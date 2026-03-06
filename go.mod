@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/boombuler/barcode v1.1.0
 	github.com/caarlos0/env/v10 v10.0.0
+	github.com/coreos/go-iptables v0.8.0
 	github.com/go-playground/validator/v10 v10.16.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
@@ -15,16 +16,19 @@ require (
 	github.com/riverqueue/river v0.31.0
 	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.31.0
 	github.com/riverqueue/river/rivertype v0.31.0
+	github.com/shirou/gopsutil/v4 v4.24.10
+	github.com/stretchr/testify v1.11.1
 	golang.org/x/crypto v0.46.0
 	google.golang.org/grpc v1.79.2
 	google.golang.org/protobuf v1.36.11
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/driver/sqlite v1.6.0
 	gorm.io/gorm v1.31.1
+	libvirt.org/go/libvirt v1.12001.0
+	libvirt.org/go/libvirtxml v1.12001.0
 )
 
 require (
-	github.com/coreos/go-iptables v0.8.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/ebitengine/purego v0.8.1 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.2 // indirect
@@ -46,8 +50,6 @@ require (
 	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect
 	github.com/riverqueue/river/riverdriver v0.31.0 // indirect
 	github.com/riverqueue/river/rivershared v0.31.0 // indirect
-	github.com/shirou/gopsutil/v4 v4.24.10 // indirect
-	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.2.0 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
@@ -62,8 +64,7 @@ require (
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
+	golang.org/x/time v0.14.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251202230838-ff82c1b0f217 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	libvirt.org/go/libvirt v1.12001.0 // indirect
-	libvirt.org/go/libvirtxml v1.12001.0 // indirect
 )

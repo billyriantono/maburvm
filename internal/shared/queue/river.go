@@ -60,6 +60,8 @@ type Client struct {
 	logger      *slog.Logger
 	config      *Config
 	auditRepo   *repository.AuditRepository
+	metrics     *MetricsCollector
+	agentClient *AgentClient
 }
 
 // NewClient creates a new queue client with database pool and River client
@@ -149,13 +151,32 @@ func (c *Client) initPool(ctx context.Context) error {
 func (c *Client) initRiver() error {
 	workers := river.NewWorkers()
 
-	// Create audit repository for the audit worker
+	c.metrics = NewMetricsCollector()
+	c.agentClient = NewAgentClient()
+
 	c.auditRepo = repository.NewAuditRepository(c.gormDB)
+	templateRepo := repository.NewTemplateRepository(c.gormDB)
+	nodeRepo := repository.NewNodeRepository(c.gormDB)
+	vmRepo := repository.NewVMRepository(c.gormDB)
+
+	SetWorkerContext(&WorkerContext{
+		DB:           c.gormDB,
+		VMRepo:       vmRepo,
+		NodeRepo:     nodeRepo,
+		TemplateRepo: templateRepo,
+		AgentClient:  c.agentClient,
+		Metrics:      c.metrics,
+	})
+
+	if err := c.gormDB.AutoMigrate(&JobRecord{}); err != nil {
+		return fmt.Errorf("failed to migrate job records table: %w", err)
+	}
 
 	river.AddWorker(workers, NewVMOperationWorker(c.logger))
-	river.AddWorker(workers, NewTemplateSyncWorker(c.logger))
+	river.AddWorker(workers, NewTemplateSyncWorker(c.logger, templateRepo, nodeRepo, c.gormDB))
 	river.AddWorker(workers, NewBackupWorker(c.logger))
 	river.AddWorker(workers, NewImportWorker(c.logger))
+	river.AddWorker(workers, NewNetworkConfigWorker(c.logger))
 	river.AddWorker(workers, NewAuditWorker(c.logger, c.auditRepo))
 
 	riverClient, err := river.NewClient(riverpgxv5.New(c.pool), &river.Config{
@@ -209,9 +230,16 @@ func (c *Client) Stop(ctx context.Context) error {
 		c.logger.Info("stopping River client")
 		if err := c.riverClient.Stop(ctx); err != nil {
 			c.logger.Error("failed to stop River client", "error", err)
-			// Continue to close pool even if River stop fails
 		}
 		c.riverClient = nil
+	}
+
+	if c.agentClient != nil {
+		c.logger.Info("closing agent client connections")
+		if err := c.agentClient.Close(); err != nil {
+			c.logger.Error("failed to close agent client", "error", err)
+		}
+		c.agentClient = nil
 	}
 
 	// Close database pool
@@ -223,6 +251,19 @@ func (c *Client) Stop(ctx context.Context) error {
 
 	c.logger.Info("queue client stopped")
 	return nil
+}
+
+func (c *Client) GetMetrics() (processed, failed, retried, dead int64, avgLatency time.Duration) {
+	if c.metrics == nil {
+		return 0, 0, 0, 0, 0
+	}
+	return c.metrics.GetMetrics()
+}
+
+func (c *Client) ResetMetrics() {
+	if c.metrics != nil {
+		c.metrics = NewMetricsCollector()
+	}
 }
 
 // InsertJob inserts a job into the queue
@@ -333,7 +374,10 @@ func (c *Client) InsertImport(ctx context.Context, job ImportJob) (*rivertype.Jo
 	return c.riverClient.Insert(ctx, job, nil)
 }
 
-// InsertAudit inserts an audit log job
 func (c *Client) InsertAudit(ctx context.Context, job AuditJob) (*rivertype.JobInsertResult, error) {
+	return c.riverClient.Insert(ctx, job, nil)
+}
+
+func (c *Client) InsertNetworkConfig(ctx context.Context, job NetworkConfigJob) (*rivertype.JobInsertResult, error) {
 	return c.riverClient.Insert(ctx, job, nil)
 }

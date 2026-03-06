@@ -29,16 +29,20 @@ const (
 type VMOperationType string
 
 const (
-	VMOpCreate    VMOperationType = "create"
-	VMOpStart     VMOperationType = "start"
-	VMOpStop      VMOperationType = "stop"
-	VMOpRestart   VMOperationType = "restart"
-	VMOpDelete    VMOperationType = "delete"
-	VMOpRebuild   VMOperationType = "rebuild"
-	VMOpSuspend   VMOperationType = "suspend"
-	VMOpUnsuspend VMOperationType = "unsuspend"
-	VMOpMigrate   VMOperationType = "migrate"
-	VMOpResize    VMOperationType = "resize"
+	VMOpCreate            VMOperationType = "create"
+	VMOpStart             VMOperationType = "start"
+	VMOpStop              VMOperationType = "stop"
+	VMOpRestart           VMOperationType = "restart"
+	VMOpDelete            VMOperationType = "delete"
+	VMOpRebuild           VMOperationType = "rebuild"
+	VMOpSuspend           VMOperationType = "suspend"
+	VMOpUnsuspend         VMOperationType = "unsuspend"
+	VMOpMigrate           VMOperationType = "migrate"
+	VMOpResize            VMOperationType = "resize"
+	VMOpConfigureNetwork  VMOperationType = "configure_network"
+	VMOpAddPortForward    VMOperationType = "add_port_forward"
+	VMOpRemovePortForward VMOperationType = "remove_port_forward"
+	VMOpConfigureFirewall VMOperationType = "configure_firewall"
 )
 
 // VMOperationJob represents a VM lifecycle operation job
@@ -152,7 +156,8 @@ func (j ImportJob) InsertOpts() *river.InsertOpts {
 func ValidateVMOperation(op VMOperationType) error {
 	switch op {
 	case VMOpCreate, VMOpStart, VMOpStop, VMOpRestart, VMOpDelete,
-		VMOpRebuild, VMOpSuspend, VMOpUnsuspend, VMOpMigrate, VMOpResize:
+		VMOpRebuild, VMOpSuspend, VMOpUnsuspend, VMOpMigrate, VMOpResize,
+		VMOpConfigureNetwork, VMOpAddPortForward, VMOpRemovePortForward, VMOpConfigureFirewall:
 		return nil
 	default:
 		return fmt.Errorf("invalid VM operation type: %s", op)
