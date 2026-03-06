@@ -63,10 +63,13 @@ func (s *Server) SetupRoutes() {
 	// Node routes
 	s.setupNodeRoutes(v1)
 
+	// VM routes
+	s.setupVMRoutes(v1)
+
 	// Billing webhook routes (outside /api group, uses own auth)
 	s.setupBillingRoutes()
 
-	// TODO: Add other route groups (VMs, users, networks, etc.)
+	// TODO: Add other route groups (users, networks, etc.)
 }
 
 // setupNodeRoutes configures node-related routes
@@ -104,6 +107,32 @@ func (s *Server) setupNodeRoutes(g *echo.Group) {
 
 	// Regenerate token - requires node:update permission
 	nodes.POST("/:id/regenerate-token", nodeHandler.RegenerateToken, panelMiddleware.RequirePermission("node:update"))
+}
+
+// setupVMRoutes configures VM-related routes
+func (s *Server) setupVMRoutes(g *echo.Group) {
+	logger := slog.Default()
+
+	vmRepo := repository.NewVMRepository(s.db)
+	nodeRepo := repository.NewNodeRepository(s.db)
+	templateRepo := repository.NewTemplateRepository(s.db)
+
+	vmService := service.NewVMService(s.db, vmRepo, nodeRepo, templateRepo, nil, logger)
+
+	wsHost := ""
+	if s.cfg.Server.Host != "" {
+		wsHost = fmt.Sprintf("%s:%d", s.cfg.Server.Host, s.cfg.Server.Port)
+	}
+
+	vncService := service.NewVNCService(s.db, vmRepo, nodeRepo, logger, s.cfg.JWT.SecretKey, wsHost)
+
+	if err := vncService.Migrate(); err != nil {
+		logger.Error("failed to migrate console tokens table", "error", err)
+	}
+
+	vmHandler := handler.NewVMHandler(vmService, vncService)
+
+	handler.RegisterVMRoutes(s.echo, vmHandler, s.db)
 }
 
 // setupBillingRoutes configures billing webhook routes with HMAC authentication

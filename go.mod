@@ -3,19 +3,26 @@ module github.com/maburvm/panel
 go 1.25.0
 
 require (
+	github.com/aws/aws-sdk-go-v2 v1.41.3
+	github.com/aws/aws-sdk-go-v2/config v1.32.11
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.11
+	github.com/aws/aws-sdk-go-v2/service/s3 v1.96.4
 	github.com/boombuler/barcode v1.1.0
 	github.com/caarlos0/env/v10 v10.0.0
 	github.com/coreos/go-iptables v0.8.0
 	github.com/go-playground/validator/v10 v10.16.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/joho/godotenv v1.5.1
+	github.com/klauspost/compress v1.17.11
 	github.com/labstack/echo/v4 v4.15.1
 	github.com/pquerna/otp v1.5.0
 	github.com/riverqueue/river v0.31.0
 	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.31.0
 	github.com/riverqueue/river/rivertype v0.31.0
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/shirou/gopsutil/v4 v4.24.10
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/crypto v0.46.0
@@ -29,12 +36,8 @@ require (
 )
 
 require (
-	github.com/aws/aws-sdk-go-v2 v1.41.3 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.6 // indirect
-	github.com/aws/aws-sdk-go-v2/config v1.32.11 // indirect
-	github.com/aws/aws-sdk-go-v2/credentials v1.19.11 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.19 // indirect
-	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.22.6 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.19 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.19 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/ini v1.8.5 // indirect
@@ -43,7 +46,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.9.11 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.19 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.19 // indirect
-	github.com/aws/aws-sdk-go-v2/service/s3 v1.96.4 // indirect
 	github.com/aws/aws-sdk-go-v2/service/signin v1.0.7 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sso v1.30.12 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.16 // indirect
@@ -60,7 +62,6 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
-	github.com/klauspost/compress v1.17.11 // indirect
 	github.com/labstack/gommon v0.4.2 // indirect
 	github.com/leodido/go-urn v1.2.4 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
@@ -71,7 +72,6 @@ require (
 	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect
 	github.com/riverqueue/river/riverdriver v0.31.0 // indirect
 	github.com/riverqueue/river/rivershared v0.31.0 // indirect
-	github.com/robfig/cron/v3 v3.0.1 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.2.0 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect

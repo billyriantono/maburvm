@@ -14,13 +14,23 @@ import (
 
 // VMHandler handles HTTP requests for VM management
 type VMHandler struct {
-	service *service.VMService
+	service    *service.VMService
+	vncService *service.VNCService
 }
 
 // NewVMHandler creates a new VMHandler instance
-func NewVMHandler(service *service.VMService) *VMHandler {
+func NewVMHandler(service *service.VMService, vncService *service.VNCService) *VMHandler {
 	return &VMHandler{
-		service: service,
+		service:    service,
+		vncService: vncService,
+	}
+}
+
+// NewVMHandlerWithoutVNC creates a new VMHandler instance without VNC service (for backward compatibility)
+func NewVMHandlerWithoutVNC(service *service.VMService) *VMHandler {
+	return &VMHandler{
+		service:    service,
+		vncService: nil,
 	}
 }
 
@@ -751,4 +761,105 @@ func RegisterVMRoutes(e *echo.Echo, handler *VMHandler, db interface{}) {
 		vnc.GET("", handler.GetVNCConfig)
 		vnc.POST("/refresh", handler.RefreshVNCPassword)
 	}
+
+	// Console token operations - require vm:console
+	consoleToken := vms.Group("/:id/console")
+	consoleToken.Use(middleware.RequirePermission("vm:console"))
+	{
+		consoleToken.POST("/token", handler.GenerateConsoleToken)
+		consoleToken.DELETE("/token", handler.RevokeConsoleToken)
+	}
+}
+
+func (h *VMHandler) GenerateConsoleToken(c echo.Context) error {
+	id := c.Param("id")
+	if id == "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error":   "Bad Request",
+			"message": "VM ID is required",
+		})
+	}
+
+	if h.vncService == nil {
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+			"error":   "Internal Server Error",
+			"message": "VNC service not configured",
+		})
+	}
+
+	userCtx, ok := c.Get("user").(*middleware.UserContext)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]interface{}{
+			"error":   "Unauthorized",
+			"message": "User context not found",
+		})
+	}
+
+	resp, err := h.vncService.GenerateConsoleToken(c.Request().Context(), id, userCtx.ID.String())
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrConsoleTokenVMNotFound):
+			return c.JSON(http.StatusNotFound, map[string]interface{}{
+				"error":   "Not Found",
+				"message": "VM not found",
+			})
+		case errors.Is(err, service.ErrConsoleTokenUnauthorized):
+			return c.JSON(http.StatusForbidden, map[string]interface{}{
+				"error":   "Forbidden",
+				"message": "User not authorized to access this VM",
+			})
+		default:
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+				"error":   "Internal Server Error",
+				"message": err.Error(),
+			})
+		}
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Console token generated",
+		"data": map[string]interface{}{
+			"token":      resp.Token,
+			"expires_at": resp.ExpiresAt.Format("2006-01-02T15:04:05Z"),
+			"ws_url":     resp.WSURL,
+		},
+	})
+}
+
+func (h *VMHandler) RevokeConsoleToken(c echo.Context) error {
+	id := c.Param("id")
+	if id == "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error":   "Bad Request",
+			"message": "VM ID is required",
+		})
+	}
+
+	var req struct {
+		JTI string `json:"jti"`
+	}
+	if err := c.Bind(&req); err != nil || req.JTI == "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error":   "Bad Request",
+			"message": "Token JTI is required",
+		})
+	}
+
+	if h.vncService == nil {
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+			"error":   "Internal Server Error",
+			"message": "VNC service not configured",
+		})
+	}
+
+	if err := h.vncService.RevokeConsoleToken(c.Request().Context(), req.JTI); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+			"error":   "Internal Server Error",
+			"message": err.Error(),
+		})
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Console token revoked",
+	})
 }
