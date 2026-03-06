@@ -330,7 +330,7 @@ func (suite *UserRepositoryTestSuite) TestUserRepository_EmailExists() {
 		PasswordHash: "hashedpassword",
 		Role:         models.RoleClient,
 	}
-	err := suite.db.Create(user).Error
+	err = suite.db.Create(user).Error
 	assert.NoError(suite.T(), err)
 
 	// Check existing email

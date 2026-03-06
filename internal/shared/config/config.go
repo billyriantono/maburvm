@@ -40,6 +40,17 @@ type AgentConfig struct {
 	PanelAddress      string        `env:"AGENT_PANEL_ADDRESS"`
 }
 
+// AgentServerConfig holds gRPC server configuration for the agent
+type AgentServerConfig struct {
+	GRPCPort        int
+	BindAddress     string
+	TLSCertFile     string
+	TLSKeyFile      string
+	Environment     string
+	ShutdownTimeout time.Duration
+	AuthToken       string
+}
+
 // S3 settings
 type S3Config struct {
 	Endpoint  string `env:"S3_ENDPOINT"`
