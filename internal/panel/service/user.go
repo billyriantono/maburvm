@@ -114,6 +114,8 @@ func (s *UserService) Register(req *RegisterRequest) (*RegisterResponse, error) 
 		PasswordHash: string(hashedPassword),
 		Role:         role,
 		IPWhitelist:  []string{},
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
 	}
 
 	if err := s.db.Create(user).Error; err != nil {

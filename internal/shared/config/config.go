@@ -10,11 +10,11 @@ import (
 
 // Database settings
 type DatabaseConfig struct {
-	Host     string `env:"DB_HOST,required" envDefault:"localhost"`
+	Host     string `env:"DB_HOST" envDefault:"localhost"`
 	Port     int    `env:"DB_PORT" envDefault:"5432"`
-	User     string `env:"DB_USER,required"`
-	Password string `env:"DB_PASSWORD,required"`
-	Name     string `env:"DB_NAME,required"`
+	User     string `env:"DB_USER"`
+	Password string `env:"DB_PASSWORD"`
+	Name     string `env:"DB_NAME"`
 	SSLMode  string `env:"DB_SSL_MODE" envDefault:"disable"`
 }
 
@@ -28,7 +28,7 @@ type ServerConfig struct {
 
 // JWT settings
 type JWTConfig struct {
-	SecretKey       string        `env:"JWT_SECRET_KEY,required"`
+	SecretKey       string        `env:"JWT_SECRET_KEY"`
 	AccessTokenTTL  time.Duration `env:"JWT_ACCESS_TOKEN_TTL" envDefault:"15m"`
 	RefreshTokenTTL time.Duration `env:"JWT_REFRESH_TOKEN_TTL" envDefault:"168h"`
 }
@@ -37,14 +37,15 @@ type JWTConfig struct {
 type AgentConfig struct {
 	GRPCPort          int           `env:"AGENT_GRPC_PORT" envDefault:"50051"`
 	HeartbeatInterval time.Duration `env:"AGENT_HEARTBEAT_INTERVAL" envDefault:"30s"`
+	PanelAddress      string        `env:"AGENT_PANEL_ADDRESS"`
 }
 
 // S3 settings
 type S3Config struct {
-	Endpoint  string `env:"S3_ENDPOINT,required"`
-	AccessKey string `env:"S3_ACCESS_KEY,required"`
-	SecretKey string `env:"S3_SECRET_KEY,required"`
-	Bucket    string `env:"S3_BUCKET,required"`
+	Endpoint  string `env:"S3_ENDPOINT"`
+	AccessKey string `env:"S3_ACCESS_KEY"`
+	SecretKey string `env:"S3_SECRET_KEY"`
+	Bucket    string `env:"S3_BUCKET"`
 	Region    string `env:"S3_REGION" envDefault:"us-east-1"`
 }
 

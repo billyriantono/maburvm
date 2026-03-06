@@ -7,7 +7,6 @@ import (
 )
 
 func TestLoad_WithRequiredEnvVars(t *testing.T) {
-	// Set required environment variables
 	os.Setenv("DB_HOST", "localhost")
 	os.Setenv("DB_USER", "postgres")
 	os.Setenv("DB_PASSWORD", "password")
@@ -35,7 +34,6 @@ func TestLoad_WithRequiredEnvVars(t *testing.T) {
 		t.Fatalf("Expected no error, got: %v", err)
 	}
 
-	// Verify database config
 	if cfg.Database.Host != "localhost" {
 		t.Errorf("Expected DB_HOST=localhost, got %s", cfg.Database.Host)
 	}
@@ -49,7 +47,6 @@ func TestLoad_WithRequiredEnvVars(t *testing.T) {
 		t.Errorf("Expected DB_SSL_MODE=disable, got %s", cfg.Database.SSLMode)
 	}
 
-	// Verify server config defaults
 	if cfg.Server.Port != 8080 {
 		t.Errorf("Expected SERVER_PORT=8080, got %d", cfg.Server.Port)
 	}
@@ -57,27 +54,23 @@ func TestLoad_WithRequiredEnvVars(t *testing.T) {
 		t.Errorf("Expected SERVER_HOST=0.0.0.0, got %s", cfg.Server.Host)
 	}
 
-	// Verify JWT config
 	if cfg.JWT.SecretKey != "test-secret-key" {
 		t.Errorf("Expected JWT_SECRET_KEY=test-secret-key, got %s", cfg.JWT.SecretKey)
 	}
 
-	// Verify S3 config
 	if cfg.S3.Endpoint != "http://localhost:9000" {
-		t.Errorf("Expected S3_ENDPOINT=http://localhost:9000, got %s", cfg.S3.SecretKey)
+		t.Errorf("Expected S3_ENDPOINT=http://localhost:9000, got %s", cfg.S3.Endpoint)
 	}
 	if cfg.S3.Region != "us-east-1" {
 		t.Errorf("Expected S3_REGION=us-east-1, got %s", cfg.S3.Region)
 	}
 
-	// Verify VNC defaults
-	if time.Duration(cfg.VNC.TokenTTL) != 5*time.Minute {
-		t.Errorf("Expected VNC_TOKEN_TTL=5m, got %s", time.Duration(cfg.VNC.TokenTTL))
+	if cfg.VNC.TokenTTL != 5*time.Minute {
+		t.Errorf("Expected VNC_TOKEN_TTL=5m, got %s", cfg.VNC.TokenTTL)
 	}
 }
 
 func TestLoad_MissingRequiredFields(t *testing.T) {
-	// Unset all required env vars
 	os.Unsetenv("DB_HOST")
 	os.Unsetenv("DB_USER")
 	os.Unsetenv("DB_PASSWORD")
@@ -93,18 +86,15 @@ func TestLoad_MissingRequiredFields(t *testing.T) {
 		t.Fatal("Expected error for missing required fields, got nil")
 	}
 
-	// Should get a validation error about missing required fields
 	t.Logf("Got expected error: %v", err)
 }
 
 func TestLoadDefault(t *testing.T) {
-	// This should load with defaults even without required fields
 	cfg, err := LoadDefault()
 	if err != nil {
 		t.Fatalf("Expected no error from LoadDefault, got: %v", err)
 	}
 
-	// Verify defaults are applied
 	if cfg.Database.Host != "localhost" {
 		t.Errorf("Expected default DB_HOST=localhost, got %s", cfg.Database.Host)
 	}

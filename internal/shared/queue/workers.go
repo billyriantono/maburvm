@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/maburvm/panel/internal/panel/repository"
 	"github.com/maburvm/panel/internal/shared/models"
 	"github.com/riverqueue/river"
 )
@@ -197,24 +198,32 @@ func (w *ImportWorker) Work(ctx context.Context, job *river.Job[ImportJob]) erro
 	return nil
 }
 
+// AuditWorker handles audit log insertion to database
+// Queue: audit (20 workers)
 type AuditWorker struct {
 	river.WorkerDefaults[AuditJob]
-	logger *slog.Logger
+	logger    *slog.Logger
+	auditRepo *repository.AuditRepository
 }
 
-func NewAuditWorker(logger *slog.Logger) *AuditWorker {
+// NewAuditWorker creates a new audit worker with repository
+func NewAuditWorker(logger *slog.Logger, auditRepo *repository.AuditRepository) *AuditWorker {
 	return &AuditWorker{
-		logger: logger,
+		logger:    logger,
+		auditRepo: auditRepo,
 	}
 }
 
+// Work implements the audit job handler - inserts audit log to database
 func (w *AuditWorker) Work(ctx context.Context, job *river.Job[AuditJob]) error {
 	w.logger.InfoContext(ctx, "processing audit log",
 		"action", job.Args.Action,
 		"resource_type", job.Args.ResourceType,
+		"user_id", job.Args.UserID,
 	)
 
-	auditLog := models.AuditLog{
+	// Create audit log model from job args
+	auditLog := &models.AuditLog{
 		UserID:         job.Args.UserID,
 		Action:         job.Args.Action,
 		ResourceType:   job.Args.ResourceType,
@@ -224,14 +233,29 @@ func (w *AuditWorker) Work(ctx context.Context, job *river.Job[AuditJob]) error 
 		Details:        job.Args.Details,
 		BeforeSnapshot: job.Args.BeforeSnapshot,
 		AfterSnapshot:  job.Args.AfterSnapshot,
-		CreatedAt:      job.Args.Timestamp,
 	}
 
-	if auditLog.Details == nil {
-		auditLog.Details = make(map[string]any)
+	// Set timestamp from job if provided, otherwise use current time
+	if !job.Args.Timestamp.IsZero() {
+		auditLog.CreatedAt = job.Args.Timestamp
 	}
 
-	_ = auditLog
+	// Insert audit log to database
+	// Errors are logged but not returned to prevent job retries for audit logs
+	if err := w.auditRepo.Create(ctx, auditLog); err != nil {
+		w.logger.ErrorContext(ctx, "failed to insert audit log",
+			"error", err,
+			"action", job.Args.Action,
+			"resource_type", job.Args.ResourceType,
+		)
+		// Return nil to prevent retries - audit log failures should not block the system
+		return nil
+	}
+
+	w.logger.InfoContext(ctx, "audit log inserted successfully",
+		"audit_id", auditLog.ID,
+		"action", job.Args.Action,
+	)
 
 	return nil
 }

@@ -11,10 +11,14 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/maburvm/panel/internal/panel/repository"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivermigrate"
 	"github.com/riverqueue/river/rivertype"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 // Config holds the configuration for the queue system
@@ -51,9 +55,11 @@ func DefaultConfig(databaseURL string) *Config {
 // Client wraps the River client and database pool
 type Client struct {
 	pool        *pgxpool.Pool
+	gormDB      *gorm.DB
 	riverClient *river.Client[pgx.Tx]
 	logger      *slog.Logger
 	config      *Config
+	auditRepo   *repository.AuditRepository
 }
 
 // NewClient creates a new queue client with database pool and River client
@@ -120,6 +126,17 @@ func (c *Client) initPool(ctx context.Context) error {
 	}
 
 	c.pool = pool
+
+	// Initialize GORM DB for repositories using same connection string
+	gormDB, err := gorm.Open(postgres.Open(c.config.DatabaseURL), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	if err != nil {
+		pool.Close()
+		return fmt.Errorf("failed to create GORM connection: %w", err)
+	}
+	c.gormDB = gormDB
+
 	c.logger.Info("database pool initialized",
 		"max_conns", pgxConfig.MaxConns,
 		"min_conns", pgxConfig.MinConns,
@@ -132,11 +149,14 @@ func (c *Client) initPool(ctx context.Context) error {
 func (c *Client) initRiver() error {
 	workers := river.NewWorkers()
 
+	// Create audit repository for the audit worker
+	c.auditRepo = repository.NewAuditRepository(c.gormDB)
+
 	river.AddWorker(workers, NewVMOperationWorker(c.logger))
 	river.AddWorker(workers, NewTemplateSyncWorker(c.logger))
 	river.AddWorker(workers, NewBackupWorker(c.logger))
 	river.AddWorker(workers, NewImportWorker(c.logger))
-	river.AddWorker(workers, NewAuditWorker(c.logger))
+	river.AddWorker(workers, NewAuditWorker(c.logger, c.auditRepo))
 
 	riverClient, err := river.NewClient(riverpgxv5.New(c.pool), &river.Config{
 		Queues: map[string]river.QueueConfig{
@@ -310,5 +330,10 @@ func (c *Client) InsertBackup(ctx context.Context, job BackupJob) (*rivertype.Jo
 
 // InsertImport inserts an import job
 func (c *Client) InsertImport(ctx context.Context, job ImportJob) (*rivertype.JobInsertResult, error) {
+	return c.riverClient.Insert(ctx, job, nil)
+}
+
+// InsertAudit inserts an audit log job
+func (c *Client) InsertAudit(ctx context.Context, job AuditJob) (*rivertype.JobInsertResult, error) {
 	return c.riverClient.Insert(ctx, job, nil)
 }
