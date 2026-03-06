@@ -1,0 +1,839 @@
+syntax = "proto3";
+
+package agent;
+
+option go_package = "github.com/maburvm/maburvm/internal/shared/grpc/pb;pb";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+
+// ============================================================================
+// NodeAgent Service - Main gRPC service for panel-agent communication
+// ============================================================================
+
+// NodeAgent is the primary service for communication between the MaburVM Panel
+// and Node Agents. It handles node registration, heartbeat monitoring,
+// VM lifecycle management, metrics streaming, and network configuration.
+service NodeAgent {
+  // RegisterNode handles initial node registration when an agent connects
+  // to the panel for the first time. The panel assigns a node ID and returns
+  // authentication credentials for subsequent requests.
+  rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
+
+  // Heartbeat establishes a bidirectional streaming connection for health
+  // monitoring. Both panel and agent can send heartbeats to detect
+  // connectivity issues and exchange status updates in real-time.
+  rpc Heartbeat(stream HeartbeatRequest) returns (stream HeartbeatResponse);
+
+  // ExecuteVMCommand sends VM lifecycle commands (create, start, stop, destroy)
+  // to the node agent. This is a unary RPC as commands must complete
+  // before returning a response.
+  rpc ExecuteVMCommand(VMCommandRequest) returns (VMCommandResponse);
+
+  // GetVMStatus retrieves the current state of a VM including resource usage,
+  // running processes, and health information.
+  rpc GetVMStatus(VMStatusRequest) returns (VMStatusResponse);
+
+  // StreamVMMetrics opens a server-side streaming connection for real-time
+  // VM metrics including CPU, memory, disk, and network statistics.
+  rpc StreamVMMetrics(VMMetricsRequest) returns (stream VMMetricsResponse);
+
+  // CreateSnapshot creates a point-in-time snapshot of a VM's disk state.
+  // Can also be used to list, restore, or delete existing snapshots.
+  rpc CreateSnapshot(SnapshotRequest) returns (SnapshotResponse);
+
+  // ApplyNetworkConfig applies TC (traffic control) and iptables rules
+  // to enforce bandwidth limits, firewall rules, and network isolation.
+  rpc ApplyNetworkConfig(NetworkConfigRequest) returns (NetworkConfigResponse);
+
+  // StartVNCProxy starts a noVNC proxy server for browser-based console access
+  // to the VM. Returns connection details for the WebSocket VNC session.
+  rpc StartVNCProxy(VNCProxyRequest) returns (VNCProxyResponse);
+}
+
+// ============================================================================
+// Node Registration
+// ============================================================================
+
+// RegisterNodeRequest is sent by the agent to register with the panel.
+message RegisterNodeRequest {
+  // hostname is the system's hostname
+  string hostname = 1;
+
+  // agent_version is the version of the agent software
+  string agent_version = 2;
+
+  // total_resources describes the total capacity of the node
+  VMResources total_resources = 3;
+
+  // capabilities lists features supported by this node (e.g., "kvm", "zfs", "snapshot")
+  repeated string capabilities = 4;
+
+  // labels are user-defined key-value pairs for node organization
+  map<string, string> labels = 5;
+
+  // public_ip is the node's public IP address
+  string public_ip = 6;
+
+  // region is the geographical region where the node is located
+  string region = 7;
+}
+
+// RegisterNodeResponse is returned by the panel after successful registration.
+message RegisterNodeResponse {
+  // node_id is the unique identifier assigned to this node
+  string node_id = 1;
+
+  // auth_token is the bearer token for authenticating subsequent requests
+  string auth_token = 2;
+
+  // refresh_interval specifies how often the agent should send heartbeats
+  google.protobuf.Duration refresh_interval = 3;
+
+  // metrics_interval specifies how often to collect and report metrics
+  google.protobuf.Duration metrics_interval = 4;
+}
+
+// ============================================================================
+// Heartbeat
+// ============================================================================
+
+// HeartbeatRequest is sent by the agent to report its current status.
+message HeartbeatRequest {
+  // timestamp when this heartbeat was generated
+  google.protobuf.Timestamp timestamp = 1;
+
+  // node_id identifies the sending node
+  string node_id = 2;
+
+  // available_resources shows current available capacity
+  VMResources available_resources = 3;
+
+  // active_vms lists currently running VMs on this node
+  repeated string active_vm_ids = 4;
+
+  // system_load contains node-level system metrics
+  SystemLoad system_load = 5;
+}
+
+// HeartbeatResponse is sent by the panel in response to heartbeats.
+message HeartbeatResponse {
+  // timestamp when this response was generated
+  google.protobuf.Timestamp timestamp = 1;
+
+  // commands_pending indicates if there are pending commands for this node
+  bool commands_pending = 2;
+
+  // config_update signals if the node should fetch new configuration
+  bool config_update = 3;
+
+  // acknowledged confirms the heartbeat was received
+  bool acknowledged = 4;
+}
+
+// SystemLoad contains node-level system metrics.
+message SystemLoad {
+  // cpu_percent is the current CPU utilization (0-100)
+  double cpu_percent = 1;
+
+  // memory_used_bytes is the amount of memory in use
+  int64 memory_used_bytes = 2;
+
+  // memory_total_bytes is the total available memory
+  int64 memory_total_bytes = 3;
+
+  // disk_io_read_bytes_per_sec is disk read throughput
+  int64 disk_io_read_bytes_per_sec = 4;
+
+  // disk_io_write_bytes_per_sec is disk write throughput
+  int64 disk_io_write_bytes_per_sec = 5;
+
+  // network_rx_bytes_per_sec is network receive throughput
+  int64 network_rx_bytes_per_sec = 6;
+
+  // network_tx_bytes_per_sec is network transmit throughput
+  int64 network_tx_bytes_per_sec = 7;
+}
+
+// ============================================================================
+// VM Resources
+// ============================================================================
+
+// VMResources defines CPU, memory, and disk allocation for a VM.
+message VMResources {
+  // vcpus is the number of virtual CPUs
+  int32 vcpus = 1;
+
+  // memory_mb is the amount of RAM in megabytes
+  int64 memory_mb = 2;
+
+  // disk_gb is the disk size in gigabytes
+  int64 disk_gb = 3;
+
+  // swap_mb is the swap size in megabytes (optional)
+  int64 swap_mb = 4;
+
+  // network_bandwidth_mbps is the network bandwidth limit in Mbps
+  int32 network_bandwidth_mbps = 5;
+
+  // iops_limit is the disk IOPS limit (0 = unlimited)
+  int32 iops_limit = 6;
+}
+
+// ============================================================================
+// VM Commands
+// ============================================================================
+
+// VMCommandType enumerates the possible VM lifecycle operations.
+enum VMCommandType {
+  VM_COMMAND_TYPE_UNSPECIFIED = 0;
+  VM_COMMAND_TYPE_CREATE = 1;    // Create a new VM
+  VM_COMMAND_TYPE_START = 2;     // Start an existing VM
+  VM_COMMAND_TYPE_STOP = 3;      // Graceful shutdown
+  VM_COMMAND_TYPE_FORCE_STOP = 4;// Force power off
+  VM_COMMAND_TYPE_RESTART = 5;   // Restart the VM
+  VM_COMMAND_TYPE_DESTROY = 6;   // Delete the VM and its data
+  VM_COMMAND_TYPE_PAUSE = 7;     // Pause execution
+  VM_COMMAND_TYPE_RESUME = 8;    // Resume from pause
+}
+
+// VMCommandRequest sends a lifecycle command to a VM.
+message VMCommandRequest {
+  // vm_id is the unique identifier for the VM
+  string vm_id = 1;
+
+  // command specifies the operation to perform
+  VMCommandType command = 2;
+
+  // config is required for CREATE commands
+  VMConfig config = 3;
+
+  // timeout_seconds specifies max time to wait for the command (0 = default)
+  int32 timeout_seconds = 4;
+
+  // async if true, returns immediately without waiting for completion
+  bool async = 5;
+}
+
+// VMCommandResponse reports the result of a VM command.
+message VMCommandResponse {
+  // success indicates if the command completed successfully
+  bool success = 1;
+
+  // vm_id of the affected VM
+  string vm_id = 2;
+
+  // command that was executed
+  VMCommandType command = 3;
+
+  // error details if success is false
+  ErrorResponse error = 4;
+
+  // state is the new VM state after the command
+  VMState state = 5;
+
+  // message contains additional information about the result
+  string message = 6;
+}
+
+// VMConfig defines the configuration for creating a new VM.
+message VMConfig {
+  // resources specifies CPU, memory, and disk allocation
+  VMResources resources = 1;
+
+  // image_id is the OS image to use (e.g., "ubuntu-22.04")
+  string image_id = 2;
+
+  // network_config defines network interfaces and settings
+  VMNetworkConfig network_config = 3;
+
+  // storage_config defines additional storage volumes
+  StorageConfig storage_config = 4;
+
+  // ssh_public_key for initial user access
+  string ssh_public_key = 5;
+
+  // user_data is cloud-init compatible configuration
+  string user_data = 6;
+
+  // metadata is key-value pairs for VM identification
+  map<string, string> metadata = 7;
+
+  // vnc_enabled enables VNC console access
+  bool vnc_enabled = 8;
+
+  // vnc_password sets a password for VNC access (optional)
+  string vnc_password = 9;
+}
+
+// ============================================================================
+// VM State
+// ============================================================================
+
+// VMState represents the current state of a virtual machine.
+enum VMState {
+  VM_STATE_UNSPECIFIED = 0;
+  VM_STATE_PENDING = 1;      // VM is being created/configured
+  VM_STATE_RUNNING = 2;      // VM is actively running
+  VM_STATE_STOPPED = 3;      // VM is powered off
+  VM_STATE_PAUSED = 4;       // VM execution is paused
+  VM_STATE_ERROR = 5;        // VM is in an error state
+  VM_STATE_MIGRATING = 6;    // VM is being migrated
+  VM_STATE_SNAPSHOTTING = 7; // Snapshot operation in progress
+  VM_STATE_DESTROYED = 8;    // VM has been destroyed
+}
+
+// VMStatusRequest queries the current state of a VM.
+message VMStatusRequest {
+  // vm_id is the VM to query
+  string vm_id = 1;
+
+  // include_metrics if true, includes current resource usage
+  bool include_metrics = 2;
+}
+
+// VMStatusResponse contains the current VM status.
+message VMStatusResponse {
+  // vm_id of the queried VM
+  string vm_id = 1;
+
+  // current state of the VM
+  VMState state = 2;
+
+  // uptime_seconds since the VM was started
+  int64 uptime_seconds = 3;
+
+  // pid is the process ID of the VM on the host (if running)
+  int32 pid = 4;
+
+  // current_resources shows actual resource usage
+  VMResourceUsage current_resources = 5;
+
+  // ip_addresses assigned to the VM
+  repeated string ip_addresses = 6;
+
+  // vnc_port if VNC is enabled
+  int32 vnc_port = 7;
+
+  // last_state_change timestamp
+  google.protobuf.Timestamp last_state_change = 8;
+
+  // error_message if VM is in ERROR state
+  string error_message = 9;
+}
+
+// VMResourceUsage contains actual resource consumption metrics.
+message VMResourceUsage {
+  // cpu_percent is current CPU utilization (0-100 per vCPU)
+  double cpu_percent = 1;
+
+  // memory_used_mb is current memory consumption
+  int64 memory_used_mb = 2;
+
+  // memory_total_mb is allocated memory
+  int64 memory_total_mb = 3;
+
+  // disk_read_bytes is total bytes read from disk
+  int64 disk_read_bytes = 4;
+
+  // disk_write_bytes is total bytes written to disk
+  int64 disk_write_bytes = 5;
+
+  // disk_read_iops is current read IOPS
+  int32 disk_read_iops = 6;
+
+  // disk_write_iops is current write IOPS
+  int32 disk_write_iops = 7;
+
+  // network_rx_bytes is total bytes received
+  int64 network_rx_bytes = 8;
+
+  // network_tx_bytes is total bytes transmitted
+  int64 network_tx_bytes = 9;
+}
+
+// ============================================================================
+// VM Metrics Streaming
+// ============================================================================
+
+// VMMetricsRequest initiates a metrics stream for one or more VMs.
+message VMMetricsRequest {
+  // vm_ids to monitor (empty = all VMs on node)
+  repeated string vm_ids = 1;
+
+  // interval_ms between metric samples
+  int32 interval_ms = 2;
+
+  // metric_types to include (empty = all)
+  repeated MetricType metric_types = 3;
+}
+
+// VMMetricsResponse contains a single metrics sample.
+message VMMetricsResponse {
+  // timestamp when metrics were collected
+  google.protobuf.Timestamp timestamp = 1;
+
+  // vm_id these metrics belong to
+  string vm_id = 2;
+
+  // cpu metrics
+  CPUMetrics cpu = 3;
+
+  // memory metrics
+  MemoryMetrics memory = 4;
+
+  // disk metrics
+  DiskMetrics disk = 5;
+
+  // network metrics
+  NetworkMetrics network = 6;
+
+  // process metrics
+  ProcessMetrics process = 7;
+}
+
+// MetricType enumerates available metric categories.
+enum MetricType {
+  METRIC_TYPE_UNSPECIFIED = 0;
+  METRIC_TYPE_CPU = 1;
+  METRIC_TYPE_MEMORY = 2;
+  METRIC_TYPE_DISK = 3;
+  METRIC_TYPE_NETWORK = 4;
+  METRIC_TYPE_PROCESS = 5;
+}
+
+// CPUMetrics contains CPU utilization data.
+message CPUMetrics {
+  // usage_percent is aggregate CPU utilization (0-100 * vcpus)
+  double usage_percent = 1;
+
+  // per_vcpu_percent breaks down usage by virtual CPU
+  repeated double per_vcpu_percent = 2;
+
+  // steal_time_percent is time spent waiting for hypervisor
+  double steal_time_percent = 3;
+
+  // iowait_percent is time spent waiting for IO
+  double iowait_percent = 4;
+}
+
+// MemoryMetrics contains memory utilization data.
+message MemoryMetrics {
+  // used_bytes is currently used memory
+  int64 used_bytes = 1;
+
+  // available_bytes is memory available for use
+  int64 available_bytes = 2;
+
+  // total_bytes is total allocated memory
+  int64 total_bytes = 3;
+
+  // swap_used_bytes is swap space in use
+  int64 swap_used_bytes = 4;
+
+  // swap_total_bytes is total swap allocated
+  int64 swap_total_bytes = 5;
+
+  // cache_bytes is filesystem cache
+  int64 cache_bytes = 6;
+}
+
+// DiskMetrics contains disk IO statistics.
+message DiskMetrics {
+  // read_bytes_per_sec is current read throughput
+  int64 read_bytes_per_sec = 1;
+
+  // write_bytes_per_sec is current write throughput
+  int64 write_bytes_per_sec = 2;
+
+  // read_iops is current read operations per second
+  int32 read_iops = 3;
+
+  // write_iops is current write operations per second
+  int32 write_iops = 4;
+
+  // read_latency_ms is average read latency
+  double read_latency_ms = 5;
+
+  // write_latency_ms is average write latency
+  double write_latency_ms = 6;
+
+  // disk_usage_percent is disk space utilization (0-100)
+  double disk_usage_percent = 7;
+}
+
+// NetworkMetrics contains network IO statistics.
+message NetworkMetrics {
+  // rx_bytes_per_sec is receive throughput
+  int64 rx_bytes_per_sec = 1;
+
+  // tx_bytes_per_sec is transmit throughput
+  int64 tx_bytes_per_sec = 2;
+
+  // rx_packets_per_sec is receive packet rate
+  int64 rx_packets_per_sec = 3;
+
+  // tx_packets_per_sec is transmit packet rate
+  int64 tx_packets_per_sec = 4;
+
+  // rx_errors_per_sec is receive error rate
+  int64 rx_errors_per_sec = 5;
+
+  // tx_errors_per_sec is transmit error rate
+  int64 tx_errors_per_sec = 6;
+
+  // rx_dropped_per_sec is dropped receive packets
+  int64 rx_dropped_per_sec = 7;
+
+  // tx_dropped_per_sec is dropped transmit packets
+  int64 tx_dropped_per_sec = 8;
+}
+
+// ProcessMetrics contains process-level information.
+message ProcessMetrics {
+  // process_count is number of processes in the VM
+  int32 process_count = 1;
+
+  // thread_count is number of threads
+  int32 thread_count = 2;
+
+  // load_average_1m is 1-minute load average
+  double load_average_1m = 3;
+
+  // load_average_5m is 5-minute load average
+  double load_average_5m = 4;
+
+  // load_average_15m is 15-minute load average
+  double load_average_15m = 5;
+}
+
+// ============================================================================
+// Snapshots
+// ============================================================================
+
+// SnapshotOperationType enumerates snapshot operations.
+enum SnapshotOperationType {
+  SNAPSHOT_OPERATION_TYPE_UNSPECIFIED = 0;
+  SNAPSHOT_OPERATION_TYPE_CREATE = 1;   // Create new snapshot
+  SNAPSHOT_OPERATION_TYPE_LIST = 2;     // List existing snapshots
+  SNAPSHOT_OPERATION_TYPE_RESTORE = 3;  // Restore from snapshot
+  SNAPSHOT_OPERATION_TYPE_DELETE = 4;   // Delete a snapshot
+  SNAPSHOT_OPERATION_TYPE_INFO = 5;     // Get snapshot details
+}
+
+// SnapshotRequest initiates a snapshot operation.
+message SnapshotRequest {
+  // vm_id is the target VM
+  string vm_id = 1;
+
+  // operation specifies what to do
+  SnapshotOperationType operation = 2;
+
+  // snapshot_id is required for RESTORE, DELETE, and INFO operations
+  string snapshot_id = 3;
+
+  // name is the desired name for CREATE operations
+  string name = 4;
+
+  // description provides additional context
+  string description = 5;
+
+  // quiesce if true, attempts to quiesce filesystem before snapshot
+  bool quiesce = 6;
+}
+
+// SnapshotResponse reports the result of a snapshot operation.
+message SnapshotResponse {
+  // success indicates if the operation succeeded
+  bool success = 1;
+
+  // operation that was performed
+  SnapshotOperationType operation = 2;
+
+  // snapshot contains details for CREATE, LIST, INFO operations
+  SnapshotInfo snapshot = 3;
+
+  // snapshots list for LIST operations
+  repeated SnapshotInfo snapshots = 4;
+
+  // error details if failed
+  ErrorResponse error = 5;
+}
+
+// SnapshotInfo describes a single snapshot.
+message SnapshotInfo {
+  // snapshot_id is the unique identifier
+  string snapshot_id = 1;
+
+  // name of the snapshot
+  string name = 2;
+
+  // description of the snapshot
+  string description = 3;
+
+  // created_at timestamp
+  google.protobuf.Timestamp created_at = 4;
+
+  // size_bytes is the snapshot size
+  int64 size_bytes = 5;
+
+  // vm_state was the VM state when snapshot was taken
+  VMState vm_state = 6;
+
+  // parent_id is the parent snapshot (for chains)
+  string parent_id = 7;
+}
+
+// ============================================================================
+// Network Configuration
+// ============================================================================
+
+// VMNetworkConfig defines network settings for a VM.
+message VMNetworkConfig {
+  // interfaces list of network interfaces
+  repeated NetworkInterface interfaces = 1;
+
+  // firewall_rules to apply
+  repeated FirewallRule firewall_rules = 2;
+
+  // bandwidth_limits for traffic shaping
+  BandwidthLimit bandwidth_limits = 3;
+}
+
+// NetworkInterface defines a single network interface.
+message NetworkInterface {
+  // name is the interface identifier (e.g., "eth0")
+  string name = 1;
+
+  // type of interface (bridge, macvtap, etc.)
+  NetworkInterfaceType type = 2;
+
+  // bridge_name is the host bridge for bridge type
+  string bridge_name = 3;
+
+  // mac_address is the assigned MAC address
+  string mac_address = 4;
+
+  // ip_address is the assigned IP (optional, may use DHCP)
+  string ip_address = 5;
+
+  // netmask in CIDR notation (e.g., "24")
+  int32 netmask = 6;
+
+  // gateway is the default gateway
+  string gateway = 7;
+
+  // use_dhcp if true, IP is assigned via DHCP
+  bool use_dhcp = 8;
+}
+
+// NetworkInterfaceType enumerates network interface types.
+enum NetworkInterfaceType {
+  NETWORK_INTERFACE_TYPE_UNSPECIFIED = 0;
+  NETWORK_INTERFACE_TYPE_BRIDGE = 1;
+  NETWORK_INTERFACE_TYPE_MACVTAP = 2;
+  NETWORK_INTERFACE_TYPE_USER = 3;
+  NETWORK_INTERFACE_TYPE_PASSTHROUGH = 4;
+}
+
+// FirewallRule defines a single firewall rule.
+message FirewallRule {
+  // direction of traffic
+  FirewallDirection direction = 1;
+
+  // action to take
+  FirewallAction action = 2;
+
+  // protocol (tcp, udp, icmp, or all)
+  string protocol = 3;
+
+  // source_cidr is the source IP range
+  string source_cidr = 4;
+
+  // dest_port is the destination port or range (e.g., "80", "1000-2000")
+  string dest_port = 5;
+
+  // priority of the rule (lower = higher priority)
+  int32 priority = 6;
+
+  // description of the rule
+  string description = 7;
+}
+
+// FirewallDirection enumerates traffic directions.
+enum FirewallDirection {
+  FIREWALL_DIRECTION_UNSPECIFIED = 0;
+  FIREWALL_DIRECTION_INBOUND = 1;
+  FIREWALL_DIRECTION_OUTBOUND = 2;
+}
+
+// FirewallAction enumerates firewall actions.
+enum FirewallAction {
+  FIREWALL_ACTION_UNSPECIFIED = 0;
+  FIREWALL_ACTION_ALLOW = 1;
+  FIREWALL_ACTION_DENY = 2;
+  FIREWALL_ACTION_REJECT = 3;
+}
+
+// BandwidthLimit defines traffic shaping parameters.
+message BandwidthLimit {
+  // ingress_rate_mbps is incoming bandwidth limit
+  int32 ingress_rate_mbps = 1;
+
+  // egress_rate_mbps is outgoing bandwidth limit
+  int32 egress_rate_mbps = 2;
+
+  // burst_size_mb allows temporary bursts
+  int32 burst_size_mb = 3;
+}
+
+// NetworkConfigRequest applies network configuration to a VM.
+message NetworkConfigRequest {
+  // vm_id is the target VM
+  string vm_id = 1;
+
+  // config to apply
+  VMNetworkConfig config = 2;
+
+  // replace_all if true, replaces entire config; if false, merges
+  bool replace_all = 3;
+}
+
+// NetworkConfigResponse reports the result of network configuration.
+message NetworkConfigResponse {
+  // success indicates if configuration was applied
+  bool success = 1;
+
+  // applied_interfaces shows what was configured
+  repeated NetworkInterface applied_interfaces = 2;
+
+  // error details if failed
+  ErrorResponse error = 3;
+}
+
+// ============================================================================
+// Storage Configuration
+// ============================================================================
+
+// StorageConfig defines additional storage for a VM.
+message StorageConfig {
+  // primary_disk configuration
+  DiskConfig primary_disk = 1;
+
+  // additional_volumes to attach
+  repeated DiskConfig additional_volumes = 2;
+}
+
+// DiskConfig defines a single disk or volume.
+message DiskConfig {
+  // id is the unique identifier for this disk
+  string id = 1;
+
+  // size_gb is the disk size
+  int64 size_gb = 2;
+
+  // format is the disk image format (qcow2, raw, etc.)
+  DiskFormat format = 3;
+
+  // backend is the storage backend type
+  StorageBackend backend = 4;
+
+  // backing_image is a base image for copy-on-write (optional)
+  string backing_image = 5;
+
+  // mount_point in the guest (for additional volumes)
+  string mount_point = 6;
+}
+
+// DiskFormat enumerates supported disk formats.
+enum DiskFormat {
+  DISK_FORMAT_UNSPECIFIED = 0;
+  DISK_FORMAT_QCOW2 = 1;
+  DISK_FORMAT_RAW = 2;
+  DISK_FORMAT_VMDK = 3;
+  DISK_FORMAT_VDI = 4;
+}
+
+// StorageBackend enumerates storage backends.
+enum StorageBackend {
+  STORAGE_BACKEND_UNSPECIFIED = 0;
+  STORAGE_BACKEND_LOCAL = 1;
+  STORAGE_BACKEND_ZFS = 2;
+  STORAGE_BACKEND_LVM = 3;
+  STORAGE_BACKEND_CEPH = 4;
+  STORAGE_BACKEND_NFS = 5;
+}
+
+// ============================================================================
+// VNC Proxy
+// ============================================================================
+
+// VNCProxyRequest initiates a VNC proxy for console access.
+message VNCProxyRequest {
+  // vm_id is the target VM
+  string vm_id = 1;
+
+  // websocket_port to bind (0 = auto-assign)
+  int32 websocket_port = 2;
+
+  // expiry_seconds for the proxy session (0 = no expiry)
+  int32 expiry_seconds = 3;
+
+  // one_time if true, proxy stops after first connection
+  bool one_time = 4;
+}
+
+// VNCProxyResponse provides VNC connection details.
+message VNCProxyResponse {
+  // success indicates if proxy was started
+  bool success = 1;
+
+  // websocket_url is the WebSocket endpoint for noVNC
+  string websocket_url = 2;
+
+  // websocket_port the proxy is listening on
+  int32 websocket_port = 3;
+
+  // token for authentication
+  string token = 4;
+
+  // expires_at when the session expires
+  google.protobuf.Timestamp expires_at = 5;
+
+  // error details if failed
+  ErrorResponse error = 6;
+}
+
+// ============================================================================
+// Common Messages
+// ============================================================================
+
+// ErrorResponse provides detailed error information.
+message ErrorResponse {
+  // code is a machine-readable error code
+  ErrorCode code = 1;
+
+  // message is a human-readable description
+  string message = 2;
+
+  // details contains additional error context
+  map<string, string> details = 3;
+
+  // retryable indicates if the operation can be retried
+  bool retryable = 4;
+}
+
+// ErrorCode enumerates possible error conditions.
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_INTERNAL = 1;           // Internal server error
+  ERROR_CODE_INVALID_ARGUMENT = 2;   // Invalid request parameter
+  ERROR_CODE_NOT_FOUND = 3;          // Resource not found
+  ERROR_CODE_ALREADY_EXISTS = 4;     // Resource already exists
+  ERROR_CODE_PERMISSION_DENIED = 5;  // Insufficient permissions
+  ERROR_CODE_RESOURCE_EXHAUSTED = 6; // Resource limits reached
+  ERROR_CODE_UNAVAILABLE = 7;        // Service temporarily unavailable
+  ERROR_CODE_TIMEOUT = 8;            // Operation timed out
+  ERROR_CODE_CONFLICT = 9;           // State conflict
+  ERROR_CODE_UNAUTHENTICATED = 10;   // Authentication required
+}

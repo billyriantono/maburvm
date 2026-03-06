@@ -1,0 +1,51 @@
+# Docker Compose Override for Local Development
+# This file is automatically loaded by docker-compose when running `docker compose up`
+# See: https://docs.docker.com/compose/extends/
+
+version: "3.8"
+
+services:
+  # Development overrides for PostgreSQL
+  postgres:
+    # Use a simpler healthcheck for local dev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U maburvm -d maburvm"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    # Add development-specific environment
+    environment:
+      POSTGRES_USER: maburvm
+      POSTGRES_PASSWORD: changeme
+      POSTGRES_DB: maburvm
+      # Enable debug logging
+      POSTGRES_HOST_AUTH_METHOD: trust
+    # Share host network for easier debugging
+    network_mode: bridge
+
+  # Development overrides for MinIO
+  minio:
+    network_mode: bridge
+    # Enable MinIO console logs for debugging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Development overrides for Mailpit (optional)
+  # Comment out if you don't need email testing
+  mailpit:
+    network_mode: bridge
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+# Development-specific volumes (if needed)
+# volumes:
+#   postgres_data:
+#     driver: local
+#   minio_data:
+#     driver: local
