@@ -7,7 +7,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
+	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -17,14 +17,14 @@ import (
 
 // NodeAgentService implements the NodeAgent gRPC service
 type NodeAgentService struct {
-	proto.UnimplementedNodeAgentServer
+	pb.UnimplementedNodeAgentServer
 }
 
 // Ensure NodeAgentService implements the interface
-var _ proto.NodeAgentServer = (*NodeAgentService)(nil)
+var _ pb.NodeAgentServer = (*NodeAgentService)(nil)
 
 // RegisterNode handles initial node registration
-func (s *NodeAgentService) RegisterNode(ctx context.Context, req *proto.RegisterNodeRequest) (*proto.RegisterNodeResponse, error) {
+func (s *NodeAgentService) RegisterNode(ctx context.Context, req *pb.RegisterNodeRequest) (*pb.RegisterNodeResponse, error) {
 	log.Printf("[NodeAgent] RegisterNode called: hostname=%s, version=%s", req.Hostname, req.AgentVersion)
 
 	// Validate request
@@ -39,7 +39,7 @@ func (s *NodeAgentService) RegisterNode(ctx context.Context, req *proto.Register
 	// - Store node information in database
 
 	// For now, return a mock response
-	resp := &proto.RegisterNodeResponse{
+	resp := &pb.RegisterNodeResponse{
 		NodeId:          fmt.Sprintf("node-%s", req.Hostname),
 		AuthToken:       "mock-auth-token-placeholder",
 		RefreshInterval: durationpb.New(30 * time.Second),
@@ -51,7 +51,7 @@ func (s *NodeAgentService) RegisterNode(ctx context.Context, req *proto.Register
 }
 
 // Heartbeat establishes bidirectional streaming for health monitoring
-func (s *NodeAgentService) Heartbeat(stream grpc.BidiStreamingServer[proto.HeartbeatRequest, proto.HeartbeatResponse]) error {
+func (s *NodeAgentService) Heartbeat(stream grpc.BidiStreamingServer[pb.HeartbeatRequest, pb.HeartbeatResponse]) error {
 	log.Println("[NodeAgent] Heartbeat stream started")
 
 	// Get node ID from context
@@ -72,7 +72,7 @@ func (s *NodeAgentService) Heartbeat(stream grpc.BidiStreamingServer[proto.Heart
 			case <-stream.Context().Done():
 				return
 			case <-ticker.C:
-				resp := &proto.HeartbeatResponse{
+				resp := &pb.HeartbeatResponse{
 					Timestamp:       timestamppb.Now(),
 					CommandsPending: false,
 					ConfigUpdate:    false,
@@ -106,7 +106,7 @@ func (s *NodeAgentService) Heartbeat(stream grpc.BidiStreamingServer[proto.Heart
 		// - Update active VMs list
 
 		// Send immediate acknowledgment
-		resp := &proto.HeartbeatResponse{
+		resp := &pb.HeartbeatResponse{
 			Timestamp:       timestamppb.Now(),
 			CommandsPending: false,
 			ConfigUpdate:    false,
@@ -121,7 +121,7 @@ func (s *NodeAgentService) Heartbeat(stream grpc.BidiStreamingServer[proto.Heart
 }
 
 // ExecuteVMCommand sends VM lifecycle commands
-func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *proto.VMCommandRequest) (*proto.VMCommandResponse, error) {
+func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMCommandRequest) (*pb.VMCommandResponse, error) {
 	log.Printf("[NodeAgent] ExecuteVMCommand: vm_id=%s, command=%v", req.VmId, req.Command)
 
 	// Validate request
@@ -143,11 +143,11 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *proto.VMCo
 	// - Wait for completion (unless async)
 	// - Return result
 
-	resp := &proto.VMCommandResponse{
+	resp := &pb.VMCommandResponse{
 		Success: true,
 		VmId:    req.VmId,
 		Command: req.Command,
-		State:   proto.VMState_VM_STATE_RUNNING,
+		State:   pb.VMState_VM_STATE_RUNNING,
 		Message: fmt.Sprintf("Command %v executed successfully", req.Command),
 	}
 
@@ -155,7 +155,7 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *proto.VMCo
 }
 
 // GetVMStatus retrieves the current state of a VM
-func (s *NodeAgentService) GetVMStatus(ctx context.Context, req *proto.VMStatusRequest) (*proto.VMStatusResponse, error) {
+func (s *NodeAgentService) GetVMStatus(ctx context.Context, req *pb.VMStatusRequest) (*pb.VMStatusResponse, error) {
 	log.Printf("[NodeAgent] GetVMStatus: vm_id=%s", req.VmId)
 
 	if req.VmId == "" {
@@ -175,9 +175,9 @@ func (s *NodeAgentService) GetVMStatus(ctx context.Context, req *proto.VMStatusR
 	// - Get resource usage if requested
 	// - Return comprehensive status
 
-	resp := &proto.VMStatusResponse{
+	resp := &pb.VMStatusResponse{
 		VmId:            req.VmId,
-		State:           proto.VMState_VM_STATE_RUNNING,
+		State:           pb.VMState_VM_STATE_RUNNING,
 		UptimeSeconds:   3600,
 		Pid:             12345,
 		IpAddresses:     []string{"192.168.1.100"},
@@ -186,7 +186,7 @@ func (s *NodeAgentService) GetVMStatus(ctx context.Context, req *proto.VMStatusR
 	}
 
 	if req.IncludeMetrics {
-		resp.CurrentResources = &proto.VMResourceUsage{
+		resp.CurrentResources = &pb.VMResourceUsage{
 			CpuPercent:     25.5,
 			MemoryUsedMb:   2048,
 			MemoryTotalMb:  4096,
@@ -199,7 +199,7 @@ func (s *NodeAgentService) GetVMStatus(ctx context.Context, req *proto.VMStatusR
 }
 
 // StreamVMMetrics opens server-side streaming for VM metrics
-func (s *NodeAgentService) StreamVMMetrics(req *proto.VMMetricsRequest, stream grpc.ServerStreamingServer[proto.VMMetricsResponse]) error {
+func (s *NodeAgentService) StreamVMMetrics(req *pb.VMMetricsRequest, stream grpc.ServerStreamingServer[pb.VMMetricsResponse]) error {
 	log.Printf("[NodeAgent] StreamVMMetrics started for VMs: %v", req.VmIds)
 
 	// Get node ID from context
@@ -244,17 +244,17 @@ func (s *NodeAgentService) StreamVMMetrics(req *proto.VMMetricsRequest, stream g
 }
 
 // generateMockMetrics creates mock metrics for testing
-func (s *NodeAgentService) generateMockMetrics(vmID string) *proto.VMMetricsResponse {
-	return &proto.VMMetricsResponse{
+func (s *NodeAgentService) generateMockMetrics(vmID string) *pb.VMMetricsResponse {
+	return &pb.VMMetricsResponse{
 		Timestamp: timestamppb.Now(),
 		VmId:      vmID,
-		Cpu: &proto.CPUMetrics{
+		Cpu: &pb.CPUMetrics{
 			UsagePercent:     25.0,
 			PerVcpuPercent:   []double{20.0, 30.0},
 			StealTimePercent: 0.5,
 			IowaitPercent:    1.0,
 		},
-		Memory: &proto.MemoryMetrics{
+		Memory: &pb.MemoryMetrics{
 			UsedBytes:      2147483648,
 			AvailableBytes: 2147483648,
 			TotalBytes:     4294967296,
@@ -262,7 +262,7 @@ func (s *NodeAgentService) generateMockMetrics(vmID string) *proto.VMMetricsResp
 			SwapTotalBytes: 1073741824,
 			CacheBytes:     536870912,
 		},
-		Disk: &proto.DiskMetrics{
+		Disk: &pb.DiskMetrics{
 			ReadBytesPerSec:  1048576,
 			WriteBytesPerSec: 524288,
 			ReadIops:         100,
@@ -271,7 +271,7 @@ func (s *NodeAgentService) generateMockMetrics(vmID string) *proto.VMMetricsResp
 			WriteLatencyMs:   3.0,
 			DiskUsagePercent: 45.0,
 		},
-		Network: &proto.NetworkMetrics{
+		Network: &pb.NetworkMetrics{
 			RxBytesPerSec:   1024000,
 			TxBytesPerSec:   512000,
 			RxPacketsPerSec: 1000,
@@ -281,18 +281,18 @@ func (s *NodeAgentService) generateMockMetrics(vmID string) *proto.VMMetricsResp
 			RxDroppedPerSec: 0,
 			TxDroppedPerSec: 0,
 		},
-		Process: &proto.ProcessMetrics{
-			ProcessCount:   150,
-			ThreadCount:    300,
-			LoadAverage1m:  0.5,
-			LoadAverage5m:  0.4,
-			LoadAverage15m: 0.3,
+		Process: &pb.ProcessMetrics{
+			ProcessCount:    150,
+			ThreadCount:     300,
+			LoadAverage_1M:  0.5,
+			LoadAverage_5M:  0.4,
+			LoadAverage_15M: 0.3,
 		},
 	}
 }
 
 // CreateSnapshot creates or manages VM snapshots
-func (s *NodeAgentService) CreateSnapshot(ctx context.Context, req *proto.SnapshotRequest) (*proto.SnapshotResponse, error) {
+func (s *NodeAgentService) CreateSnapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.SnapshotResponse, error) {
 	log.Printf("[NodeAgent] CreateSnapshot: vm_id=%s, operation=%v", req.VmId, req.Operation)
 
 	if req.VmId == "" {
@@ -312,16 +312,16 @@ func (s *NodeAgentService) CreateSnapshot(ctx context.Context, req *proto.Snapsh
 	// - Restore from snapshot
 	// - Delete snapshot
 
-	resp := &proto.SnapshotResponse{
+	resp := &pb.SnapshotResponse{
 		Success:   true,
 		Operation: req.Operation,
-		Snapshot: &proto.SnapshotInfo{
+		Snapshot: &pb.SnapshotInfo{
 			SnapshotId:  fmt.Sprintf("snap-%d", time.Now().Unix()),
 			Name:        req.Name,
 			Description: req.Description,
 			CreatedAt:   timestamppb.Now(),
 			SizeBytes:   1073741824,
-			VmState:     proto.VMState_VM_STATE_RUNNING,
+			VmState:     pb.VMState_VM_STATE_RUNNING,
 		},
 	}
 
@@ -329,7 +329,7 @@ func (s *NodeAgentService) CreateSnapshot(ctx context.Context, req *proto.Snapsh
 }
 
 // ApplyNetworkConfig applies network configuration to a VM
-func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *proto.NetworkConfigRequest) (*proto.NetworkConfigResponse, error) {
+func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *pb.NetworkConfigRequest) (*pb.NetworkConfigResponse, error) {
 	log.Printf("[NodeAgent] ApplyNetworkConfig: vm_id=%s", req.VmId)
 
 	if req.VmId == "" {
@@ -348,7 +348,7 @@ func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *proto.Ne
 	// - Apply iptables/nftables for firewall rules
 	// - Configure network interfaces
 
-	resp := &proto.NetworkConfigResponse{
+	resp := &pb.NetworkConfigResponse{
 		Success:           true,
 		AppliedInterfaces: req.Config.Interfaces,
 	}
@@ -357,7 +357,7 @@ func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *proto.Ne
 }
 
 // StartVNCProxy starts a VNC proxy for console access
-func (s *NodeAgentService) StartVNCProxy(ctx context.Context, req *proto.VNCProxyRequest) (*proto.VNCProxyResponse, error) {
+func (s *NodeAgentService) StartVNCProxy(ctx context.Context, req *pb.VNCProxyRequest) (*pb.VNCProxyResponse, error) {
 	log.Printf("[NodeAgent] StartVNCProxy: vm_id=%s", req.VmId)
 
 	if req.VmId == "" {
@@ -382,7 +382,7 @@ func (s *NodeAgentService) StartVNCProxy(ctx context.Context, req *proto.VNCProx
 		websocketPort = 6080 // Default noVNC port
 	}
 
-	resp := &proto.VNCProxyResponse{
+	resp := &pb.VNCProxyResponse{
 		Success:       true,
 		WebsocketUrl:  fmt.Sprintf("ws://localhost:%d/websockify", websocketPort),
 		WebsocketPort: websocketPort,

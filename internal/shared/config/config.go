@@ -66,6 +66,15 @@ type VNCConfig struct {
 	ProxyTimeout time.Duration `env:"VNC_PROXY_TIMEOUT" envDefault:"10s"`
 }
 
+// Libvirt settings
+type LibvirtConfig struct {
+	URI                 string        `env:"LIBVIRT_URI" envDefault:"qemu:///system"`
+	PoolMinSize         int           `env:"LIBVIRT_POOL_MIN_SIZE" envDefault:"2"`
+	PoolMaxSize         int           `env:"LIBVIRT_POOL_MAX_SIZE" envDefault:"10"`
+	HealthCheckInterval time.Duration `env:"LIBVIRT_HEALTH_CHECK_INTERVAL" envDefault:"30s"`
+	ConnectTimeout      time.Duration `env:"LIBVIRT_CONNECT_TIMEOUT" envDefault:"10s"`
+}
+
 // Config holds all application configuration
 type Config struct {
 	Database DatabaseConfig
@@ -74,6 +83,7 @@ type Config struct {
 	Agent    AgentConfig
 	S3       S3Config
 	VNC      VNCConfig
+	Libvirt  LibvirtConfig
 }
 
 // Load reads configuration from environment variables.
