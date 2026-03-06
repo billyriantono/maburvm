@@ -29,11 +29,11 @@ type Resources struct {
 
 // VM represents a virtual machine in the system
 type VM struct {
-	ID              uuid.UUID      `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	UserID          uuid.UUID      `json:"user_id" gorm:"type:uuid;not null" validate:"required,uuid"`
-	NodeID          uuid.UUID      `json:"node_id" gorm:"type:uuid;not null" validate:"required,uuid"`
+	ID              string         `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	UserID          string         `json:"user_id" gorm:"type:uuid;not null" validate:"required,uuid"`
+	NodeID          string         `json:"node_id" gorm:"type:uuid;not null" validate:"required,uuid"`
 	Hostname        string         `json:"hostname" gorm:"type:varchar(100);not null" validate:"required,max=100"`
-	OSTemplateID    uuid.UUID      `json:"os_template_id" gorm:"type:uuid;not null" validate:"required,uuid"`
+	OSTemplateID    string         `json:"os_template_id" gorm:"type:uuid;not null" validate:"required,uuid"`
 	Resources       Resources      `json:"resources" gorm:"type:jsonb;serializer:json" validate:"required"`
 	Status          VMStatus       `json:"status" gorm:"type:vm_status;default:stopped" validate:"required,oneof=running stopped suspended creating error"`
 	SourceMigration bool           `json:"source_migration" gorm:"default:FALSE"`
@@ -51,13 +51,37 @@ func (VM) TableName() string {
 
 // BeforeCreate hook for VM
 func (v *VM) BeforeCreate(tx *gorm.DB) error {
-	if v.ID == uuid.Nil {
-		v.ID = uuid.New()
+	if v.ID == "" {
+		v.ID = uuid.New().String()
 	}
 	if v.Status == "" {
 		v.Status = VMStatusStopped
 	}
 	return nil
+}
+
+// GetID returns the UUID representation of ID
+func (v *VM) GetID() uuid.UUID {
+	id, _ := uuid.Parse(v.ID)
+	return id
+}
+
+// GetUserID returns the UUID representation of UserID
+func (v *VM) GetUserID() uuid.UUID {
+	id, _ := uuid.Parse(v.UserID)
+	return id
+}
+
+// GetNodeID returns the UUID representation of NodeID
+func (v *VM) GetNodeID() uuid.UUID {
+	id, _ := uuid.Parse(v.NodeID)
+	return id
+}
+
+// GetOSTemplateID returns the UUID representation of OSTemplateID
+func (v *VM) GetOSTemplateID() uuid.UUID {
+	id, _ := uuid.Parse(v.OSTemplateID)
+	return id
 }
 
 // Validate validates the VM struct

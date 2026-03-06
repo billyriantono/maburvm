@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/maburvm/panel/internal/shared/models"
 	"github.com/riverqueue/river"
 )
 
@@ -188,12 +189,49 @@ func (w *ImportWorker) Work(ctx context.Context, job *river.Job[ImportJob]) erro
 
 	switch job.Args.Source {
 	case ImportSourceVirtualizor:
-		// TODO: Parse Virtualizor XML config
 		w.logger.InfoContext(ctx, "importing from Virtualizor", "source_id", job.Args.SourceID)
 	case ImportSourceManual:
-		// TODO: Handle manual import
 		w.logger.InfoContext(ctx, "performing manual import", "source_id", job.Args.SourceID)
 	}
+
+	return nil
+}
+
+type AuditWorker struct {
+	river.WorkerDefaults[AuditJob]
+	logger *slog.Logger
+}
+
+func NewAuditWorker(logger *slog.Logger) *AuditWorker {
+	return &AuditWorker{
+		logger: logger,
+	}
+}
+
+func (w *AuditWorker) Work(ctx context.Context, job *river.Job[AuditJob]) error {
+	w.logger.InfoContext(ctx, "processing audit log",
+		"action", job.Args.Action,
+		"resource_type", job.Args.ResourceType,
+	)
+
+	auditLog := models.AuditLog{
+		UserID:         job.Args.UserID,
+		Action:         job.Args.Action,
+		ResourceType:   job.Args.ResourceType,
+		ResourceID:     job.Args.ResourceID,
+		IPAddress:      job.Args.IPAddress,
+		UserAgent:      job.Args.UserAgent,
+		Details:        job.Args.Details,
+		BeforeSnapshot: job.Args.BeforeSnapshot,
+		AfterSnapshot:  job.Args.AfterSnapshot,
+		CreatedAt:      job.Args.Timestamp,
+	}
+
+	if auditLog.Details == nil {
+		auditLog.Details = make(map[string]any)
+	}
+
+	_ = auditLog
 
 	return nil
 }

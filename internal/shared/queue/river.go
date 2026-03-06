@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivermigrate"
 	"github.com/riverqueue/river/rivertype"
 )
 
@@ -28,6 +29,7 @@ type Config struct {
 	CriticalWorkers int // VM lifecycle operations
 	DefaultWorkers  int // General operations
 	BatchWorkers    int // Backups, imports
+	AuditWorkers    int // Audit logging
 
 	// Job reschedule delay (how long to wait before retry)
 	RescueStuckJobsAfter time.Duration
@@ -38,9 +40,10 @@ func DefaultConfig(databaseURL string) *Config {
 	return &Config{
 		DatabaseURL:          databaseURL,
 		MaxConns:             20,
-		CriticalWorkers:      20, // VM lifecycle
-		DefaultWorkers:       50, // General operations
-		BatchWorkers:         10, // Backups, imports
+		CriticalWorkers:      20,
+		DefaultWorkers:       50,
+		BatchWorkers:         10,
+		AuditWorkers:         20,
 		RescueStuckJobsAfter: 1 * time.Hour,
 	}
 }
@@ -129,18 +132,18 @@ func (c *Client) initPool(ctx context.Context) error {
 func (c *Client) initRiver() error {
 	workers := river.NewWorkers()
 
-	// Register workers for each job type
 	river.AddWorker(workers, NewVMOperationWorker(c.logger))
 	river.AddWorker(workers, NewTemplateSyncWorker(c.logger))
 	river.AddWorker(workers, NewBackupWorker(c.logger))
 	river.AddWorker(workers, NewImportWorker(c.logger))
+	river.AddWorker(workers, NewAuditWorker(c.logger))
 
-	// Create River client with multiple queues
 	riverClient, err := river.NewClient(riverpgxv5.New(c.pool), &river.Config{
 		Queues: map[string]river.QueueConfig{
-			QueueCritical: {MaxWorkers: c.config.CriticalWorkers}, // 20 workers - VM lifecycle
-			QueueDefault:  {MaxWorkers: c.config.DefaultWorkers},  // 50 workers - general operations
-			QueueBatch:    {MaxWorkers: c.config.BatchWorkers},    // 10 workers - backups, imports
+			QueueCritical: {MaxWorkers: c.config.CriticalWorkers},
+			QueueDefault:  {MaxWorkers: c.config.DefaultWorkers},
+			QueueBatch:    {MaxWorkers: c.config.BatchWorkers},
+			QueueAudit:    {MaxWorkers: c.config.AuditWorkers},
 		},
 		Workers:              workers,
 		Logger:               c.logger,
@@ -155,6 +158,7 @@ func (c *Client) initRiver() error {
 		"critical_workers", c.config.CriticalWorkers,
 		"default_workers", c.config.DefaultWorkers,
 		"batch_workers", c.config.BatchWorkers,
+		"audit_workers", c.config.AuditWorkers,
 	)
 
 	return nil
@@ -229,13 +233,13 @@ func (c *Client) RiverClient() *river.Client[pgx.Tx] {
 	return c.riverClient
 }
 
-// Stats returns queue statistics
-func (c *Client) Stats(ctx context.Context) (river.ClientStats, error) {
+// Stats is disabled - River doesn't expose this directly
+// Use database queries to get queue statistics if needed
+func (c *Client) Stats(ctx context.Context) error {
 	if c.riverClient == nil {
-		return river.ClientStats{}, fmt.Errorf("River client not initialized")
+		return fmt.Errorf("River client not initialized")
 	}
-
-	return c.riverClient.Stats(), nil
+	return nil
 }
 
 // RunMigrations runs River migrations to create required tables
@@ -246,12 +250,13 @@ func RunMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 
 // RunMigrationsWithLogger runs River migrations with a custom logger
 func RunMigrationsWithLogger(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger) error {
-	migrator, err := river.NewMigrator(riverpgxv5.New(pool), nil)
+	migrator, err := rivermigrate.New(riverpgxv5.New(pool), nil)
 	if err != nil {
 		return fmt.Errorf("failed to create migrator: %w", err)
 	}
 
-	if err := migrator.Migrate(ctx); err != nil {
+	_, err = migrator.Migrate(ctx, rivermigrate.DirectionUp, &rivermigrate.MigrateOpts{})
+	if err != nil {
 		return fmt.Errorf("failed to run migrations: %w", err)
 	}
 

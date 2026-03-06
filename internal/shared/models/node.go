@@ -1,7 +1,6 @@
 package models
 
 import (
-	"net"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,9 +18,9 @@ const (
 
 // Node represents a compute node in the system
 type Node struct {
-	ID        uuid.UUID      `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	ID        string         `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
 	Name      string         `json:"name" gorm:"type:varchar(100);not null" validate:"required,max=100"`
-	IPAddress net.IP         `json:"ip_address" gorm:"type:inet;not null" validate:"required,ip"`
+	IPAddress string         `json:"ip_address" gorm:"type:inet;not null" validate:"required,ip"`
 	Status    NodeStatus     `json:"status" gorm:"type:node_status;default:offline" validate:"required,oneof=active maintenance offline"`
 	Token     string         `json:"-" gorm:"type:varchar(255);uniqueIndex;not null"` // Never exposed in JSON
 	CreatedAt time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
@@ -36,13 +35,19 @@ func (Node) TableName() string {
 
 // BeforeCreate hook for Node
 func (n *Node) BeforeCreate(tx *gorm.DB) error {
-	if n.ID == uuid.Nil {
-		n.ID = uuid.New()
+	if n.ID == "" {
+		n.ID = uuid.New().String()
 	}
 	if n.Status == "" {
 		n.Status = NodeStatusOffline
 	}
 	return nil
+}
+
+// GetID returns the UUID representation of ID
+func (n *Node) GetID() uuid.UUID {
+	id, _ := uuid.Parse(n.ID)
+	return id
 }
 
 // Validate validates the Node struct

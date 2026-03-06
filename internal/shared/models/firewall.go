@@ -9,8 +9,8 @@ import (
 
 // FirewallRule represents a firewall rule for a VM
 type FirewallRule struct {
-	ID        uuid.UUID      `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	VMID      uuid.UUID      `json:"vm_id" gorm:"type:uuid;not null" validate:"required,uuid"`
+	ID        string         `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	VMID      string         `json:"vm_id" gorm:"type:uuid;not null" validate:"required,uuid"`
 	Protocol  string         `json:"protocol" gorm:"type:varchar(10);not null" validate:"required,oneof=tcp udp icmp all"`
 	PortRange string         `json:"port_range" gorm:"type:varchar(50)" validate:"omitempty,port_range"`
 	Action    string         `json:"action" gorm:"type:varchar(10);not null" validate:"required,oneof=allow deny"`
@@ -29,10 +29,22 @@ func (FirewallRule) TableName() string {
 
 // BeforeCreate hook for FirewallRule
 func (f *FirewallRule) BeforeCreate(tx *gorm.DB) error {
-	if f.ID == uuid.Nil {
-		f.ID = uuid.New()
+	if f.ID == "" {
+		f.ID = uuid.New().String()
 	}
 	return nil
+}
+
+// GetID returns the UUID representation of ID
+func (f *FirewallRule) GetID() uuid.UUID {
+	id, _ := uuid.Parse(f.ID)
+	return id
+}
+
+// GetVMID returns the UUID representation of VMID
+func (f *FirewallRule) GetVMID() uuid.UUID {
+	id, _ := uuid.Parse(f.VMID)
+	return id
 }
 
 // Validate validates the FirewallRule struct

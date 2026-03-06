@@ -19,8 +19,8 @@ const (
 
 // Backup represents a VM backup
 type Backup struct {
-	ID              uuid.UUID      `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	VMID            uuid.UUID      `json:"vm_id" gorm:"type:uuid;not null" validate:"required,uuid"`
+	ID              string         `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	VMID            string         `json:"vm_id" gorm:"type:uuid;not null" validate:"required,uuid"`
 	StorageProvider string         `json:"storage_provider" gorm:"type:varchar(100);not null" validate:"required,max=100"`
 	Status          BackupStatus   `json:"status" gorm:"type:backup_status;default:pending" validate:"required,oneof=pending in_progress completed failed"`
 	Size            int64          `json:"size" gorm:"type:bigint;default:0" validate:"omitempty,min=0"`
@@ -36,13 +36,25 @@ func (Backup) TableName() string {
 
 // BeforeCreate hook for Backup
 func (b *Backup) BeforeCreate(tx *gorm.DB) error {
-	if b.ID == uuid.Nil {
-		b.ID = uuid.New()
+	if b.ID == "" {
+		b.ID = uuid.New().String()
 	}
 	if b.Status == "" {
 		b.Status = BackupStatusPending
 	}
 	return nil
+}
+
+// GetID returns the UUID representation of ID
+func (b *Backup) GetID() uuid.UUID {
+	id, _ := uuid.Parse(b.ID)
+	return id
+}
+
+// GetVMID returns the UUID representation of VMID
+func (b *Backup) GetVMID() uuid.UUID {
+	id, _ := uuid.Parse(b.VMID)
+	return id
 }
 
 // Validate validates the Backup struct

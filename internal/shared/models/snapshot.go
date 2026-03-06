@@ -18,8 +18,8 @@ const (
 
 // Snapshot represents a VM snapshot
 type Snapshot struct {
-	ID        uuid.UUID      `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	VMID      uuid.UUID      `json:"vm_id" gorm:"type:uuid;not null" validate:"required,uuid"`
+	ID        string         `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	VMID      string         `json:"vm_id" gorm:"type:uuid;not null" validate:"required,uuid"`
 	Name      string         `json:"name" gorm:"type:varchar(100);not null" validate:"required,max=100"`
 	DiskPath  string         `json:"disk_path" gorm:"type:varchar(500);not null" validate:"required,max=500"`
 	Status    SnapshotStatus `json:"status" gorm:"type:snapshot_status;default:pending" validate:"required,oneof=pending completed failed"`
@@ -35,13 +35,25 @@ func (Snapshot) TableName() string {
 
 // BeforeCreate hook for Snapshot
 func (s *Snapshot) BeforeCreate(tx *gorm.DB) error {
-	if s.ID == uuid.Nil {
-		s.ID = uuid.New()
+	if s.ID == "" {
+		s.ID = uuid.New().String()
 	}
 	if s.Status == "" {
 		s.Status = SnapshotStatusPending
 	}
 	return nil
+}
+
+// GetID returns the UUID representation of ID
+func (s *Snapshot) GetID() uuid.UUID {
+	id, _ := uuid.Parse(s.ID)
+	return id
+}
+
+// GetVMID returns the UUID representation of VMID
+func (s *Snapshot) GetVMID() uuid.UUID {
+	id, _ := uuid.Parse(s.VMID)
+	return id
 }
 
 // Validate validates the Snapshot struct

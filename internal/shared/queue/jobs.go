@@ -4,6 +4,7 @@ package queue
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/riverqueue/river"
 )
@@ -21,6 +22,7 @@ const (
 	QueueCritical = "critical" // VM lifecycle: 20 workers
 	QueueDefault  = "default"  // General operations: 50 workers
 	QueueBatch    = "batch"    // Backups, imports: 10 workers
+	QueueAudit    = "audit"    // Audit logging: 20 workers
 )
 
 // VMOperationType represents the type of VM operation
@@ -174,5 +176,29 @@ func ValidateImportSource(src ImportSource) error {
 		return nil
 	default:
 		return fmt.Errorf("invalid import source: %s", src)
+	}
+}
+
+type AuditJob struct {
+	UserID         *string         `json:"user_id,omitempty"`
+	Action         string          `json:"action"`
+	ResourceType   string          `json:"resource_type,omitempty"`
+	ResourceID     *string         `json:"resource_id,omitempty"`
+	IPAddress      string          `json:"ip_address,omitempty"`
+	UserAgent      string          `json:"user_agent,omitempty"`
+	Details        map[string]any  `json:"details,omitempty"`
+	BeforeSnapshot *map[string]any `json:"before_snapshot,omitempty"`
+	AfterSnapshot  *map[string]any `json:"after_snapshot,omitempty"`
+	Timestamp      time.Time       `json:"timestamp"`
+}
+
+func (j AuditJob) Kind() string {
+	return "audit"
+}
+
+func (j AuditJob) InsertOpts() *river.InsertOpts {
+	return &river.InsertOpts{
+		Queue:    QueueAudit,
+		Priority: PriorityNormal,
 	}
 }

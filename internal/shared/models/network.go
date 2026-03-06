@@ -1,7 +1,6 @@
 package models
 
 import (
-	"net"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,9 +9,9 @@ import (
 
 // Network represents a network configuration for a VM
 type Network struct {
-	ID             uuid.UUID      `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	VMID           uuid.UUID      `json:"vm_id" gorm:"type:uuid;not null" validate:"required,uuid"`
-	IPAddress      net.IP         `json:"ip_address" gorm:"type:inet;not null" validate:"required,ip"`
+	ID             string         `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	VMID           string         `json:"vm_id" gorm:"type:uuid;not null" validate:"required,uuid"`
+	IPAddress      string         `json:"ip_address" gorm:"type:inet;not null" validate:"required,ip"`
 	BandwidthLimit int64          `json:"bandwidth_limit" gorm:"type:bigint;default:0" validate:"omitempty,min=0"`
 	VLANID         *int           `json:"vlan_id" gorm:"type:integer" validate:"omitempty,min=1,max=4094"`
 	CreatedAt      time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
@@ -27,10 +26,22 @@ func (Network) TableName() string {
 
 // BeforeCreate hook for Network
 func (n *Network) BeforeCreate(tx *gorm.DB) error {
-	if n.ID == uuid.Nil {
-		n.ID = uuid.New()
+	if n.ID == "" {
+		n.ID = uuid.New().String()
 	}
 	return nil
+}
+
+// GetID returns the UUID representation of ID
+func (n *Network) GetID() uuid.UUID {
+	id, _ := uuid.Parse(n.ID)
+	return id
+}
+
+// GetVMID returns the UUID representation of VMID
+func (n *Network) GetVMID() uuid.UUID {
+	id, _ := uuid.Parse(n.VMID)
+	return id
 }
 
 // Validate validates the Network struct
