@@ -9,13 +9,15 @@ import (
 
 // AuditRepository provides data access for audit logs
 type AuditRepository struct {
-	*BaseRepository[models.AuditLog]
+	base *BaseRepository[models.AuditLog]
+	db   *gorm.DB
 }
 
 // NewAuditRepository creates a new audit repository
 func NewAuditRepository(db *gorm.DB) *AuditRepository {
 	return &AuditRepository{
-		BaseRepository: NewBaseRepository[models.AuditLog](db),
+		base: NewBaseRepository[models.AuditLog](db),
+		db:   db,
 	}
 }
 
@@ -26,12 +28,12 @@ func (r *AuditRepository) Create(ctx context.Context, auditLog *models.AuditLog)
 
 // GetByID retrieves an audit log by its ID
 func (r *AuditRepository) GetByID(ctx context.Context, id string) (*models.AuditLog, error) {
-	return r.BaseRepository.GetByID(ctx, id)
+	return r.base.GetByID(ctx, id)
 }
 
 // List retrieves audit logs with optional filtering and pagination
 func (r *AuditRepository) List(ctx context.Context, limit, offset int) ([]models.AuditLog, error) {
-	return r.BaseRepository.List(ctx, limit, offset)
+	return r.base.List(ctx, limit, offset)
 }
 
 // ListByUser retrieves audit logs for a specific user
@@ -92,7 +94,7 @@ func (r *AuditRepository) ListByResource(ctx context.Context, resourceType, reso
 
 // Count returns the total number of audit logs
 func (r *AuditRepository) Count(ctx context.Context) (int64, error) {
-	return r.BaseRepository.Count(ctx)
+	return r.base.Count(ctx)
 }
 
 // CountByUser returns the number of audit logs for a specific user

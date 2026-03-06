@@ -24,6 +24,7 @@ require (
 )
 
 require (
+	github.com/coreos/go-iptables v0.8.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/ebitengine/purego v0.8.1 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.2 // indirect
@@ -64,4 +65,5 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251202230838-ff82c1b0f217 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	libvirt.org/go/libvirt v1.12001.0 // indirect
+	libvirt.org/go/libvirtxml v1.12001.0 // indirect
 )
