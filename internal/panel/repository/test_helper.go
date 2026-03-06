@@ -66,7 +66,7 @@ func SetupTestDB() (*gorm.DB, error) {
 			os_template_id TEXT NOT NULL,
 			resources TEXT,
 			status TEXT DEFAULT 'stopped',
-			source_migration BOOLEAN DEFAULT 0,
+			source_migration TEXT,
 			vnc_port INTEGER,
 			vnc_password TEXT,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,

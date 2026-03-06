@@ -53,7 +53,7 @@ CREATE TABLE vms (
     os_template_id UUID NOT NULL REFERENCES os_templates(id) ON DELETE RESTRICT,
     resources JSONB NOT NULL DEFAULT '{}'::jsonb,
     status vm_status NOT NULL DEFAULT 'stopped',
-    source_migration BOOLEAN NOT NULL DEFAULT FALSE,
+    source_migration VARCHAR(50),
     vnc_port INTEGER CHECK (vnc_port >= 5900 AND vnc_port <= 5999),
     vnc_password VARCHAR(255),
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),

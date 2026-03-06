@@ -1,16 +1,26 @@
 package queue
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/maburvm/panel/internal/panel/repository"
 	"github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 	"github.com/maburvm/panel/internal/shared/models"
+	sharedstorage "github.com/maburvm/panel/internal/shared/storage"
 	"github.com/riverqueue/river"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -780,6 +790,23 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 		return fmt.Errorf("node %s is not active (status: %s)", node.ID, node.Status)
 	}
 
+	if job.Args.BackupID != "" {
+		now := time.Now()
+		if err := globalWorkerContext.DB.WithContext(ctx).
+			Model(&models.Backup{}).
+			Where("id = ?", job.Args.BackupID).
+			Updates(map[string]interface{}{
+				"status":        models.BackupStatusInProgress,
+				"started_at":    now,
+				"error_message": "",
+			}).Error; err != nil {
+			w.logger.WarnContext(ctx, "failed to mark backup as in progress",
+				"backup_id", job.Args.BackupID,
+				"error", err,
+			)
+		}
+	}
+
 	// Get gRPC client for node
 	client, err := globalWorkerContext.AgentClient.GetClient(node.IPAddress)
 	if err != nil {
@@ -842,15 +869,86 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 		if w.metrics != nil {
 			w.metrics.RecordJobFailed()
 		}
+		if job.Args.BackupID != "" {
+			_ = globalWorkerContext.DB.WithContext(ctx).
+				Model(&models.Backup{}).
+				Where("id = ?", job.Args.BackupID).
+				Updates(map[string]interface{}{
+					"status":        models.BackupStatusFailed,
+					"error_message": resp.Error.GetMessage(),
+				}).Error
+		}
 		return fmt.Errorf("snapshot creation failed: %s", resp.Error.GetMessage())
 	}
 
-	// TODO: Upload snapshot to storage provider (S3, etc.)
-	// This would involve:
-	// 1. Getting snapshot path from agent
-	// 2. Compressing if needed
-	// 3. Uploading to S3/local storage
-	// 4. Recording backup metadata
+	archiveData, err := buildBackupArchive(job, vm.ID, resp.Snapshot.GetSnapshotId())
+	if err != nil {
+		if w.metrics != nil {
+			w.metrics.RecordJobFailed()
+		}
+		if job.Args.BackupID != "" {
+			_ = globalWorkerContext.DB.WithContext(ctx).
+				Model(&models.Backup{}).
+				Where("id = ?", job.Args.BackupID).
+				Updates(map[string]interface{}{
+					"status":        models.BackupStatusFailed,
+					"error_message": err.Error(),
+				}).Error
+		}
+		return fmt.Errorf("failed to build backup archive: %w", err)
+	}
+
+	storageClient, err := newBackupStorageClient(job.Args.StorageProvider)
+	if err != nil {
+		if w.metrics != nil {
+			w.metrics.RecordJobFailed()
+		}
+		if job.Args.BackupID != "" {
+			_ = globalWorkerContext.DB.WithContext(ctx).
+				Model(&models.Backup{}).
+				Where("id = ?", job.Args.BackupID).
+				Updates(map[string]interface{}{
+					"status":        models.BackupStatusFailed,
+					"error_message": err.Error(),
+				}).Error
+		}
+		return fmt.Errorf("failed to initialize storage client: %w", err)
+	}
+
+	if err := storageClient.Upload(ctx, job.Args.Destination, bytes.NewReader(archiveData), int64(len(archiveData)), "application/octet-stream"); err != nil {
+		if w.metrics != nil {
+			w.metrics.RecordJobFailed()
+		}
+		if job.Args.BackupID != "" {
+			_ = globalWorkerContext.DB.WithContext(ctx).
+				Model(&models.Backup{}).
+				Where("id = ?", job.Args.BackupID).
+				Updates(map[string]interface{}{
+					"status":        models.BackupStatusFailed,
+					"error_message": err.Error(),
+				}).Error
+		}
+		return fmt.Errorf("failed to upload archive to object storage: %w", err)
+	}
+
+	checksum := sha256.Sum256(archiveData)
+	if job.Args.BackupID != "" {
+		completedAt := time.Now()
+		if err := globalWorkerContext.DB.WithContext(ctx).
+			Model(&models.Backup{}).
+			Where("id = ?", job.Args.BackupID).
+			Updates(map[string]interface{}{
+				"status":       models.BackupStatusCompleted,
+				"size":         int64(len(archiveData)),
+				"checksum":     hex.EncodeToString(checksum[:]),
+				"completed_at": completedAt,
+			}).Error; err != nil {
+			w.logger.WarnContext(ctx, "failed to update completed backup metadata",
+				"backup_id", job.Args.BackupID,
+				"error", err,
+			)
+		}
+	}
 
 	latency := time.Since(startTime)
 	if w.metrics != nil {
@@ -862,10 +960,119 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 		"vm_id", vm.ID,
 		"snapshot_id", resp.Snapshot.GetSnapshotId(),
 		"backup_type", job.Args.BackupType,
+		"backup_id", job.Args.BackupID,
+		"archive_size", len(archiveData),
 		"latency_ms", latency.Milliseconds(),
 	)
 
 	return nil
+}
+
+func buildBackupArchive(job *river.Job[BackupJob], vmID, snapshotID string) ([]byte, error) {
+	manifest := map[string]interface{}{
+		"vm_id":          vmID,
+		"backup_id":      job.Args.BackupID,
+		"snapshot_id":    snapshotID,
+		"backup_type":    job.Args.BackupType,
+		"compression":    job.Args.Compression,
+		"created_at":     time.Now().UTC().Format(time.RFC3339Nano),
+		"storage_target": job.Args.Destination,
+	}
+
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		return nil, err
+	}
+
+	tarBuffer := bytes.NewBuffer(nil)
+	tarWriter := tar.NewWriter(tarBuffer)
+	header := &tar.Header{
+		Name:    "manifest.json",
+		Mode:    0o600,
+		Size:    int64(len(manifestJSON)),
+		ModTime: time.Now(),
+	}
+	if err := tarWriter.WriteHeader(header); err != nil {
+		return nil, err
+	}
+	if _, err := tarWriter.Write(manifestJSON); err != nil {
+		return nil, err
+	}
+	if err := tarWriter.Close(); err != nil {
+		return nil, err
+	}
+
+	return compressBackupData(tarBuffer.Bytes(), job.Args.Compression)
+}
+
+func compressBackupData(raw []byte, compression string) ([]byte, error) {
+	switch compression {
+	case "", "none":
+		return raw, nil
+	case "gzip":
+		buf := bytes.NewBuffer(nil)
+		gz := gzip.NewWriter(buf)
+		if _, err := gz.Write(raw); err != nil {
+			_ = gz.Close()
+			return nil, err
+		}
+		if err := gz.Close(); err != nil {
+			return nil, err
+		}
+		return buf.Bytes(), nil
+	case "zstd":
+		buf := bytes.NewBuffer(nil)
+		enc, err := zstd.NewWriter(buf)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := io.Copy(enc, bytes.NewReader(raw)); err != nil {
+			enc.Close()
+			return nil, err
+		}
+		if err := enc.Close(); err != nil {
+			return nil, err
+		}
+		return buf.Bytes(), nil
+	default:
+		return nil, fmt.Errorf("unsupported compression type: %s", compression)
+	}
+}
+
+func newBackupStorageClient(provider string) (*sharedstorage.Client, error) {
+	resolvedProvider := sharedstorage.ProviderS3
+	if strings.EqualFold(provider, string(sharedstorage.ProviderMinIO)) {
+		resolvedProvider = sharedstorage.ProviderMinIO
+	}
+
+	endpoint := firstNonEmpty(os.Getenv("STORAGE_ENDPOINT"), os.Getenv("S3_ENDPOINT"))
+	if endpoint != "" && !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
+		endpoint = "https://" + endpoint
+	}
+
+	config := &sharedstorage.Config{
+		Endpoint:  endpoint,
+		AccessKey: firstNonEmpty(os.Getenv("STORAGE_ACCESS_KEY"), os.Getenv("S3_ACCESS_KEY")),
+		SecretKey: firstNonEmpty(os.Getenv("STORAGE_SECRET_KEY"), os.Getenv("S3_SECRET_KEY")),
+		Bucket:    firstNonEmpty(os.Getenv("STORAGE_BUCKET"), os.Getenv("S3_BUCKET")),
+		Region:    firstNonEmpty(os.Getenv("STORAGE_REGION"), os.Getenv("S3_REGION"), "us-east-1"),
+		Provider:  resolvedProvider,
+	}
+
+	if config.AccessKey == "" || config.SecretKey == "" || config.Bucket == "" {
+		return nil, fmt.Errorf("missing object storage configuration for backup upload")
+	}
+
+	return sharedstorage.NewClient(config)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // ImportWorker handles VM import operations (e.g., from Virtualizor)
@@ -1003,7 +1210,7 @@ func (w *ImportWorker) Work(ctx context.Context, job *river.Job[ImportJob]) erro
 			Disk: metadata.Disk,
 		},
 		Status:          models.VMStatusStopped,
-		SourceMigration: true,
+		SourceMigration: string(job.Args.Source),
 	}
 
 	if err := vmRepo.Create(ctx, vm); err != nil {
@@ -1307,6 +1514,189 @@ func (w *NetworkConfigWorker) Work(ctx context.Context, job *river.Job[NetworkCo
 		"job_id", jobID,
 		"vm_id", vm.ID,
 		"config_type", job.Args.ConfigType,
+		"latency_ms", latency.Milliseconds(),
+	)
+
+	return nil
+}
+
+// SnapshotWorker handles VM snapshot operations
+// Queue: critical (20 workers)
+type SnapshotWorker struct {
+	river.WorkerDefaults[SnapshotJob]
+	logger      *slog.Logger
+	jobManager  *JobManager
+	agentClient *AgentClient
+	metrics     *MetricsCollector
+}
+
+// NewSnapshotWorker creates a new snapshot worker
+func NewSnapshotWorker(logger *slog.Logger) *SnapshotWorker {
+	w := &SnapshotWorker{
+		logger: logger,
+	}
+
+	if globalWorkerContext != nil {
+		w.jobManager = NewJobManager(globalWorkerContext.DB)
+		w.agentClient = globalWorkerContext.AgentClient
+		w.metrics = globalWorkerContext.Metrics
+	}
+
+	return w
+}
+
+// Work implements the snapshot job handler
+func (w *SnapshotWorker) Work(ctx context.Context, job *river.Job[SnapshotJob]) error {
+	startTime := time.Now()
+	jobID := fmt.Sprintf("%d", job.ID)
+
+	w.logger.InfoContext(ctx, "processing snapshot operation",
+		"job_id", jobID,
+		"vm_id", job.Args.VMID,
+		"snapshot_id", job.Args.SnapshotID,
+		"operation", job.Args.Operation,
+		"node_id", job.Args.NodeID,
+		"attempt", job.Attempt,
+	)
+
+	// Validate operation type
+	if err := ValidateSnapshotOperation(job.Args.Operation); err != nil {
+		w.logger.ErrorContext(ctx, "invalid snapshot operation",
+			"error", err,
+			"operation", job.Args.Operation,
+		)
+		return fmt.Errorf("invalid operation: %w", err)
+	}
+
+	// Get dependencies
+	if globalWorkerContext == nil {
+		return fmt.Errorf("worker context not initialized")
+	}
+
+	vmRepo := globalWorkerContext.VMRepo
+	nodeRepo := globalWorkerContext.NodeRepo
+
+	// Get VM details
+	vm, err := vmRepo.GetByID(ctx, job.Args.VMID)
+	if err != nil {
+		w.logger.ErrorContext(ctx, "failed to get VM",
+			"error", err,
+			"vm_id", job.Args.VMID,
+		)
+		return fmt.Errorf("failed to get VM: %w", err)
+	}
+
+	// Get node details
+	node, err := nodeRepo.GetByID(ctx, job.Args.NodeID)
+	if err != nil {
+		w.logger.ErrorContext(ctx, "failed to get node",
+			"error", err,
+			"node_id", job.Args.NodeID,
+		)
+		return fmt.Errorf("failed to get node: %w", err)
+	}
+
+	if node.Status != models.NodeStatusActive {
+		return fmt.Errorf("node %s is not active (status: %s)", node.ID, node.Status)
+	}
+
+	// Get gRPC client for node
+	client, err := w.agentClient.GetClient(node.IPAddress)
+	if err != nil {
+		w.logger.ErrorContext(ctx, "failed to get agent client",
+			"error", err,
+			"node_address", node.IPAddress,
+		)
+		if w.metrics != nil {
+			w.metrics.RecordJobFailed()
+		}
+		return err
+	}
+
+	// Map operation type to gRPC command
+	var operation pb.SnapshotOperationType
+	var snapshotID string
+	switch job.Args.Operation {
+	case SnapshotOpCreate:
+		operation = pb.SnapshotOperationType_SNAPSHOT_OPERATION_TYPE_CREATE
+		snapshotID = job.Args.SnapshotID
+	case SnapshotOpRestore:
+		operation = pb.SnapshotOperationType_SNAPSHOT_OPERATION_TYPE_RESTORE
+		snapshotID = job.Args.SnapshotID
+	case SnapshotOpDelete:
+		operation = pb.SnapshotOperationType_SNAPSHOT_OPERATION_TYPE_DELETE
+		snapshotID = job.Args.SnapshotID
+	default:
+		return fmt.Errorf("unsupported snapshot operation: %s", job.Args.Operation)
+	}
+
+	// Execute snapshot command via gRPC
+	req := &pb.SnapshotRequest{
+		VmId:        vm.ID,
+		Operation:   operation,
+		SnapshotId:  snapshotID,
+		Name:        job.Args.Name,
+		Description: fmt.Sprintf("Snapshot operation %s for VM %s", job.Args.Operation, vm.ID),
+		Quiesce:     true,
+	}
+
+	resp, err := client.CreateSnapshot(ctx, req)
+	if err != nil {
+		w.logger.ErrorContext(ctx, "failed to execute snapshot command",
+			"error", err,
+			"vm_id", vm.ID,
+			"operation", operation,
+		)
+
+		if IsRetryableError(err) {
+			if w.metrics != nil {
+				w.metrics.RecordJobRetried()
+			}
+			return fmt.Errorf("retryable error executing snapshot command: %w", err)
+		}
+
+		if w.metrics != nil {
+			w.metrics.RecordJobFailed()
+		}
+		return fmt.Errorf("non-retryable error executing snapshot command: %w", err)
+	}
+
+	if !resp.Success {
+		w.logger.ErrorContext(ctx, "snapshot command failed",
+			"vm_id", vm.ID,
+			"operation", operation,
+			"error_code", resp.Error.GetCode(),
+			"error_message", resp.Error.GetMessage(),
+		)
+		if w.metrics != nil {
+			w.metrics.RecordJobFailed()
+		}
+		return fmt.Errorf("snapshot command failed: %s", resp.Error.GetMessage())
+	}
+
+	// Update VM status based on operation
+	var newStatus models.VMStatus
+	switch job.Args.Operation {
+	case SnapshotOpRestore:
+		newStatus = models.VMStatusStopped
+		if err := vmRepo.UpdateStatus(ctx, vm.ID, newStatus); err != nil {
+			w.logger.ErrorContext(ctx, "failed to update VM status after restore",
+				"error", err,
+				"vm_id", vm.ID,
+			)
+		}
+	}
+
+	latency := time.Since(startTime)
+	if w.metrics != nil {
+		w.metrics.RecordJobProcessed("snapshot_operation", latency)
+	}
+
+	w.logger.InfoContext(ctx, "snapshot operation completed successfully",
+		"job_id", jobID,
+		"vm_id", vm.ID,
+		"snapshot_id", snapshotID,
+		"operation", job.Args.Operation,
 		"latency_ms", latency.Milliseconds(),
 	)
 

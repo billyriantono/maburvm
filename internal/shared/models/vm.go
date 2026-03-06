@@ -36,7 +36,7 @@ type VM struct {
 	OSTemplateID    string         `json:"os_template_id" gorm:"type:uuid;not null" validate:"required,uuid"`
 	Resources       Resources      `json:"resources" gorm:"type:jsonb;serializer:json" validate:"required"`
 	Status          VMStatus       `json:"status" gorm:"type:vm_status;default:stopped" validate:"required,oneof=running stopped suspended creating error"`
-	SourceMigration bool           `json:"source_migration" gorm:"default:FALSE"`
+	SourceMigration string         `json:"source_migration,omitempty" gorm:"type:varchar(50);default:null"`
 	VNCPort         *int           `json:"vnc_port" gorm:"type:integer" validate:"omitempty,min=5900,max=5999"`
 	VNCPassword     string         `json:"-" gorm:"type:varchar(255)"` // Never exposed in JSON
 	CreatedAt       time.Time      `json:"created_at" gorm:"not null;default:NOW()"`

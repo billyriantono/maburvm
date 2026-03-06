@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -62,6 +63,9 @@ func (s *Server) SetupRoutes() {
 	// Node routes
 	s.setupNodeRoutes(v1)
 
+	// Billing webhook routes (outside /api group, uses own auth)
+	s.setupBillingRoutes()
+
 	// TODO: Add other route groups (VMs, users, networks, etc.)
 }
 
@@ -100,6 +104,20 @@ func (s *Server) setupNodeRoutes(g *echo.Group) {
 
 	// Regenerate token - requires node:update permission
 	nodes.POST("/:id/regenerate-token", nodeHandler.RegenerateToken, panelMiddleware.RequirePermission("node:update"))
+}
+
+// setupBillingRoutes configures billing webhook routes with HMAC authentication
+func (s *Server) setupBillingRoutes() {
+	logger := slog.Default()
+
+	vmRepo := repository.NewVMRepository(s.db)
+	nodeRepo := repository.NewNodeRepository(s.db)
+	templateRepo := repository.NewTemplateRepository(s.db)
+
+	vmService := service.NewVMService(s.db, vmRepo, nodeRepo, templateRepo, nil, logger)
+
+	billingHandler := handler.NewBillingHandler(vmService, logger)
+	handler.RegisterBillingRoutes(s.echo, billingHandler)
 }
 
 // Start starts the HTTP server

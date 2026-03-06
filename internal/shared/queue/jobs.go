@@ -104,6 +104,8 @@ type BackupJob struct {
 	BackupType      BackupType `json:"backup_type"`
 	StorageProvider string     `json:"storage_provider"` // e.g., "s3", "local"
 	Destination     string     `json:"destination"`      // S3 bucket or local path
+	Compression     string     `json:"compression"`      // gzip, zstd, none
+	BackupID        string     `json:"backup_id"`        // Reference to backup record
 }
 
 // Kind returns the job kind for backup
@@ -149,6 +151,50 @@ func (j ImportJob) InsertOpts() *river.InsertOpts {
 	return &river.InsertOpts{
 		Queue:    QueueBatch,
 		Priority: PriorityLow,
+	}
+}
+
+// SnapshotOperation represents the type of snapshot operation
+type SnapshotOperation string
+
+const (
+	SnapshotOpCreate  SnapshotOperation = "create"
+	SnapshotOpRestore SnapshotOperation = "restore"
+	SnapshotOpDelete  SnapshotOperation = "delete"
+)
+
+// SnapshotJob represents a VM snapshot operation job
+// This is inserted into the critical queue
+type SnapshotJob struct {
+	VMID       string            `json:"vm_id"`
+	SnapshotID string            `json:"snapshot_id"`
+	Operation  SnapshotOperation `json:"operation"`
+	NodeID     string            `json:"node_id"`
+	Name       string            `json:"name,omitempty"`
+	DiskPath   string            `json:"disk_path,omitempty"`
+	Params     json.RawMessage   `json:"params,omitempty"`
+}
+
+// Kind returns the job kind for snapshot operations
+func (j SnapshotJob) Kind() string {
+	return "snapshot_operation"
+}
+
+// InsertOpts returns insert options for snapshot operations (critical queue)
+func (j SnapshotJob) InsertOpts() *river.InsertOpts {
+	return &river.InsertOpts{
+		Queue:    QueueCritical,
+		Priority: PriorityHigh,
+	}
+}
+
+// ValidateSnapshotOperation validates snapshot operation type
+func ValidateSnapshotOperation(op SnapshotOperation) error {
+	switch op {
+	case SnapshotOpCreate, SnapshotOpRestore, SnapshotOpDelete:
+		return nil
+	default:
+		return fmt.Errorf("invalid snapshot operation type: %s", op)
 	}
 }
 
