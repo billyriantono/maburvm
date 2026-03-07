@@ -31,6 +31,7 @@ type JWTConfig struct {
 	SecretKey       string        `env:"JWT_SECRET_KEY"`
 	AccessTokenTTL  time.Duration `env:"JWT_ACCESS_TOKEN_TTL" envDefault:"15m"`
 	RefreshTokenTTL time.Duration `env:"JWT_REFRESH_TOKEN_TTL" envDefault:"168h"`
+	AESKey          string        `env:"AES_KEY"` // 32-byte key for AES-256 encryption
 }
 
 // Agent settings
@@ -120,6 +121,9 @@ func validate(cfg *Config) error {
 	}
 	if cfg.JWT.SecretKey == "" {
 		return errors.New("JWT_SECRET_KEY is required")
+	}
+	if cfg.JWT.AESKey == "" || len(cfg.JWT.AESKey) != 32 {
+		return errors.New("AES_KEY is required and must be exactly 32 bytes")
 	}
 	if cfg.S3.Endpoint == "" {
 		return errors.New("S3_ENDPOINT is required")

@@ -1,0 +1,119 @@
+
+> maburvm-web@0.1.0 dev
+> next dev
+
+   ▲ Next.js 14.1.0
+   - Local:        http://localhost:3000
+   - Environments: .env.local
+
+ ✓ Ready in 1625ms
+ ○ Compiling /nodes ...
+ ✓ Compiled /nodes in 3.9s (738 modules)
+ ✓ Compiled /dashboard in 269ms (719 modules)
+ ✓ Compiled / in 165ms (721 modules)
+ ○ Compiling /login ...
+ ✓ Compiled /login in 1090ms (894 modules)
+ ✓ Compiled /not-found in 201ms (899 modules)
+ ⨯ TypeError: __webpack_modules__[moduleId] is not a function
+    at __webpack_require__ (/root/Works/MaburVM/web/.next/server/webpack-runtime.js:33:42)
+    at JSON.parse (<anonymous>)
+TypeError: __webpack_modules__[moduleId] is not a function
+    at __webpack_require__ (/root/Works/MaburVM/web/.next/server/webpack-runtime.js:33:42)
+    at /root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:103108
+    at eo (/root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:103293)
+    at /root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:105726
+    at Object._fromJSON (/root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:106078)
+    at JSON.parse (<anonymous>)
+    at eu (/root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:103787)
+    at en (/root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:102855)
+    at G (/root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:101847)
+    at ak (/root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:46824)
+    at av (/root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:7809)
+    at /root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:12972
+    at aw (/root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:13009)
+    at ak (/root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:46552)
+    at /root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:55430
+    at /root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:56107
+    at aD (/root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:56115)
+    at Timeout._onTimeout (/root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:4293)
+    at listOnTimeout (node:internal/timers:581:17)
+    at process.processTimers (node:internal/timers:519:7)
+ ⨯ TypeError: __webpack_modules__[moduleId] is not a function
+    at __webpack_require__ (/root/Works/MaburVM/web/.next/server/webpack-runtime.js:33:42)
+    at /root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:103108
+    at eo (/root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:103293)
+    at /root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:105726
+    at Object._fromJSON (/root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:106078)
+    at JSON.parse (<anonymous>)
+    at eu (/root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:103787)
+    at en (/root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:102855)
+    at G (/root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:101847)
+    at ak (/root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:46824)
+    at av (/root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:7809)
+    at /root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:12972
+    at aw (/root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:13009)
+    at ak (/root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:46552)
+    at /root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:55430
+    at /root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:56107
+    at aD (/root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:56115)
+    at Timeout._onTimeout (/root/Works/MaburVM/web/node_modules/next/dist/compiled/next-server/app-page.runtime.dev.js:35:4293)
+    at listOnTimeout (node:internal/timers:581:17)
+    at process.processTimers (node:internal/timers:519:7) {
+  page: '/dashboard'
+}
+ ○ Compiling /_error ...
+ ✓ Compiled /_error in 1174ms (1069 modules)
+<w> [webpack.cache.PackFileCacheStrategy] Caching failed for pack: Error: ENOENT: no such file or directory, lstat '/root/Works/MaburVM/web/.next/server/app'
+<w> [webpack.cache.PackFileCacheStrategy/webpack.FileSystemInfo] Resolving '../../../../.next/server/app/not-found' in /root/Works/MaburVM/web/node_modules/next/dist/server for build dependencies doesn't lead to expected result '/root/Works/MaburVM/web/.next/server/app/not-found.js', but to 'Error: Can't resolve '../../../../.next/server/app/not-found' in '/root/Works/MaburVM/web/node_modules/next/dist/server'' instead. Resolving dependencies are ignored for this path.
+<w>  at resolve commonjs file ../../../../.next/server/app/not-found (expected /root/Works/MaburVM/web/.next/server/app/not-found.js)
+<w>  at file dependencies /root/Works/MaburVM/web/node_modules/next/dist/server/require.js
+<w>  at file /root/Works/MaburVM/web/node_modules/next/dist/server/require.js
+<w>  at file dependencies /root/Works/MaburVM/web/node_modules/next/dist/server/load-components.js
+<w>  at file /root/Works/MaburVM/web/node_modules/next/dist/server/load-components.js
+<w>  at file dependencies /root/Works/MaburVM/web/node_modules/next/dist/build/utils.js
+<w>  at file /root/Works/MaburVM/web/node_modules/next/dist/build/utils.js
+<w>  at file dependencies /root/Works/MaburVM/web/node_modules/next/dist/build/worker.js
+<w>  at file /root/Works/MaburVM/web/node_modules/next/dist/build/worker.js
+<w>  at file dependencies /root/Works/MaburVM/web/node_modules/next/dist/build/webpack/loaders/next-route-loader/index.js
+<w>  at file /root/Works/MaburVM/web/node_modules/next/dist/build/webpack/loaders/next-route-loader/index.js
+<w>  at resolve commonjs /root/Works/MaburVM/web/node_modules/next/dist/build/webpack/loaders/next-route-loader/index.js
+<w> [webpack.cache.PackFileCacheStrategy/webpack.FileSystemInfo] Resolving '../../../../.next/server/pages/_error' in /root/Works/MaburVM/web/node_modules/next/dist/server for build dependencies doesn't lead to expected result '/root/Works/MaburVM/web/.next/server/pages/_error.js', but to 'Error: Can't resolve '../../../../.next/server/pages/_error' in '/root/Works/MaburVM/web/node_modules/next/dist/server'' instead. Resolving dependencies are ignored for this path.
+<w>  at resolve commonjs file ../../../../.next/server/pages/_error (expected /root/Works/MaburVM/web/.next/server/pages/_error.js)
+<w>  at file dependencies /root/Works/MaburVM/web/node_modules/next/dist/server/require.js
+<w>  at file /root/Works/MaburVM/web/node_modules/next/dist/server/require.js
+<w>  at file dependencies /root/Works/MaburVM/web/node_modules/next/dist/server/load-components.js
+<w>  at file /root/Works/MaburVM/web/node_modules/next/dist/server/load-components.js
+<w>  at file dependencies /root/Works/MaburVM/web/node_modules/next/dist/build/utils.js
+<w>  at file /root/Works/MaburVM/web/node_modules/next/dist/build/utils.js
+<w>  at file dependencies /root/Works/MaburVM/web/node_modules/next/dist/build/worker.js
+<w>  at file /root/Works/MaburVM/web/node_modules/next/dist/build/worker.js
+<w>  at file dependencies /root/Works/MaburVM/web/node_modules/next/dist/build/webpack/loaders/next-route-loader/index.js
+<w>  at file /root/Works/MaburVM/web/node_modules/next/dist/build/webpack/loaders/next-route-loader/index.js
+<w>  at resolve commonjs /root/Works/MaburVM/web/node_modules/next/dist/build/webpack/loaders/next-route-loader/index.js
+<w> [webpack.cache.PackFileCacheStrategy/webpack.FileSystemInfo] Resolving '../../../../.next/server/app/(dashboard)/dashboard/page' in /root/Works/MaburVM/web/node_modules/next/dist/server for build dependencies doesn't lead to expected result '/root/Works/MaburVM/web/.next/server/app/(dashboard)/dashboard/page.js', but to 'Error: Can't resolve '../../../../.next/server/app/(dashboard)/dashboard/page' in '/root/Works/MaburVM/web/node_modules/next/dist/server'' instead. Resolving dependencies are ignored for this path.
+<w>  at resolve commonjs file ../../../../.next/server/app/(dashboard)/dashboard/page (expected /root/Works/MaburVM/web/.next/server/app/(dashboard)/dashboard/page.js)
+<w>  at file dependencies /root/Works/MaburVM/web/node_modules/next/dist/server/require.js
+<w>  at file /root/Works/MaburVM/web/node_modules/next/dist/server/require.js
+<w>  at file dependencies /root/Works/MaburVM/web/node_modules/next/dist/server/load-components.js
+<w>  at file /root/Works/MaburVM/web/node_modules/next/dist/server/load-components.js
+<w>  at file dependencies /root/Works/MaburVM/web/node_modules/next/dist/build/utils.js
+<w>  at file /root/Works/MaburVM/web/node_modules/next/dist/build/utils.js
+<w>  at file dependencies /root/Works/MaburVM/web/node_modules/next/dist/build/worker.js
+<w>  at file /root/Works/MaburVM/web/node_modules/next/dist/build/worker.js
+<w>  at file dependencies /root/Works/MaburVM/web/node_modules/next/dist/build/webpack/loaders/next-route-loader/index.js
+<w>  at file /root/Works/MaburVM/web/node_modules/next/dist/build/webpack/loaders/next-route-loader/index.js
+<w>  at resolve commonjs /root/Works/MaburVM/web/node_modules/next/dist/build/webpack/loaders/next-route-loader/index.js
+<w> [webpack.cache.PackFileCacheStrategy/webpack.FileSystemInfo] Resolving '../../../../.next/server/pages/_app' in /root/Works/MaburVM/web/node_modules/next/dist/server for build dependencies doesn't lead to expected result '/root/Works/MaburVM/web/.next/server/pages/_app.js', but to 'Error: Can't resolve '../../../../.next/server/pages/_app' in '/root/Works/MaburVM/web/node_modules/next/dist/server'' instead. Resolving dependencies are ignored for this path.
+<w>  at resolve commonjs file ../../../../.next/server/pages/_app (expected /root/Works/MaburVM/web/.next/server/pages/_app.js)
+<w>  at file dependencies /root/Works/MaburVM/web/node_modules/next/dist/server/require.js
+<w>  at file /root/Works/MaburVM/web/node_modules/next/dist/server/require.js
+<w>  at file dependencies /root/Works/MaburVM/web/node_modules/next/dist/server/load-components.js
+<w>  at file /root/Works/MaburVM/web/node_modules/next/dist/server/load-components.js
+<w>  at file dependencies /root/Works/MaburVM/web/node_modules/next/dist/build/utils.js
+<w>  at file /root/Works/MaburVM/web/node_modules/next/dist/build/utils.js
+<w>  at file dependencies /root/Works/MaburVM/web/node_modules/next/dist/build/worker.js
+<w>  at file /root/Works/MaburVM/web/node_modules/next/dist/build/worker.js
+<w>  at file dependencies /root/Works/MaburVM/web/node_modules/next/dist/build/webpack/loaders/next-route-loader/index.js
+<w>  at file /root/Works/MaburVM/web/node_modules/next/dist/build/webpack/loaders/next-route-loader/index.js
+<w>  at resolve commonjs /root/Works/MaburVM/web/node_modules/next/dist/build/webpack/loaders/next-route-loader/index.js
+[?25h

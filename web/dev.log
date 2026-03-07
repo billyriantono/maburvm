@@ -1,0 +1,2131 @@
+
+> maburvm-web@0.1.0 dev
+> next dev
+
+   ▲ Next.js 14.1.0
+   - Local:        http://localhost:3000
+   - Environments: .env.local
+
+ ✓ Ready in 1830ms
+ ○ Compiling /vms/[id] ...
+ ✓ Compiled /vms/[id] in 6.6s (1704 modules)
+ ✓ Compiled in 463ms (845 modules)
+ ○ Compiling /templates ...
+ ✓ Compiled /templates in 715ms (1703 modules)
+ ✓ Compiled /vms in 306ms (1715 modules)
+ ✓ Compiled /api/vm-events in 160ms (873 modules)
+ ✓ Compiled /templates/new in 333ms (1249 modules)
+ ○ Compiling /nodes ...
+ ✓ Compiled /nodes in 1260ms (1262 modules)
+ ✓ Compiled /not-found in 261ms (407 modules)
+ ✓ Compiled in 492ms (872 modules)
+ ✓ Compiled in 2.4s (1231 modules)
+ ✓ Compiled in 480ms (872 modules)
+ ✓ Compiled in 410ms (872 modules)
+ ✓ Compiled in 358ms (872 modules)
+ ✓ Compiled in 389ms (872 modules)
+ ✓ Compiled in 1064ms (872 modules)
+ ✓ Compiled in 540ms (872 modules)
+ ✓ Compiled in 468ms (873 modules)
+ ✓ Compiled in 326ms (873 modules)
+ ✓ Compiled in 686ms (873 modules)
+ ✓ Compiled in 265ms (873 modules)
+ ✓ Compiled in 457ms (859 modules)
+ ✓ Compiled in 2s (859 modules)
+ ✓ Compiled in 431ms (859 modules)
+ ✓ Compiled in 300ms (873 modules)
+ ✓ Compiled in 492ms (859 modules)
+ ✓ Compiled in 530ms (873 modules)
+ ✓ Compiled in 445ms (873 modules)
+ ✓ Compiled in 1040ms (873 modules)
+ ✓ Compiled in 543ms (873 modules)
+ ✓ Compiled in 366ms (873 modules)
+ ✓ Compiled in 421ms (873 modules)
+ ✓ Compiled in 425ms (873 modules)
+ ✓ Compiled in 1460ms (873 modules)
+ ✓ Compiled in 529ms (873 modules)
+ ✓ Compiled in 842ms (873 modules)
+ ✓ Compiled in 435ms (873 modules)
+ ✓ Compiled in 464ms (873 modules)
+ ✓ Compiled in 396ms (873 modules)
+ ✓ Compiled in 463ms (873 modules)
+ ⨯ ./src/app/(dashboard)/templates/page.tsx
+Error: 
+  [31mx[0m Expression expected
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:20:1]
+ [2m20[0m | import { Input } from "@/components/ui/input"
+ [2m21[0m | import { useTemplates, useSyncTemplate } from "@/lib/hooks/use-templates"
+ [2m22[0m | 
+ [2m23[0m |   )
+    : [31;1m  ^[0m
+ [2m24[0m | }
+ [2m25[0m | function formatBytes(bytes: number): string {
+ [2m26[0m |   if (bytes === 0) return "0 B"
+    `----
+
+Caused by:
+    Syntax Error
+
+Import trace for requested module:
+./src/app/(dashboard)/templates/page.tsx
+ ⨯ ./src/app/(dashboard)/templates/page.tsx
+Error: 
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:18:1]
+ [2m18[0m | } from "lucide-react"
+ [2m19[0m | import { Button } from "@/components/ui/button"
+ [2m20[0m | // Format bytes to human readable
+ [2m21[0m |   if (bytes === 0) return "0 B"
+    : [31;1m                   ^^^^^^^^^^^^[0m
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+    `----
+
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:22:1]
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+    : [31;1m  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+ [2m26[0m | }
+ [2m27[0m | 
+ [2m28[0m | // Format date
+    `----
+
+  [31mx[0m Expression expected
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:23:1]
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+ [2m26[0m | }
+    : [31;1m^[0m
+ [2m27[0m | 
+ [2m28[0m | // Format date
+ [2m29[0m | function formatDate(dateString: string): string {
+    `----
+
+Caused by:
+    Syntax Error
+
+Import trace for requested module:
+./src/app/(dashboard)/templates/page.tsx
+ ⨯ ./src/app/(dashboard)/templates/page.tsx
+Error: 
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:18:1]
+ [2m18[0m | } from "lucide-react"
+ [2m19[0m | import { Button } from "@/components/ui/button"
+ [2m20[0m | // Format bytes to human readable
+ [2m21[0m |   if (bytes === 0) return "0 B"
+    : [31;1m                   ^^^^^^^^^^^^[0m
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+    `----
+
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:22:1]
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+    : [31;1m  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+ [2m26[0m | }
+ [2m27[0m | 
+ [2m28[0m | // Format date
+    `----
+
+  [31mx[0m Expression expected
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:23:1]
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+ [2m26[0m | }
+    : [31;1m^[0m
+ [2m27[0m | 
+ [2m28[0m | // Format date
+ [2m29[0m | function formatDate(dateString: string): string {
+    `----
+
+Caused by:
+    Syntax Error
+
+Import trace for requested module:
+./src/app/(dashboard)/templates/page.tsx
+ ⨯ ./src/app/(dashboard)/templates/page.tsx
+Error: 
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:18:1]
+ [2m18[0m | } from "lucide-react"
+ [2m19[0m | import { Button } from "@/components/ui/button"
+ [2m20[0m | // Format bytes to human readable
+ [2m21[0m |   if (bytes === 0) return "0 B"
+    : [31;1m                   ^^^^^^^^^^^^[0m
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+    `----
+
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:22:1]
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+    : [31;1m  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+ [2m26[0m | }
+ [2m27[0m | 
+ [2m28[0m | // Format date
+    `----
+
+  [31mx[0m Expression expected
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:23:1]
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+ [2m26[0m | }
+    : [31;1m^[0m
+ [2m27[0m | 
+ [2m28[0m | // Format date
+ [2m29[0m | function formatDate(dateString: string): string {
+    `----
+
+Caused by:
+    Syntax Error
+
+Import trace for requested module:
+./src/app/(dashboard)/templates/page.tsx
+ ⨯ ./src/app/(dashboard)/templates/page.tsx
+Error: 
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:18:1]
+ [2m18[0m | } from "lucide-react"
+ [2m19[0m | import { Button } from "@/components/ui/button"
+ [2m20[0m | // Format bytes to human readable
+ [2m21[0m |   if (bytes === 0) return "0 B"
+    : [31;1m                   ^^^^^^^^^^^^[0m
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+    `----
+
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:22:1]
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+    : [31;1m  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+ [2m26[0m | }
+ [2m27[0m | 
+ [2m28[0m | // Format date
+    `----
+
+  [31mx[0m Expression expected
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:23:1]
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+ [2m26[0m | }
+    : [31;1m^[0m
+ [2m27[0m | 
+ [2m28[0m | // Format date
+ [2m29[0m | function formatDate(dateString: string): string {
+    `----
+
+Caused by:
+    Syntax Error
+
+Import trace for requested module:
+./src/app/(dashboard)/templates/page.tsx
+ ⨯ ./src/app/(dashboard)/templates/page.tsx
+Error: 
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:18:1]
+ [2m18[0m | } from "lucide-react"
+ [2m19[0m | import { Button } from "@/components/ui/button"
+ [2m20[0m | // Format bytes to human readable
+ [2m21[0m |   if (bytes === 0) return "0 B"
+    : [31;1m                   ^^^^^^^^^^^^[0m
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+    `----
+
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:22:1]
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+    : [31;1m  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+ [2m26[0m | }
+ [2m27[0m | 
+ [2m28[0m | // Format date
+    `----
+
+  [31mx[0m Expression expected
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:23:1]
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+ [2m26[0m | }
+    : [31;1m^[0m
+ [2m27[0m | 
+ [2m28[0m | // Format date
+ [2m29[0m | function formatDate(dateString: string): string {
+    `----
+
+Caused by:
+    Syntax Error
+
+Import trace for requested module:
+./src/app/(dashboard)/templates/page.tsx
+ ⨯ ./src/app/(dashboard)/templates/page.tsx
+Error: 
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:18:1]
+ [2m18[0m | } from "lucide-react"
+ [2m19[0m | import { Button } from "@/components/ui/button"
+ [2m20[0m | // Format bytes to human readable
+ [2m21[0m |   if (bytes === 0) return "0 B"
+    : [31;1m                   ^^^^^^^^^^^^[0m
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+    `----
+
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:22:1]
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+    : [31;1m  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+ [2m26[0m | }
+ [2m27[0m | 
+ [2m28[0m | // Format date
+    `----
+
+  [31mx[0m Expression expected
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:23:1]
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+ [2m26[0m | }
+    : [31;1m^[0m
+ [2m27[0m | 
+ [2m28[0m | // Format date
+ [2m29[0m | function formatDate(dateString: string): string {
+    `----
+
+Caused by:
+    Syntax Error
+
+Import trace for requested module:
+./src/app/(dashboard)/templates/page.tsx
+ ⨯ ./src/app/(dashboard)/templates/page.tsx
+Error: 
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:18:1]
+ [2m18[0m | } from "lucide-react"
+ [2m19[0m | import { Button } from "@/components/ui/button"
+ [2m20[0m | // Format bytes to human readable
+ [2m21[0m |   if (bytes === 0) return "0 B"
+    : [31;1m                   ^^^^^^^^^^^^[0m
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+    `----
+
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:22:1]
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+    : [31;1m  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+ [2m26[0m | }
+ [2m27[0m | 
+ [2m28[0m | // Format date
+    `----
+
+  [31mx[0m Expression expected
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:23:1]
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+ [2m26[0m | }
+    : [31;1m^[0m
+ [2m27[0m | 
+ [2m28[0m | // Format date
+ [2m29[0m | function formatDate(dateString: string): string {
+    `----
+
+Caused by:
+    Syntax Error
+
+Import trace for requested module:
+./src/app/(dashboard)/templates/page.tsx
+ ⨯ ./src/app/(dashboard)/templates/page.tsx
+Error: 
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:18:1]
+ [2m18[0m | } from "lucide-react"
+ [2m19[0m | import { Button } from "@/components/ui/button"
+ [2m20[0m | // Format bytes to human readable
+ [2m21[0m |   if (bytes === 0) return "0 B"
+    : [31;1m                   ^^^^^^^^^^^^[0m
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+    `----
+
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:22:1]
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+    : [31;1m  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+ [2m26[0m | }
+ [2m27[0m | 
+ [2m28[0m | // Format date
+    `----
+
+  [31mx[0m Expression expected
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:23:1]
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+ [2m26[0m | }
+    : [31;1m^[0m
+ [2m27[0m | 
+ [2m28[0m | // Format date
+ [2m29[0m | function formatDate(dateString: string): string {
+    `----
+
+Caused by:
+    Syntax Error
+
+Import trace for requested module:
+./src/app/(dashboard)/templates/page.tsx
+ ⨯ ./src/app/(dashboard)/templates/page.tsx
+Error: 
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:18:1]
+ [2m18[0m | } from "lucide-react"
+ [2m19[0m | import { Button } from "@/components/ui/button"
+ [2m20[0m | // Format bytes to human readable
+ [2m21[0m |   if (bytes === 0) return "0 B"
+    : [31;1m                   ^^^^^^^^^^^^[0m
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+    `----
+
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:22:1]
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+    : [31;1m  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+ [2m26[0m | }
+ [2m27[0m | 
+ [2m28[0m | // Format date
+    `----
+
+  [31mx[0m Expression expected
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:23:1]
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+ [2m26[0m | }
+    : [31;1m^[0m
+ [2m27[0m | 
+ [2m28[0m | // Format date
+ [2m29[0m | function formatDate(dateString: string): string {
+    `----
+
+Caused by:
+    Syntax Error
+
+Import trace for requested module:
+./src/app/(dashboard)/templates/page.tsx
+ ⨯ ./src/app/(dashboard)/templates/page.tsx
+Error: 
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:18:1]
+ [2m18[0m | } from "lucide-react"
+ [2m19[0m | import { Button } from "@/components/ui/button"
+ [2m20[0m | // Format bytes to human readable
+ [2m21[0m |   if (bytes === 0) return "0 B"
+    : [31;1m                   ^^^^^^^^^^^^[0m
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+    `----
+
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:22:1]
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+    : [31;1m  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+ [2m26[0m | }
+ [2m27[0m | 
+ [2m28[0m | // Format date
+    `----
+
+  [31mx[0m Expression expected
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:23:1]
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+ [2m26[0m | }
+    : [31;1m^[0m
+ [2m27[0m | 
+ [2m28[0m | // Format date
+ [2m29[0m | function formatDate(dateString: string): string {
+    `----
+
+Caused by:
+    Syntax Error
+
+Import trace for requested module:
+./src/app/(dashboard)/templates/page.tsx
+ ⨯ ./src/app/(dashboard)/templates/page.tsx
+Error: 
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:18:1]
+ [2m18[0m | } from "lucide-react"
+ [2m19[0m | import { Button } from "@/components/ui/button"
+ [2m20[0m | // Format bytes to human readable
+ [2m21[0m |   if (bytes === 0) return "0 B"
+    : [31;1m                   ^^^^^^^^^^^^[0m
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+    `----
+
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:22:1]
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+    : [31;1m  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+ [2m26[0m | }
+ [2m27[0m | 
+ [2m28[0m | // Format date
+    `----
+
+  [31mx[0m Expression expected
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:23:1]
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+ [2m26[0m | }
+    : [31;1m^[0m
+ [2m27[0m | 
+ [2m28[0m | // Format date
+ [2m29[0m | function formatDate(dateString: string): string {
+    `----
+
+Caused by:
+    Syntax Error
+
+Import trace for requested module:
+./src/app/(dashboard)/templates/page.tsx
+ ⨯ ./src/app/(dashboard)/templates/page.tsx
+Error: 
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:18:1]
+ [2m18[0m | } from "lucide-react"
+ [2m19[0m | import { Button } from "@/components/ui/button"
+ [2m20[0m | // Format bytes to human readable
+ [2m21[0m |   if (bytes === 0) return "0 B"
+    : [31;1m                   ^^^^^^^^^^^^[0m
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+    `----
+
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:22:1]
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+    : [31;1m  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+ [2m26[0m | }
+ [2m27[0m | 
+ [2m28[0m | // Format date
+    `----
+
+  [31mx[0m Expression expected
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:23:1]
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+ [2m26[0m | }
+    : [31;1m^[0m
+ [2m27[0m | 
+ [2m28[0m | // Format date
+ [2m29[0m | function formatDate(dateString: string): string {
+    `----
+
+Caused by:
+    Syntax Error
+
+Import trace for requested module:
+./src/app/(dashboard)/templates/page.tsx
+ ⨯ ./src/app/(dashboard)/templates/page.tsx
+Error: 
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:18:1]
+ [2m18[0m | } from "lucide-react"
+ [2m19[0m | import { Button } from "@/components/ui/button"
+ [2m20[0m | // Format bytes to human readable
+ [2m21[0m |   if (bytes === 0) return "0 B"
+    : [31;1m                   ^^^^^^^^^^^^[0m
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+    `----
+
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:22:1]
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+    : [31;1m  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+ [2m26[0m | }
+ [2m27[0m | 
+ [2m28[0m | // Format date
+    `----
+
+  [31mx[0m Expression expected
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:23:1]
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+ [2m26[0m | }
+    : [31;1m^[0m
+ [2m27[0m | 
+ [2m28[0m | // Format date
+ [2m29[0m | function formatDate(dateString: string): string {
+    `----
+
+Caused by:
+    Syntax Error
+
+Import trace for requested module:
+./src/app/(dashboard)/templates/page.tsx
+ ⨯ ./src/app/(dashboard)/templates/page.tsx
+Error: 
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:18:1]
+ [2m18[0m | } from "lucide-react"
+ [2m19[0m | import { Button } from "@/components/ui/button"
+ [2m20[0m | // Format bytes to human readable
+ [2m21[0m |   if (bytes === 0) return "0 B"
+    : [31;1m                   ^^^^^^^^^^^^[0m
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+    `----
+
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:22:1]
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+    : [31;1m  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+ [2m26[0m | }
+ [2m27[0m | 
+ [2m28[0m | // Format date
+    `----
+
+  [31mx[0m Expression expected
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:23:1]
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+ [2m26[0m | }
+    : [31;1m^[0m
+ [2m27[0m | 
+ [2m28[0m | // Format date
+ [2m29[0m | function formatDate(dateString: string): string {
+    `----
+
+Caused by:
+    Syntax Error
+
+Import trace for requested module:
+./src/app/(dashboard)/templates/page.tsx
+ ⨯ ./src/app/(dashboard)/templates/page.tsx
+Error: 
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:18:1]
+ [2m18[0m | } from "lucide-react"
+ [2m19[0m | import { Button } from "@/components/ui/button"
+ [2m20[0m | // Format bytes to human readable
+ [2m21[0m |   if (bytes === 0) return "0 B"
+    : [31;1m                   ^^^^^^^^^^^^[0m
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+    `----
+
+  [31mx[0m Return statement is not allowed here
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:22:1]
+ [2m22[0m |   const k = 1024
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+    : [31;1m  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+ [2m26[0m | }
+ [2m27[0m | 
+ [2m28[0m | // Format date
+    `----
+
+  [31mx[0m Expression expected
+    ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/templates/page.tsx[0m:23:1]
+ [2m23[0m |   const sizes = ["B", "KB", "MB", "GB", "TB"]
+ [2m24[0m |   const i = Math.floor(Math.log(bytes) / Math.log(k))
+ [2m25[0m |   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+ [2m26[0m | }
+    : [31;1m^[0m
+ [2m27[0m | 
+ [2m28[0m | // Format date
+ [2m29[0m | function formatDate(dateString: string): string {
+    `----
+
+Caused by:
+    Syntax Error
+
+Import trace for requested module:
+./src/app/(dashboard)/templates/page.tsx
+ ⨯ ./src/app/(dashboard)/vms/page.tsx:22:0
+Module not found: Can't resolve '@/components/ui/skeleton'
+[0m [90m 20 |[39m [36mimport[39m { [33mButton[39m } [36mfrom[39m [32m"@/components/ui/button"[39m[0m
+[0m [90m 21 |[39m [36mimport[39m { [33mInput[39m } [36mfrom[39m [32m"@/components/ui/input"[39m[0m
+[0m[31m[1m>[22m[39m[90m 22 |[39m [36mimport[39m { [33mSkeleton[39m } [36mfrom[39m [32m"@/components/ui/skeleton"[39m[0m
+[0m [90m 23 |[39m [36mimport[39m { toast } [36mfrom[39m [32m"sonner"[39m[0m
+[0m [90m 24 |[39m [36mimport[39m { useVMs[33m,[39m useVMAction[33m,[39m useDeleteVM } [36mfrom[39m [32m"@/lib/hooks/use-vms"[39m[0m
+[0m [90m 25 |[39m [36mimport[39m { useNodes } [36mfrom[39m [32m"@/lib/hooks/use-nodes"[39m[0m
+
+https://nextjs.org/docs/messages/module-not-found
+ ⨯ ./src/app/(dashboard)/vms/page.tsx:22:0
+Module not found: Can't resolve '@/components/ui/skeleton'
+[0m [90m 20 |[39m [36mimport[39m { [33mButton[39m } [36mfrom[39m [32m"@/components/ui/button"[39m[0m
+[0m [90m 21 |[39m [36mimport[39m { [33mInput[39m } [36mfrom[39m [32m"@/components/ui/input"[39m[0m
+[0m[31m[1m>[22m[39m[90m 22 |[39m [36mimport[39m { [33mSkeleton[39m } [36mfrom[39m [32m"@/components/ui/skeleton"[39m[0m
+[0m [90m 23 |[39m [36mimport[39m { toast } [36mfrom[39m [32m"sonner"[39m[0m
+[0m [90m 24 |[39m [36mimport[39m { useVMs[33m,[39m useVMAction[33m,[39m useDeleteVM } [36mfrom[39m [32m"@/lib/hooks/use-vms"[39m[0m
+[0m [90m 25 |[39m [36mimport[39m { useNodes } [36mfrom[39m [32m"@/lib/hooks/use-nodes"[39m[0m
+
+https://nextjs.org/docs/messages/module-not-found
+ ⨯ ./src/app/(dashboard)/nodes/page.tsx
+Error: 
+  [31mx[0m Return statement is not allowed here
+     ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/nodes/page.tsx[0m:580:1]
+ [2m580[0m |       )
+ [2m581[0m |     }
+ [2m582[0m |     
+ [2m583[0m | [31;1m,[0m[31;1m-[0m[31;1m>[0m   return (
+ [2m584[0m | [31;1m|[0m       <div className="max-w-7xl mx-auto">
+ [2m585[0m | [31;1m|[0m         {/* Header */}
+ [2m586[0m | [31;1m|[0m         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+ [2m587[0m | [31;1m|[0m           <div>
+ [2m588[0m | [31;1m|[0m             <h1 className="text-3xl font-black uppercase tracking-tight text-black">
+ [2m589[0m | [31;1m|[0m               Nodes
+ [2m590[0m | [31;1m|[0m             </h1>
+ [2m591[0m | [31;1m|[0m             <p className="text-gray-500 font-medium uppercase tracking-wider text-sm">
+ [2m592[0m | [31;1m|[0m               {stats.total} nodes • {stats.online} online • {stats.totalVMs} total VMs
+ [2m593[0m | [31;1m|[0m             </p>
+ [2m594[0m | [31;1m|[0m           </div>
+ [2m595[0m | [31;1m|[0m           <Link href="/nodes/new">
+ [2m596[0m | [31;1m|[0m             <Button className="gap-2">
+ [2m597[0m | [31;1m|[0m               <Plus className="w-4 h-4" />
+ [2m598[0m | [31;1m|[0m               Add Node
+ [2m599[0m | [31;1m|[0m             </Button>
+ [2m600[0m | [31;1m|[0m           </Link>
+ [2m601[0m | [31;1m|[0m         </div>
+ [2m602[0m | [31;1m|[0m   
+ [2m603[0m | [31;1m|[0m         {/* Quick Stats */}
+ [2m604[0m | [31;1m|[0m         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+ [2m605[0m | [31;1m|[0m           <div className="bg-white border-4 border-black p-4 shadow-neo">
+ [2m606[0m | [31;1m|[0m             <div className="flex items-center justify-between mb-2">
+ [2m607[0m | [31;1m|[0m               <span className="text-xs font-black uppercase text-gray-500">Total Nodes</span>
+ [2m608[0m | [31;1m|[0m               <Server className="w-4 h-4 text-gray-400" />
+ [2m609[0m | [31;1m|[0m             </div>
+ [2m610[0m | [31;1m|[0m             <p className="text-3xl font-black text-black">{stats.total}</p>
+ [2m611[0m | [31;1m|[0m           </div>
+ [2m612[0m | [31;1m|[0m           
+ [2m613[0m | [31;1m|[0m           <div className="bg-white border-4 border-black p-4 shadow-neo">
+ [2m614[0m | [31;1m|[0m             <div className="flex items-center justify-between mb-2">
+ [2m615[0m | [31;1m|[0m               <span className="text-xs font-black uppercase text-gray-500">Online</span>
+ [2m616[0m | [31;1m|[0m               <span className="w-3 h-3 bg-success rounded-full animate-pulse" />
+ [2m617[0m | [31;1m|[0m             </div>
+ [2m618[0m | [31;1m|[0m             <p className="text-3xl font-black text-success">{stats.online}</p>
+ [2m619[0m | [31;1m|[0m           </div>
+ [2m620[0m | [31;1m|[0m           
+ [2m621[0m | [31;1m|[0m           <div className="bg-white border-4 border-black p-4 shadow-neo">
+ [2m622[0m | [31;1m|[0m             <div className="flex items-center justify-between mb-2">
+ [2m623[0m | [31;1m|[0m               <span className="text-xs font-black uppercase text-gray-500">Offline</span>
+ [2m624[0m | [31;1m|[0m               <span className="w-3 h-3 bg-danger rounded-full" />
+ [2m625[0m | [31;1m|[0m             </div>
+ [2m626[0m | [31;1m|[0m             <p className="text-3xl font-black text-danger">{stats.offline}</p>
+ [2m627[0m | [31;1m|[0m           </div>
+ [2m628[0m | [31;1m|[0m           
+ [2m629[0m | [31;1m|[0m           <div className="bg-white border-4 border-black p-4 shadow-neo">
+ [2m630[0m | [31;1m|[0m             <div className="flex items-center justify-between mb-2">
+ [2m631[0m | [31;1m|[0m               <span className="text-xs font-black uppercase text-gray-500">Running VMs</span>
+ [2m632[0m | [31;1m|[0m               <Activity className="w-4 h-4 text-gray-400" />
+ [2m633[0m | [31;1m|[0m             </div>
+ [2m634[0m | [31;1m|[0m             <p className="text-3xl font-black text-black">{stats.runningVMs}</p>
+ [2m635[0m | [31;1m|[0m           </div>
+ [2m636[0m | [31;1m|[0m         </div>
+ [2m637[0m | [31;1m|[0m         
+ [2m638[0m | [31;1m|[0m         {/* Filters */}
+ [2m639[0m | [31;1m|[0m         <div className="bg-white border-4 border-black p-4 shadow-neo mb-6">
+ [2m640[0m | [31;1m|[0m           <div className="flex flex-col lg:flex-row gap-4">
+ [2m641[0m | [31;1m|[0m             {/* Search */}
+ [2m642[0m | [31;1m|[0m             <div className="relative flex-1">
+ [2m643[0m | [31;1m|[0m               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+ [2m644[0m | [31;1m|[0m               <Input
+ [2m645[0m | [31;1m|[0m                 type="text"
+ [2m646[0m | [31;1m|[0m                 placeholder="Search by name or IP..."
+ [2m647[0m | [31;1m|[0m                 value={searchQuery}
+ [2m648[0m | [31;1m|[0m                 onChange={(e) => setSearchQuery(e.target.value)}
+ [2m649[0m | [31;1m|[0m                 className="pl-10 border-2 border-black"
+ [2m650[0m | [31;1m|[0m               />
+ [2m651[0m | [31;1m|[0m             </div>
+ [2m652[0m | [31;1m|[0m             
+ [2m653[0m | [31;1m|[0m             {/* Status Filter */}
+ [2m654[0m | [31;1m|[0m             <select
+ [2m655[0m | [31;1m|[0m               value={statusFilter}
+ [2m656[0m | [31;1m|[0m               onChange={(e) => setStatusFilter(e.target.value)}
+ [2m657[0m | [31;1m|[0m               className="h-12 px-4 border-2 border-black font-medium bg-white focus:outline-none focus:shadow-neo-sm"
+ [2m658[0m | [31;1m|[0m             >
+ [2m659[0m | [31;1m|[0m               <option value="">All Status</option>
+ [2m660[0m | [31;1m|[0m               <option value="online">Online</option>
+ [2m661[0m | [31;1m|[0m               <option value="offline">Offline</option>
+ [2m662[0m | [31;1m|[0m               <option value="maintenance">Maintenance</option>
+ [2m663[0m | [31;1m|[0m             </select>
+ [2m664[0m | [31;1m|[0m             
+ [2m665[0m | [31;1m|[0m             {/* Clear filters */}
+ [2m666[0m | [31;1m|[0m             {hasFilters && (
+ [2m667[0m | [31;1m|[0m               <Button variant="ghost" onClick={clearFilters} className="border-2 border-black gap-1">
+ [2m668[0m | [31;1m|[0m                 <X className="w-4 h-4" />
+ [2m669[0m | [31;1m|[0m                 Clear
+ [2m670[0m | [31;1m|[0m               </Button>
+ [2m671[0m | [31;1m|[0m             )}
+ [2m672[0m | [31;1m|[0m           </div>
+ [2m673[0m | [31;1m|[0m         </div>
+ [2m674[0m | [31;1m|[0m         
+ [2m675[0m | [31;1m|[0m         {/* Nodes Grid */}
+ [2m676[0m | [31;1m|[0m         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+ [2m677[0m | [31;1m|[0m           {filteredNodes.length === 0 ? (
+ [2m678[0m | [31;1m|[0m             <div className="col-span-full bg-white border-4 border-black p-12 shadow-neo text-center">
+ [2m679[0m | [31;1m|[0m               <Server className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+ [2m680[0m | [31;1m|[0m               <p className="text-gray-500 font-bold uppercase">No nodes found</p>
+ [2m681[0m | [31;1m|[0m               {hasFilters && (
+ [2m682[0m | [31;1m|[0m                 <Button variant="ghost" onClick={clearFilters} className="mt-4 border-2 border-black">
+ [2m683[0m | [31;1m|[0m                   Clear filters
+ [2m684[0m | [31;1m|[0m                 </Button>
+ [2m685[0m | [31;1m|[0m               )}
+ [2m686[0m | [31;1m|[0m             </div>
+ [2m687[0m | [31;1m|[0m           ) : (
+ [2m688[0m | [31;1m|[0m             filteredNodes.map((node) => (
+ [2m689[0m | [31;1m|[0m               <div key={node.id} className="bg-white border-4 border-black shadow-neo">
+ [2m690[0m | [31;1m|[0m                 {/* Node Header */}
+ [2m691[0m | [31;1m|[0m                 <div className="p-4 border-b-4 border-black bg-gray-50">
+ [2m692[0m | [31;1m|[0m                   <div className="flex items-start justify-between">
+ [2m693[0m | [31;1m|[0m                     <div>
+ [2m694[0m | [31;1m|[0m                       <Link href={`/nodes/${node.id}`} className="text-xl font-black uppercase hover:text-primary transition-colors">
+ [2m695[0m | [31;1m|[0m                         {node.name}
+ [2m696[0m | [31;1m|[0m                       </Link>
+ [2m697[0m | [31;1m|[0m                       <p className="text-sm font-mono font-medium text-gray-500">{node.ip}</p>
+ [2m698[0m | [31;1m|[0m                     </div>
+ [2m699[0m | [31;1m|[0m                     <StatusIndicator status={node.status} />
+ [2m700[0m | [31;1m|[0m                   </div>
+ [2m701[0m | [31;1m|[0m                 </div>
+ [2m702[0m | [31;1m|[0m                 
+ [2m703[0m | [31;1m|[0m                 {/* Node Body */}
+ [2m704[0m | [31;1m|[0m                 <div className="p-4">
+ [2m705[0m | [31;1m|[0m                   {/* VM Count */}
+ [2m706[0m | [31;1m|[0m                   <div className="flex items-center gap-4 mb-4">
+ [2m707[0m | [31;1m|[0m                     <div className="flex items-center gap-2">
+ [2m708[0m | [31;1m|[0m                       <div className="w-8 h-8 bg-primary flex items-center justify-center border-2 border-black">
+ [2m709[0m | [31;1m|[0m                         <Database className="w-4 h-4" />
+ [2m710[0m | [31;1m|[0m                       </div>
+ [2m711[0m | [31;1m|[0m                       <div>
+ [2m712[0m | [31;1m|[0m                         <p className="text-lg font-black">{node.runningVMs}/{node.vmCount}</p>
+ [2m713[0m | [31;1m|[0m                         <p className="text-[10px] font-bold text-gray-500 uppercase">VMs</p>
+ [2m714[0m | [31;1m|[0m                       </div>
+ [2m715[0m | [31;1m|[0m                     </div>
+ [2m716[0m | [31;1m|[0m                     
+ [2m717[0m | [31;1m|[0m                     <div className="flex items-center gap-2">
+ [2m718[0m | [31;1m|[0m                       <Clock className="w-4 h-4 text-gray-400" />
+ [2m719[0m | [31;1m|[0m                       <span className="text-xs font-medium text-gray-500">Last seen: {node.lastSeen}</span>
+ [2m720[0m | [31;1m|[0m                     </div>
+ [2m721[0m | [31;1m|[0m                   </div>
+ [2m722[0m | [31;1m|[0m                   
+ [2m723[0m | [31;1m|[0m                   {/* Resource Usage - Only show if online */}
+ [2m724[0m | [31;1m|[0m                   {node.status === "online" && (
+ [2m725[0m | [31;1m|[0m                     <div className="space-y-2 mb-4">
+ [2m726[0m | [31;1m|[0m                       <ResourceBar value={node.health.cpu} label="CPU" color="bg-primary" />
+ [2m727[0m | [31;1m|[0m                       <ResourceBar value={node.health.memory} label="RAM" color="bg-secondary" />
+ [2m728[0m | [31;1m|[0m                       <ResourceBar value={node.health.disk} label="Disk" color="bg-accent" />
+ [2m729[0m | [31;1m|[0m                       
+ [2m730[0m | [31;1m|[0m                       {/* Network Sparklines */}
+ [2m731[0m | [31;1m|[0m                       <div className="flex items-center justify-between pt-2 border-t border-gray-200">
+ [2m732[0m | [31;1m|[0m                         <div className="flex items-center gap-2">
+ [2m733[0m | [31;1m|[0m                           <Network className="w-4 h-4 text-gray-400" />
+ [2m734[0m | [31;1m|[0m                           <span className="text-xs font-medium text-gray-500">Network</span>
+ [2m735[0m | [31;1m|[0m                         </div>
+ [2m736[0m | [31;1m|[0m                         <div className="flex items-center gap-4">
+ [2m737[0m | [31;1m|[0m                           <div className="flex items-center gap-1">
+ [2m738[0m | [31;1m|[0m                             <Sparkline data={[45, 78, 125, 89, 156, 125]} color="#22c55e" />
+ [2m739[0m | [31;1m|[0m                             <span className="text-[10px] font-bold text-success">{node.health.networkIn} MB/s</span>
+ [2m740[0m | [31;1m|[0m                           </div>
+ [2m741[0m | [31;1m|[0m                           <div className="flex items-center gap-1">
+ [2m742[0m | [31;1m|[0m                             <Sparkline data={[23, 56, 89, 67, 134, 89]} color="#3b82f6" />
+ [2m743[0m | [31;1m|[0m                             <span className="text-[10px] font-bold text-primary">{node.health.networkOut} MB/s</span>
+ [2m744[0m | [31;1m|[0m                           </div>
+ [2m745[0m | [31;1m|[0m                         </div>
+ [2m746[0m | [31;1m|[0m                       </div>
+ [2m747[0m | [31;1m|[0m                     </div>
+ [2m748[0m | [31;1m|[0m                   )}
+ [2m749[0m | [31;1m|[0m                   
+ [2m750[0m | [31;1m|[0m                   {node.status === "maintenance" && (
+ [2m751[0m | [31;1m|[0m                     <div className="bg-warning/20 border-2 border-warning p-3 mb-4">
+ [2m752[0m | [31;1m|[0m                       <p className="text-xs font-bold uppercase text-warning">Node is in maintenance mode</p>
+ [2m753[0m | [31;1m|[0m                     </div>
+ [2m754[0m | [31;1m|[0m                   )}
+ [2m755[0m | [31;1m|[0m                   
+ [2m756[0m | [31;1m|[0m                   {node.status === "offline" && (
+ [2m757[0m | [31;1m|[0m                     <div className="bg-danger/10 border-2 border-danger p-3 mb-4">
+ [2m758[0m | [31;1m|[0m                       <p className="text-xs font-bold uppercase text-danger">Node is offline - cannot manage VMs</p>
+ [2m759[0m | [31;1m|[0m                     </div>
+ [2m760[0m | [31;1m|[0m                   )}
+ [2m761[0m | [31;1m|[0m                   
+ [2m762[0m | [31;1m|[0m                   {/* Token Display */}
+ [2m763[0m | [31;1m|[0m                   <div className="bg-gray-100 border-2 border-black p-2 mb-4">
+ [2m764[0m | [31;1m|[0m                     <div className="flex items-center justify-between">
+ [2m765[0m | [31;1m|[0m                       <span className="text-[10px] font-bold text-gray-500 uppercase">Token</span>
+ [2m766[0m | [31;1m|[0m                       <span className="font-mono text-xs font-medium">{node.token}</span>
+ [2m767[0m | [31;1m|[0m                     </div>
+ [2m768[0m | [31;1m|[0m                   </div>
+ [2m769[0m | [31;1m|[0m                   
+ [2m770[0m | [31;1m|[0m                   {/* Actions */}
+ [2m771[0m | [31;1m|[0m                   <div className="flex items-center gap-2">
+ [2m772[0m | [31;1m|[0m                     <Button
+ [2m773[0m | [31;1m|[0m                       variant="ghost"
+ [2m774[0m | [31;1m|[0m                       size="sm"
+ [2m775[0m | [31;1m|[0m                       onClick={() => setEditNode(node)}
+ [2m776[0m | [31;1m|[0m                       className="h-9 border-2 border-black"
+ [2m777[0m | [31;1m|[0m                       title="Edit"
+ [2m778[0m | [31;1m|[0m                     >
+ [2m779[0m | [31;1m|[0m                       <Edit2 className="w-4 h-4" />
+ [2m780[0m | [31;1m|[0m                       <span className="ml-1">Edit</span>
+ [2m781[0m | [31;1m|[0m                     </Button>
+ [2m782[0m | [31;1m|[0m                     
+ [2m783[0m | [31;1m|[0m                     <Button
+ [2m784[0m | [31;1m|[0m                       variant="ghost"
+ [2m785[0m | [31;1m|[0m                       size="sm"
+ [2m786[0m | [31;1m|[0m                       onClick={() => setRegenerateToken(node)}
+ [2m787[0m | [31;1m|[0m                       disabled={node.status !== "online" || !!actionLoading}
+ [2m788[0m | [31;1m|[0m                       className="h-9 border-2 border-black"
+ [2m789[0m | [31;1m|[0m                       title="Regenerate Token"
+ [2m790[0m | [31;1m|[0m                     >
+ [2m791[0m | [31;1m|[0m                       {actionLoading === `token-${node.id}` ? (
+ [2m792[0m | [31;1m|[0m                         <Loader2 className="w-4 h-4 animate-spin" />
+ [2m793[0m | [31;1m|[0m                       ) : (
+ [2m794[0m | [31;1m|[0m                         <RefreshCw className="w-4 h-4" />
+ [2m795[0m | [31;1m|[0m                       )}
+ [2m796[0m | [31;1m|[0m                       <span className="ml-1">Token</span>
+ [2m797[0m | [31;1m|[0m                     </Button>
+ [2m798[0m | [31;1m|[0m                     
+ [2m799[0m | [31;1m|[0m                     <Button
+ [2m800[0m | [31;1m|[0m                       variant="ghost"
+ [2m801[0m | [31;1m|[0m                       size="sm"
+ [2m802[0m | [31;1m|[0m                       onClick={() => handleDeleteClick(node)}
+ [2m803[0m | [31;1m|[0m                       disabled={!!actionLoading}
+ [2m804[0m | [31;1m|[0m                       className="h-9 border-2 border-black hover:bg-danger hover:text-white"
+ [2m805[0m | [31;1m|[0m                       title="Delete"
+ [2m806[0m | [31;1m|[0m                     >
+ [2m807[0m | [31;1m|[0m                       <Trash2 className="w-4 h-4" />
+ [2m808[0m | [31;1m|[0m                     </Button>
+ [2m809[0m | [31;1m|[0m                   </div>
+ [2m810[0m | [31;1m|[0m                 </div>
+ [2m811[0m | [31;1m|[0m               </div>
+ [2m812[0m | [31;1m|[0m             ))
+ [2m813[0m | [31;1m|[0m           )}
+ [2m814[0m | [31;1m|[0m         </div>
+ [2m815[0m | [31;1m|[0m   
+ [2m816[0m | [31;1m|[0m         {/* Import Section */}
+ [2m817[0m | [31;1m|[0m         <div className="mt-8 bg-white border-4 border-black p-6 shadow-neo">
+ [2m818[0m | [31;1m|[0m           <h2 className="text-lg font-black uppercase tracking-tight text-black mb-4">
+ [2m819[0m | [31;1m|[0m             Import
+ [2m820[0m | [31;1m|[0m           </h2>
+ [2m821[0m | [31;1m|[0m           <div className="flex items-center justify-between">
+ [2m822[0m | [31;1m|[0m             <div>
+ [2m823[0m | [31;1m|[0m               <p className="font-bold text-black">Virtualizor Import</p>
+ [2m824[0m | [31;1m|[0m               <p className="text-sm text-gray-500">Import nodes and VMs from Virtualizor panel</p>
+ [2m825[0m | [31;1m|[0m             </div>
+ [2m826[0m | [31;1m|[0m             <Button variant="outline" className="gap-2">
+ [2m827[0m | [31;1m|[0m               <Database className="w-4 h-4" />
+ [2m828[0m | [31;1m|[0m               Import from Virtualizor
+ [2m829[0m | [31;1m|[0m             </Button>
+ [2m830[0m | [31;1m|[0m           </div>
+ [2m831[0m | [31;1m|[0m         </div>
+ [2m832[0m | [31;1m|[0m         
+ [2m833[0m | [31;1m|[0m         {/* Delete Confirmation Dialog */}
+ [2m834[0m | [31;1m|[0m         <ConfirmDialog
+ [2m835[0m | [31;1m|[0m           open={!!deleteConfirm && !migrateDialog}
+ [2m836[0m | [31;1m|[0m           title="Delete Node"
+ [2m837[0m | [31;1m|[0m           message={`Are you sure you want to delete "${deleteConfirm?.name}"? This action cannot be undone.`}
+ [2m838[0m | [31;1m|[0m           onConfirm={handleDelete}
+ [2m839[0m | [31;1m|[0m           onCancel={() => setDeleteConfirm(null)}
+ [2m840[0m | [31;1m|[0m         />
+ [2m841[0m | [31;1m|[0m         
+ [2m842[0m | [31;1m|[0m         {/* Migration Dialog */}
+ [2m843[0m | [31;1m|[0m         <MigrationDialog
+ [2m844[0m | [31;1m|[0m           open={!!migrateDialog}
+ [2m845[0m | [31;1m|[0m           nodeName={migrateDialog?.name || ""}
+ [2m846[0m | [31;1m|[0m           onMigrate={handleMigrateAndDelete}
+ [2m847[0m | [31;1m|[0m           onCancel={() => setMigrateDialog(null)}
+ [2m848[0m | [31;1m|[0m         />
+ [2m849[0m | [31;1m|[0m         
+ [2m850[0m | [31;1m|[0m         {/* Edit Dialog */}
+ [2m851[0m | [31;1m|[0m         {editNode && (
+ [2m852[0m | [31;1m|[0m           <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
+ [2m853[0m | [31;1m|[0m             <button type="button" className="absolute inset-0 bg-black/50 cursor-default" onClick={() => setEditNode(null)} />
+ [2m854[0m | [31;1m|[0m             <div className="relative bg-white border-4 border-black p-6 shadow-neo-xl max-w-md w-full mx-4">
+ [2m855[0m | [31;1m|[0m               <h3 className="text-xl font-black uppercase mb-4">Edit Node</h3>
+ [2m856[0m | [31;1m|[0m               
+ [2m857[0m | [31;1m|[0m               <div className="space-y-4 mb-6">
+ [2m858[0m | [31;1m|[0m                 <div>
+ [2m859[0m | [31;1m|[0m                   <label htmlFor="edit-node-name" className="block text-xs font-black uppercase text-gray-500 mb-1">Name</label>
+ [2m860[0m | [31;1m|[0m                   <Input
+ [2m861[0m | [31;1m|[0m                     id="edit-node-name"
+ [2m862[0m | [31;1m|[0m                     type="text"
+ [2m863[0m | [31;1m|[0m                     value={editNode.name}
+ [2m864[0m | [31;1m|[0m                     onChange={(e) => setEditNode({ ...editNode, name: e.target.value })}
+ [2m865[0m | [31;1m|[0m                     className="border-2 border-black"
+ [2m866[0m | [31;1m|[0m                   />
+ [2m867[0m | [31;1m|[0m                 </div>
+ [2m868[0m | [31;1m|[0m                 <div>
+ [2m869[0m | [31;1m|[0m                   <label htmlFor="edit-node-ip" className="block text-xs font-black uppercase text-gray-500 mb-1">IP Address</label>
+ [2m870[0m | [31;1m|[0m                   <Input
+ [2m871[0m | [31;1m|[0m                     id="edit-node-ip"
+ [2m872[0m | [31;1m|[0m                     type="text"
+ [2m873[0m | [31;1m|[0m                     value={editNode.ip}
+ [2m874[0m | [31;1m|[0m                     onChange={(e) => setEditNode({ ...editNode, ip: e.target.value })}
+ [2m875[0m | [31;1m|[0m                     className="border-2 border-black"
+ [2m876[0m | [31;1m|[0m                   />
+ [2m877[0m | [31;1m|[0m                 </div>
+ [2m878[0m | [31;1m|[0m               </div>
+ [2m879[0m | [31;1m|[0m               
+ [2m880[0m | [31;1m|[0m               <div className="flex gap-3 justify-end">
+ [2m881[0m | [31;1m|[0m                 <Button variant="ghost" onClick={() => setEditNode(null)} className="border-2 border-black">
+ [2m882[0m | [31;1m|[0m                   Cancel
+ [2m883[0m | [31;1m|[0m                 </Button>
+ [2m884[0m | [31;1m|[0m                 <Button onClick={() => handleEdit(editNode)} disabled={!!actionLoading}>
+ [2m885[0m | [31;1m|[0m                   {actionLoading === `edit-${editNode.id}` && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
+ [2m886[0m | [31;1m|[0m                   Save Changes
+ [2m887[0m | [31;1m|[0m                 </Button>
+ [2m888[0m | [31;1m|[0m               </div>
+ [2m889[0m | [31;1m|[0m             </div>
+ [2m890[0m | [31;1m|[0m           </div>
+ [2m891[0m | [31;1m|[0m         )}
+ [2m892[0m | [31;1m|[0m         
+ [2m893[0m | [31;1m|[0m         {/* Regenerate Token Confirmation */}
+ [2m894[0m | [31;1m|[0m         <ConfirmDialog
+ [2m895[0m | [31;1m|[0m           open={!!regenerateToken}
+ [2m896[0m | [31;1m|[0m           title="Regenerate Token"
+ [2m897[0m | [31;1m|[0m           message={`Are you sure you want to regenerate the token for "${regenerateToken?.name}"? The old token will become invalid.`}
+ [2m898[0m | [31;1m|[0m           confirmLabel="Regenerate"
+ [2m899[0m | [31;1m|[0m           onConfirm={() => regenerateToken && handleRegenerateToken(regenerateToken)}
+ [2m900[0m | [31;1m|[0m           onCancel={() => setRegenerateToken(null)}
+ [2m901[0m | [31;1m|[0m         />
+ [2m902[0m | [31;1m|[0m         
+ [2m903[0m | [31;1m|[0m         {/* Toast */}
+ [2m904[0m | [31;1m|[0m         {toast && (
+ [2m905[0m | [31;1m|[0m           <Toast 
+ [2m906[0m | [31;1m|[0m             message={toast.message} 
+ [2m907[0m | [31;1m|[0m             type={toast.type} 
+ [2m908[0m | [31;1m|[0m             onClose={() => setToast(null)} 
+ [2m909[0m | [31;1m|[0m           />
+ [2m910[0m | [31;1m|[0m         )}
+ [2m911[0m | [31;1m|[0m       </div>
+ [2m912[0m | [31;1m`[0m[31;1m-[0m[31;1m>[0m   )
+ [2m913[0m |     }
+     `----
+
+  [31mx[0m Expression expected
+     ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/nodes/page.tsx[0m:910:1]
+ [2m910[0m |       )}
+ [2m911[0m |     </div>
+ [2m912[0m |   )
+ [2m913[0m | }
+     : [31;1m^[0m
+     `----
+
+Caused by:
+    Syntax Error
+
+Import trace for requested module:
+./src/app/(dashboard)/nodes/page.tsx
+ ⨯ ./src/app/(dashboard)/nodes/page.tsx
+Error: 
+  [31mx[0m Return statement is not allowed here
+     ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/nodes/page.tsx[0m:580:1]
+ [2m580[0m |       )
+ [2m581[0m |     }
+ [2m582[0m |     
+ [2m583[0m | [31;1m,[0m[31;1m-[0m[31;1m>[0m   return (
+ [2m584[0m | [31;1m|[0m       <div className="max-w-7xl mx-auto">
+ [2m585[0m | [31;1m|[0m         {/* Header */}
+ [2m586[0m | [31;1m|[0m         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+ [2m587[0m | [31;1m|[0m           <div>
+ [2m588[0m | [31;1m|[0m             <h1 className="text-3xl font-black uppercase tracking-tight text-black">
+ [2m589[0m | [31;1m|[0m               Nodes
+ [2m590[0m | [31;1m|[0m             </h1>
+ [2m591[0m | [31;1m|[0m             <p className="text-gray-500 font-medium uppercase tracking-wider text-sm">
+ [2m592[0m | [31;1m|[0m               {stats.total} nodes • {stats.online} online • {stats.totalVMs} total VMs
+ [2m593[0m | [31;1m|[0m             </p>
+ [2m594[0m | [31;1m|[0m           </div>
+ [2m595[0m | [31;1m|[0m           <Link href="/nodes/new">
+ [2m596[0m | [31;1m|[0m             <Button className="gap-2">
+ [2m597[0m | [31;1m|[0m               <Plus className="w-4 h-4" />
+ [2m598[0m | [31;1m|[0m               Add Node
+ [2m599[0m | [31;1m|[0m             </Button>
+ [2m600[0m | [31;1m|[0m           </Link>
+ [2m601[0m | [31;1m|[0m         </div>
+ [2m602[0m | [31;1m|[0m   
+ [2m603[0m | [31;1m|[0m         {/* Quick Stats */}
+ [2m604[0m | [31;1m|[0m         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+ [2m605[0m | [31;1m|[0m           <div className="bg-white border-4 border-black p-4 shadow-neo">
+ [2m606[0m | [31;1m|[0m             <div className="flex items-center justify-between mb-2">
+ [2m607[0m | [31;1m|[0m               <span className="text-xs font-black uppercase text-gray-500">Total Nodes</span>
+ [2m608[0m | [31;1m|[0m               <Server className="w-4 h-4 text-gray-400" />
+ [2m609[0m | [31;1m|[0m             </div>
+ [2m610[0m | [31;1m|[0m             <p className="text-3xl font-black text-black">{stats.total}</p>
+ [2m611[0m | [31;1m|[0m           </div>
+ [2m612[0m | [31;1m|[0m           
+ [2m613[0m | [31;1m|[0m           <div className="bg-white border-4 border-black p-4 shadow-neo">
+ [2m614[0m | [31;1m|[0m             <div className="flex items-center justify-between mb-2">
+ [2m615[0m | [31;1m|[0m               <span className="text-xs font-black uppercase text-gray-500">Online</span>
+ [2m616[0m | [31;1m|[0m               <span className="w-3 h-3 bg-success rounded-full animate-pulse" />
+ [2m617[0m | [31;1m|[0m             </div>
+ [2m618[0m | [31;1m|[0m             <p className="text-3xl font-black text-success">{stats.online}</p>
+ [2m619[0m | [31;1m|[0m           </div>
+ [2m620[0m | [31;1m|[0m           
+ [2m621[0m | [31;1m|[0m           <div className="bg-white border-4 border-black p-4 shadow-neo">
+ [2m622[0m | [31;1m|[0m             <div className="flex items-center justify-between mb-2">
+ [2m623[0m | [31;1m|[0m               <span className="text-xs font-black uppercase text-gray-500">Offline</span>
+ [2m624[0m | [31;1m|[0m               <span className="w-3 h-3 bg-danger rounded-full" />
+ [2m625[0m | [31;1m|[0m             </div>
+ [2m626[0m | [31;1m|[0m             <p className="text-3xl font-black text-danger">{stats.offline}</p>
+ [2m627[0m | [31;1m|[0m           </div>
+ [2m628[0m | [31;1m|[0m           
+ [2m629[0m | [31;1m|[0m           <div className="bg-white border-4 border-black p-4 shadow-neo">
+ [2m630[0m | [31;1m|[0m             <div className="flex items-center justify-between mb-2">
+ [2m631[0m | [31;1m|[0m               <span className="text-xs font-black uppercase text-gray-500">Running VMs</span>
+ [2m632[0m | [31;1m|[0m               <Activity className="w-4 h-4 text-gray-400" />
+ [2m633[0m | [31;1m|[0m             </div>
+ [2m634[0m | [31;1m|[0m             <p className="text-3xl font-black text-black">{stats.runningVMs}</p>
+ [2m635[0m | [31;1m|[0m           </div>
+ [2m636[0m | [31;1m|[0m         </div>
+ [2m637[0m | [31;1m|[0m         
+ [2m638[0m | [31;1m|[0m         {/* Filters */}
+ [2m639[0m | [31;1m|[0m         <div className="bg-white border-4 border-black p-4 shadow-neo mb-6">
+ [2m640[0m | [31;1m|[0m           <div className="flex flex-col lg:flex-row gap-4">
+ [2m641[0m | [31;1m|[0m             {/* Search */}
+ [2m642[0m | [31;1m|[0m             <div className="relative flex-1">
+ [2m643[0m | [31;1m|[0m               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+ [2m644[0m | [31;1m|[0m               <Input
+ [2m645[0m | [31;1m|[0m                 type="text"
+ [2m646[0m | [31;1m|[0m                 placeholder="Search by name or IP..."
+ [2m647[0m | [31;1m|[0m                 value={searchQuery}
+ [2m648[0m | [31;1m|[0m                 onChange={(e) => setSearchQuery(e.target.value)}
+ [2m649[0m | [31;1m|[0m                 className="pl-10 border-2 border-black"
+ [2m650[0m | [31;1m|[0m               />
+ [2m651[0m | [31;1m|[0m             </div>
+ [2m652[0m | [31;1m|[0m             
+ [2m653[0m | [31;1m|[0m             {/* Status Filter */}
+ [2m654[0m | [31;1m|[0m             <select
+ [2m655[0m | [31;1m|[0m               value={statusFilter}
+ [2m656[0m | [31;1m|[0m               onChange={(e) => setStatusFilter(e.target.value)}
+ [2m657[0m | [31;1m|[0m               className="h-12 px-4 border-2 border-black font-medium bg-white focus:outline-none focus:shadow-neo-sm"
+ [2m658[0m | [31;1m|[0m             >
+ [2m659[0m | [31;1m|[0m               <option value="">All Status</option>
+ [2m660[0m | [31;1m|[0m               <option value="online">Online</option>
+ [2m661[0m | [31;1m|[0m               <option value="offline">Offline</option>
+ [2m662[0m | [31;1m|[0m               <option value="maintenance">Maintenance</option>
+ [2m663[0m | [31;1m|[0m             </select>
+ [2m664[0m | [31;1m|[0m             
+ [2m665[0m | [31;1m|[0m             {/* Clear filters */}
+ [2m666[0m | [31;1m|[0m             {hasFilters && (
+ [2m667[0m | [31;1m|[0m               <Button variant="ghost" onClick={clearFilters} className="border-2 border-black gap-1">
+ [2m668[0m | [31;1m|[0m                 <X className="w-4 h-4" />
+ [2m669[0m | [31;1m|[0m                 Clear
+ [2m670[0m | [31;1m|[0m               </Button>
+ [2m671[0m | [31;1m|[0m             )}
+ [2m672[0m | [31;1m|[0m           </div>
+ [2m673[0m | [31;1m|[0m         </div>
+ [2m674[0m | [31;1m|[0m         
+ [2m675[0m | [31;1m|[0m         {/* Nodes Grid */}
+ [2m676[0m | [31;1m|[0m         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+ [2m677[0m | [31;1m|[0m           {filteredNodes.length === 0 ? (
+ [2m678[0m | [31;1m|[0m             <div className="col-span-full bg-white border-4 border-black p-12 shadow-neo text-center">
+ [2m679[0m | [31;1m|[0m               <Server className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+ [2m680[0m | [31;1m|[0m               <p className="text-gray-500 font-bold uppercase">No nodes found</p>
+ [2m681[0m | [31;1m|[0m               {hasFilters && (
+ [2m682[0m | [31;1m|[0m                 <Button variant="ghost" onClick={clearFilters} className="mt-4 border-2 border-black">
+ [2m683[0m | [31;1m|[0m                   Clear filters
+ [2m684[0m | [31;1m|[0m                 </Button>
+ [2m685[0m | [31;1m|[0m               )}
+ [2m686[0m | [31;1m|[0m             </div>
+ [2m687[0m | [31;1m|[0m           ) : (
+ [2m688[0m | [31;1m|[0m             filteredNodes.map((node) => (
+ [2m689[0m | [31;1m|[0m               <div key={node.id} className="bg-white border-4 border-black shadow-neo">
+ [2m690[0m | [31;1m|[0m                 {/* Node Header */}
+ [2m691[0m | [31;1m|[0m                 <div className="p-4 border-b-4 border-black bg-gray-50">
+ [2m692[0m | [31;1m|[0m                   <div className="flex items-start justify-between">
+ [2m693[0m | [31;1m|[0m                     <div>
+ [2m694[0m | [31;1m|[0m                       <Link href={`/nodes/${node.id}`} className="text-xl font-black uppercase hover:text-primary transition-colors">
+ [2m695[0m | [31;1m|[0m                         {node.name}
+ [2m696[0m | [31;1m|[0m                       </Link>
+ [2m697[0m | [31;1m|[0m                       <p className="text-sm font-mono font-medium text-gray-500">{node.ip}</p>
+ [2m698[0m | [31;1m|[0m                     </div>
+ [2m699[0m | [31;1m|[0m                     <StatusIndicator status={node.status} />
+ [2m700[0m | [31;1m|[0m                   </div>
+ [2m701[0m | [31;1m|[0m                 </div>
+ [2m702[0m | [31;1m|[0m                 
+ [2m703[0m | [31;1m|[0m                 {/* Node Body */}
+ [2m704[0m | [31;1m|[0m                 <div className="p-4">
+ [2m705[0m | [31;1m|[0m                   {/* VM Count */}
+ [2m706[0m | [31;1m|[0m                   <div className="flex items-center gap-4 mb-4">
+ [2m707[0m | [31;1m|[0m                     <div className="flex items-center gap-2">
+ [2m708[0m | [31;1m|[0m                       <div className="w-8 h-8 bg-primary flex items-center justify-center border-2 border-black">
+ [2m709[0m | [31;1m|[0m                         <Database className="w-4 h-4" />
+ [2m710[0m | [31;1m|[0m                       </div>
+ [2m711[0m | [31;1m|[0m                       <div>
+ [2m712[0m | [31;1m|[0m                         <p className="text-lg font-black">{node.runningVMs}/{node.vmCount}</p>
+ [2m713[0m | [31;1m|[0m                         <p className="text-[10px] font-bold text-gray-500 uppercase">VMs</p>
+ [2m714[0m | [31;1m|[0m                       </div>
+ [2m715[0m | [31;1m|[0m                     </div>
+ [2m716[0m | [31;1m|[0m                     
+ [2m717[0m | [31;1m|[0m                     <div className="flex items-center gap-2">
+ [2m718[0m | [31;1m|[0m                       <Clock className="w-4 h-4 text-gray-400" />
+ [2m719[0m | [31;1m|[0m                       <span className="text-xs font-medium text-gray-500">Last seen: {node.lastSeen}</span>
+ [2m720[0m | [31;1m|[0m                     </div>
+ [2m721[0m | [31;1m|[0m                   </div>
+ [2m722[0m | [31;1m|[0m                   
+ [2m723[0m | [31;1m|[0m                   {/* Resource Usage - Only show if online */}
+ [2m724[0m | [31;1m|[0m                   {node.status === "online" && (
+ [2m725[0m | [31;1m|[0m                     <div className="space-y-2 mb-4">
+ [2m726[0m | [31;1m|[0m                       <ResourceBar value={node.health.cpu} label="CPU" color="bg-primary" />
+ [2m727[0m | [31;1m|[0m                       <ResourceBar value={node.health.memory} label="RAM" color="bg-secondary" />
+ [2m728[0m | [31;1m|[0m                       <ResourceBar value={node.health.disk} label="Disk" color="bg-accent" />
+ [2m729[0m | [31;1m|[0m                       
+ [2m730[0m | [31;1m|[0m                       {/* Network Sparklines */}
+ [2m731[0m | [31;1m|[0m                       <div className="flex items-center justify-between pt-2 border-t border-gray-200">
+ [2m732[0m | [31;1m|[0m                         <div className="flex items-center gap-2">
+ [2m733[0m | [31;1m|[0m                           <Network className="w-4 h-4 text-gray-400" />
+ [2m734[0m | [31;1m|[0m                           <span className="text-xs font-medium text-gray-500">Network</span>
+ [2m735[0m | [31;1m|[0m                         </div>
+ [2m736[0m | [31;1m|[0m                         <div className="flex items-center gap-4">
+ [2m737[0m | [31;1m|[0m                           <div className="flex items-center gap-1">
+ [2m738[0m | [31;1m|[0m                             <Sparkline data={[45, 78, 125, 89, 156, 125]} color="#22c55e" />
+ [2m739[0m | [31;1m|[0m                             <span className="text-[10px] font-bold text-success">{node.health.networkIn} MB/s</span>
+ [2m740[0m | [31;1m|[0m                           </div>
+ [2m741[0m | [31;1m|[0m                           <div className="flex items-center gap-1">
+ [2m742[0m | [31;1m|[0m                             <Sparkline data={[23, 56, 89, 67, 134, 89]} color="#3b82f6" />
+ [2m743[0m | [31;1m|[0m                             <span className="text-[10px] font-bold text-primary">{node.health.networkOut} MB/s</span>
+ [2m744[0m | [31;1m|[0m                           </div>
+ [2m745[0m | [31;1m|[0m                         </div>
+ [2m746[0m | [31;1m|[0m                       </div>
+ [2m747[0m | [31;1m|[0m                     </div>
+ [2m748[0m | [31;1m|[0m                   )}
+ [2m749[0m | [31;1m|[0m                   
+ [2m750[0m | [31;1m|[0m                   {node.status === "maintenance" && (
+ [2m751[0m | [31;1m|[0m                     <div className="bg-warning/20 border-2 border-warning p-3 mb-4">
+ [2m752[0m | [31;1m|[0m                       <p className="text-xs font-bold uppercase text-warning">Node is in maintenance mode</p>
+ [2m753[0m | [31;1m|[0m                     </div>
+ [2m754[0m | [31;1m|[0m                   )}
+ [2m755[0m | [31;1m|[0m                   
+ [2m756[0m | [31;1m|[0m                   {node.status === "offline" && (
+ [2m757[0m | [31;1m|[0m                     <div className="bg-danger/10 border-2 border-danger p-3 mb-4">
+ [2m758[0m | [31;1m|[0m                       <p className="text-xs font-bold uppercase text-danger">Node is offline - cannot manage VMs</p>
+ [2m759[0m | [31;1m|[0m                     </div>
+ [2m760[0m | [31;1m|[0m                   )}
+ [2m761[0m | [31;1m|[0m                   
+ [2m762[0m | [31;1m|[0m                   {/* Token Display */}
+ [2m763[0m | [31;1m|[0m                   <div className="bg-gray-100 border-2 border-black p-2 mb-4">
+ [2m764[0m | [31;1m|[0m                     <div className="flex items-center justify-between">
+ [2m765[0m | [31;1m|[0m                       <span className="text-[10px] font-bold text-gray-500 uppercase">Token</span>
+ [2m766[0m | [31;1m|[0m                       <span className="font-mono text-xs font-medium">{node.token}</span>
+ [2m767[0m | [31;1m|[0m                     </div>
+ [2m768[0m | [31;1m|[0m                   </div>
+ [2m769[0m | [31;1m|[0m                   
+ [2m770[0m | [31;1m|[0m                   {/* Actions */}
+ [2m771[0m | [31;1m|[0m                   <div className="flex items-center gap-2">
+ [2m772[0m | [31;1m|[0m                     <Button
+ [2m773[0m | [31;1m|[0m                       variant="ghost"
+ [2m774[0m | [31;1m|[0m                       size="sm"
+ [2m775[0m | [31;1m|[0m                       onClick={() => setEditNode(node)}
+ [2m776[0m | [31;1m|[0m                       className="h-9 border-2 border-black"
+ [2m777[0m | [31;1m|[0m                       title="Edit"
+ [2m778[0m | [31;1m|[0m                     >
+ [2m779[0m | [31;1m|[0m                       <Edit2 className="w-4 h-4" />
+ [2m780[0m | [31;1m|[0m                       <span className="ml-1">Edit</span>
+ [2m781[0m | [31;1m|[0m                     </Button>
+ [2m782[0m | [31;1m|[0m                     
+ [2m783[0m | [31;1m|[0m                     <Button
+ [2m784[0m | [31;1m|[0m                       variant="ghost"
+ [2m785[0m | [31;1m|[0m                       size="sm"
+ [2m786[0m | [31;1m|[0m                       onClick={() => setRegenerateToken(node)}
+ [2m787[0m | [31;1m|[0m                       disabled={node.status !== "online" || !!actionLoading}
+ [2m788[0m | [31;1m|[0m                       className="h-9 border-2 border-black"
+ [2m789[0m | [31;1m|[0m                       title="Regenerate Token"
+ [2m790[0m | [31;1m|[0m                     >
+ [2m791[0m | [31;1m|[0m                       {actionLoading === `token-${node.id}` ? (
+ [2m792[0m | [31;1m|[0m                         <Loader2 className="w-4 h-4 animate-spin" />
+ [2m793[0m | [31;1m|[0m                       ) : (
+ [2m794[0m | [31;1m|[0m                         <RefreshCw className="w-4 h-4" />
+ [2m795[0m | [31;1m|[0m                       )}
+ [2m796[0m | [31;1m|[0m                       <span className="ml-1">Token</span>
+ [2m797[0m | [31;1m|[0m                     </Button>
+ [2m798[0m | [31;1m|[0m                     
+ [2m799[0m | [31;1m|[0m                     <Button
+ [2m800[0m | [31;1m|[0m                       variant="ghost"
+ [2m801[0m | [31;1m|[0m                       size="sm"
+ [2m802[0m | [31;1m|[0m                       onClick={() => handleDeleteClick(node)}
+ [2m803[0m | [31;1m|[0m                       disabled={!!actionLoading}
+ [2m804[0m | [31;1m|[0m                       className="h-9 border-2 border-black hover:bg-danger hover:text-white"
+ [2m805[0m | [31;1m|[0m                       title="Delete"
+ [2m806[0m | [31;1m|[0m                     >
+ [2m807[0m | [31;1m|[0m                       <Trash2 className="w-4 h-4" />
+ [2m808[0m | [31;1m|[0m                     </Button>
+ [2m809[0m | [31;1m|[0m                   </div>
+ [2m810[0m | [31;1m|[0m                 </div>
+ [2m811[0m | [31;1m|[0m               </div>
+ [2m812[0m | [31;1m|[0m             ))
+ [2m813[0m | [31;1m|[0m           )}
+ [2m814[0m | [31;1m|[0m         </div>
+ [2m815[0m | [31;1m|[0m   
+ [2m816[0m | [31;1m|[0m         {/* Import Section */}
+ [2m817[0m | [31;1m|[0m         <div className="mt-8 bg-white border-4 border-black p-6 shadow-neo">
+ [2m818[0m | [31;1m|[0m           <h2 className="text-lg font-black uppercase tracking-tight text-black mb-4">
+ [2m819[0m | [31;1m|[0m             Import
+ [2m820[0m | [31;1m|[0m           </h2>
+ [2m821[0m | [31;1m|[0m           <div className="flex items-center justify-between">
+ [2m822[0m | [31;1m|[0m             <div>
+ [2m823[0m | [31;1m|[0m               <p className="font-bold text-black">Virtualizor Import</p>
+ [2m824[0m | [31;1m|[0m               <p className="text-sm text-gray-500">Import nodes and VMs from Virtualizor panel</p>
+ [2m825[0m | [31;1m|[0m             </div>
+ [2m826[0m | [31;1m|[0m             <Button variant="outline" className="gap-2">
+ [2m827[0m | [31;1m|[0m               <Database className="w-4 h-4" />
+ [2m828[0m | [31;1m|[0m               Import from Virtualizor
+ [2m829[0m | [31;1m|[0m             </Button>
+ [2m830[0m | [31;1m|[0m           </div>
+ [2m831[0m | [31;1m|[0m         </div>
+ [2m832[0m | [31;1m|[0m         
+ [2m833[0m | [31;1m|[0m         {/* Delete Confirmation Dialog */}
+ [2m834[0m | [31;1m|[0m         <ConfirmDialog
+ [2m835[0m | [31;1m|[0m           open={!!deleteConfirm && !migrateDialog}
+ [2m836[0m | [31;1m|[0m           title="Delete Node"
+ [2m837[0m | [31;1m|[0m           message={`Are you sure you want to delete "${deleteConfirm?.name}"? This action cannot be undone.`}
+ [2m838[0m | [31;1m|[0m           onConfirm={handleDelete}
+ [2m839[0m | [31;1m|[0m           onCancel={() => setDeleteConfirm(null)}
+ [2m840[0m | [31;1m|[0m         />
+ [2m841[0m | [31;1m|[0m         
+ [2m842[0m | [31;1m|[0m         {/* Migration Dialog */}
+ [2m843[0m | [31;1m|[0m         <MigrationDialog
+ [2m844[0m | [31;1m|[0m           open={!!migrateDialog}
+ [2m845[0m | [31;1m|[0m           nodeName={migrateDialog?.name || ""}
+ [2m846[0m | [31;1m|[0m           onMigrate={handleMigrateAndDelete}
+ [2m847[0m | [31;1m|[0m           onCancel={() => setMigrateDialog(null)}
+ [2m848[0m | [31;1m|[0m         />
+ [2m849[0m | [31;1m|[0m         
+ [2m850[0m | [31;1m|[0m         {/* Edit Dialog */}
+ [2m851[0m | [31;1m|[0m         {editNode && (
+ [2m852[0m | [31;1m|[0m           <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
+ [2m853[0m | [31;1m|[0m             <button type="button" className="absolute inset-0 bg-black/50 cursor-default" onClick={() => setEditNode(null)} />
+ [2m854[0m | [31;1m|[0m             <div className="relative bg-white border-4 border-black p-6 shadow-neo-xl max-w-md w-full mx-4">
+ [2m855[0m | [31;1m|[0m               <h3 className="text-xl font-black uppercase mb-4">Edit Node</h3>
+ [2m856[0m | [31;1m|[0m               
+ [2m857[0m | [31;1m|[0m               <div className="space-y-4 mb-6">
+ [2m858[0m | [31;1m|[0m                 <div>
+ [2m859[0m | [31;1m|[0m                   <label htmlFor="edit-node-name" className="block text-xs font-black uppercase text-gray-500 mb-1">Name</label>
+ [2m860[0m | [31;1m|[0m                   <Input
+ [2m861[0m | [31;1m|[0m                     id="edit-node-name"
+ [2m862[0m | [31;1m|[0m                     type="text"
+ [2m863[0m | [31;1m|[0m                     value={editNode.name}
+ [2m864[0m | [31;1m|[0m                     onChange={(e) => setEditNode({ ...editNode, name: e.target.value })}
+ [2m865[0m | [31;1m|[0m                     className="border-2 border-black"
+ [2m866[0m | [31;1m|[0m                   />
+ [2m867[0m | [31;1m|[0m                 </div>
+ [2m868[0m | [31;1m|[0m                 <div>
+ [2m869[0m | [31;1m|[0m                   <label htmlFor="edit-node-ip" className="block text-xs font-black uppercase text-gray-500 mb-1">IP Address</label>
+ [2m870[0m | [31;1m|[0m                   <Input
+ [2m871[0m | [31;1m|[0m                     id="edit-node-ip"
+ [2m872[0m | [31;1m|[0m                     type="text"
+ [2m873[0m | [31;1m|[0m                     value={editNode.ip}
+ [2m874[0m | [31;1m|[0m                     onChange={(e) => setEditNode({ ...editNode, ip: e.target.value })}
+ [2m875[0m | [31;1m|[0m                     className="border-2 border-black"
+ [2m876[0m | [31;1m|[0m                   />
+ [2m877[0m | [31;1m|[0m                 </div>
+ [2m878[0m | [31;1m|[0m               </div>
+ [2m879[0m | [31;1m|[0m               
+ [2m880[0m | [31;1m|[0m               <div className="flex gap-3 justify-end">
+ [2m881[0m | [31;1m|[0m                 <Button variant="ghost" onClick={() => setEditNode(null)} className="border-2 border-black">
+ [2m882[0m | [31;1m|[0m                   Cancel
+ [2m883[0m | [31;1m|[0m                 </Button>
+ [2m884[0m | [31;1m|[0m                 <Button onClick={() => handleEdit(editNode)} disabled={!!actionLoading}>
+ [2m885[0m | [31;1m|[0m                   {actionLoading === `edit-${editNode.id}` && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
+ [2m886[0m | [31;1m|[0m                   Save Changes
+ [2m887[0m | [31;1m|[0m                 </Button>
+ [2m888[0m | [31;1m|[0m               </div>
+ [2m889[0m | [31;1m|[0m             </div>
+ [2m890[0m | [31;1m|[0m           </div>
+ [2m891[0m | [31;1m|[0m         )}
+ [2m892[0m | [31;1m|[0m         
+ [2m893[0m | [31;1m|[0m         {/* Regenerate Token Confirmation */}
+ [2m894[0m | [31;1m|[0m         <ConfirmDialog
+ [2m895[0m | [31;1m|[0m           open={!!regenerateToken}
+ [2m896[0m | [31;1m|[0m           title="Regenerate Token"
+ [2m897[0m | [31;1m|[0m           message={`Are you sure you want to regenerate the token for "${regenerateToken?.name}"? The old token will become invalid.`}
+ [2m898[0m | [31;1m|[0m           confirmLabel="Regenerate"
+ [2m899[0m | [31;1m|[0m           onConfirm={() => regenerateToken && handleRegenerateToken(regenerateToken)}
+ [2m900[0m | [31;1m|[0m           onCancel={() => setRegenerateToken(null)}
+ [2m901[0m | [31;1m|[0m         />
+ [2m902[0m | [31;1m|[0m         
+ [2m903[0m | [31;1m|[0m         {/* Toast */}
+ [2m904[0m | [31;1m|[0m         {toast && (
+ [2m905[0m | [31;1m|[0m           <Toast 
+ [2m906[0m | [31;1m|[0m             message={toast.message} 
+ [2m907[0m | [31;1m|[0m             type={toast.type} 
+ [2m908[0m | [31;1m|[0m             onClose={() => setToast(null)} 
+ [2m909[0m | [31;1m|[0m           />
+ [2m910[0m | [31;1m|[0m         )}
+ [2m911[0m | [31;1m|[0m       </div>
+ [2m912[0m | [31;1m`[0m[31;1m-[0m[31;1m>[0m   )
+ [2m913[0m |     }
+     `----
+
+  [31mx[0m Expression expected
+     ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/nodes/page.tsx[0m:910:1]
+ [2m910[0m |       )}
+ [2m911[0m |     </div>
+ [2m912[0m |   )
+ [2m913[0m | }
+     : [31;1m^[0m
+     `----
+
+Caused by:
+    Syntax Error
+
+Import trace for requested module:
+./src/app/(dashboard)/nodes/page.tsx
+ ⨯ ./src/app/(dashboard)/nodes/page.tsx
+Error: 
+  [31mx[0m Return statement is not allowed here
+     ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/nodes/page.tsx[0m:580:1]
+ [2m580[0m |       )
+ [2m581[0m |     }
+ [2m582[0m |     
+ [2m583[0m | [31;1m,[0m[31;1m-[0m[31;1m>[0m   return (
+ [2m584[0m | [31;1m|[0m       <div className="max-w-7xl mx-auto">
+ [2m585[0m | [31;1m|[0m         {/* Header */}
+ [2m586[0m | [31;1m|[0m         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+ [2m587[0m | [31;1m|[0m           <div>
+ [2m588[0m | [31;1m|[0m             <h1 className="text-3xl font-black uppercase tracking-tight text-black">
+ [2m589[0m | [31;1m|[0m               Nodes
+ [2m590[0m | [31;1m|[0m             </h1>
+ [2m591[0m | [31;1m|[0m             <p className="text-gray-500 font-medium uppercase tracking-wider text-sm">
+ [2m592[0m | [31;1m|[0m               {stats.total} nodes • {stats.online} online • {stats.totalVMs} total VMs
+ [2m593[0m | [31;1m|[0m             </p>
+ [2m594[0m | [31;1m|[0m           </div>
+ [2m595[0m | [31;1m|[0m           <Link href="/nodes/new">
+ [2m596[0m | [31;1m|[0m             <Button className="gap-2">
+ [2m597[0m | [31;1m|[0m               <Plus className="w-4 h-4" />
+ [2m598[0m | [31;1m|[0m               Add Node
+ [2m599[0m | [31;1m|[0m             </Button>
+ [2m600[0m | [31;1m|[0m           </Link>
+ [2m601[0m | [31;1m|[0m         </div>
+ [2m602[0m | [31;1m|[0m   
+ [2m603[0m | [31;1m|[0m         {/* Quick Stats */}
+ [2m604[0m | [31;1m|[0m         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+ [2m605[0m | [31;1m|[0m           <div className="bg-white border-4 border-black p-4 shadow-neo">
+ [2m606[0m | [31;1m|[0m             <div className="flex items-center justify-between mb-2">
+ [2m607[0m | [31;1m|[0m               <span className="text-xs font-black uppercase text-gray-500">Total Nodes</span>
+ [2m608[0m | [31;1m|[0m               <Server className="w-4 h-4 text-gray-400" />
+ [2m609[0m | [31;1m|[0m             </div>
+ [2m610[0m | [31;1m|[0m             <p className="text-3xl font-black text-black">{stats.total}</p>
+ [2m611[0m | [31;1m|[0m           </div>
+ [2m612[0m | [31;1m|[0m           
+ [2m613[0m | [31;1m|[0m           <div className="bg-white border-4 border-black p-4 shadow-neo">
+ [2m614[0m | [31;1m|[0m             <div className="flex items-center justify-between mb-2">
+ [2m615[0m | [31;1m|[0m               <span className="text-xs font-black uppercase text-gray-500">Online</span>
+ [2m616[0m | [31;1m|[0m               <span className="w-3 h-3 bg-success rounded-full animate-pulse" />
+ [2m617[0m | [31;1m|[0m             </div>
+ [2m618[0m | [31;1m|[0m             <p className="text-3xl font-black text-success">{stats.online}</p>
+ [2m619[0m | [31;1m|[0m           </div>
+ [2m620[0m | [31;1m|[0m           
+ [2m621[0m | [31;1m|[0m           <div className="bg-white border-4 border-black p-4 shadow-neo">
+ [2m622[0m | [31;1m|[0m             <div className="flex items-center justify-between mb-2">
+ [2m623[0m | [31;1m|[0m               <span className="text-xs font-black uppercase text-gray-500">Offline</span>
+ [2m624[0m | [31;1m|[0m               <span className="w-3 h-3 bg-danger rounded-full" />
+ [2m625[0m | [31;1m|[0m             </div>
+ [2m626[0m | [31;1m|[0m             <p className="text-3xl font-black text-danger">{stats.offline}</p>
+ [2m627[0m | [31;1m|[0m           </div>
+ [2m628[0m | [31;1m|[0m           
+ [2m629[0m | [31;1m|[0m           <div className="bg-white border-4 border-black p-4 shadow-neo">
+ [2m630[0m | [31;1m|[0m             <div className="flex items-center justify-between mb-2">
+ [2m631[0m | [31;1m|[0m               <span className="text-xs font-black uppercase text-gray-500">Running VMs</span>
+ [2m632[0m | [31;1m|[0m               <Activity className="w-4 h-4 text-gray-400" />
+ [2m633[0m | [31;1m|[0m             </div>
+ [2m634[0m | [31;1m|[0m             <p className="text-3xl font-black text-black">{stats.runningVMs}</p>
+ [2m635[0m | [31;1m|[0m           </div>
+ [2m636[0m | [31;1m|[0m         </div>
+ [2m637[0m | [31;1m|[0m         
+ [2m638[0m | [31;1m|[0m         {/* Filters */}
+ [2m639[0m | [31;1m|[0m         <div className="bg-white border-4 border-black p-4 shadow-neo mb-6">
+ [2m640[0m | [31;1m|[0m           <div className="flex flex-col lg:flex-row gap-4">
+ [2m641[0m | [31;1m|[0m             {/* Search */}
+ [2m642[0m | [31;1m|[0m             <div className="relative flex-1">
+ [2m643[0m | [31;1m|[0m               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+ [2m644[0m | [31;1m|[0m               <Input
+ [2m645[0m | [31;1m|[0m                 type="text"
+ [2m646[0m | [31;1m|[0m                 placeholder="Search by name or IP..."
+ [2m647[0m | [31;1m|[0m                 value={searchQuery}
+ [2m648[0m | [31;1m|[0m                 onChange={(e) => setSearchQuery(e.target.value)}
+ [2m649[0m | [31;1m|[0m                 className="pl-10 border-2 border-black"
+ [2m650[0m | [31;1m|[0m               />
+ [2m651[0m | [31;1m|[0m             </div>
+ [2m652[0m | [31;1m|[0m             
+ [2m653[0m | [31;1m|[0m             {/* Status Filter */}
+ [2m654[0m | [31;1m|[0m             <select
+ [2m655[0m | [31;1m|[0m               value={statusFilter}
+ [2m656[0m | [31;1m|[0m               onChange={(e) => setStatusFilter(e.target.value)}
+ [2m657[0m | [31;1m|[0m               className="h-12 px-4 border-2 border-black font-medium bg-white focus:outline-none focus:shadow-neo-sm"
+ [2m658[0m | [31;1m|[0m             >
+ [2m659[0m | [31;1m|[0m               <option value="">All Status</option>
+ [2m660[0m | [31;1m|[0m               <option value="online">Online</option>
+ [2m661[0m | [31;1m|[0m               <option value="offline">Offline</option>
+ [2m662[0m | [31;1m|[0m               <option value="maintenance">Maintenance</option>
+ [2m663[0m | [31;1m|[0m             </select>
+ [2m664[0m | [31;1m|[0m             
+ [2m665[0m | [31;1m|[0m             {/* Clear filters */}
+ [2m666[0m | [31;1m|[0m             {hasFilters && (
+ [2m667[0m | [31;1m|[0m               <Button variant="ghost" onClick={clearFilters} className="border-2 border-black gap-1">
+ [2m668[0m | [31;1m|[0m                 <X className="w-4 h-4" />
+ [2m669[0m | [31;1m|[0m                 Clear
+ [2m670[0m | [31;1m|[0m               </Button>
+ [2m671[0m | [31;1m|[0m             )}
+ [2m672[0m | [31;1m|[0m           </div>
+ [2m673[0m | [31;1m|[0m         </div>
+ [2m674[0m | [31;1m|[0m         
+ [2m675[0m | [31;1m|[0m         {/* Nodes Grid */}
+ [2m676[0m | [31;1m|[0m         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+ [2m677[0m | [31;1m|[0m           {filteredNodes.length === 0 ? (
+ [2m678[0m | [31;1m|[0m             <div className="col-span-full bg-white border-4 border-black p-12 shadow-neo text-center">
+ [2m679[0m | [31;1m|[0m               <Server className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+ [2m680[0m | [31;1m|[0m               <p className="text-gray-500 font-bold uppercase">No nodes found</p>
+ [2m681[0m | [31;1m|[0m               {hasFilters && (
+ [2m682[0m | [31;1m|[0m                 <Button variant="ghost" onClick={clearFilters} className="mt-4 border-2 border-black">
+ [2m683[0m | [31;1m|[0m                   Clear filters
+ [2m684[0m | [31;1m|[0m                 </Button>
+ [2m685[0m | [31;1m|[0m               )}
+ [2m686[0m | [31;1m|[0m             </div>
+ [2m687[0m | [31;1m|[0m           ) : (
+ [2m688[0m | [31;1m|[0m             filteredNodes.map((node) => (
+ [2m689[0m | [31;1m|[0m               <div key={node.id} className="bg-white border-4 border-black shadow-neo">
+ [2m690[0m | [31;1m|[0m                 {/* Node Header */}
+ [2m691[0m | [31;1m|[0m                 <div className="p-4 border-b-4 border-black bg-gray-50">
+ [2m692[0m | [31;1m|[0m                   <div className="flex items-start justify-between">
+ [2m693[0m | [31;1m|[0m                     <div>
+ [2m694[0m | [31;1m|[0m                       <Link href={`/nodes/${node.id}`} className="text-xl font-black uppercase hover:text-primary transition-colors">
+ [2m695[0m | [31;1m|[0m                         {node.name}
+ [2m696[0m | [31;1m|[0m                       </Link>
+ [2m697[0m | [31;1m|[0m                       <p className="text-sm font-mono font-medium text-gray-500">{node.ip}</p>
+ [2m698[0m | [31;1m|[0m                     </div>
+ [2m699[0m | [31;1m|[0m                     <StatusIndicator status={node.status} />
+ [2m700[0m | [31;1m|[0m                   </div>
+ [2m701[0m | [31;1m|[0m                 </div>
+ [2m702[0m | [31;1m|[0m                 
+ [2m703[0m | [31;1m|[0m                 {/* Node Body */}
+ [2m704[0m | [31;1m|[0m                 <div className="p-4">
+ [2m705[0m | [31;1m|[0m                   {/* VM Count */}
+ [2m706[0m | [31;1m|[0m                   <div className="flex items-center gap-4 mb-4">
+ [2m707[0m | [31;1m|[0m                     <div className="flex items-center gap-2">
+ [2m708[0m | [31;1m|[0m                       <div className="w-8 h-8 bg-primary flex items-center justify-center border-2 border-black">
+ [2m709[0m | [31;1m|[0m                         <Database className="w-4 h-4" />
+ [2m710[0m | [31;1m|[0m                       </div>
+ [2m711[0m | [31;1m|[0m                       <div>
+ [2m712[0m | [31;1m|[0m                         <p className="text-lg font-black">{node.runningVMs}/{node.vmCount}</p>
+ [2m713[0m | [31;1m|[0m                         <p className="text-[10px] font-bold text-gray-500 uppercase">VMs</p>
+ [2m714[0m | [31;1m|[0m                       </div>
+ [2m715[0m | [31;1m|[0m                     </div>
+ [2m716[0m | [31;1m|[0m                     
+ [2m717[0m | [31;1m|[0m                     <div className="flex items-center gap-2">
+ [2m718[0m | [31;1m|[0m                       <Clock className="w-4 h-4 text-gray-400" />
+ [2m719[0m | [31;1m|[0m                       <span className="text-xs font-medium text-gray-500">Last seen: {node.lastSeen}</span>
+ [2m720[0m | [31;1m|[0m                     </div>
+ [2m721[0m | [31;1m|[0m                   </div>
+ [2m722[0m | [31;1m|[0m                   
+ [2m723[0m | [31;1m|[0m                   {/* Resource Usage - Only show if online */}
+ [2m724[0m | [31;1m|[0m                   {node.status === "online" && (
+ [2m725[0m | [31;1m|[0m                     <div className="space-y-2 mb-4">
+ [2m726[0m | [31;1m|[0m                       <ResourceBar value={node.health.cpu} label="CPU" color="bg-primary" />
+ [2m727[0m | [31;1m|[0m                       <ResourceBar value={node.health.memory} label="RAM" color="bg-secondary" />
+ [2m728[0m | [31;1m|[0m                       <ResourceBar value={node.health.disk} label="Disk" color="bg-accent" />
+ [2m729[0m | [31;1m|[0m                       
+ [2m730[0m | [31;1m|[0m                       {/* Network Sparklines */}
+ [2m731[0m | [31;1m|[0m                       <div className="flex items-center justify-between pt-2 border-t border-gray-200">
+ [2m732[0m | [31;1m|[0m                         <div className="flex items-center gap-2">
+ [2m733[0m | [31;1m|[0m                           <Network className="w-4 h-4 text-gray-400" />
+ [2m734[0m | [31;1m|[0m                           <span className="text-xs font-medium text-gray-500">Network</span>
+ [2m735[0m | [31;1m|[0m                         </div>
+ [2m736[0m | [31;1m|[0m                         <div className="flex items-center gap-4">
+ [2m737[0m | [31;1m|[0m                           <div className="flex items-center gap-1">
+ [2m738[0m | [31;1m|[0m                             <Sparkline data={[45, 78, 125, 89, 156, 125]} color="#22c55e" />
+ [2m739[0m | [31;1m|[0m                             <span className="text-[10px] font-bold text-success">{node.health.networkIn} MB/s</span>
+ [2m740[0m | [31;1m|[0m                           </div>
+ [2m741[0m | [31;1m|[0m                           <div className="flex items-center gap-1">
+ [2m742[0m | [31;1m|[0m                             <Sparkline data={[23, 56, 89, 67, 134, 89]} color="#3b82f6" />
+ [2m743[0m | [31;1m|[0m                             <span className="text-[10px] font-bold text-primary">{node.health.networkOut} MB/s</span>
+ [2m744[0m | [31;1m|[0m                           </div>
+ [2m745[0m | [31;1m|[0m                         </div>
+ [2m746[0m | [31;1m|[0m                       </div>
+ [2m747[0m | [31;1m|[0m                     </div>
+ [2m748[0m | [31;1m|[0m                   )}
+ [2m749[0m | [31;1m|[0m                   
+ [2m750[0m | [31;1m|[0m                   {node.status === "maintenance" && (
+ [2m751[0m | [31;1m|[0m                     <div className="bg-warning/20 border-2 border-warning p-3 mb-4">
+ [2m752[0m | [31;1m|[0m                       <p className="text-xs font-bold uppercase text-warning">Node is in maintenance mode</p>
+ [2m753[0m | [31;1m|[0m                     </div>
+ [2m754[0m | [31;1m|[0m                   )}
+ [2m755[0m | [31;1m|[0m                   
+ [2m756[0m | [31;1m|[0m                   {node.status === "offline" && (
+ [2m757[0m | [31;1m|[0m                     <div className="bg-danger/10 border-2 border-danger p-3 mb-4">
+ [2m758[0m | [31;1m|[0m                       <p className="text-xs font-bold uppercase text-danger">Node is offline - cannot manage VMs</p>
+ [2m759[0m | [31;1m|[0m                     </div>
+ [2m760[0m | [31;1m|[0m                   )}
+ [2m761[0m | [31;1m|[0m                   
+ [2m762[0m | [31;1m|[0m                   {/* Token Display */}
+ [2m763[0m | [31;1m|[0m                   <div className="bg-gray-100 border-2 border-black p-2 mb-4">
+ [2m764[0m | [31;1m|[0m                     <div className="flex items-center justify-between">
+ [2m765[0m | [31;1m|[0m                       <span className="text-[10px] font-bold text-gray-500 uppercase">Token</span>
+ [2m766[0m | [31;1m|[0m                       <span className="font-mono text-xs font-medium">{node.token}</span>
+ [2m767[0m | [31;1m|[0m                     </div>
+ [2m768[0m | [31;1m|[0m                   </div>
+ [2m769[0m | [31;1m|[0m                   
+ [2m770[0m | [31;1m|[0m                   {/* Actions */}
+ [2m771[0m | [31;1m|[0m                   <div className="flex items-center gap-2">
+ [2m772[0m | [31;1m|[0m                     <Button
+ [2m773[0m | [31;1m|[0m                       variant="ghost"
+ [2m774[0m | [31;1m|[0m                       size="sm"
+ [2m775[0m | [31;1m|[0m                       onClick={() => setEditNode(node)}
+ [2m776[0m | [31;1m|[0m                       className="h-9 border-2 border-black"
+ [2m777[0m | [31;1m|[0m                       title="Edit"
+ [2m778[0m | [31;1m|[0m                     >
+ [2m779[0m | [31;1m|[0m                       <Edit2 className="w-4 h-4" />
+ [2m780[0m | [31;1m|[0m                       <span className="ml-1">Edit</span>
+ [2m781[0m | [31;1m|[0m                     </Button>
+ [2m782[0m | [31;1m|[0m                     
+ [2m783[0m | [31;1m|[0m                     <Button
+ [2m784[0m | [31;1m|[0m                       variant="ghost"
+ [2m785[0m | [31;1m|[0m                       size="sm"
+ [2m786[0m | [31;1m|[0m                       onClick={() => setRegenerateToken(node)}
+ [2m787[0m | [31;1m|[0m                       disabled={node.status !== "online" || !!actionLoading}
+ [2m788[0m | [31;1m|[0m                       className="h-9 border-2 border-black"
+ [2m789[0m | [31;1m|[0m                       title="Regenerate Token"
+ [2m790[0m | [31;1m|[0m                     >
+ [2m791[0m | [31;1m|[0m                       {actionLoading === `token-${node.id}` ? (
+ [2m792[0m | [31;1m|[0m                         <Loader2 className="w-4 h-4 animate-spin" />
+ [2m793[0m | [31;1m|[0m                       ) : (
+ [2m794[0m | [31;1m|[0m                         <RefreshCw className="w-4 h-4" />
+ [2m795[0m | [31;1m|[0m                       )}
+ [2m796[0m | [31;1m|[0m                       <span className="ml-1">Token</span>
+ [2m797[0m | [31;1m|[0m                     </Button>
+ [2m798[0m | [31;1m|[0m                     
+ [2m799[0m | [31;1m|[0m                     <Button
+ [2m800[0m | [31;1m|[0m                       variant="ghost"
+ [2m801[0m | [31;1m|[0m                       size="sm"
+ [2m802[0m | [31;1m|[0m                       onClick={() => handleDeleteClick(node)}
+ [2m803[0m | [31;1m|[0m                       disabled={!!actionLoading}
+ [2m804[0m | [31;1m|[0m                       className="h-9 border-2 border-black hover:bg-danger hover:text-white"
+ [2m805[0m | [31;1m|[0m                       title="Delete"
+ [2m806[0m | [31;1m|[0m                     >
+ [2m807[0m | [31;1m|[0m                       <Trash2 className="w-4 h-4" />
+ [2m808[0m | [31;1m|[0m                     </Button>
+ [2m809[0m | [31;1m|[0m                   </div>
+ [2m810[0m | [31;1m|[0m                 </div>
+ [2m811[0m | [31;1m|[0m               </div>
+ [2m812[0m | [31;1m|[0m             ))
+ [2m813[0m | [31;1m|[0m           )}
+ [2m814[0m | [31;1m|[0m         </div>
+ [2m815[0m | [31;1m|[0m   
+ [2m816[0m | [31;1m|[0m         {/* Import Section */}
+ [2m817[0m | [31;1m|[0m         <div className="mt-8 bg-white border-4 border-black p-6 shadow-neo">
+ [2m818[0m | [31;1m|[0m           <h2 className="text-lg font-black uppercase tracking-tight text-black mb-4">
+ [2m819[0m | [31;1m|[0m             Import
+ [2m820[0m | [31;1m|[0m           </h2>
+ [2m821[0m | [31;1m|[0m           <div className="flex items-center justify-between">
+ [2m822[0m | [31;1m|[0m             <div>
+ [2m823[0m | [31;1m|[0m               <p className="font-bold text-black">Virtualizor Import</p>
+ [2m824[0m | [31;1m|[0m               <p className="text-sm text-gray-500">Import nodes and VMs from Virtualizor panel</p>
+ [2m825[0m | [31;1m|[0m             </div>
+ [2m826[0m | [31;1m|[0m             <Button variant="outline" className="gap-2">
+ [2m827[0m | [31;1m|[0m               <Database className="w-4 h-4" />
+ [2m828[0m | [31;1m|[0m               Import from Virtualizor
+ [2m829[0m | [31;1m|[0m             </Button>
+ [2m830[0m | [31;1m|[0m           </div>
+ [2m831[0m | [31;1m|[0m         </div>
+ [2m832[0m | [31;1m|[0m         
+ [2m833[0m | [31;1m|[0m         {/* Delete Confirmation Dialog */}
+ [2m834[0m | [31;1m|[0m         <ConfirmDialog
+ [2m835[0m | [31;1m|[0m           open={!!deleteConfirm && !migrateDialog}
+ [2m836[0m | [31;1m|[0m           title="Delete Node"
+ [2m837[0m | [31;1m|[0m           message={`Are you sure you want to delete "${deleteConfirm?.name}"? This action cannot be undone.`}
+ [2m838[0m | [31;1m|[0m           onConfirm={handleDelete}
+ [2m839[0m | [31;1m|[0m           onCancel={() => setDeleteConfirm(null)}
+ [2m840[0m | [31;1m|[0m         />
+ [2m841[0m | [31;1m|[0m         
+ [2m842[0m | [31;1m|[0m         {/* Migration Dialog */}
+ [2m843[0m | [31;1m|[0m         <MigrationDialog
+ [2m844[0m | [31;1m|[0m           open={!!migrateDialog}
+ [2m845[0m | [31;1m|[0m           nodeName={migrateDialog?.name || ""}
+ [2m846[0m | [31;1m|[0m           onMigrate={handleMigrateAndDelete}
+ [2m847[0m | [31;1m|[0m           onCancel={() => setMigrateDialog(null)}
+ [2m848[0m | [31;1m|[0m         />
+ [2m849[0m | [31;1m|[0m         
+ [2m850[0m | [31;1m|[0m         {/* Edit Dialog */}
+ [2m851[0m | [31;1m|[0m         {editNode && (
+ [2m852[0m | [31;1m|[0m           <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
+ [2m853[0m | [31;1m|[0m             <button type="button" className="absolute inset-0 bg-black/50 cursor-default" onClick={() => setEditNode(null)} />
+ [2m854[0m | [31;1m|[0m             <div className="relative bg-white border-4 border-black p-6 shadow-neo-xl max-w-md w-full mx-4">
+ [2m855[0m | [31;1m|[0m               <h3 className="text-xl font-black uppercase mb-4">Edit Node</h3>
+ [2m856[0m | [31;1m|[0m               
+ [2m857[0m | [31;1m|[0m               <div className="space-y-4 mb-6">
+ [2m858[0m | [31;1m|[0m                 <div>
+ [2m859[0m | [31;1m|[0m                   <label htmlFor="edit-node-name" className="block text-xs font-black uppercase text-gray-500 mb-1">Name</label>
+ [2m860[0m | [31;1m|[0m                   <Input
+ [2m861[0m | [31;1m|[0m                     id="edit-node-name"
+ [2m862[0m | [31;1m|[0m                     type="text"
+ [2m863[0m | [31;1m|[0m                     value={editNode.name}
+ [2m864[0m | [31;1m|[0m                     onChange={(e) => setEditNode({ ...editNode, name: e.target.value })}
+ [2m865[0m | [31;1m|[0m                     className="border-2 border-black"
+ [2m866[0m | [31;1m|[0m                   />
+ [2m867[0m | [31;1m|[0m                 </div>
+ [2m868[0m | [31;1m|[0m                 <div>
+ [2m869[0m | [31;1m|[0m                   <label htmlFor="edit-node-ip" className="block text-xs font-black uppercase text-gray-500 mb-1">IP Address</label>
+ [2m870[0m | [31;1m|[0m                   <Input
+ [2m871[0m | [31;1m|[0m                     id="edit-node-ip"
+ [2m872[0m | [31;1m|[0m                     type="text"
+ [2m873[0m | [31;1m|[0m                     value={editNode.ip}
+ [2m874[0m | [31;1m|[0m                     onChange={(e) => setEditNode({ ...editNode, ip: e.target.value })}
+ [2m875[0m | [31;1m|[0m                     className="border-2 border-black"
+ [2m876[0m | [31;1m|[0m                   />
+ [2m877[0m | [31;1m|[0m                 </div>
+ [2m878[0m | [31;1m|[0m               </div>
+ [2m879[0m | [31;1m|[0m               
+ [2m880[0m | [31;1m|[0m               <div className="flex gap-3 justify-end">
+ [2m881[0m | [31;1m|[0m                 <Button variant="ghost" onClick={() => setEditNode(null)} className="border-2 border-black">
+ [2m882[0m | [31;1m|[0m                   Cancel
+ [2m883[0m | [31;1m|[0m                 </Button>
+ [2m884[0m | [31;1m|[0m                 <Button onClick={() => handleEdit(editNode)} disabled={!!actionLoading}>
+ [2m885[0m | [31;1m|[0m                   {actionLoading === `edit-${editNode.id}` && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
+ [2m886[0m | [31;1m|[0m                   Save Changes
+ [2m887[0m | [31;1m|[0m                 </Button>
+ [2m888[0m | [31;1m|[0m               </div>
+ [2m889[0m | [31;1m|[0m             </div>
+ [2m890[0m | [31;1m|[0m           </div>
+ [2m891[0m | [31;1m|[0m         )}
+ [2m892[0m | [31;1m|[0m         
+ [2m893[0m | [31;1m|[0m         {/* Regenerate Token Confirmation */}
+ [2m894[0m | [31;1m|[0m         <ConfirmDialog
+ [2m895[0m | [31;1m|[0m           open={!!regenerateToken}
+ [2m896[0m | [31;1m|[0m           title="Regenerate Token"
+ [2m897[0m | [31;1m|[0m           message={`Are you sure you want to regenerate the token for "${regenerateToken?.name}"? The old token will become invalid.`}
+ [2m898[0m | [31;1m|[0m           confirmLabel="Regenerate"
+ [2m899[0m | [31;1m|[0m           onConfirm={() => regenerateToken && handleRegenerateToken(regenerateToken)}
+ [2m900[0m | [31;1m|[0m           onCancel={() => setRegenerateToken(null)}
+ [2m901[0m | [31;1m|[0m         />
+ [2m902[0m | [31;1m|[0m         
+ [2m903[0m | [31;1m|[0m         {/* Toast */}
+ [2m904[0m | [31;1m|[0m         {toast && (
+ [2m905[0m | [31;1m|[0m           <Toast 
+ [2m906[0m | [31;1m|[0m             message={toast.message} 
+ [2m907[0m | [31;1m|[0m             type={toast.type} 
+ [2m908[0m | [31;1m|[0m             onClose={() => setToast(null)} 
+ [2m909[0m | [31;1m|[0m           />
+ [2m910[0m | [31;1m|[0m         )}
+ [2m911[0m | [31;1m|[0m       </div>
+ [2m912[0m | [31;1m`[0m[31;1m-[0m[31;1m>[0m   )
+ [2m913[0m |     }
+     `----
+
+  [31mx[0m Expression expected
+     ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/nodes/page.tsx[0m:910:1]
+ [2m910[0m |       )}
+ [2m911[0m |     </div>
+ [2m912[0m |   )
+ [2m913[0m | }
+     : [31;1m^[0m
+     `----
+
+Caused by:
+    Syntax Error
+
+Import trace for requested module:
+./src/app/(dashboard)/nodes/page.tsx
+ ⨯ ./src/app/(dashboard)/vms/page.tsx:22:0
+Module not found: Can't resolve '@/components/ui/skeleton'
+[0m [90m 20 |[39m [36mimport[39m { [33mButton[39m } [36mfrom[39m [32m"@/components/ui/button"[39m[0m
+[0m [90m 21 |[39m [36mimport[39m { [33mInput[39m } [36mfrom[39m [32m"@/components/ui/input"[39m[0m
+[0m[31m[1m>[22m[39m[90m 22 |[39m [36mimport[39m { [33mSkeleton[39m } [36mfrom[39m [32m"@/components/ui/skeleton"[39m[0m
+[0m [90m 23 |[39m [36mimport[39m { toast } [36mfrom[39m [32m"sonner"[39m[0m
+[0m [90m 24 |[39m [36mimport[39m { useVMs[33m,[39m useVMAction[33m,[39m useDeleteVM } [36mfrom[39m [32m"@/lib/hooks/use-vms"[39m[0m
+[0m [90m 25 |[39m [36mimport[39m { useNodes } [36mfrom[39m [32m"@/lib/hooks/use-nodes"[39m[0m
+
+https://nextjs.org/docs/messages/module-not-found
+ ⨯ ./src/app/(dashboard)/vms/page.tsx:22:0
+Module not found: Can't resolve '@/components/ui/skeleton'
+[0m [90m 20 |[39m [36mimport[39m { [33mButton[39m } [36mfrom[39m [32m"@/components/ui/button"[39m[0m
+[0m [90m 21 |[39m [36mimport[39m { [33mInput[39m } [36mfrom[39m [32m"@/components/ui/input"[39m[0m
+[0m[31m[1m>[22m[39m[90m 22 |[39m [36mimport[39m { [33mSkeleton[39m } [36mfrom[39m [32m"@/components/ui/skeleton"[39m[0m
+[0m [90m 23 |[39m [36mimport[39m { toast } [36mfrom[39m [32m"sonner"[39m[0m
+[0m [90m 24 |[39m [36mimport[39m { useVMs[33m,[39m useVMAction[33m,[39m useDeleteVM } [36mfrom[39m [32m"@/lib/hooks/use-vms"[39m[0m
+[0m [90m 25 |[39m [36mimport[39m { useNodes } [36mfrom[39m [32m"@/lib/hooks/use-nodes"[39m[0m
+
+https://nextjs.org/docs/messages/module-not-found
+ ⨯ ./src/app/(dashboard)/vms/page.tsx:22:0
+Module not found: Can't resolve '@/components/ui/skeleton'
+[0m [90m 20 |[39m [36mimport[39m { [33mButton[39m } [36mfrom[39m [32m"@/components/ui/button"[39m[0m
+[0m [90m 21 |[39m [36mimport[39m { [33mInput[39m } [36mfrom[39m [32m"@/components/ui/input"[39m[0m
+[0m[31m[1m>[22m[39m[90m 22 |[39m [36mimport[39m { [33mSkeleton[39m } [36mfrom[39m [32m"@/components/ui/skeleton"[39m[0m
+[0m [90m 23 |[39m [36mimport[39m { toast } [36mfrom[39m [32m"sonner"[39m[0m
+[0m [90m 24 |[39m [36mimport[39m { useVMs[33m,[39m useVMAction[33m,[39m useDeleteVM } [36mfrom[39m [32m"@/lib/hooks/use-vms"[39m[0m
+[0m [90m 25 |[39m [36mimport[39m { useNodes } [36mfrom[39m [32m"@/lib/hooks/use-nodes"[39m[0m
+
+https://nextjs.org/docs/messages/module-not-found
+ ⨯ ./src/app/(dashboard)/vms/page.tsx:22:0
+Module not found: Can't resolve '@/components/ui/skeleton'
+[0m [90m 20 |[39m [36mimport[39m { [33mButton[39m } [36mfrom[39m [32m"@/components/ui/button"[39m[0m
+[0m [90m 21 |[39m [36mimport[39m { [33mInput[39m } [36mfrom[39m [32m"@/components/ui/input"[39m[0m
+[0m[31m[1m>[22m[39m[90m 22 |[39m [36mimport[39m { [33mSkeleton[39m } [36mfrom[39m [32m"@/components/ui/skeleton"[39m[0m
+[0m [90m 23 |[39m [36mimport[39m { toast } [36mfrom[39m [32m"sonner"[39m[0m
+[0m [90m 24 |[39m [36mimport[39m { useVMs[33m,[39m useVMAction[33m,[39m useDeleteVM } [36mfrom[39m [32m"@/lib/hooks/use-vms"[39m[0m
+[0m [90m 25 |[39m [36mimport[39m { useNodes } [36mfrom[39m [32m"@/lib/hooks/use-nodes"[39m[0m
+
+https://nextjs.org/docs/messages/module-not-found
+ ⨯ ./src/app/(dashboard)/vms/page.tsx:22:0
+Module not found: Can't resolve '@/components/ui/skeleton'
+[0m [90m 20 |[39m [36mimport[39m { [33mButton[39m } [36mfrom[39m [32m"@/components/ui/button"[39m[0m
+[0m [90m 21 |[39m [36mimport[39m { [33mInput[39m } [36mfrom[39m [32m"@/components/ui/input"[39m[0m
+[0m[31m[1m>[22m[39m[90m 22 |[39m [36mimport[39m { [33mSkeleton[39m } [36mfrom[39m [32m"@/components/ui/skeleton"[39m[0m
+[0m [90m 23 |[39m [36mimport[39m { toast } [36mfrom[39m [32m"sonner"[39m[0m
+[0m [90m 24 |[39m [36mimport[39m { useVMs[33m,[39m useVMAction[33m,[39m useDeleteVM } [36mfrom[39m [32m"@/lib/hooks/use-vms"[39m[0m
+[0m [90m 25 |[39m [36mimport[39m { useNodes } [36mfrom[39m [32m"@/lib/hooks/use-nodes"[39m[0m
+
+https://nextjs.org/docs/messages/module-not-found
+ ⨯ ./src/app/(dashboard)/vms/page.tsx:22:0
+Module not found: Can't resolve '@/components/ui/skeleton'
+[0m [90m 20 |[39m [36mimport[39m { [33mButton[39m } [36mfrom[39m [32m"@/components/ui/button"[39m[0m
+[0m [90m 21 |[39m [36mimport[39m { [33mInput[39m } [36mfrom[39m [32m"@/components/ui/input"[39m[0m
+[0m[31m[1m>[22m[39m[90m 22 |[39m [36mimport[39m { [33mSkeleton[39m } [36mfrom[39m [32m"@/components/ui/skeleton"[39m[0m
+[0m [90m 23 |[39m [36mimport[39m { toast } [36mfrom[39m [32m"sonner"[39m[0m
+[0m [90m 24 |[39m [36mimport[39m { useVMs[33m,[39m useVMAction[33m,[39m useDeleteVM } [36mfrom[39m [32m"@/lib/hooks/use-vms"[39m[0m
+[0m [90m 25 |[39m [36mimport[39m { useNodes } [36mfrom[39m [32m"@/lib/hooks/use-nodes"[39m[0m
+
+https://nextjs.org/docs/messages/module-not-found
+ ⨯ ./src/app/(dashboard)/vms/[id]/page.tsx:16:0
+Module not found: Can't resolve '@/components/ui/skeleton'
+[0m [90m 14 |[39m [36mimport[39m { [33mDialog[39m[33m,[39m [33mDialogContent[39m[33m,[39m [33mDialogDescription[39m[33m,[39m [33mDialogFooter[39m[33m,[39m [33mDialogHeader[39m[33m,[39m [33mDialogTitle[39m[33m,[39m [33mDialogTrigger[39m } [36mfrom[39m [32m"@/components/ui/dialog"[39m[0m
+[0m [90m 15 |[39m [36mimport[39m { [33mTabs[39m[33m,[39m [33mTabsContent[39m[33m,[39m [33mTabsList[39m[33m,[39m [33mTabsTrigger[39m } [36mfrom[39m [32m"@/components/ui/tabs"[39m[0m
+[0m[31m[1m>[22m[39m[90m 16 |[39m [36mimport[39m { [33mSkeleton[39m } [36mfrom[39m [32m"@/components/ui/skeleton"[39m[0m
+[0m [90m 17 |[39m [36mimport[39m { toast } [36mfrom[39m [32m"sonner"[39m[0m
+[0m [90m 18 |[39m [36mimport[39m { useVM[33m,[39m useVMMetrics[33m,[39m useVMAction[33m,[39m useDeleteVM } [36mfrom[39m [32m"@/lib/hooks/use-vms"[39m[0m
+[0m [90m 19 |[39m [36mimport[39m { useSnapshots[33m,[39m useCreateSnapshot[33m,[39m useRestoreSnapshot[33m,[39m useDeleteSnapshot } [36mfrom[39m [32m"@/lib/hooks/use-snapshots"[39m[0m
+
+https://nextjs.org/docs/messages/module-not-found
+ ⨯ ./src/app/(dashboard)/vms/[id]/page.tsx:16:0
+Module not found: Can't resolve '@/components/ui/skeleton'
+[0m [90m 14 |[39m [36mimport[39m { [33mDialog[39m[33m,[39m [33mDialogContent[39m[33m,[39m [33mDialogDescription[39m[33m,[39m [33mDialogFooter[39m[33m,[39m [33mDialogHeader[39m[33m,[39m [33mDialogTitle[39m[33m,[39m [33mDialogTrigger[39m } [36mfrom[39m [32m"@/components/ui/dialog"[39m[0m
+[0m [90m 15 |[39m [36mimport[39m { [33mTabs[39m[33m,[39m [33mTabsContent[39m[33m,[39m [33mTabsList[39m[33m,[39m [33mTabsTrigger[39m } [36mfrom[39m [32m"@/components/ui/tabs"[39m[0m
+[0m[31m[1m>[22m[39m[90m 16 |[39m [36mimport[39m { [33mSkeleton[39m } [36mfrom[39m [32m"@/components/ui/skeleton"[39m[0m
+[0m [90m 17 |[39m [36mimport[39m { toast } [36mfrom[39m [32m"sonner"[39m[0m
+[0m [90m 18 |[39m [36mimport[39m { useVM[33m,[39m useVMMetrics[33m,[39m useVMAction[33m,[39m useDeleteVM } [36mfrom[39m [32m"@/lib/hooks/use-vms"[39m[0m
+[0m [90m 19 |[39m [36mimport[39m { useSnapshots[33m,[39m useCreateSnapshot[33m,[39m useRestoreSnapshot[33m,[39m useDeleteSnapshot } [36mfrom[39m [32m"@/lib/hooks/use-snapshots"[39m[0m
+
+https://nextjs.org/docs/messages/module-not-found
+ ⨯ ./src/app/(dashboard)/vms/[id]/page.tsx:16:0
+Module not found: Can't resolve '@/components/ui/skeleton'
+[0m [90m 14 |[39m [36mimport[39m { [33mDialog[39m[33m,[39m [33mDialogContent[39m[33m,[39m [33mDialogDescription[39m[33m,[39m [33mDialogFooter[39m[33m,[39m [33mDialogHeader[39m[33m,[39m [33mDialogTitle[39m[33m,[39m [33mDialogTrigger[39m } [36mfrom[39m [32m"@/components/ui/dialog"[39m[0m
+[0m [90m 15 |[39m [36mimport[39m { [33mTabs[39m[33m,[39m [33mTabsContent[39m[33m,[39m [33mTabsList[39m[33m,[39m [33mTabsTrigger[39m } [36mfrom[39m [32m"@/components/ui/tabs"[39m[0m
+[0m[31m[1m>[22m[39m[90m 16 |[39m [36mimport[39m { [33mSkeleton[39m } [36mfrom[39m [32m"@/components/ui/skeleton"[39m[0m
+[0m [90m 17 |[39m [36mimport[39m { toast } [36mfrom[39m [32m"sonner"[39m[0m
+[0m [90m 18 |[39m [36mimport[39m { useVM[33m,[39m useVMMetrics[33m,[39m useVMAction[33m,[39m useDeleteVM } [36mfrom[39m [32m"@/lib/hooks/use-vms"[39m[0m
+[0m [90m 19 |[39m [36mimport[39m { useSnapshots[33m,[39m useCreateSnapshot[33m,[39m useRestoreSnapshot[33m,[39m useDeleteSnapshot } [36mfrom[39m [32m"@/lib/hooks/use-snapshots"[39m[0m
+
+https://nextjs.org/docs/messages/module-not-found
+ ⨯ ./src/app/(dashboard)/vms/[id]/page.tsx:16:0
+Module not found: Can't resolve '@/components/ui/skeleton'
+[0m [90m 14 |[39m [36mimport[39m { [33mDialog[39m[33m,[39m [33mDialogContent[39m[33m,[39m [33mDialogDescription[39m[33m,[39m [33mDialogFooter[39m[33m,[39m [33mDialogHeader[39m[33m,[39m [33mDialogTitle[39m[33m,[39m [33mDialogTrigger[39m } [36mfrom[39m [32m"@/components/ui/dialog"[39m[0m
+[0m [90m 15 |[39m [36mimport[39m { [33mTabs[39m[33m,[39m [33mTabsContent[39m[33m,[39m [33mTabsList[39m[33m,[39m [33mTabsTrigger[39m } [36mfrom[39m [32m"@/components/ui/tabs"[39m[0m
+[0m[31m[1m>[22m[39m[90m 16 |[39m [36mimport[39m { [33mSkeleton[39m } [36mfrom[39m [32m"@/components/ui/skeleton"[39m[0m
+[0m [90m 17 |[39m [36mimport[39m { toast } [36mfrom[39m [32m"sonner"[39m[0m
+[0m [90m 18 |[39m [36mimport[39m { useVM[33m,[39m useVMMetrics[33m,[39m useVMAction[33m,[39m useDeleteVM } [36mfrom[39m [32m"@/lib/hooks/use-vms"[39m[0m
+[0m [90m 19 |[39m [36mimport[39m { useSnapshots[33m,[39m useCreateSnapshot[33m,[39m useRestoreSnapshot[33m,[39m useDeleteSnapshot } [36mfrom[39m [32m"@/lib/hooks/use-snapshots"[39m[0m
+
+https://nextjs.org/docs/messages/module-not-found
+ ⨯ ./src/app/(dashboard)/vms/[id]/page.tsx:16:0
+Module not found: Can't resolve '@/components/ui/skeleton'
+[0m [90m 14 |[39m [36mimport[39m { [33mDialog[39m[33m,[39m [33mDialogContent[39m[33m,[39m [33mDialogDescription[39m[33m,[39m [33mDialogFooter[39m[33m,[39m [33mDialogHeader[39m[33m,[39m [33mDialogTitle[39m[33m,[39m [33mDialogTrigger[39m } [36mfrom[39m [32m"@/components/ui/dialog"[39m[0m
+[0m [90m 15 |[39m [36mimport[39m { [33mTabs[39m[33m,[39m [33mTabsContent[39m[33m,[39m [33mTabsList[39m[33m,[39m [33mTabsTrigger[39m } [36mfrom[39m [32m"@/components/ui/tabs"[39m[0m
+[0m[31m[1m>[22m[39m[90m 16 |[39m [36mimport[39m { [33mSkeleton[39m } [36mfrom[39m [32m"@/components/ui/skeleton"[39m[0m
+[0m [90m 17 |[39m [36mimport[39m { toast } [36mfrom[39m [32m"sonner"[39m[0m
+[0m [90m 18 |[39m [36mimport[39m { useVM[33m,[39m useVMMetrics[33m,[39m useVMAction[33m,[39m useDeleteVM } [36mfrom[39m [32m"@/lib/hooks/use-vms"[39m[0m
+[0m [90m 19 |[39m [36mimport[39m { useSnapshots[33m,[39m useCreateSnapshot[33m,[39m useRestoreSnapshot[33m,[39m useDeleteSnapshot } [36mfrom[39m [32m"@/lib/hooks/use-snapshots"[39m[0m
+
+https://nextjs.org/docs/messages/module-not-found
+<w> [webpack.cache.PackFileCacheStrategy] Caching failed for pack: Error: ENOENT: no such file or directory, rename '/root/Works/MaburVM/web/.next/cache/webpack/client-development/0.pack.gz_' -> '/root/Works/MaburVM/web/.next/cache/webpack/client-development/0.pack.gz'
+ ⨯ ./src/app/(dashboard)/vms/[id]/page.tsx:16:0
+Module not found: Can't resolve '@/components/ui/skeleton'
+[0m [90m 14 |[39m [36mimport[39m { [33mDialog[39m[33m,[39m [33mDialogContent[39m[33m,[39m [33mDialogDescription[39m[33m,[39m [33mDialogFooter[39m[33m,[39m [33mDialogHeader[39m[33m,[39m [33mDialogTitle[39m[33m,[39m [33mDialogTrigger[39m } [36mfrom[39m [32m"@/components/ui/dialog"[39m[0m
+[0m [90m 15 |[39m [36mimport[39m { [33mTabs[39m[33m,[39m [33mTabsContent[39m[33m,[39m [33mTabsList[39m[33m,[39m [33mTabsTrigger[39m } [36mfrom[39m [32m"@/components/ui/tabs"[39m[0m
+[0m[31m[1m>[22m[39m[90m 16 |[39m [36mimport[39m { [33mSkeleton[39m } [36mfrom[39m [32m"@/components/ui/skeleton"[39m[0m
+[0m [90m 17 |[39m [36mimport[39m { toast } [36mfrom[39m [32m"sonner"[39m[0m
+[0m [90m 18 |[39m [36mimport[39m { useVM[33m,[39m useVMMetrics[33m,[39m useVMAction[33m,[39m useDeleteVM } [36mfrom[39m [32m"@/lib/hooks/use-vms"[39m[0m
+[0m [90m 19 |[39m [36mimport[39m { useSnapshots[33m,[39m useCreateSnapshot[33m,[39m useRestoreSnapshot[33m,[39m useDeleteSnapshot } [36mfrom[39m [32m"@/lib/hooks/use-snapshots"[39m[0m
+
+https://nextjs.org/docs/messages/module-not-found
+ ⨯ ./src/app/(dashboard)/vms/[id]/page.tsx:16:0
+Module not found: Can't resolve '@/components/ui/skeleton'
+[0m [90m 14 |[39m [36mimport[39m { [33mDialog[39m[33m,[39m [33mDialogContent[39m[33m,[39m [33mDialogDescription[39m[33m,[39m [33mDialogFooter[39m[33m,[39m [33mDialogHeader[39m[33m,[39m [33mDialogTitle[39m[33m,[39m [33mDialogTrigger[39m } [36mfrom[39m [32m"@/components/ui/dialog"[39m[0m
+[0m [90m 15 |[39m [36mimport[39m { [33mTabs[39m[33m,[39m [33mTabsContent[39m[33m,[39m [33mTabsList[39m[33m,[39m [33mTabsTrigger[39m } [36mfrom[39m [32m"@/components/ui/tabs"[39m[0m
+[0m[31m[1m>[22m[39m[90m 16 |[39m [36mimport[39m { [33mSkeleton[39m } [36mfrom[39m [32m"@/components/ui/skeleton"[39m[0m
+[0m [90m 17 |[39m [36mimport[39m { toast } [36mfrom[39m [32m"sonner"[39m[0m
+[0m [90m 18 |[39m [36mimport[39m { useVM[33m,[39m useVMMetrics[33m,[39m useVMAction[33m,[39m useDeleteVM } [36mfrom[39m [32m"@/lib/hooks/use-vms"[39m[0m
+[0m [90m 19 |[39m [36mimport[39m { useSnapshots[33m,[39m useCreateSnapshot[33m,[39m useRestoreSnapshot[33m,[39m useDeleteSnapshot } [36mfrom[39m [32m"@/lib/hooks/use-snapshots"[39m[0m
+
+https://nextjs.org/docs/messages/module-not-found
+ ✓ Compiled in 499ms (982 modules)
+ ✓ Compiled in 432ms (982 modules)
+ ✓ Compiled in 544ms (982 modules)
+ ✓ Compiled in 430ms (982 modules)
+ ✓ Compiled in 582ms (982 modules)
+ ✓ Compiled in 739ms (982 modules)
+ ✓ Compiled in 392ms (982 modules)
+ ✓ Compiled in 413ms (982 modules)
+ ✓ Compiled in 534ms (982 modules)
+ ✓ Compiled in 455ms (982 modules)
+ ✓ Compiled in 468ms (982 modules)
+<w> [webpack.cache.PackFileCacheStrategy] Caching failed for pack: Error: ENOENT: no such file or directory, rename '/root/Works/MaburVM/web/.next/cache/webpack/client-development/0.pack.gz_' -> '/root/Works/MaburVM/web/.next/cache/webpack/client-development/0.pack.gz'
+ ✓ Compiled in 519ms (982 modules)
+ ✓ Compiled in 473ms (982 modules)
+ ✓ Compiled in 574ms (982 modules)
+ ✓ Compiled in 411ms (982 modules)
+<w> [webpack.cache.PackFileCacheStrategy] Restoring pack from /root/Works/MaburVM/web/.next/cache/webpack/client-development.pack.gz failed: TypeError: Cannot read properties of undefined (reading 'hasStartTime')
+ ✓ Compiled in 453ms (982 modules)
+ ✓ Compiled in 594ms (982 modules)
+ ⨯ ./src/app/(dashboard)/nodes/page.tsx
+Error: 
+  [31mx[0m the name `handleEdit` is defined multiple times
+     ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/nodes/page.tsx[0m:237:1]
+ [2m237[0m |   const deleteNode = useDeleteNode()
+ [2m238[0m |   const [editNode, setEditNode] = useState<Node | null>(null)
+ [2m239[0m |   
+ [2m240[0m |   const handleEdit = async () => {
+     : [31;1m        ^^^^^|^^^^[0m
+     :              [31;1m`-- [31;1mprevious definition of `handleEdit` here[0m[0m
+ [2m241[0m |     if (!editNode) return
+ [2m242[0m |     const updateNode = useUpdateNode(editNode.id)
+ [2m243[0m |     
+ [2m244[0m |     try {
+ [2m245[0m |       await updateNode.mutateAsync({ name: editNode.name, ip_address: editNode.ip_address as string })
+ [2m246[0m |       toast.success(`Node ${editNode.name} updated`)
+ [2m247[0m |     } catch (err) {
+ [2m248[0m |       toast.error("Failed to update node")
+ [2m249[0m |     }
+ [2m250[0m |     setEditNode(null)
+ [2m251[0m |   }
+ [2m252[0m |   
+ [2m253[0m |   const filteredNodes = useCallback(() => {
+ [2m254[0m |     let result = [...nodes]
+ [2m255[0m |     
+ [2m256[0m |     if (searchQuery) {
+ [2m257[0m |       const query = searchQuery.toLowerCase()
+ [2m258[0m |       result = result.filter(node => 
+ [2m259[0m |         node.name.toLowerCase().includes(query) || 
+ [2m260[0m |         node.ip_address.toLowerCase().includes(query)
+ [2m261[0m |       )
+ [2m262[0m |     }
+ [2m263[0m |     
+ [2m264[0m |     if (statusFilter) {
+ [2m265[0m |       result = result.filter(node => node.status === statusFilter)
+ [2m266[0m |     }
+ [2m267[0m |     
+ [2m268[0m |     return result
+ [2m269[0m |   }, [nodes, searchQuery, statusFilter])()
+ [2m270[0m | 
+ [2m271[0m |   const handleDelete = async () => {
+ [2m272[0m |     if (!deleteConfirm) return
+ [2m273[0m |     
+ [2m274[0m |     try {
+ [2m275[0m |       await deleteNode.mutateAsync(deleteConfirm.id)
+ [2m276[0m |       toast.success(`Node ${deleteConfirm.name} deleted`)
+ [2m277[0m |     } catch (err) {
+ [2m278[0m |       toast.error("Failed to delete node")
+ [2m279[0m |     }
+ [2m280[0m |     setDeleteConfirm(null)
+ [2m281[0m |   }
+ [2m282[0m | 
+ [2m283[0m |   const handleMigrateAndDelete = async (targetNodeId: string) => {
+ [2m284[0m |     if (!migrateDialog || !targetNodeId) return
+ [2m285[0m |     
+ [2m286[0m |     toast.success(`VMs migrated from ${migrateDialog.name} to target node`)
+ [2m287[0m |     setMigrateDialog(null)
+ [2m288[0m |   }
+ [2m289[0m | 
+ [2m290[0m |   const handleDeleteClick = (node: Node) => {
+ [2m291[0m |     setDeleteConfirm(node)
+ [2m292[0m |   }
+ [2m293[0m | 
+ [2m294[0m |   const handleEdit = async () => {
+     : [33;1m        ^^^^^|^^^^[0m
+     :              [33;1m`-- [33;1m`handleEdit` redefined here[0m[0m
+ [2m295[0m |     if (!editNode) return
+ [2m296[0m |     
+ [2m297[0m |     try {
+     `----
+
+Import trace for requested module:
+./src/app/(dashboard)/nodes/page.tsx
+ ⨯ ./src/app/(dashboard)/nodes/page.tsx
+Error: 
+  [31mx[0m the name `handleEdit` is defined multiple times
+     ,-[[36;1;4m/root/Works/MaburVM/web/src/app/(dashboard)/nodes/page.tsx[0m:243:1]
+ [2m243[0m |   const [deleteConfirm, setDeleteConfirm] = useState<Node | null>(null)
+ [2m244[0m |   const [migrateDialog, setMigrateDialog] = useState<Node | null>(null)
+ [2m245[0m |   
+ [2m246[0m |   const handleEdit = async () => {
+     : [31;1m        ^^^^^|^^^^[0m
+     :              [31;1m`-- [31;1mprevious definition of `handleEdit` here[0m[0m
+ [2m247[0m |     if (!editNode) return
+ [2m248[0m |     
+ [2m249[0m |     try {
+ [2m250[0m |       await editNodeMutation?.mutateAsync({ name: editNode.name, ip_address: editNode.ip_address as string })
+ [2m251[0m |       toast.success(`Node ${editNode.name} updated`)
+ [2m252[0m |     } catch (err) {
+ [2m253[0m |       toast.error("Failed to update node")
+ [2m254[0m |     }
+ [2m255[0m |     setEditNode(null)
+ [2m256[0m |     setEditNodeMutation(null)
+ [2m257[0m |   }
+ [2m258[0m | 
+ [2m259[0m |   const openEditDialog = (node: Node) => {
+ [2m260[0m |     setEditNode(node)
+ [2m261[0m |     setEditNodeMutation(useUpdateNode(node.id))
+ [2m262[0m |   }
+ [2m263[0m |   
+ [2m264[0m |   const filteredNodes = useCallback(() => {
+ [2m265[0m |     let result = [...nodes]
+ [2m266[0m |     
+ [2m267[0m |     if (searchQuery) {
+ [2m268[0m |       const query = searchQuery.toLowerCase()
+ [2m269[0m |       result = result.filter(node => 
+ [2m270[0m |         node.name.toLowerCase().includes(query) || 
+ [2m271[0m |         node.ip_address.toLowerCase().includes(query)
+ [2m272[0m |       )
+ [2m273[0m |     }
+ [2m274[0m |     
+ [2m275[0m |     if (statusFilter) {
+ [2m276[0m |       result = result.filter(node => node.status === statusFilter)
+ [2m277[0m |     }
+ [2m278[0m |     
+ [2m279[0m |     return result
+ [2m280[0m |   }, [nodes, searchQuery, statusFilter])()
+ [2m281[0m | 
+ [2m282[0m |   const handleDelete = async () => {
+ [2m283[0m |     if (!deleteConfirm) return
+ [2m284[0m |     
+ [2m285[0m |     try {
+ [2m286[0m |       await deleteNode.mutateAsync(deleteConfirm.id)
+ [2m287[0m |       toast.success(`Node ${deleteConfirm.name} deleted`)
+ [2m288[0m |     } catch (err) {
+ [2m289[0m |       toast.error("Failed to delete node")
+ [2m290[0m |     }
+ [2m291[0m |     setDeleteConfirm(null)
+ [2m292[0m |   }
+ [2m293[0m | 
+ [2m294[0m |   const handleMigrateAndDelete = async (targetNodeId: string) => {
+ [2m295[0m |     if (!migrateDialog || !targetNodeId) return
+ [2m296[0m |     
+ [2m297[0m |     toast.success(`VMs migrated from ${migrateDialog.name} to target node`)
+ [2m298[0m |     setMigrateDialog(null)
+ [2m299[0m |   }
+ [2m300[0m | 
+ [2m301[0m |   const handleDeleteClick = (node: Node) => {
+ [2m302[0m |     setDeleteConfirm(node)
+ [2m303[0m |   }
+ [2m304[0m | 
+ [2m305[0m |   const handleEdit = async () => {
+     : [33;1m        ^^^^^|^^^^[0m
+     :              [33;1m`-- [33;1m`handleEdit` redefined here[0m[0m
+ [2m306[0m |     if (!editNode) return
+ [2m307[0m |     
+ [2m308[0m |     try {
+     `----
+
+Import trace for requested module:
+./src/app/(dashboard)/nodes/page.tsx
+ ✓ Compiled in 469ms (982 modules)
+ ✓ Compiled in 336ms (982 modules)
+<w> [webpack.cache.PackFileCacheStrategy] Caching failed for pack: Error: ENOENT: no such file or directory, rename '/root/Works/MaburVM/web/.next/cache/webpack/client-development/0.pack.gz_' -> '/root/Works/MaburVM/web/.next/cache/webpack/client-development/0.pack.gz'
+ ✓ Compiled in 519ms (981 modules)
+<w> [webpack.cache.PackFileCacheStrategy] Caching failed for pack: Error: ENOENT: no such file or directory, rename '/root/Works/MaburVM/web/.next/cache/webpack/client-development/0.pack.gz_' -> '/root/Works/MaburVM/web/.next/cache/webpack/client-development/0.pack.gz'
+ ✓ Compiled in 491ms (981 modules)
+ ✓ Compiled in 399ms (981 modules)
+ ✓ Compiled in 488ms (981 modules)
+ ✓ Compiled in 385ms (981 modules)
+ ✓ Compiled in 611ms (981 modules)
+ ✓ Compiled in 4.3s (981 modules)
+ ✓ Compiled in 462ms (981 modules)
+ ✓ Compiled in 1409ms (981 modules)
+ ✓ Compiled in 410ms (981 modules)
+ ✓ Compiled in 234ms (967 modules)
+ ⚠ Found a change in next.config.js. Restarting the server to apply the changes...
+   ▲ Next.js 14.1.0
+   - Local:        http://localhost:3000
+   - Environments: .env.local
+
+ ✓ Ready in 2.7s
+ ⚠ Found a change in next.config.js. Restarting the server to apply the changes...
+   ▲ Next.js 14.1.0
+   - Local:        http://localhost:3000
+   - Environments: .env.local
+
+ ✓ Ready in 2.1s
+ ⚠ Found a change in next.config.js. Restarting the server to apply the changes...
+   ▲ Next.js 14.1.0
+   - Local:        http://localhost:3000
+   - Environments: .env.local
+
+ ✓ Ready in 1964ms

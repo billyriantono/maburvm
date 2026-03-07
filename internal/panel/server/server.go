@@ -35,7 +35,24 @@ func NewServer(db *gorm.DB, cfg *config.Config) *Server {
 	// Middleware
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
-	e.Use(middleware.CORS())
+	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
+		AllowOrigins: []string{
+			"http://localhost:3000",
+			"http://localhost:3001",
+			"http://100.118.100.27:3000",
+			"http://100.118.100.27:3001",
+		},
+		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions},
+		AllowHeaders: []string{
+			echo.HeaderOrigin,
+			echo.HeaderContentType,
+			echo.HeaderAccept,
+			echo.HeaderAuthorization,
+			echo.HeaderXRequestedWith,
+		},
+		AllowCredentials: true,
+		MaxAge:           86400,
+	}))
 	e.Use(middleware.Secure())
 	e.Use(middleware.BodyLimit("10M"))
 	e.Use(middleware.RequestID())
@@ -60,6 +77,9 @@ func (s *Server) SetupRoutes() {
 	// API v1 routes
 	v1 := s.echo.Group("/api")
 
+	// Auth routes (no auth required)
+	s.setupAuthRoutes(v1)
+
 	// Node routes
 	s.setupNodeRoutes(v1)
 
@@ -70,6 +90,28 @@ func (s *Server) SetupRoutes() {
 	s.setupBillingRoutes()
 
 	// TODO: Add other route groups (users, networks, etc.)
+}
+
+// setupAuthRoutes configures authentication-related routes
+func (s *Server) setupAuthRoutes(g *echo.Group) {
+	userService, err := service.NewUserService(
+		s.db,
+		s.cfg.JWT.AESKey,
+		s.cfg.JWT.SecretKey,
+		"maburvm-panel",
+	)
+	if err != nil {
+		slog.Default().Error("failed to create user service", "error", err)
+		return
+	}
+
+	authHandler := handler.NewAuthHandler(userService)
+
+	auth := g.Group("/auth")
+	auth.POST("/login", authHandler.Login)
+	auth.POST("/register", authHandler.Register)
+	auth.POST("/logout", authHandler.Logout)
+	auth.GET("/me", authHandler.Me, panelMiddleware.RequireAuth(s.db))
 }
 
 // setupNodeRoutes configures node-related routes

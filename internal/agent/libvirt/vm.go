@@ -35,7 +35,7 @@ type VMInfo struct {
 	UUID      string
 	Name      string
 	Status    VMStatus
-	State     DomainState
+	State     libvirt.DomainState
 	CPU       int
 	Memory    uint64
 	MaxMemory uint64
@@ -454,7 +454,7 @@ func GetVMStatus(uuidStr string) (VMStatus, error) {
 			return fmt.Errorf("failed to get domain state: %w", err)
 		}
 
-		status = mapDomainStateToVMStatus(DomainState(state))
+		status = mapDomainStateToVMStatus(libvirt.DomainState(state))
 		return nil
 	})
 
@@ -466,17 +466,17 @@ func GetVMStatus(uuidStr string) (VMStatus, error) {
 }
 
 // mapDomainStateToVMStatus maps libvirt domain state to VMStatus
-func mapDomainStateToVMStatus(state DomainState) VMStatus {
+func mapDomainStateToVMStatus(state libvirt.DomainState) VMStatus {
 	switch state {
-	case DomainStateRunning:
+	case libvirt.DOMAIN_RUNNING:
 		return VMStatusRunning
-	case DomainStateShutoff:
+	case libvirt.DOMAIN_SHUTOFF:
 		return VMStatusStopped
-	case DomainStatePaused:
+	case libvirt.DOMAIN_PAUSED:
 		return VMStatusPaused
-	case DomainStatePMSuspended:
+	case libvirt.DOMAIN_PMSUSPENDED:
 		return VMStatusSuspended
-	case DomainStateCrashed:
+	case libvirt.DOMAIN_CRASHED:
 		return VMStatusCrashed
 	default:
 		return VMStatusUnknown
@@ -510,7 +510,7 @@ func GetVMInfo(uuidStr string) (*VMInfo, error) {
 		if err != nil {
 			return fmt.Errorf("failed to get domain state: %w", err)
 		}
-		info.State = DomainState(state)
+		info.State = libvirt.DomainState(state)
 		info.Status = mapDomainStateToVMStatus(info.State)
 
 		// Get autostart
@@ -617,8 +617,8 @@ func getVMInfoFromDomain(dom *libvirt.Domain) (*VMInfo, error) {
 	info := &VMInfo{
 		Name:      name,
 		UUID:      uuidStr,
-		State:     DomainState(state),
-		Status:    mapDomainStateToVMStatus(DomainState(state)),
+		State:     libvirt.DomainState(state),
+		Status:    mapDomainStateToVMStatus(libvirt.DomainState(state)),
 		Autostart: autostart,
 	}
 

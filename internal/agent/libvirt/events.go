@@ -9,41 +9,12 @@ import (
 	"libvirt.org/go/libvirt"
 )
 
-// DomainEventType represents libvirt domain event types
-type DomainEventType int
-
-const (
-	DomainEventDefined     DomainEventType = libvirt.DOMAIN_EVENT_DEFINED
-	DomainEventUndefined   DomainEventType = libvirt.DOMAIN_EVENT_UNDEFINED
-	DomainEventStarted     DomainEventType = libvirt.DOMAIN_EVENT_STARTED
-	DomainEventSuspended   DomainEventType = libvirt.DOMAIN_EVENT_SUSPENDED
-	DomainEventResumed     DomainEventType = libvirt.DOMAIN_EVENT_RESUMED
-	DomainEventStopped     DomainEventType = libvirt.DOMAIN_EVENT_STOPPED
-	DomainEventShutdown    DomainEventType = libvirt.DOMAIN_EVENT_SHUTDOWN
-	DomainEventPMSuspended DomainEventType = libvirt.DOMAIN_EVENT_PMSUSPENDED
-	DomainEventCrashed     DomainEventType = libvirt.DOMAIN_EVENT_CRASHED
-)
-
-// DomainState represents the state of a domain
-type DomainState int
-
-const (
-	DomainStateNoState     DomainState = libvirt.DOMAIN_NOSTATE
-	DomainStateRunning     DomainState = libvirt.DOMAIN_RUNNING
-	DomainStateBlocked     DomainState = libvirt.DOMAIN_BLOCKED
-	DomainStatePaused      DomainState = libvirt.DOMAIN_PAUSED
-	DomainStateShutdown    DomainState = libvirt.DOMAIN_SHUTDOWN
-	DomainStateShutoff     DomainState = libvirt.DOMAIN_SHUTOFF
-	DomainStateCrashed     DomainState = libvirt.DOMAIN_CRASHED
-	DomainStatePMSuspended DomainState = libvirt.DOMAIN_PMSUSPENDED
-)
-
 // DomainEventDetails contains information about a domain event
 type DomainEventDetails struct {
-	Event   DomainEventType
+	Event   libvirt.DomainEventType
 	Domain  string
 	UUID    string
-	State   DomainState
+	State   libvirt.DomainState
 	Details string
 }
 
@@ -53,7 +24,7 @@ type EventCallback func(details DomainEventDetails)
 // EventManager handles libvirt domain lifecycle events
 type EventManager struct {
 	mu         sync.RWMutex
-	callbacks  map[DomainEventType][]EventCallback
+	callbacks  map[libvirt.DomainEventType][]EventCallback
 	conn       *libvirt.Connect
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -80,14 +51,14 @@ func NewEventManager() (*EventManager, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &EventManager{
-		callbacks: make(map[DomainEventType][]EventCallback),
+		callbacks: make(map[libvirt.DomainEventType][]EventCallback),
 		ctx:       ctx,
 		cancel:    cancel,
 	}, nil
 }
 
 // RegisterCallback adds a callback for a specific event type
-func (em *EventManager) RegisterCallback(eventType DomainEventType, callback EventCallback) {
+func (em *EventManager) RegisterCallback(eventType libvirt.DomainEventType, callback EventCallback) {
 	em.mu.Lock()
 	defer em.mu.Unlock()
 
@@ -96,7 +67,7 @@ func (em *EventManager) RegisterCallback(eventType DomainEventType, callback Eve
 }
 
 // UnregisterAllCallbacks removes all callbacks for a specific event type
-func (em *EventManager) UnregisterAllCallbacks(eventType DomainEventType) {
+func (em *EventManager) UnregisterAllCallbacks(eventType libvirt.DomainEventType) {
 	em.mu.Lock()
 	defer em.mu.Unlock()
 
@@ -174,20 +145,20 @@ func (em *EventManager) handleDomainEvent(dom *libvirt.Domain, event int, detail
 	uuid, _ := dom.GetUUIDString()
 
 	details := DomainEventDetails{
-		Event:   DomainEventType(event),
+		Event:   libvirt.DomainEventType(event),
 		Domain:  name,
 		UUID:    uuid,
-		Details: getEventDetailString(DomainEventType(event), detail),
+		Details: getEventDetailString(libvirt.DomainEventType(event), detail),
 	}
 
 	// Try to get current state
 	state, _, _ := dom.GetState()
-	details.State = DomainState(state)
+	details.State = libvirt.DomainState(state)
 
 	log.Printf("[LibvirtEvents] Domain event: %s (%s) - %s", name, uuid, details.Details)
 
 	em.mu.RLock()
-	callbacks := em.callbacks[DomainEventType(event)]
+	callbacks := em.callbacks[libvirt.DomainEventType(event)]
 	em.mu.RUnlock()
 
 	// Execute callbacks
@@ -203,9 +174,9 @@ func (em *EventManager) handleDomainEvent(dom *libvirt.Domain, event int, detail
 	}
 }
 
-func getEventDetailString(event DomainEventType, detail int) string {
+func getEventDetailString(event libvirt.DomainEventType, detail int) string {
 	switch event {
-	case DomainEventDefined:
+	case libvirt.DOMAIN_EVENT_DEFINED:
 		switch detail {
 		case 0:
 			return "Added"
@@ -214,9 +185,9 @@ func getEventDetailString(event DomainEventType, detail int) string {
 		default:
 			return "Defined (unknown)"
 		}
-	case DomainEventUndefined:
+	case libvirt.DOMAIN_EVENT_UNDEFINED:
 		return "Removed"
-	case DomainEventStarted:
+	case libvirt.DOMAIN_EVENT_STARTED:
 		switch detail {
 		case 0:
 			return "Booted"
@@ -231,7 +202,7 @@ func getEventDetailString(event DomainEventType, detail int) string {
 		default:
 			return "Started (unknown)"
 		}
-	case DomainEventSuspended:
+	case libvirt.DOMAIN_EVENT_SUSPENDED:
 		switch detail {
 		case 0:
 			return "Paused"
@@ -250,7 +221,7 @@ func getEventDetailString(event DomainEventType, detail int) string {
 		default:
 			return "Suspended (unknown)"
 		}
-	case DomainEventResumed:
+	case libvirt.DOMAIN_EVENT_RESUMED:
 		switch detail {
 		case 0:
 			return "Unpaused"
@@ -263,7 +234,7 @@ func getEventDetailString(event DomainEventType, detail int) string {
 		default:
 			return "Resumed (unknown)"
 		}
-	case DomainEventStopped:
+	case libvirt.DOMAIN_EVENT_STOPPED:
 		switch detail {
 		case 0:
 			return "Shutdown"
@@ -282,7 +253,7 @@ func getEventDetailString(event DomainEventType, detail int) string {
 		default:
 			return "Stopped (unknown)"
 		}
-	case DomainEventShutdown:
+	case libvirt.DOMAIN_EVENT_SHUTDOWN:
 		switch detail {
 		case 0:
 			return "Finished"
@@ -293,7 +264,7 @@ func getEventDetailString(event DomainEventType, detail int) string {
 		default:
 			return "Shutdown (unknown)"
 		}
-	case DomainEventPMSuspended:
+	case libvirt.DOMAIN_EVENT_PMSUSPENDED:
 		switch detail {
 		case 0:
 			return "Memory"
@@ -302,7 +273,7 @@ func getEventDetailString(event DomainEventType, detail int) string {
 		default:
 			return "PMSuspended (unknown)"
 		}
-	case DomainEventCrashed:
+	case libvirt.DOMAIN_EVENT_CRASHED:
 		switch detail {
 		case 0:
 			return "Panicked"
@@ -314,23 +285,23 @@ func getEventDetailString(event DomainEventType, detail int) string {
 	}
 }
 
-func (s DomainState) String() string {
+func DomainStateString(s libvirt.DomainState) string {
 	switch s {
-	case DomainStateNoState:
+	case libvirt.DOMAIN_NOSTATE:
 		return "nostate"
-	case DomainStateRunning:
+	case libvirt.DOMAIN_RUNNING:
 		return "running"
-	case DomainStateBlocked:
+	case libvirt.DOMAIN_BLOCKED:
 		return "blocked"
-	case DomainStatePaused:
+	case libvirt.DOMAIN_PAUSED:
 		return "paused"
-	case DomainStateShutdown:
+	case libvirt.DOMAIN_SHUTDOWN:
 		return "shutdown"
-	case DomainStateShutoff:
+	case libvirt.DOMAIN_SHUTOFF:
 		return "shutoff"
-	case DomainStateCrashed:
+	case libvirt.DOMAIN_CRASHED:
 		return "crashed"
-	case DomainStatePMSuspended:
+	case libvirt.DOMAIN_PMSUSPENDED:
 		return "pmsuspended"
 	default:
 		return "unknown"
@@ -340,7 +311,7 @@ func (s DomainState) String() string {
 // Global functions for event management
 
 // RegisterDomainEventCallback registers a callback for domain events
-func RegisterDomainEventCallback(eventType DomainEventType, callback EventCallback) error {
+func RegisterDomainEventCallback(eventType libvirt.DomainEventType, callback EventCallback) error {
 	if globalEventManager == nil {
 		if err := InitializeEventManager(); err != nil {
 			return err

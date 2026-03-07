@@ -32,7 +32,7 @@ const mockUser = {
 // Simulated auth check - in production, verify JWT or session cookie
 async function getUser() {
   const cookieStore = await cookies()
-  const authCookie = cookieStore.get("auth_token")
+  const authCookie = cookieStore.get("refreshToken")
   
   // For now, we'll allow access if there's any session or for demo purposes
   // In production: if (!authCookie) redirect("/login")
