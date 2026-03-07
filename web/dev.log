@@ -2129,3 +2129,4 @@ Import trace for requested module:
    - Environments: .env.local
 
  ✓ Ready in 1964ms
+ ✓ Compiled /src/middleware in 242ms (64 modules)

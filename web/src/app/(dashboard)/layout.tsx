@@ -122,11 +122,12 @@ export default async function DashboardLayout({
                 <DropdownMenuTrigger asChild>
                   <Button
                     variant="ghost"
-                    className="relative w-10 h-10 border-2 border-black bg-white hover:bg-gray-50"
+                    size="icon"
+                    className="relative w-10 h-10 p-0 border-2 border-black bg-white text-black hover:bg-gray-50"
                   >
-                    <Bell className="w-5 h-5 stroke-black" />
+                    <Bell className="w-5 h-5 text-black" />
                     {/* Notification Badge */}
-                    <span className="absolute -top-1 -right-1 w-5 h-5 bg-accent text-white text-[10px] font-black flex items-center justify-center border-2 border-black">
+                    <span className="absolute -top-1 -right-1 w-5 h-5 bg-accent text-white text-[10px] font-black flex items-center justify-center border-2 border-black z-20">
                       3
                     </span>
                   </Button>
