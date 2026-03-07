@@ -204,7 +204,7 @@ export default function UsersPage() {
             </div>
             <div className="flex items-center gap-2">
               <Badge variant="default">{users.length} Total</Badge>
-              <Badge variant="success">{users.filter((u) => u.status === "active").length} Active</Badge>
+              <Badge variant="secondary">{users.filter((u) => u.status === "active").length} Active</Badge>
               <Badge variant="destructive">{users.filter((u) => u.status === "suspended").length} Suspended</Badge>
             </div>
           </div>

@@ -419,7 +419,7 @@ export default function NodesListPage() {
             {stats.total} nodes • {stats.online} online • {stats.totalVMs} total VMs
           </p>
         </div>
-        <Link href="/dashboard/nodes/new">
+        <Link href="/nodes/new">
           <Button className="gap-2">
             <Plus className="w-4 h-4" />
             Add Node
@@ -518,7 +518,7 @@ export default function NodesListPage() {
               <div className="p-4 border-b-4 border-black bg-gray-50">
                 <div className="flex items-start justify-between">
                   <div>
-                    <Link href={`/dashboard/nodes/${node.id}`} className="text-xl font-black uppercase hover:text-primary transition-colors">
+                    <Link href={`/nodes/${node.id}`} className="text-xl font-black uppercase hover:text-primary transition-colors">
                       {node.name}
                     </Link>
                     <p className="text-sm font-mono font-medium text-gray-500">{node.ip}</p>

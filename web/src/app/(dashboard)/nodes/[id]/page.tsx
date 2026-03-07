@@ -284,7 +284,7 @@ export default function NodeDetailPage() {
         ...prev,
         vms: prev.vms.map(vm => {
           if (vm.id !== vmId) return vm
-          const statusMap: Record<VMStatus, VMStatus> = {
+          const statusMap: Record<string, VMStatus> = {
             start: "running",
             stop: "stopped",
             restart: "running",
@@ -329,7 +329,7 @@ export default function NodeDetailPage() {
           <Server className="w-16 h-16 text-gray-300 mx-auto mb-4" />
           <h2 className="text-xl font-black uppercase mb-2">Node Not Found</h2>
           <p className="text-gray-500 font-medium mb-6">The requested node does not exist.</p>
-          <Link href="/dashboard/nodes">
+          <Link href="/nodes">
             <Button className="gap-2">
               <ArrowLeft className="w-4 h-4" />
               Back to Nodes
@@ -344,7 +344,7 @@ export default function NodeDetailPage() {
     <div className="max-w-7xl mx-auto">
       {/* Header */}
       <div className="flex items-center gap-4 mb-6">
-        <Link href="/dashboard/nodes">
+        <Link href="/nodes">
           <Button variant="ghost" size="icon" className="border-2 border-black">
             <ArrowLeft className="w-4 h-4" />
           </Button>

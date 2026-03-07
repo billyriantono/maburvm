@@ -20,14 +20,14 @@ const path = require('path');
 
   const page = await browser.newPage();
   
-  // Navigate to the nodes page
-  await page.goto('http://localhost:3001/nodes', { waitUntil: 'networkidle0' });
+  // Navigate to the audit-logs page
+  await page.goto('http://localhost:3001/audit-logs', { waitUntil: 'networkidle0' });
   
   // Wait a moment for any animations
   await new Promise(resolve => setTimeout(resolve, 2000));
   
   // Take screenshot - absolute path
-  const screenshotPath = '/root/Works/MaburVM/.sisyphus/evidence/task-43-node-ui.png';
+  const screenshotPath = '/root/Works/MaburVM/.sisyphus/evidence/task-46-audit-logs.png';
   await page.screenshot({ 
     path: screenshotPath,
     fullPage: true 

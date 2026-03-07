@@ -508,10 +508,11 @@ export default function NewTemplatePage() {
           
           {verifyChecksum && (
             <div>
-              <label className="block text-sm font-bold uppercase mb-2">
+              <label htmlFor="checksum" className="block text-sm font-bold uppercase mb-2">
                 Expected Checksum (SHA256)
               </label>
               <Input
+                id="checksum"
                 type="text"
                 placeholder="e.g., a1b2c3d4e5f6..."
                 value={checksum}

@@ -53,23 +53,23 @@ const navigation: NavGroup[] = [
     title: "Overview",
     items: [
       { title: "Dashboard", href: "/dashboard", icon: <LayoutDashboard className="w-5 h-5" /> },
-      { title: "VMs", href: "/dashboard/vms", icon: <Monitor className="w-5 h-5" /> },
+      { title: "VMs", href: "/vms", icon: <Monitor className="w-5 h-5" /> },
     ],
   },
   {
     title: "Infrastructure",
     items: [
-      { title: "Nodes", href: "/dashboard/nodes", icon: <Server className="w-5 h-5" /> },
-      { title: "Templates", href: "/dashboard/templates", icon: <FileCode className="w-5 h-5" /> },
-      { title: "Networks", href: "/dashboard/networks", icon: <Network className="w-5 h-5" /> },
+      { title: "Nodes", href: "/nodes", icon: <Server className="w-5 h-5" /> },
+      { title: "Templates", href: "/templates", icon: <FileCode className="w-5 h-5" /> },
+      { title: "Networks", href: "/networks", icon: <Network className="w-5 h-5" /> },
     ],
   },
   {
     title: "Admin",
     items: [
-      { title: "Users", href: "/dashboard/users", icon: <Users className="w-5 h-5" /> },
-      { title: "Audit Logs", href: "/dashboard/audit-logs", icon: <FileText className="w-5 h-5" /> },
-      { title: "Settings", href: "/dashboard/settings", icon: <Settings className="w-5 h-5" /> },
+      { title: "Users", href: "/users", icon: <Users className="w-5 h-5" /> },
+      { title: "Audit Logs", href: "/audit-logs", icon: <FileText className="w-5 h-5" /> },
+      { title: "Settings", href: "/settings", icon: <Settings className="w-5 h-5" /> },
     ],
   },
 ]

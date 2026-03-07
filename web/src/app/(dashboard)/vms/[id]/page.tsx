@@ -67,11 +67,11 @@ export default function VMDetailPage() {
   const handleAction = async (action: string) => { setActionLoading(action); await new Promise(resolve => setTimeout(resolve, 1000)); setActionLoading(null) }
   const copyToClipboard = (text: string) => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000) }
   const handleRebuild = () => { if (confirmVMName === vm.name && selectedTemplate) { setRebuildDialogOpen(false); setConfirmVMName(""); setSelectedTemplate("") } }
-  const handleDelete = () => { setDeleteDialogOpen(false); router.push("/dashboard/vms") }
+  const handleDelete = () => { setDeleteDialogOpen(false); router.push("/vms") }
 
   return (
     <div className="max-w-7xl mx-auto">
-      <nav className="flex items-center gap-2 mb-6"><Link href="/dashboard/vms" className="flex items-center gap-2 text-sm font-bold uppercase text-gray-500 hover:text-black transition-colors"><ArrowLeft className="w-4 h-4" />Back to VMs</Link></nav>
+      <nav className="flex items-center gap-2 mb-6"><Link href="/vms" className="flex items-center gap-2 text-sm font-bold uppercase text-gray-500 hover:text-black transition-colors"><ArrowLeft className="w-4 h-4" />Back to VMs</Link></nav>
       <div className="bg-white border-4 border-black p-6 shadow-neo mb-6">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
           <div className="flex items-center gap-4">
