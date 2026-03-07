@@ -267,7 +267,7 @@ export default function SystemSettingsPage() {
 
       {/* Settings Tabs */}
       <Tabs defaultValue="general" className="space-y-6">
-        <TabsList className="grid w-full grid-cols-5 border-2 border-black bg-white">
+        <TabsList className="grid w-full grid-cols-2 md:grid-cols-5 gap-2 bg-transparent p-0 border-none">
           <TabsTrigger value="general" className="font-bold uppercase text-xs">
             <Globe className="w-4 h-4 mr-2" />
             General

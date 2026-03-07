@@ -474,8 +474,10 @@ export default function VMListPage() {
                 index % 2 === 0 ? "bg-white" : "bg-gray-50"
               }`}
             >
-              <div className="col-span-2">
-                <p className="font-black text-black">{vm.name}</p>
+              <div className="col-span-2 flex flex-col justify-center">
+                <Link href={`/vms/${vm.id}`} className="font-black text-black hover:underline w-fit border-none">
+                  {vm.name}
+                </Link>
                 <p className="text-xs text-gray-500 font-medium">{vm.hostname}</p>
               </div>
               <div className="col-span-1">

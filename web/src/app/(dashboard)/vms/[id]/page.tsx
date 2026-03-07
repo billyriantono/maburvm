@@ -65,13 +65,47 @@ export default function VMDetailPage() {
   const vmId = params.id as string, vm = { ...mockVM, id: vmId, name: vmId === "vm-001" ? "web-server-01" : vmId.replace(/-/g, " ") }
 
   const handleAction = async (action: string) => { setActionLoading(action); await new Promise(resolve => setTimeout(resolve, 1000)); setActionLoading(null) }
-  const copyToClipboard = (text: string) => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000) }
+  const copyWithFallback = async (text: string) => {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return
+    }
+
+    if (typeof document === "undefined") {
+      throw new Error("Clipboard is not available in this environment")
+    }
+
+    const textarea = document.createElement("textarea")
+    textarea.value = text
+    textarea.setAttribute("readonly", "")
+    textarea.style.position = "fixed"
+    textarea.style.opacity = "0"
+    document.body.appendChild(textarea)
+    textarea.select()
+
+    const copiedText = document.execCommand("copy")
+
+    document.body.removeChild(textarea)
+
+    if (!copiedText) {
+      throw new Error("Fallback clipboard copy failed")
+    }
+  }
+  const copyToClipboard = async (text: string) => {
+    try {
+      await copyWithFallback(text)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch (error) {
+      console.error("Failed to copy text", error)
+    }
+  }
   const handleRebuild = () => { if (confirmVMName === vm.name && selectedTemplate) { setRebuildDialogOpen(false); setConfirmVMName(""); setSelectedTemplate("") } }
   const handleDelete = () => { setDeleteDialogOpen(false); router.push("/vms") }
 
   return (
     <div className="max-w-7xl mx-auto">
-      <nav className="flex items-center gap-2 mb-6"><Link href="/vms" className="flex items-center gap-2 text-sm font-bold uppercase text-gray-500 hover:text-black transition-colors"><ArrowLeft className="w-4 h-4" />Back to VMs</Link></nav>
+      <nav className="flex items-center gap-2 mb-6"><Link href="/vms" className="flex items-center gap-2 text-sm font-bold uppercase text-gray-500 hover:text-black transition-colors w-fit"><ArrowLeft className="w-4 h-4" />Back to VMs</Link></nav>
       <div className="bg-white border-4 border-black p-6 shadow-neo mb-6">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
           <div className="flex items-center gap-4">
@@ -86,7 +120,15 @@ export default function VMDetailPage() {
         </div>
       </div>
       <Tabs defaultValue="overview" className="space-y-6">
-        <TabsList className="bg-white border-2 border-black p-1 shadow-neo-sm inline-flex flex-wrap"><TabsTrigger value="overview" className="data-[selected]:bg-primary data-[selected]:shadow-neo"><Monitor className="w-4 h-4 mr-2" />Overview</TabsTrigger><TabsTrigger value="console" className="data-[selected]:bg-primary data-[selected]:shadow-neo"><Terminal className="w-4 h-4 mr-2" />Console</TabsTrigger><TabsTrigger value="network" className="data-[selected]:bg-primary data-[selected]:shadow-neo"><Network className="w-4 h-4 mr-2" />Network</TabsTrigger><TabsTrigger value="snapshots" className="data-[selected]:bg-primary data-[selected]:shadow-neo"><Database className="w-4 h-4 mr-2" />Snapshots</TabsTrigger><TabsTrigger value="backups" className="data-[selected]:bg-primary data-[selected]:shadow-neo"><HardDrive className="w-4 h-4 mr-2" />Backups</TabsTrigger><TabsTrigger value="firewall" className="data-[selected]:bg-primary data-[selected]:shadow-neo"><Shield className="w-4 h-4 mr-2" />Firewall</TabsTrigger><TabsTrigger value="logs" className="data-[selected]:bg-primary data-[selected]:shadow-neo"><FileText className="w-4 h-4 mr-2" />Logs</TabsTrigger></TabsList>
+        <TabsList className="mb-2">
+          <TabsTrigger value="overview"><Monitor className="w-4 h-4 mr-2" />Overview</TabsTrigger>
+          <TabsTrigger value="console"><Terminal className="w-4 h-4 mr-2" />Console</TabsTrigger>
+          <TabsTrigger value="network"><Network className="w-4 h-4 mr-2" />Network</TabsTrigger>
+          <TabsTrigger value="snapshots"><Database className="w-4 h-4 mr-2" />Snapshots</TabsTrigger>
+          <TabsTrigger value="backups"><HardDrive className="w-4 h-4 mr-2" />Backups</TabsTrigger>
+          <TabsTrigger value="firewall"><Shield className="w-4 h-4 mr-2" />Firewall</TabsTrigger>
+          <TabsTrigger value="logs"><FileText className="w-4 h-4 mr-2" />Logs</TabsTrigger>
+        </TabsList>
         <TabsContent value="overview" className="space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 bg-white border-4 border-black p-6 shadow-neo"><h2 className="text-lg font-black uppercase tracking-tight text-black mb-6 flex items-center gap-2"><Activity className="w-5 h-5" />Resource Usage</h2><div className="space-y-6"><ProgressBar value={vm.cpu.usage} max={100} label="CPU" color={vm.cpu.usage > 80 ? "danger" : "primary"} /><ProgressBar value={vm.ram.used} max={vm.ram.total} label="Memory" color={vm.ram.used / vm.ram.total > 0.8 ? "danger" : "secondary"} /><ProgressBar value={vm.disk.used} max={vm.disk.total} label="Disk" color={vm.disk.used / vm.disk.total > 0.8 ? "danger" : "accent"} /></div></div>
