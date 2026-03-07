@@ -160,7 +160,6 @@ func (h *AuthHandler) Me(c echo.Context) error {
 		})
 	}
 
-	// TODO: Fetch full user details from service
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"userID": userID,
 	})

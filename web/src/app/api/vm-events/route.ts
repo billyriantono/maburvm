@@ -4,48 +4,60 @@ export const dynamic = "force-dynamic"
 
 export async function GET(request: NextRequest) {
   const encoder = new TextEncoder()
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"
   
   const stream = new ReadableStream({
-    start(controller) {
-      // Send initial connection message
+    async start(controller) {
       controller.enqueue(
         encoder.encode(`data: ${JSON.stringify({ type: "connected", timestamp: new Date().toISOString() })}\n\n`)
       )
       
-      // Simulate periodic VM status updates
-      const interval = setInterval(() => {
-        // Randomly simulate VM status changes for demo
-        const mockStatuses = ["running", "stopped", "suspended"]
-        const randomVmId = Math.floor(Math.random() * 10) + 1
-        const randomStatus = mockStatuses[Math.floor(Math.random() * mockStatuses.length)]
+      try {
+        const response = await fetch(`${apiUrl}/api/v1/events/vm-status`, {
+          headers: {
+            Accept: "text/event-stream",
+          },
+        })
         
-        const update = {
-          type: "vm_update",
-          vm: {
-            id: String(randomVmId),
-            status: randomStatus,
-            timestamp: new Date().toISOString()
+        if (!response.ok || !response.body) {
+          throw new Error("SSE endpoint not available, using polling fallback")
+        }
+        
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          
+          const chunk = decoder.decode(value, { stream: true })
+          controller.enqueue(encoder.encode(chunk))
+        }
+      } catch {
+        const pollInterval = setInterval(async () => {
+          try {
+            const vmsResponse = await fetch(`${apiUrl}/api/v1/vms`)
+            if (vmsResponse.ok) {
+              const vms = await vmsResponse.json()
+              controller.enqueue(
+                encoder.encode(`data: ${JSON.stringify({ type: "vm_list", vms, timestamp: new Date().toISOString() })}\n\n`)
+              )
+            }
+          } catch {
+            // API not available, skip this poll
           }
-        }
+        }, 10000)
         
-        try {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(update)}\n\n`))
-        } catch (error) {
-          // Stream closed
-          clearInterval(interval)
-        }
-      }, 10000) // Send update every 10 seconds
-      
-      // Cleanup on close
-      request.signal.addEventListener("abort", () => {
-        clearInterval(interval)
-        try {
-          controller.close()
-        } catch (e) {
-          // Already closed
-        }
-      })
-    }
+        request.signal.addEventListener("abort", () => {
+          clearInterval(pollInterval)
+          try {
+            controller.close()
+          } catch {
+            // Already closed
+          }
+        })
+      }
+    },
   })
   
   return new Response(stream, {

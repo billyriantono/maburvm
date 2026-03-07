@@ -75,7 +75,7 @@ func (s *Server) SetupRoutes() {
 	})
 
 	// API v1 routes
-	v1 := s.echo.Group("/api")
+	v1 := s.echo.Group("/api/v1")
 
 	// Auth routes (no auth required)
 	s.setupAuthRoutes(v1)
@@ -86,10 +86,13 @@ func (s *Server) SetupRoutes() {
 	// VM routes
 	s.setupVMRoutes(v1)
 
+	// Storage routes
+	s.setupStorageRoutes(v1)
+
 	// Billing webhook routes (outside /api group, uses own auth)
 	s.setupBillingRoutes()
 
-	// TODO: Add other route groups (users, networks, etc.)
+	// Additional route groups will be added as features are implemented
 }
 
 // setupAuthRoutes configures authentication-related routes
@@ -175,6 +178,26 @@ func (s *Server) setupVMRoutes(g *echo.Group) {
 	vmHandler := handler.NewVMHandler(vmService, vncService)
 
 	handler.RegisterVMRoutes(s.echo, vmHandler, s.db)
+}
+
+// setupStorageRoutes configures storage-related routes
+func (s *Server) setupStorageRoutes(g *echo.Group) {
+	storageRepo := repository.NewStorageRepository(s.db)
+	storageService := service.NewStorageService(storageRepo)
+	storageHandler := handler.NewStorageHandler(storageService)
+
+	storage := g.Group("/storage")
+	storage.Use(panelMiddleware.RequireAuth(s.db))
+
+	storage.GET("/pools", storageHandler.GetPools)
+	storage.GET("/pools/:id", storageHandler.GetPoolByID)
+	storage.POST("/pools", storageHandler.CreatePool, panelMiddleware.RequirePermission("storage:create"))
+	storage.PUT("/pools/:id", storageHandler.UpdatePool, panelMiddleware.RequirePermission("storage:update"))
+	storage.DELETE("/pools/:id", storageHandler.DeletePool, panelMiddleware.RequirePermission("storage:delete"))
+
+	storage.GET("/pools/:id/volumes", storageHandler.GetVolumes)
+	storage.POST("/pools/:id/volumes", storageHandler.CreateVolume, panelMiddleware.RequirePermission("storage:create"))
+	storage.DELETE("/pools/:poolId/volumes/:volumeId", storageHandler.DeleteVolume, panelMiddleware.RequirePermission("storage:delete"))
 }
 
 // setupBillingRoutes configures billing webhook routes with HMAC authentication

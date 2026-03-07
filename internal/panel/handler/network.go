@@ -589,7 +589,7 @@ func (h *NetworkHandler) ListFirewallRules(c echo.Context) error {
 // RegisterNetworkRoutes registers all network routes with the Echo router
 func RegisterNetworkRoutes(e *echo.Echo, handler *NetworkHandler, db interface{}) {
 	// Create VM routes group
-	vms := e.Group("/api/vms")
+	vms := e.Group("/api/v1/vms")
 
 	// Apply authentication middleware
 	vms.Use(middleware.RequireAuth(nil))

@@ -638,7 +638,7 @@ func mapScheduleResponse(schedule *models.BackupSchedule) ConfigureScheduleRespo
 // RegisterBackupRoutes registers all backup routes with the Echo router
 func RegisterBackupRoutes(e *echo.Echo, handler *BackupHandler, db *gorm.DB) {
 	// Create backup routes group
-	vms := e.Group("/api/vms")
+	vms := e.Group("/api/v1/vms")
 
 	// Apply authentication middleware
 	vms.Use(middleware.RequireAuth(db))

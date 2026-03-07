@@ -189,7 +189,7 @@ func RegisterRoutes(e *echo.Echo, handler *Handler, requireAuth echo.MiddlewareF
 	e.GET("/ws/vnc", handler.HandleWebSocket)
 
 	// API endpoints (require authentication)
-	vnc := e.Group("/api/vnc")
+	vnc := e.Group("/api/v1/vnc")
 	vnc.Use(requireAuth)
 
 	// Token management

@@ -55,7 +55,7 @@ type SuccessResponse struct {
 
 // RegisterRoutes registers all template routes
 func (h *TemplateHandler) RegisterRoutes(e *echo.Echo, authMiddleware echo.MiddlewareFunc) {
-	api := e.Group("/api/templates", authMiddleware)
+	api := e.Group("/api/v1/templates", authMiddleware)
 
 	api.POST("", h.CreateTemplate)
 	api.GET("", h.ListTemplates)

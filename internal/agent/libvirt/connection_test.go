@@ -197,10 +197,10 @@ func TestEventManager(t *testing.T) {
 	// Test callback registration
 	testCallback := func(details DomainEventDetails) {}
 
-	em.RegisterCallback(DomainEventStarted, testCallback)
+	em.RegisterCallback(libvirt.DOMAIN_EVENT_STARTED, testCallback)
 
 	em.mu.RLock()
-	callbacks := em.callbacks[DomainEventStarted]
+	callbacks := em.callbacks[libvirt.DOMAIN_EVENT_STARTED]
 	em.mu.RUnlock()
 
 	if len(callbacks) != 1 {
@@ -208,10 +208,10 @@ func TestEventManager(t *testing.T) {
 	}
 
 	// Test unregister
-	em.UnregisterAllCallbacks(DomainEventStarted)
+	em.UnregisterAllCallbacks(libvirt.DOMAIN_EVENT_STARTED)
 
 	em.mu.RLock()
-	callbacks = em.callbacks[DomainEventStarted]
+	callbacks = em.callbacks[libvirt.DOMAIN_EVENT_STARTED]
 	em.mu.RUnlock()
 
 	if len(callbacks) != 0 {
@@ -229,22 +229,22 @@ func TestEventManager(t *testing.T) {
 
 func TestDomainStateString(t *testing.T) {
 	tests := []struct {
-		state    DomainState
+		state    libvirt.DomainState
 		expected string
 	}{
-		{DomainStateNoState, "nostate"},
-		{DomainStateRunning, "running"},
-		{DomainStateBlocked, "blocked"},
-		{DomainStatePaused, "paused"},
-		{DomainStateShutdown, "shutdown"},
-		{DomainStateShutoff, "shutoff"},
-		{DomainStateCrashed, "crashed"},
-		{DomainStatePMSuspended, "pmsuspended"},
-		{DomainState(999), "unknown"},
+		{libvirt.DOMAIN_NOSTATE, "nostate"},
+		{libvirt.DOMAIN_RUNNING, "running"},
+		{libvirt.DOMAIN_BLOCKED, "blocked"},
+		{libvirt.DOMAIN_PAUSED, "paused"},
+		{libvirt.DOMAIN_SHUTDOWN, "shutdown"},
+		{libvirt.DOMAIN_SHUTOFF, "shutoff"},
+		{libvirt.DOMAIN_CRASHED, "crashed"},
+		{libvirt.DOMAIN_PMSUSPENDED, "pmsuspended"},
+		{libvirt.DomainState(999), "unknown"},
 	}
 
 	for _, test := range tests {
-		result := test.state.String()
+		result := DomainStateString(test.state)
 		if result != test.expected {
 			t.Errorf("State %d: expected %q, got %q", test.state, test.expected, result)
 		}
@@ -253,23 +253,23 @@ func TestDomainStateString(t *testing.T) {
 
 func TestGetEventDetailString(t *testing.T) {
 	tests := []struct {
-		event  DomainEventType
+		event  libvirt.DomainEventType
 		detail int
 		want   string
 	}{
-		{DomainEventDefined, 0, "Added"},
-		{DomainEventDefined, 1, "Updated"},
-		{DomainEventUndefined, 0, "Removed"},
-		{DomainEventStarted, 0, "Booted"},
-		{DomainEventStarted, 1, "Migrated"},
-		{DomainEventSuspended, 0, "Paused"},
-		{DomainEventResumed, 0, "Unpaused"},
-		{DomainEventStopped, 0, "Shutdown"},
-		{DomainEventStopped, 1, "Destroyed"},
-		{DomainEventShutdown, 0, "Finished"},
-		{DomainEventPMSuspended, 0, "Memory"},
-		{DomainEventCrashed, 0, "Panicked"},
-		{DomainEventType(999), 0, "Unknown event"},
+		{libvirt.DOMAIN_EVENT_DEFINED, 0, "Added"},
+		{libvirt.DOMAIN_EVENT_DEFINED, 1, "Updated"},
+		{libvirt.DOMAIN_EVENT_UNDEFINED, 0, "Removed"},
+		{libvirt.DOMAIN_EVENT_STARTED, 0, "Booted"},
+		{libvirt.DOMAIN_EVENT_STARTED, 1, "Migrated"},
+		{libvirt.DOMAIN_EVENT_SUSPENDED, 0, "Paused"},
+		{libvirt.DOMAIN_EVENT_RESUMED, 0, "Unpaused"},
+		{libvirt.DOMAIN_EVENT_STOPPED, 0, "Shutdown"},
+		{libvirt.DOMAIN_EVENT_STOPPED, 1, "Destroyed"},
+		{libvirt.DOMAIN_EVENT_SHUTDOWN, 0, "Finished"},
+		{libvirt.DOMAIN_EVENT_PMSUSPENDED, 0, "Memory"},
+		{libvirt.DOMAIN_EVENT_CRASHED, 0, "Panicked"},
+		{libvirt.DomainEventType(999), 0, "Unknown event"},
 	}
 
 	for _, test := range tests {

@@ -4,18 +4,22 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"image/png"
 	"net"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/boombuler/barcode"
 	"github.com/boombuler/barcode/qr"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/maburvm/panel/internal/shared/models"
 	"github.com/pquerna/otp/totp"
@@ -278,7 +282,7 @@ type Setup2FAResponse struct {
 	Secret      string   `json:"secret"`       // Base32 encoded secret (for manual entry)
 	QRCodeURL   string   `json:"qr_code_url"`  // otpauth:// URL
 	QRCodePNG   string   `json:"qr_code_png"`  // Base64 encoded PNG image
-	BackupCodes []string `json:"backup_codes"` // TODO: Implement backup codes
+	BackupCodes []string `json:"backup_codes"` // Recovery codes for 2FA bypass
 }
 
 // Setup2FA generates a new TOTP secret and QR code for 2FA setup
@@ -329,7 +333,7 @@ func (s *UserService) Setup2FA(req *Setup2FARequest) (*Setup2FAResponse, error) 
 		Secret:      key.Secret(),
 		QRCodeURL:   key.URL(),
 		QRCodePNG:   qrCode,
-		BackupCodes: []string{}, // TODO: Generate backup codes
+		BackupCodes: s.generateBackupCodes(),
 	}, nil
 }
 
@@ -507,12 +511,31 @@ func (s *UserService) isValidIPOrCIDR(input string) bool {
 	return ip != nil
 }
 
-// PasswordResetRequest contains password reset request
+// PasswordResetToken represents a password reset token
+type PasswordResetToken struct {
+	ID        uuid.UUID `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	UserID    uuid.UUID `json:"user_id" gorm:"type:uuid;not null;index"`
+	Token     string    `json:"-" gorm:"type:varchar(255);not null;uniqueIndex"`
+	ExpiresAt time.Time `json:"expires_at" gorm:"not null;index"`
+	Used      bool      `json:"used" gorm:"default:false"`
+	CreatedAt time.Time `json:"created_at" gorm:"not null;default:NOW()"`
+}
+
+// TableName specifies the table name for PasswordResetToken
+func (PasswordResetToken) TableName() string {
+	return "password_reset_tokens"
+}
+
+// IsExpired checks if the token has expired
+func (t *PasswordResetToken) IsExpired() bool {
+	return time.Now().After(t.ExpiresAt)
+}
+
 type PasswordResetRequest struct {
 	Email string `json:"email" validate:"required,email"`
 }
 
-// RequestPasswordReset initiates a password reset flow (placeholder)
+// RequestPasswordReset initiates a password reset flow
 func (s *UserService) RequestPasswordReset(req *PasswordResetRequest) error {
 	// Find user
 	var user models.User
@@ -524,13 +547,35 @@ func (s *UserService) RequestPasswordReset(req *PasswordResetRequest) error {
 		return fmt.Errorf("database error: %w", err)
 	}
 
-	// TODO: Implement actual password reset logic
-	// 1. Generate reset token
-	// 2. Store token with expiration
-	// 3. Send email with reset link
-	// For now, this is just a placeholder
+	// Generate secure reset token
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return fmt.Errorf("failed to generate token: %w", err)
+	}
+	token := hex.EncodeToString(tokenBytes)
 
-	fmt.Printf("[PLACEHOLDER] Password reset requested for: %s\n", user.Email)
+	// Create password reset token record
+	resetToken := &PasswordResetToken{
+		UserID:    user.ID,
+		Token:     token,
+		ExpiresAt: time.Now().Add(1 * time.Hour),
+		Used:      false,
+	}
+
+	// Invalidate any existing tokens for this user
+	s.db.Model(&PasswordResetToken{}).
+		Where("user_id = ? AND used = ?", user.ID, false).
+		Update("used", true)
+
+	// Store new token
+	if err := s.db.Create(resetToken).Error; err != nil {
+		return fmt.Errorf("failed to store reset token: %w", err)
+	}
+
+	// In production, send email with reset link
+	// For now, log the token (in production, use proper email service)
+	fmt.Printf("[PASSWORD RESET] Token for %s: %s (expires at %s)\n", user.Email, token, resetToken.ExpiresAt)
+
 	return nil
 }
 
@@ -540,52 +585,87 @@ type ResetPasswordRequest struct {
 	NewPassword string `json:"new_password" validate:"required"`
 }
 
-// ResetPassword resets a user's password using a reset token (placeholder)
+// ResetPassword resets a user's password using a reset token
 func (s *UserService) ResetPassword(req *ResetPasswordRequest) error {
-	// Validate password strength
 	if err := s.validatePasswordStrength(req.NewPassword); err != nil {
 		return err
 	}
 
-	// TODO: Implement actual password reset logic
-	// 1. Validate reset token
-	// 2. Check expiration
-	// 3. Hash new password
-	// 4. Update user password
-	// 5. Invalidate token
+	var resetToken PasswordResetToken
+	if err := s.db.Where("token = ? AND used = ?", req.Token, false).First(&resetToken).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return errors.New("invalid or expired reset token")
+		}
+		return fmt.Errorf("database error: %w", err)
+	}
 
-	return errors.New("password reset not yet implemented")
+	if resetToken.IsExpired() {
+		return errors.New("reset token has expired")
+	}
+
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), BcryptCost)
+	if err != nil {
+		return fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	if err := s.db.Model(&models.User{}).Where("id = ?", resetToken.UserID).Update("password_hash", string(hashedPassword)).Error; err != nil {
+		return fmt.Errorf("failed to update password: %w", err)
+	}
+
+	resetToken.Used = true
+	if err := s.db.Save(&resetToken).Error; err != nil {
+		return fmt.Errorf("failed to invalidate token: %w", err)
+	}
+
+	return nil
 }
 
 // generateTempToken generates a temporary token for 2FA verification
 func (s *UserService) generateTempToken(userID uuid.UUID) string {
-	// Simple implementation - in production, use proper JWT with short expiration
-	// This is a placeholder implementation
 	timestamp := time.Now().Unix()
-	data := fmt.Sprintf("%s:%d:%s", userID.String(), timestamp, s.jwtSecret)
-	// In production, use proper HMAC or JWT library
-	return base64.StdEncoding.EncodeToString([]byte(data))
+	nonce := make([]byte, 16)
+	rand.Read(nonce)
+
+	data := fmt.Sprintf("%s:%d:%s", userID.String(), timestamp, hex.EncodeToString(nonce))
+	h := hmac.New(sha256.New, []byte(s.jwtSecret))
+	h.Write([]byte(data))
+	signature := hex.EncodeToString(h.Sum(nil))
+
+	return base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", data, signature)))
 }
 
-// generateJWT generates a JWT token for authenticated users
+// JWTClaims represents the JWT claims
+type JWTClaims struct {
+	UserID string `json:"user_id"`
+	Role   string `json:"role"`
+	jwt.RegisteredClaims
+}
+
+// generateJWT generates a JWT token for authenticated users using golang-jwt/jwt/v5
 func (s *UserService) generateJWT(userID uuid.UUID, role models.UserRole) (string, error) {
-	// TODO: Implement proper JWT generation
-	// For now, return a placeholder
-	claims := map[string]interface{}{
-		"user_id": userID.String(),
-		"role":    string(role),
-		"exp":     time.Now().Add(24 * time.Hour).Unix(),
-		"iat":     time.Now().Unix(),
-		"iss":     s.issuer,
+	claims := JWTClaims{
+		UserID: userID.String(),
+		Role:   string(role),
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			NotBefore: jwt.NewNumericDate(time.Now()),
+			Issuer:    s.issuer,
+			Subject:   userID.String(),
+		},
 	}
 
-	// Simple JWT structure (header.payload.signature)
-	// In production, use a proper JWT library like github.com/golang-jwt/jwt
-	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
-	payload, _ := json.Marshal(claims)
-	payloadB64 := base64.RawURLEncoding.EncodeToString(payload)
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(s.jwtSecret))
+}
 
-	// Create signature (in production, use proper HMAC)
-	signature := fmt.Sprintf("%s.%s", header, payloadB64)
-	return fmt.Sprintf("%s.%s", signature, "signature_placeholder"), nil
+// generateBackupCodes generates backup codes for 2FA recovery
+func (s *UserService) generateBackupCodes() []string {
+	codes := make([]string, 8)
+	for i := 0; i < 8; i++ {
+		bytes := make([]byte, 5)
+		rand.Read(bytes)
+		codes[i] = strings.ToUpper(hex.EncodeToString(bytes))
+	}
+	return codes
 }

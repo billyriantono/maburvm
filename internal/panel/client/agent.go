@@ -623,13 +623,22 @@ func (c *AgentClient) StartVNCProxy(ctx context.Context, nodeID string, vmID str
 	}, nil
 }
 
-// getNodeInfo retrieves node information (placeholder - should be integrated with repository)
+// getNodeInfo retrieves node information from the internal connection registry
 func (c *AgentClient) getNodeInfo(nodeID string) (NodeInfo, error) {
-	// This is a placeholder implementation
-	// In a real implementation, this would query the node repository
-	// For now, return an error indicating this needs to be implemented
-	// or the node info needs to be provided externally
-	return NodeInfo{}, fmt.Errorf("getNodeInfo not implemented - node info must be provided externally")
+	c.mu.RLock()
+	conn, exists := c.connections[nodeID]
+	c.mu.RUnlock()
+
+	if !exists {
+		return NodeInfo{}, fmt.Errorf("node %s not found in connection registry", nodeID)
+	}
+
+	return NodeInfo{
+		ID:         conn.nodeID,
+		Address:    conn.address,
+		Token:      conn.token,
+		TLSEnabled: c.tlsConfig != nil,
+	}, nil
 }
 
 // RegisterNode allows registering a node with the client

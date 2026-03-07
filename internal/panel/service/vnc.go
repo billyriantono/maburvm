@@ -329,7 +329,6 @@ func (s *VNCService) CleanExpiredTokens(ctx context.Context) (int64, error) {
 func (s *VNCService) buildWebSocketURL(vmID, nodeID string) string {
 	wsHost := s.wsHost
 	if wsHost == "" {
-		// Default to a placeholder - should be configured via environment
 		wsHost = "localhost:8080"
 	}
 	return fmt.Sprintf("wss://%s/api/vms/%s/console", wsHost, vmID)

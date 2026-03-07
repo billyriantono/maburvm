@@ -14,15 +14,21 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
+	healthcollector "github.com/maburvm/panel/internal/agent/health"
+	"github.com/maburvm/panel/internal/agent/libvirt"
+	"github.com/maburvm/panel/internal/agent/network"
+	"github.com/maburvm/panel/internal/agent/vncproxy"
 	"github.com/maburvm/panel/internal/shared/config"
-	"github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
+	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/health"
+	grpclibhealth "google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
@@ -34,7 +40,7 @@ type Server struct {
 	config       *config.AgentServerConfig
 	tlsConfig    *tls.Config
 	listener     net.Listener
-	healthServer *health.Server
+	healthServer *grpclibhealth.Server
 	mu           sync.RWMutex
 	started      bool
 	activeRPCs   sync.WaitGroup
@@ -297,12 +303,28 @@ func (s *Server) Start() error {
 	s.grpcServer = grpc.NewServer(opts...)
 
 	// Register health check service
-	s.healthServer = health.NewServer()
+	s.healthServer = grpclibhealth.NewServer()
 	grpc_health_v1.RegisterHealthServer(s.grpcServer, s.healthServer)
 	s.healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
 
-	// Register NodeAgent service
-	nodeAgentSvc := &NodeAgentService{}
+	// Initialize dependencies for NodeAgent service
+	libvirtMgr := libvirt.NewVMManager()
+	var networkMgr *network.Manager
+	var healthColl *healthcollector.MetricsCollector
+	var vncProx *vncproxy.Proxy
+
+	// Try to initialize optional dependencies
+	networkMgr, err = network.NewManager()
+	if err != nil {
+		log.Printf("[Server] Failed to initialize network manager: %v", err)
+		networkMgr = nil
+	}
+
+	healthColl = healthcollector.NewMetricsCollector()
+	vncProx = vncproxy.NewProxy()
+
+	// Register NodeAgent service with dependencies
+	nodeAgentSvc := NewNodeAgentService(libvirtMgr, networkMgr, healthColl, vncProx)
 	pb.RegisterNodeAgentServer(s.grpcServer, nodeAgentSvc)
 
 	s.started = true
@@ -444,7 +466,5 @@ func getEnvOrDefault(key, defaultValue string) string {
 
 // setupSignalHandler sets up signal handling for graceful shutdown
 func setupSignalHandler(ch chan<- os.Signal) {
-	// Import signal package and setup handler
-	// This is a placeholder - actual implementation would use os/signal
-	// signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 }

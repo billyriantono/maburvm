@@ -677,11 +677,14 @@ func (s *ImportService) UpdateDomainXML(originalXML []byte, mappings []DiskMappi
 	return updatedXML, nil
 }
 
-// GetImportStatus retrieves the status of an import job
+// GetImportStatus retrieves the status of an import job from River
 func (s *ImportService) GetImportStatus(ctx context.Context, jobID int64) (*queue.ImportJob, error) {
-	// This would query the job status from River
-	// For now, return a placeholder
-	return nil, fmt.Errorf("import status query not implemented")
+	_, err := s.riverClient.JobGet(ctx, jobID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get job status: %w", err)
+	}
+
+	return nil, fmt.Errorf("GetImportStatus requires job args decoding which is type-specific - not fully implemented")
 }
 
 // ListImportableVMs scans a node and returns VMs that can be imported
@@ -700,6 +703,16 @@ func (s *ImportService) ListImportableVMs(ctx context.Context, nodeID string, cu
 	}
 
 	return s.scanForVirtualizorVMs(ctx, req)
+}
+
+// GetVMByID retrieves a VM by ID for conflict checking
+func (s *ImportService) GetVMByID(ctx context.Context, vmID string) (*models.VM, error) {
+	return s.vmRepo.GetByID(ctx, vmID)
+}
+
+// GetVMByHostname retrieves a VM by hostname for conflict checking
+func (s *ImportService) GetVMByHostname(ctx context.Context, hostname string) (*models.VM, error) {
+	return s.vmRepo.GetByHostname(ctx, hostname)
 }
 
 // ValidateImportRequest validates an import request before processing

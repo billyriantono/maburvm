@@ -720,7 +720,7 @@ func (h *VMHandler) RefreshVNCPassword(c echo.Context) error {
 // RegisterVMRoutes registers all VM routes with the Echo router
 func RegisterVMRoutes(e *echo.Echo, handler *VMHandler, db interface{}) {
 	// Create VM routes group
-	vms := e.Group("/api/vms")
+	vms := e.Group("/api/v1/vms")
 
 	// Apply authentication middleware
 	vms.Use(middleware.RequireAuth(nil))

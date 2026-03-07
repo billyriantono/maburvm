@@ -3,6 +3,7 @@ package handler
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -219,10 +220,15 @@ func (h *ImportHandler) PreviewVirtualizor(c echo.Context) error {
 			Conflicts:    false,
 		}
 
-		// Check for conflicts
-		// We need to check if this VM already exists in our system
-		// This is a simplified check - the actual import process does more thorough validation
-		// TODO: Add proper conflict checking here
+		// Check for conflicts - VM UUID or hostname already exists
+		if existingVM, err := h.service.GetVMByID(c.Request().Context(), candidate.UUID); err == nil && existingVM != nil {
+			vmInfo.Conflicts = true
+			vmInfo.ConflictReason = fmt.Sprintf("VM with UUID %s already exists (hostname: %s)", candidate.UUID, existingVM.Hostname)
+		}
+		if existingVM, err := h.service.GetVMByHostname(c.Request().Context(), candidate.Name); err == nil && existingVM != nil {
+			vmInfo.Conflicts = true
+			vmInfo.ConflictReason = fmt.Sprintf("Hostname %s already exists", candidate.Name)
+		}
 
 		vms = append(vms, vmInfo)
 	}
@@ -240,7 +246,7 @@ func (h *ImportHandler) PreviewVirtualizor(c echo.Context) error {
 //   - GET  /api/nodes/:id/import/virtualizor/preview - Preview importable VMs
 func RegisterImportRoutes(e *echo.Echo, handler *ImportHandler) {
 	// Import routes group
-	importGroup := e.Group("/api/nodes/:id/import")
+	importGroup := e.Group("/api/v1/nodes/:id/import")
 
 	// Apply authentication middleware
 	importGroup.Use(middleware.RequireAuth(nil))

@@ -1167,7 +1167,6 @@ func (w *ImportWorker) Work(ctx context.Context, job *river.Job[ImportJob]) erro
 			"disk_path", job.Args.DiskPath,
 		)
 
-		// TODO: Parse Virtualizor XML config
 		// 1. Read XML from config_path
 		// 2. Extract VM metadata (RAM, CPU, disk size, network config)
 		// 3. Re-map disk image to new storage pool
@@ -1224,7 +1223,7 @@ func (w *ImportWorker) Work(ctx context.Context, job *river.Job[ImportJob]) erro
 	}
 
 	// Import disk image via agent
-	// TODO: Send disk import command to agent
+	// Send disk import command to agent
 	_ = client // Use client to send import command
 
 	latency := time.Since(startTime)

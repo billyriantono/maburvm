@@ -419,7 +419,7 @@ func (h *NodeHandler) RegenerateToken(c echo.Context) error {
 // RegisterNodeRoutes registers all node routes with the Echo router
 func RegisterNodeRoutes(e *echo.Echo, handler *NodeHandler, db interface{}) {
 	// Create node routes group
-	nodes := e.Group("/api/nodes")
+	nodes := e.Group("/api/v1/nodes")
 
 	// Apply authentication middleware
 	nodes.Use(middleware.RequireAuth(nil))

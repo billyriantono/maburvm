@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maburvm/panel/internal/agent/libvirt"
 	"github.com/maburvm/panel/internal/shared/config"
 	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 	"google.golang.org/grpc"
@@ -156,8 +157,8 @@ func (r *Reporter) sendHeartbeat(stream pb.NodeAgent_HeartbeatClient) error {
 	// Collect current metrics
 	metrics := r.metrics.Collect()
 
-	// Get active VM IDs (placeholder - would integrate with VM manager)
-	activeVMs := r.metrics.GetRunningVMIDs()
+	// Get active VM IDs from libvirt
+	activeVMs := r.getActiveVMs()
 
 	// Build heartbeat request
 	req := &pb.HeartbeatRequest{
@@ -165,7 +166,6 @@ func (r *Reporter) sendHeartbeat(stream pb.NodeAgent_HeartbeatClient) error {
 		NodeId:      r.nodeID,
 		ActiveVmIds: activeVMs,
 		AvailableResources: &pb.VMResources{
-			// Available resources would be calculated from total - used
 			Vcpus:    int32(metrics.AvailableCPUs),
 			MemoryMb: metrics.AvailableMemoryMB,
 			DiskGb:   metrics.AvailableDiskGB,
@@ -195,6 +195,25 @@ func (r *Reporter) sendHeartbeat(stream pb.NodeAgent_HeartbeatClient) error {
 	}
 
 	return nil
+}
+
+// getActiveVMs returns the list of running VM IDs from libvirt
+func (r *Reporter) getActiveVMs() []string {
+	vms, err := libvirt.ListVMs()
+	if err != nil {
+		log.Printf("[health] Failed to list VMs: %v", err)
+		return []string{}
+	}
+
+	var activeVMs []string
+	for _, vm := range vms {
+		// Only include running VMs
+		if vm.Status == libvirt.VMStatusRunning {
+			activeVMs = append(activeVMs, vm.UUID)
+		}
+	}
+
+	return activeVMs
 }
 
 func (r *Reporter) setConnected(connected bool) {

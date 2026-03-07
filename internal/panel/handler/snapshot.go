@@ -454,7 +454,7 @@ func (h *SnapshotHandler) DeleteSnapshot(c echo.Context) error {
 // RegisterSnapshotRoutes registers all snapshot routes with the Echo router
 func RegisterSnapshotRoutes(e *echo.Echo, handler *SnapshotHandler, db interface{}) {
 	// Create snapshot routes group
-	snapshots := e.Group("/api/vms/:id/snapshots")
+	snapshots := e.Group("/api/v1/vms/:id/snapshots")
 
 	// Apply authentication middleware
 	snapshots.Use(middleware.RequireAuth(nil))
