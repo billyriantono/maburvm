@@ -12,7 +12,9 @@ import {
   Users,
   Activity,
   Zap,
-  Database
+  Database,
+  User as UserIcon,
+  Shield
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -33,11 +35,17 @@ const navItems = [
   { href: "/networks", label: "Networks", icon: Zap },
   { href: "/users", label: "Users", icon: Users },
   { href: "/monitoring", label: "Monitoring", icon: Activity },
-  { href: "/settings", label: "Settings", icon: Settings },
+]
+
+// Settings navigation with sub-items
+const settingsNav = [
+  { href: "/settings/profile", label: "Profile", icon: UserIcon },
+  { href: "/settings/system", label: "System", icon: Shield },
 ]
 
 export function Sidebar({ user }: { user: User }) {
   const pathname = usePathname()
+  const isSettingsActive = pathname.startsWith("/settings")
   
   return (
     <aside className="fixed left-0 top-0 z-50 h-screen w-64 bg-white border-r-4 border-black overflow-hidden">
@@ -81,6 +89,35 @@ export function Sidebar({ user }: { user: User }) {
               </Link>
             )
           })}
+
+          {/* Settings Section */}
+          <div className="pt-4 mt-4 border-t-2 border-black">
+            <div className="px-4 py-2">
+              <span className="text-xs font-black uppercase tracking-wider text-gray-400">
+                Settings
+              </span>
+            </div>
+            {settingsNav.map((item) => {
+              const isActive = pathname === item.href
+              const Icon = item.icon
+              
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={cn(
+                    "flex items-center gap-3 px-4 py-3 text-sm font-bold uppercase tracking-wide transition-all duration-150 ml-2",
+                    isActive 
+                      ? "bg-black text-white shadow-neo" 
+                      : "text-black hover:bg-gray-100 hover:translate-x-1"
+                  )}
+                >
+                  <Icon className="w-4 h-4" />
+                  {item.label}
+                </Link>
+              )
+            })}
+          </div>
         </div>
       </nav>
     </aside>

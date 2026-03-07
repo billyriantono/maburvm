@@ -21,7 +21,7 @@ const path = require('path');
   const page = await browser.newPage();
   
   // Navigate to the audit-logs page
-  await page.goto('http://localhost:3001/audit-logs', { waitUntil: 'networkidle0' });
+  await page.goto('http://localhost:3000/audit-logs', { waitUntil: 'networkidle0' });
   
   // Wait a moment for any animations
   await new Promise(resolve => setTimeout(resolve, 2000));

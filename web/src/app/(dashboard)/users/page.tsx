@@ -315,7 +315,7 @@ export default function UsersPage() {
                           </Button>
                         </Link>
                         <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
+                          <DropdownMenuTrigger>
                             <Button variant="ghost" size="icon" className="h-8 w-8">
                               <MoreHorizontal className="w-4 h-4" />
                             </Button>

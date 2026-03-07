@@ -26,13 +26,38 @@ import {
   Gauge,
   Loader2,
   Copy,
-  Check
+  Check,
+  Upload,
+  Search,
+  FileWarning,
+  FolderOpen,
+  Circle,
+  HelpCircle,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 
 // Types
 type VMStatus = "running" | "stopped" | "suspended"
 type NodeStatus = "online" | "offline" | "maintenance"
+type ImportStatus = "pending" | "importing" | "completed" | "error"
+
+interface ImportCandidate {
+  id: string
+  name: string
+  hostname: string
+  vcpu: number
+  ramGB: number
+  diskPath: string
+  diskSizeGB: number
+  status: ImportStatus
+  error?: string
+  uuid?: string
+  existingVM?: string
+  diskExists: boolean
+  hasUuidConflict: boolean
+}
 
 interface NodeHealth {
   cpu: number
@@ -249,6 +274,14 @@ export default function NodeDetailPage() {
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
   const [copied, setCopied] = useState(false)
   
+  const [activeTab, setActiveTab] = useState("overview")
+  const [scanStatus, setScanStatus] = useState<"idle" | "scanning" | "complete">("idle")
+  const [importCandidates, setImportCandidates] = useState<ImportCandidate[]>([])
+  const [selectedVMs, setSelectedVMs] = useState<Set<string>>(new Set())
+  const [isImporting, setIsImporting] = useState(false)
+  const [importProgress, setImportProgress] = useState(0)
+  const [importResults, setImportResults] = useState<{ success: number; failed: number } | null>(null)
+  
   // Load node data
   useEffect(() => {
     // Simulate API call
@@ -304,7 +337,6 @@ export default function NodeDetailPage() {
     
     setActionLoading("regenerate-token")
     
-    // Simulate API call
     await new Promise(resolve => setTimeout(resolve, 1500))
     
     const newToken = "tok_" + Math.random().toString(36).substring(2, 10) + Math.random().toString(36).substring(2, 6)
@@ -312,6 +344,154 @@ export default function NodeDetailPage() {
     setNode(prev => prev ? { ...prev, token: newToken } : null)
     setToast({ message: "Token regenerated successfully", type: "success" })
     setActionLoading(null)
+  }
+  
+  const handleScan = async () => {
+    setScanStatus("scanning")
+    setImportResults(null)
+    
+    await new Promise(resolve => setTimeout(resolve, 2000))
+    
+    const mockCandidates: ImportCandidate[] = [
+      {
+        id: "cand-1",
+        name: "web-server-old",
+        hostname: "web-old.internal",
+        vcpu: 4,
+        ramGB: 8,
+        diskPath: "/var/lib/libvirt/images/web-server-old.qcow2",
+        diskSizeGB: 80,
+        status: "pending",
+        uuid: "550e8400-e29b-41d4-a716-446655440000",
+        diskExists: true,
+        hasUuidConflict: false,
+      },
+      {
+        id: "cand-2",
+        name: "db-backup",
+        hostname: "db-backup.internal",
+        vcpu: 8,
+        ramGB: 32,
+        diskPath: "/var/lib/libvirt/images/db-backup.qcow2",
+        diskSizeGB: 500,
+        status: "pending",
+        uuid: "550e8400-e29b-41d4-a716-446655440001",
+        diskExists: true,
+        hasUuidConflict: true,
+        existingVM: "db-primary",
+      },
+      {
+        id: "cand-3",
+        name: "test-vm",
+        hostname: "test-old.internal",
+        vcpu: 2,
+        ramGB: 4,
+        diskPath: "/var/lib/libvirt/images/test-vm.qcow2",
+        diskSizeGB: 40,
+        status: "pending",
+        uuid: "550e8400-e29b-41d4-a716-446655440002",
+        diskExists: false,
+        hasUuidConflict: false,
+      },
+      {
+        id: "cand-4",
+        name: "cache-old",
+        hostname: "cache-old.internal",
+        vcpu: 2,
+        ramGB: 4,
+        diskPath: "/var/lib/libvirt/images/cache-old.qcow2",
+        diskSizeGB: 25,
+        status: "pending",
+        uuid: "550e8400-e29b-41d4-a716-446655440003",
+        diskExists: true,
+        hasUuidConflict: false,
+      },
+      {
+        id: "cand-5",
+        name: "dev-box",
+        hostname: "dev-old.internal",
+        vcpu: 4,
+        ramGB: 16,
+        diskPath: "/var/lib/libvirt/images/dev-box.qcow2",
+        diskSizeGB: 120,
+        status: "pending",
+        uuid: "550e8400-e29b-41d4-a716-446655440004",
+        diskExists: true,
+        hasUuidConflict: false,
+      },
+    ]
+    
+    setImportCandidates(mockCandidates)
+    setScanStatus("complete")
+    setToast({ message: `Found ${mockCandidates.length} import candidates`, type: "success" })
+  }
+  
+  const handleToggleVM = (id: string) => {
+    setSelectedVMs(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }
+  
+  const handleSelectAll = () => {
+    const validCandidates = importCandidates.filter(c => c.diskExists && !c.hasUuidConflict)
+    if (selectedVMs.size === validCandidates.length) {
+      setSelectedVMs(new Set())
+    } else {
+      setSelectedVMs(new Set(validCandidates.map(c => c.id)))
+    }
+  }
+  
+  const handleImport = async () => {
+    if (selectedVMs.size === 0) return
+    
+    setIsImporting(true)
+    setImportProgress(0)
+    setImportResults(null)
+    
+    const selectedIds = Array.from(selectedVMs)
+    let successCount = 0
+    let failedCount = 0
+    
+    for (let i = 0; i < selectedIds.length; i++) {
+      const id = selectedIds[i]
+      
+      setImportCandidates(prev => 
+        prev.map(c => c.id === id ? { ...c, status: "importing" } : c)
+      )
+      
+      await new Promise(resolve => setTimeout(resolve, 1500))
+      
+      const candidate = importCandidates.find(c => c.id === id)
+      const success = candidate?.diskExists && !candidate?.hasUuidConflict
+      
+      if (success) {
+        successCount++
+        setImportCandidates(prev => 
+          prev.map(c => c.id === id ? { ...c, status: "completed" } : c)
+        )
+      } else {
+        failedCount++
+        setImportCandidates(prev => 
+          prev.map(c => c.id === id ? { ...c, status: "error", error: "Disk not found" } : c)
+        )
+      }
+      
+      setImportProgress(Math.round(((i + 1) / selectedIds.length) * 100))
+    }
+    
+    setIsImporting(false)
+    setImportResults({ success: successCount, failed: failedCount })
+    setSelectedVMs(new Set())
+    setToast({ 
+      message: `Import complete: ${successCount} succeeded, ${failedCount} failed`, 
+      type: failedCount > 0 ? "error" : "success" 
+    })
   }
   
   if (loading) {
@@ -381,8 +561,15 @@ export default function NodeDetailPage() {
         </div>
       </div>
 
-      {/* Quick Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <TabsList className="mb-6">
+          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="import">Import VMs</TabsTrigger>
+        </TabsList>
+        
+        <TabsContent value="overview">
+          {/* Quick Stats */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         <div className="bg-white border-4 border-black p-4 shadow-neo">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-black uppercase text-gray-500">Total VMs</span>
@@ -608,6 +795,253 @@ export default function NodeDetailPage() {
           </div>
         )}
       </div>
+        </TabsContent>
+        
+        <TabsContent value="import">
+          <div className="bg-white border-4 border-black shadow-neo">
+            <div className="p-4 border-b-4 border-black bg-gray-50 flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-black uppercase tracking-tight text-black">
+                  Import Virtual Machines
+                </h2>
+                <p className="text-xs text-gray-500 font-medium">
+                  Scan this node for existing Virtualizor VMs to import
+                </p>
+              </div>
+              <Button 
+                onClick={handleScan}
+                disabled={scanStatus === "scanning" || node.status !== "online"}
+                className="gap-2"
+              >
+                {scanStatus === "scanning" ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Search className="w-4 h-4" />
+                )}
+                Scan for VMs
+              </Button>
+            </div>
+
+            {/* Scan Status */}
+            <div className="p-6 border-b-4 border-black">
+              {scanStatus === "idle" && (
+                <div className="text-center py-8">
+                  <FolderOpen className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+                  <p className="text-gray-500 font-bold uppercase">Click "Scan for VMs" to search for import candidates</p>
+                </div>
+              )}
+              
+              {scanStatus === "scanning" && (
+                <div className="text-center py-8">
+                  <Loader2 className="w-12 h-12 text-primary mx-auto mb-4 animate-spin" />
+                  <p className="text-black font-black uppercase text-lg">Scanning...</p>
+                  <p className="text-gray-500 font-medium">Searching for Virtualizor VMs on this node</p>
+                </div>
+              )}
+              
+              {scanStatus === "complete" && (
+                <div className="flex items-center gap-2 mb-4">
+                  <CheckCircle className="w-5 h-5 text-success" />
+                  <span className="font-bold text-black">Found {importCandidates.length} VMs</span>
+                </div>
+              )}
+            </div>
+
+            {/* Import Candidates Table */}
+            {scanStatus === "complete" && importCandidates.length > 0 && (
+              <>
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead className="bg-gray-100 border-b-4 border-black">
+                      <tr>
+                        <th className="p-4 text-left">
+                          <Checkbox
+                            checked={selectedVMs.size === importCandidates.filter(c => c.diskExists && !c.hasUuidConflict).length && selectedVMs.size > 0}
+                            onCheckedChange={handleSelectAll}
+                          />
+                        </th>
+                        <th className="p-4 text-left text-xs font-black uppercase">VM Name</th>
+                        <th className="p-4 text-left text-xs font-black uppercase">Specs</th>
+                        <th className="p-4 text-left text-xs font-black uppercase">Disk Path</th>
+                        <th className="p-4 text-left text-xs font-black uppercase">Warnings</th>
+                        <th className="p-4 text-left text-xs font-black uppercase">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y-2 divide-black">
+                      {importCandidates.map((candidate) => (
+                        <tr 
+                          key={candidate.id} 
+                          className={`hover:bg-gray-50 ${!candidate.diskExists || candidate.hasUuidConflict ? "bg-gray-50" : ""}`}
+                        >
+                          <td className="p-4">
+                            <Checkbox
+                              checked={selectedVMs.has(candidate.id)}
+                              onCheckedChange={() => handleToggleVM(candidate.id)}
+                              disabled={!candidate.diskExists || candidate.hasUuidConflict}
+                            />
+                          </td>
+                          <td className="p-4">
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 bg-primary flex items-center justify-center border-2 border-black">
+                                <Server className="w-5 h-5" />
+                              </div>
+                              <div>
+                                <p className="font-black text-black">{candidate.name}</p>
+                                <p className="text-xs text-gray-500 font-medium">{candidate.hostname}</p>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="p-4">
+                            <div className="flex items-center gap-3">
+                              <div className="flex items-center gap-1">
+                                <div className="w-6 h-6 bg-primary flex items-center justify-center border border-black text-[10px] font-black">
+                                  {candidate.vcpu}
+                                </div>
+                                <span className="text-xs text-gray-500">vCPU</span>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <div className="w-6 h-6 bg-secondary flex items-center justify-center border border-black text-[10px] font-black">
+                                  {candidate.ramGB}
+                                </div>
+                                <span className="text-xs text-gray-500">GB</span>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <div className="w-6 h-6 bg-accent flex items-center justify-center border border-black text-[10px] font-black">
+                                  {candidate.diskSizeGB}
+                                </div>
+                                <span className="text-xs text-gray-500">GB</span>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="p-4">
+                            <code className="text-xs font-mono bg-gray-100 px-2 py-1 border border-black">
+                              {candidate.diskPath}
+                            </code>
+                          </td>
+                          <td className="p-4">
+                            <div className="flex flex-col gap-1">
+                              {!candidate.diskExists && (
+                                <div className="flex items-center gap-1 text-danger text-xs font-bold uppercase">
+                                  <FileWarning className="w-3 h-3" />
+                                  Disk not found
+                                </div>
+                              )}
+                              {candidate.hasUuidConflict && (
+                                <div className="flex items-center gap-1 text-warning text-xs font-bold uppercase">
+                                  <AlertTriangle className="w-3 h-3" />
+                                  UUID conflict: {candidate.existingVM}
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                          <td className="p-4">
+                            {candidate.status === "pending" && (
+                              <span className="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-black uppercase border border-black bg-gray-100">
+                                <HelpCircle className="w-3 h-3" />
+                                Pending
+                              </span>
+                            )}
+                            {candidate.status === "importing" && (
+                              <span className="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-black uppercase border border-black bg-primary text-white">
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                                Importing
+                              </span>
+                            )}
+                            {candidate.status === "completed" && (
+                              <span className="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-black uppercase border border-black bg-success text-black">
+                                <CheckCircle className="w-3 h-3" />
+                                Completed
+                              </span>
+                            )}
+                            {candidate.status === "error" && (
+                              <span className="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-black uppercase border border-black bg-danger text-white">
+                                <XCircle className="w-3 h-3" />
+                                Error
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Import Actions */}
+                <div className="p-4 border-t-4 border-black bg-gray-50 flex items-center justify-between">
+                  <div className="text-sm font-medium text-gray-500">
+                    {selectedVMs.size} VM{selectedVMs.size !== 1 ? "s" : ""} selected
+                  </div>
+                  <Button
+                    onClick={handleImport}
+                    disabled={selectedVMs.size === 0 || isImporting}
+                    className="gap-2"
+                  >
+                    {isImporting ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Importing... {importProgress}%
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="w-4 h-4" />
+                        Import Selected VMs
+                      </>
+                    )}
+                  </Button>
+                </div>
+
+                {/* Progress Bar */}
+                {isImporting && (
+                  <div className="p-4 border-t-4 border-black">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-black uppercase text-gray-500">Import Progress</span>
+                      <span className="text-lg font-black text-primary">{importProgress}%</span>
+                    </div>
+                    <div className="h-4 bg-gray-200 border-2 border-black">
+                      <div 
+                        className="h-full bg-primary transition-all duration-300"
+                        style={{ width: `${importProgress}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Results Summary */}
+                {importResults && (
+                  <div className="p-6 border-t-4 border-black bg-gray-50">
+                    <h3 className="text-lg font-black uppercase mb-4">Import Results</h3>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="bg-success/20 border-4 border-success p-4">
+                        <div className="flex items-center gap-2 mb-2">
+                          <CheckCircle className="w-5 h-5 text-success" />
+                          <span className="text-xs font-black uppercase text-success">Successful</span>
+                        </div>
+                        <p className="text-3xl font-black text-success">{importResults.success}</p>
+                      </div>
+                      <div className="bg-danger/20 border-4 border-danger p-4">
+                        <div className="flex items-center gap-2 mb-2">
+                          <XCircle className="w-5 h-5 text-danger" />
+                          <span className="text-xs font-black uppercase text-danger">Failed</span>
+                        </div>
+                        <p className="text-3xl font-black text-danger">{importResults.failed}</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Empty State */}
+            {scanStatus === "complete" && importCandidates.length === 0 && (
+              <div className="p-12 text-center">
+                <Search className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+                <p className="text-gray-500 font-bold uppercase">No import candidates found</p>
+                <p className="text-xs text-gray-400 mt-2">This node doesn't have any Virtualizor VMs to import</p>
+              </div>
+            )}
+          </div>
+        </TabsContent>
+      </Tabs>
 
       {/* Toast */}
       {toast && (
