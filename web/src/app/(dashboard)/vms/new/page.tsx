@@ -1,0 +1,935 @@
+"use client"
+
+import { useState } from "react"
+import { useRouter } from "next/navigation"
+import { useForm, Controller } from "react-hook-form"
+import { zodResolver } from "@hookform/resolvers/zod"
+import { z } from "zod"
+import { 
+  ChevronRight, 
+  ChevronLeft, 
+  Check, 
+  Server, 
+  Cpu, 
+  HardDrive, 
+  Network, 
+  CreditCard,
+  Loader2,
+  CheckCircle2,
+  AlertCircle,
+  User,
+  Wifi,
+  WifiOff
+} from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+
+// Validation schemas for each step
+const step1Schema = z.object({
+  hostname: z.string()
+    .min(1, "Hostname is required")
+    .regex(/^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/, 
+      "Invalid hostname format (e.g., vm.example.com or my-vm)"),
+  userId: z.string().min(1, "User assignment is required"),
+})
+
+const step2Schema = z.object({
+  cpuCores: z.number().min(1, "Minimum 1 CPU core").max(64, "Maximum 64 CPU cores"),
+  ramGB: z.number().min(1, "Minimum 1 GB RAM").max(512, "Maximum 512 GB RAM"),
+  diskGB: z.number().min(10, "Minimum 10 GB disk").max(2000, "Maximum 2 TB disk"),
+})
+
+const step3Schema = z.object({
+  templateId: z.string().min(1, "Please select an OS template"),
+})
+
+const step4Schema = z.object({
+  ipAddress: z.string()
+    .optional()
+    .refine((val) => !val || /^(\d{1,3}\.){3}\d{1,3}$/.test(val), {
+      message: "Invalid IP address format",
+    })
+    .refine((val) => {
+      if (!val) return true
+      const parts = val.split(".").map(Number)
+      return parts.every((p) => p >= 0 && p <= 255)
+    }, { message: "IP address octets must be 0-255" }),
+  bandwidthMbps: z.number().min(1, "Minimum 1 Mbps").max(10000, "Maximum 10 Gbps"),
+  vlanId: z.string().optional(),
+})
+
+const fullSchema = step1Schema.merge(step2Schema).merge(step3Schema).merge(step4Schema)
+
+type FormData = z.infer<typeof fullSchema>
+
+// Mock data
+const mockUsers = [
+  { id: "user-1", name: "Admin User", email: "admin@maburvm.local" },
+  { id: "user-2", name: "John Doe", email: "john@example.com" },
+  { id: "user-3", name: "Jane Smith", email: "jane@example.com" },
+]
+
+const osTemplates = [
+  { 
+    id: "ubuntu-22.04", 
+    name: "Ubuntu 22.04 LTS", 
+    version: "22.04.3",
+    logo: "🟠",
+    color: "bg-orange-100",
+    description: "Long Term Support"
+  },
+  { 
+    id: "ubuntu-24.04", 
+    name: "Ubuntu 24.04 LTS", 
+    version: "24.04.1",
+    logo: "🟠",
+    color: "bg-orange-100",
+    description: "Latest LTS"
+  },
+  { 
+    id: "debian-12", 
+    name: "Debian 12", 
+    version: "12.0",
+    logo: "🔴",
+    color: "bg-red-100",
+    description: "Stable"
+  },
+  { 
+    id: "centos-stream9", 
+    name: "CentOS Stream 9", 
+    version: "9.0",
+    logo: "🟢",
+    color: "bg-green-100",
+    description: "Enterprise"
+  },
+  { 
+    id: "almalinux-9", 
+    name: "AlmaLinux 9", 
+    version: "9.3",
+    logo: "🟢",
+    color: "bg-green-100",
+    description: "RHEL Compatible"
+  },
+  { 
+    id: "rocky-linux-9", 
+    name: "Rocky Linux 9", 
+    version: "9.3",
+    logo: "🟢",
+    color: "bg-green-100",
+    description: "RHEL Compatible"
+  },
+  { 
+    id: "fedora-40", 
+    name: "Fedora 40", 
+    version: "40",
+    logo: "🔵",
+    color: "bg-blue-100",
+    description: "Cutting Edge"
+  },
+  { 
+    id: "windows-2022", 
+    name: "Windows Server 2022", 
+    version: "21H2",
+    logo: "🪟",
+    color: "bg-blue-200",
+    description: "Datacenter"
+  },
+]
+
+const mockVlans = [
+  { id: "vlan-10", name: "Production (10)", network: "10.0.10.0/24" },
+  { id: "vlan-20", name: "Development (20)", network: "10.0.20.0/24" },
+  { id: "vlan-30", name: "Staging (30)", network: "10.0.30.0/24" },
+  { id: "vlan-100", name: "Management (100)", network: "10.0.100.0/24" },
+]
+
+// Node capacity (mock)
+const nodeCapacity = {
+  maxCpu: 64,
+  maxRam: 512,
+  maxDisk: 2000,
+  usedCpu: 32,
+  usedRam: 256,
+  usedDisk: 800,
+}
+
+// Steps configuration
+const steps = [
+  { id: 1, title: "Basic", description: "Hostname & User", icon: Server },
+  { id: 2, title: "Resources", description: "CPU, RAM, Disk", icon: Cpu },
+  { id: 3, title: "OS Template", description: "Select OS", icon: HardDrive },
+  { id: 4, title: "Network", description: "IP & VLAN", icon: Network },
+  { id: 5, title: "Review", description: "Confirm & Create", icon: CheckCircle2 },
+]
+
+export default function NewVMPage() {
+  const router = useRouter()
+  const [currentStep, setCurrentStep] = useState(1)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
+  
+  const {
+    register,
+    handleSubmit,
+    control,
+    watch,
+    trigger,
+    setValue,
+    formState: { errors },
+  } = useForm<FormData>({
+    resolver: zodResolver(fullSchema),
+    defaultValues: {
+      hostname: "",
+      userId: "",
+      cpuCores: 2,
+      ramGB: 4,
+      diskGB: 50,
+      templateId: "",
+      ipAddress: "",
+      bandwidthMbps: 100,
+      vlanId: "",
+    },
+    mode: "onChange",
+  })
+
+  const watchedValues = watch()
+
+  // Calculate available resources
+  const availableCpu = nodeCapacity.maxCpu - nodeCapacity.usedCpu
+  const availableRam = nodeCapacity.maxRam - nodeCapacity.usedRam
+  const availableDisk = nodeCapacity.maxDisk - nodeCapacity.usedDisk
+
+  // Calculate estimated cost (mock)
+  const calculateCost = () => {
+    const cpuCost = watchedValues.cpuCores * 10
+    const ramCost = watchedValues.ramGB * 2
+    const diskCost = watchedValues.diskGB * 0.1
+    const bandwidthCost = watchedValues.bandwidthMbps * 0.5
+    return (cpuCost + ramCost + diskCost + bandwidthCost).toFixed(2)
+  }
+
+  const handleNext = async () => {
+    let fieldsToValidate: (keyof FormData)[] = []
+    
+    switch (currentStep) {
+      case 1:
+        fieldsToValidate = ["hostname", "userId"]
+        break
+      case 2:
+        fieldsToValidate = ["cpuCores", "ramGB", "diskGB"]
+        break
+      case 3:
+        fieldsToValidate = ["templateId"]
+        break
+      case 4:
+        fieldsToValidate = ["bandwidthMbps"]
+        break
+    }
+
+    const isValid = await trigger(fieldsToValidate)
+    if (isValid && currentStep < 5) {
+      setCurrentStep(currentStep + 1)
+    }
+  }
+
+  const handleBack = () => {
+    if (currentStep > 1) {
+      setCurrentStep(currentStep - 1)
+    }
+  }
+
+  const onSubmit = async (data: FormData) => {
+    setIsSubmitting(true)
+    setSubmitError(null)
+
+    try {
+      // Simulate API call
+      await new Promise((resolve) => setTimeout(resolve, 2000))
+      
+      // Mock success - in production this would call the API
+      console.log("VM created:", data)
+      
+      // Redirect to VM detail page (mock)
+      router.push(`/vms/vm-${Date.now()}`)
+    } catch (error) {
+      setSubmitError("Failed to create VM. Please try again.")
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  const getSelectedTemplate = () => {
+    return osTemplates.find(t => t.id === watchedValues.templateId)
+  }
+
+  const getSelectedUser = () => {
+    return mockUsers.find(u => u.id === watchedValues.userId)
+  }
+
+  return (
+    <div className="max-w-4xl mx-auto">
+      {/* Header */}
+      <div className="mb-8">
+        <h1 className="text-3xl font-black uppercase tracking-tight text-black mb-2">
+          Create New VM
+        </h1>
+        <p className="text-gray-500 font-medium uppercase tracking-wider text-sm">
+          Provision a new virtual machine in minutes
+        </p>
+      </div>
+
+      {/* Progress Indicator */}
+      <div className="mb-8">
+        <div className="flex items-center justify-between">
+          {steps.map((step, index) => {
+            const Icon = step.icon
+            const isActive = step.id === currentStep
+            const isCompleted = step.id < currentStep
+            
+            return (
+              <div key={step.id} className="flex items-center flex-1">
+                <div className="flex flex-col items-center">
+                  <div 
+                    className={`
+                      w-12 h-12 flex items-center justify-center border-4 border-black 
+                      transition-all duration-300
+                      ${isCompleted ? "bg-success shadow-neo" : ""}
+                      ${isActive ? "bg-primary shadow-neo scale-110" : ""}
+                      ${!isActive && !isCompleted ? "bg-white shadow-neo-sm" : ""}
+                    `}
+                  >
+                    {isCompleted ? (
+                      <Check className="w-6 h-6" />
+                    ) : (
+                      <Icon className={`w-6 h-6 ${isActive ? "" : "text-gray-400"}`} />
+                    )}
+                  </div>
+                  <span className={`mt-2 text-xs font-bold uppercase tracking-wider ${
+                    isActive ? "text-black" : "text-gray-400"
+                  }`}>
+                    {step.title}
+                  </span>
+                  <span className="text-[10px] text-gray-500">
+                    {step.description}
+                  </span>
+                </div>
+                
+                {index < steps.length - 1 && (
+                  <div className={`flex-1 h-2 mx-2 border-2 border-black ${
+                    isCompleted ? "bg-success" : "bg-gray-200"
+                  }`}>
+                    <div 
+                      className={`h-full bg-black transition-all duration-300 ${
+                        isCompleted ? "w-full" : "w-0"
+                      }`}
+                    />
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Form */}
+      <form onSubmit={handleSubmit(onSubmit)}>
+        <div className="bg-white border-4 border-black p-8 shadow-neo">
+          
+          {/* Step 1: Basic Info */}
+          {currentStep === 1 && (
+            <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
+              <div className="flex items-center gap-3 mb-6">
+                <div className="w-10 h-10 bg-primary flex items-center justify-center border-2 border-black">
+                  <Server className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="text-xl font-black uppercase">Basic Information</h2>
+                  <p className="text-sm text-gray-500">Configure hostname and user assignment</p>
+                </div>
+              </div>
+
+              {/* Hostname */}
+              <div className="space-y-2">
+                <label htmlFor="hostname" className="text-sm font-bold uppercase tracking-wide">
+                  Hostname <span className="text-danger">*</span>
+                </label>
+                <Input
+                  id="hostname"
+                  {...register("hostname")}
+                  placeholder="e.g., web-server-01 or vm.example.com"
+                  className={`h-12 ${errors.hostname ? "border-danger ring-2 ring-danger/30" : ""}`}
+                />
+                {errors.hostname && (
+                  <p className="text-sm font-medium text-danger flex items-center gap-1">
+                    <AlertCircle className="w-4 h-4" />
+                    {errors.hostname.message}
+                  </p>
+                )}
+                <p className="text-xs text-gray-500">
+                  Use a valid hostname format (letters, numbers, dots, hyphens)
+                </p>
+              </div>
+
+              {/* User Assignment */}
+              <div className="space-y-2">
+                <label htmlFor="userId" className="text-sm font-bold uppercase tracking-wide">
+                  Assign to User <span className="text-danger">*</span>
+                </label>
+                <Controller
+                  name="userId"
+                  control={control}
+                  render={({ field }) => (
+                    <Select onValueChange={field.onChange} value={field.value}>
+                      <SelectTrigger id="userId" className={`h-12 ${errors.userId ? "border-danger ring-2 ring-danger/30" : ""}`}>
+                        <SelectValue placeholder="Select a user" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {mockUsers.map((user) => (
+                          <SelectItem key={user.id} value={user.id}>
+                            <div className="flex items-center gap-2">
+                              <User className="w-4 h-4" />
+                              <span>{user.name}</span>
+                              <span className="text-gray-400 text-sm">({user.email})</span>
+                            </div>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
+                {errors.userId && (
+                  <p className="text-sm font-medium text-danger flex items-center gap-1">
+                    <AlertCircle className="w-4 h-4" />
+                    {errors.userId.message}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Step 2: Resources */}
+          {currentStep === 2 && (
+            <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
+              <div className="flex items-center gap-3 mb-6">
+                <div className="w-10 h-10 bg-secondary flex items-center justify-center border-2 border-black">
+                  <Cpu className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="text-xl font-black uppercase">Resource Allocation</h2>
+                  <p className="text-sm text-gray-500">Select CPU, RAM, and disk size</p>
+                </div>
+              </div>
+
+              {/* Node Capacity Info */}
+              <div className="bg-gray-100 border-2 border-black p-4 mb-6">
+                <p className="text-xs font-bold uppercase mb-2">Available Node Capacity</p>
+                <div className="grid grid-cols-3 gap-4 text-center">
+                  <div>
+                    <p className="text-2xl font-black">{availableCpu}</p>
+                    <p className="text-xs text-gray-500">CPU Cores</p>
+                  </div>
+                  <div>
+                    <p className="text-2xl font-black">{availableRam} GB</p>
+                    <p className="text-xs text-gray-500">RAM</p>
+                  </div>
+                  <div>
+                    <p className="text-2xl font-black">{availableDisk} GB</p>
+                    <p className="text-xs text-gray-500">Disk</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* CPU Cores */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <label htmlFor="cpuCores" className="text-sm font-bold uppercase tracking-wide">CPU Cores</label>
+                  <span className="text-2xl font-black">{watchedValues.cpuCores}</span>
+                </div>
+                <Controller
+                  name="cpuCores"
+                  control={control}
+                  render={({ field: { onChange, value } }) => (
+                    <div className="relative">
+                      <input
+                        id="cpuCores"
+                        type="range"
+                        min={1}
+                        max={Math.min(availableCpu, 64)}
+                        value={value}
+                        onChange={(e) => onChange(Number(e.target.value))}
+                        className="w-full h-4 appearance-none bg-white border-2 border-black cursor-pointer"
+                        style={{
+                          background: `linear-gradient(to right, #000000 0%, #000000 ${(value / Math.min(availableCpu, 64)) * 100}%, #e5e5e5 ${(value / Math.min(availableCpu, 64)) * 100}%, #e5e5e5 100%)`
+                        }}
+                      />
+                      <style jsx>{`
+                        input[type="range"]::-webkit-slider-thumb {
+                          -webkit-appearance: none;
+                          width: 24px;
+                          height: 24px;
+                          background: #FFE500;
+                          border: 3px solid black;
+                          cursor: pointer;
+                          box-shadow: 2px 2px 0 0 #000;
+                        }
+                        input[type="range"]::-moz-range-thumb {
+                          width: 24px;
+                          height: 24px;
+                          background: #FFE500;
+                          border: 3px solid black;
+                          cursor: pointer;
+                          box-shadow: 2px 2px 0 0 #000;
+                        }
+                      `}</style>
+                    </div>
+                  )}
+                />
+                <div className="flex justify-between text-xs text-gray-500">
+                  <span>1</span>
+                  <span>Max: {Math.min(availableCpu, 64)}</span>
+                </div>
+              </div>
+
+              {/* RAM */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <label htmlFor="ramGB" className="text-sm font-bold uppercase tracking-wide">RAM (GB)</label>
+                  <span className="text-2xl font-black">{watchedValues.ramGB} GB</span>
+                </div>
+                <Controller
+                  name="ramGB"
+                  control={control}
+                  render={({ field: { onChange, value } }) => (
+                    <div className="relative">
+                      <input
+                        id="ramGB"
+                        type="range"
+                        min={1}
+                        max={Math.min(availableRam, 512)}
+                        value={value}
+                        onChange={(e) => onChange(Number(e.target.value))}
+                        className="w-full h-4 appearance-none bg-white border-2 border-black cursor-pointer"
+                        style={{
+                          background: `linear-gradient(to right, #000000 0%, #000000 ${(value / Math.min(availableRam, 512)) * 100}%, #e5e5e5 ${(value / Math.min(availableRam, 512)) * 100}%, #e5e5e5 100%)`
+                        }}
+                      />
+                    </div>
+                  )}
+                />
+                <div className="flex justify-between text-xs text-gray-500">
+                  <span>1 GB</span>
+                  <span>Max: {Math.min(availableRam, 512)} GB</span>
+                </div>
+              </div>
+
+              {/* Disk */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <label htmlFor="diskGB" className="text-sm font-bold uppercase tracking-wide">Disk (GB)</label>
+                  <span className="text-2xl font-black">{watchedValues.diskGB} GB</span>
+                </div>
+                <Controller
+                  name="diskGB"
+                  control={control}
+                  render={({ field: { onChange, value } }) => (
+                    <div className="relative">
+                      <input
+                        id="diskGB"
+                        type="range"
+                        min={10}
+                        max={Math.min(availableDisk, 2000)}
+                        step={10}
+                        value={value}
+                        onChange={(e) => onChange(Number(e.target.value))}
+                        className="w-full h-4 appearance-none bg-white border-2 border-black cursor-pointer"
+                        style={{
+                          background: `linear-gradient(to right, #000000 0%, #000000 ${(value / Math.min(availableDisk, 2000)) * 100}%, #e5e5e5 ${(value / Math.min(availableDisk, 2000)) * 100}%, #e5e5e5 100%)`
+                        }}
+                      />
+                    </div>
+                  )}
+                />
+                <div className="flex justify-between text-xs text-gray-500">
+                  <span>10 GB</span>
+                  <span>Max: {Math.min(availableDisk, 2000)} GB</span>
+                </div>
+              </div>
+
+              {/* Resource Summary */}
+              <div className="bg-primary/20 border-2 border-black p-4 mt-6">
+                <p className="text-xs font-bold uppercase mb-2">Selected Resources</p>
+                <div className="flex items-center gap-6">
+                  <div className="flex items-center gap-2">
+                    <Cpu className="w-5 h-5" />
+                    <span className="font-bold">{watchedValues.cpuCores} vCPU</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <HardDrive className="w-5 h-5" />
+                    <span className="font-bold">{watchedValues.ramGB} GB RAM</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <HardDrive className="w-5 h-5" />
+                    <span className="font-bold">{watchedValues.diskGB} GB Disk</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Step 3: OS Template */}
+          {currentStep === 3 && (
+            <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
+              <div className="flex items-center gap-3 mb-6">
+                <div className="w-10 h-10 bg-success flex items-center justify-center border-2 border-black">
+                  <HardDrive className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="text-xl font-black uppercase">Select OS Template</h2>
+                  <p className="text-sm text-gray-500">Choose an operating system for your VM</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                {osTemplates.map((template) => {
+                  const isSelected = watchedValues.templateId === template.id
+                  
+                  return (
+                    <button
+                      key={template.id}
+                      type="button"
+                      onClick={() => setValue("templateId", template.id, { shouldValidate: true })}
+                      className={`
+                        relative p-4 border-4 text-left transition-all duration-200
+                        ${isSelected 
+                          ? "bg-primary border-black shadow-neo hover:shadow-neo-hover" 
+                          : "bg-white border-black hover:shadow-neo-sm hover:-translate-y-1"
+                        }
+                      `}
+                    >
+                      {isSelected && (
+                        <div className="absolute top-2 right-2 w-6 h-6 bg-black text-white flex items-center justify-center">
+                          <Check className="w-4 h-4" />
+                        </div>
+                      )}
+                      
+                      <div className="text-4xl mb-2">{template.logo}</div>
+                      <p className="font-black uppercase text-sm leading-tight">{template.name}</p>
+                      <p className="text-xs text-gray-500 mt-1">v{template.version}</p>
+                      <span className="inline-block mt-2 px-2 py-0.5 bg-gray-200 text-xs font-bold uppercase">
+                        {template.description}
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+
+              {errors.templateId && (
+                <p className="text-sm font-medium text-danger flex items-center gap-1">
+                  <AlertCircle className="w-4 h-4" />
+                  {errors.templateId.message}
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Step 4: Network */}
+          {currentStep === 4 && (
+            <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
+              <div className="flex items-center gap-3 mb-6">
+                <div className="w-10 h-10 bg-accent text-white flex items-center justify-center border-2 border-black">
+                  <Network className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="text-xl font-black uppercase">Network Configuration</h2>
+                  <p className="text-sm text-gray-500">Configure IP address, bandwidth, and VLAN</p>
+                </div>
+              </div>
+
+              {/* IP Address (Optional) */}
+              <div className="space-y-2">
+                <label htmlFor="ipAddress" className="text-sm font-bold uppercase tracking-wide">
+                  IP Address <span className="text-gray-400">(optional)</span>
+                </label>
+                <Input
+                  id="ipAddress"
+                  {...register("ipAddress")}
+                  placeholder="e.g., 192.168.1.100"
+                  className={`h-12 ${errors.ipAddress ? "border-danger ring-2 ring-danger/30" : ""}`}
+                />
+                {errors.ipAddress && (
+                  <p className="text-sm font-medium text-danger flex items-center gap-1">
+                    <AlertCircle className="w-4 h-4" />
+                    {errors.ipAddress.message}
+                  </p>
+                )}
+                <p className="text-xs text-gray-500">
+                  Leave blank for automatic IP allocation via DHCP
+                </p>
+              </div>
+
+              {/* Bandwidth */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <label htmlFor="bandwidthMbps" className="text-sm font-bold uppercase tracking-wide">Bandwidth Limit</label>
+                  <span className="text-2xl font-black">{watchedValues.bandwidthMbps} Mbps</span>
+                </div>
+                <Controller
+                  name="bandwidthMbps"
+                  control={control}
+                  render={({ field: { onChange, value } }) => (
+                    <div className="relative">
+                      <input
+                        id="bandwidthMbps"
+                        type="range"
+                        min={1}
+                        max={10000}
+                        value={value}
+                        onChange={(e) => onChange(Number(e.target.value))}
+                        className="w-full h-4 appearance-none bg-white border-2 border-black cursor-pointer"
+                        style={{
+                          background: `linear-gradient(to right, #000000 0%, #000000 ${(value / 10000) * 100}%, #e5e5e5 ${(value / 10000) * 100}%, #e5e5e5 100%)`
+                        }}
+                      />
+                    </div>
+                  )}
+                />
+                <div className="flex justify-between text-xs text-gray-500">
+                  <span>1 Mbps</span>
+                  <span>10 Gbps</span>
+                </div>
+              </div>
+
+              {/* VLAN */}
+              <div className="space-y-2">
+                <label htmlFor="vlanId" className="text-sm font-bold uppercase tracking-wide">
+                  VLAN <span className="text-gray-400">(optional)</span>
+                </label>
+                <Controller
+                  name="vlanId"
+                  control={control}
+                  render={({ field }) => (
+                    <Select onValueChange={field.onChange} value={field.value || ""}>
+                      <SelectTrigger id="vlanId" className="h-12">
+                        <SelectValue placeholder="Select a VLAN" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="">No VLAN (Default)</SelectItem>
+                        {mockVlans.map((vlan) => (
+                          <SelectItem key={vlan.id} value={vlan.id}>
+                            <div className="flex items-center gap-2">
+                              <Wifi className="w-4 h-4" />
+                              <span>{vlan.name}</span>
+                              <span className="text-gray-400 text-sm">({vlan.network})</span>
+                            </div>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
+              </div>
+
+              {/* Network Preview */}
+              <div className="bg-gray-100 border-2 border-black p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <Wifi className="w-5 h-5" />
+                  <p className="text-xs font-bold uppercase">Network Settings</p>
+                </div>
+                <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div>
+                    <span className="text-gray-500">IP Address:</span>
+                    <span className="ml-2 font-bold">{watchedValues.ipAddress || "Auto (DHCP)"}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500">Bandwidth:</span>
+                    <span className="ml-2 font-bold">{watchedValues.bandwidthMbps} Mbps</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500">VLAN:</span>
+                    <span className="ml-2 font-bold">
+                      {watchedValues.vlanId 
+                        ? mockVlans.find(v => v.id === watchedValues.vlanId)?.name 
+                        : "None"
+                      }
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Step 5: Review */}
+          {currentStep === 5 && (
+            <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
+              <div className="flex items-center gap-3 mb-6">
+                <div className="w-10 h-10 bg-success flex items-center justify-center border-2 border-black">
+                  <CheckCircle2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="text-xl font-black uppercase">Review & Create</h2>
+                  <p className="text-sm text-gray-500">Confirm your VM configuration before creating</p>
+                </div>
+              </div>
+
+              {/* Summary Cards */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Basic Info */}
+                <div className="bg-gray-100 border-2 border-black p-4">
+                  <p className="text-xs font-bold uppercase mb-3 flex items-center gap-2">
+                    <Server className="w-4 h-4" /> Basic Information
+                  </p>
+                  <div className="space-y-2 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Hostname:</span>
+                      <span className="font-bold">{watchedValues.hostname}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Assigned To:</span>
+                      <span className="font-bold">{getSelectedUser()?.name}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Resources */}
+                <div className="bg-gray-100 border-2 border-black p-4">
+                  <p className="text-xs font-bold uppercase mb-3 flex items-center gap-2">
+                    <Cpu className="w-4 h-4" /> Resources
+                  </p>
+                  <div className="space-y-2 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">CPU:</span>
+                      <span className="font-bold">{watchedValues.cpuCores} vCPU</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">RAM:</span>
+                      <span className="font-bold">{watchedValues.ramGB} GB</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Disk:</span>
+                      <span className="font-bold">{watchedValues.diskGB} GB</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* OS Template */}
+                <div className="bg-gray-100 border-2 border-black p-4">
+                  <p className="text-xs font-bold uppercase mb-3 flex items-center gap-2">
+                    <HardDrive className="w-4 h-4" /> OS Template
+                  </p>
+                  {getSelectedTemplate() && (
+                    <div className="flex items-center gap-3">
+                      <span className="text-3xl">{getSelectedTemplate()?.logo}</span>
+                      <div>
+                        <p className="font-bold">{getSelectedTemplate()?.name}</p>
+                        <p className="text-sm text-gray-500">v{getSelectedTemplate()?.version}</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Network */}
+                <div className="bg-gray-100 border-2 border-black p-4">
+                  <p className="text-xs font-bold uppercase mb-3 flex items-center gap-2">
+                    <Network className="w-4 h-4" /> Network
+                  </p>
+                  <div className="space-y-2 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">IP Address:</span>
+                      <span className="font-bold">{watchedValues.ipAddress || "Auto (DHCP)"}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Bandwidth:</span>
+                      <span className="font-bold">{watchedValues.bandwidthMbps} Mbps</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">VLAN:</span>
+                      <span className="font-bold">
+                        {watchedValues.vlanId 
+                          ? mockVlans.find(v => v.id === watchedValues.vlanId)?.name 
+                          : "None"
+                        }
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Cost Estimation */}
+              <div className="bg-primary/30 border-4 border-black p-6">
+                <div className="flex items-center gap-3 mb-4">
+                  <CreditCard className="w-6 h-6" />
+                  <p className="text-lg font-black uppercase">Estimated Monthly Cost</p>
+                </div>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-5xl font-black">${calculateCost()}</span>
+                  <span className="text-lg font-bold text-gray-500">/month</span>
+                </div>
+                <p className="text-xs text-gray-500 mt-2">
+                  * Estimated cost based on selected resources. Actual usage may vary.
+                </p>
+              </div>
+
+              {/* Error Message */}
+              {submitError && (
+                <div className="bg-danger/20 border-2 border-danger p-4 flex items-center gap-2">
+                  <AlertCircle className="w-5 h-5 text-danger" />
+                  <p className="text-sm font-bold text-danger">{submitError}</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Navigation Buttons */}
+          <div className="flex items-center justify-between mt-8 pt-6 border-t-2 border-black">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={handleBack}
+              disabled={currentStep === 1 || isSubmitting}
+              className="gap-2"
+            >
+              <ChevronLeft className="w-4 h-4" />
+              Previous
+            </Button>
+
+            {currentStep < 5 ? (
+              <Button
+                type="button"
+                onClick={handleNext}
+                className="gap-2"
+              >
+                Next
+                <ChevronRight className="w-4 h-4" />
+              </Button>
+            ) : (
+              <Button
+                type="submit"
+                disabled={isSubmitting}
+                className="gap-2 bg-success hover:bg-success/80"
+              >
+                {isSubmitting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Creating VM...
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-4 h-4" />
+                    Create VM
+                  </>
+                )}
+              </Button>
+            )}
+          </div>
+        </div>
+      </form>
+    </div>
+  )
+}
