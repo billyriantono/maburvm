@@ -314,8 +314,8 @@ export default function UsersPage() {
                             <Edit className="w-4 h-4" />
                           </Button>
                         </Link>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger>
+<DropdownMenu>
+                          <DropdownMenuTrigger asChild>
                             <Button variant="ghost" size="icon" className="h-8 w-8">
                               <MoreHorizontal className="w-4 h-4" />
                             </Button>

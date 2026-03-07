@@ -119,15 +119,14 @@ export default async function DashboardLayout({
 
               {/* Notifications */}
               <DropdownMenu>
-                <DropdownMenuTrigger>
-                  <Button 
-                    variant="ghost" 
-                    size="icon"
-                    className="relative border-2 border-transparent hover:border-black hover:bg-gray-50"
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    className="relative w-10 h-10 border-2 border-black bg-white hover:bg-gray-50"
                   >
-                    <Bell className="w-5 h-5" />
+                    <Bell className="w-5 h-5 stroke-black" />
                     {/* Notification Badge */}
-                    <span className="absolute -top-1 -right-1 w-5 h-5 bg-accent text-white text-[10px] font-black flex items-center justify-center border-2 border-white">
+                    <span className="absolute -top-1 -right-1 w-5 h-5 bg-accent text-white text-[10px] font-black flex items-center justify-center border-2 border-black">
                       3
                     </span>
                   </Button>
@@ -163,7 +162,7 @@ export default async function DashboardLayout({
 
               {/* User Menu */}
               <DropdownMenu>
-                <DropdownMenuTrigger>
+                <DropdownMenuTrigger asChild>
                   <Button 
                     variant="ghost"
                     className="flex items-center gap-2 px-3 h-10 border-2 border-black bg-white hover:bg-gray-50"

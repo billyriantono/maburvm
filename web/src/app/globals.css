@@ -46,10 +46,6 @@
 }
 
 @layer base {
-  * {
-    @apply border-2 border-black;
-  }
-  
   body {
     @apply bg-background text-foreground;
     font-family: 'Courier New', Courier, monospace;

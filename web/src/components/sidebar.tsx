@@ -52,7 +52,7 @@ export function Sidebar({ user }: { user: User }) {
       {/* Logo */}
       <div className="h-16 flex items-center px-6 border-b-4 border-black bg-primary">
         <Link href="/dashboard" className="flex items-center gap-2">
-          <div className="w-10 h-10 bg-black flex items-center justify-center border-2 border-white">
+          <div className="w-10 h-10 bg-black flex items-center justify-center">
             <Monitor className="w-6 h-6 text-primary" />
           </div>
           <div className="flex flex-col">
