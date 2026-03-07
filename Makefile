@@ -1,8 +1,8 @@
 # MaburVM Panel Makefile
 
-.PHONY: build test proto migrate clean
+.PHONY: build test proto migrate clean run-panel run-agent build-agent-linux run-web dev
 
-# Build binaries
+# Default: build both binaries
 build:
 	@mkdir -p bin
 	@echo "Building panel..."
@@ -10,6 +10,42 @@ build:
 	@echo "Building agent..."
 	@go build -o bin/agent ./cmd/agent
 	@echo "Build complete: bin/panel bin/agent"
+
+# Run panel backend (dev mode)
+run-panel:
+	@echo "Starting panel backend on :8080..."
+	@go run ./cmd/panel
+
+# Run agent (dev mode - requires token)
+run-agent:
+	@if [ -z "$(TOKEN)" ]; then \
+		echo "Usage: make run-agent TOKEN=<node-token>"; \
+		echo "Example: make run-agent TOKEN=abc123"; \
+		exit 1; \
+	fi
+	@echo "Starting agent with token: $(TOKEN)..."
+	@go run ./cmd/agent -token=$(TOKEN)
+
+# Build agent for Linux (cross-compile)
+build-agent-linux:
+	@echo "Building agent for Linux..."
+	@mkdir -p bin/linux
+	@GOOS=linux GOARCH=amd64 go build -o bin/linux/agent-amd64 ./cmd/agent
+	@echo "Linux agent built: bin/linux/agent-amd64"
+	@echo "To build for ARM64: GOOS=linux GOARCH=arm64 go build -o bin/linux/agent-arm64 ./cmd/agent"
+
+# Run frontend dev server on all interfaces
+run-web:
+	@echo "Starting frontend on http://0.0.0.0:3000..."
+	@cd web && npm run dev -- -H 0.0.0.0
+
+# Dev: Run everything (panel + web)
+dev:
+	@echo "Starting MaburVM development servers..."
+	@echo "Panel will run on http://localhost:8080"
+	@echo "Web will run on http://0.0.0.0:3000"
+	@echo ""
+	@make -j2 run-panel run-web
 
 # Run tests
 test:
@@ -34,7 +70,33 @@ migrate:
 	@echo "Running migrations..."
 	@go run -tags migrate ./internal/shared/db/migrate.go
 
+# Install dependencies (Go + Node)
+install:
+	@echo "Installing Go dependencies..."
+	@go mod download
+	@echo "Installing Node dependencies..."
+	@cd web && npm install
+	@echo "Dependencies installed!"
+
 # Clean build artifacts
 clean:
 	@rm -rf bin/
+	@cd web && rm -rf .next/ node_modules/
 	@go clean
+
+# Help
+help:
+	@echo "MaburVM Panel - Available Commands:"
+	@echo ""
+	@echo "  make build              - Build both panel and agent binaries"
+	@echo "  make run-panel          - Run panel backend (dev mode)"
+	@echo "  make run-agent TOKEN=x  - Run agent with token"
+	@echo "  make build-agent-linux  - Build agent for Linux"
+	@echo "  make run-web            - Run frontend dev server (0.0.0.0:3000)"
+	@echo "  make dev                - Run both panel and web concurrently"
+	@echo "  make test               - Run all tests"
+	@echo "  make proto              - Generate protobuf code"
+	@echo "  make migrate            - Run database migrations"
+	@echo "  make install            - Install Go and Node dependencies"
+	@echo "  make clean              - Clean build artifacts"
+	@echo "  make help               - Show this help"
