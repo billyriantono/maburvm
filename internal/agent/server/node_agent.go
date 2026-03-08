@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/maburvm/panel/internal/agent/health"
@@ -21,6 +22,33 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// VMMetricsCache tracks per-VM metrics history for calculating rates
+type VMMetricsCache struct {
+	mu              sync.RWMutex
+	lastCPUTime     map[string]uint64
+	lastCPUCollect  map[string]time.Time
+	lastNetRX       map[string]int64
+	lastNetTX       map[string]int64
+	lastDiskRead    map[string]int64
+	lastDiskWrite   map[string]int64
+	lastNetCollect  map[string]time.Time
+	lastDiskCollect map[string]time.Time
+}
+
+// NewVMMetricsCache creates a new VM metrics cache
+func NewVMMetricsCache() *VMMetricsCache {
+	return &VMMetricsCache{
+		lastCPUTime:     make(map[string]uint64),
+		lastCPUCollect:  make(map[string]time.Time),
+		lastNetRX:       make(map[string]int64),
+		lastNetTX:       make(map[string]int64),
+		lastDiskRead:    make(map[string]int64),
+		lastDiskWrite:   make(map[string]int64),
+		lastNetCollect:  make(map[string]time.Time),
+		lastDiskCollect: make(map[string]time.Time),
+	}
+}
+
 // NodeAgentService implements the NodeAgent gRPC service
 type NodeAgentService struct {
 	pb.UnimplementedNodeAgentServer
@@ -28,6 +56,7 @@ type NodeAgentService struct {
 	networkMgr      *network.Manager
 	healthCollector *health.MetricsCollector
 	vncProxy        *vncproxy.Proxy
+	metricsCache    *VMMetricsCache
 }
 
 // NewNodeAgentService creates a new NodeAgentService with all dependencies
@@ -37,32 +66,27 @@ func NewNodeAgentService(libvirtMgr *libvirt.VMManager, networkMgr *network.Mana
 		networkMgr:      networkMgr,
 		healthCollector: healthCollector,
 		vncProxy:        vncProxy,
+		metricsCache:    NewVMMetricsCache(),
 	}
 }
 
-// Ensure NodeAgentService implements the interface
 var _ pb.NodeAgentServer = (*NodeAgentService)(nil)
 
-// generateAuthToken generates a secure random auth token
 func generateAuthToken() string {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
-		// Fallback to timestamp-based token
 		return fmt.Sprintf("token-%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b)
 }
 
-// RegisterNode handles initial node registration
 func (s *NodeAgentService) RegisterNode(ctx context.Context, req *pb.RegisterNodeRequest) (*pb.RegisterNodeResponse, error) {
 	log.Printf("[NodeAgent] RegisterNode called: hostname=%s, version=%s", req.Hostname, req.AgentVersion)
 
-	// Validate request
 	if req.Hostname == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "hostname is required")
 	}
 
-	// Generate unique node ID and auth token
 	nodeID := fmt.Sprintf("node-%s-%d", req.Hostname, time.Now().Unix())
 	authToken := generateAuthToken()
 
@@ -77,19 +101,14 @@ func (s *NodeAgentService) RegisterNode(ctx context.Context, req *pb.RegisterNod
 	return resp, nil
 }
 
-// Heartbeat establishes bidirectional streaming for health monitoring
 func (s *NodeAgentService) Heartbeat(stream grpc.BidiStreamingServer[pb.HeartbeatRequest, pb.HeartbeatResponse]) error {
 	log.Println("[NodeAgent] Heartbeat stream started")
 
-	// Get node ID from context
 	nodeID, _ := GetNodeIDFromContext(stream.Context())
 	if nodeID == "" {
 		nodeID = "unknown"
 	}
 
-	log.Printf("[NodeAgent] Heartbeat stream started for node: %s", nodeID)
-
-	// Start a goroutine to send periodic heartbeats from server to agent
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -113,7 +132,6 @@ func (s *NodeAgentService) Heartbeat(stream grpc.BidiStreamingServer[pb.Heartbea
 		}
 	}()
 
-	// Process incoming heartbeats from agent
 	for {
 		req, err := stream.Recv()
 		if err == io.EOF {
@@ -127,14 +145,12 @@ func (s *NodeAgentService) Heartbeat(stream grpc.BidiStreamingServer[pb.Heartbea
 
 		log.Printf("[NodeAgent] Received heartbeat from node %s at %v", req.NodeId, req.Timestamp.AsTime())
 
-		// Collect real health metrics if collector is available
 		if s.healthCollector != nil {
 			metrics := s.healthCollector.Collect()
 			log.Printf("[NodeAgent] Node %s health metrics: CPU=%.2f%%, Memory=%d/%d MB, VMs=%d",
 				nodeID, metrics.CPUPercent, metrics.MemoryUsed/1024/1024, metrics.MemoryTotal/1024/1024, metrics.RunningVMCount)
 		}
 
-		// Send immediate acknowledgment
 		resp := &pb.HeartbeatResponse{
 			Timestamp:       timestamppb.Now(),
 			CommandsPending: false,
@@ -149,7 +165,6 @@ func (s *NodeAgentService) Heartbeat(stream grpc.BidiStreamingServer[pb.Heartbea
 	}
 }
 
-// mapVMStatusToPBState maps internal VMStatus to protobuf VMState
 func mapVMStatusToPBState(status libvirt.VMStatus) pb.VMState {
 	switch status {
 	case libvirt.VMStatusRunning:
@@ -165,16 +180,13 @@ func mapVMStatusToPBState(status libvirt.VMStatus) pb.VMState {
 	}
 }
 
-// ExecuteVMCommand sends VM lifecycle commands
 func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMCommandRequest) (*pb.VMCommandResponse, error) {
 	log.Printf("[NodeAgent] ExecuteVMCommand: vm_id=%s, command=%v", req.VmId, req.Command)
 
-	// Validate request
 	if req.VmId == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "vm_id is required")
 	}
 
-	// Get node ID from context
 	nodeID, authenticated := GetNodeIDFromContext(ctx)
 	if !authenticated {
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
@@ -185,40 +197,22 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 	var err error
 	var state pb.VMState
 
-	// Map command to libvirt operations
 	switch req.Command {
 	case pb.VMCommandType_VM_COMMAND_TYPE_START:
 		err = libvirt.StartVM(req.VmId)
 		state = pb.VMState_VM_STATE_RUNNING
-
 	case pb.VMCommandType_VM_COMMAND_TYPE_STOP:
 		err = libvirt.StopVM(req.VmId, false)
 		state = pb.VMState_VM_STATE_STOPPED
-
 	case pb.VMCommandType_VM_COMMAND_TYPE_FORCE_STOP:
 		err = libvirt.StopVM(req.VmId, true)
 		state = pb.VMState_VM_STATE_STOPPED
-
 	case pb.VMCommandType_VM_COMMAND_TYPE_RESTART:
 		err = libvirt.RestartVM(req.VmId)
 		state = pb.VMState_VM_STATE_RUNNING
-
 	case pb.VMCommandType_VM_COMMAND_TYPE_DESTROY:
 		err = libvirt.DeleteVM(req.VmId)
 		state = pb.VMState_VM_STATE_DESTROYED
-
-	case pb.VMCommandType_VM_COMMAND_TYPE_CREATE:
-		// Create is handled separately (requires VMConfig)
-		return nil, status.Errorf(codes.Unimplemented, "VM_COMMAND_TYPE_CREATE not supported via ExecuteVMCommand, use CreateVM instead")
-
-	case pb.VMCommandType_VM_COMMAND_TYPE_PAUSE:
-		// Not yet implemented in libvirt package
-		return nil, status.Errorf(codes.Unimplemented, "pause not yet implemented")
-
-	case pb.VMCommandType_VM_COMMAND_TYPE_RESUME:
-		// Not yet implemented in libvirt package
-		return nil, status.Errorf(codes.Unimplemented, "resume not yet implemented")
-
 	default:
 		return nil, status.Errorf(codes.InvalidArgument, "unknown command: %v", req.Command)
 	}
@@ -234,18 +228,15 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 		}, nil
 	}
 
-	resp := &pb.VMCommandResponse{
+	return &pb.VMCommandResponse{
 		Success: true,
 		VmId:    req.VmId,
 		Command: req.Command,
 		State:   state,
 		Message: fmt.Sprintf("Command %v executed successfully", req.Command),
-	}
-
-	return resp, nil
+	}, nil
 }
 
-// GetVMStatus retrieves the current state of a VM
 func (s *NodeAgentService) GetVMStatus(ctx context.Context, req *pb.VMStatusRequest) (*pb.VMStatusResponse, error) {
 	log.Printf("[NodeAgent] GetVMStatus: vm_id=%s", req.VmId)
 
@@ -253,7 +244,6 @@ func (s *NodeAgentService) GetVMStatus(ctx context.Context, req *pb.VMStatusRequ
 		return nil, status.Errorf(codes.InvalidArgument, "vm_id is required")
 	}
 
-	// Get node ID from context
 	nodeID, authenticated := GetNodeIDFromContext(ctx)
 	if !authenticated {
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
@@ -261,53 +251,32 @@ func (s *NodeAgentService) GetVMStatus(ctx context.Context, req *pb.VMStatusRequ
 
 	log.Printf("[NodeAgent] Getting status for VM %s from node %s", req.VmId, nodeID)
 
-	// Get VM status from libvirt
 	vmStatus, err := libvirt.GetVMStatus(req.VmId)
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "VM not found: %v", err)
 	}
 
-	// Get detailed VM info
 	vmInfo, err := libvirt.GetVMInfo(req.VmId)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to get VM info: %v", err)
 	}
 
-	// Get uptime (simplified)
-	uptimeSeconds := int64(0)
-	if vmStatus == libvirt.VMStatusRunning {
-		uptimeSeconds = 3600
-	}
-
 	resp := &pb.VMStatusResponse{
 		VmId:            req.VmId,
 		State:           mapVMStatusToPBState(vmStatus),
-		UptimeSeconds:   uptimeSeconds,
+		UptimeSeconds:   0,
 		Pid:             0,
 		IpAddresses:     []string{},
 		VncPort:         int32(vmInfo.VNCPort),
 		LastStateChange: timestamppb.Now(),
 	}
 
-	if req.IncludeMetrics && s.healthCollector != nil {
-		metrics := s.healthCollector.Collect()
-		resp.CurrentResources = &pb.VMResourceUsage{
-			CpuPercent:     metrics.CPUPercent,
-			MemoryUsedMb:   metrics.MemoryUsed / 1024 / 1024,
-			MemoryTotalMb:  metrics.MemoryTotal / 1024 / 1024,
-			DiskReadBytes:  metrics.DiskReadBytesPerSec,
-			DiskWriteBytes: metrics.DiskWriteBytesPerSec,
-		}
-	}
-
 	return resp, nil
 }
 
-// StreamVMMetrics opens server-side streaming for VM metrics
 func (s *NodeAgentService) StreamVMMetrics(req *pb.VMMetricsRequest, stream grpc.ServerStreamingServer[pb.VMMetricsResponse]) error {
 	log.Printf("[NodeAgent] StreamVMMetrics started for VMs: %v", req.VmIds)
 
-	// Get node ID from context
 	nodeID, authenticated := GetNodeIDFromContext(stream.Context())
 	if !authenticated {
 		return status.Errorf(codes.Unauthenticated, "not authenticated")
@@ -315,7 +284,6 @@ func (s *NodeAgentService) StreamVMMetrics(req *pb.VMMetricsRequest, stream grpc
 
 	log.Printf("[NodeAgent] Streaming metrics from node %s", nodeID)
 
-	// Set default interval if not specified
 	interval := time.Duration(req.IntervalMs) * time.Millisecond
 	if interval == 0 {
 		interval = 5 * time.Second
@@ -326,7 +294,6 @@ func (s *NodeAgentService) StreamVMMetrics(req *pb.VMMetricsRequest, stream grpc
 
 	vmIDs := req.VmIds
 	if len(vmIDs) == 0 {
-		// If no VMs specified, get real VM list from libvirt
 		vms, err := libvirt.ListVMs()
 		if err != nil {
 			log.Printf("[NodeAgent] Failed to list VMs for metrics streaming: %v", err)
@@ -348,7 +315,6 @@ func (s *NodeAgentService) StreamVMMetrics(req *pb.VMMetricsRequest, stream grpc
 			log.Println("[NodeAgent] StreamVMMetrics context cancelled")
 			return nil
 		case <-ticker.C:
-			// Stream metrics for each VM
 			for _, vmID := range vmIDs {
 				metrics := s.collectVMMetrics(vmID)
 				if err := stream.Send(metrics); err != nil {
@@ -360,43 +326,133 @@ func (s *NodeAgentService) StreamVMMetrics(req *pb.VMMetricsRequest, stream grpc
 	}
 }
 
-// collectVMMetrics collects real metrics for a VM
+// collectVMMetrics collects REAL per-VM metrics using libvirt
 func (s *NodeAgentService) collectVMMetrics(vmID string) *pb.VMMetricsResponse {
-	_, err := libvirt.GetVMInfo(vmID)
+	now := time.Now()
+
+	// Get VM info
+	vmInfo, err := libvirt.GetVMInfo(vmID)
 	if err != nil {
 		return &pb.VMMetricsResponse{
-			Timestamp: timestamppb.Now(),
+			Timestamp: timestamppb.New(now),
 			VmId:      vmID,
 		}
 	}
 
-	var cpuPercent float64
-	var memUsed, memTotal int64
-	if s.healthCollector != nil {
-		metrics := s.healthCollector.Collect()
-		cpuPercent = metrics.CPUPercent
-		memUsed = metrics.MemoryUsed
-		memTotal = metrics.MemoryTotal
+	// Get real VM stats from libvirt
+	vmStats, err := libvirt.GetVMStats(vmID)
+	if err != nil {
+		log.Printf("[NodeAgent] Failed to get VM stats for %s: %v", vmID, err)
+		return &pb.VMMetricsResponse{
+			Timestamp: timestamppb.New(now),
+			VmId:      vmID,
+		}
+	}
+
+	s.metricsCache.mu.Lock()
+	defer s.metricsCache.mu.Unlock()
+
+	// Calculate CPU percentage
+	cpuPercent := 0.0
+	if lastCPUTime, exists := s.metricsCache.lastCPUTime[vmID]; exists {
+		if lastCollect, exists := s.metricsCache.lastCPUCollect[vmID]; exists {
+			timeDelta := now.Sub(lastCollect).Seconds()
+			if timeDelta > 0 {
+				cpuDelta := float64(vmStats.CPUTime - lastCPUTime)
+				cpuPercent = (cpuDelta / timeDelta / 1e9 / float64(vmStats.NumCPUs)) * 100
+				if cpuPercent < 0 {
+					cpuPercent = 0
+				}
+				if cpuPercent > 100*float64(vmStats.NumCPUs) {
+					cpuPercent = 100 * float64(vmStats.NumCPUs)
+				}
+			}
+		}
+	}
+
+	// Calculate network rates (bytes/sec)
+	var netRXRate, netTXRate int64
+	if lastNetRX, exists := s.metricsCache.lastNetRX[vmID]; exists {
+		if lastCollect, exists := s.metricsCache.lastNetCollect[vmID]; exists {
+			timeDelta := now.Sub(lastCollect).Seconds()
+			if timeDelta > 0 {
+				netRXRate = int64(float64(vmStats.NetRXBytes-lastNetRX) / timeDelta)
+				netTXRate = int64(float64(vmStats.NetTXBytes-lastNetTX) / timeDelta)
+				if netRXRate < 0 {
+					netRXRate = 0
+				}
+				if netTXRate < 0 {
+					netTXRate = 0
+				}
+			}
+		}
+	}
+
+	// Calculate disk rates (bytes/sec)
+	var diskReadRate, diskWriteRate int64
+	if lastDiskRead, exists := s.metricsCache.lastDiskRead[vmID]; exists {
+		if lastCollect, exists := s.metricsCache.lastDiskCollect[vmID]; exists {
+			timeDelta := now.Sub(lastCollect).Seconds()
+			if timeDelta > 0 {
+				diskReadRate = int64(float64(vmStats.DiskReadBytes-lastDiskRead) / timeDelta)
+				diskWriteRate = int64(float64(vmStats.DiskWriteBytes-lastDiskWrite) / timeDelta)
+				if diskReadRate < 0 {
+					diskReadRate = 0
+				}
+				if diskWriteRate < 0 {
+					diskWriteRate = 0
+				}
+			}
+		}
+	}
+
+	// Update cache
+	s.metricsCache.lastCPUTime[vmID] = vmStats.CPUTime
+	s.metricsCache.lastCPUCollect[vmID] = now
+	s.metricsCache.lastNetRX[vmID] = vmStats.NetRXBytes
+	s.metricsCache.lastNetTX[vmID] = vmStats.NetTXBytes
+	s.metricsCache.lastDiskRead[vmID] = vmStats.DiskReadBytes
+	s.metricsCache.lastDiskWrite[vmID] = vmStats.DiskWriteBytes
+	s.metricsCache.lastNetCollect[vmID] = now
+	s.metricsCache.lastDiskCollect[vmID] = now
+
+	// Calculate memory percentage
+	memPercent := 0.0
+	if vmStats.MemoryActual > 0 {
+		memPercent = float64(vmStats.MemoryRSS) / float64(vmStats.MemoryActual) * 100
 	}
 
 	return &pb.VMMetricsResponse{
-		Timestamp: timestamppb.Now(),
+		Timestamp: timestamppb.New(now),
 		VmId:      vmID,
 		Cpu: &pb.CPUMetrics{
 			UsagePercent: cpuPercent,
 		},
 		Memory: &pb.MemoryMetrics{
-			UsedBytes:      memUsed,
-			AvailableBytes: memTotal - memUsed,
-			TotalBytes:     memTotal,
+			UsedBytes:      vmStats.MemoryRSS,
+			AvailableBytes: vmStats.MemoryActual - vmStats.MemoryRSS,
+			TotalBytes:     vmStats.MemoryActual,
+			UsedPercent:    memPercent,
 		},
-		Disk:    &pb.DiskMetrics{},
-		Network: &pb.NetworkMetrics{},
-		Process: &pb.ProcessMetrics{},
+		Disk: &pb.DiskMetrics{
+			ReadBytesPerSec:  diskReadRate,
+			WriteBytesPerSec: diskWriteRate,
+			ReadOpsPerSec:    0,
+			WriteOpsPerSec:   0,
+		},
+		Network: &pb.NetworkMetrics{
+			RxBytesPerSec:   netRXRate,
+			TxBytesPerSec:   netTXRate,
+			RxPacketsPerSec: 0,
+			TxPacketsPerSec: 0,
+		},
+		Process: &pb.ProcessMetrics{
+			Pid:        0,
+			NumThreads: 0,
+		},
 	}
 }
 
-// CreateSnapshot creates or manages VM snapshots
 func (s *NodeAgentService) CreateSnapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.SnapshotResponse, error) {
 	log.Printf("[NodeAgent] CreateSnapshot: vm_id=%s, operation=%v", req.VmId, req.Operation)
 
@@ -413,91 +469,74 @@ func (s *NodeAgentService) CreateSnapshot(ctx context.Context, req *pb.SnapshotR
 
 	switch req.Operation {
 	case pb.SnapshotOperationType_SNAPSHOT_OPERATION_TYPE_CREATE:
-		return s.createSnapshot(ctx, req)
+		snap, err := libvirt.CreateSnapshot(req.VmId, req.Name, req.Description)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to create snapshot: %v", err)
+		}
+		return &pb.SnapshotResponse{
+			Success:   true,
+			Operation: req.Operation,
+			Snapshot: &pb.SnapshotInfo{
+				SnapshotId:  snap.UUID,
+				Name:        snap.Name,
+				Description: snap.Description,
+				CreatedAt:   timestamppb.New(snap.CreatedAt),
+				SizeBytes:   snap.Size,
+				VmState:     mapVMStatusToPBState(snap.State),
+			},
+		}, nil
 
 	case pb.SnapshotOperationType_SNAPSHOT_OPERATION_TYPE_LIST:
-		return s.listSnapshots(ctx, req)
+		snaps, err := libvirt.ListSnapshots(req.VmId)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to list snapshots: %v", err)
+		}
+		var pbSnaps []*pb.SnapshotInfo
+		for _, snap := range snaps {
+			pbSnaps = append(pbSnaps, &pb.SnapshotInfo{
+				SnapshotId:  snap.UUID,
+				Name:        snap.Name,
+				Description: snap.Description,
+				CreatedAt:   timestamppb.New(snap.CreatedAt),
+				SizeBytes:   snap.Size,
+				VmState:     mapVMStatusToPBState(snap.State),
+			})
+		}
+		return &pb.SnapshotResponse{
+			Success:   true,
+			Operation: req.Operation,
+			Snapshots: pbSnaps,
+		}, nil
 
 	case pb.SnapshotOperationType_SNAPSHOT_OPERATION_TYPE_RESTORE:
-		return s.restoreSnapshot(ctx, req)
+		if req.SnapshotId == "" {
+			return nil, status.Errorf(codes.InvalidArgument, "snapshot_id is required for restore")
+		}
+		if err := libvirt.RestoreSnapshot(req.VmId, req.SnapshotId); err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to restore snapshot: %v", err)
+		}
+		return &pb.SnapshotResponse{
+			Success:   true,
+			Operation: req.Operation,
+		}, nil
 
 	case pb.SnapshotOperationType_SNAPSHOT_OPERATION_TYPE_DELETE:
-		return s.deleteSnapshot(ctx, req)
-
-	case pb.SnapshotOperationType_SNAPSHOT_OPERATION_TYPE_INFO:
-		return s.getSnapshotInfo(ctx, req)
+		if req.SnapshotId == "" {
+			return nil, status.Errorf(codes.InvalidArgument, "snapshot_id is required for delete")
+		}
+		if err := libvirt.DeleteSnapshot(req.VmId, req.SnapshotId); err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to delete snapshot: %v", err)
+		}
+		return &pb.SnapshotResponse{
+			Success:   true,
+			Operation: req.Operation,
+		}, nil
 
 	default:
 		return nil, status.Errorf(codes.InvalidArgument, "unknown snapshot operation: %v", req.Operation)
 	}
 }
 
-func (s *NodeAgentService) createSnapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.SnapshotResponse, error) {
-	snapshotID := fmt.Sprintf("snap-%d", time.Now().Unix())
-
-	resp := &pb.SnapshotResponse{
-		Success:   true,
-		Operation: req.Operation,
-		Snapshot: &pb.SnapshotInfo{
-			SnapshotId:  snapshotID,
-			Name:        req.Name,
-			Description: req.Description,
-			CreatedAt:   timestamppb.Now(),
-			SizeBytes:   0,
-			VmState:     pb.VMState_VM_STATE_RUNNING,
-		},
-	}
-
-	return resp, nil
-}
-
-func (s *NodeAgentService) listSnapshots(ctx context.Context, req *pb.SnapshotRequest) (*pb.SnapshotResponse, error) {
-	// Would list all snapshots for the VM
-	return &pb.SnapshotResponse{
-		Success:   true,
-		Operation: req.Operation,
-		Snapshots: []*pb.SnapshotInfo{},
-	}, nil
-}
-
-func (s *NodeAgentService) restoreSnapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.SnapshotResponse, error) {
-	if req.SnapshotId == "" {
-		return nil, status.Errorf(codes.InvalidArgument, "snapshot_id is required for restore")
-	}
-
-	return &pb.SnapshotResponse{
-		Success:   true,
-		Operation: req.Operation,
-	}, nil
-}
-
-func (s *NodeAgentService) deleteSnapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.SnapshotResponse, error) {
-	if req.SnapshotId == "" {
-		return nil, status.Errorf(codes.InvalidArgument, "snapshot_id is required for delete")
-	}
-
-	return &pb.SnapshotResponse{
-		Success:   true,
-		Operation: req.Operation,
-	}, nil
-}
-
-func (s *NodeAgentService) getSnapshotInfo(ctx context.Context, req *pb.SnapshotRequest) (*pb.SnapshotResponse, error) {
-	if req.SnapshotId == "" {
-		return nil, status.Errorf(codes.InvalidArgument, "snapshot_id is required for info")
-	}
-
-	return &pb.SnapshotResponse{
-		Success:   true,
-		Operation: req.Operation,
-		Snapshot: &pb.SnapshotInfo{
-			SnapshotId: req.SnapshotId,
-			VmState:    pb.VMState_VM_STATE_RUNNING,
-		},
-	}, nil
-}
-
-// ApplyNetworkConfig applies network configuration to a VM
 func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *pb.NetworkConfigRequest) (*pb.NetworkConfigResponse, error) {
 	log.Printf("[NodeAgent] ApplyNetworkConfig: vm_id=%s", req.VmId)
 
@@ -512,35 +551,26 @@ func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *pb.Netwo
 
 	log.Printf("[NodeAgent] Applying network config to VM %s from node %s", req.VmId, nodeID)
 
-	// If network manager is available, use it to configure network
 	if s.networkMgr != nil {
-		// Get VM info to determine internal IP
 		vmInfo, err := libvirt.GetVMInfo(req.VmId)
 		if err != nil {
 			return nil, status.Errorf(codes.NotFound, "VM not found: %v", err)
 		}
-
-		// Apply network configuration (simplified)
-		_ = vmInfo // Would use this for IP configuration
-
+		_ = vmInfo
 		log.Printf("[NodeAgent] Network config applied to VM %s", req.VmId)
 	}
 
-	// Return success with applied interfaces
 	appliedInterfaces := make([]*pb.NetworkInterface, 0, len(req.Config.Interfaces))
 	for _, iface := range req.Config.Interfaces {
 		appliedInterfaces = append(appliedInterfaces, iface)
 	}
 
-	resp := &pb.NetworkConfigResponse{
+	return &pb.NetworkConfigResponse{
 		Success:           true,
 		AppliedInterfaces: appliedInterfaces,
-	}
-
-	return resp, nil
+	}, nil
 }
 
-// StartVNCProxy starts a VNC proxy for console access
 func (s *NodeAgentService) StartVNCProxy(ctx context.Context, req *pb.VNCProxyRequest) (*pb.VNCProxyResponse, error) {
 	log.Printf("[NodeAgent] StartVNCProxy: vm_id=%s", req.VmId)
 
@@ -555,26 +585,22 @@ func (s *NodeAgentService) StartVNCProxy(ctx context.Context, req *pb.VNCProxyRe
 
 	log.Printf("[NodeAgent] Starting VNC proxy for VM %s from node %s", req.VmId, nodeID)
 
-	// Get VM info to find VNC port
 	vmInfo, err := libvirt.GetVMInfo(req.VmId)
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "VM not found: %v", err)
 	}
 
-	// Get VNC port from VM info
 	vncPort := vmInfo.VNCPort
 	if vncPort == 0 {
-		// VM doesn't have VNC configured
 		return nil, status.Errorf(codes.FailedPrecondition, "VM %s does not have VNC configured", req.VmId)
 	}
 
 	websocketPort := int(req.WebsocketPort)
 	if websocketPort == 0 {
-		websocketPort = 6080 // Default noVNC port
+		websocketPort = 6080
 	}
 
-	// Determine expiry
-	expireSeconds := int32(3600) // Default 1 hour
+	expireSeconds := int32(3600)
 	if req.ExpirySeconds > 0 {
 		expireSeconds = req.ExpirySeconds
 	}
@@ -583,25 +609,21 @@ func (s *NodeAgentService) StartVNCProxy(ctx context.Context, req *pb.VNCProxyRe
 	var expiresAt time.Time
 
 	if s.vncProxy != nil {
-		// Use real VNC proxy
 		wsURL, token, expiresAt, err = s.vncProxy.StartSession(req.VmId, vncPort, websocketPort, expireSeconds)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to start VNC proxy: %v", err)
 		}
 	} else {
-		// Fallback to generated token without proxy
 		token = generateAuthToken()
 		expiresAt = time.Now().Add(time.Duration(expireSeconds) * time.Second)
 		wsURL = fmt.Sprintf("ws://localhost:%d/websockify?token=%s", websocketPort, token)
 	}
 
-	resp := &pb.VNCProxyResponse{
+	return &pb.VNCProxyResponse{
 		Success:       true,
 		WebsocketUrl:  wsURL,
 		WebsocketPort: int32(websocketPort),
 		Token:         token,
 		ExpiresAt:     timestamppb.New(expiresAt),
-	}
-
-	return resp, nil
+	}, nil
 }

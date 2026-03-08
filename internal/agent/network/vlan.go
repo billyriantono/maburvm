@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/maburvm/panel/internal/agent/libvirt"
 )
 
 const (
@@ -53,8 +55,8 @@ func (vm *VLANManager) validateVLANID(vlanID int) error {
 }
 
 // getVNetInterface returns the vnet interface name for a VM
-func (vm *VLANManager) getVNetInterface(vmID string) string {
-	return fmt.Sprintf("%s%s", DefaultInterfacePrefix, vmID[:8])
+func (vm *VLANManager) getVNetInterface(vmID string) (string, error) {
+	return libvirt.GetVMInterfaceName(vmID)
 }
 
 // AssignVLAN assigns a VLAN ID to a VM's vnet interface
@@ -67,7 +69,10 @@ func (vm *VLANManager) AssignVLAN(vmID string, vlanID int) error {
 	vm.mu.Lock()
 	defer vm.mu.Unlock()
 
-	iface := vm.getVNetInterface(vmID)
+	iface, err := vm.getVNetInterface(vmID)
+		if err != nil {
+			return err
+		}
 
 	// Method 1: Using bridge vlan commands (requires bridge-utils)
 	// This adds the vnet interface to a VLAN on the bridge
@@ -145,7 +150,10 @@ func (vm *VLANManager) RemoveVLAN(vmID string, vlanID int) error {
 	vm.mu.Lock()
 	defer vm.mu.Unlock()
 
-	iface := vm.getVNetInterface(vmID)
+	iface, err := vm.getVNetInterface(vmID)
+		if err != nil {
+			return err
+		}
 
 	// Try bridge vlan first
 	if err := vm.removeBridgeVLAN(iface, vlanID); err != nil {
@@ -282,7 +290,10 @@ func (vm *VLANManager) CleanupVM(vmID string) error {
 		return nil // Nothing to cleanup
 	}
 
-	iface := vm.getVNetInterface(vmID)
+	iface, err := vm.getVNetInterface(vmID)
+		if err != nil {
+			return err
+		}
 
 	// Try to remove bridge VLAN (ignore errors)
 	_ = vm.removeBridgeVLAN(iface, vlanID)

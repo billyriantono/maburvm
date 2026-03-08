@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -65,8 +66,6 @@ func (q *QCOW2Manager) CreateImage(path string, sizeGB int) error {
 }
 
 // ResizeImage resizes an existing QCOW2 image to the new size in GB
-// The resize preserves existing data. If newSizeGB is smaller than current,
-// it will shrink the image (may fail if data exceeds new size)
 func (q *QCOW2Manager) ResizeImage(path string, newSizeGB int) error {
 	if newSizeGB <= 0 {
 		return fmt.Errorf("new size must be positive, got %d", newSizeGB)
@@ -92,7 +91,6 @@ func (q *QCOW2Manager) ResizeImage(path string, newSizeGB int) error {
 }
 
 // CloneImage creates an independent copy of a QCOW2 image
-// Uses qemu-img convert to ensure the copy is independent (not a backing file chain)
 func (q *QCOW2Manager) CloneImage(source string, dest string) error {
 	// Verify source exists
 	if _, err := os.Stat(source); err != nil {
@@ -160,12 +158,46 @@ type ImageInfo struct {
 	ActualSize  int64  `json:"actual-size"`
 	DirtyFlag   bool   `json:"dirty-flag"`
 	ClusterSize int    `json:"cluster-size"`
+	BackingFile string `json:"backing-filename,omitempty"`
+	FullBackingPath string `json:"full-backing-filename,omitempty"`
+}
+
+// qemuImgOutput represents the JSON structure from qemu-img info
+type qemuImgOutput struct {
+	Format        string      `json:"format"`
+	VirtualSize   int64       `json:"virtual-size"`
+	ActualSize    int64       `json:"actual-size"`
+	DirtyFlag     bool        `json:"dirty-flag"`
+	ClusterSize   int         `json:"cluster-size"`
+	BackingFile   string      `json:"backing-filename"`
+	FullBackingPath string    `json:"full-backing-filename"`
+	Snapshots     []snapshot  `json:"snapshots"`
+}
+
+type snapshot struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	VMStateSize int64 `json:"vm-state-size"`
+	DateSec  int64  `json:"date-sec"`
+	DateNsec int64  `json:"date-nsec"`
 }
 
 // parseImageInfo parses the JSON output from qemu-img info
 func parseImageInfo(data []byte) (*ImageInfo, error) {
-	// Simple JSON parsing - in production, use proper JSON unmarshaling
-	info := &ImageInfo{}
-	// This is a simplified version - full implementation would use encoding/json
+	var output qemuImgOutput
+	if err := json.Unmarshal(data, &output); err != nil {
+		return nil, fmt.Errorf("failed to parse qemu-img output: %w", err)
+	}
+
+	info := &ImageInfo{
+		Format:          output.Format,
+		VirtualSize:     output.VirtualSize,
+		ActualSize:      output.ActualSize,
+		DirtyFlag:       output.DirtyFlag,
+		ClusterSize:     output.ClusterSize,
+		BackingFile:     output.BackingFile,
+		FullBackingPath: output.FullBackingPath,
+	}
+
 	return info, nil
 }

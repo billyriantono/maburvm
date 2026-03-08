@@ -747,3 +747,275 @@ func copyFile(src, dst string) error {
 func (s VMStatus) String() string {
 	return string(s)
 }
+
+// VMSnapshot represents a VM snapshot
+type VMSnapshot struct {
+	UUID        string
+	Name        string
+	Description string
+	CreatedAt   time.Time
+	State       VMStatus
+	Size        int64
+}
+
+// CreateSnapshot creates a new snapshot for a VM
+func CreateSnapshot(uuidStr, name, description string) (*VMSnapshot, error) {
+	if _, err := uuid.Parse(uuidStr); err != nil {
+		return nil, fmt.Errorf("invalid UUID format: %w", err)
+	}
+	if name == "" {
+		return nil, fmt.Errorf("snapshot name is required")
+	}
+
+	var snapshot VMSnapshot
+	err := WithConnection(func(conn *libvirt.Connect) error {
+		dom, err := conn.LookupDomainByUUIDString(uuidStr)
+		if err != nil {
+			return fmt.Errorf("domain not found: %w", err)
+		}
+		defer dom.Free()
+
+		state, _, err := dom.GetState()
+		if err != nil {
+			return fmt.Errorf("failed to get domain state: %w", err)
+		}
+
+		snapshotXML := fmt.Sprintf(`
+<domainsnapshot>
+	<name>%s</name>
+	<description>%s</description>
+	<creationTime>%d</creationTime>
+</domainsnapshot>`, name, description, time.Now().Unix())
+
+		snap, err := dom.CreateSnapshotXML(snapshotXML, libvirt.DOMAIN_SNAPSHOT_CREATE_ATOMIC)
+		if err != nil {
+			return fmt.Errorf("failed to create snapshot: %w", err)
+		}
+		defer snap.Free()
+
+		snapName, _ := snap.GetName()
+		snapshot = VMSnapshot{
+			UUID:        snapName,
+			Name:        snapName,
+			Description: description,
+			CreatedAt:   time.Now(),
+			State:       mapDomainStateToVMStatus(libvirt.DomainState(state)),
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+	return &snapshot, nil
+}
+
+// ListSnapshots returns all snapshots for a VM
+func ListSnapshots(uuidStr string) ([]VMSnapshot, error) {
+	if _, err := uuid.Parse(uuidStr); err != nil {
+		return nil, fmt.Errorf("invalid UUID format: %w", err)
+	}
+
+	var snapshots []VMSnapshot
+	err := WithConnection(func(conn *libvirt.Connect) error {
+		dom, err := conn.LookupDomainByUUIDString(uuidStr)
+		if err != nil {
+			return fmt.Errorf("domain not found: %w", err)
+		}
+		defer dom.Free()
+
+		snaps, err := dom.ListAllSnapshots(0)
+		if err != nil {
+			return fmt.Errorf("failed to list snapshots: %w", err)
+		}
+		defer func() {
+			for _, snap := range snaps {
+				snap.Free()
+			}
+		}()
+
+		for _, snap := range snaps {
+			name, err := snap.GetName()
+			if err != nil {
+				continue
+			}
+			info, err := snap.GetInfo()
+			if err != nil {
+				continue
+			}
+			snapshots = append(snapshots, VMSnapshot{
+				UUID:      name,
+				Name:      name,
+				CreatedAt: time.Unix(int64(info.CreationTime), 0),
+				State:     mapDomainStateToVMStatus(info.State),
+			})
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+	return snapshots, nil
+}
+
+// RestoreSnapshot restores a VM to a snapshot
+func RestoreSnapshot(uuidStr, snapshotName string) error {
+	if _, err := uuid.Parse(uuidStr); err != nil {
+		return fmt.Errorf("invalid UUID format: %w", err)
+	}
+	if snapshotName == "" {
+		return fmt.Errorf("snapshot name is required")
+	}
+
+	return WithConnection(func(conn *libvirt.Connect) error {
+		dom, err := conn.LookupDomainByUUIDString(uuidStr)
+		if err != nil {
+			return fmt.Errorf("domain not found: %w", err)
+		}
+		defer dom.Free()
+
+		snap, err := dom.LookupSnapshotByName(snapshotName, 0)
+		if err != nil {
+			return fmt.Errorf("snapshot not found: %w", err)
+		}
+		defer snap.Free()
+
+		if err := dom.RevertToSnapshot(snap, libvirt.DOMAIN_SNAPSHOT_REVERT_RUNNING); err != nil {
+			return fmt.Errorf("failed to revert to snapshot: %w", err)
+		}
+		return nil
+	})
+}
+
+// DeleteSnapshot deletes a snapshot
+func DeleteSnapshot(uuidStr, snapshotName string) error {
+	if _, err := uuid.Parse(uuidStr); err != nil {
+		return fmt.Errorf("invalid UUID format: %w", err)
+	}
+	if snapshotName == "" {
+		return fmt.Errorf("snapshot name is required")
+	}
+
+	return WithConnection(func(conn *libvirt.Connect) error {
+		dom, err := conn.LookupDomainByUUIDString(uuidStr)
+		if err != nil {
+			return fmt.Errorf("domain not found: %w", err)
+		}
+		defer dom.Free()
+
+		snap, err := dom.LookupSnapshotByName(snapshotName, 0)
+		if err != nil {
+			return fmt.Errorf("snapshot not found: %w", err)
+		}
+		defer snap.Free()
+
+		if err := snap.Delete(libvirt.DOMAIN_SNAPSHOT_DELETE_CHILDREN); err != nil {
+			return fmt.Errorf("failed to delete snapshot: %w", err)
+		}
+		return nil
+	})
+}
+
+// VMStats holds real-time VM statistics
+type VMStats struct {
+	CPUTime        uint64
+	MemoryActual   int64
+	MemoryRSS      int64
+	SwapIn         int64
+	SwapOut        int64
+	NetRXBytes     int64
+	NetTXBytes     int64
+	NetRXPackets   int64
+	NetTXPackets   int64
+	DiskReadBytes  int64
+	DiskWriteBytes int64
+	DiskReadOps    int64
+	DiskWriteOps   int64
+	NumCPUs        int
+}
+
+// GetVMStats returns real-time statistics for a VM
+func GetVMStats(uuidStr string) (*VMStats, error) {
+	if _, err := uuid.Parse(uuidStr); err != nil {
+		return nil, fmt.Errorf("invalid UUID format: %w", err)
+	}
+
+	var stats VMStats
+	err := WithConnection(func(conn *libvirt.Connect) error {
+		dom, err := conn.LookupDomainByUUIDString(uuidStr)
+		if err != nil {
+			return fmt.Errorf("domain not found: %w", err)
+		}
+		defer dom.Free()
+
+		// Get CPU stats
+		cpuStats, err := dom.GetCPUStats(-1, 1, 0)
+		if err == nil && len(cpuStats) > 0 {
+			stats.CPUTime = cpuStats[0].CpuTime
+		}
+
+		// Get vCPU count
+		info, err := dom.GetInfo()
+		if err == nil {
+			stats.NumCPUs = int(info.NrVirtCpu)
+		}
+
+		// Get memory stats
+		memStats, err := dom.MemoryStats(uint32(libvirt.DOMAIN_MEMORY_STAT_NR), 0)
+		if err == nil {
+			for _, stat := range memStats {
+				switch stat.Tag {
+				case int32(libvirt.DOMAIN_MEMORY_STAT_ACTUAL_BALLOON):
+					stats.MemoryActual = int64(stat.Val) * 1024
+				case int32(libvirt.DOMAIN_MEMORY_STAT_RSS):
+					stats.MemoryRSS = int64(stat.Val) * 1024
+				case int32(libvirt.DOMAIN_MEMORY_STAT_SWAP_IN):
+					stats.SwapIn = int64(stat.Val) * 1024
+				case int32(libvirt.DOMAIN_MEMORY_STAT_SWAP_OUT):
+					stats.SwapOut = int64(stat.Val) * 1024
+				}
+			}
+		}
+
+		// Get interface stats
+		ifaces, err := dom.InterfaceAddresses(libvirt.DOMAIN_INTERFACE_ADDRESSES_SRC_LEASE)
+		if err == nil {
+			for _, iface := range ifaces {
+				ifStats, err := dom.InterfaceStats(iface.Name)
+				if err == nil {
+					stats.NetRXBytes += int64(ifStats.RxBytes)
+					stats.NetTXBytes += int64(ifStats.TxBytes)
+					stats.NetRXPackets += int64(ifStats.RxPackets)
+					stats.NetTXPackets += int64(ifStats.TxPackets)
+				}
+			}
+		}
+
+		// Get block stats
+		xmlDesc, err := dom.GetXMLDesc(0)
+		if err == nil {
+			var domain libvirtxml.Domain
+			if err := xml.Unmarshal([]byte(xmlDesc), &domain); err == nil {
+				for _, disk := range domain.Devices.Disks {
+					if disk.Target != nil {
+						blkStats, err := dom.BlockStats(disk.Target.Dev)
+						if err == nil {
+							stats.DiskReadBytes += int64(blkStats.RdBytes)
+							stats.DiskWriteBytes += int64(blkStats.WrBytes)
+							stats.DiskReadOps += int64(blkStats.RdReq)
+							stats.DiskWriteOps += int64(blkStats.WrReq)
+						}
+					}
+				}
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+	return &stats, nil
+}
