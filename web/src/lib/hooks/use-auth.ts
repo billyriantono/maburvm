@@ -20,6 +20,13 @@ export function useCurrentUser(
   })
 }
 
+// Alias for useCurrentUser - provides a cleaner API for auth checks
+export function useAuth(
+  options?: Omit<UseQueryOptions<User>, 'queryKey' | 'queryFn'>
+) {
+  return useCurrentUser(options)
+}
+
 export function useLogin() {
   const queryClient = useQueryClient()
 

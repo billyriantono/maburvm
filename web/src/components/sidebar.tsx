@@ -17,13 +17,7 @@ import {
   Shield
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-
-// Mock user type
-type User = {
-  name: string
-  email: string
-  role: string
-}
+import type { User } from "@/types"
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -43,7 +37,11 @@ const settingsNav = [
   { href: "/settings/system", label: "System", icon: Shield },
 ]
 
-export function Sidebar({ user }: { user: User }) {
+interface SidebarProps {
+  user: User
+}
+
+export function Sidebar({ user }: SidebarProps) {
   const pathname = usePathname()
   const isSettingsActive = pathname.startsWith("/settings")
   

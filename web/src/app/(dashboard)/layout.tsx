@@ -1,5 +1,7 @@
-import { cookies } from "next/headers"
-import { redirect } from "next/navigation"
+"use client"
+
+import { useEffect } from "react"
+import { useRouter } from "next/navigation"
 import Link from "next/link"
 import { 
   Bell, 
@@ -8,7 +10,8 @@ import {
   LogOut, 
   Settings, 
   User,
-  Search
+  Search,
+  Loader2
 } from "lucide-react"
 import { Sidebar } from "@/components/sidebar"
 import { Button } from "@/components/ui/button"
@@ -20,62 +23,65 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { cn } from "@/lib/utils"
+import { useAuth, useLogout } from "@/lib/hooks/use-auth"
 
-// Mock user data - in production, this would come from the auth cookie/session
-const mockUser = {
-  name: "Admin User",
-  email: "admin@maburvm.local",
-  role: "Administrator",
-}
-
-// Simulated auth check - in production, verify JWT or session cookie
-async function getUser() {
-  const cookieStore = await cookies()
-  const authCookie = cookieStore.get("refreshToken")
-  
-  // For now, we'll allow access if there's any session or for demo purposes
-  // In production: if (!authCookie) redirect("/login")
-  if (!authCookie) {
-    // Demo mode: return mock user
-    return mockUser
-  }
-  
-  return mockUser
-}
-
-// Generate breadcrumbs from current path
-function generateBreadcrumbs(pathname: string) {
-  const segments = pathname.split("/").filter(Boolean)
-  const breadcrumbs = [{ label: "Home", href: "/dashboard" }]
-  
-  let currentPath = ""
-  segments.forEach((segment) => {
-    currentPath += `/${segment}`
-    const label = segment
-      .split("-")
-      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(" ")
-    breadcrumbs.push({ label, href: currentPath })
-  })
-  
-  return breadcrumbs
-}
-
-export default async function DashboardLayout({
+export default function DashboardLayout({
   children,
 }: {
   children: React.ReactNode
 }) {
-  // Auth guard - check for authentication
-  // In production, uncomment the redirect below
-  // const user = await getUser()
-  const user = mockUser // Demo mode
-  
-  // Get current path for breadcrumbs
-  // Note: In Next.js App Router, we need to use usePathname in client components
-  // For demo, we'll pass a default
-  
+  const router = useRouter()
+  const { data: user, isLoading, error, isError } = useAuth()
+  const logout = useLogout()
+
+  // Redirect to login if not authenticated
+  useEffect(() => {
+    if (isError && !isLoading) {
+      router.push("/login")
+    }
+  }, [isError, isLoading, router])
+
+  // Handle logout
+  const handleLogout = () => {
+    logout.mutate(undefined, {
+      onSuccess: () => {
+        router.push("/login")
+      }
+    })
+  }
+
+  // Show loading state
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-[#f5f5f0] flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
+          <p className="text-sm font-medium text-gray-500">Loading...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // Show error state
+  if (isError || !user) {
+    return (
+      <div className="min-h-screen bg-[#f5f5f0] flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <p className="text-sm font-medium text-destructive">
+            {error?.message || "Authentication failed"}
+          </p>
+          <Button onClick={() => router.push("/login")}>
+            Go to Login
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  // Derive display name from email (use part before @)
+  const displayName = user.email.split('@')[0]
+  const displayRole = user.role === 'admin' ? 'Administrator' : 'Client'
+
   return (
     <div className="min-h-screen bg-[#f5f5f0]">
       {/* Sidebar */}
@@ -172,16 +178,16 @@ export default async function DashboardLayout({
                       <User className="w-4 h-4" />
                     </div>
                     <span className="hidden md:block text-sm font-bold uppercase">
-                      {user.name}
+                      {displayName}
                     </span>
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-56">
                   <DropdownMenuLabel className="font-black uppercase text-xs">
-                    {user.name}
+                    {displayName}
                   </DropdownMenuLabel>
                   <p className="px-2 py-1 text-xs text-gray-500">{user.email}</p>
-                  <p className="px-2 pb-2 text-xs font-bold text-primary">{user.role}</p>
+                  <p className="px-2 pb-2 text-xs font-bold text-primary">{displayRole}</p>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem className="font-medium cursor-pointer">
                     <User className="w-4 h-4 mr-2" />
@@ -192,9 +198,13 @@ export default async function DashboardLayout({
                     Settings
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem className="font-medium text-destructive focus:text-destructive cursor-pointer">
+                  <DropdownMenuItem 
+                    className="font-medium text-destructive focus:text-destructive cursor-pointer"
+                    onClick={handleLogout}
+                    disabled={logout.isPending}
+                  >
                     <LogOut className="w-4 h-4 mr-2" />
-                    Logout
+                    {logout.isPending ? "Logging out..." : "Logout"}
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
