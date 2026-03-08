@@ -15,14 +15,20 @@ import type {
 export function useNodes() {
   return useQuery<Node[]>({
     queryKey: ['nodes', 'list'],
-    queryFn: () => api.get<Node[]>('/api/v1/nodes'),
+    queryFn: async () => {
+      const response = await api.get<Node[]>('/api/v1/nodes')
+      return response.data.data
+    },
   })
 }
 
 export function useNode(id: string, options?: UseQueryOptions<Node>) {
   return useQuery<Node>({
     queryKey: ['nodes', 'detail', id],
-    queryFn: () => api.get<Node>(`/api/v1/nodes/${id}`),
+    queryFn: async () => {
+      const response = await api.get<Node>(`/api/v1/nodes/${id}`)
+      return response.data.data
+    },
     enabled: !!id,
     ...options,
   })
@@ -31,7 +37,10 @@ export function useNode(id: string, options?: UseQueryOptions<Node>) {
 export function useNodeMetrics(id: string) {
   return useQuery<NodeMetrics>({
     queryKey: ['nodes', 'metrics', id],
-    queryFn: () => api.get<NodeMetrics>(`/api/v1/nodes/${id}/metrics`),
+    queryFn: async () => {
+      const response = await api.get<NodeMetrics>(`/api/v1/nodes/${id}/metrics`)
+      return response.data.data
+    },
     enabled: !!id,
     refetchInterval: 10000,
   })
@@ -41,7 +50,10 @@ export function useCreateNode() {
   const queryClient = useQueryClient()
 
   return useMutation<Node, Error, CreateNodeRequest>({
-    mutationFn: (data) => api.post<Node>('/api/v1/nodes', data),
+    mutationFn: async (data) => {
+      const response = await api.post<Node>('/api/v1/nodes', data)
+      return response.data.data
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['nodes', 'list'] })
     },
@@ -52,7 +64,10 @@ export function useUpdateNode(id: string) {
   const queryClient = useQueryClient()
 
   return useMutation<Node, Error, UpdateNodeRequest>({
-    mutationFn: (data) => api.put<Node>(`/api/v1/nodes/${id}`, data),
+    mutationFn: async (data) => {
+      const response = await api.put<Node>(`/api/v1/nodes/${id}`, data)
+      return response.data.data
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['nodes', 'detail', id] })
       queryClient.invalidateQueries({ queryKey: ['nodes', 'list'] })
@@ -64,7 +79,9 @@ export function useDeleteNode() {
   const queryClient = useQueryClient()
 
   return useMutation<void, Error, string>({
-    mutationFn: (id) => api.delete(`/api/v1/nodes/${id}`),
+    mutationFn: async (id) => {
+      await api.delete(`/api/v1/nodes/${id}`)
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['nodes', 'list'] })
     },

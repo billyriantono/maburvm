@@ -15,7 +15,7 @@ import type {
 interface UserListParams {
   page?: number
   pageSize?: number
-  role?: string
+  role?: string;
 }
 
 export function useUsers(params: UserListParams = {}) {
@@ -23,19 +23,26 @@ export function useUsers(params: UserListParams = {}) {
 
   return useQuery<PaginatedResponse<User>>({
     queryKey: ['users', 'list', { page, pageSize, role }],
-    queryFn: () =>
-      api.get<PaginatedResponse<User>>('/api/v1/users', {
-        page,
-        page_size: pageSize,
-        role,
-      }),
+    queryFn: async () => {
+      const response = await api.get<PaginatedResponse<User>>('/api/v1/users', {
+        params: {
+          page,
+          page_size: pageSize,
+          role,
+        },
+      })
+      return response.data.data
+    },
   })
 }
 
 export function useUser(id: string, options?: UseQueryOptions<User>) {
   return useQuery<User>({
     queryKey: ['users', 'detail', id],
-    queryFn: () => api.get<User>(`/api/v1/users/${id}`),
+    queryFn: async () => {
+      const response = await api.get<User>(`/api/v1/users/${id}`)
+      return response.data.data
+    },
     enabled: !!id,
     ...options,
   })
@@ -45,7 +52,10 @@ export function useCreateUser() {
   const queryClient = useQueryClient()
 
   return useMutation<User, Error, CreateUserRequest>({
-    mutationFn: (data) => api.post<User>('/api/v1/users', data),
+    mutationFn: async (data) => {
+      const response = await api.post<User>('/api/v1/users', data)
+      return response.data.data
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users', 'list'] })
     },
@@ -56,7 +66,10 @@ export function useUpdateUser(id: string) {
   const queryClient = useQueryClient()
 
   return useMutation<User, Error, UpdateUserRequest>({
-    mutationFn: (data) => api.put<User>(`/api/v1/users/${id}`, data),
+    mutationFn: async (data) => {
+      const response = await api.put<User>(`/api/v1/users/${id}`, data)
+      return response.data.data
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users', 'detail', id] })
       queryClient.invalidateQueries({ queryKey: ['users', 'list'] })
@@ -68,7 +81,9 @@ export function useDeleteUser() {
   const queryClient = useQueryClient()
 
   return useMutation<void, Error, string>({
-    mutationFn: (id) => api.delete(`/api/v1/users/${id}`),
+    mutationFn: async (id) => {
+      await api.delete(`/api/v1/users/${id}`)
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users', 'list'] })
     },

@@ -10,7 +10,6 @@ import type {
   VMMetrics,
   CreateVMRequest,
   UpdateVMRequest,
-  VMAction,
   PaginatedResponse,
 } from '@/types'
 
@@ -19,8 +18,7 @@ interface VMListParams {
   pageSize?: number
   userId?: string
   nodeId?: string
-  status?: string
-  templateId?: string
+  status?: string;
 }
 
 export function useVMs(params: VMListParams = {}) {
@@ -28,21 +26,28 @@ export function useVMs(params: VMListParams = {}) {
 
   return useQuery<PaginatedResponse<VM>>({
     queryKey: ['vms', 'list', { page, pageSize, userId, nodeId, status }],
-    queryFn: () =>
-      api.get<PaginatedResponse<VM>>('/api/v1/vms', {
-        page,
-        page_size: pageSize,
-        user_id: userId,
-        node_id: nodeId,
-        status,
-      }),
+    queryFn: async () => {
+      const response = await api.get<PaginatedResponse<VM>>('/api/v1/vms', {
+        params: {
+          page,
+          page_size: pageSize,
+          user_id: userId,
+          node_id: nodeId,
+          status,
+        },
+      })
+      return response.data.data
+    },
   })
 }
 
 export function useVM(id: string, options?: UseQueryOptions<VM>) {
   return useQuery<VM>({
     queryKey: ['vms', 'detail', id],
-    queryFn: () => api.get<VM>(`/api/v1/vms/${id}`),
+    queryFn: async () => {
+      const response = await api.get<VM>(`/api/v1/vms/${id}`)
+      return response.data.data
+    },
     enabled: !!id,
     ...options,
   })
@@ -52,7 +57,10 @@ export function useCreateVM() {
   const queryClient = useQueryClient()
 
   return useMutation<VM, Error, CreateVMRequest>({
-    mutationFn: (data) => api.post<VM>('/api/v1/vms', data),
+    mutationFn: async (data) => {
+      const response = await api.post<VM>('/api/v1/vms', data)
+      return response.data.data
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['vms', 'list'] })
     },
@@ -63,7 +71,10 @@ export function useUpdateVM(id: string) {
   const queryClient = useQueryClient()
 
   return useMutation<VM, Error, UpdateVMRequest>({
-    mutationFn: (data) => api.put<VM>(`/api/v1/vms/${id}`, data),
+    mutationFn: async (data) => {
+      const response = await api.put<VM>(`/api/v1/vms/${id}`, data)
+      return response.data.data
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['vms', 'detail', id] })
       queryClient.invalidateQueries({ queryKey: ['vms', 'list'] })
@@ -75,7 +86,9 @@ export function useDeleteVM() {
   const queryClient = useQueryClient()
 
   return useMutation<void, Error, string>({
-    mutationFn: (id) => api.delete(`/api/v1/vms/${id}`),
+    mutationFn: async (id) => {
+      await api.delete(`/api/v1/vms/${id}`)
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['vms', 'list'] })
     },
@@ -85,9 +98,10 @@ export function useDeleteVM() {
 export function useVMAction(id: string) {
   const queryClient = useQueryClient()
 
-  return useMutation<void, Error, VMAction>({
-    mutationFn: (action) =>
-      api.post(`/api/v1/vms/${id}/actions`, { action }),
+  return useMutation<void, Error, string>({
+    mutationFn: async (action) => {
+      await api.post(`/api/v1/vms/${id}/actions`, { action })
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['vms', 'detail', id] })
       queryClient.invalidateQueries({ queryKey: ['vms', 'list'] })
@@ -98,7 +112,10 @@ export function useVMAction(id: string) {
 export function useVMMetrics(id: string) {
   return useQuery<VMMetrics>({
     queryKey: ['vms', 'metrics', id],
-    queryFn: () => api.get<VMMetrics>(`/api/v1/vms/${id}/metrics`),
+    queryFn: async () => {
+      const response = await api.get<VMMetrics>(`/api/v1/vms/${id}/metrics`)
+      return response.data.data
+    },
     enabled: !!id,
     refetchInterval: 5000,
   })

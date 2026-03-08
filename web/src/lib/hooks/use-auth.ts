@@ -12,7 +12,10 @@ export function useCurrentUser(
 ) {
   return useQuery<User>({
     queryKey: ['auth', 'me'],
-    queryFn: () => api.get<User>('/api/v1/auth/me'),
+    queryFn: async () => {
+      const response = await api.get<User>('/api/v1/auth/me')
+      return response.data.data
+    },
     ...options,
   })
 }
@@ -21,7 +24,10 @@ export function useLogin() {
   const queryClient = useQueryClient()
 
   return useMutation<LoginResponse, Error, LoginRequest>({
-    mutationFn: (data) => api.post<LoginResponse>('/api/v1/auth/login', data),
+    mutationFn: async (data) => {
+      const response = await api.post<LoginResponse>('/api/v1/auth/login', data)
+      return response.data.data
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['auth', 'me'] })
     },
@@ -32,7 +38,9 @@ export function useLogout() {
   const queryClient = useQueryClient()
 
   return useMutation<void, Error, void>({
-    mutationFn: () => api.post('/api/v1/auth/logout'),
+    mutationFn: async () => {
+      await api.post('/api/v1/auth/logout')
+    },
     onSuccess: () => {
       queryClient.clear()
     },

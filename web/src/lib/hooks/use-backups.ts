@@ -14,7 +14,10 @@ import type {
 export function useBackups(vmId: string) {
   return useQuery<Backup[]>({
     queryKey: ['backups', 'list', vmId],
-    queryFn: () => api.get<Backup[]>(`/api/v1/vms/${vmId}/backups`),
+    queryFn: async () => {
+      const response = await api.get<Backup[]>(`/api/v1/vms/${vmId}/backups`)
+      return response.data.data
+    },
     enabled: !!vmId,
   })
 }
@@ -22,8 +25,10 @@ export function useBackups(vmId: string) {
 export function useBackupSchedules(vmId: string) {
   return useQuery<BackupSchedule[]>({
     queryKey: ['backups', 'schedules', vmId],
-    queryFn: () =>
-      api.get<BackupSchedule[]>(`/api/v1/vms/${vmId}/backup-schedules`),
+    queryFn: async () => {
+      const response = await api.get<BackupSchedule[]>(`/api/v1/vms/${vmId}/backup-schedules`)
+      return response.data.data
+    },
     enabled: !!vmId,
   })
 }
@@ -32,8 +37,10 @@ export function useCreateBackupSchedule(vmId: string) {
   const queryClient = useQueryClient()
 
   return useMutation<BackupSchedule, Error, CreateBackupScheduleRequest>({
-    mutationFn: (data) =>
-      api.post<BackupSchedule>(`/api/v1/vms/${vmId}/backup-schedules`, data),
+    mutationFn: async (data) => {
+      const response = await api.post<BackupSchedule>(`/api/v1/vms/${vmId}/backup-schedules`, data)
+      return response.data.data
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: ['backups', 'schedules', vmId],
@@ -50,11 +57,13 @@ export function useUpdateBackupSchedule(vmId: string) {
     Error,
     { scheduleId: string; data: UpdateBackupScheduleRequest }
   >({
-    mutationFn: ({ scheduleId, data }) =>
-      api.put<BackupSchedule>(
+    mutationFn: async ({ scheduleId, data }) => {
+      const response = await api.put<BackupSchedule>(
         `/api/v1/vms/${vmId}/backup-schedules/${scheduleId}`,
         data
-      ),
+      )
+      return response.data.data
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: ['backups', 'schedules', vmId],
@@ -67,8 +76,9 @@ export function useDeleteBackupSchedule(vmId: string) {
   const queryClient = useQueryClient()
 
   return useMutation<void, Error, string>({
-    mutationFn: (scheduleId) =>
-      api.delete(`/api/v1/vms/${vmId}/backup-schedules/${scheduleId}`),
+    mutationFn: async (scheduleId) => {
+      await api.delete(`/api/v1/vms/${vmId}/backup-schedules/${scheduleId}`)
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: ['backups', 'schedules', vmId],
@@ -81,7 +91,10 @@ export function useCreateBackup(vmId: string) {
   const queryClient = useQueryClient()
 
   return useMutation<Backup, Error, void>({
-    mutationFn: () => api.post<Backup>(`/api/v1/vms/${vmId}/backups`),
+    mutationFn: async () => {
+      const response = await api.post<Backup>(`/api/v1/vms/${vmId}/backups`)
+      return response.data.data
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backups', 'list', vmId] })
     },
@@ -92,8 +105,9 @@ export function useDeleteBackup(vmId: string) {
   const queryClient = useQueryClient()
 
   return useMutation<void, Error, string>({
-    mutationFn: (backupId) =>
-      api.delete(`/api/v1/vms/${vmId}/backups/${backupId}`),
+    mutationFn: async (backupId) => {
+      await api.delete(`/api/v1/vms/${vmId}/backups/${backupId}`)
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backups', 'list', vmId] })
     },

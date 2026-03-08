@@ -1,119 +1,96 @@
-import axios, { AxiosError, AxiosInstance, AxiosRequestConfig } from 'axios'
+import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8089'
+// API Response wrapper matching Go backend structure
+export interface ApiResponse<T> {
+  data: T;
+  message?: string;
+  success: boolean;
+}
 
+// API Error structure
 export interface ApiError {
-  status: number
-  message: string
-  errors?: Record<string, string[]>
+  message: string;
+  code?: string;
+  details?: Record<string, string[]>;
 }
 
-function getCookie(name: string): string | null {
-  if (typeof document === 'undefined') return null
-  const value = `; ${document.cookie}`
-  const parts = value.split(`; ${name}=`)
-  if (parts.length === 2) return parts.pop()?.split(';').shift() ?? null
-  return null
-}
+// Create axios instance with default config
+const apiClient: AxiosInstance = axios.create({
+  baseURL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  timeout: 30000,
+});
 
-function deleteCookie(name: string): void {
-  if (typeof document === 'undefined') return
-  document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;`
-}
-
-function createApiClient(): AxiosInstance {
-  const client = axios.create({
-    baseURL: API_BASE_URL,
-    withCredentials: true,
-    headers: {
-      'Content-Type': 'application/json',
-    },
-  })
-
-  client.interceptors.request.use(
-    (config) => {
-      const token = getCookie('refreshToken')
-      if (token && config.headers) {
-        config.headers.Authorization = `Bearer ${token}`
+// Request interceptor: Attach JWT token
+apiClient.interceptors.request.use(
+  (config) => {
+    // Try to get token from cookie first, then localStorage
+    let token: string | null = null;
+    
+    if (typeof document !== 'undefined') {
+      // Try cookie first (preferred for httpOnly)
+      const cookieMatch = document.cookie.match(/accessToken=([^;]+)/);
+      if (cookieMatch) {
+        token = cookieMatch[1];
+      } else {
+        // Fallback to localStorage
+        token = localStorage.getItem('accessToken');
       }
-      return config
-    },
-    (error) => Promise.reject(error)
-  )
-
-  client.interceptors.response.use(
-    (response) => response,
-    (error: AxiosError<ApiError>) => {
-      if (error.response) {
-        const status = error.response.status
-        const data = error.response.data
-
-        if (status === 401) {
-          deleteCookie('refreshToken')
-          if (typeof window !== 'undefined') {
-            window.location.href = '/login'
-          }
-        }
-
-        const apiError: ApiError = {
-          status,
-          message: data?.message ?? error.message,
-          errors: data?.errors,
-        }
-
-        return Promise.reject(apiError)
-      }
-
-      const apiError: ApiError = {
-        status: 500,
-        message: error.message ?? 'Network error',
-      }
-
-      return Promise.reject(apiError)
     }
-  )
 
-  return client
-}
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
 
-const apiClient = createApiClient()
-
-export const api = {
-  get: <T>(url: string, params?: object) =>
-    apiClient.get<T>(url, { params }).then((r) => r.data),
-  post: <T>(url: string, data?: unknown) =>
-    apiClient.post<T>(url, data).then((r) => r.data),
-  put: <T>(url: string, data?: unknown) =>
-    apiClient.put<T>(url, data).then((r) => r.data),
-  patch: <T>(url: string, data?: unknown) =>
-    apiClient.patch<T>(url, data).then((r) => r.data),
-  delete: <T>(url: string) => apiClient.delete<T>(url).then((r) => r.data),
-}
-
-export function createServerApiClient(token?: string): AxiosInstance {
-  const client = axios.create({
-    baseURL: API_BASE_URL,
-    headers: {
-      'Content-Type': 'application/json',
-    },
-  })
-
-  if (token) {
-    client.defaults.headers.common['Authorization'] = `Bearer ${token}`
+    return config;
+  },
+  (error) => {
+    return Promise.reject(error);
   }
+);
 
-  return client
-}
+// Response interceptor: Handle 401 and other errors
+apiClient.interceptors.response.use(
+  (response: AxiosResponse) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      // Clear tokens
+      if (typeof document !== 'undefined') {
+        document.cookie = 'accessToken=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;';
+        document.cookie = 'refreshToken=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;';
+        localStorage.removeItem('accessToken');
+        localStorage.removeItem('refreshToken');
+      }
+      
+      // Redirect to login if in browser
+      if (typeof window !== 'undefined') {
+        window.location.href = '/login';
+      }
+    }
+    
+    return Promise.reject(error);
+  }
+);
 
-export const serverApi = {
-  get: <T>(client: AxiosInstance, url: string, params?: object) =>
-    client.get<T>(url, { params }).then((r) => r.data),
-  post: <T>(client: AxiosInstance, url: string, data?: unknown) =>
-    client.post<T>(url, data).then((r) => r.data),
-  put: <T>(client: AxiosInstance, url: string, data?: unknown) =>
-    client.put<T>(url, data).then((r) => r.data),
-  patch: <T>(client: AxiosInstance, url: string, data?: unknown) =>
-    client.patch<T>(url, data).then((r) => r.data),
-  delete: <T>(client: AxiosInstance, url: string) =>
-    client.delete<T>(url).then((r) => r.data),
-}
+// Typed HTTP methods
+export const api = {
+  get: <T>(url: string, config?: AxiosRequestConfig): Promise<AxiosResponse<ApiResponse<T>>> =>
+    apiClient.get<ApiResponse<T>>(url, config),
+
+  post: <T>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<AxiosResponse<ApiResponse<T>>> =>
+    apiClient.post<ApiResponse<T>>(url, data, config),
+
+  put: <T>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<AxiosResponse<ApiResponse<T>>> =>
+    apiClient.put<ApiResponse<T>>(url, data, config),
+
+  patch: <T>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<AxiosResponse<ApiResponse<T>>> =>
+    apiClient.patch<ApiResponse<T>>(url, data, config),
+
+  delete: <T>(url: string, config?: AxiosRequestConfig): Promise<AxiosResponse<ApiResponse<T>>> =>
+    apiClient.delete<ApiResponse<T>>(url, config),
+};
+
+export default apiClient;
+export { apiClient };

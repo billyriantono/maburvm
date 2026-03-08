@@ -1,52 +1,63 @@
-export type VMStatus = 'running' | 'stopped' | 'suspended' | 'creating' | 'error'
+// VMStatus matches the Go VMStatus type
+export type VMStatus = 'running' | 'stopped' | 'suspended' | 'creating' | 'error';
 
+// Resources represents CPU, RAM, and Disk resources for a VM
 export interface Resources {
-  cpu: number
-  ram: number
-  disk: number
-  iops?: number
-  swap?: number
+  cpu: number;
+  ram: number; // MB
+  disk: number; // GB
+  iops?: number;
+  swap?: number; // MB
 }
 
+// VM represents a virtual machine in the system
 export interface VM {
-  id: string
-  user_id: string
-  node_id: string
-  hostname: string
-  os_template_id: string
-  resources: Resources
-  status: VMStatus
-  source_migration?: string
-  vnc_port?: number
-  created_at: string
-  updated_at: string
+  id: string;
+  user_id: string;
+  node_id: string;
+  hostname: string;
+  os_template_id: string;
+  resources: Resources;
+  status: VMStatus;
+  source_migration?: string;
+  vnc_port?: number;
+  created_at: string;
+  updated_at: string;
 }
 
+// VMMetrics represents VM performance metrics
 export interface VMMetrics {
-  id: string
-  hostname: string
-  status: VMStatus
-  cpu_usage: number
-  memory_usage: number
-  disk_usage: number
-  network_in: number
-  network_out: number
+  cpu_percent: number;
+  memory_used: number;
+  memory_total: number;
+  memory_used_percent: number;
+  disk_read_bytes_per_sec: number;
+  disk_write_bytes_per_sec: number;
+  network_rx_bytes_per_sec: number;
+  network_tx_bytes_per_sec: number;
 }
 
-export type VMAction = 'start' | 'stop' | 'restart' | 'rebuild' | 'suspend' | 'resume'
-
+// CreateVMRequest for creating new VMs
 export interface CreateVMRequest {
-  hostname: string
-  node_id: string
-  os_template_id: string
-  resources: Resources
+  hostname: string;
+  os_template_id: string;
+  node_id?: string;
+  resources: Resources;
 }
 
+// UpdateVMRequest for updating VMs
 export interface UpdateVMRequest {
-  hostname?: string
-  resources?: Resources
+  hostname?: string;
+  resources?: Partial<Resources>;
 }
 
-export interface VMActionRequest {
-  action: VMAction
+// VMStartRequest for starting a VM
+export interface VMStartRequest {
+  vnc_enabled?: boolean;
+}
+
+// VMStartResponse after starting a VM
+export interface VMStartResponse {
+  vnc_port?: number;
+  vnc_password?: string;
 }

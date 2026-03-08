@@ -41,8 +41,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const checkAuth = useCallback(async () => {
     try {
-      const userData = await api.get<User>('/api/v1/auth/me')
-      setUser(userData)
+      const response = await api.get<User>('/api/v1/auth/me')
+      setUser(response.data.data)
     } catch {
       setUser(null)
     } finally {
@@ -64,11 +64,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           totp_code: totpCode,
         } as LoginRequest)
 
-        if (response.token) {
-          setCookie('maburvm_token', response.token, 7)
+        const loginData = response.data.data
+
+        if (loginData.access_token) {
+          setCookie('accessToken', loginData.access_token, 7)
+        }
+        if (loginData.refresh_token) {
+          setCookie('refreshToken', loginData.refresh_token, 7)
         }
 
-        setUser(response.user)
+        setUser(loginData.user)
       } catch (err) {
         const errorMessage =
           err instanceof Error ? err.message : 'Login failed'
@@ -85,7 +90,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch {
       // Ignore logout errors
     } finally {
-      deleteCookie('maburvm_token')
+      deleteCookie('accessToken')
+      deleteCookie('refreshToken')
       setUser(null)
       queryClient.clear()
       window.location.href = '/login'

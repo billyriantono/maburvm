@@ -1,20 +1,37 @@
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 
-export function middleware(request: NextRequest) {
-  const token = request.cookies.get('refreshToken')
-  const isDashboard = request.nextUrl.pathname.startsWith('/dashboard')
-  const isLogin = request.nextUrl.pathname === '/login'
+// Whitelisted paths that don't require authentication
+const WHITELIST = ['/login', '/reset-password']
 
+export function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl
+  
+  // Allow API routes and static files
+  if (pathname.startsWith('/api/') || pathname.startsWith('/_next/')) {
+    return NextResponse.next()
+  }
+  
+  // Check for access token
+  const token = request.cookies.get('accessToken')
+  
+  const isDashboard = pathname.startsWith('/dashboard')
+  const isLogin = pathname === '/login'
+  const isWhitelisted = WHITELIST.some(path => pathname === path)
+
+  // Protect dashboard routes
   if (isDashboard && !token) {
     return NextResponse.redirect(new URL('/login', request.url))
   }
+  
+  // Redirect authenticated users away from login
   if (isLogin && token) {
     return NextResponse.redirect(new URL('/dashboard', request.url))
   }
+  
   return NextResponse.next()
 }
 
 export const config = {
-  matcher: ['/dashboard/:path*', '/login'],
+  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
 }
