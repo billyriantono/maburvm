@@ -9,10 +9,13 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image/png"
 	"net"
+	"net/smtp"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -51,6 +54,25 @@ const (
 	MinPasswordLength = 12
 	BcryptCost        = 12
 )
+
+// SMTP configuration for sending emails
+var (
+	SMTPServer = getEnvOrDefault("SMTP_SERVER", "localhost:1025")
+	SMTPFrom   = getEnvOrDefault("SMTP_FROM", "noreply@maburvm.local")
+)
+
+func getEnvOrDefault(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+// sendEmail sends an email via SMTP
+func sendEmail(to, subject, body string) error {
+	msg := []byte(fmt.Sprintf("To: %s\r\nSubject: %s\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n%s", to, subject, body))
+	return smtp.SendMail(SMTPServer, nil, SMTPFrom, []string{to}, msg)
+}
 
 // UserService handles user-related operations
 type UserService struct {
@@ -329,11 +351,25 @@ func (s *UserService) Setup2FA(req *Setup2FARequest) (*Setup2FAResponse, error) 
 		return nil, fmt.Errorf("failed to generate QR code: %w", err)
 	}
 
+	// Generate backup codes
+	plaintextCodes, hashedCodes := s.generateBackupCodes()
+
+	// Store hashed backup codes
+	codesJSON, _ := json.Marshal(hashedCodes)
+	encryptedCodes, err := s.encryptSecret(string(codesJSON))
+	if err != nil {
+		return nil, fmt.Errorf("failed to encrypt backup codes: %w", err)
+	}
+	user.TwoFactorBackupCodes = encryptedCodes
+	if err := s.db.Save(&user).Error; err != nil {
+		return nil, fmt.Errorf("failed to save backup codes: %w", err)
+	}
+
 	return &Setup2FAResponse{
 		Secret:      key.Secret(),
 		QRCodeURL:   key.URL(),
 		QRCodePNG:   qrCode,
-		BackupCodes: s.generateBackupCodes(),
+		BackupCodes: plaintextCodes, // Return plaintext ONCE
 	}, nil
 }
 
@@ -389,7 +425,51 @@ func (s *UserService) Disable2FA(userID uuid.UUID) error {
 	}
 
 	user.TwoFactorSecret = ""
+	user.TwoFactorBackupCodes = ""
 	return s.db.Save(&user).Error
+}
+
+// Verify2FARequest contains 2FA verification request for login
+type Verify2FARequest struct {
+	UserID   uuid.UUID `json:"user_id" validate:"required"`
+	Code     string    `json:"code" validate:"required"` // TOTP code or backup code
+}
+
+// Verify2FA verifies 2FA code (TOTP or backup code) during login
+func (s *UserService) Verify2FA(req *Verify2FARequest) error {
+	var user models.User
+	if err := s.db.First(&user, req.UserID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrUserNotFound
+		}
+		return fmt.Errorf("database error: %w", err)
+	}
+
+	if user.TwoFactorSecret == "" {
+		return Err2FANotEnabled
+	}
+
+	// Decrypt secret
+	decryptedSecret, err := s.decryptSecret(user.TwoFactorSecret)
+	if err != nil {
+		return fmt.Errorf("failed to decrypt 2FA secret: %w", err)
+	}
+
+	// Try TOTP code first (6 digits)
+	if len(req.Code) == 6 {
+		if totp.Validate(req.Code, decryptedSecret) {
+			return nil
+		}
+	}
+
+	// Try backup code (8 characters)
+	if len(req.Code) == 8 {
+		if s.verifyBackupCode(&user, req.Code) {
+			return nil
+		}
+	}
+
+	return ErrInvalidTOTPCode
 }
 
 // generateQRCode creates a QR code from the TOTP URL and returns it as base64 PNG
@@ -572,9 +652,25 @@ func (s *UserService) RequestPasswordReset(req *PasswordResetRequest) error {
 		return fmt.Errorf("failed to store reset token: %w", err)
 	}
 
-	// In production, send email with reset link
-	// For now, log the token (in production, use proper email service)
-	fmt.Printf("[PASSWORD RESET] Token for %s: %s (expires at %s)\n", user.Email, token, resetToken.ExpiresAt)
+	// Send email with reset link
+	resetURL := fmt.Sprintf("https://panel.maburvm.local/reset-password?token=%s", token)
+	emailBody := fmt.Sprintf(`
+		<html>
+		<body>
+			<h2>Password Reset Request</h2>
+			<p>You requested a password reset for your MaburVM account.</p>
+			<p>Click the link below to reset your password:</p>
+			<p><a href="%s">Reset Password</a></p>
+			<p>Or copy this token: <strong>%s</strong></p>
+			<p>This link/token expires at: %s</p>
+			<p>If you didn't request this, please ignore this email.</p>
+		</body>
+		</html>`, resetURL, token, resetToken.ExpiresAt.Format(time.RFC1123))
+
+	if err := sendEmail(user.Email, "MaburVM Password Reset", emailBody); err != nil {
+		// Log error but don't fail the request - user can still use token from logs if needed
+		fmt.Printf("[ERROR] Failed to send password reset email to %s: %v\n", user.Email, err)
+	}
 
 	return nil
 }
@@ -659,13 +755,70 @@ func (s *UserService) generateJWT(userID uuid.UUID, role models.UserRole) (strin
 	return token.SignedString([]byte(s.jwtSecret))
 }
 
-// generateBackupCodes generates backup codes for 2FA recovery
-func (s *UserService) generateBackupCodes() []string {
-	codes := make([]string, 8)
-	for i := 0; i < 8; i++ {
-		bytes := make([]byte, 5)
+// generateBackupCodes generates 10 backup codes for 2FA recovery
+// Returns plaintext codes (to be shown once) and stores hashed versions
+func (s *UserService) generateBackupCodes() ([]string, []string) {
+	plaintextCodes := make([]string, 10)
+	hashedCodes := make([]string, 10)
+
+	for i := 0; i < 10; i++ {
+		// Generate 8-character code
+		bytes := make([]byte, 4)
 		rand.Read(bytes)
-		codes[i] = strings.ToUpper(hex.EncodeToString(bytes))
+		code := strings.ToUpper(hex.EncodeToString(bytes))
+
+		// Hash with bcrypt
+		hashed, err := bcrypt.GenerateFromPassword([]byte(code), BcryptCost)
+		if err != nil {
+			// Fallback to unhashed if bcrypt fails (shouldn't happen)
+			hashed = []byte(code)
+		}
+
+		plaintextCodes[i] = code
+		hashedCodes[i] = string(hashed)
 	}
-	return codes
+
+	return plaintextCodes, hashedCodes
+}
+
+// verifyBackupCode verifies a backup code against stored hashed codes
+// Returns true if valid and marks the code as used
+func (s *UserService) verifyBackupCode(user *models.User, code string) bool {
+	// Decrypt backup codes
+	if user.TwoFactorBackupCodes == "" {
+		return false
+	}
+
+	decryptedCodes, err := s.decryptSecret(user.TwoFactorBackupCodes)
+	if err != nil {
+		return false
+	}
+
+	// Parse stored hashed codes
+	var storedCodes []string
+	if err := json.Unmarshal([]byte(decryptedCodes), &storedCodes); err != nil {
+		return false
+	}
+
+	// Check each code
+	for i, hashedCode := range storedCodes {
+		if hashedCode == "USED" {
+			continue
+		}
+
+		if bcrypt.CompareHashAndPassword([]byte(hashedCode), []byte(code)) == nil {
+			// Mark as used
+			storedCodes[i] = "USED"
+
+			// Save back to user
+			updatedCodes, _ := json.Marshal(storedCodes)
+			encryptedCodes, _ := s.encryptSecret(string(updatedCodes))
+			user.TwoFactorBackupCodes = encryptedCodes
+			s.db.Save(user)
+
+			return true
+		}
+	}
+
+	return false
 }

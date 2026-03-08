@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
+	vmimport "github.com/maburvm/panel/internal/agent/import"
 	"github.com/maburvm/panel/internal/panel/repository"
 	"github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 	"github.com/maburvm/panel/internal/shared/models"
@@ -1159,29 +1160,7 @@ func (w *ImportWorker) Work(ctx context.Context, job *river.Job[ImportJob]) erro
 		return err
 	}
 
-	switch job.Args.Source {
-	case ImportSourceVirtualizor:
-		w.logger.InfoContext(ctx, "importing from Virtualizor",
-			"source_id", job.Args.SourceID,
-			"config_path", job.Args.ConfigPath,
-			"disk_path", job.Args.DiskPath,
-		)
-
-		// 1. Read XML from config_path
-		// 2. Extract VM metadata (RAM, CPU, disk size, network config)
-		// 3. Re-map disk image to new storage pool
-		// 4. Create VM record in database
-		// 5. Update network configuration
-		// 6. Start VM if it was running
-
-	case ImportSourceManual:
-		w.logger.InfoContext(ctx, "performing manual import",
-			"source_id", job.Args.SourceID,
-		)
-	}
-
-	// Create VM record for imported VM
-	// Parse metadata if available
+	// Parse metadata if available - declare early so it's available in switch
 	var metadata struct {
 		Hostname string `json:"hostname"`
 		CPU      int    `json:"cpu"`
@@ -1195,6 +1174,122 @@ func (w *ImportWorker) Work(ctx context.Context, job *river.Job[ImportJob]) erro
 				"error", err,
 			)
 		}
+	}
+
+	switch job.Args.Source {
+	case ImportSourceVirtualizor:
+		w.logger.InfoContext(ctx, "importing from Virtualizor",
+			"source_id", job.Args.SourceID,
+			"config_path", job.Args.ConfigPath,
+			"disk_path", job.Args.DiskPath,
+		)
+
+		// 1. Parse Virtualizor XML config
+		candidate, err := vmimport.ParseVirtualizorDomainXML(job.Args.ConfigPath)
+		if err != nil {
+			w.logger.ErrorContext(ctx, "failed to parse Virtualizor XML config",
+				"error", err,
+				"config_path", job.Args.ConfigPath,
+			)
+			if w.metrics != nil {
+				w.metrics.RecordJobFailed()
+			}
+			return fmt.Errorf("failed to parse Virtualizor XML: %w", err)
+		}
+
+		w.logger.InfoContext(ctx, "parsed Virtualizor config",
+			"vm_name", candidate.Name,
+			"uuid", candidate.UUID,
+			"cpu", candidate.CPU,
+			"memory_mb", candidate.Memory,
+			"disk_count", len(candidate.Disks),
+			"network_count", len(candidate.Networks),
+		)
+
+		// 2. Extract VM metadata from parsed config
+		metadata.Hostname = candidate.Name
+		metadata.CPU = candidate.CPU
+		metadata.RAM = candidate.Memory
+
+		// Calculate total disk size from candidate disks
+		totalDiskGB := int(candidate.GetTotalDiskSize())
+		if totalDiskGB == 0 {
+			totalDiskGB = 20 // Default if can't determine
+		}
+		metadata.Disk = totalDiskGB
+
+		// 3. Import each disk image via agent gRPC
+		for i, disk := range candidate.Disks {
+			if disk.SourceFile == "" {
+				continue
+			}
+
+			diskFormat := disk.GetDiskFormatWithFallback()
+			if diskFormat == "" {
+				diskFormat = "qcow2" // Default format
+			}
+
+			// Determine target path for the disk
+			targetPath := fmt.Sprintf("/var/lib/libvirt/images/%s-disk%d.%s",
+				candidate.UUID, i, diskFormat)
+
+			// Determine action from metadata or default to copy
+			action := "copy" // Default action
+
+			w.logger.InfoContext(ctx, "importing disk via agent",
+				"vm_id", job.Args.SourceID,
+				"source_path", disk.SourceFile,
+				"target_path", targetPath,
+				"format", diskFormat,
+				"action", action,
+			)
+
+			// Send disk import command to agent via gRPC
+			req := &pb.DiskImportRequest{
+				VmId:       job.Args.SourceID,
+				SourcePath: disk.SourceFile,
+				TargetPath: targetPath,
+				Format:     diskFormat,
+				Action:     action,
+			}
+
+			resp, err := client.ImportDisk(ctx, req)
+			if err != nil {
+				w.logger.ErrorContext(ctx, "failed to import disk via agent",
+					"error", err,
+					"source_path", disk.SourceFile,
+				)
+				if w.metrics != nil {
+					w.metrics.RecordJobFailed()
+				}
+				return fmt.Errorf("failed to import disk %s: %w", disk.SourceFile, err)
+			}
+
+			if !resp.Success {
+				w.logger.ErrorContext(ctx, "disk import failed",
+					"error_message", resp.Error.GetMessage(),
+					"source_path", disk.SourceFile,
+				)
+				if w.metrics != nil {
+					w.metrics.RecordJobFailed()
+				}
+				return fmt.Errorf("disk import failed for %s: %s", disk.SourceFile, resp.Error.GetMessage())
+			}
+
+			w.logger.InfoContext(ctx, "disk imported successfully",
+				"imported_path", resp.ImportedPath,
+				"size_bytes", resp.SizeBytes,
+			)
+		}
+
+		// 4. Update VM record with network configuration from parsed XML
+		// Networks are extracted from the candidate and will be configured
+		// when the VM is started
+
+	case ImportSourceManual:
+		w.logger.InfoContext(ctx, "performing manual import",
+			"source_id", job.Args.SourceID,
+		)
 	}
 
 	// Create VM record
@@ -1221,10 +1316,6 @@ func (w *ImportWorker) Work(ctx context.Context, job *river.Job[ImportJob]) erro
 		}
 		return fmt.Errorf("failed to create VM record: %w", err)
 	}
-
-	// Import disk image via agent
-	// Send disk import command to agent
-	_ = client // Use client to send import command
 
 	latency := time.Since(startTime)
 	if w.metrics != nil {

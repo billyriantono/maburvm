@@ -27,6 +27,8 @@ const (
 	NodeAgent_CreateSnapshot_FullMethodName     = "/agent.NodeAgent/CreateSnapshot"
 	NodeAgent_ApplyNetworkConfig_FullMethodName = "/agent.NodeAgent/ApplyNetworkConfig"
 	NodeAgent_StartVNCProxy_FullMethodName      = "/agent.NodeAgent/StartVNCProxy"
+	NodeAgent_GetNodeInfo_FullMethodName        = "/agent.NodeAgent/GetNodeInfo"
+	NodeAgent_ImportDisk_FullMethodName         = "/agent.NodeAgent/ImportDisk"
 )
 
 // NodeAgentClient is the client API for NodeAgent service.
@@ -64,6 +66,12 @@ type NodeAgentClient interface {
 	// StartVNCProxy starts a noVNC proxy server for browser-based console access
 	// to the VM. Returns connection details for the WebSocket VNC session.
 	StartVNCProxy(ctx context.Context, in *VNCProxyRequest, opts ...grpc.CallOption) (*VNCProxyResponse, error)
+	// GetNodeInfo retrieves detailed system information about the node including
+	// OS version, kernel version, CPU info, memory, disk, and libvirt version.
+	GetNodeInfo(ctx context.Context, in *GetNodeInfoRequest, opts ...grpc.CallOption) (*GetNodeInfoResponse, error)
+	// ImportDisk imports a disk image from a source path to the VM's storage.
+	// Used for VM migration from external sources like Virtualizor.
+	ImportDisk(ctx context.Context, in *DiskImportRequest, opts ...grpc.CallOption) (*DiskImportResponse, error)
 }
 
 type nodeAgentClient struct {
@@ -166,6 +174,26 @@ func (c *nodeAgentClient) StartVNCProxy(ctx context.Context, in *VNCProxyRequest
 	return out, nil
 }
 
+func (c *nodeAgentClient) GetNodeInfo(ctx context.Context, in *GetNodeInfoRequest, opts ...grpc.CallOption) (*GetNodeInfoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetNodeInfoResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_GetNodeInfo_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeAgentClient) ImportDisk(ctx context.Context, in *DiskImportRequest, opts ...grpc.CallOption) (*DiskImportResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DiskImportResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_ImportDisk_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // NodeAgentServer is the server API for NodeAgent service.
 // All implementations must embed UnimplementedNodeAgentServer
 // for forward compatibility.
@@ -201,6 +229,12 @@ type NodeAgentServer interface {
 	// StartVNCProxy starts a noVNC proxy server for browser-based console access
 	// to the VM. Returns connection details for the WebSocket VNC session.
 	StartVNCProxy(context.Context, *VNCProxyRequest) (*VNCProxyResponse, error)
+	// GetNodeInfo retrieves detailed system information about the node including
+	// OS version, kernel version, CPU info, memory, disk, and libvirt version.
+	GetNodeInfo(context.Context, *GetNodeInfoRequest) (*GetNodeInfoResponse, error)
+	// ImportDisk imports a disk image from a source path to the VM's storage.
+	// Used for VM migration from external sources like Virtualizor.
+	ImportDisk(context.Context, *DiskImportRequest) (*DiskImportResponse, error)
 	mustEmbedUnimplementedNodeAgentServer()
 }
 
@@ -234,6 +268,12 @@ func (UnimplementedNodeAgentServer) ApplyNetworkConfig(context.Context, *Network
 }
 func (UnimplementedNodeAgentServer) StartVNCProxy(context.Context, *VNCProxyRequest) (*VNCProxyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method StartVNCProxy not implemented")
+}
+func (UnimplementedNodeAgentServer) GetNodeInfo(context.Context, *GetNodeInfoRequest) (*GetNodeInfoResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetNodeInfo not implemented")
+}
+func (UnimplementedNodeAgentServer) ImportDisk(context.Context, *DiskImportRequest) (*DiskImportResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ImportDisk not implemented")
 }
 func (UnimplementedNodeAgentServer) mustEmbedUnimplementedNodeAgentServer() {}
 func (UnimplementedNodeAgentServer) testEmbeddedByValue()                   {}
@@ -382,6 +422,42 @@ func _NodeAgent_StartVNCProxy_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NodeAgent_GetNodeInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetNodeInfoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).GetNodeInfo(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_GetNodeInfo_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).GetNodeInfo(ctx, req.(*GetNodeInfoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeAgent_ImportDisk_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DiskImportRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).ImportDisk(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_ImportDisk_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).ImportDisk(ctx, req.(*DiskImportRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // NodeAgent_ServiceDesc is the grpc.ServiceDesc for NodeAgent service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -412,6 +488,14 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "StartVNCProxy",
 			Handler:    _NodeAgent_StartVNCProxy_Handler,
+		},
+		{
+			MethodName: "GetNodeInfo",
+			Handler:    _NodeAgent_GetNodeInfo_Handler,
+		},
+		{
+			MethodName: "ImportDisk",
+			Handler:    _NodeAgent_ImportDisk_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

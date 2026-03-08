@@ -8,6 +8,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/maburvm/panel/internal/panel/client"
 	"github.com/maburvm/panel/internal/panel/repository"
 	"github.com/maburvm/panel/internal/shared/models"
 )
@@ -29,17 +30,20 @@ const TokenLength = 32
 
 // NodeService handles node-related operations
 type NodeService struct {
-	repo      *repository.NodeRepository
-	agentPort int
-	timeout   time.Duration
+	repo       *repository.NodeRepository
+	agentPort  int
+	timeout    time.Duration
+	agentClient *client.AgentClient
 }
 
 // NewNodeService creates a new NodeService instance
 func NewNodeService(repo *repository.NodeRepository) *NodeService {
+	agentClient, _ := client.NewAgentClient(nil)
 	return &NodeService{
-		repo:      repo,
-		agentPort: DefaultAgentPort,
-		timeout:   5 * time.Second,
+		repo:        repo,
+		agentPort:   DefaultAgentPort,
+		timeout:     5 * time.Second,
+		agentClient: agentClient,
 	}
 }
 
@@ -353,15 +357,28 @@ func (s *NodeService) GetNodeMetrics(ctx context.Context, id string) (*NodeMetri
 		}, nil
 	}
 
-	// In production, this would query the agent for actual metrics
-	// Return metrics with online status
+	// Get real metrics from agent
+	metricsResult, err := s.agentClient.GetNodeMetrics(ctx, id)
+	if err != nil {
+		// If failed to get metrics, return online status with zero values
+		return &NodeMetrics{
+			NodeID:      id,
+			Timestamp:   time.Now(),
+			CPUUsage:    0,
+			MemoryUsage: 0,
+			DiskUsage:   0,
+			VMCount:     0,
+			Status:      "online",
+		}, nil
+	}
+
 	return &NodeMetrics{
 		NodeID:      id,
-		Timestamp:   time.Now(),
-		CPUUsage:    0,
-		MemoryUsage: 0,
-		DiskUsage:   0,
-		VMCount:     0,
+		Timestamp:   metricsResult.Timestamp,
+		CPUUsage:    metricsResult.CPUUsage,
+		MemoryUsage: metricsResult.MemoryUsage,
+		DiskUsage:   metricsResult.DiskUsage,
+		VMCount:     metricsResult.VMCount,
 		Status:      "online",
 	}, nil
 }

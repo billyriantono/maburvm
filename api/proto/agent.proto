@@ -49,6 +49,14 @@ service NodeAgent {
   // StartVNCProxy starts a noVNC proxy server for browser-based console access
   // to the VM. Returns connection details for the WebSocket VNC session.
   rpc StartVNCProxy(VNCProxyRequest) returns (VNCProxyResponse);
+
+  // GetNodeInfo retrieves detailed system information about the node including
+  // OS version, kernel version, CPU info, memory, disk, and libvirt version.
+  rpc GetNodeInfo(GetNodeInfoRequest) returns (GetNodeInfoResponse);
+
+  // ImportDisk imports a disk image from a source path to the VM's storage.
+  // Used for VM migration from external sources like Virtualizor.
+  rpc ImportDisk(DiskImportRequest) returns (DiskImportResponse);
 }
 
 // ============================================================================
@@ -836,4 +844,110 @@ enum ErrorCode {
   ERROR_CODE_TIMEOUT = 8;            // Operation timed out
   ERROR_CODE_CONFLICT = 9;           // State conflict
   ERROR_CODE_UNAUTHENTICATED = 10;   // Authentication required
+}
+
+// ============================================================================
+// Node Information
+// ============================================================================
+
+// GetNodeInfoRequest requests detailed system information about a node.
+message GetNodeInfoRequest {
+  // Empty request - node is identified by connection context
+}
+
+// GetNodeInfoResponse contains detailed system information about a node.
+message GetNodeInfoResponse {
+  // success indicates if the operation succeeded
+  bool success = 1;
+
+  // os_info contains operating system information
+  OSInfo os_info = 2;
+
+  // cpu_info contains CPU information
+  CPUInfo cpu_info = 3;
+
+  // memory_total_bytes is the total system memory
+  int64 memory_total_bytes = 4;
+
+  // disk_total_bytes is the total disk space
+  int64 disk_total_bytes = 5;
+
+  // libvirt_version is the installed libvirt version
+  string libvirt_version = 6;
+
+  // error details if failed
+  ErrorResponse error = 7;
+}
+
+// OSInfo contains operating system information.
+message OSInfo {
+  // os_name is the operating system name (e.g., "Ubuntu", "CentOS")
+  string os_name = 1;
+
+  // os_version is the OS version (e.g., "22.04", "8")
+  string os_version = 2;
+
+  // kernel_version is the kernel version string
+  string kernel_version = 3;
+
+  // architecture is the system architecture (e.g., "x86_64", "aarch64")
+  string architecture = 4;
+}
+
+// CPUInfo contains CPU information.
+message CPUInfo {
+  // model is the CPU model name
+  string model = 1;
+
+  // cores is the number of CPU cores
+  int32 cores = 2;
+
+  // threads is the number of CPU threads
+  int32 threads = 3;
+
+  // architecture is the CPU architecture
+  string architecture = 4;
+
+  // flags are the CPU feature flags
+  repeated string flags = 5;
+}
+
+// ============================================================================
+// Disk Import
+// ============================================================================
+
+// DiskImportRequest requests importing a disk image for a VM.
+message DiskImportRequest {
+  // vm_id is the target VM
+  string vm_id = 1;
+
+  // source_path is the path to the source disk image
+  string source_path = 2;
+
+  // target_path is the destination path for the disk image
+  string target_path = 3;
+
+  // format is the disk image format (qcow2, raw, vmdk, etc.)
+  string format = 4;
+
+  // action specifies how to handle the disk (copy, move, symlink)
+  string action = 5;
+}
+
+// DiskImportResponse reports the result of a disk import operation.
+message DiskImportResponse {
+  // success indicates if the import succeeded
+  bool success = 1;
+
+  // vm_id of the affected VM
+  string vm_id = 2;
+
+  // imported_path is the final path where the disk was imported
+  string imported_path = 3;
+
+  // size_bytes is the size of the imported disk
+  int64 size_bytes = 4;
+
+  // error details if failed
+  ErrorResponse error = 5;
 }

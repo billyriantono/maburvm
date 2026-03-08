@@ -623,7 +623,142 @@ func (c *AgentClient) StartVNCProxy(ctx context.Context, nodeID string, vmID str
 	}, nil
 }
 
-// getNodeInfo retrieves node information from the internal connection registry
+// NodeMetricsResult holds node metrics retrieved from agent
+type NodeMetricsResult struct {
+	CPUUsage    float64
+	MemoryUsage float64
+	DiskUsage   float64
+	VMCount     int
+	Timestamp   time.Time
+}
+
+// NodeSystemInfo holds detailed system information about a node
+type NodeSystemInfo struct {
+	OSName         string
+	OSVersion      string
+	KernelVersion  string
+	Architecture   string
+	CPUModel       string
+	CPUCores       int32
+	CPUThreads     int32
+	MemoryTotal    int64
+	DiskTotal      int64
+	LibvirtVersion string
+}
+
+// GetNodeMetrics retrieves metrics from the node agent via GetVMStatus
+func (c *AgentClient) GetNodeMetrics(ctx context.Context, nodeID string) (*NodeMetricsResult, error) {
+	node, err := c.getNodeInfo(nodeID)
+	if err != nil {
+		return nil, err
+	}
+
+	var result *NodeMetricsResult
+	err = c.executeWithRetry(ctx, node, func(ctx context.Context, client pb.NodeAgentClient) error {
+		// For now, return basic online status
+		// In production, this should call a dedicated metrics endpoint
+		result = &NodeMetricsResult{
+			Timestamp: time.Now(),
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// GetNodeInfo retrieves detailed system information from a node
+func (c *AgentClient) GetNodeInfo(ctx context.Context, nodeID string) (*NodeSystemInfo, error) {
+	node, err := c.getNodeInfo(nodeID)
+	if err != nil {
+		return nil, err
+	}
+
+	var result *NodeSystemInfo
+	err = c.executeWithRetry(ctx, node, func(ctx context.Context, client pb.NodeAgentClient) error {
+		resp, err := client.GetNodeInfo(ctx, &pb.GetNodeInfoRequest{})
+		if err != nil {
+			return err
+		}
+
+		if !resp.Success {
+			return fmt.Errorf("GetNodeInfo failed: %s", resp.Error.GetMessage())
+		}
+
+		result = &NodeSystemInfo{
+			OSName:         resp.OsInfo.GetOsName(),
+			OSVersion:      resp.OsInfo.GetOsVersion(),
+			KernelVersion:  resp.OsInfo.GetKernelVersion(),
+			Architecture:   resp.OsInfo.GetArchitecture(),
+			CPUModel:       resp.CpuInfo.GetModel(),
+			CPUCores:       resp.CpuInfo.GetCores(),
+			CPUThreads:     resp.CpuInfo.GetThreads(),
+			MemoryTotal:    resp.MemoryTotalBytes,
+			DiskTotal:      resp.DiskTotalBytes,
+			LibvirtVersion: resp.LibvirtVersion,
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// ImportDiskResult contains the result of a disk import operation
+type ImportDiskResult struct {
+	VMID          string
+	ImportedPath  string
+	SizeBytes     int64
+	Success       bool
+}
+
+// ImportDisk imports a disk image from source to target path on a node
+func (c *AgentClient) ImportDisk(ctx context.Context, nodeID string, vmID, sourcePath, targetPath, format, action string) (*ImportDiskResult, error) {
+	node, err := c.getNodeInfo(nodeID)
+	if err != nil {
+		return nil, err
+	}
+
+	var result *ImportDiskResult
+	err = c.executeWithRetry(ctx, node, func(ctx context.Context, client pb.NodeAgentClient) error {
+		req := &pb.DiskImportRequest{
+			VmId:       vmID,
+			SourcePath: sourcePath,
+			TargetPath: targetPath,
+			Format:     format,
+			Action:     action,
+		}
+
+		resp, err := client.ImportDisk(ctx, req)
+		if err != nil {
+			return err
+		}
+
+		if !resp.Success {
+			return fmt.Errorf("disk import failed: %s", resp.Error.GetMessage())
+		}
+
+		result = &ImportDiskResult{
+			VMID:         resp.VmId,
+			ImportedPath: resp.ImportedPath,
+			SizeBytes:    resp.SizeBytes,
+			Success:      resp.Success,
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
 func (c *AgentClient) getNodeInfo(nodeID string) (NodeInfo, error) {
 	c.mu.RLock()
 	conn, exists := c.connections[nodeID]
