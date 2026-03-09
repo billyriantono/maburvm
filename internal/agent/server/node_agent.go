@@ -330,15 +330,6 @@ func (s *NodeAgentService) StreamVMMetrics(req *pb.VMMetricsRequest, stream grpc
 func (s *NodeAgentService) collectVMMetrics(vmID string) *pb.VMMetricsResponse {
 	now := time.Now()
 
-	// Get VM info
-	vmInfo, err := libvirt.GetVMInfo(vmID)
-	if err != nil {
-		return &pb.VMMetricsResponse{
-			Timestamp: timestamppb.New(now),
-			VmId:      vmID,
-		}
-	}
-
 	// Get real VM stats from libvirt
 	vmStats, err := libvirt.GetVMStats(vmID)
 	if err != nil {
@@ -373,16 +364,18 @@ func (s *NodeAgentService) collectVMMetrics(vmID string) *pb.VMMetricsResponse {
 	// Calculate network rates (bytes/sec)
 	var netRXRate, netTXRate int64
 	if lastNetRX, exists := s.metricsCache.lastNetRX[vmID]; exists {
-		if lastCollect, exists := s.metricsCache.lastNetCollect[vmID]; exists {
-			timeDelta := now.Sub(lastCollect).Seconds()
-			if timeDelta > 0 {
-				netRXRate = int64(float64(vmStats.NetRXBytes-lastNetRX) / timeDelta)
-				netTXRate = int64(float64(vmStats.NetTXBytes-lastNetTX) / timeDelta)
-				if netRXRate < 0 {
-					netRXRate = 0
-				}
-				if netTXRate < 0 {
-					netTXRate = 0
+		if lastNetTX, exists := s.metricsCache.lastNetTX[vmID]; exists {
+			if lastCollect, exists := s.metricsCache.lastNetCollect[vmID]; exists {
+				timeDelta := now.Sub(lastCollect).Seconds()
+				if timeDelta > 0 {
+					netRXRate = int64(float64(vmStats.NetRXBytes-lastNetRX) / timeDelta)
+					netTXRate = int64(float64(vmStats.NetTXBytes-lastNetTX) / timeDelta)
+					if netRXRate < 0 {
+						netRXRate = 0
+					}
+					if netTXRate < 0 {
+						netTXRate = 0
+					}
 				}
 			}
 		}
@@ -391,16 +384,18 @@ func (s *NodeAgentService) collectVMMetrics(vmID string) *pb.VMMetricsResponse {
 	// Calculate disk rates (bytes/sec)
 	var diskReadRate, diskWriteRate int64
 	if lastDiskRead, exists := s.metricsCache.lastDiskRead[vmID]; exists {
-		if lastCollect, exists := s.metricsCache.lastDiskCollect[vmID]; exists {
-			timeDelta := now.Sub(lastCollect).Seconds()
-			if timeDelta > 0 {
-				diskReadRate = int64(float64(vmStats.DiskReadBytes-lastDiskRead) / timeDelta)
-				diskWriteRate = int64(float64(vmStats.DiskWriteBytes-lastDiskWrite) / timeDelta)
-				if diskReadRate < 0 {
-					diskReadRate = 0
-				}
-				if diskWriteRate < 0 {
-					diskWriteRate = 0
+		if lastDiskWrite, exists := s.metricsCache.lastDiskWrite[vmID]; exists {
+			if lastCollect, exists := s.metricsCache.lastDiskCollect[vmID]; exists {
+				timeDelta := now.Sub(lastCollect).Seconds()
+				if timeDelta > 0 {
+					diskReadRate = int64(float64(vmStats.DiskReadBytes-lastDiskRead) / timeDelta)
+					diskWriteRate = int64(float64(vmStats.DiskWriteBytes-lastDiskWrite) / timeDelta)
+					if diskReadRate < 0 {
+						diskReadRate = 0
+					}
+					if diskWriteRate < 0 {
+						diskWriteRate = 0
+					}
 				}
 			}
 		}
@@ -416,12 +411,6 @@ func (s *NodeAgentService) collectVMMetrics(vmID string) *pb.VMMetricsResponse {
 	s.metricsCache.lastNetCollect[vmID] = now
 	s.metricsCache.lastDiskCollect[vmID] = now
 
-	// Calculate memory percentage
-	memPercent := 0.0
-	if vmStats.MemoryActual > 0 {
-		memPercent = float64(vmStats.MemoryRSS) / float64(vmStats.MemoryActual) * 100
-	}
-
 	return &pb.VMMetricsResponse{
 		Timestamp: timestamppb.New(now),
 		VmId:      vmID,
@@ -432,13 +421,12 @@ func (s *NodeAgentService) collectVMMetrics(vmID string) *pb.VMMetricsResponse {
 			UsedBytes:      vmStats.MemoryRSS,
 			AvailableBytes: vmStats.MemoryActual - vmStats.MemoryRSS,
 			TotalBytes:     vmStats.MemoryActual,
-			UsedPercent:    memPercent,
 		},
 		Disk: &pb.DiskMetrics{
-			ReadBytesPerSec:  diskReadRate,
+			ReadBytesPerSec: diskReadRate,
 			WriteBytesPerSec: diskWriteRate,
-			ReadOpsPerSec:    0,
-			WriteOpsPerSec:   0,
+			ReadIops:    0,
+			WriteIops:   0,
 		},
 		Network: &pb.NetworkMetrics{
 			RxBytesPerSec:   netRXRate,
@@ -447,8 +435,8 @@ func (s *NodeAgentService) collectVMMetrics(vmID string) *pb.VMMetricsResponse {
 			TxPacketsPerSec: 0,
 		},
 		Process: &pb.ProcessMetrics{
-			Pid:        0,
-			NumThreads: 0,
+			ProcessCount: 0,
+			ThreadCount:  0,
 		},
 	}
 }

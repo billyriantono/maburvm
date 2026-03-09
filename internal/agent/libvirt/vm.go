@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -483,6 +484,43 @@ func mapDomainStateToVMStatus(state libvirt.DomainState) VMStatus {
 	}
 }
 
+// mapSnapshotStateToVMStatus maps snapshot state string from XML to VMStatus
+func mapSnapshotStateToVMStatus(stateStr string) VMStatus {
+	switch stateStr {
+	case "running":
+		return VMStatusRunning
+	case "shutoff":
+		return VMStatusStopped
+	case "paused":
+		return VMStatusPaused
+	case "pmsuspended":
+		return VMStatusSuspended
+	case "crashed":
+		return VMStatusCrashed
+	default:
+		return VMStatusUnknown
+	}
+}
+
+// extractInterfaceNames extracts network interface names from domain XML
+func extractInterfaceNames(xmlDesc string) []string {
+	// Match <interface type='...'> elements and get the target device name
+	re := regexp.MustCompile(`<interface[^>]*type=['"](\w+)['"][^>]*>[\s\S]*?<target[^>]*dev=['"]([^'"]+)['"]`)
+	matches := re.FindAllStringSubmatch(xmlDesc, -1)
+	
+	var names []string
+	seen := make(map[string]bool)
+	for _, match := range matches {
+		if len(match) > 2 {
+			if !seen[match[2]] {
+				names = append(names, match[2])
+				seen[match[2]] = true
+			}
+		}
+	}
+	return names
+}
+
 // GetVMInfo returns detailed information about a VM
 func GetVMInfo(uuidStr string) (*VMInfo, error) {
 	if _, err := uuid.Parse(uuidStr); err != nil {
@@ -839,15 +877,32 @@ func ListSnapshots(uuidStr string) ([]VMSnapshot, error) {
 			if err != nil {
 				continue
 			}
-			info, err := snap.GetInfo()
+			// Get snapshot XML to extract creation time and state
+			// (GetInfo was removed in newer libvirt Go bindings)
+			xmlDesc, err := snap.GetXMLDesc(0)
 			if err != nil {
 				continue
 			}
+			
+			// Parse creationTime from XML: <creationTime>1234567890</creationTime>
+			var createdAt time.Time
+			if matches := regexp.MustCompile(`<creationTime>(\d+)</creationTime>`).FindStringSubmatch(xmlDesc); len(matches) > 1 {
+				if ts, err := strconv.ParseInt(matches[1], 10, 64); err == nil {
+					createdAt = time.Unix(ts, 0)
+				}
+			}
+			
+			// Parse state from XML: <state>running</state>
+			state := mapDomainStateToVMStatus(0) // default to stopped
+			if matches := regexp.MustCompile(`<state>(\w+)</state>`).FindStringSubmatch(xmlDesc); len(matches) > 1 {
+				state = mapSnapshotStateToVMStatus(matches[1])
+			}
+			
 			snapshots = append(snapshots, VMSnapshot{
 				UUID:      name,
 				Name:      name,
-				CreatedAt: time.Unix(int64(info.CreationTime), 0),
-				State:     mapDomainStateToVMStatus(info.State),
+				CreatedAt: createdAt,
+				State:     state,
 			})
 		}
 		return nil
@@ -875,13 +930,13 @@ func RestoreSnapshot(uuidStr, snapshotName string) error {
 		}
 		defer dom.Free()
 
-		snap, err := dom.LookupSnapshotByName(snapshotName, 0)
+		snap, err := dom.SnapshotLookupByName(snapshotName, 0)
 		if err != nil {
 			return fmt.Errorf("snapshot not found: %w", err)
 		}
 		defer snap.Free()
 
-		if err := dom.RevertToSnapshot(snap, libvirt.DOMAIN_SNAPSHOT_REVERT_RUNNING); err != nil {
+		if err := snap.RevertToSnapshot(libvirt.DOMAIN_SNAPSHOT_REVERT_RUNNING); err != nil {
 			return fmt.Errorf("failed to revert to snapshot: %w", err)
 		}
 		return nil
@@ -904,7 +959,7 @@ func DeleteSnapshot(uuidStr, snapshotName string) error {
 		}
 		defer dom.Free()
 
-		snap, err := dom.LookupSnapshotByName(snapshotName, 0)
+		snap, err := dom.SnapshotLookupByName(snapshotName, 0)
 		if err != nil {
 			return fmt.Errorf("snapshot not found: %w", err)
 		}
@@ -978,11 +1033,14 @@ func GetVMStats(uuidStr string) (*VMStats, error) {
 			}
 		}
 
-		// Get interface stats
-		ifaces, err := dom.InterfaceAddresses(libvirt.DOMAIN_INTERFACE_ADDRESSES_SRC_LEASE)
+		// Get interface stats - parse from XML instead of InterfaceAddresses
+		// (InterfaceAddresses is not available in current libvirt Go bindings)
+		xmlDesc, err := dom.GetXMLDesc(0)
 		if err == nil {
-			for _, iface := range ifaces {
-				ifStats, err := dom.InterfaceStats(iface.Name)
+			// Extract interface names from XML using regex
+			ifaceNames := extractInterfaceNames(xmlDesc)
+			for _, ifaceName := range ifaceNames {
+				ifStats, err := dom.InterfaceStats(ifaceName)
 				if err == nil {
 					stats.NetRXBytes += int64(ifStats.RxBytes)
 					stats.NetTXBytes += int64(ifStats.TxBytes)
@@ -992,8 +1050,7 @@ func GetVMStats(uuidStr string) (*VMStats, error) {
 			}
 		}
 
-		// Get block stats
-		xmlDesc, err := dom.GetXMLDesc(0)
+		// Get block stats (moved up since we need XML for interfaces above)
 		if err == nil {
 			var domain libvirtxml.Domain
 			if err := xml.Unmarshal([]byte(xmlDesc), &domain); err == nil {
