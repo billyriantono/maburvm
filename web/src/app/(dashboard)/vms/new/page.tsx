@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import { useForm, Controller } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
@@ -13,13 +13,10 @@ import {
   Cpu, 
   HardDrive, 
   Network, 
-  CreditCard,
   Loader2,
   CheckCircle2,
   AlertCircle,
-  User,
-  Wifi,
-  WifiOff
+  User
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -30,6 +27,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Skeleton } from "@/components/ui/skeleton"
+import { useUsers } from "@/lib/hooks/use-users"
+import { useTemplates } from "@/lib/hooks/use-templates"
+import { useNodes } from "@/lib/hooks/use-nodes"
+import { useCreateVM } from "@/lib/hooks/use-vms"
 
 // Validation schemas for each step
 const step1Schema = z.object({
@@ -37,13 +39,14 @@ const step1Schema = z.object({
     .min(1, "Hostname is required")
     .regex(/^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/, 
       "Invalid hostname format (e.g., vm.example.com or my-vm)"),
-  userId: z.string().min(1, "User assignment is required"),
+  userId: z.string().optional(),
 })
 
 const step2Schema = z.object({
   cpuCores: z.number().min(1, "Minimum 1 CPU core").max(64, "Maximum 64 CPU cores"),
   ramGB: z.number().min(1, "Minimum 1 GB RAM").max(512, "Maximum 512 GB RAM"),
   diskGB: z.number().min(10, "Minimum 10 GB disk").max(2000, "Maximum 2 TB disk"),
+  nodeId: z.string().optional(),
 })
 
 const step3Schema = z.object({
@@ -69,112 +72,31 @@ const fullSchema = step1Schema.merge(step2Schema).merge(step3Schema).merge(step4
 
 type FormData = z.infer<typeof fullSchema>
 
-// Mock data
-const mockUsers = [
-  { id: "user-1", name: "Admin User", email: "admin@maburvm.local" },
-  { id: "user-2", name: "John Doe", email: "john@example.com" },
-  { id: "user-3", name: "Jane Smith", email: "jane@example.com" },
-]
-
-const osTemplates = [
-  { 
-    id: "ubuntu-22.04", 
-    name: "Ubuntu 22.04 LTS", 
-    version: "22.04.3",
-    logo: "🟠",
-    color: "bg-orange-100",
-    description: "Long Term Support"
-  },
-  { 
-    id: "ubuntu-24.04", 
-    name: "Ubuntu 24.04 LTS", 
-    version: "24.04.1",
-    logo: "🟠",
-    color: "bg-orange-100",
-    description: "Latest LTS"
-  },
-  { 
-    id: "debian-12", 
-    name: "Debian 12", 
-    version: "12.0",
-    logo: "🔴",
-    color: "bg-red-100",
-    description: "Stable"
-  },
-  { 
-    id: "centos-stream9", 
-    name: "CentOS Stream 9", 
-    version: "9.0",
-    logo: "🟢",
-    color: "bg-green-100",
-    description: "Enterprise"
-  },
-  { 
-    id: "almalinux-9", 
-    name: "AlmaLinux 9", 
-    version: "9.3",
-    logo: "🟢",
-    color: "bg-green-100",
-    description: "RHEL Compatible"
-  },
-  { 
-    id: "rocky-linux-9", 
-    name: "Rocky Linux 9", 
-    version: "9.3",
-    logo: "🟢",
-    color: "bg-green-100",
-    description: "RHEL Compatible"
-  },
-  { 
-    id: "fedora-40", 
-    name: "Fedora 40", 
-    version: "40",
-    logo: "🔵",
-    color: "bg-blue-100",
-    description: "Cutting Edge"
-  },
-  { 
-    id: "windows-2022", 
-    name: "Windows Server 2022", 
-    version: "21H2",
-    logo: "🪟",
-    color: "bg-blue-200",
-    description: "Datacenter"
-  },
-]
-
-const mockVlans = [
-  { id: "vlan-10", name: "Production (10)", network: "10.0.10.0/24" },
-  { id: "vlan-20", name: "Development (20)", network: "10.0.20.0/24" },
-  { id: "vlan-30", name: "Staging (30)", network: "10.0.30.0/24" },
-  { id: "vlan-100", name: "Management (100)", network: "10.0.100.0/24" },
-]
-
-// Node capacity (mock)
-const nodeCapacity = {
-  maxCpu: 64,
-  maxRam: 512,
-  maxDisk: 2000,
-  usedCpu: 32,
-  usedRam: 256,
-  usedDisk: 800,
-}
-
 // Steps configuration
 const steps = [
-  { id: 1, title: "Basic", description: "Hostname & User", icon: Server },
+  { id: 1, title: "Basic", description: "Hostname & Node", icon: Server },
   { id: 2, title: "Resources", description: "CPU, RAM, Disk", icon: Cpu },
   { id: 3, title: "OS Template", description: "Select OS", icon: HardDrive },
-  { id: 4, title: "Network", description: "IP & VLAN", icon: Network },
+  { id: 4, title: "Network", description: "IP & Config", icon: Network },
   { id: 5, title: "Review", description: "Confirm & Create", icon: CheckCircle2 },
 ]
 
 export default function NewVMPage() {
   const router = useRouter()
   const [currentStep, setCurrentStep] = useState(1)
-  const [isSubmitting, setIsSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   
+  // API hooks
+  const { data: usersData, isLoading: usersLoading } = useUsers({ pageSize: 100 })
+  const { data: templatesData, isLoading: templatesLoading } = useTemplates()
+  const { data: nodesData, isLoading: nodesLoading } = useNodes()
+  const createVM = useCreateVM()
+
+  const users = usersData?.data || []
+  const templates = templatesData || []
+  const nodes = nodesData || []
+  const activeNodes = useMemo(() => nodes.filter(n => n.status === "active"), [nodes])
+
   const {
     register,
     handleSubmit,
@@ -192,6 +114,7 @@ export default function NewVMPage() {
       ramGB: 4,
       diskGB: 50,
       templateId: "",
+      nodeId: "",
       ipAddress: "",
       bandwidthMbps: 100,
       vlanId: "",
@@ -201,26 +124,12 @@ export default function NewVMPage() {
 
   const watchedValues = watch()
 
-  // Calculate available resources
-  const availableCpu = nodeCapacity.maxCpu - nodeCapacity.usedCpu
-  const availableRam = nodeCapacity.maxRam - nodeCapacity.usedRam
-  const availableDisk = nodeCapacity.maxDisk - nodeCapacity.usedDisk
-
-  // Calculate estimated cost (mock)
-  const calculateCost = () => {
-    const cpuCost = watchedValues.cpuCores * 10
-    const ramCost = watchedValues.ramGB * 2
-    const diskCost = watchedValues.diskGB * 0.1
-    const bandwidthCost = watchedValues.bandwidthMbps * 0.5
-    return (cpuCost + ramCost + diskCost + bandwidthCost).toFixed(2)
-  }
-
   const handleNext = async () => {
     let fieldsToValidate: (keyof FormData)[] = []
     
     switch (currentStep) {
       case 1:
-        fieldsToValidate = ["hostname", "userId"]
+        fieldsToValidate = ["hostname"]
         break
       case 2:
         fieldsToValidate = ["cpuCores", "ramGB", "diskGB"]
@@ -246,31 +155,47 @@ export default function NewVMPage() {
   }
 
   const onSubmit = async (data: FormData) => {
-    setIsSubmitting(true)
     setSubmitError(null)
 
     try {
-      // Simulate API call
-      await new Promise((resolve) => setTimeout(resolve, 2000))
-      
-      // Mock success - in production this would call the API
-      console.log("VM created:", data)
-      
-      // Redirect to VM detail page (mock)
-      router.push(`/vms/vm-${Date.now()}`)
+      const result = await createVM.mutateAsync({
+        hostname: data.hostname,
+        os_template_id: data.templateId,
+        node_id: data.nodeId || undefined,
+        resources: {
+          cpu: data.cpuCores,
+          ram: data.ramGB * 1024, // Convert GB to MB
+          disk: data.diskGB,
+        },
+      })
+      router.push(`/vms/${result.id}`)
     } catch (error) {
-      setSubmitError("Failed to create VM. Please try again.")
-    } finally {
-      setIsSubmitting(false)
+      setSubmitError((error as Error).message || "Failed to create VM. Please try again.")
     }
   }
 
   const getSelectedTemplate = () => {
-    return osTemplates.find(t => t.id === watchedValues.templateId)
+    return templates.find(t => t.id === watchedValues.templateId)
   }
 
   const getSelectedUser = () => {
-    return mockUsers.find(u => u.id === watchedValues.userId)
+    return users.find(u => u.id === watchedValues.userId)
+  }
+
+  const getSelectedNode = () => {
+    return nodes.find(n => n.id === watchedValues.nodeId)
+  }
+
+  // Get OS icon based on template name
+  const getTemplateIcon = (name: string): string => {
+    const lower = name.toLowerCase()
+    if (lower.includes("ubuntu")) return "🟠"
+    if (lower.includes("debian")) return "🔴"
+    if (lower.includes("centos") || lower.includes("alma") || lower.includes("rocky")) return "🟢"
+    if (lower.includes("fedora")) return "🔵"
+    if (lower.includes("windows")) return "🪟"
+    if (lower.includes("arch")) return "🔷"
+    return "🐧"
   }
 
   return (
@@ -351,7 +276,7 @@ export default function NewVMPage() {
                 </div>
                 <div>
                   <h2 className="text-xl font-black uppercase">Basic Information</h2>
-                  <p className="text-sm text-gray-500">Configure hostname and user assignment</p>
+                  <p className="text-sm text-gray-500">Configure hostname and assignment</p>
                 </div>
               </div>
 
@@ -377,38 +302,69 @@ export default function NewVMPage() {
                 </p>
               </div>
 
-              {/* User Assignment */}
+              {/* User Assignment (optional) */}
               <div className="space-y-2">
                 <label htmlFor="userId" className="text-sm font-bold uppercase tracking-wide">
-                  Assign to User <span className="text-danger">*</span>
+                  Assign to User <span className="text-gray-400">(optional)</span>
                 </label>
-                <Controller
-                  name="userId"
-                  control={control}
-                  render={({ field }) => (
-                    <Select onValueChange={field.onChange} value={field.value}>
-                      <SelectTrigger id="userId" className={`h-12 ${errors.userId ? "border-danger ring-2 ring-danger/30" : ""}`}>
-                        <SelectValue placeholder="Select a user" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {mockUsers.map((user) => (
-                          <SelectItem key={user.id} value={user.id}>
-                            <div className="flex items-center gap-2">
-                              <User className="w-4 h-4" />
-                              <span>{user.name}</span>
-                              <span className="text-gray-400 text-sm">({user.email})</span>
-                            </div>
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  )}
-                />
-                {errors.userId && (
-                  <p className="text-sm font-medium text-danger flex items-center gap-1">
-                    <AlertCircle className="w-4 h-4" />
-                    {errors.userId.message}
-                  </p>
+                {usersLoading ? (
+                  <Skeleton className="h-12 w-full" />
+                ) : (
+                  <Controller
+                    name="userId"
+                    control={control}
+                    render={({ field }) => (
+                      <Select onValueChange={field.onChange} value={field.value}>
+                        <SelectTrigger id="userId" className="h-12">
+                          <SelectValue placeholder="Select a user (optional)" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {users.map((user) => (
+                            <SelectItem key={user.id} value={user.id}>
+                              <div className="flex items-center gap-2">
+                                <User className="w-4 h-4" />
+                                <span>{user.email}</span>
+                                <span className="text-gray-400 text-sm">({user.role})</span>
+                              </div>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  />
+                )}
+              </div>
+
+              {/* Node Selection (optional) */}
+              <div className="space-y-2">
+                <label htmlFor="nodeId" className="text-sm font-bold uppercase tracking-wide">
+                  Target Node <span className="text-gray-400">(optional — auto-select if empty)</span>
+                </label>
+                {nodesLoading ? (
+                  <Skeleton className="h-12 w-full" />
+                ) : (
+                  <Controller
+                    name="nodeId"
+                    control={control}
+                    render={({ field }) => (
+                      <Select onValueChange={field.onChange} value={field.value}>
+                        <SelectTrigger id="nodeId" className="h-12">
+                          <SelectValue placeholder="Auto-select best node" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {activeNodes.map((node) => (
+                            <SelectItem key={node.id} value={node.id}>
+                              <div className="flex items-center gap-2">
+                                <Server className="w-4 h-4" />
+                                <span>{node.name}</span>
+                                <span className="text-gray-400 text-sm">({node.ip_address})</span>
+                              </div>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  />
                 )}
               </div>
             </div>
@@ -427,25 +383,6 @@ export default function NewVMPage() {
                 </div>
               </div>
 
-              {/* Node Capacity Info */}
-              <div className="bg-gray-100 border-2 border-black p-4 mb-6">
-                <p className="text-xs font-bold uppercase mb-2">Available Node Capacity</p>
-                <div className="grid grid-cols-3 gap-4 text-center">
-                  <div>
-                    <p className="text-2xl font-black">{availableCpu}</p>
-                    <p className="text-xs text-gray-500">CPU Cores</p>
-                  </div>
-                  <div>
-                    <p className="text-2xl font-black">{availableRam} GB</p>
-                    <p className="text-xs text-gray-500">RAM</p>
-                  </div>
-                  <div>
-                    <p className="text-2xl font-black">{availableDisk} GB</p>
-                    <p className="text-xs text-gray-500">Disk</p>
-                  </div>
-                </div>
-              </div>
-
               {/* CPU Cores */}
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
@@ -461,12 +398,12 @@ export default function NewVMPage() {
                         id="cpuCores"
                         type="range"
                         min={1}
-                        max={Math.min(availableCpu, 64)}
+                        max={64}
                         value={value}
                         onChange={(e) => onChange(Number(e.target.value))}
                         className="w-full h-4 appearance-none bg-white border-2 border-black cursor-pointer"
                         style={{
-                          background: `linear-gradient(to right, #000000 0%, #000000 ${(value / Math.min(availableCpu, 64)) * 100}%, #e5e5e5 ${(value / Math.min(availableCpu, 64)) * 100}%, #e5e5e5 100%)`
+                          background: `linear-gradient(to right, #000000 0%, #000000 ${(value / 64) * 100}%, #e5e5e5 ${(value / 64) * 100}%, #e5e5e5 100%)`
                         }}
                       />
                       <style jsx>{`
@@ -493,7 +430,7 @@ export default function NewVMPage() {
                 />
                 <div className="flex justify-between text-xs text-gray-500">
                   <span>1</span>
-                  <span>Max: {Math.min(availableCpu, 64)}</span>
+                  <span>64</span>
                 </div>
               </div>
 
@@ -512,12 +449,12 @@ export default function NewVMPage() {
                         id="ramGB"
                         type="range"
                         min={1}
-                        max={Math.min(availableRam, 512)}
+                        max={512}
                         value={value}
                         onChange={(e) => onChange(Number(e.target.value))}
                         className="w-full h-4 appearance-none bg-white border-2 border-black cursor-pointer"
                         style={{
-                          background: `linear-gradient(to right, #000000 0%, #000000 ${(value / Math.min(availableRam, 512)) * 100}%, #e5e5e5 ${(value / Math.min(availableRam, 512)) * 100}%, #e5e5e5 100%)`
+                          background: `linear-gradient(to right, #000000 0%, #000000 ${(value / 512) * 100}%, #e5e5e5 ${(value / 512) * 100}%, #e5e5e5 100%)`
                         }}
                       />
                     </div>
@@ -525,7 +462,7 @@ export default function NewVMPage() {
                 />
                 <div className="flex justify-between text-xs text-gray-500">
                   <span>1 GB</span>
-                  <span>Max: {Math.min(availableRam, 512)} GB</span>
+                  <span>512 GB</span>
                 </div>
               </div>
 
@@ -544,13 +481,13 @@ export default function NewVMPage() {
                         id="diskGB"
                         type="range"
                         min={10}
-                        max={Math.min(availableDisk, 2000)}
+                        max={2000}
                         step={10}
                         value={value}
                         onChange={(e) => onChange(Number(e.target.value))}
                         className="w-full h-4 appearance-none bg-white border-2 border-black cursor-pointer"
                         style={{
-                          background: `linear-gradient(to right, #000000 0%, #000000 ${(value / Math.min(availableDisk, 2000)) * 100}%, #e5e5e5 ${(value / Math.min(availableDisk, 2000)) * 100}%, #e5e5e5 100%)`
+                          background: `linear-gradient(to right, #000000 0%, #000000 ${(value / 2000) * 100}%, #e5e5e5 ${(value / 2000) * 100}%, #e5e5e5 100%)`
                         }}
                       />
                     </div>
@@ -558,7 +495,7 @@ export default function NewVMPage() {
                 />
                 <div className="flex justify-between text-xs text-gray-500">
                   <span>10 GB</span>
-                  <span>Max: {Math.min(availableDisk, 2000)} GB</span>
+                  <span>2 TB</span>
                 </div>
               </div>
 
@@ -596,39 +533,55 @@ export default function NewVMPage() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                {osTemplates.map((template) => {
-                  const isSelected = watchedValues.templateId === template.id
-                  
-                  return (
-                    <button
-                      key={template.id}
-                      type="button"
-                      onClick={() => setValue("templateId", template.id, { shouldValidate: true })}
-                      className={`
-                        relative p-4 border-4 text-left transition-all duration-200
-                        ${isSelected 
-                          ? "bg-primary border-black shadow-neo hover:shadow-neo-hover" 
-                          : "bg-white border-black hover:shadow-neo-sm hover:-translate-y-1"
-                        }
-                      `}
-                    >
-                      {isSelected && (
-                        <div className="absolute top-2 right-2 w-6 h-6 bg-black text-white flex items-center justify-center">
-                          <Check className="w-4 h-4" />
-                        </div>
-                      )}
-                      
-                      <div className="text-4xl mb-2">{template.logo}</div>
-                      <p className="font-black uppercase text-sm leading-tight">{template.name}</p>
-                      <p className="text-xs text-gray-500 mt-1">v{template.version}</p>
-                      <span className="inline-block mt-2 px-2 py-0.5 bg-gray-200 text-xs font-bold uppercase">
-                        {template.description}
-                      </span>
-                    </button>
-                  )
-                })}
-              </div>
+              {templatesLoading ? (
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                  {[1, 2, 3, 4, 5, 6].map(i => (
+                    <Skeleton key={i} className="h-28 w-full" />
+                  ))}
+                </div>
+              ) : templates.length === 0 ? (
+                <div className="p-8 text-center border-2 border-black">
+                  <HardDrive className="w-10 h-10 mx-auto text-gray-300 mb-3" />
+                  <p className="text-gray-500 font-bold uppercase text-sm">No templates available</p>
+                  <p className="text-gray-400 text-xs mt-1">Please create OS templates first</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                  {templates.filter(t => t.is_active).map((template) => {
+                    const isSelected = watchedValues.templateId === template.id
+                    
+                    return (
+                      <button
+                        key={template.id}
+                        type="button"
+                        onClick={() => setValue("templateId", template.id, { shouldValidate: true })}
+                        className={`
+                          relative p-4 border-4 text-left transition-all duration-200
+                          ${isSelected 
+                            ? "bg-primary border-black shadow-neo hover:shadow-neo-hover" 
+                            : "bg-white border-black hover:shadow-neo-sm hover:-translate-y-1"
+                          }
+                        `}
+                      >
+                        {isSelected && (
+                          <div className="absolute top-2 right-2 w-6 h-6 bg-black text-white flex items-center justify-center">
+                            <Check className="w-4 h-4" />
+                          </div>
+                        )}
+                        
+                        <div className="text-4xl mb-2">{getTemplateIcon(template.name)}</div>
+                        <p className="font-black uppercase text-sm leading-tight">{template.name}</p>
+                        <p className="text-xs text-gray-500 mt-1">v{template.version}</p>
+                        {template.description && (
+                          <span className="inline-block mt-2 px-2 py-0.5 bg-gray-200 text-xs font-bold uppercase">
+                            {template.description}
+                          </span>
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
 
               {errors.templateId && (
                 <p className="text-sm font-medium text-danger flex items-center gap-1">
@@ -648,8 +601,15 @@ export default function NewVMPage() {
                 </div>
                 <div>
                   <h2 className="text-xl font-black uppercase">Network Configuration</h2>
-                  <p className="text-sm text-gray-500">Configure IP address, bandwidth, and VLAN</p>
+                  <p className="text-sm text-gray-500">Configure network settings (applied after VM creation)</p>
                 </div>
+              </div>
+
+              <div className="bg-gray-100 border-2 border-black p-4 mb-4">
+                <p className="text-xs font-bold uppercase text-gray-600 flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4" />
+                  Note: Network configuration is applied after VM creation
+                </p>
               </div>
 
               {/* IP Address (Optional) */}
@@ -706,41 +666,27 @@ export default function NewVMPage() {
                 </div>
               </div>
 
-              {/* VLAN */}
+              {/* VLAN ID (optional text input) */}
               <div className="space-y-2">
                 <label htmlFor="vlanId" className="text-sm font-bold uppercase tracking-wide">
-                  VLAN <span className="text-gray-400">(optional)</span>
+                  VLAN ID <span className="text-gray-400">(optional)</span>
                 </label>
-                <Controller
-                  name="vlanId"
-                  control={control}
-                  render={({ field }) => (
-                    <Select onValueChange={field.onChange} value={field.value || ""}>
-                      <SelectTrigger id="vlanId" className="h-12">
-                        <SelectValue placeholder="Select a VLAN" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="">No VLAN (Default)</SelectItem>
-                        {mockVlans.map((vlan) => (
-                          <SelectItem key={vlan.id} value={vlan.id}>
-                            <div className="flex items-center gap-2">
-                              <Wifi className="w-4 h-4" />
-                              <span>{vlan.name}</span>
-                              <span className="text-gray-400 text-sm">({vlan.network})</span>
-                            </div>
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  )}
+                <Input
+                  id="vlanId"
+                  {...register("vlanId")}
+                  placeholder="e.g., 10, 20, 100"
+                  className="h-12"
                 />
+                <p className="text-xs text-gray-500">
+                  Enter a VLAN ID to assign this VM to a specific network segment
+                </p>
               </div>
 
               {/* Network Preview */}
               <div className="bg-gray-100 border-2 border-black p-4">
                 <div className="flex items-center gap-2 mb-2">
-                  <Wifi className="w-5 h-5" />
-                  <p className="text-xs font-bold uppercase">Network Settings</p>
+                  <Network className="w-5 h-5" />
+                  <p className="text-xs font-bold uppercase">Network Settings Preview</p>
                 </div>
                 <div className="grid grid-cols-2 gap-4 text-sm">
                   <div>
@@ -754,10 +700,7 @@ export default function NewVMPage() {
                   <div>
                     <span className="text-gray-500">VLAN:</span>
                     <span className="ml-2 font-bold">
-                      {watchedValues.vlanId 
-                        ? mockVlans.find(v => v.id === watchedValues.vlanId)?.name 
-                        : "None"
-                      }
+                      {watchedValues.vlanId || "None"}
                     </span>
                   </div>
                 </div>
@@ -790,9 +733,15 @@ export default function NewVMPage() {
                       <span className="text-gray-500">Hostname:</span>
                       <span className="font-bold">{watchedValues.hostname}</span>
                     </div>
+                    {getSelectedUser() && (
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Assigned To:</span>
+                        <span className="font-bold">{getSelectedUser()?.email}</span>
+                      </div>
+                    )}
                     <div className="flex justify-between">
-                      <span className="text-gray-500">Assigned To:</span>
-                      <span className="font-bold">{getSelectedUser()?.name}</span>
+                      <span className="text-gray-500">Node:</span>
+                      <span className="font-bold">{getSelectedNode()?.name || "Auto-select"}</span>
                     </div>
                   </div>
                 </div>
@@ -825,7 +774,7 @@ export default function NewVMPage() {
                   </p>
                   {getSelectedTemplate() && (
                     <div className="flex items-center gap-3">
-                      <span className="text-3xl">{getSelectedTemplate()?.logo}</span>
+                      <span className="text-3xl">{getTemplateIcon(getSelectedTemplate()!.name)}</span>
                       <div>
                         <p className="font-bold">{getSelectedTemplate()?.name}</p>
                         <p className="text-sm text-gray-500">v{getSelectedTemplate()?.version}</p>
@@ -850,30 +799,13 @@ export default function NewVMPage() {
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-500">VLAN:</span>
-                      <span className="font-bold">
-                        {watchedValues.vlanId 
-                          ? mockVlans.find(v => v.id === watchedValues.vlanId)?.name 
-                          : "None"
-                        }
-                      </span>
+                      <span className="font-bold">{watchedValues.vlanId || "None"}</span>
                     </div>
                   </div>
+                  <p className="text-[10px] text-gray-400 mt-2 italic">
+                    Network settings will be configured after VM creation
+                  </p>
                 </div>
-              </div>
-
-              {/* Cost Estimation */}
-              <div className="bg-primary/30 border-4 border-black p-6">
-                <div className="flex items-center gap-3 mb-4">
-                  <CreditCard className="w-6 h-6" />
-                  <p className="text-lg font-black uppercase">Estimated Monthly Cost</p>
-                </div>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-5xl font-black">${calculateCost()}</span>
-                  <span className="text-lg font-bold text-gray-500">/month</span>
-                </div>
-                <p className="text-xs text-gray-500 mt-2">
-                  * Estimated cost based on selected resources. Actual usage may vary.
-                </p>
               </div>
 
               {/* Error Message */}
@@ -892,7 +824,7 @@ export default function NewVMPage() {
               type="button"
               variant="ghost"
               onClick={handleBack}
-              disabled={currentStep === 1 || isSubmitting}
+              disabled={currentStep === 1 || createVM.isPending}
               className="gap-2"
             >
               <ChevronLeft className="w-4 h-4" />
@@ -911,10 +843,10 @@ export default function NewVMPage() {
             ) : (
               <Button
                 type="submit"
-                disabled={isSubmitting}
+                disabled={createVM.isPending}
                 className="gap-2 bg-success hover:bg-success/80"
               >
-                {isSubmitting ? (
+                {createVM.isPending ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
                     Creating VM...
