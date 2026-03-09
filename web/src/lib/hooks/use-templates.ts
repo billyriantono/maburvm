@@ -11,11 +11,19 @@ import type {
   UpdateTemplateRequest,
 } from '@/types'
 
-export function useTemplates() {
+interface TemplateListParams {
+  type?: string
+}
+
+export function useTemplates(params: TemplateListParams = {}) {
+  const { type } = params
+
   return useQuery<OSTemplate[]>({
-    queryKey: ['templates', 'list'],
+    queryKey: ['templates', 'list', { type }],
     queryFn: async () => {
-      const response = await api.get<OSTemplate[]>('/api/v1/templates')
+      const response = await api.get<OSTemplate[]>('/api/v1/templates', {
+        params: type ? { type } : undefined,
+      })
       return response.data.data
     },
   })

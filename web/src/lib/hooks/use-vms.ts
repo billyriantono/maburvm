@@ -109,6 +109,20 @@ export function useVMAction(id: string) {
   })
 }
 
+// Version that accepts vmId + action together (for list pages)
+export function useVMActions() {
+  const queryClient = useQueryClient()
+
+  return useMutation<void, Error, { vmId: string; action: string }>({
+    mutationFn: async ({ vmId, action }) => {
+      await api.post(`/api/v1/vms/${vmId}/actions`, { action })
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['vms', 'list'] })
+    },
+  })
+}
+
 export function useVMMetrics(id: string) {
   return useQuery<VMMetrics>({
     queryKey: ['vms', 'metrics', id],

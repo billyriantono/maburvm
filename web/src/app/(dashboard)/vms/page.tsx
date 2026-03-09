@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useMemo } from "react"
 import Link from "next/link"
 import { 
   Play, 
@@ -10,58 +10,31 @@ import {
   Trash2, 
   Search,
   Plus,
-  Filter,
   ChevronLeft,
   ChevronRight,
   X,
-  Loader2
+  Loader2,
+  AlertCircle,
+  Server
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-
-// Types
-type VMStatus = "running" | "stopped" | "suspended"
-
-interface VM {
-  id: string
-  name: string
-  hostname: string
-  node: string
-  status: VMStatus
-  ip: string
-  cpuCores: number
-  ramGB: number
-  user?: string
-  createdAt: string
-}
-
-// Mock data
-const mockVMs: VM[] = [
-  { id: "1", name: "web-server-01", hostname: "web01.internal", node: "node-01", status: "running", ip: "10.0.1.10", cpuCores: 4, ramGB: 8, user: "admin", createdAt: "2024-01-15" },
-  { id: "2", name: "web-server-02", hostname: "web02.internal", node: "node-01", status: "running", ip: "10.0.1.11", cpuCores: 4, ramGB: 8, user: "admin", createdAt: "2024-01-16" },
-  { id: "3", name: "db-primary", hostname: "db01.internal", node: "node-02", status: "running", ip: "10.0.2.10", cpuCores: 8, ramGB: 32, user: "dba", createdAt: "2024-01-10" },
-  { id: "4", name: "db-replica", hostname: "db02.internal", node: "node-02", status: "stopped", ip: "10.0.2.11", cpuCores: 8, ramGB: 32, user: "dba", createdAt: "2024-01-11" },
-  { id: "5", name: "cache-server", hostname: "cache01.internal", node: "node-03", status: "running", ip: "10.0.3.10", cpuCores: 2, ramGB: 4, user: "ops", createdAt: "2024-01-18" },
-  { id: "6", name: "worker-01", hostname: "worker01.internal", node: "node-03", status: "suspended", ip: "10.0.3.11", cpuCores: 4, ramGB: 16, user: "dev", createdAt: "2024-01-20" },
-  { id: "7", name: "api-gateway", hostname: "api01.internal", node: "node-01", status: "running", ip: "10.0.1.20", cpuCores: 2, ramGB: 4, user: "admin", createdAt: "2024-01-22" },
-  { id: "8", name: "monitoring", hostname: "mon01.internal", node: "node-04", status: "running", ip: "10.0.4.10", cpuCores: 2, ramGB: 2, user: "ops", createdAt: "2024-01-25" },
-  { id: "9", name: "backup-server", hostname: "backup01.internal", node: "node-04", status: "stopped", ip: "10.0.4.11", cpuCores: 4, ramGB: 8, user: "admin", createdAt: "2024-01-26" },
-  { id: "10", name: "dev-container", hostname: "dev01.internal", node: "node-02", status: "running", ip: "10.0.2.20", cpuCores: 2, ramGB: 4, user: "dev", createdAt: "2024-01-28" },
-]
-
-const nodes = ["node-01", "node-02", "node-03", "node-04"]
-const users = ["admin", "dba", "ops", "dev"]
+import { Skeleton } from "@/components/ui/skeleton"
+import { useVMs, useDeleteVM, useVMActions } from "@/lib/hooks/use-vms"
+import type { VM, VMStatus } from "@/types"
 
 // Status badge component
 function StatusBadge({ status }: { status: VMStatus }) {
-  const colors = {
+  const colors: Record<string, string> = {
     running: "bg-[#CCFF00] text-black",
     stopped: "bg-[#FF4444] text-white",
     suspended: "bg-[#FFAA00] text-black",
+    creating: "bg-[#00CCFF] text-black",
+    error: "bg-[#FF0000] text-white",
   }
   
   return (
-    <span className={`inline-flex items-center px-3 py-1 text-xs font-black uppercase tracking-wider border-2 border-black ${colors[status]}`}>
+    <span className={`inline-flex items-center px-3 py-1 text-xs font-black uppercase tracking-wider border-2 border-black ${colors[status] || "bg-gray-200 text-black"}`}>
       <span className={`w-2 h-2 mr-2 rounded-full ${status === "running" ? "bg-black animate-pulse" : "bg-current"}`} />
       {status}
     </span>
@@ -147,19 +120,52 @@ function Pagination({
   )
 }
 
+// Skeleton row for loading state
+function SkeletonRow() {
+  return (
+    <div className="grid grid-cols-12 gap-4 p-4 items-center border-b-2 border-black last:border-0">
+      <div className="col-span-3">
+        <Skeleton className="h-5 w-32" />
+        <Skeleton className="h-3 w-24 mt-1" />
+      </div>
+      <div className="col-span-2">
+        <Skeleton className="h-6 w-16" />
+      </div>
+      <div className="col-span-2">
+        <Skeleton className="h-6 w-20" />
+      </div>
+      <div className="col-span-2">
+        <div className="flex items-center gap-3">
+          <Skeleton className="h-6 w-6" />
+          <Skeleton className="h-6 w-6" />
+        </div>
+      </div>
+      <div className="col-span-3 flex items-center justify-end gap-2">
+        <Skeleton className="h-8 w-8" />
+        <Skeleton className="h-8 w-8" />
+        <Skeleton className="h-8 w-8" />
+        <Skeleton className="h-8 w-8" />
+        <Skeleton className="h-8 w-8" />
+      </div>
+    </div>
+  )
+}
+
 // Confirm dialog component
 function ConfirmDialog({ 
   open, 
   title, 
   message, 
   onConfirm, 
-  onCancel 
+  onCancel,
+  loading = false
 }: { 
   open: boolean
   title: string
   message: string
   onConfirm: () => void
   onCancel: () => void
+  loading?: boolean
 }) {
   if (!open) return null
   
@@ -170,11 +176,11 @@ function ConfirmDialog({
         <h3 className="text-xl font-black uppercase mb-4">{title}</h3>
         <p className="text-gray-600 font-medium mb-6">{message}</p>
         <div className="flex gap-3 justify-end">
-          <Button variant="ghost" onClick={onCancel} className="border-2 border-black">
+          <Button variant="ghost" onClick={onCancel} className="border-2 border-black" disabled={loading}>
             Cancel
           </Button>
-          <Button variant="destructive" onClick={onConfirm}>
-            Confirm Delete
+          <Button variant="destructive" onClick={onConfirm} disabled={loading}>
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Confirm Delete"}
           </Button>
         </div>
       </div>
@@ -198,156 +204,142 @@ function Toast({ message, type, onClose }: { message: string, type: "success" | 
   )
 }
 
+// Error state component
+function ErrorState({ message, onRetry }: { message: string, onRetry: () => void }) {
+  return (
+    <div className="p-12 text-center">
+      <AlertCircle className="w-12 h-12 mx-auto text-danger mb-4" />
+      <p className="text-gray-700 font-bold uppercase mb-2">Failed to load VMs</p>
+      <p className="text-gray-500 text-sm mb-4">{message}</p>
+      <Button onClick={onRetry} className="gap-2">
+        <RotateCcw className="w-4 h-4" />
+        Retry
+      </Button>
+    </div>
+  )
+}
+
+// Empty state component
+function EmptyState({ hasFilters, onClearFilters }: { hasFilters: boolean, onClearFilters: () => void }) {
+  return (
+    <div className="p-12 text-center">
+      <Server className="w-12 h-12 mx-auto text-gray-300 mb-4" />
+      <p className="text-gray-700 font-bold uppercase mb-2">No VMs found</p>
+      <p className="text-gray-500 text-sm mb-4">
+        {hasFilters ? "Try adjusting your filters to see more results." : "Get started by creating your first VM."}
+      </p>
+      {hasFilters ? (
+        <Button variant="ghost" onClick={onClearFilters} className="border-2 border-black gap-2">
+          <X className="w-4 h-4" />
+          Clear filters
+        </Button>
+      ) : (
+        <Link href="/vms/new">
+          <Button className="gap-2">
+            <Plus className="w-4 h-4" />
+            Create VM
+          </Button>
+        </Link>
+      )}
+    </div>
+  )
+}
+
 export default function VMListPage() {
   // State
-  const [vms, setVms] = useState<VM[]>(mockVMs)
-  const [filteredVMs, setFilteredVMs] = useState<VM[]>(mockVMs)
+  const [currentPage, setCurrentPage] = useState(1)
   const [searchQuery, setSearchQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState<string>("")
-  const [nodeFilter, setNodeFilter] = useState<string>("")
-  const [userFilter, setUserFilter] = useState<string>("")
-  const [currentPage, setCurrentPage] = useState(1)
-  const [sseConnected, setSseConnected] = useState(false)
-  const [sseError, setSseError] = useState(false)
+  const [debouncedSearch, setDebouncedSearch] = useState("")
   const [deleteConfirm, setDeleteConfirm] = useState<VM | null>(null)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
   
-  const itemsPerPage = 5
-  const totalPages = Math.ceil(filteredVMs.length / itemsPerPage)
+  const itemsPerPage = 10
   
-  // Filter VMs
+  // Debounce search query
   useEffect(() => {
-    let result = [...vms]
-    
-    if (searchQuery) {
-      const query = searchQuery.toLowerCase()
-      result = result.filter(vm => 
-        vm.name.toLowerCase().includes(query) || 
-        vm.hostname.toLowerCase().includes(query)
-      )
-    }
-    
-    if (statusFilter) {
-      result = result.filter(vm => vm.status === statusFilter)
-    }
-    
-    if (nodeFilter) {
-      result = result.filter(vm => vm.node === nodeFilter)
-    }
-    
-    if (userFilter) {
-      result = result.filter(vm => vm.user === userFilter)
-    }
-    
-    setFilteredVMs(result)
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchQuery)
+      setCurrentPage(1)
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [searchQuery])
+  
+  // Reset to page 1 when status filter changes
+  useEffect(() => {
     setCurrentPage(1)
-  }, [vms, searchQuery, statusFilter, nodeFilter, userFilter])
+  }, [statusFilter])
   
-  // Paginate
-  const paginatedVMs = filteredVMs.slice(
-    (currentPage - 1) * itemsPerPage,
-    currentPage * itemsPerPage
-  )
+  // Fetch VMs with pagination
+  const { data, isLoading, error, refetch } = useVMs({
+    page: currentPage,
+    pageSize: itemsPerPage,
+    status: statusFilter || undefined,
+  })
   
-  // SSE connection
-  useEffect(() => {
-    let eventSource: EventSource | null = null
-    let reconnectTimeout: NodeJS.Timeout | null = null
+  const deleteVM = useDeleteVM()
+  const vmActions = useVMActions()
+  
+  // Filter VMs client-side for search
+  const filteredVMs = useMemo(() => {
+    if (!data?.data) return []
     
-    const connectSSE = () => {
-      try {
-        eventSource = new EventSource("/api/vm-events")
-        
-        eventSource.onopen = () => {
-          setSseConnected(true)
-          setSseError(false)
-        }
-        
-        eventSource.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data)
-            if (data.type === "vm_update") {
-              setVms(prev => prev.map(vm => 
-                vm.id === data.vm.id 
-                  ? { ...vm, status: data.vm.status }
-                  : vm
-              ))
-            }
-          } catch (e) {
-            console.error("Failed to parse SSE data:", e)
-          }
-        }
-        
-        eventSource.onerror = () => {
-          setSseConnected(false)
-          setSseError(true)
-          eventSource?.close()
-          
-          // Reconnect after 5 seconds
-          reconnectTimeout = setTimeout(connectSSE, 5000)
-        }
-      } catch (error) {
-        setSseError(true)
-        console.error("SSE connection error:", error)
-      }
-    }
+    if (!debouncedSearch) return data.data
     
-    connectSSE()
-    
-    return () => {
-      eventSource?.close()
-      if (reconnectTimeout) clearTimeout(reconnectTimeout)
-    }
-  }, [])
+    const query = debouncedSearch.toLowerCase()
+    return data.data.filter(vm => 
+      vm.hostname.toLowerCase().includes(query) || 
+      vm.id.toLowerCase().includes(query)
+    )
+  }, [data, debouncedSearch])
+  
+  // Calculate total pages
+  const totalPages = data?.totalPages || 1
+  const totalItems = data?.total || 0
+  
+  // Clear all filters
+  const clearFilters = () => {
+    setSearchQuery("")
+    setStatusFilter("")
+    setCurrentPage(1)
+  }
+  
+  const hasFilters = Boolean(searchQuery || statusFilter)
   
   // Action handlers
   const handleAction = useCallback(async (vm: VM, action: "start" | "stop" | "restart" | "console") => {
+    if (action === "console") {
+      // Open console in new window/tab
+      window.open(`/vms/${vm.id}/console`, "_blank")
+      return
+    }
+    
     setActionLoading(`${vm.id}-${action}`)
     
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 1000))
-    
-    // Update local state
-    setVms(prev => prev.map(v => {
-      if (v.id !== vm.id) return v
-      
-      const statusMap: Record<string, VMStatus> = {
-        start: "running",
-        stop: "stopped",
-        restart: "running",
-        console: v.status
-      }
-      
-      return { ...v, status: statusMap[action] }
-    }))
-    
-    setToast({ message: `VM ${vm.name} ${action} successful`, type: "success" })
-    setActionLoading(null)
-  }, [])
+    try {
+      await vmActions.mutateAsync({ vmId: vm.id, action })
+      setToast({ message: `VM ${vm.hostname} ${action} successful`, type: "success" })
+      refetch()
+    } catch (err) {
+      setToast({ message: `Failed to ${action} VM: ${(err as Error).message}`, type: "error" })
+    } finally {
+      setActionLoading(null)
+    }
+  }, [vmActions, refetch])
   
   const handleDelete = useCallback(async () => {
     if (!deleteConfirm) return
     
-    setActionLoading(`delete-${deleteConfirm.id}`)
-    
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 1000))
-    
-    setVms(prev => prev.filter(vm => vm.id !== deleteConfirm.id))
-    setToast({ message: `VM ${deleteConfirm.name} deleted`, type: "success" })
-    setDeleteConfirm(null)
-    setActionLoading(null)
-  }, [deleteConfirm])
-  
-  const clearFilters = () => {
-    setSearchQuery("")
-    setStatusFilter("")
-    setNodeFilter("")
-    setUserFilter("")
-  }
-  
-  const hasFilters = searchQuery || statusFilter || nodeFilter || userFilter
+    try {
+      await deleteVM.mutateAsync(deleteConfirm.id)
+      setToast({ message: `VM ${deleteConfirm.hostname} deleted`, type: "success" })
+      setDeleteConfirm(null)
+      refetch()
+    } catch (err) {
+      setToast({ message: `Failed to delete VM: ${(err as Error).message}`, type: "error" })
+    }
+  }, [deleteConfirm, deleteVM, refetch])
   
   return (
     <div className="max-w-7xl mx-auto">
@@ -359,20 +351,8 @@ export default function VMListPage() {
           </h1>
           <div className="flex items-center gap-2 mt-1">
             <p className="text-gray-500 font-medium uppercase tracking-wider text-sm">
-              {filteredVMs.length} VMs
+              {isLoading ? "Loading..." : `${totalItems} VMs`}
             </p>
-            {sseConnected && (
-              <span className="flex items-center gap-1 text-xs font-bold text-success">
-                <span className="w-2 h-2 bg-success rounded-full animate-pulse" />
-                LIVE
-              </span>
-            )}
-            {sseError && (
-              <span className="flex items-center gap-1 text-xs font-bold text-danger">
-                <span className="w-2 h-2 bg-danger rounded-full" />
-                DISCONNECTED
-              </span>
-            )}
           </div>
         </div>
         <Link href="/vms/new">
@@ -391,7 +371,7 @@ export default function VMListPage() {
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
             <Input
               type="text"
-              placeholder="Search by name or hostname..."
+              placeholder="Search by hostname or ID..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-10 border-2 border-black"
@@ -408,30 +388,8 @@ export default function VMListPage() {
             <option value="running">Running</option>
             <option value="stopped">Stopped</option>
             <option value="suspended">Suspended</option>
-          </select>
-          
-          {/* Node Filter */}
-          <select
-            value={nodeFilter}
-            onChange={(e) => setNodeFilter(e.target.value)}
-            className="h-12 px-4 border-2 border-black font-medium bg-white focus:outline-none focus:shadow-neo-sm"
-          >
-            <option value="">All Nodes</option>
-            {nodes.map(node => (
-              <option key={node} value={node}>{node}</option>
-            ))}
-          </select>
-          
-          {/* User Filter (Admin only) */}
-          <select
-            value={userFilter}
-            onChange={(e) => setUserFilter(e.target.value)}
-            className="h-12 px-4 border-2 border-black font-medium bg-white focus:outline-none focus:shadow-neo-sm"
-          >
-            <option value="">All Users</option>
-            {users.map(user => (
-              <option key={user} value={user}>{user}</option>
-            ))}
+            <option value="creating">Creating</option>
+            <option value="error">Error</option>
           </select>
           
           {/* Clear filters */}
@@ -448,60 +406,60 @@ export default function VMListPage() {
       <div className="bg-white border-4 border-black shadow-neo overflow-hidden">
         {/* Table Header */}
         <div className="grid grid-cols-12 gap-4 p-4 bg-black text-white font-black uppercase text-xs tracking-wider">
-          <div className="col-span-2">Name</div>
-          <div className="col-span-1">Node</div>
+          <div className="col-span-3">Hostname</div>
+          <div className="col-span-2">Node</div>
           <div className="col-span-2">Status</div>
-          <div className="col-span-2">IP Address</div>
           <div className="col-span-2">Resources</div>
           <div className="col-span-3 text-right">Actions</div>
         </div>
         
         {/* Table Body */}
-        {paginatedVMs.length === 0 ? (
-          <div className="p-12 text-center">
-            <p className="text-gray-500 font-bold uppercase">No VMs found</p>
-            {hasFilters && (
-              <Button variant="ghost" onClick={clearFilters} className="mt-4 border-2 border-black">
-                Clear filters
-              </Button>
-            )}
-          </div>
+        {isLoading ? (
+          // Loading skeleton
+          <>
+            <SkeletonRow />
+            <SkeletonRow />
+            <SkeletonRow />
+            <SkeletonRow />
+            <SkeletonRow />
+          </>
+        ) : error ? (
+          <ErrorState message={(error as Error).message} onRetry={() => refetch()} />
+        ) : filteredVMs.length === 0 ? (
+          <EmptyState hasFilters={hasFilters} onClearFilters={clearFilters} />
         ) : (
-          paginatedVMs.map((vm, index) => (
+          filteredVMs.map((vm, index) => (
             <div 
               key={vm.id} 
               className={`grid grid-cols-12 gap-4 p-4 items-center border-b-2 border-black last:border-0 ${
                 index % 2 === 0 ? "bg-white" : "bg-gray-50"
               }`}
             >
-              <div className="col-span-2 flex flex-col justify-center">
+              <div className="col-span-3 flex flex-col justify-center">
                 <Link href={`/vms/${vm.id}`} className="font-black text-black hover:underline w-fit border-none">
-                  {vm.name}
+                  {vm.hostname}
                 </Link>
-                <p className="text-xs text-gray-500 font-medium">{vm.hostname}</p>
+                <p className="text-xs text-gray-500 font-medium">ID: {vm.id.slice(0, 8)}</p>
               </div>
-              <div className="col-span-1">
+              <div className="col-span-2">
                 <span className="inline-flex items-center px-2 py-1 text-xs font-bold border border-black bg-gray-100">
-                  {vm.node}
+                  {vm.node_id}
                 </span>
               </div>
               <div className="col-span-2">
                 <StatusBadge status={vm.status} />
               </div>
               <div className="col-span-2">
-                <p className="font-mono text-sm font-bold">{vm.ip}</p>
-              </div>
-              <div className="col-span-2">
                 <div className="flex items-center gap-3">
                   <div className="flex items-center gap-1">
                     <span className="w-6 h-6 bg-primary flex items-center justify-center border border-black text-xs font-black">
-                      {vm.cpuCores}
+                      {vm.resources.cpu}
                     </span>
                     <span className="text-xs text-gray-500">CPU</span>
                   </div>
                   <div className="flex items-center gap-1">
                     <span className="w-6 h-6 bg-secondary flex items-center justify-center border border-black text-xs font-black">
-                      {vm.ramGB}
+                      {Math.round(vm.resources.ram / 1024)}
                     </span>
                     <span className="text-xs text-gray-500">GB</span>
                   </div>
@@ -565,11 +523,7 @@ export default function VMListPage() {
                   className="h-8 w-8 p-0"
                   title="Console"
                 >
-                  {actionLoading === `${vm.id}-console` ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Terminal className="w-4 h-4" />
-                  )}
+                  <Terminal className="w-4 h-4" />
                 </Button>
                 
                 {/* Delete */}
@@ -590,10 +544,10 @@ export default function VMListPage() {
       </div>
       
       {/* Pagination */}
-      {totalPages > 1 && (
+      {!isLoading && !error && totalPages > 1 && (
         <div className="flex items-center justify-between mt-6">
           <p className="text-sm font-medium text-gray-500">
-            Showing {(currentPage - 1) * itemsPerPage + 1} to {Math.min(currentPage * itemsPerPage, filteredVMs.length)} of {filteredVMs.length} VMs
+            Showing {(currentPage - 1) * itemsPerPage + 1} to {Math.min(currentPage * itemsPerPage, totalItems)} of {totalItems} VMs
           </p>
           <Pagination
             currentPage={currentPage}
@@ -607,9 +561,10 @@ export default function VMListPage() {
       <ConfirmDialog
         open={!!deleteConfirm}
         title="Delete VM"
-        message={`Are you sure you want to delete "${deleteConfirm?.name}"? This action cannot be undone.`}
+        message={`Are you sure you want to delete "${deleteConfirm?.hostname}"? This action cannot be undone.`}
         onConfirm={handleDelete}
         onCancel={() => setDeleteConfirm(null)}
+        loading={deleteVM.isPending}
       />
       
       {/* Toast */}
