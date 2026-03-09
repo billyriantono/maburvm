@@ -21,11 +21,13 @@ import {
   EyeOff,
   CheckCircle,
   AlertTriangle,
+  AlertCircle,
   Save,
   Loader2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Skeleton } from "@/components/ui/skeleton"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -36,6 +38,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { useCurrentUser } from "@/lib/hooks/use-auth"
 
 // Password change schema
 const passwordSchema = z.object({
@@ -61,23 +64,6 @@ const totpSchema = z.object({
 type PasswordFormData = z.infer<typeof passwordSchema>
 type TOTPFormData = z.infer<typeof totpSchema>
 
-// Mock user data
-interface User {
-  id: string
-  name: string
-  email: string
-  role: string
-  twoFactorEnabled: boolean
-}
-
-const mockUser: User = {
-  id: "1",
-  name: "Admin User",
-  email: "admin@maburvm.local",
-  role: "Administrator",
-  twoFactorEnabled: false,
-}
-
 // Generate backup codes
 function generateBackupCodes(): string[] {
   const codes: string[] = []
@@ -94,7 +80,10 @@ function generateBackupCodes(): string[] {
 
 export default function ProfileSettingsPage() {
   const router = useRouter()
-  const [user, setUser] = useState<User>(mockUser)
+  
+  // Data hook
+  const { data: user, isLoading: userLoading, error: userError } = useCurrentUser()
+  
   const [showPasswordForm, setShowPasswordForm] = useState(false)
   const [showCurrentPassword, setShowCurrentPassword] = useState(false)
   const [showNewPassword, setShowNewPassword] = useState(false)
@@ -102,7 +91,7 @@ export default function ProfileSettingsPage() {
   const [isLoading, setIsLoading] = useState(false)
 
   // 2FA state
-  const [twoFactorEnabled, setTwoFactorEnabled] = useState(user.twoFactorEnabled)
+  const [twoFactorEnabled, setTwoFactorEnabled] = useState(false)
   const [showSetupDialog, setShowSetupDialog] = useState(false)
   const [showBackupCodes, setShowBackupCodes] = useState(false)
   const [showDisableDialog, setShowDisableDialog] = useState(false)
@@ -111,6 +100,13 @@ export default function ProfileSettingsPage() {
   const [qrCodeImage, setQrCodeImage] = useState<string>("")
   const [backupCodes, setBackupCodes] = useState<string[]>([])
   const [isVerifying, setIsVerifying] = useState(false)
+
+  // Sync 2FA state with user data
+  useEffect(() => {
+    if (user) {
+      setTwoFactorEnabled(!!user.two_factor_secret)
+    }
+  }, [user])
 
   // Password form
   const passwordForm = useForm<PasswordFormData>({
@@ -132,7 +128,7 @@ export default function ProfileSettingsPage() {
 
   // Generate TOTP secret and QR code
   useEffect(() => {
-    if (showSetupDialog && setupStep === "qr") {
+    if (showSetupDialog && setupStep === "qr" && user) {
       // Generate mock TOTP secret (in production, this comes from server)
       const secret = "JBSWY3DPEHPK3PXP"
       const otpauthUrl = `otpauth://totp/MaburVM:${user.email}?secret=${secret}&issuer=MaburVM`
@@ -149,7 +145,7 @@ export default function ProfileSettingsPage() {
         },
       }).then(setQrCodeImage).catch(console.error)
     }
-  }, [showSetupDialog, setupStep, user.email])
+  }, [showSetupDialog, setupStep, user?.email])
 
   const handlePasswordChange = async (data: PasswordFormData) => {
     setIsLoading(true)
@@ -228,6 +224,36 @@ export default function ProfileSettingsPage() {
     setBackupCodes([])
   }
 
+  // Loading state
+  if (userLoading) {
+    return (
+      <div className="max-w-4xl mx-auto">
+        <div className="mb-8">
+          <h1 className="text-3xl font-black uppercase tracking-tight text-black">Profile Settings</h1>
+          <Skeleton className="h-5 w-64 mt-1" />
+        </div>
+        <div className="space-y-6">
+          <Skeleton className="h-48 border-4 border-black" />
+          <Skeleton className="h-32 border-4 border-black" />
+          <Skeleton className="h-24 border-4 border-black" />
+        </div>
+      </div>
+    )
+  }
+
+  // Error state
+  if (userError || !user) {
+    return (
+      <div className="max-w-4xl mx-auto">
+        <div className="bg-white border-4 border-black p-12 shadow-neo text-center">
+          <AlertCircle className="w-16 h-16 text-danger mx-auto mb-4" />
+          <h2 className="text-xl font-black uppercase mb-2">Failed to load profile</h2>
+          <p className="text-gray-500 font-medium mb-6">{(userError as Error)?.message || "Could not load user profile."}</p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="max-w-4xl mx-auto">
       {/* Header */}
@@ -252,19 +278,6 @@ export default function ProfileSettingsPage() {
           </CardHeader>
           <CardContent className="p-6 space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* Name */}
-              <div>
-                <label htmlFor="fullName" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
-                  Full Name
-                </label>
-                <Input
-                  id="fullName"
-                  defaultValue={user.name}
-                  className="bg-gray-50"
-                  disabled
-                />
-              </div>
-
               {/* Email */}
               <div>
                 <label htmlFor="email" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
@@ -293,7 +306,7 @@ export default function ProfileSettingsPage() {
                 </label>
                 <Input
                   id="role"
-                  defaultValue={user.role}
+                  defaultValue={user.role === "admin" ? "Administrator" : "Client"}
                   className="bg-gray-50"
                   disabled
                 />
