@@ -1,8 +1,8 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import Link from "next/link"
-import { useParams } from "next/navigation"
+import { useParams, useRouter } from "next/navigation"
 import { 
   Server, 
   ArrowLeft,
@@ -10,7 +10,6 @@ import {
   Square,
   RotateCcw,
   Terminal,
-  Trash2,
   Edit2,
   RefreshCw,
   Activity,
@@ -23,181 +22,35 @@ import {
   XCircle,
   Database,
   MemoryStick,
-  Gauge,
   Loader2,
   Copy,
   Check,
-  Upload,
   Search,
-  FileWarning,
   FolderOpen,
-  Circle,
-  HelpCircle,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Checkbox } from "@/components/ui/checkbox"
+import { Input } from "@/components/ui/input"
+import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
-
-// Types
-type VMStatus = "running" | "stopped" | "suspended"
-type NodeStatus = "online" | "offline" | "maintenance"
-type ImportStatus = "pending" | "importing" | "completed" | "error"
-
-interface ImportCandidate {
-  id: string
-  name: string
-  hostname: string
-  vcpu: number
-  ramGB: number
-  diskPath: string
-  diskSizeGB: number
-  status: ImportStatus
-  error?: string
-  uuid?: string
-  existingVM?: string
-  diskExists: boolean
-  hasUuidConflict: boolean
-}
-
-interface NodeHealth {
-  cpu: number
-  memory: number
-  disk: number
-  networkIn: number
-  networkOut: number
-}
-
-interface VM {
-  id: string
-  name: string
-  hostname: string
-  status: VMStatus
-  ip: string
-  cpuCores: number
-  ramGB: number
-  user?: string
-}
-
-interface Node {
-  id: string
-  name: string
-  ip: string
-  status: NodeStatus
-  vmCount: number
-  runningVMs: number
-  health: NodeHealth
-  token: string
-  lastSeen: string
-  createdAt: string
-  vms: VM[]
-}
-
-// Mock data
-const mockNodes: Record<string, Node> = {
-  "1": { 
-    id: "1", 
-    name: "node-01", 
-    ip: "10.0.1.100", 
-    status: "online", 
-    vmCount: 12,
-    runningVMs: 10,
-    health: { cpu: 45, memory: 62, disk: 38, networkIn: 125, networkOut: 89 },
-    token: "tok_abc123xyz",
-    lastSeen: "2 minutes ago",
-    createdAt: "2024-01-10",
-    vms: [
-      { id: "v1", name: "web-server-01", hostname: "web01.internal", status: "running", ip: "10.0.1.10", cpuCores: 4, ramGB: 8, user: "admin" },
-      { id: "v2", name: "web-server-02", hostname: "web02.internal", status: "running", ip: "10.0.1.11", cpuCores: 4, ramGB: 8, user: "admin" },
-      { id: "v3", name: "api-gateway", hostname: "api01.internal", status: "running", ip: "10.0.1.20", cpuCores: 2, ramGB: 4, user: "admin" },
-      { id: "v4", name: "monitoring", hostname: "mon01.internal", status: "running", ip: "10.0.1.30", cpuCores: 2, ramGB: 2, user: "ops" },
-      { id: "v5", name: "test-vm-01", hostname: "test01.internal", status: "stopped", ip: "10.0.1.40", cpuCores: 2, ramGB: 4, user: "dev" },
-      { id: "v6", name: "test-vm-02", hostname: "test02.internal", status: "stopped", ip: "10.0.1.41", cpuCores: 4, ramGB: 8, user: "dev" },
-    ]
-  },
-  "2": { 
-    id: "2", 
-    name: "node-02", 
-    ip: "10.0.2.100", 
-    status: "online", 
-    vmCount: 8,
-    runningVMs: 6,
-    health: { cpu: 72, memory: 85, disk: 55, networkIn: 234, networkOut: 156 },
-    token: "tok_def456uvw",
-    lastSeen: "1 minute ago",
-    createdAt: "2024-01-12",
-    vms: [
-      { id: "v7", name: "db-primary", hostname: "db01.internal", status: "running", ip: "10.0.2.10", cpuCores: 8, ramGB: 32, user: "dba" },
-      { id: "v8", name: "db-replica", hostname: "db02.internal", status: "running", ip: "10.0.2.11", cpuCores: 8, ramGB: 32, user: "dba" },
-      { id: "v9", name: "cache-server", hostname: "cache01.internal", status: "running", ip: "10.0.2.20", cpuCores: 2, ramGB: 4, user: "ops" },
-    ]
-  },
-  "3": { 
-    id: "3", 
-    name: "node-03", 
-    ip: "10.0.3.100", 
-    status: "offline", 
-    vmCount: 15,
-    runningVMs: 0,
-    health: { cpu: 0, memory: 0, disk: 0, networkIn: 0, networkOut: 0 },
-    token: "tok_ghi789rst",
-    lastSeen: "2 hours ago",
-    createdAt: "2024-01-15",
-    vms: []
-  },
-  "4": { 
-    id: "4", 
-    name: "node-04", 
-    ip: "10.0.4.100", 
-    status: "maintenance", 
-    vmCount: 3,
-    runningVMs: 0,
-    health: { cpu: 5, memory: 12, disk: 22, networkIn: 0, networkOut: 0 },
-    token: "tok_jkl012mno",
-    lastSeen: "5 minutes ago",
-    createdAt: "2024-01-18",
-    vms: []
-  },
-  "5": { 
-    id: "5", 
-    name: "node-05", 
-    ip: "10.0.5.100", 
-    status: "maintenance", 
-    vmCount: 5,
-    runningVMs: 0,
-    health: { cpu: 2, memory: 8, disk: 15, networkIn: 0, networkOut: 0 },
-    token: "tok_pqr345stu",
-    lastSeen: "10 minutes ago",
-    createdAt: "2024-01-20",
-    vms: []
-  },
-  "6": { 
-    id: "6", 
-    name: "node-06", 
-    ip: "10.0.6.100", 
-    status: "online", 
-    vmCount: 10,
-    runningVMs: 8,
-    health: { cpu: 58, memory: 73, disk: 41, networkIn: 189, networkOut: 145 },
-    token: "tok_vwx678yza",
-    lastSeen: "10 seconds ago",
-    createdAt: "2024-01-22",
-    vms: []
-  },
-}
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import { useNode, useUpdateNode, useNodeMetrics } from "@/lib/hooks/use-nodes"
+import { useVMs } from "@/lib/hooks/use-vms"
+import { useVMActions } from "@/lib/hooks/use-vms"
+import type { NodeStatus, VMStatus } from "@/types"
 
 // Status indicator component
 function StatusIndicator({ status }: { status: NodeStatus }) {
-  const config = {
-    online: { bg: "bg-success", icon: CheckCircle, text: "text-success", label: "Online" },
-    offline: { bg: "bg-danger", icon: XCircle, text: "text-danger", label: "Offline" },
-    maintenance: { bg: "bg-warning", icon: AlertTriangle, text: "text-warning", label: "Maintenance" },
+  const config: Record<string, { bg: string; text: string; label: string }> = {
+    active: { bg: "bg-success", text: "text-success", label: "Active" },
+    offline: { bg: "bg-danger", text: "text-danger", label: "Offline" },
+    maintenance: { bg: "bg-warning", text: "text-warning", label: "Maintenance" },
   }
   
-  const { bg, icon: Icon, text, label } = config[status]
+  const { bg, text, label } = config[status] || config.offline
   
   return (
     <div className="flex items-center gap-2">
-      <span className={`w-3 h-3 rounded-full ${bg} ${status === "online" ? "animate-pulse" : ""}`} />
+      <span className={`w-3 h-3 rounded-full ${bg} ${status === "active" ? "animate-pulse" : ""}`} />
       <span className={`text-sm font-black uppercase ${text}`}>{label}</span>
     </div>
   )
@@ -205,14 +58,16 @@ function StatusIndicator({ status }: { status: NodeStatus }) {
 
 // VM Status badge
 function VMStatusBadge({ status }: { status: VMStatus }) {
-  const colors = {
+  const colors: Record<string, string> = {
     running: "bg-[#CCFF00] text-black",
     stopped: "bg-[#FF4444] text-white",
     suspended: "bg-[#FFAA00] text-black",
+    creating: "bg-[#00AAFF] text-white",
+    error: "bg-[#FF0000] text-white",
   }
   
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 text-[10px] font-black uppercase tracking-wider border border-black ${colors[status]}`}>
+    <span className={`inline-flex items-center px-2 py-0.5 text-[10px] font-black uppercase tracking-wider border border-black ${colors[status] || colors.stopped}`}>
       <span className={`w-1.5 h-1.5 mr-1.5 rounded-full ${status === "running" ? "bg-black animate-pulse" : "bg-current"}`} />
       {status}
     </span>
@@ -220,7 +75,7 @@ function VMStatusBadge({ status }: { status: VMStatus }) {
 }
 
 // Resource gauge component
-function ResourceGauge({ value, label, icon: Icon, color }: { value: number, label: string, icon: React.ElementType, color: string }) {
+function ResourceGauge({ value, label, detail, icon: Icon, color }: { value: number; label: string; detail?: string; icon: React.ElementType; color: string }) {
   const getColorClass = () => {
     if (value >= 90) return "bg-danger"
     if (value >= 70) return "bg-warning"
@@ -234,18 +89,37 @@ function ResourceGauge({ value, label, icon: Icon, color }: { value: number, lab
           <div className={`w-8 h-8 ${color} flex items-center justify-center border-2 border-black`}>
             <Icon className="w-4 h-4" />
           </div>
-          <span className="text-xs font-black uppercase text-gray-500">{label}</span>
+          <div>
+            <span className="text-xs font-black uppercase text-gray-500">{label}</span>
+            {detail && <span className="text-[10px] text-gray-400 block">{detail}</span>}
+          </div>
         </div>
         <span className="text-2xl font-black">{value}%</span>
       </div>
       <div className="h-3 bg-gray-200 border-2 border-black">
         <div 
           className={`h-full ${getColorClass()} transition-all duration-500`}
-          style={{ width: `${value}%` }}
+          style={{ width: `${Math.min(value, 100)}%` }}
         />
       </div>
     </div>
   )
+}
+
+function formatDate(dateString: string) {
+  return new Date(dateString).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return "0 B"
+  const k = 1024
+  const sizes = ["B", "KB", "MB", "GB", "TB"]
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+}
+
+function formatBytesPerSec(bytes: number): string {
+  return `${formatBytes(bytes)}/s`
 }
 
 // Toast notification
@@ -266,249 +140,96 @@ function Toast({ message, type, onClose }: { message: string, type: "success" | 
 
 export default function NodeDetailPage() {
   const params = useParams()
+  const router = useRouter()
   const nodeId = params.id as string
   
-  const [node, setNode] = useState<Node | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
   const [copied, setCopied] = useState(false)
-  
-  const [activeTab, setActiveTab] = useState("overview")
-  const [scanStatus, setScanStatus] = useState<"idle" | "scanning" | "complete">("idle")
-  const [importCandidates, setImportCandidates] = useState<ImportCandidate[]>([])
-  const [selectedVMs, setSelectedVMs] = useState<Set<string>>(new Set())
-  const [isImporting, setIsImporting] = useState(false)
-  const [importProgress, setImportProgress] = useState(0)
-  const [importResults, setImportResults] = useState<{ success: number; failed: number } | null>(null)
-  
-  // Load node data
-  useEffect(() => {
-    // Simulate API call
-    setTimeout(() => {
-      setNode(mockNodes[nodeId] || null)
-      setLoading(false)
-    }, 500)
-  }, [nodeId])
-  
-  // Copy token to clipboard
-  const copyToken = () => {
-    if (node) {
-      navigator.clipboard.writeText(node.token)
-      setCopied(true)
-      setToast({ message: "Token copied to clipboard", type: "success" })
-      setTimeout(() => setCopied(false), 2000)
-    }
-  }
-  
-  // Handle VM actions
-  const handleVMAction = async (vmId: string, action: "start" | "stop" | "restart") => {
-    if (!node) return
-    
+  const [editDialogOpen, setEditDialogOpen] = useState(false)
+  const [editName, setEditName] = useState("")
+  const [actionLoading, setActionLoading] = useState<string | null>(null)
+
+  // Data hooks
+  const { data: node, isLoading, error, refetch } = useNode(nodeId)
+  const { data: metrics } = useNodeMetrics(nodeId)
+  const { data: vmsData, isLoading: vmsLoading, refetch: refetchVMs } = useVMs({ nodeId, pageSize: 100 })
+  const updateNode = useUpdateNode(nodeId)
+  const vmActions = useVMActions()
+
+  const vms = vmsData?.data || []
+
+  // VM action handler
+  const handleVMAction = useCallback(async (vmId: string, action: string) => {
     setActionLoading(`${vmId}-${action}`)
-    
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 1000))
-    
-    // Update local state
-    setNode(prev => {
-      if (!prev) return null
-      return {
-        ...prev,
-        vms: prev.vms.map(vm => {
-          if (vm.id !== vmId) return vm
-          const statusMap: Record<string, VMStatus> = {
-            start: "running",
-            stop: "stopped",
-            restart: "running",
-          }
-          return { ...vm, status: statusMap[action] }
-        })
-      }
-    })
-    
-    setToast({ message: `VM ${action} successful`, type: "success" })
-    setActionLoading(null)
-  }
+    try {
+      await vmActions.mutateAsync({ vmId, action })
+      setToast({ message: `VM ${action} successful`, type: "success" })
+      refetchVMs()
+    } catch (err) {
+      setToast({ message: `Failed to ${action} VM: ${(err as Error).message}`, type: "error" })
+    } finally {
+      setActionLoading(null)
+    }
+  }, [vmActions, refetchVMs])
   
-  // Handle regenerate token
-  const handleRegenerateToken = async () => {
-    if (!node) return
-    
-    setActionLoading("regenerate-token")
-    
-    await new Promise(resolve => setTimeout(resolve, 1500))
-    
-    const newToken = "tok_" + Math.random().toString(36).substring(2, 10) + Math.random().toString(36).substring(2, 6)
-    
-    setNode(prev => prev ? { ...prev, token: newToken } : null)
-    setToast({ message: "Token regenerated successfully", type: "success" })
-    setActionLoading(null)
-  }
-  
-  const handleScan = async () => {
-    setScanStatus("scanning")
-    setImportResults(null)
-    
-    await new Promise(resolve => setTimeout(resolve, 2000))
-    
-    const mockCandidates: ImportCandidate[] = [
-      {
-        id: "cand-1",
-        name: "web-server-old",
-        hostname: "web-old.internal",
-        vcpu: 4,
-        ramGB: 8,
-        diskPath: "/var/lib/libvirt/images/web-server-old.qcow2",
-        diskSizeGB: 80,
-        status: "pending",
-        uuid: "550e8400-e29b-41d4-a716-446655440000",
-        diskExists: true,
-        hasUuidConflict: false,
-      },
-      {
-        id: "cand-2",
-        name: "db-backup",
-        hostname: "db-backup.internal",
-        vcpu: 8,
-        ramGB: 32,
-        diskPath: "/var/lib/libvirt/images/db-backup.qcow2",
-        diskSizeGB: 500,
-        status: "pending",
-        uuid: "550e8400-e29b-41d4-a716-446655440001",
-        diskExists: true,
-        hasUuidConflict: true,
-        existingVM: "db-primary",
-      },
-      {
-        id: "cand-3",
-        name: "test-vm",
-        hostname: "test-old.internal",
-        vcpu: 2,
-        ramGB: 4,
-        diskPath: "/var/lib/libvirt/images/test-vm.qcow2",
-        diskSizeGB: 40,
-        status: "pending",
-        uuid: "550e8400-e29b-41d4-a716-446655440002",
-        diskExists: false,
-        hasUuidConflict: false,
-      },
-      {
-        id: "cand-4",
-        name: "cache-old",
-        hostname: "cache-old.internal",
-        vcpu: 2,
-        ramGB: 4,
-        diskPath: "/var/lib/libvirt/images/cache-old.qcow2",
-        diskSizeGB: 25,
-        status: "pending",
-        uuid: "550e8400-e29b-41d4-a716-446655440003",
-        diskExists: true,
-        hasUuidConflict: false,
-      },
-      {
-        id: "cand-5",
-        name: "dev-box",
-        hostname: "dev-old.internal",
-        vcpu: 4,
-        ramGB: 16,
-        diskPath: "/var/lib/libvirt/images/dev-box.qcow2",
-        diskSizeGB: 120,
-        status: "pending",
-        uuid: "550e8400-e29b-41d4-a716-446655440004",
-        diskExists: true,
-        hasUuidConflict: false,
-      },
-    ]
-    
-    setImportCandidates(mockCandidates)
-    setScanStatus("complete")
-    setToast({ message: `Found ${mockCandidates.length} import candidates`, type: "success" })
-  }
-  
-  const handleToggleVM = (id: string) => {
-    setSelectedVMs(prev => {
-      const next = new Set(prev)
-      if (next.has(id)) {
-        next.delete(id)
-      } else {
-        next.add(id)
-      }
-      return next
-    })
-  }
-  
-  const handleSelectAll = () => {
-    const validCandidates = importCandidates.filter(c => c.diskExists && !c.hasUuidConflict)
-    if (selectedVMs.size === validCandidates.length) {
-      setSelectedVMs(new Set())
-    } else {
-      setSelectedVMs(new Set(validCandidates.map(c => c.id)))
+  // Edit handler
+  const handleEdit = useCallback(async () => {
+    if (!editName.trim()) return
+    try {
+      await updateNode.mutateAsync({ name: editName })
+      setToast({ message: "Node updated successfully", type: "success" })
+      setEditDialogOpen(false)
+      refetch()
+    } catch (err) {
+      setToast({ message: `Failed to update node: ${(err as Error).message}`, type: "error" })
+    }
+  }, [updateNode, editName, refetch])
+
+  // Copy to clipboard
+  const copyToClipboard = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      setToast({ message: "Copied to clipboard", type: "success" })
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      setCopied(false)
     }
   }
-  
-  const handleImport = async () => {
-    if (selectedVMs.size === 0) return
-    
-    setIsImporting(true)
-    setImportProgress(0)
-    setImportResults(null)
-    
-    const selectedIds = Array.from(selectedVMs)
-    let successCount = 0
-    let failedCount = 0
-    
-    for (let i = 0; i < selectedIds.length; i++) {
-      const id = selectedIds[i]
-      
-      setImportCandidates(prev => 
-        prev.map(c => c.id === id ? { ...c, status: "importing" } : c)
-      )
-      
-      await new Promise(resolve => setTimeout(resolve, 1500))
-      
-      const candidate = importCandidates.find(c => c.id === id)
-      const success = candidate?.diskExists && !candidate?.hasUuidConflict
-      
-      if (success) {
-        successCount++
-        setImportCandidates(prev => 
-          prev.map(c => c.id === id ? { ...c, status: "completed" } : c)
-        )
-      } else {
-        failedCount++
-        setImportCandidates(prev => 
-          prev.map(c => c.id === id ? { ...c, status: "error", error: "Disk not found" } : c)
-        )
-      }
-      
-      setImportProgress(Math.round(((i + 1) / selectedIds.length) * 100))
-    }
-    
-    setIsImporting(false)
-    setImportResults({ success: successCount, failed: failedCount })
-    setSelectedVMs(new Set())
-    setToast({ 
-      message: `Import complete: ${successCount} succeeded, ${failedCount} failed`, 
-      type: failedCount > 0 ? "error" : "success" 
-    })
-  }
-  
-  if (loading) {
+
+  // Loading state
+  if (isLoading) {
     return (
-      <div className="max-w-7xl mx-auto flex items-center justify-center min-h-[400px]">
-        <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
+      <div className="max-w-7xl mx-auto">
+        <div className="flex items-center gap-4 mb-6">
+          <Link href="/nodes">
+            <Button variant="ghost" size="icon" className="border-2 border-black">
+              <ArrowLeft className="w-4 h-4" />
+            </Button>
+          </Link>
+          <div className="flex-1">
+            <Skeleton className="h-8 w-48 mb-2" />
+            <Skeleton className="h-5 w-32" />
+          </div>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+          {[1,2,3,4].map(i => <Skeleton key={i} className="h-24 border-4 border-black" />)}
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          {[1,2,3].map(i => <Skeleton key={i} className="h-32 border-4 border-black" />)}
+        </div>
       </div>
     )
   }
-  
-  if (!node) {
+
+  // Error / not found
+  if (error || !node) {
     return (
       <div className="max-w-7xl mx-auto">
         <div className="bg-white border-4 border-black p-12 shadow-neo text-center">
           <Server className="w-16 h-16 text-gray-300 mx-auto mb-4" />
           <h2 className="text-xl font-black uppercase mb-2">Node Not Found</h2>
-          <p className="text-gray-500 font-medium mb-6">The requested node does not exist.</p>
+          <p className="text-gray-500 font-medium mb-6">{(error as Error)?.message || "The requested node does not exist."}</p>
           <Link href="/nodes">
             <Button className="gap-2">
               <ArrowLeft className="w-4 h-4" />
@@ -519,6 +240,9 @@ export default function NodeDetailPage() {
       </div>
     )
   }
+
+  const runningVMs = vms.filter(vm => vm.status === "running").length
+  const stoppedVMs = vms.length - runningVMs
   
   return (
     <div className="max-w-7xl mx-auto">
@@ -537,31 +261,41 @@ export default function NodeDetailPage() {
             <StatusIndicator status={node.status} />
           </div>
           <p className="text-gray-500 font-medium uppercase tracking-wider text-sm">
-            {node.ip} • Created {node.createdAt}
+            {node.ip_address} • Created {formatDate(node.created_at)}
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="ghost" className="border-2 border-black gap-2">
-            <Edit2 className="w-4 h-4" />
-            Edit
-          </Button>
-          <Button 
-            variant="ghost" 
-            onClick={handleRegenerateToken}
-            disabled={node.status !== "online" || !!actionLoading}
-            className="border-2 border-black gap-2"
-          >
-            {actionLoading === "regenerate-token" ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <RefreshCw className="w-4 h-4" />
-            )}
-            Regenerate Token
-          </Button>
+          <Dialog open={editDialogOpen} onOpenChange={(open) => { setEditDialogOpen(open); if (open) setEditName(node.name) }}>
+            <DialogTrigger asChild>
+              <Button variant="ghost" className="border-2 border-black gap-2">
+                <Edit2 className="w-4 h-4" />
+                Edit
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-md border-4 border-black shadow-neo-xl">
+              <DialogHeader>
+                <DialogTitle className="text-lg font-black uppercase">Edit Node</DialogTitle>
+                <DialogDescription>Update node name</DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4 py-4">
+                <div>
+                  <label htmlFor="edit-name" className="block text-xs font-black uppercase text-gray-500 mb-1">Name</label>
+                  <Input id="edit-name" value={editName} onChange={(e) => setEditName(e.target.value)} className="border-2 border-black" />
+                </div>
+              </div>
+              <DialogFooter>
+                <Button variant="ghost" onClick={() => setEditDialogOpen(false)}>Cancel</Button>
+                <Button onClick={handleEdit} disabled={updateNode.isPending || !editName.trim()}>
+                  {updateNode.isPending && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
+                  Save Changes
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
 
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
+      <Tabs defaultValue="overview">
         <TabsList className="mb-6">
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="import">Import VMs</TabsTrigger>
@@ -570,231 +304,275 @@ export default function NodeDetailPage() {
         <TabsContent value="overview">
           {/* Quick Stats */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-        <div className="bg-white border-4 border-black p-4 shadow-neo">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-black uppercase text-gray-500">Total VMs</span>
-            <Database className="w-4 h-4 text-gray-400" />
-          </div>
-          <p className="text-3xl font-black text-black">{node.vmCount}</p>
-        </div>
-        
-        <div className="bg-white border-4 border-black p-4 shadow-neo">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-black uppercase text-gray-500">Running</span>
-            <span className="w-3 h-3 bg-success rounded-full animate-pulse" />
-          </div>
-          <p className="text-3xl font-black text-success">{node.runningVMs}</p>
-        </div>
-        
-        <div className="bg-white border-4 border-black p-4 shadow-neo">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-black uppercase text-gray-500">Stopped</span>
-            <span className="w-3 h-3 bg-danger rounded-full" />
-          </div>
-          <p className="text-3xl font-black text-danger">{node.vmCount - node.runningVMs}</p>
-        </div>
-        
-        <div className="bg-white border-4 border-black p-4 shadow-neo">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-black uppercase text-gray-500">Last Seen</span>
-            <Clock className="w-4 h-4 text-gray-400" />
-          </div>
-          <p className="text-lg font-black text-black">{node.lastSeen}</p>
-        </div>
-      </div>
-
-      {/* Resource Usage */}
-      {node.status === "online" && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-          <ResourceGauge value={node.health.cpu} label="CPU Usage" icon={Cpu} color="bg-primary" />
-          <ResourceGauge value={node.health.memory} label="Memory Usage" icon={MemoryStick} color="bg-secondary" />
-          <ResourceGauge value={node.health.disk} label="Disk Usage" icon={HardDrive} color="bg-accent" />
-        </div>
-      )}
-
-      {/* Network Stats */}
-      {node.status === "online" && (
-        <div className="bg-white border-4 border-black p-6 shadow-neo mb-6">
-          <h2 className="text-lg font-black uppercase tracking-tight text-black mb-4">
-            Network Throughput
-          </h2>
-          <div className="grid grid-cols-2 gap-8">
-            <div className="flex items-center gap-4">
-              <div className="w-12 h-12 bg-success flex items-center justify-center border-2 border-black">
-                <Network className="w-6 h-6" />
+            <div className="bg-white border-4 border-black p-4 shadow-neo">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-black uppercase text-gray-500">Total VMs</span>
+                <Database className="w-4 h-4 text-gray-400" />
               </div>
-              <div>
-                <p className="text-xs font-black uppercase text-gray-500">Inbound</p>
-                <p className="text-2xl font-black text-success">{node.health.networkIn} MB/s</p>
-              </div>
+              <p className="text-3xl font-black text-black">{metrics?.running_vm_count ?? vms.length}</p>
             </div>
-            <div className="flex items-center gap-4">
-              <div className="w-12 h-12 bg-primary flex items-center justify-center border-2 border-black">
-                <Network className="w-6 h-6" />
+            
+            <div className="bg-white border-4 border-black p-4 shadow-neo">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-black uppercase text-gray-500">Running</span>
+                <span className="w-3 h-3 bg-success rounded-full animate-pulse" />
               </div>
-              <div>
-                <p className="text-xs font-black uppercase text-gray-500">Outbound</p>
-                <p className="text-2xl font-black text-primary">{node.health.networkOut} MB/s</p>
+              <p className="text-3xl font-black text-success">{runningVMs}</p>
+            </div>
+            
+            <div className="bg-white border-4 border-black p-4 shadow-neo">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-black uppercase text-gray-500">Stopped</span>
+                <span className="w-3 h-3 bg-danger rounded-full" />
               </div>
+              <p className="text-3xl font-black text-danger">{stoppedVMs}</p>
+            </div>
+            
+            <div className="bg-white border-4 border-black p-4 shadow-neo">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-black uppercase text-gray-500">Status</span>
+                <Clock className="w-4 h-4 text-gray-400" />
+              </div>
+              <StatusIndicator status={node.status} />
             </div>
           </div>
-        </div>
-      )}
 
-      {/* Token Section */}
-      <div className="bg-white border-4 border-black p-6 shadow-neo mb-6">
-        <h2 className="text-lg font-black uppercase tracking-tight text-black mb-4">
-          Node Token
-        </h2>
-        <div className="flex items-center gap-4">
-          <div className="flex-1 bg-gray-100 border-2 border-black p-3">
-            <code className="font-mono text-sm font-medium">{node.token}</code>
-          </div>
-          <Button variant="ghost" onClick={copyToken} className="border-2 border-black gap-2">
-            {copied ? <Check className="w-4 h-4 text-success" /> : <Copy className="w-4 h-4" />}
-            {copied ? "Copied" : "Copy"}
-          </Button>
-        </div>
-        <p className="text-xs text-gray-500 mt-2">
-          Use this token to register this node with the control panel.
-        </p>
-      </div>
+          {/* Resource Usage from NodeMetrics */}
+          {metrics && node.status === "active" && (
+            <>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                <ResourceGauge 
+                  value={Math.round(metrics.cpu_percent)} 
+                  label="CPU Usage" 
+                  detail={`${metrics.available_cpus} cores available`}
+                  icon={Cpu} 
+                  color="bg-primary" 
+                />
+                <ResourceGauge 
+                  value={Math.round(metrics.memory_used_percent)} 
+                  label="Memory Usage" 
+                  detail={`${metrics.available_memory_mb} MB available`}
+                  icon={MemoryStick} 
+                  color="bg-secondary" 
+                />
+                <ResourceGauge 
+                  value={Math.round(metrics.disk_used_percent)} 
+                  label="Disk Usage" 
+                  detail={`${metrics.available_disk_gb} GB available`}
+                  icon={HardDrive} 
+                  color="bg-accent" 
+                />
+              </div>
 
-      {/* Status Alerts */}
-      {node.status === "maintenance" && (
-        <div className="bg-warning/20 border-4 border-warning p-6 mb-6">
-          <div className="flex items-center gap-3">
-            <AlertTriangle className="w-6 h-6 text-warning" />
-            <div>
-              <p className="font-black uppercase text-warning">Node in Maintenance Mode</p>
-              <p className="text-sm font-medium">VM operations are disabled while in maintenance mode.</p>
-            </div>
-          </div>
-        </div>
-      )}
-      
-      {node.status === "offline" && (
-        <div className="bg-danger/10 border-4 border-danger p-6 mb-6">
-          <div className="flex items-center gap-3">
-            <XCircle className="w-6 h-6 text-danger" />
-            <div>
-              <p className="font-black uppercase text-danger">Node Offline</p>
-              <p className="text-sm font-medium">Cannot connect to this node. Check network connectivity and node status.</p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Running VMs */}
-      <div className="bg-white border-4 border-black shadow-neo">
-        <div className="p-4 border-b-4 border-black bg-gray-50">
-          <h2 className="text-lg font-black uppercase tracking-tight text-black">
-            Virtual Machines ({node.vms.length})
-          </h2>
-        </div>
-        
-        {node.vms.length === 0 ? (
-          <div className="p-12 text-center">
-            <Database className="w-12 h-12 text-gray-300 mx-auto mb-4" />
-            <p className="text-gray-500 font-bold uppercase">No VMs on this node</p>
-          </div>
-        ) : (
-          <div className="divide-y-2 divide-black">
-            {node.vms.map((vm) => (
-              <div key={vm.id} className="p-4 flex items-center justify-between hover:bg-gray-50">
-                <div className="flex items-center gap-4">
-                  <div className="w-10 h-10 bg-primary flex items-center justify-center border-2 border-black">
-                    <Server className="w-5 h-5" />
+              {/* Network + I/O Stats */}
+              <div className="bg-white border-4 border-black p-6 shadow-neo mb-6">
+                <h2 className="text-lg font-black uppercase tracking-tight text-black mb-4">
+                  Network & I/O Throughput
+                </h2>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="p-3 border-2 border-black bg-gray-50">
+                    <span className="text-xs font-bold uppercase text-gray-500 block">Network RX</span>
+                    <span className="text-lg font-black text-success">{formatBytesPerSec(metrics.network_rx_bytes_per_sec)}</span>
                   </div>
-                  <div>
-                    <p className="font-black text-black">{vm.name}</p>
-                    <p className="text-xs text-gray-500 font-medium">{vm.hostname} • {vm.ip}</p>
+                  <div className="p-3 border-2 border-black bg-gray-50">
+                    <span className="text-xs font-bold uppercase text-gray-500 block">Network TX</span>
+                    <span className="text-lg font-black text-primary">{formatBytesPerSec(metrics.network_tx_bytes_per_sec)}</span>
+                  </div>
+                  <div className="p-3 border-2 border-black bg-gray-50">
+                    <span className="text-xs font-bold uppercase text-gray-500 block">Disk Read</span>
+                    <span className="text-lg font-black">{formatBytesPerSec(metrics.disk_read_bytes_per_sec)}</span>
+                  </div>
+                  <div className="p-3 border-2 border-black bg-gray-50">
+                    <span className="text-xs font-bold uppercase text-gray-500 block">Disk Write</span>
+                    <span className="text-lg font-black">{formatBytesPerSec(metrics.disk_write_bytes_per_sec)}</span>
                   </div>
                 </div>
-                
-                <div className="flex items-center gap-6">
-                  {/* Resources */}
+                {metrics.load_avg && metrics.load_avg.length >= 3 && (
+                  <div className="mt-4 pt-4 border-t-2 border-black">
+                    <span className="text-xs font-bold uppercase text-gray-500">Load Average: </span>
+                    <span className="font-mono font-bold">
+                      {metrics.load_avg[0].toFixed(2)} / {metrics.load_avg[1].toFixed(2)} / {metrics.load_avg[2].toFixed(2)}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+
+          {/* No metrics for non-active nodes */}
+          {node.status !== "active" && (
+            <>
+              {node.status === "maintenance" && (
+                <div className="bg-warning/20 border-4 border-warning p-6 mb-6">
                   <div className="flex items-center gap-3">
-                    <div className="flex items-center gap-1">
-                      <div className="w-6 h-6 bg-primary flex items-center justify-center border border-black text-[10px] font-black">
-                        {vm.cpuCores}
-                      </div>
-                      <span className="text-xs text-gray-500">CPU</span>
+                    <AlertTriangle className="w-6 h-6 text-warning" />
+                    <div>
+                      <p className="font-black uppercase text-warning">Node in Maintenance Mode</p>
+                      <p className="text-sm font-medium">VM operations are disabled while in maintenance mode.</p>
                     </div>
-                    <div className="flex items-center gap-1">
-                      <div className="w-6 h-6 bg-secondary flex items-center justify-center border border-black text-[10px] font-black">
-                        {vm.ramGB}
-                      </div>
-                      <span className="text-xs text-gray-500">GB</span>
-                    </div>
-                  </div>
-                  
-                  {/* Status */}
-                  <VMStatusBadge status={vm.status} />
-                  
-                  {/* Actions */}
-                  <div className="flex items-center gap-1">
-                    <Button
-                      variant="success"
-                      size="sm"
-                      onClick={() => handleVMAction(vm.id, "start")}
-                      disabled={vm.status === "running" || node.status !== "online" || !!actionLoading}
-                      className="h-8 w-8 p-0"
-                      title="Start"
-                    >
-                      {actionLoading === `${vm.id}-start` ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <Play className="w-4 h-4" />
-                      )}
-                    </Button>
-                    
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      onClick={() => handleVMAction(vm.id, "stop")}
-                      disabled={vm.status === "stopped" || node.status !== "online" || !!actionLoading}
-                      className="h-8 w-8 p-0"
-                      title="Stop"
-                    >
-                      {actionLoading === `${vm.id}-stop` ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <Square className="w-4 h-4" />
-                      )}
-                    </Button>
-                    
-                    <Button
-                      variant="warning"
-                      size="sm"
-                      onClick={() => handleVMAction(vm.id, "restart")}
-                      disabled={vm.status !== "running" || node.status !== "online" || !!actionLoading}
-                      className="h-8 w-8 p-0"
-                      title="Restart"
-                    >
-                      {actionLoading === `${vm.id}-restart` ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <RotateCcw className="w-4 h-4" />
-                      )}
-                    </Button>
-                    
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      disabled={vm.status !== "running" || node.status !== "online" || !!actionLoading}
-                      className="h-8 w-8 p-0"
-                      title="Console"
-                    >
-                      <Terminal className="w-4 h-4" />
-                    </Button>
                   </div>
                 </div>
+              )}
+              
+              {node.status === "offline" && (
+                <div className="bg-danger/10 border-4 border-danger p-6 mb-6">
+                  <div className="flex items-center gap-3">
+                    <XCircle className="w-6 h-6 text-danger" />
+                    <div>
+                      <p className="font-black uppercase text-danger">Node Offline</p>
+                      <p className="text-sm font-medium">Cannot connect to this node. Check network connectivity and node status.</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Node Details */}
+          <div className="bg-white border-4 border-black p-6 shadow-neo mb-6">
+            <h2 className="text-lg font-black uppercase tracking-tight text-black mb-4">
+              Node Details
+            </h2>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+              <div className="p-3 border-2 border-black">
+                <span className="text-xs font-bold uppercase text-gray-500 block">Node ID</span>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-sm font-bold">{node.id.slice(0, 16)}...</span>
+                  <button onClick={() => copyToClipboard(node.id)} className="p-1 hover:bg-gray-100" aria-label="Copy node ID">
+                    {copied ? <Check className="w-3 h-3 text-success" /> : <Copy className="w-3 h-3" />}
+                  </button>
+                </div>
               </div>
-            ))}
+              <div className="p-3 border-2 border-black">
+                <span className="text-xs font-bold uppercase text-gray-500 block">IP Address</span>
+                <span className="font-mono text-sm font-bold">{node.ip_address}</span>
+              </div>
+              <div className="p-3 border-2 border-black">
+                <span className="text-xs font-bold uppercase text-gray-500 block">Created</span>
+                <span className="text-sm font-bold">{formatDate(node.created_at)}</span>
+              </div>
+            </div>
           </div>
-        )}
-      </div>
+
+          {/* Virtual Machines on this Node */}
+          <div className="bg-white border-4 border-black shadow-neo">
+            <div className="p-4 border-b-4 border-black bg-gray-50">
+              <h2 className="text-lg font-black uppercase tracking-tight text-black">
+                Virtual Machines ({vms.length})
+              </h2>
+            </div>
+            
+            {vmsLoading ? (
+              <div className="p-6 space-y-4">
+                {[1,2,3].map(i => <Skeleton key={i} className="h-16 w-full" />)}
+              </div>
+            ) : vms.length === 0 ? (
+              <div className="p-12 text-center">
+                <Database className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+                <p className="text-gray-500 font-bold uppercase">No VMs on this node</p>
+              </div>
+            ) : (
+              <div className="divide-y-2 divide-black">
+                {vms.map((vm) => (
+                  <div key={vm.id} className="p-4 flex items-center justify-between hover:bg-gray-50">
+                    <div className="flex items-center gap-4">
+                      <div className="w-10 h-10 bg-primary flex items-center justify-center border-2 border-black">
+                        <Server className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <Link href={`/vms/${vm.id}`} className="font-black text-black hover:text-primary transition-colors">
+                          {vm.hostname}
+                        </Link>
+                        <p className="text-xs text-gray-500 font-medium">
+                          {vm.resources.cpu} vCPU • {Math.round(vm.resources.ram / 1024 * 10) / 10} GB RAM • {vm.resources.disk} GB Disk
+                        </p>
+                      </div>
+                    </div>
+                    
+                    <div className="flex items-center gap-4">
+                      {/* Resources */}
+                      <div className="hidden md:flex items-center gap-3">
+                        <div className="flex items-center gap-1">
+                          <div className="w-6 h-6 bg-primary flex items-center justify-center border border-black text-[10px] font-black">
+                            {vm.resources.cpu}
+                          </div>
+                          <span className="text-xs text-gray-500">CPU</span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <div className="w-6 h-6 bg-secondary flex items-center justify-center border border-black text-[10px] font-black">
+                            {Math.round(vm.resources.ram / 1024)}
+                          </div>
+                          <span className="text-xs text-gray-500">GB</span>
+                        </div>
+                      </div>
+                      
+                      {/* Status */}
+                      <VMStatusBadge status={vm.status} />
+                      
+                      {/* Actions */}
+                      <div className="flex items-center gap-1">
+                        <Button
+                          variant="default"
+                          size="sm"
+                          onClick={() => handleVMAction(vm.id, "start")}
+                          disabled={vm.status === "running" || node.status !== "active" || !!actionLoading}
+                          className="h-8 w-8 p-0"
+                          title="Start"
+                        >
+                          {actionLoading === `${vm.id}-start` ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Play className="w-4 h-4" />
+                          )}
+                        </Button>
+                        
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          onClick={() => handleVMAction(vm.id, "stop")}
+                          disabled={vm.status === "stopped" || node.status !== "active" || !!actionLoading}
+                          className="h-8 w-8 p-0"
+                          title="Stop"
+                        >
+                          {actionLoading === `${vm.id}-stop` ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Square className="w-4 h-4" />
+                          )}
+                        </Button>
+                        
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => handleVMAction(vm.id, "restart")}
+                          disabled={vm.status !== "running" || node.status !== "active" || !!actionLoading}
+                          className="h-8 w-8 p-0"
+                          title="Restart"
+                        >
+                          {actionLoading === `${vm.id}-restart` ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <RotateCcw className="w-4 h-4" />
+                          )}
+                        </Button>
+                        
+                        <Link href={`/vms/${vm.id}`}>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            className="h-8 w-8 p-0"
+                            title="Details"
+                          >
+                            <Terminal className="w-4 h-4" />
+                          </Button>
+                        </Link>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </TabsContent>
         
         <TabsContent value="import">
@@ -808,237 +586,17 @@ export default function NodeDetailPage() {
                   Scan this node for existing Virtualizor VMs to import
                 </p>
               </div>
-              <Button 
-                onClick={handleScan}
-                disabled={scanStatus === "scanning" || node.status !== "online"}
-                className="gap-2"
-              >
-                {scanStatus === "scanning" ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Search className="w-4 h-4" />
-                )}
+              <Button disabled={node.status !== "active"} className="gap-2">
+                <Search className="w-4 h-4" />
                 Scan for VMs
               </Button>
             </div>
-
-            {/* Scan Status */}
-            <div className="p-6 border-b-4 border-black">
-              {scanStatus === "idle" && (
-                <div className="text-center py-8">
-                  <FolderOpen className="w-12 h-12 text-gray-300 mx-auto mb-4" />
-                  <p className="text-gray-500 font-bold uppercase">Click "Scan for VMs" to search for import candidates</p>
-                </div>
-              )}
-              
-              {scanStatus === "scanning" && (
-                <div className="text-center py-8">
-                  <Loader2 className="w-12 h-12 text-primary mx-auto mb-4 animate-spin" />
-                  <p className="text-black font-black uppercase text-lg">Scanning...</p>
-                  <p className="text-gray-500 font-medium">Searching for Virtualizor VMs on this node</p>
-                </div>
-              )}
-              
-              {scanStatus === "complete" && (
-                <div className="flex items-center gap-2 mb-4">
-                  <CheckCircle className="w-5 h-5 text-success" />
-                  <span className="font-bold text-black">Found {importCandidates.length} VMs</span>
-                </div>
-              )}
+            
+            <div className="p-12 text-center">
+              <FolderOpen className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+              <p className="text-gray-500 font-bold uppercase">VM Import</p>
+              <p className="text-xs text-gray-400 mt-2">Import scanning feature coming soon</p>
             </div>
-
-            {/* Import Candidates Table */}
-            {scanStatus === "complete" && importCandidates.length > 0 && (
-              <>
-                <div className="overflow-x-auto">
-                  <table className="w-full">
-                    <thead className="bg-gray-100 border-b-4 border-black">
-                      <tr>
-                        <th className="p-4 text-left">
-                          <Checkbox
-                            checked={selectedVMs.size === importCandidates.filter(c => c.diskExists && !c.hasUuidConflict).length && selectedVMs.size > 0}
-                            onCheckedChange={handleSelectAll}
-                          />
-                        </th>
-                        <th className="p-4 text-left text-xs font-black uppercase">VM Name</th>
-                        <th className="p-4 text-left text-xs font-black uppercase">Specs</th>
-                        <th className="p-4 text-left text-xs font-black uppercase">Disk Path</th>
-                        <th className="p-4 text-left text-xs font-black uppercase">Warnings</th>
-                        <th className="p-4 text-left text-xs font-black uppercase">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y-2 divide-black">
-                      {importCandidates.map((candidate) => (
-                        <tr 
-                          key={candidate.id} 
-                          className={`hover:bg-gray-50 ${!candidate.diskExists || candidate.hasUuidConflict ? "bg-gray-50" : ""}`}
-                        >
-                          <td className="p-4">
-                            <Checkbox
-                              checked={selectedVMs.has(candidate.id)}
-                              onCheckedChange={() => handleToggleVM(candidate.id)}
-                              disabled={!candidate.diskExists || candidate.hasUuidConflict}
-                            />
-                          </td>
-                          <td className="p-4">
-                            <div className="flex items-center gap-3">
-                              <div className="w-10 h-10 bg-primary flex items-center justify-center border-2 border-black">
-                                <Server className="w-5 h-5" />
-                              </div>
-                              <div>
-                                <p className="font-black text-black">{candidate.name}</p>
-                                <p className="text-xs text-gray-500 font-medium">{candidate.hostname}</p>
-                              </div>
-                            </div>
-                          </td>
-                          <td className="p-4">
-                            <div className="flex items-center gap-3">
-                              <div className="flex items-center gap-1">
-                                <div className="w-6 h-6 bg-primary flex items-center justify-center border border-black text-[10px] font-black">
-                                  {candidate.vcpu}
-                                </div>
-                                <span className="text-xs text-gray-500">vCPU</span>
-                              </div>
-                              <div className="flex items-center gap-1">
-                                <div className="w-6 h-6 bg-secondary flex items-center justify-center border border-black text-[10px] font-black">
-                                  {candidate.ramGB}
-                                </div>
-                                <span className="text-xs text-gray-500">GB</span>
-                              </div>
-                              <div className="flex items-center gap-1">
-                                <div className="w-6 h-6 bg-accent flex items-center justify-center border border-black text-[10px] font-black">
-                                  {candidate.diskSizeGB}
-                                </div>
-                                <span className="text-xs text-gray-500">GB</span>
-                              </div>
-                            </div>
-                          </td>
-                          <td className="p-4">
-                            <code className="text-xs font-mono bg-gray-100 px-2 py-1 border border-black">
-                              {candidate.diskPath}
-                            </code>
-                          </td>
-                          <td className="p-4">
-                            <div className="flex flex-col gap-1">
-                              {!candidate.diskExists && (
-                                <div className="flex items-center gap-1 text-danger text-xs font-bold uppercase">
-                                  <FileWarning className="w-3 h-3" />
-                                  Disk not found
-                                </div>
-                              )}
-                              {candidate.hasUuidConflict && (
-                                <div className="flex items-center gap-1 text-warning text-xs font-bold uppercase">
-                                  <AlertTriangle className="w-3 h-3" />
-                                  UUID conflict: {candidate.existingVM}
-                                </div>
-                              )}
-                            </div>
-                          </td>
-                          <td className="p-4">
-                            {candidate.status === "pending" && (
-                              <span className="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-black uppercase border border-black bg-gray-100">
-                                <HelpCircle className="w-3 h-3" />
-                                Pending
-                              </span>
-                            )}
-                            {candidate.status === "importing" && (
-                              <span className="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-black uppercase border border-black bg-primary text-white">
-                                <Loader2 className="w-3 h-3 animate-spin" />
-                                Importing
-                              </span>
-                            )}
-                            {candidate.status === "completed" && (
-                              <span className="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-black uppercase border border-black bg-success text-black">
-                                <CheckCircle className="w-3 h-3" />
-                                Completed
-                              </span>
-                            )}
-                            {candidate.status === "error" && (
-                              <span className="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-black uppercase border border-black bg-danger text-white">
-                                <XCircle className="w-3 h-3" />
-                                Error
-                              </span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                {/* Import Actions */}
-                <div className="p-4 border-t-4 border-black bg-gray-50 flex items-center justify-between">
-                  <div className="text-sm font-medium text-gray-500">
-                    {selectedVMs.size} VM{selectedVMs.size !== 1 ? "s" : ""} selected
-                  </div>
-                  <Button
-                    onClick={handleImport}
-                    disabled={selectedVMs.size === 0 || isImporting}
-                    className="gap-2"
-                  >
-                    {isImporting ? (
-                      <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        Importing... {importProgress}%
-                      </>
-                    ) : (
-                      <>
-                        <Upload className="w-4 h-4" />
-                        Import Selected VMs
-                      </>
-                    )}
-                  </Button>
-                </div>
-
-                {/* Progress Bar */}
-                {isImporting && (
-                  <div className="p-4 border-t-4 border-black">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs font-black uppercase text-gray-500">Import Progress</span>
-                      <span className="text-lg font-black text-primary">{importProgress}%</span>
-                    </div>
-                    <div className="h-4 bg-gray-200 border-2 border-black">
-                      <div 
-                        className="h-full bg-primary transition-all duration-300"
-                        style={{ width: `${importProgress}%` }}
-                      />
-                    </div>
-                  </div>
-                )}
-
-                {/* Results Summary */}
-                {importResults && (
-                  <div className="p-6 border-t-4 border-black bg-gray-50">
-                    <h3 className="text-lg font-black uppercase mb-4">Import Results</h3>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="bg-success/20 border-4 border-success p-4">
-                        <div className="flex items-center gap-2 mb-2">
-                          <CheckCircle className="w-5 h-5 text-success" />
-                          <span className="text-xs font-black uppercase text-success">Successful</span>
-                        </div>
-                        <p className="text-3xl font-black text-success">{importResults.success}</p>
-                      </div>
-                      <div className="bg-danger/20 border-4 border-danger p-4">
-                        <div className="flex items-center gap-2 mb-2">
-                          <XCircle className="w-5 h-5 text-danger" />
-                          <span className="text-xs font-black uppercase text-danger">Failed</span>
-                        </div>
-                        <p className="text-3xl font-black text-danger">{importResults.failed}</p>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </>
-            )}
-
-            {/* Empty State */}
-            {scanStatus === "complete" && importCandidates.length === 0 && (
-              <div className="p-12 text-center">
-                <Search className="w-12 h-12 text-gray-300 mx-auto mb-4" />
-                <p className="text-gray-500 font-bold uppercase">No import candidates found</p>
-                <p className="text-xs text-gray-400 mt-2">This node doesn't have any Virtualizor VMs to import</p>
-              </div>
-            )}
           </div>
         </TabsContent>
       </Tabs>
