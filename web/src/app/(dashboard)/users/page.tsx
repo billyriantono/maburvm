@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useMemo, useEffect, useCallback } from "react"
 import Link from "next/link"
 import { 
   UserPlus, 
@@ -11,16 +11,19 @@ import {
   Mail,
   Edit,
   Trash2,
-  PowerCircle,
   RotateCcw,
   Eye,
   CheckCircle,
-  XCircle
+  XCircle,
+  Loader2,
+  AlertCircle,
+  Users,
+  X
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Skeleton } from "@/components/ui/skeleton"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -28,146 +31,131 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog"
+import { useUsers, useDeleteUser } from "@/lib/hooks/use-users"
+import type { User } from "@/types"
 
-// Mock user data
-interface User {
-  id: string
-  name: string
-  email: string
-  role: "admin" | "client"
-  status: "active" | "suspended"
-  twoFactorEnabled: boolean
-  vmCount: number
-  ipWhitelist: string[]
-  createdAt: string
+function Toast({ message, type, onClose }: { message: string; type: "success" | "error"; onClose: () => void }) {
+  useEffect(() => {
+    const timer = setTimeout(onClose, 3000)
+    return () => clearTimeout(timer)
+  }, [onClose])
+
+  return (
+    <div className={`fixed bottom-4 right-4 z-50 px-6 py-4 border-4 border-black shadow-neo ${
+      type === "success" ? "bg-success text-black" : "bg-danger text-white"
+    }`}>
+      <p className="font-bold uppercase text-sm">{message}</p>
+    </div>
+  )
 }
 
-const mockUsers: User[] = [
-  {
-    id: "1",
-    name: "Admin User",
-    email: "admin@maburvm.local",
-    role: "admin",
-    status: "active",
-    twoFactorEnabled: true,
-    vmCount: 0,
-    ipWhitelist: ["192.168.1.0/24", "10.0.0.0/8"],
-    createdAt: "2024-01-15",
-  },
-  {
-    id: "2",
-    name: "John Developer",
-    email: "john@company.com",
-    role: "client",
-    status: "active",
-    twoFactorEnabled: true,
-    vmCount: 5,
-    ipWhitelist: ["192.168.1.100"],
-    createdAt: "2024-02-20",
-  },
-  {
-    id: "3",
-    name: "Sarah Engineer",
-    email: "sarah@company.com",
-    role: "client",
-    status: "active",
-    twoFactorEnabled: false,
-    vmCount: 8,
-    ipWhitelist: [],
-    createdAt: "2024-03-10",
-  },
-  {
-    id: "4",
-    name: "Mike Tester",
-    email: "mike@company.com",
-    role: "client",
-    status: "suspended",
-    twoFactorEnabled: false,
-    vmCount: 2,
-    ipWhitelist: ["192.168.2.0/24"],
-    createdAt: "2024-04-05",
-  },
-  {
-    id: "5",
-    name: "Alice DevOps",
-    email: "alice@company.com",
-    role: "client",
-    status: "active",
-    twoFactorEnabled: true,
-    vmCount: 12,
-    ipWhitelist: ["10.0.0.0/16", "172.16.0.0/12"],
-    createdAt: "2024-05-01",
-  },
-]
+function ConfirmDialog({ open, title, message, loading, confirmLabel, variant, onConfirm, onCancel }: { 
+  open: boolean; title: string; message: string; loading?: boolean; confirmLabel?: string; variant?: "destructive" | "default"; onConfirm: () => void; onCancel: () => void 
+}) {
+  if (!open) return null
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-label="Confirm dialog">
+      <button type="button" className="absolute inset-0 bg-black/50 cursor-default focus:outline-none" onClick={onCancel} aria-label="Close dialog" />
+      <div className="relative bg-white border-4 border-black p-6 shadow-neo-xl max-w-md w-full mx-4">
+        <h3 className="text-xl font-black uppercase mb-4">{title}</h3>
+        <p className="text-gray-600 font-medium mb-6">{message}</p>
+        <div className="flex gap-3 justify-end">
+          <Button variant="ghost" onClick={onCancel} className="border-2 border-black" disabled={loading}>Cancel</Button>
+          <Button variant={variant === "destructive" ? "destructive" : "default"} onClick={onConfirm} disabled={loading}>
+            {loading && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
+            {confirmLabel || "Confirm"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function formatDate(dateString: string): string {
+  return new Date(dateString).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })
+}
 
 export default function UsersPage() {
   const [searchQuery, setSearchQuery] = useState("")
-  const [users, setUsers] = useState<User[]>(mockUsers)
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
-  const [userToDelete, setUserToDelete] = useState<User | null>(null)
-  const [suspendDialogOpen, setSuspendDialogOpen] = useState(false)
-  const [userToSuspend, setUserToSuspend] = useState<User | null>(null)
-  const [resetDialogOpen, setResetDialogOpen] = useState(false)
-  const [userToReset, setUserToReset] = useState<User | null>(null)
+  const [roleFilter, setRoleFilter] = useState<string>("")
+  const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; email: string } | null>(null)
+  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
 
-  const filteredUsers = users.filter(
-    (user) =>
-      user.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      user.email.toLowerCase().includes(searchQuery.toLowerCase())
-  )
+  // Data hooks
+  const { data: usersData, isLoading, error, refetch } = useUsers({ pageSize: 100 })
+  const deleteUser = useDeleteUser()
 
-  const handleDeleteUser = (user: User) => {
-    setUserToDelete(user)
-    setDeleteDialogOpen(true)
-  }
+  const users = usersData?.data || []
 
-  const confirmDelete = () => {
-    if (userToDelete) {
-      setUsers(users.filter((u) => u.id !== userToDelete.id))
-      setDeleteDialogOpen(false)
-      setUserToDelete(null)
-    }
-  }
+  // Filter users
+  const filteredUsers = useMemo(() => {
+    let result = [...users]
 
-  const handleSuspendUser = (user: User) => {
-    setUserToSuspend(user)
-    setSuspendDialogOpen(true)
-  }
-
-  const confirmSuspend = () => {
-    if (userToSuspend) {
-      setUsers(
-        users.map((u) =>
-          u.id === userToSuspend.id
-            ? { ...u, status: u.status === "active" ? "suspended" : "active" }
-            : u
-        )
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase()
+      result = result.filter(u =>
+        u.email.toLowerCase().includes(query) ||
+        u.id.toLowerCase().includes(query)
       )
-      setSuspendDialogOpen(false)
-      setUserToSuspend(null)
     }
+
+    if (roleFilter) {
+      result = result.filter(u => u.role === roleFilter)
+    }
+
+    return result
+  }, [users, searchQuery, roleFilter])
+
+  // Delete handler
+  const handleDelete = useCallback(async () => {
+    if (!deleteConfirm) return
+    try {
+      await deleteUser.mutateAsync(deleteConfirm.id)
+      setToast({ message: `User "${deleteConfirm.email}" deleted`, type: "success" })
+      setDeleteConfirm(null)
+      refetch()
+    } catch (err) {
+      setToast({ message: `Failed to delete: ${(err as Error).message}`, type: "error" })
+    }
+  }, [deleteConfirm, deleteUser, refetch])
+
+  const clearFilters = () => { setSearchQuery(""); setRoleFilter("") }
+  const hasFilters = searchQuery || roleFilter
+
+  // Loading
+  if (isLoading) {
+    return (
+      <div className="max-w-7xl mx-auto">
+        <div className="flex items-center justify-between mb-8">
+          <div>
+            <h1 className="text-3xl font-black uppercase tracking-tight text-black">Users</h1>
+            <Skeleton className="h-5 w-48 mt-1" />
+          </div>
+        </div>
+        <Skeleton className="h-16 border-4 border-black mb-6" />
+        <div className="space-y-4">
+          {[1,2,3,4].map(i => <Skeleton key={i} className="h-16 border-4 border-black" />)}
+        </div>
+      </div>
+    )
   }
 
-  const handleResetPassword = (user: User) => {
-    setUserToReset(user)
-    setResetDialogOpen(true)
+  // Error
+  if (error) {
+    return (
+      <div className="max-w-7xl mx-auto">
+        <div className="bg-white border-4 border-black p-12 shadow-neo text-center">
+          <AlertCircle className="w-16 h-16 text-danger mx-auto mb-4" />
+          <h2 className="text-xl font-black uppercase mb-2">Failed to load users</h2>
+          <p className="text-gray-500 font-medium mb-6">{(error as Error).message}</p>
+          <Button onClick={() => refetch()}>Retry</Button>
+        </div>
+      </div>
+    )
   }
 
-  const confirmReset = () => {
-    // In production, this would generate a temp password
-    alert(`Password reset email sent to ${userToReset?.email}`)
-    setResetDialogOpen(false)
-    setUserToReset(null)
-  }
+  const adminCount = users.filter(u => u.role === "admin").length
+  const clientCount = users.filter(u => u.role === "client").length
 
   return (
     <div className="max-w-7xl mx-auto">
@@ -178,7 +166,7 @@ export default function UsersPage() {
             Users
           </h1>
           <p className="text-gray-500 font-medium uppercase tracking-wider text-sm mt-1">
-            Manage user accounts and permissions
+            {users.length} users • {adminCount} admins • {clientCount} clients
           </p>
         </div>
         <Link href="/users/new">
@@ -190,252 +178,136 @@ export default function UsersPage() {
       </div>
 
       {/* Search and Filters */}
-      <Card className="mb-6">
-        <CardContent className="p-4">
-          <div className="flex items-center gap-4">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-              <Input
-                placeholder="Search users..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-10"
-              />
-            </div>
-            <div className="flex items-center gap-2">
-              <Badge variant="default">{users.length} Total</Badge>
-              <Badge variant="secondary">{users.filter((u) => u.status === "active").length} Active</Badge>
-              <Badge variant="destructive">{users.filter((u) => u.status === "suspended").length} Suspended</Badge>
-            </div>
+      <div className="bg-white border-4 border-black p-4 shadow-neo mb-6">
+        <div className="flex flex-col md:flex-row gap-4">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <Input
+              placeholder="Search users by email..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-10 border-2 border-black"
+            />
           </div>
-        </CardContent>
-      </Card>
+          <select
+            value={roleFilter}
+            onChange={(e) => setRoleFilter(e.target.value)}
+            className="h-12 px-4 border-2 border-black font-medium bg-white focus:outline-none focus:shadow-neo-sm"
+          >
+            <option value="">All Roles</option>
+            <option value="admin">Admin</option>
+            <option value="client">Client</option>
+          </select>
+          {hasFilters && (
+            <Button variant="ghost" onClick={clearFilters} className="border-2 border-black gap-1"><X className="w-4 h-4" />Clear</Button>
+          )}
+        </div>
+      </div>
 
       {/* Users Table */}
-      <Card>
-        <CardHeader className="border-b-2 border-black">
-          <CardTitle className="text-lg">All Users</CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead className="bg-gray-50 border-b-2 border-black">
-                <tr>
-                  <th className="text-left px-6 py-3 text-xs font-black uppercase tracking-wider">
-                    User
-                  </th>
-                  <th className="text-left px-6 py-3 text-xs font-black uppercase tracking-wider">
-                    Role
-                  </th>
-                  <th className="text-left px-6 py-3 text-xs font-black uppercase tracking-wider">
-                    Status
-                  </th>
-                  <th className="text-left px-6 py-3 text-xs font-black uppercase tracking-wider">
-                    2FA
-                  </th>
-                  <th className="text-left px-6 py-3 text-xs font-black uppercase tracking-wider">
-                    VMs
-                  </th>
-                  <th className="text-left px-6 py-3 text-xs font-black uppercase tracking-wider">
-                    IP Whitelist
-                  </th>
-                  <th className="text-right px-6 py-3 text-xs font-black uppercase tracking-wider">
-                    Actions
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y-2 divide-black">
-                {filteredUsers.map((user) => (
-                  <tr key={user.id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 bg-primary flex items-center justify-center border-2 border-black">
-                          <span className="text-sm font-black">
-                            {user.name.charAt(0).toUpperCase()}
-                          </span>
-                        </div>
-                        <div>
-                          <Link
-                            href={`/users/${user.id}`}
-                            className="font-bold text-black hover:underline"
-                          >
-                            {user.name}
-                          </Link>
-                          <p className="text-sm text-gray-500">{user.email}</p>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4">
-                      <Badge variant={user.role === "admin" ? "secondary" : "outline"}>
-                        {user.role === "admin" ? "Admin" : "Client"}
-                      </Badge>
-                    </td>
-                    <td className="px-6 py-4">
-                      {user.status === "active" ? (
-                        <Badge variant="success">Active</Badge>
-                      ) : (
-                        <Badge variant="destructive">Suspended</Badge>
-                      )}
-                    </td>
-                    <td className="px-6 py-4">
-                      {user.twoFactorEnabled ? (
-                        <div className="flex items-center gap-1 text-success">
-                          <CheckCircle className="w-4 h-4" />
-                          <span className="text-xs font-bold uppercase">Enabled</span>
-                        </div>
-                      ) : (
-                        <div className="flex items-center gap-1 text-danger">
-                          <XCircle className="w-4 h-4" />
-                          <span className="text-xs font-bold uppercase">Disabled</span>
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-6 py-4">
-                      <span className="font-bold text-black">{user.vmCount}</span>
-                    </td>
-                    <td className="px-6 py-4">
-                      {user.ipWhitelist.length > 0 ? (
-                        <span className="text-sm font-medium">
-                          {user.ipWhitelist.length} entries
-                        </span>
-                      ) : (
-                        <span className="text-sm text-gray-400">Any</span>
-                      )}
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="flex items-center justify-end gap-2">
-                        <Link href={`/users/${user.id}`}>
-                          <Button variant="ghost" size="icon" className="h-8 w-8">
-                            <Eye className="w-4 h-4" />
-                          </Button>
-                        </Link>
-                        <Link href={`/users/${user.id}/edit`}>
-                          <Button variant="ghost" size="icon" className="h-8 w-8">
-                            <Edit className="w-4 h-4" />
-                          </Button>
-                        </Link>
-<DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="icon" className="h-8 w-8">
-                              <MoreHorizontal className="w-4 h-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem
-                              onClick={() => handleSuspendUser(user)}
-                              className="flex items-center gap-2"
-                            >
-                              {user.status === "active" ? (
-                                <>
-                                  <ShieldOff className="w-4 h-4" />
-                                  Suspend
-                                </>
-                              ) : (
-                                <>
-                                  <Shield className="w-4 h-4" />
-                                  Activate
-                                </>
-                              )}
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onClick={() => handleResetPassword(user)}
-                              className="flex items-center gap-2"
-                            >
-                              <RotateCcw className="w-4 h-4" />
-                              Reset Password
-                            </DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                              onClick={() => handleDeleteUser(user)}
-                              className="flex items-center gap-2 text-danger focus:text-danger"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                              Delete
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      <div className="bg-white border-4 border-black shadow-neo overflow-hidden">
+        <div className="grid grid-cols-12 gap-4 p-4 bg-black text-white font-black uppercase text-xs tracking-wider">
+          <div className="col-span-4">User</div>
+          <div className="col-span-2">Role</div>
+          <div className="col-span-2">2FA</div>
+          <div className="col-span-2">Created</div>
+          <div className="col-span-2 text-right">Actions</div>
+        </div>
+
+        {filteredUsers.length === 0 ? (
+          <div className="p-12 text-center">
+            <Users className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+            <p className="text-gray-500 font-bold uppercase">No users found</p>
+            {hasFilters && (
+              <Button variant="ghost" onClick={clearFilters} className="mt-4 border-2 border-black">Clear filters</Button>
+            )}
           </div>
-        </CardContent>
-      </Card>
+        ) : (
+          filteredUsers.map((user, index) => (
+            <div key={user.id} className={`grid grid-cols-12 gap-4 p-4 items-center border-b-2 border-black last:border-0 ${index % 2 === 0 ? "bg-white" : "bg-gray-50"}`}>
+              {/* User Info */}
+              <div className="col-span-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-primary flex items-center justify-center border-2 border-black">
+                    <span className="text-sm font-black">
+                      {user.email.charAt(0).toUpperCase()}
+                    </span>
+                  </div>
+                  <div>
+                    <Link
+                      href={`/users/${user.id}`}
+                      className="font-black text-black hover:text-primary transition-colors"
+                    >
+                      {user.email}
+                    </Link>
+                    <p className="text-xs text-gray-500 font-medium font-mono">{user.id.slice(0, 16)}...</p>
+                  </div>
+                </div>
+              </div>
 
-      {/* Delete Confirmation Dialog */}
-      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete User</DialogTitle>
-            <DialogDescription>
-              Are you sure you want to delete {userToDelete?.name}? This action cannot be undone.
-              {userToDelete && userToDelete.vmCount > 0 && (
-                <p className="mt-2 text-danger font-bold">
-                  Warning: This user owns {userToDelete.vmCount} VM(s). Consider reassigning them first.
-                </p>
-              )}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>
-              Cancel
-            </Button>
-            <Button variant="destructive" onClick={confirmDelete}>
-              Delete User
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+              {/* Role */}
+              <div className="col-span-2">
+                <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-black uppercase border border-black ${
+                  user.role === "admin" ? "bg-secondary" : "bg-gray-100"
+                }`}>
+                  <Shield className="w-3 h-3" />
+                  {user.role}
+                </span>
+              </div>
 
-      {/* Suspend/Activate Dialog */}
-      <Dialog open={suspendDialogOpen} onOpenChange={setSuspendDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              {userToSuspend?.status === "active" ? "Suspend" : "Activate"} User
-            </DialogTitle>
-            <DialogDescription>
-              Are you sure you want to {userToSuspend?.status === "active" ? "suspend" : "activate"}{" "}
-              {userToSuspend?.name}?
-              {userToSuspend?.status === "active"
-                ? " They will not be able to log in."
-                : " They will regain access to their account."}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setSuspendDialogOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              variant={userToSuspend?.status === "active" ? "destructive" : "success"}
-              onClick={confirmSuspend}
-            >
-              {userToSuspend?.status === "active" ? "Suspend" : "Activate"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+              {/* 2FA */}
+              <div className="col-span-2">
+                {user.two_factor_secret ? (
+                  <div className="flex items-center gap-1 text-success">
+                    <CheckCircle className="w-4 h-4" />
+                    <span className="text-xs font-bold uppercase">Enabled</span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1 text-gray-400">
+                    <XCircle className="w-4 h-4" />
+                    <span className="text-xs font-bold uppercase">Disabled</span>
+                  </div>
+                )}
+              </div>
 
-      {/* Reset Password Dialog */}
-      <Dialog open={resetDialogOpen} onOpenChange={setResetDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Reset Password</DialogTitle>
-            <DialogDescription>
-              Generate a temporary password for {userToReset?.name}? They will receive an email
-              with instructions to set a new password.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setResetDialogOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={confirmReset}>Reset Password</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+              {/* Created */}
+              <div className="col-span-2">
+                <span className="text-sm font-medium">{formatDate(user.created_at)}</span>
+              </div>
+
+              {/* Actions */}
+              <div className="col-span-2 flex items-center justify-end gap-2">
+                <Link href={`/users/${user.id}`}>
+                  <Button variant="secondary" size="sm" className="h-8">Details</Button>
+                </Link>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setDeleteConfirm({ id: user.id, email: user.email })}
+                  disabled={deleteUser.isPending}
+                  className="h-8 w-8 p-0 border-2 border-black hover:bg-danger hover:text-white"
+                  title="Delete"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </Button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+
+      <ConfirmDialog
+        open={!!deleteConfirm}
+        title="Delete User"
+        message={`Are you sure you want to delete "${deleteConfirm?.email}"? This action cannot be undone.`}
+        loading={deleteUser.isPending}
+        confirmLabel="Delete User"
+        variant="destructive"
+        onConfirm={handleDelete}
+        onCancel={() => setDeleteConfirm(null)}
+      />
+
+      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
     </div>
   )
 }
