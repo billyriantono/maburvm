@@ -29,6 +29,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		password_hash TEXT NOT NULL,
 		role TEXT DEFAULT 'client',
 		two_factor_secret TEXT,
+		two_factor_backup_codes TEXT,
 		ip_whitelist TEXT,
 		created_at DATETIME NOT NULL,
 		updated_at DATETIME NOT NULL,
@@ -37,6 +38,20 @@ func setupTestDB(t *testing.T) *gorm.DB {
 
 	if err := db.Exec(createTableSQL).Error; err != nil {
 		t.Fatalf("failed to create table: %v", err)
+	}
+
+	// Create password_reset_tokens table for reset tests
+	createResetTokensSQL := `CREATE TABLE IF NOT EXISTS password_reset_tokens (
+		id TEXT PRIMARY KEY,
+		user_id TEXT NOT NULL,
+		token TEXT UNIQUE NOT NULL,
+		expires_at DATETIME NOT NULL,
+		used INTEGER DEFAULT 0,
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);`
+
+	if err := db.Exec(createResetTokensSQL).Error; err != nil {
+		t.Fatalf("failed to create password_reset_tokens table: %v", err)
 	}
 
 	return db
@@ -543,14 +558,14 @@ func TestUserService_PasswordReset(t *testing.T) {
 		}
 	})
 
-	t.Run("reset password not implemented", func(t *testing.T) {
+	t.Run("reset password with invalid token", func(t *testing.T) {
 		req := &ResetPasswordRequest{
 			Token:       "some-token",
 			NewPassword: "NewStr0ngP@ss!",
 		}
 		err := service.ResetPassword(req)
-		if err == nil || !strings.Contains(err.Error(), "not yet implemented") {
-			t.Errorf("ResetPassword() should return not implemented error: %v", err)
+		if err == nil {
+			t.Errorf("ResetPassword() should return error for invalid token")
 		}
 	})
 }

@@ -94,7 +94,7 @@ export default function NewUserPage() {
           <Card>
             <CardHeader>
               <CardTitle className="text-lg">Basic Information</CardTitle>
-              <CardDescription>Enter the user's basic details</CardDescription>
+              <CardDescription>Enter the user&apos;s basic details</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-2">

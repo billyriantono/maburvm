@@ -17,7 +17,7 @@ export function IPWhitelistEditor({ value = [], onChange, showSuggestion = true 
   const [newIP, setNewIP] = useState("")
   const [error, setError] = useState("")
 
-  // Mock suggestion - in production, get from request headers
+  // TODO: Get current IP from request headers via API endpoint
   const suggestedIP = "192.168.1.100"
 
   const validateIP = (ip: string): boolean => {

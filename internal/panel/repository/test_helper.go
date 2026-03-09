@@ -32,6 +32,7 @@ func SetupTestDB() (*gorm.DB, error) {
 			password_hash TEXT NOT NULL,
 			role TEXT DEFAULT 'client',
 			two_factor_secret TEXT,
+			two_factor_backup_codes TEXT,
 			ip_whitelist TEXT,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,

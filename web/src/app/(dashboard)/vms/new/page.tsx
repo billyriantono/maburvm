@@ -92,9 +92,9 @@ export default function NewVMPage() {
   const { data: nodesData, isLoading: nodesLoading } = useNodes()
   const createVM = useCreateVM()
 
-  const users = usersData?.data || []
-  const templates = templatesData || []
-  const nodes = nodesData || []
+  const users = useMemo(() => usersData?.data || [], [usersData?.data])
+  const templates = useMemo(() => templatesData || [], [templatesData])
+  const nodes = useMemo(() => nodesData || [], [nodesData])
   const activeNodes = useMemo(() => nodes.filter(n => n.status === "active"), [nodes])
 
   const {

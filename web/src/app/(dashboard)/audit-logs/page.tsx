@@ -226,7 +226,7 @@ export default function AuditLogsPage() {
     pageSize: itemsPerPage,
   })
 
-  const logs = logsData?.data || []
+  const logs = useMemo(() => logsData?.data || [], [logsData?.data])
   const totalPages = logsData?.totalPages || 1
   const totalLogs = logsData?.total || 0
 

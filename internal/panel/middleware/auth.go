@@ -314,39 +314,52 @@ func RequireAuth(db *gorm.DB) echo.MiddlewareFunc {
 			}
 
 			// Fetch user from database to ensure they still exist and are active
-			var user models.User
-			if err := db.Where("id = ?", userID).First(&user).Error; err != nil {
-				if errors.Is(err, gorm.ErrRecordNotFound) {
-					return c.JSON(http.StatusUnauthorized, map[string]interface{}{
-						"error":   "Unauthorized",
-						"message": "User not found",
+			// If no db is provided, skip DB validation (JWT-only mode)
+			if db != nil {
+				var user models.User
+				if err := db.Where("id = ?", userID).First(&user).Error; err != nil {
+					if errors.Is(err, gorm.ErrRecordNotFound) {
+						return c.JSON(http.StatusUnauthorized, map[string]interface{}{
+							"error":   "Unauthorized",
+							"message": "User not found",
+						})
+					}
+					return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+						"error":   "Internal Server Error",
+						"message": "Failed to validate user",
 					})
 				}
-				return c.JSON(http.StatusInternalServerError, map[string]interface{}{
-					"error":   "Internal Server Error",
-					"message": "Failed to validate user",
-				})
-			}
 
-			// Check if user is soft-deleted
-			if user.DeletedAt.Valid {
-				return c.JSON(http.StatusUnauthorized, map[string]interface{}{
-					"error":   "Unauthorized",
-					"message": "User account is deactivated",
-				})
-			}
+				// Check if user is soft-deleted
+				if user.DeletedAt.Valid {
+					return c.JSON(http.StatusUnauthorized, map[string]interface{}{
+						"error":   "Unauthorized",
+						"message": "User account is deactivated",
+					})
+				}
 
-			// Create user context
-			userCtx := &UserContext{
-				ID:          user.ID,
-				Email:       user.Email,
-				Role:        user.Role,
-				Permissions: claims.Permissions,
-			}
+				// Create user context from DB user
+				userCtx := &UserContext{
+					ID:          user.ID,
+					Email:       user.Email,
+					Role:        user.Role,
+					Permissions: claims.Permissions,
+				}
 
-			// Store user and claims in context
-			c.Set(UserContextKey, userCtx)
-			c.Set(ClaimsContextKey, claims)
+				c.Set(UserContextKey, userCtx)
+				c.Set(ClaimsContextKey, claims)
+			} else {
+				// JWT-only mode: create context from token claims
+				userCtx := &UserContext{
+					ID:          userID,
+					Email:       claims.Email,
+					Role:        models.UserRole(claims.Role),
+					Permissions: claims.Permissions,
+				}
+
+				c.Set(UserContextKey, userCtx)
+				c.Set(ClaimsContextKey, claims)
+			}
 
 			return next(c)
 		}

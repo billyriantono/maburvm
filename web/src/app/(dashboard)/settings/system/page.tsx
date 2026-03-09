@@ -82,7 +82,7 @@ type BackupFormData = z.infer<typeof backupSchema>
 type APIFormData = z.infer<typeof apiSchema>
 type EmailFormData = z.infer<typeof emailSchema>
 
-// Mock current settings
+// Default form values — will be populated from API when system settings endpoint is available
 const defaultGeneralSettings = {
   panelName: "MaburVM",
   timezone: "UTC",

@@ -85,7 +85,7 @@ export default function UsersPage() {
   const { data: usersData, isLoading, error, refetch } = useUsers({ pageSize: 100 })
   const deleteUser = useDeleteUser()
 
-  const users = usersData?.data || []
+  const users = useMemo(() => usersData?.data || [], [usersData?.data])
 
   // Filter users
   const filteredUsers = useMemo(() => {

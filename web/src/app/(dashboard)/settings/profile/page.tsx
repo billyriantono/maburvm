@@ -129,7 +129,7 @@ export default function ProfileSettingsPage() {
   // Generate TOTP secret and QR code
   useEffect(() => {
     if (showSetupDialog && setupStep === "qr" && user) {
-      // Generate mock TOTP secret (in production, this comes from server)
+      // TODO: Replace with useSetup2FA() hook when 2FA setup endpoint is production-ready
       const secret = "JBSWY3DPEHPK3PXP"
       const otpauthUrl = `otpauth://totp/MaburVM:${user.email}?secret=${secret}&issuer=MaburVM`
       
@@ -145,7 +145,7 @@ export default function ProfileSettingsPage() {
         },
       }).then(setQrCodeImage).catch(console.error)
     }
-  }, [showSetupDialog, setupStep, user?.email])
+  }, [showSetupDialog, setupStep, user])
 
   const handlePasswordChange = async (data: PasswordFormData) => {
     setIsLoading(true)
@@ -582,6 +582,7 @@ export default function ProfileSettingsPage() {
             <div className="flex flex-col items-center space-y-4">
               <div className="p-4 bg-white border-2 border-black">
                 {qrCodeImage ? (
+                  // eslint-disable-next-line @next/next/no-img-element, jsx-a11y/alt-text
                   <img src={qrCodeImage} alt="QR Code" className="w-48 h-48" />
                 ) : (
                   <div className="w-48 h-48 flex items-center justify-center">
@@ -654,7 +655,7 @@ export default function ProfileSettingsPage() {
               <div className="flex items-center gap-2 p-3 bg-danger text-white border-2 border-black">
                 <AlertTriangle className="w-4 h-4" />
                 <p className="text-xs font-bold">
-                  Save these codes! You won't see them again.
+                  Save these codes! You won&apos;t see them again.
                 </p>
               </div>
               <div className="flex gap-2">

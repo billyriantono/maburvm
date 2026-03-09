@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/maburvm/panel/internal/panel/repository"
 	"github.com/maburvm/panel/internal/panel/service"
 	"github.com/maburvm/panel/internal/shared/config"
+	"github.com/maburvm/panel/internal/shared/models"
 	"gorm.io/gorm"
 )
 
@@ -89,10 +91,29 @@ func (s *Server) SetupRoutes() {
 	// Storage routes
 	s.setupStorageRoutes(v1)
 
+	// Template routes
+	s.setupTemplateRoutes(v1)
+
+	// Network routes
+	s.setupNetworkRoutes()
+
+	// Snapshot routes
+	s.setupSnapshotRoutes()
+
+	// Backup routes
+	s.setupBackupRoutes()
+
+	// Import routes
+	s.setupImportRoutes()
+
+	// User management routes
+	s.setupUserRoutes(v1)
+
+	// Audit log routes
+	s.setupAuditLogRoutes(v1)
+
 	// Billing webhook routes (outside /api group, uses own auth)
 	s.setupBillingRoutes()
-
-	// Additional route groups will be added as features are implemented
 }
 
 // setupAuthRoutes configures authentication-related routes
@@ -198,6 +219,204 @@ func (s *Server) setupStorageRoutes(g *echo.Group) {
 	storage.GET("/pools/:id/volumes", storageHandler.GetVolumes)
 	storage.POST("/pools/:id/volumes", storageHandler.CreateVolume, panelMiddleware.RequirePermission("storage:create"))
 	storage.DELETE("/pools/:poolId/volumes/:volumeId", storageHandler.DeleteVolume, panelMiddleware.RequirePermission("storage:delete"))
+}
+
+// setupTemplateRoutes configures template-related routes
+func (s *Server) setupTemplateRoutes(g *echo.Group) {
+	templateRepo := repository.NewTemplateRepository(s.db)
+	nodeRepo := repository.NewNodeRepository(s.db)
+	templateService := service.NewTemplateService(s.db, templateRepo, nodeRepo, nil)
+	templateHandler := handler.NewTemplateHandler(templateService)
+	templateHandler.RegisterRoutes(s.echo, panelMiddleware.RequireAuth(s.db))
+}
+
+// setupNetworkRoutes configures network-related routes
+func (s *Server) setupNetworkRoutes() {
+	networkRepo := repository.NewNetworkRepository(s.db)
+	firewallRepo := repository.NewFirewallRepository(s.db)
+	vmRepo := repository.NewVMRepository(s.db)
+	nodeRepo := repository.NewNodeRepository(s.db)
+	networkService := service.NewNetworkService(s.db, networkRepo, firewallRepo, vmRepo, nodeRepo, nil)
+	networkHandler := handler.NewNetworkHandler(networkService)
+	handler.RegisterNetworkRoutes(s.echo, networkHandler, s.db)
+}
+
+// setupSnapshotRoutes configures snapshot-related routes
+func (s *Server) setupSnapshotRoutes() {
+	logger := slog.Default()
+	snapshotRepo := repository.NewSnapshotRepository(s.db)
+	vmRepo := repository.NewVMRepository(s.db)
+	nodeRepo := repository.NewNodeRepository(s.db)
+	snapshotService := service.NewSnapshotService(s.db, snapshotRepo, vmRepo, nodeRepo, nil, logger)
+	snapshotHandler := handler.NewSnapshotHandler(snapshotService)
+	handler.RegisterSnapshotRoutes(s.echo, snapshotHandler, s.db)
+}
+
+// setupBackupRoutes configures backup-related routes
+func (s *Server) setupBackupRoutes() {
+	logger := slog.Default()
+	backupRepo := repository.NewBackupRepository(s.db)
+	scheduleRepo := repository.NewBackupScheduleRepository(s.db)
+	vmRepo := repository.NewVMRepository(s.db)
+	nodeRepo := repository.NewNodeRepository(s.db)
+	backupService := service.NewBackupService(s.db, backupRepo, scheduleRepo, vmRepo, nodeRepo, nil, nil, logger)
+	backupHandler := handler.NewBackupHandler(backupService)
+	handler.RegisterBackupRoutes(s.echo, backupHandler, s.db)
+}
+
+// setupImportRoutes configures VM import routes
+func (s *Server) setupImportRoutes() {
+	logger := slog.Default()
+	vmRepo := repository.NewVMRepository(s.db)
+	nodeRepo := repository.NewNodeRepository(s.db)
+	templateRepo := repository.NewTemplateRepository(s.db)
+	importService := service.NewImportService(s.db, vmRepo, nodeRepo, templateRepo, nil, logger)
+	importHandler := handler.NewImportHandler(importService)
+	handler.RegisterImportRoutes(s.echo, importHandler)
+}
+
+// setupUserRoutes configures user management routes (CRUD beyond auth)
+func (s *Server) setupUserRoutes(g *echo.Group) {
+	userRepo := repository.NewUserRepository(s.db)
+
+	users := g.Group("/users")
+	users.Use(panelMiddleware.RequireAuth(s.db))
+	users.Use(panelMiddleware.RequirePermission("user:read"))
+
+	users.GET("", func(c echo.Context) error {
+		limit := 100
+		offset := 0
+		userList, err := userRepo.List(c.Request().Context(), limit, offset)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to list users"})
+		}
+		total, _ := userRepo.Count(c.Request().Context())
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"data":       userList,
+			"total":      total,
+			"page":       1,
+			"page_size":  limit,
+			"totalPages": (int(total) + limit - 1) / limit,
+		})
+	})
+
+	users.GET("/:id", func(c echo.Context) error {
+		id, err := parseUUID(c.Param("id"))
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid user ID"})
+		}
+		user, err := userRepo.GetByID(c.Request().Context(), id)
+		if err != nil {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "User not found"})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"data": user})
+	})
+
+	users.PUT("/:id", func(c echo.Context) error {
+		id, err := parseUUID(c.Param("id"))
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid user ID"})
+		}
+		user, err := userRepo.GetByID(c.Request().Context(), id)
+		if err != nil {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "User not found"})
+		}
+		var req struct {
+			Email string `json:"email"`
+			Role  string `json:"role"`
+		}
+		if err := c.Bind(&req); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request body"})
+		}
+		if req.Email != "" {
+			user.Email = req.Email
+		}
+		if req.Role != "" {
+			user.Role = models.UserRole(req.Role)
+		}
+		if err := userRepo.Update(c.Request().Context(), user); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to update user"})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"data": user})
+	}, panelMiddleware.RequirePermission("user:update"))
+
+	users.DELETE("/:id", func(c echo.Context) error {
+		id, err := parseUUID(c.Param("id"))
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid user ID"})
+		}
+		if err := userRepo.Delete(c.Request().Context(), id); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to delete user"})
+		}
+		return c.NoContent(http.StatusNoContent)
+	}, panelMiddleware.RequirePermission("user:delete"))
+}
+
+// setupAuditLogRoutes configures audit log viewing routes
+func (s *Server) setupAuditLogRoutes(g *echo.Group) {
+	auditRepo := repository.NewAuditRepository(s.db)
+
+	auditLogs := g.Group("/audit-logs")
+	auditLogs.Use(panelMiddleware.RequireAuth(s.db))
+	auditLogs.Use(panelMiddleware.RequirePermission("audit:read"))
+
+	auditLogs.GET("", func(c echo.Context) error {
+		limit := 20
+		page := 1
+		if l := c.QueryParam("page_size"); l != "" {
+			if parsed, err := fmt.Sscanf(l, "%d", &limit); err == nil && parsed > 0 && limit > 0 {
+				if limit > 100 {
+					limit = 100
+				}
+			}
+		}
+		if p := c.QueryParam("page"); p != "" {
+			if parsed, err := fmt.Sscanf(p, "%d", &page); err == nil && parsed > 0 && page > 0 {
+				// valid
+			}
+		}
+		offset := (page - 1) * limit
+
+		action := c.QueryParam("action")
+		userID := c.QueryParam("user_id")
+
+		var logs []models.AuditLog
+		var total int64
+		var err error
+
+		if action != "" {
+			logs, err = auditRepo.ListByAction(c.Request().Context(), action, limit, offset)
+			total, _ = auditRepo.CountByAction(c.Request().Context(), action)
+		} else if userID != "" {
+			logs, err = auditRepo.ListByUser(c.Request().Context(), userID, limit, offset)
+			total, _ = auditRepo.CountByUser(c.Request().Context(), userID)
+		} else {
+			logs, err = auditRepo.List(c.Request().Context(), limit, offset)
+			total, _ = auditRepo.Count(c.Request().Context())
+		}
+
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to list audit logs"})
+		}
+
+		totalPages := (int(total) + limit - 1) / limit
+		if totalPages < 1 {
+			totalPages = 1
+		}
+
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"data":       logs,
+			"total":      total,
+			"page":       page,
+			"page_size":  limit,
+			"totalPages": totalPages,
+		})
+	})
+}
+
+// parseUUID parses a UUID string
+func parseUUID(s string) (uuid.UUID, error) {
+	return uuid.Parse(s)
 }
 
 // setupBillingRoutes configures billing webhook routes with HMAC authentication
