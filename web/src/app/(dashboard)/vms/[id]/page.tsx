@@ -19,6 +19,7 @@ import { useSnapshots, useCreateSnapshot, useRestoreSnapshot, useDeleteSnapshot 
 import { useBackups, useCreateBackup, useDeleteBackup } from "@/lib/hooks/use-backups"
 import { useFirewallRules, useDeleteFirewallRule } from "@/lib/hooks/use-networks"
 import { useTemplates } from "@/lib/hooks/use-templates"
+import { useVMBandwidth } from "@/lib/hooks/use-bandwidth"
 import type { VMStatus, Snapshot, Backup, FirewallRule } from "@/types"
 
 // --- Utility Components ---
@@ -117,6 +118,64 @@ function SectionEmpty({ icon: Icon, message }: { icon: React.ElementType; messag
     <div className="p-8 text-center">
       <Icon className="w-10 h-10 mx-auto text-gray-300 mb-3" />
       <p className="text-gray-500 text-sm font-medium">{message}</p>
+    </div>
+  )
+}
+
+function BandwidthUsageCard({ vmId }: { vmId: string }) {
+  const { data: bandwidth, isLoading, error } = useVMBandwidth(vmId)
+
+  if (isLoading) return <SectionSkeleton />
+  if (error || !bandwidth) return null
+
+  const usagePercent = bandwidth.quota_gb > 0 ? Math.min(bandwidth.usage_percent, 100) : 0
+  const isWarning = bandwidth.quota_gb > 0 && bandwidth.usage_percent >= 80
+  const isDanger = bandwidth.exceeded
+
+  return (
+    <div className={`bg-white border-4 p-6 shadow-neo ${isDanger ? 'border-danger' : 'border-black'}`}>
+      <h2 className="text-lg font-black uppercase tracking-tight text-black mb-6 flex items-center gap-2">
+        <Activity className="w-5 h-5" />Bandwidth Usage
+        {isDanger && <span className="text-xs bg-danger text-white px-2 py-0.5 border-2 border-black">EXCEEDED</span>}
+      </h2>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div className="p-4 border-2 border-black">
+          <span className="text-xs font-bold uppercase text-gray-500 block">Download</span>
+          <span className="text-sm font-mono font-bold">{formatBytes(bandwidth.rx_bytes)}</span>
+        </div>
+        <div className="p-4 border-2 border-black">
+          <span className="text-xs font-bold uppercase text-gray-500 block">Upload</span>
+          <span className="text-sm font-mono font-bold">{formatBytes(bandwidth.tx_bytes)}</span>
+        </div>
+        <div className="p-4 border-2 border-black">
+          <span className="text-xs font-bold uppercase text-gray-500 block">Total Used</span>
+          <span className="text-sm font-mono font-bold">{bandwidth.used_gb.toFixed(2)} GB</span>
+        </div>
+        <div className="p-4 border-2 border-black">
+          <span className="text-xs font-bold uppercase text-gray-500 block">Quota</span>
+          <span className="text-sm font-mono font-bold">{bandwidth.quota_gb > 0 ? `${bandwidth.quota_gb} GB` : 'Unlimited'}</span>
+        </div>
+      </div>
+
+      {bandwidth.quota_gb > 0 && (
+        <div>
+          <div className="flex justify-between items-center mb-1">
+            <span className="text-xs font-bold uppercase text-gray-600">Usage</span>
+            <span className="text-xs font-black">{bandwidth.used_gb.toFixed(2)} / {bandwidth.quota_gb} GB ({bandwidth.usage_percent.toFixed(1)}%)</span>
+          </div>
+          <div className="h-4 bg-gray-200 border-2 border-black relative">
+            <div
+              className={`h-full transition-all duration-300 ${isDanger ? 'bg-danger' : isWarning ? 'bg-warning' : 'bg-success'}`}
+              style={{ width: `${usagePercent}%` }}
+            />
+          </div>
+          <div className="flex justify-between mt-1">
+            <span className="text-xs text-gray-400">{bandwidth.period_start}</span>
+            <span className="text-xs text-gray-400">{bandwidth.period_end}</span>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -608,33 +667,35 @@ export default function VMDetailPage() {
 
         {/* Network Tab */}
         <TabsContent value="network">
-          <div className="bg-white border-4 border-black p-6 shadow-neo">
-            <h2 className="text-lg font-black uppercase tracking-tight text-black mb-6 flex items-center gap-2">
-              <Network className="w-5 h-5" />Network Configuration
-            </h2>
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div className="p-4 border-2 border-black">
-                  <span className="text-xs font-bold uppercase text-gray-500 block">Node</span>
-                  <span className="text-sm font-mono font-bold">{vm.node_id}</span>
-                </div>
-                <div className="p-4 border-2 border-black">
-                  <span className="text-xs font-bold uppercase text-gray-500 block">VNC Port</span>
-                  <span className="text-sm font-mono font-bold">{vm.vnc_port || "N/A"}</span>
-                </div>
-                <div className="p-4 border-2 border-black">
-                  <span className="text-xs font-bold uppercase text-gray-500 block">Status</span>
-                  <span className="text-sm font-bold uppercase">{vm.status}</span>
-                </div>
-                <div className="p-4 border-2 border-black">
-                  <span className="text-xs font-bold uppercase text-gray-500 block">Resources</span>
-                  <span className="text-sm font-bold">{vm.resources.cpu}C / {ramGB}GB</span>
+          <div className="space-y-6">
+            <div className="bg-white border-4 border-black p-6 shadow-neo">
+              <h2 className="text-lg font-black uppercase tracking-tight text-black mb-6 flex items-center gap-2">
+                <Network className="w-5 h-5" />Network Configuration
+              </h2>
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="p-4 border-2 border-black">
+                    <span className="text-xs font-bold uppercase text-gray-500 block">Node</span>
+                    <span className="text-sm font-mono font-bold">{vm.node_id}</span>
+                  </div>
+                  <div className="p-4 border-2 border-black">
+                    <span className="text-xs font-bold uppercase text-gray-500 block">VNC Port</span>
+                    <span className="text-sm font-mono font-bold">{vm.vnc_port || "N/A"}</span>
+                  </div>
+                  <div className="p-4 border-2 border-black">
+                    <span className="text-xs font-bold uppercase text-gray-500 block">Status</span>
+                    <span className="text-sm font-bold uppercase">{vm.status}</span>
+                  </div>
+                  <div className="p-4 border-2 border-black">
+                    <span className="text-xs font-bold uppercase text-gray-500 block">Resources</span>
+                    <span className="text-sm font-bold">{vm.resources.cpu}C / {ramGB}GB</span>
+                  </div>
                 </div>
               </div>
-              <p className="text-xs text-gray-400 italic">
-                Detailed network configuration (IP, VLAN, bandwidth) managed at infrastructure level.
-              </p>
             </div>
+
+            {/* Bandwidth Usage */}
+            <BandwidthUsageCard vmId={vmId} />
           </div>
         </TabsContent>
 

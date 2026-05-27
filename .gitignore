@@ -36,3 +36,4 @@ go.work
 go.work.sum
 
 web/.next
+node_modules/

@@ -122,6 +122,25 @@ message HeartbeatRequest {
 
   // system_load contains node-level system metrics
   SystemLoad system_load = 5;
+
+  // vm_bandwidth_usage reports per-VM traffic counters
+  repeated VMBandwidthReport vm_bandwidth_usage = 6;
+}
+
+// VMBandwidthReport contains cumulative traffic counters for a single VM.
+// The agent reads these from /sys/class/net/<vnet>/statistics/.
+message VMBandwidthReport {
+  // vm_id is the VM identifier
+  string vm_id = 1;
+
+  // rx_bytes is the total bytes received since VM boot (cumulative counter)
+  int64 rx_bytes = 2;
+
+  // tx_bytes is the total bytes transmitted since VM boot (cumulative counter)
+  int64 tx_bytes = 3;
+
+  // interface_name is the vnet interface name (e.g., vnet0)
+  string interface_name = 4;
 }
 
 // HeartbeatResponse is sent by the panel in response to heartbeats.

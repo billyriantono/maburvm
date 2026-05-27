@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/maburvm/panel/internal/agent/libvirt"
+	"github.com/maburvm/panel/internal/agent/network"
 	"github.com/maburvm/panel/internal/shared/config"
 	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 	"google.golang.org/grpc"
@@ -182,6 +183,19 @@ func (r *Reporter) sendHeartbeat(stream pb.NodeAgent_HeartbeatClient) error {
 			NetworkRxBytesPerSec:   metrics.NetworkRXBytesPerSec,
 			NetworkTxBytesPerSec:   metrics.NetworkTXBytesPerSec,
 		},
+	}
+
+	// Collect per-VM bandwidth usage
+	trafficStats, err := network.CollectAllVMTraffic()
+	if err == nil {
+		for _, ts := range trafficStats {
+			req.VmBandwidthUsage = append(req.VmBandwidthUsage, &pb.VMBandwidthReport{
+				VmId:          ts.VMID,
+				RxBytes:       ts.RxBytes,
+				TxBytes:       ts.TxBytes,
+				InterfaceName: ts.InterfaceName,
+			})
+		}
 	}
 
 	if err := stream.Send(req); err != nil {

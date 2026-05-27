@@ -202,6 +202,13 @@ func (s *Server) setupVMRoutes(g *echo.Group) {
 	vmHandler := handler.NewVMHandler(vmService, vncService)
 
 	handler.RegisterVMRoutes(s.echo, vmHandler, s.db)
+
+	// Bandwidth usage routes (nested under VMs)
+	bwRepo := repository.NewBandwidthUsageRepository(s.db)
+	bwService := service.NewBandwidthService(bwRepo, logger)
+	bwHandler := handler.NewBandwidthHandler(bwService)
+
+	handler.RegisterBandwidthRoutes(s.echo, bwHandler, s.db)
 }
 
 // setupStorageRoutes configures storage-related routes
