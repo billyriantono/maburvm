@@ -154,11 +154,14 @@ func (r *Reporter) runHeartbeat(ctx context.Context, backoff *exponentialBackoff
 }
 
 func (r *Reporter) sendHeartbeat(stream pb.NodeAgent_HeartbeatClient) error {
-	// Collect current metrics
-	metrics := r.metrics.Collect()
-
 	// Get active VM IDs from libvirt
 	activeVMs := r.getActiveVMs()
+
+	// Update metrics collector with current VM count
+	r.metrics.SetRunningVMs(len(activeVMs), activeVMs)
+
+	// Collect current metrics
+	metrics := r.metrics.Collect()
 
 	// Build heartbeat request
 	req := &pb.HeartbeatRequest{

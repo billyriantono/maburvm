@@ -14,6 +14,7 @@ import (
 	"github.com/maburvm/panel/internal/agent/libvirt"
 	"github.com/maburvm/panel/internal/agent/network"
 	"github.com/maburvm/panel/internal/agent/vncproxy"
+	"github.com/maburvm/panel/internal/shared/models"
 	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -532,6 +533,10 @@ func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *pb.Netwo
 		return nil, status.Errorf(codes.InvalidArgument, "vm_id is required")
 	}
 
+	if req.Config == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "config is required")
+	}
+
 	nodeID, authenticated := GetNodeIDFromContext(ctx)
 	if !authenticated {
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
@@ -539,14 +544,60 @@ func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *pb.Netwo
 
 	log.Printf("[NodeAgent] Applying network config to VM %s from node %s", req.VmId, nodeID)
 
-	if s.networkMgr != nil {
-		vmInfo, err := libvirt.GetVMInfo(req.VmId)
-		if err != nil {
-			return nil, status.Errorf(codes.NotFound, "VM not found: %v", err)
-		}
-		_ = vmInfo
-		log.Printf("[NodeAgent] Network config applied to VM %s", req.VmId)
+	if s.networkMgr == nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "network manager not initialized")
 	}
+
+	// Get VM info to verify VM exists
+	_, err := libvirt.GetVMInfo(req.VmId)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "VM not found: %v", err)
+	}
+
+	// Determine the primary IP from the first interface with an IP
+	var internalIP string
+	for _, iface := range req.Config.Interfaces {
+		if iface.IpAddress != "" {
+			internalIP = iface.IpAddress
+			break
+		}
+	}
+
+	// Determine bandwidth limit
+	var bandwidthMbps int
+	if req.Config.BandwidthLimits != nil {
+		bandwidthMbps = int(req.Config.BandwidthLimits.IngressRateMbps)
+	}
+
+	// Determine VLAN ID from first interface (if bridge-based)
+	var vlanID int
+	// VLAN is typically derived from bridge/network config — use 0 for now unless explicitly set
+
+	// Convert proto firewall rules to model rules
+	var fwRules []models.FirewallRule
+	for _, rule := range req.Config.FirewallRules {
+		fwRules = append(fwRules, models.FirewallRule{
+			Direction: protoDirectionToModel(rule.Direction),
+			Action:    protoActionToModel(rule.Action),
+			Protocol:  rule.Protocol,
+			SourceIP:  rule.SourceCidr,
+			PortRange: rule.DestPort,
+			Priority:  int(rule.Priority),
+		})
+	}
+
+	// If replace_all, cleanup existing config first
+	if req.ReplaceAll {
+		_ = s.networkMgr.CleanupVMNetwork(req.VmId)
+	}
+
+	// Apply the full network configuration
+	if err := s.networkMgr.SetupVMNetwork(req.VmId, internalIP, vlanID, bandwidthMbps, fwRules); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to apply network config: %v", err)
+	}
+
+	log.Printf("[NodeAgent] Network config applied to VM %s (IP: %s, bandwidth: %d Mbps, rules: %d)",
+		req.VmId, internalIP, bandwidthMbps, len(fwRules))
 
 	appliedInterfaces := make([]*pb.NetworkInterface, 0, len(req.Config.Interfaces))
 	for _, iface := range req.Config.Interfaces {
@@ -557,6 +608,32 @@ func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *pb.Netwo
 		Success:           true,
 		AppliedInterfaces: appliedInterfaces,
 	}, nil
+}
+
+// protoDirectionToModel converts proto FirewallDirection to model string
+func protoDirectionToModel(d pb.FirewallDirection) string {
+	switch d {
+	case pb.FirewallDirection_FIREWALL_DIRECTION_INBOUND:
+		return "inbound"
+	case pb.FirewallDirection_FIREWALL_DIRECTION_OUTBOUND:
+		return "outbound"
+	default:
+		return "inbound"
+	}
+}
+
+// protoActionToModel converts proto FirewallAction to model string
+func protoActionToModel(a pb.FirewallAction) string {
+	switch a {
+	case pb.FirewallAction_FIREWALL_ACTION_ALLOW:
+		return "allow"
+	case pb.FirewallAction_FIREWALL_ACTION_DENY:
+		return "deny"
+	case pb.FirewallAction_FIREWALL_ACTION_REJECT:
+		return "reject"
+	default:
+		return "deny"
+	}
 }
 
 func (s *NodeAgentService) StartVNCProxy(ctx context.Context, req *pb.VNCProxyRequest) (*pb.VNCProxyResponse, error) {

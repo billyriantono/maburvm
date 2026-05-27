@@ -1,4 +1,60 @@
+'use client'
+
+import Link from 'next/link'
+import { useDashboardStats } from '@/lib/hooks/use-dashboard'
+
+function formatTimeAgo(dateStr: string): string {
+  const date = new Date(dateStr)
+  const now = new Date()
+  const diffMs = now.getTime() - date.getTime()
+  const diffMin = Math.floor(diffMs / 60000)
+  const diffHour = Math.floor(diffMs / 3600000)
+  const diffDay = Math.floor(diffMs / 86400000)
+
+  if (diffMin < 1) return 'just now'
+  if (diffMin < 60) return `${diffMin} min ago`
+  if (diffHour < 24) return `${diffHour} hour${diffHour > 1 ? 's' : ''} ago`
+  return `${diffDay} day${diffDay > 1 ? 's' : ''} ago`
+}
+
+function formatAction(log: { action: string; resource_type: string; resource_id: string | null }): string {
+  const action = log.action.toLowerCase()
+  const resource = log.resource_type.replace(/_/g, ' ').toLowerCase()
+  const id = log.resource_id ? ` '${log.resource_id.slice(0, 8)}...'` : ''
+  return `${action} ${resource}${id}`
+}
+
 export default function DashboardPage() {
+  const { data: stats, isLoading, error } = useDashboardStats()
+
+  if (isLoading) {
+    return (
+      <div className="max-w-6xl mx-auto">
+        <h1 className="text-3xl font-black uppercase tracking-tight text-black mb-2">
+          Dashboard
+        </h1>
+        <p className="text-gray-500 font-medium uppercase tracking-wider text-sm mb-8">
+          Loading...
+        </p>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="max-w-6xl mx-auto">
+        <h1 className="text-3xl font-black uppercase tracking-tight text-black mb-2">
+          Dashboard
+        </h1>
+        <p className="text-red-500 font-medium text-sm mb-8">
+          Failed to load dashboard data. Please try again.
+        </p>
+      </div>
+    )
+  }
+
+  const utilization = stats ? Math.round(stats.utilization) : 0
+
   return (
     <div className="max-w-6xl mx-auto">
       <h1 className="text-3xl font-black uppercase tracking-tight text-black mb-2">
@@ -15,8 +71,8 @@ export default function DashboardPage() {
             <span className="text-xs font-black uppercase text-gray-500">Total VMs</span>
             <span className="w-3 h-3 bg-success"></span>
           </div>
-          <p className="text-4xl font-black text-black">24</p>
-          <p className="text-xs text-gray-500 mt-1">+3 this week</p>
+          <p className="text-4xl font-black text-black">{stats?.vms.total ?? 0}</p>
+          <p className="text-xs text-gray-500 mt-1">{stats?.vms.running ?? 0} running</p>
         </div>
         
         <div className="bg-white border-4 border-black p-4 shadow-neo">
@@ -24,8 +80,8 @@ export default function DashboardPage() {
             <span className="text-xs font-black uppercase text-gray-500">Active Nodes</span>
             <span className="w-3 h-3 bg-primary"></span>
           </div>
-          <p className="text-4xl font-black text-black">8</p>
-          <p className="text-xs text-gray-500 mt-1">of 8 online</p>
+          <p className="text-4xl font-black text-black">{stats?.nodes.active ?? 0}</p>
+          <p className="text-xs text-gray-500 mt-1">of {stats?.nodes.total ?? 0} total</p>
         </div>
         
         <div className="bg-white border-4 border-black p-4 shadow-neo">
@@ -33,8 +89,8 @@ export default function DashboardPage() {
             <span className="text-xs font-black uppercase text-gray-500">Running</span>
             <span className="w-3 h-3 bg-secondary"></span>
           </div>
-          <p className="text-4xl font-black text-black">18</p>
-          <p className="text-xs text-gray-500 mt-1">75% utilization</p>
+          <p className="text-4xl font-black text-black">{stats?.vms.running ?? 0}</p>
+          <p className="text-xs text-gray-500 mt-1">{utilization}% utilization</p>
         </div>
         
         <div className="bg-white border-4 border-black p-4 shadow-neo">
@@ -42,8 +98,10 @@ export default function DashboardPage() {
             <span className="text-xs font-black uppercase text-gray-500">Alerts</span>
             <span className="w-3 h-3 bg-danger"></span>
           </div>
-          <p className="text-4xl font-black text-black">3</p>
-          <p className="text-xs text-gray-500 mt-1">requires attention</p>
+          <p className="text-4xl font-black text-black">{stats?.alerts ?? 0}</p>
+          <p className="text-xs text-gray-500 mt-1">
+            {(stats?.alerts ?? 0) > 0 ? 'requires attention' : 'all clear'}
+          </p>
         </div>
       </div>
       
@@ -55,23 +113,21 @@ export default function DashboardPage() {
             Recent Activity
           </h2>
           <div className="space-y-4">
-            {[
-              { id: "1", time: "2 min ago", action: "VM 'web-server-01' started", user: "admin" },
-              { id: "2", time: "15 min ago", action: "New template 'ubuntu-22.04' uploaded", user: "admin" },
-              { id: "3", time: "1 hour ago", action: "Network 'vlan-10' configuration updated", user: "admin" },
-              { id: "4", time: "2 hours ago", action: "Backup completed for 'db-server-01'", user: "system" },
-              { id: "5", time: "3 hours ago", action: "Node 'node-04' came online", user: "system" },
-            ].map((activity) => (
-              <div key={activity.id} className="flex items-start gap-4 pb-4 border-b border-black last:border-0">
-                <div className="w-2 h-2 bg-black mt-2 shrink-0"></div>
-                <div className="flex-1">
-                  <p className="text-sm font-bold">{activity.action}</p>
-                  <p className="text-xs text-gray-500">
-                    <span className="font-medium">{activity.user}</span> • {activity.time}
-                  </p>
+            {stats?.recent_activity && stats.recent_activity.length > 0 ? (
+              stats.recent_activity.map((activity) => (
+                <div key={activity.id} className="flex items-start gap-4 pb-4 border-b border-black last:border-0">
+                  <div className="w-2 h-2 bg-black mt-2 shrink-0"></div>
+                  <div className="flex-1">
+                    <p className="text-sm font-bold">{formatAction(activity)}</p>
+                    <p className="text-xs text-gray-500">
+                      <span className="font-medium">{activity.user_id ? 'user' : 'system'}</span> • {formatTimeAgo(activity.created_at)}
+                    </p>
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))
+            ) : (
+              <p className="text-sm text-gray-500">No recent activity</p>
+            )}
           </div>
         </div>
         
@@ -81,18 +137,18 @@ export default function DashboardPage() {
             Quick Actions
           </h2>
           <div className="space-y-3">
-            <button type="button" className="w-full p-3 text-left border-2 border-black hover:bg-gray-50 transition-colors shadow-neo-sm hover:shadow-neo active:translate-x-[2px] active:translate-y-[2px]">
+            <Link href="/vms/new" className="block w-full p-3 text-left border-2 border-black hover:bg-gray-50 transition-colors shadow-neo-sm hover:shadow-neo active:translate-x-[2px] active:translate-y-[2px]">
               <span className="text-sm font-black uppercase">+ New VM</span>
-            </button>
-            <button type="button" className="w-full p-3 text-left border-2 border-black hover:bg-gray-50 transition-colors shadow-neo-sm hover:shadow-neo active:translate-x-[2px] active:translate-y-[2px]">
+            </Link>
+            <Link href="/nodes/new" className="block w-full p-3 text-left border-2 border-black hover:bg-gray-50 transition-colors shadow-neo-sm hover:shadow-neo active:translate-x-[2px] active:translate-y-[2px]">
               <span className="text-sm font-black uppercase">Add Node</span>
-            </button>
-            <button type="button" className="w-full p-3 text-left border-2 border-black hover:bg-gray-50 transition-colors shadow-neo-sm hover:shadow-neo active:translate-x-[2px] active:translate-y-[2px]">
+            </Link>
+            <Link href="/templates/new" className="block w-full p-3 text-left border-2 border-black hover:bg-gray-50 transition-colors shadow-neo-sm hover:shadow-neo active:translate-x-[2px] active:translate-y-[2px]">
               <span className="text-sm font-black uppercase">Create Template</span>
-            </button>
-            <button type="button" className="w-full p-3 text-left border-2 border-black hover:bg-gray-50 transition-colors shadow-neo-sm hover:shadow-neo active:translate-x-[2px] active:translate-y-[2px]">
+            </Link>
+            <Link href="/networks" className="block w-full p-3 text-left border-2 border-black hover:bg-gray-50 transition-colors shadow-neo-sm hover:shadow-neo active:translate-x-[2px] active:translate-y-[2px]">
               <span className="text-sm font-black uppercase">View Network</span>
-            </button>
+            </Link>
           </div>
         </div>
       </div>

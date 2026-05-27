@@ -24,6 +24,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { useAuth, useLogout } from "@/lib/hooks/use-auth"
+import { useDashboardStats } from "@/lib/hooks/use-dashboard"
 
 export default function DashboardLayout({
   children,
@@ -33,6 +34,7 @@ export default function DashboardLayout({
   const router = useRouter()
   const { data: user, isLoading, error, isError } = useAuth()
   const logout = useLogout()
+  const { data: stats } = useDashboardStats()
 
   // Redirect to login if not authenticated
   useEffect(() => {
@@ -133,9 +135,11 @@ export default function DashboardLayout({
                   >
                     <Bell className="w-5 h-5 text-black" />
                     {/* Notification Badge */}
-                    <span className="absolute -top-1 -right-1 w-5 h-5 bg-accent text-white text-[10px] font-black flex items-center justify-center border-2 border-black z-20">
-                      3
-                    </span>
+                    {(stats?.alerts ?? 0) > 0 && (
+                      <span className="absolute -top-1 -right-1 w-5 h-5 bg-accent text-white text-[10px] font-black flex items-center justify-center border-2 border-black z-20">
+                        {stats?.alerts ?? 0}
+                      </span>
+                    )}
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-80">
@@ -144,21 +148,25 @@ export default function DashboardLayout({
                   </DropdownMenuLabel>
                   <DropdownMenuSeparator />
                   <div className="max-h-64 overflow-y-auto">
-                    <DropdownMenuItem className="flex flex-col items-start gap-1 py-3 cursor-pointer">
-                      <p className="font-bold text-sm">VM alert</p>
-                      <p className="text-xs text-gray-500">vm-01 is offline</p>
-                      <p className="text-[10px] text-gray-400">2 min ago</p>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem className="flex flex-col items-start gap-1 py-3 cursor-pointer">
-                      <p className="font-bold text-sm">New node added</p>
-                      <p className="text-xs text-gray-500">node-03 is now online</p>
-                      <p className="text-[10px] text-gray-400">1 hour ago</p>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem className="flex flex-col items-start gap-1 py-3 cursor-pointer">
-                      <p className="font-bold text-sm">Backup complete</p>
-                      <p className="text-xs text-gray-500">Daily backup finished</p>
-                      <p className="text-[10px] text-gray-400">3 hours ago</p>
-                    </DropdownMenuItem>
+                    {stats?.recent_activity && stats.recent_activity.length > 0 ? (
+                      stats.recent_activity.slice(0, 5).map((activity) => (
+                        <DropdownMenuItem key={activity.id} className="flex flex-col items-start gap-1 py-3 cursor-pointer">
+                          <p className="font-bold text-sm">
+                            {activity.action.toLowerCase()} {activity.resource_type.replace(/_/g, ' ').toLowerCase()}
+                          </p>
+                          <p className="text-xs text-gray-500">
+                            {activity.resource_id ? `Resource ${activity.resource_id.slice(0, 8)}...` : 'System event'}
+                          </p>
+                          <p className="text-[10px] text-gray-400">
+                            {new Date(activity.created_at).toLocaleString()}
+                          </p>
+                        </DropdownMenuItem>
+                      ))
+                    ) : (
+                      <div className="py-4 text-center">
+                        <p className="text-xs text-gray-500">No notifications</p>
+                      </div>
+                    )}
                   </div>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem className="justify-center font-bold text-xs text-primary cursor-pointer">

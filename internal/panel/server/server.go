@@ -109,6 +109,9 @@ func (s *Server) SetupRoutes() {
 	// User management routes
 	s.setupUserRoutes(v1)
 
+	// Dashboard routes
+	s.setupDashboardRoutes(v1)
+
 	// Audit log routes
 	s.setupAuditLogRoutes(v1)
 
@@ -144,7 +147,7 @@ func (s *Server) setupNodeRoutes(g *echo.Group) {
 	nodeRepo := repository.NewNodeRepository(s.db)
 
 	// Initialize service
-	nodeService := service.NewNodeService(nodeRepo)
+	nodeService := service.NewNodeService(nodeRepo, s.db)
 
 	// Initialize handler
 	nodeHandler := handler.NewNodeHandler(nodeService)
@@ -350,6 +353,57 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 		}
 		return c.NoContent(http.StatusNoContent)
 	}, panelMiddleware.RequirePermission("user:delete"))
+}
+
+// setupDashboardRoutes configures dashboard statistics routes
+func (s *Server) setupDashboardRoutes(g *echo.Group) {
+	vmRepo := repository.NewVMRepository(s.db)
+	nodeRepo := repository.NewNodeRepository(s.db)
+	auditRepo := repository.NewAuditRepository(s.db)
+
+	dashboard := g.Group("/dashboard")
+	dashboard.Use(panelMiddleware.RequireAuth(s.db))
+
+	dashboard.GET("/stats", func(c echo.Context) error {
+		ctx := c.Request().Context()
+
+		// VM counts
+		totalVMs, _ := vmRepo.Count(ctx)
+		runningVMs, _ := vmRepo.CountByStatus(ctx, models.VMStatusRunning)
+		stoppedVMs, _ := vmRepo.CountByStatus(ctx, models.VMStatusStopped)
+		errorVMs, _ := vmRepo.CountByStatus(ctx, models.VMStatusError)
+
+		// Node counts
+		totalNodes, _ := nodeRepo.Count(ctx)
+		activeNodes, _ := nodeRepo.CountByStatus(ctx, models.NodeStatusActive)
+
+		// Recent activity (last 10 audit logs)
+		recentLogs, _ := auditRepo.List(ctx, 10, 0)
+
+		// Calculate utilization
+		var utilization float64
+		if totalVMs > 0 {
+			utilization = float64(runningVMs) / float64(totalVMs) * 100
+		}
+
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"data": map[string]interface{}{
+				"vms": map[string]interface{}{
+					"total":   totalVMs,
+					"running": runningVMs,
+					"stopped": stoppedVMs,
+					"error":   errorVMs,
+				},
+				"nodes": map[string]interface{}{
+					"total":  totalNodes,
+					"active": activeNodes,
+				},
+				"utilization":     utilization,
+				"alerts":          errorVMs,
+				"recent_activity": recentLogs,
+			},
+		})
+	})
 }
 
 // setupAuditLogRoutes configures audit log viewing routes

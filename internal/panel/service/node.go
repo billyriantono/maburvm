@@ -11,6 +11,7 @@ import (
 	"github.com/maburvm/panel/internal/panel/client"
 	"github.com/maburvm/panel/internal/panel/repository"
 	"github.com/maburvm/panel/internal/shared/models"
+	"gorm.io/gorm"
 )
 
 // Common errors for node operations
@@ -30,17 +31,19 @@ const TokenLength = 32
 
 // NodeService handles node-related operations
 type NodeService struct {
-	repo       *repository.NodeRepository
-	agentPort  int
-	timeout    time.Duration
+	repo        *repository.NodeRepository
+	db          *gorm.DB
+	agentPort   int
+	timeout     time.Duration
 	agentClient *client.AgentClient
 }
 
 // NewNodeService creates a new NodeService instance
-func NewNodeService(repo *repository.NodeRepository) *NodeService {
+func NewNodeService(repo *repository.NodeRepository, db *gorm.DB) *NodeService {
 	agentClient, _ := client.NewAgentClient(nil)
 	return &NodeService{
 		repo:        repo,
+		db:          db,
 		agentPort:   DefaultAgentPort,
 		timeout:     5 * time.Second,
 		agentClient: agentClient,
@@ -372,13 +375,17 @@ func (s *NodeService) GetNodeMetrics(ctx context.Context, id string) (*NodeMetri
 		}, nil
 	}
 
+	// Fill VM count from database (more reliable than agent-reported count)
+	var vmCount int64
+	s.db.WithContext(ctx).Model(&models.VM{}).Where("node_id = ?", id).Count(&vmCount)
+
 	return &NodeMetrics{
 		NodeID:      id,
 		Timestamp:   metricsResult.Timestamp,
 		CPUUsage:    metricsResult.CPUUsage,
 		MemoryUsage: metricsResult.MemoryUsage,
 		DiskUsage:   metricsResult.DiskUsage,
-		VMCount:     metricsResult.VMCount,
+		VMCount:     int(vmCount),
 		Status:      "online",
 	}, nil
 }

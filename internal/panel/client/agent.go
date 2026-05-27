@@ -646,7 +646,7 @@ type NodeSystemInfo struct {
 	LibvirtVersion string
 }
 
-// GetNodeMetrics retrieves metrics from the node agent via GetVMStatus
+// GetNodeMetrics retrieves metrics from the node agent via GetNodeInfo
 func (c *AgentClient) GetNodeMetrics(ctx context.Context, nodeID string) (*NodeMetricsResult, error) {
 	node, err := c.getNodeInfo(nodeID)
 	if err != nil {
@@ -655,10 +655,25 @@ func (c *AgentClient) GetNodeMetrics(ctx context.Context, nodeID string) (*NodeM
 
 	var result *NodeMetricsResult
 	err = c.executeWithRetry(ctx, node, func(ctx context.Context, client pb.NodeAgentClient) error {
-		// For now, return basic online status
-		// In production, this should call a dedicated metrics endpoint
+		// Call GetNodeInfo to verify node is reachable and get system info
+		resp, err := client.GetNodeInfo(ctx, &pb.GetNodeInfoRequest{})
+		if err != nil {
+			return err
+		}
+
+		if !resp.Success {
+			return fmt.Errorf("GetNodeInfo failed: %s", resp.Error.GetMessage())
+		}
+
+		// GetNodeInfo provides static info (totals) but not live usage.
+		// Live metrics (CPU%, memory used, disk used) come from heartbeat stream.
+		// For now, return what we can confirm: node is reachable.
 		result = &NodeMetricsResult{
-			Timestamp: time.Now(),
+			CPUUsage:    0, // Requires heartbeat cache — not available via GetNodeInfo
+			MemoryUsage: 0, // Requires heartbeat cache
+			DiskUsage:   0, // Requires heartbeat cache
+			VMCount:     0, // Will be filled by service layer from DB
+			Timestamp:   time.Now(),
 		}
 		return nil
 	})

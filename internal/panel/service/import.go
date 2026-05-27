@@ -678,13 +678,70 @@ func (s *ImportService) UpdateDomainXML(originalXML []byte, mappings []DiskMappi
 }
 
 // GetImportStatus retrieves the status of an import job from River
-func (s *ImportService) GetImportStatus(ctx context.Context, jobID int64) (*queue.ImportJob, error) {
-	_, err := s.riverClient.JobGet(ctx, jobID)
+func (s *ImportService) GetImportStatus(ctx context.Context, jobID int64) (*ImportJobStatus, error) {
+	job, err := s.riverClient.JobGet(ctx, jobID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get job status: %w", err)
 	}
 
-	return nil, fmt.Errorf("GetImportStatus requires job args decoding which is type-specific - not fully implemented")
+	status := &ImportJobStatus{
+		JobID:       job.ID,
+		State:       string(job.State),
+		Attempt:     job.Attempt,
+		MaxAttempts: job.MaxAttempts,
+		CreatedAt:   job.CreatedAt,
+		AttemptedAt: job.AttemptedAt,
+	}
+
+	if job.FinalizedAt != nil {
+		status.FinalizedAt = job.FinalizedAt
+	}
+
+	// Decode job args to get import-specific info
+	var importJob queue.ImportJob
+	if err := json.Unmarshal(job.EncodedArgs, &importJob); err == nil {
+		status.Source = string(importJob.Source)
+		status.SourceID = importJob.SourceID
+		status.NodeID = importJob.NodeID
+	}
+
+	// Map River job states to user-friendly status
+	switch job.State {
+	case "available", "scheduled", "retryable":
+		status.Status = "pending"
+	case "running":
+		status.Status = "processing"
+	case "completed":
+		status.Status = "completed"
+	case "discarded", "cancelled":
+		status.Status = "failed"
+	default:
+		status.Status = string(job.State)
+	}
+
+	// Include errors if present
+	if len(job.Errors) > 0 {
+		lastErr := job.Errors[len(job.Errors)-1]
+		status.Error = lastErr.Error
+	}
+
+	return status, nil
+}
+
+// ImportJobStatus represents the status of an import job
+type ImportJobStatus struct {
+	JobID       int64      `json:"job_id"`
+	Status      string     `json:"status"`       // pending, processing, completed, failed
+	State       string     `json:"state"`        // Raw River state
+	Source      string     `json:"source"`       // e.g., "virtualizor"
+	SourceID    string     `json:"source_id"`    // Original VM UUID
+	NodeID      string     `json:"node_id"`
+	Attempt     int        `json:"attempt"`
+	MaxAttempts int        `json:"max_attempts"`
+	Error       string     `json:"error,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	AttemptedAt *time.Time `json:"attempted_at,omitempty"`
+	FinalizedAt *time.Time `json:"finalized_at,omitempty"`
 }
 
 // ListImportableVMs scans a node and returns VMs that can be imported
