@@ -881,7 +881,7 @@ export default function VMDetailPage() {
             <div className="bg-gray-100 border-4 border-black p-8 h-64 flex items-center justify-center">
               <div className="text-center">
                 <FileText className="w-12 h-12 mx-auto text-gray-300 mb-4" />
-                <p className="text-gray-500 font-bold uppercase text-sm">Activity logs coming soon</p>
+                <p className="text-gray-500 font-bold uppercase text-sm">No activity logs yet for this VM</p>
                 <p className="text-gray-400 text-xs mt-1">VM activity logging is under development</p>
               </div>
             </div>

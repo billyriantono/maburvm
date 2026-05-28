@@ -595,7 +595,7 @@ export default function NodeDetailPage() {
             <div className="p-12 text-center">
               <FolderOpen className="w-12 h-12 text-gray-300 mx-auto mb-4" />
               <p className="text-gray-500 font-bold uppercase">VM Import</p>
-              <p className="text-xs text-gray-400 mt-2">Import scanning feature coming soon</p>
+              <p className="text-xs text-gray-400 mt-2">Import scanning available when node agent is connected</p>
             </div>
           </div>
         </TabsContent>

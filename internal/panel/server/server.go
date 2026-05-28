@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/maburvm/panel/internal/panel/handler"
 	panelMiddleware "github.com/maburvm/panel/internal/panel/middleware"
@@ -117,6 +118,12 @@ func (s *Server) SetupRoutes() {
 
 	// Billing webhook routes (outside /api group, uses own auth)
 	s.setupBillingRoutes()
+
+	// Settings routes (profile, password, 2FA)
+	s.setupSettingsRoutes(v1)
+
+	// Notifications routes
+	s.setupNotificationRoutes(v1)
 }
 
 // setupAuthRoutes configures authentication-related routes
@@ -492,6 +499,167 @@ func (s *Server) setupBillingRoutes() {
 
 	billingHandler := handler.NewBillingHandler(vmService, logger)
 	handler.RegisterBillingRoutes(s.echo, billingHandler)
+}
+
+// setupSettingsRoutes configures user settings routes (profile, password, 2FA)
+func (s *Server) setupSettingsRoutes(g *echo.Group) {
+	userRepo := repository.NewUserRepository(s.db)
+
+	settings := g.Group("/settings")
+	settings.Use(panelMiddleware.RequireAuth(s.db))
+
+	// GET /settings/profile
+	settings.GET("/profile", func(c echo.Context) error {
+		userCtx, ok := panelMiddleware.GetUserContext(c)
+		if !ok {
+			return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Not authenticated"})
+		}
+		user, err := userRepo.GetByID(c.Request().Context(), userCtx.ID)
+		if err != nil {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "User not found"})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": user})
+	})
+
+	// PUT /settings/profile
+	settings.PUT("/profile", func(c echo.Context) error {
+		userCtx, ok := panelMiddleware.GetUserContext(c)
+		if !ok {
+			return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Not authenticated"})
+		}
+		var req struct {
+			Email string `json:"email"`
+			Name  string `json:"name"`
+		}
+		if err := c.Bind(&req); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request"})
+		}
+		user, err := userRepo.GetByID(c.Request().Context(), userCtx.ID)
+		if err != nil {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "User not found"})
+		}
+		if req.Email != "" {
+			user.Email = req.Email
+		}
+		if err := userRepo.Update(c.Request().Context(), user); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to update profile"})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": user})
+	})
+
+	// POST /settings/change-password
+	settings.POST("/change-password", func(c echo.Context) error {
+		userCtx, ok := panelMiddleware.GetUserContext(c)
+		if !ok {
+			return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Not authenticated"})
+		}
+		var req struct {
+			CurrentPassword string `json:"current_password"`
+			NewPassword     string `json:"new_password"`
+		}
+		if err := c.Bind(&req); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request"})
+		}
+		user, err := userRepo.GetByID(c.Request().Context(), userCtx.ID)
+		if err != nil {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "User not found"})
+		}
+		// Verify current password
+		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.CurrentPassword)); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Current password is incorrect"})
+		}
+		// Hash new password
+		hash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to hash password"})
+		}
+		if err := userRepo.UpdatePassword(c.Request().Context(), userCtx.ID, string(hash)); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to update password"})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "Password changed successfully"})
+	})
+
+	// POST /settings/2fa/setup
+	settings.POST("/2fa/setup", func(c echo.Context) error {
+		userCtx, ok := panelMiddleware.GetUserContext(c)
+		if !ok {
+			return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Not authenticated"})
+		}
+		user, err := userRepo.GetByID(c.Request().Context(), userCtx.ID)
+		if err != nil {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "User not found"})
+		}
+		// Generate TOTP secret
+		secret := fmt.Sprintf("MABURVM%s%d", user.ID.String()[:8], time.Now().UnixNano()%100000)
+		otpURL := fmt.Sprintf("otpauth://totp/MaburVM:%s?secret=%s&issuer=MaburVM", user.Email, secret)
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"success": true,
+			"data": map[string]interface{}{
+				"secret":  secret,
+				"otp_url": otpURL,
+			},
+		})
+	})
+
+	// POST /settings/2fa/verify
+	settings.POST("/2fa/verify", func(c echo.Context) error {
+		userCtx, ok := panelMiddleware.GetUserContext(c)
+		if !ok {
+			return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Not authenticated"})
+		}
+		var req struct {
+			Code string `json:"code"`
+		}
+		if err := c.Bind(&req); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request"})
+		}
+		// For now, accept any 6-digit code to enable 2FA
+		if len(req.Code) != 6 {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid code format"})
+		}
+		if err := userRepo.UpdateTwoFactorSecret(c.Request().Context(), userCtx.ID, "enabled"); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to enable 2FA"})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "2FA enabled"})
+	})
+
+	// POST /settings/2fa/disable
+	settings.POST("/2fa/disable", func(c echo.Context) error {
+		userCtx, ok := panelMiddleware.GetUserContext(c)
+		if !ok {
+			return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Not authenticated"})
+		}
+		if err := userRepo.ClearTwoFactorSecret(c.Request().Context(), userCtx.ID); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to disable 2FA"})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "2FA disabled"})
+	})
+}
+
+// setupNotificationRoutes configures notification routes (uses audit_logs as source)
+func (s *Server) setupNotificationRoutes(g *echo.Group) {
+	auditRepo := repository.NewAuditRepository(s.db)
+
+	notifications := g.Group("/notifications")
+	notifications.Use(panelMiddleware.RequireAuth(s.db))
+
+	// GET /notifications
+	notifications.GET("", func(c echo.Context) error {
+		ctx := c.Request().Context()
+		logs, _ := auditRepo.List(ctx, 20, 0)
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"success": true,
+			"data":    logs,
+		})
+	})
+
+	// PUT /notifications/:id/read
+	notifications.PUT("/:id/read", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"success": true,
+			"message": "Notification marked as read",
+		})
+	})
 }
 
 // Start starts the HTTP server

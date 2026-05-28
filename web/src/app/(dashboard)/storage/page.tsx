@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useCallback } from "react"
 import {
   Database,
   Plus,
@@ -17,7 +17,7 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { useStoragePools } from "@/lib/hooks/use-storage"
+import { useStoragePools, useCreateStoragePool, useResizeStoragePool, useDeleteStoragePool } from "@/lib/hooks/use-storage"
 import { toast } from "sonner"
 
 function formatBytes(bytes: number): string {
@@ -139,9 +139,16 @@ function ConfirmDialog({
 
 export default function StorageListPage() {
   const { data: pools, isLoading, error } = useStoragePools()
+  const createPool = useCreateStoragePool()
+  const resizePool = useResizeStoragePool()
+  const deletePool = useDeleteStoragePool()
   const [searchQuery, setSearchQuery] = useState("")
   const [typeFilter, setTypeFilter] = useState<string>("")
   const [deleteConfirm, setDeleteConfirm] = useState<NonNullable<typeof pools>[number] | null>(null)
+  const [showAddPool, setShowAddPool] = useState(false)
+  const [resizeTarget, setResizeTarget] = useState<NonNullable<typeof pools>[number] | null>(null)
+  const [newPool, setNewPool] = useState({ name: "", path: "", pool_type: "dir", node_id: "", total_bytes: 107374182400 })
+  const [resizeBytes, setResizeBytes] = useState(0)
 
   const filteredPools = pools?.filter(pool =>
     pool.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -165,8 +172,35 @@ export default function StorageListPage() {
 
   const handleDelete = () => {
     if (!deleteConfirm) return
-    toast.success(`Storage pool ${deleteConfirm.name} deleted`)
-    setDeleteConfirm(null)
+    deletePool.mutate(deleteConfirm.id, {
+      onSuccess: () => {
+        toast.success(`Storage pool "${deleteConfirm.name}" deleted`)
+        setDeleteConfirm(null)
+      },
+      onError: (err) => toast.error(`Failed to delete: ${err.message}`)
+    })
+  }
+
+  const handleAddPool = () => {
+    createPool.mutate(newPool, {
+      onSuccess: () => {
+        toast.success(`Storage pool "${newPool.name}" created`)
+        setShowAddPool(false)
+        setNewPool({ name: "", path: "", pool_type: "dir", node_id: "", total_bytes: 107374182400 })
+      },
+      onError: (err) => toast.error(`Failed to create pool: ${err.message}`)
+    })
+  }
+
+  const handleResize = () => {
+    if (!resizeTarget) return
+    resizePool.mutate({ id: resizeTarget.id, total_bytes: resizeBytes }, {
+      onSuccess: () => {
+        toast.success(`Storage pool "${resizeTarget.name}" resized`)
+        setResizeTarget(null)
+      },
+      onError: (err) => toast.error(`Failed to resize: ${err.message}`)
+    })
   }
 
   if (isLoading) {
@@ -224,7 +258,7 @@ export default function StorageListPage() {
             {stats.totalPools} pools
           </p>
         </div>
-        <Button className="gap-2" onClick={() => toast.info("Add pool coming soon")}>
+        <Button className="gap-2" onClick={() => setShowAddPool(true)}>
           <Plus className="w-4 h-4" />
           Add Pool
         </Button>
@@ -366,7 +400,7 @@ export default function StorageListPage() {
                     size="sm"
                     className="h-9 border-2 border-black"
                     title="Resize"
-                    onClick={() => toast.info("Resize coming soon")}
+                    onClick={() => { setResizeTarget(pool); setResizeBytes(pool.total_space ?? 0) }}
                   >
                     <Maximize2 className="w-4 h-4" />
                     <span className="ml-1">Resize</span>
@@ -395,6 +429,72 @@ export default function StorageListPage() {
         onConfirm={handleDelete}
         onCancel={() => setDeleteConfirm(null)}
       />
+
+      {/* Add Pool Dialog */}
+      {showAddPool && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
+          <button type="button" className="absolute inset-0 bg-black/50 cursor-default focus:outline-none" onClick={() => setShowAddPool(false)} aria-label="Close" />
+          <div className="relative bg-white border-4 border-black p-6 shadow-neo-xl max-w-md w-full mx-4">
+            <h3 className="text-xl font-black uppercase mb-4">Add Storage Pool</h3>
+            <div className="space-y-4">
+              <div>
+                <label className="text-xs font-black uppercase text-gray-500">Name</label>
+                <Input value={newPool.name} onChange={(e) => setNewPool({...newPool, name: e.target.value})} placeholder="e.g., local-lvm" className="border-2 border-black" />
+              </div>
+              <div>
+                <label className="text-xs font-black uppercase text-gray-500">Path</label>
+                <Input value={newPool.path} onChange={(e) => setNewPool({...newPool, path: e.target.value})} placeholder="e.g., /var/lib/vz" className="border-2 border-black" />
+              </div>
+              <div>
+                <label className="text-xs font-black uppercase text-gray-500">Type</label>
+                <select value={newPool.pool_type} onChange={(e) => setNewPool({...newPool, pool_type: e.target.value})} className="w-full h-10 px-3 border-2 border-black font-medium bg-white">
+                  <option value="dir">Directory</option>
+                  <option value="lvm">LVM</option>
+                  <option value="zfs">ZFS</option>
+                  <option value="nfs">NFS</option>
+                  <option value="ceph">Ceph</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-black uppercase text-gray-500">Size (GB)</label>
+                <Input type="number" value={Math.round(newPool.total_bytes / 1073741824)} onChange={(e) => setNewPool({...newPool, total_bytes: parseInt(e.target.value) * 1073741824})} className="border-2 border-black" />
+              </div>
+            </div>
+            <div className="flex gap-3 justify-end mt-6">
+              <Button variant="ghost" onClick={() => setShowAddPool(false)} className="border-2 border-black">Cancel</Button>
+              <Button onClick={handleAddPool} disabled={!newPool.name || !newPool.path || createPool.isPending}>
+                {createPool.isPending ? "Creating..." : "Create Pool"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Resize Dialog */}
+      {resizeTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
+          <button type="button" className="absolute inset-0 bg-black/50 cursor-default focus:outline-none" onClick={() => setResizeTarget(null)} aria-label="Close" />
+          <div className="relative bg-white border-4 border-black p-6 shadow-neo-xl max-w-md w-full mx-4">
+            <h3 className="text-xl font-black uppercase mb-4">Resize Pool: {resizeTarget.name}</h3>
+            <div className="space-y-4">
+              <div>
+                <label className="text-xs font-black uppercase text-gray-500">Current Size</label>
+                <p className="font-bold">{formatBytes(resizeTarget.total_space ?? 0)}</p>
+              </div>
+              <div>
+                <label className="text-xs font-black uppercase text-gray-500">New Size (GB)</label>
+                <Input type="number" value={Math.round(resizeBytes / 1073741824)} onChange={(e) => setResizeBytes(parseInt(e.target.value) * 1073741824)} className="border-2 border-black" />
+              </div>
+            </div>
+            <div className="flex gap-3 justify-end mt-6">
+              <Button variant="ghost" onClick={() => setResizeTarget(null)} className="border-2 border-black">Cancel</Button>
+              <Button onClick={handleResize} disabled={resizePool.isPending}>
+                {resizePool.isPending ? "Resizing..." : "Resize"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

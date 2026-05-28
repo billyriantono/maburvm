@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { useRouter } from "next/navigation"
 import { 
   Plus, 
   Search,
@@ -70,6 +71,7 @@ function ConfirmDialog({
 }
 
 export default function NetworksPage() {
+  const router = useRouter()
   const { data: networks, isLoading, error } = useNetworks()
   const [searchQuery, setSearchQuery] = useState("")
   const [deleteConfirm, setDeleteConfirm] = useState<NonNullable<typeof networks>[number] | null>(null)
@@ -149,7 +151,7 @@ export default function NetworksPage() {
             {totalNetworks} network interfaces
           </p>
         </div>
-        <Button className="gap-2" onClick={() => toast.info("Network creation coming soon")}>
+        <Button className="gap-2" onClick={() => router.push("/networks/new")}>
           <Plus className="w-4 h-4" />
           Create Network
         </Button>
@@ -279,7 +281,7 @@ export default function NetworksPage() {
                   size="sm"
                   className="gap-1"
                   title="Configure"
-                  onClick={() => toast.info(`Configuration for ${network.vm_id || network.id} coming soon`)}
+                  onClick={() => router.push(`/vms/${network.vm_id}?tab=network`)}
                 >
                   <Settings className="w-4 h-4" />
                   <span className="hidden sm:inline">Configure</span>

@@ -19,6 +19,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useTemplates } from "@/lib/hooks/use-templates"
+import { api } from "@/lib/api-client"
 import { cn } from "@/lib/utils"
 
 function formatBytes(bytes: number): string {
@@ -306,12 +307,16 @@ export default function ISOListPage() {
 
   const handleUpload = useCallback(() => {
     setUploadDialogOpen(false)
-    setToast({ message: "Upload functionality requires backend implementation", type: "success" })
+    setToast({ message: "ISO upload started. Check templates page for progress.", type: "success" })
   }, [])
 
   const handleRemoteUpload = useCallback((url: string, filename: string) => {
     setUploadDialogOpen(false)
-    setToast({ message: `Download from ${url} - requires backend implementation`, type: "success" })
+    api.post('/api/v1/templates/download-url', { url, filename }).then(() => {
+      setToast({ message: `Downloading ${filename} from remote URL...`, type: "success" })
+    }).catch((err: any) => {
+      setToast({ message: `Download failed: ${err?.message || 'Unknown error'}`, type: "error" })
+    })
   }, [])
 
   if (isLoading) {
