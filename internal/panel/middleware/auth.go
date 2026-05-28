@@ -62,7 +62,7 @@ type UserContext struct {
 
 // GetJWTSecret retrieves the JWT secret from environment
 func GetJWTSecret() []byte {
-	secret := os.Getenv("JWT_SECRET")
+	secret := os.Getenv("JWT_SECRET_KEY")
 	if secret == "" {
 		secret = "your-jwt-secret-change-in-production"
 	}
@@ -296,8 +296,8 @@ func RequireAuth(db *gorm.DB) echo.MiddlewareFunc {
 				})
 			}
 
-			// Validate token type
-			if claims.TokenType != "access" {
+			// Validate token type (skip if not set — backward compat with user service tokens)
+			if claims.TokenType != "" && claims.TokenType != "access" {
 				return c.JSON(http.StatusUnauthorized, map[string]interface{}{
 					"error":   "Unauthorized",
 					"message": "Invalid token type",

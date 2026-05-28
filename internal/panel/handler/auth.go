@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/labstack/echo/v4"
+	"github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/panel/service"
 )
 
@@ -153,14 +154,19 @@ func (h *AuthHandler) Logout(c echo.Context) error {
 
 func (h *AuthHandler) Me(c echo.Context) error {
 	// Get user from context (set by auth middleware)
-	userID := c.Get("userID")
-	if userID == nil {
+	userCtx, ok := c.Get("user").(*middleware.UserContext)
+	if !ok || userCtx == nil {
 		return c.JSON(http.StatusUnauthorized, map[string]string{
 			"error": "Not authenticated",
 		})
 	}
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"userID": userID,
+		"success": true,
+		"data": map[string]interface{}{
+			"id":    userCtx.ID,
+			"email": userCtx.Email,
+			"role":  userCtx.Role,
+		},
 	})
 }

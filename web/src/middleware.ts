@@ -17,7 +17,14 @@ export function middleware(request: NextRequest) {
   
   const isDashboard = pathname.startsWith('/dashboard')
   const isLogin = pathname === '/login'
-  const isWhitelisted = WHITELIST.some(path => pathname === path)
+
+  // Root redirect — send to dashboard (which will bounce to login if no token)
+  if (pathname === '/') {
+    if (token) {
+      return NextResponse.redirect(new URL('/dashboard', request.url))
+    }
+    return NextResponse.redirect(new URL('/login', request.url))
+  }
 
   // Protect dashboard routes
   if (isDashboard && !token) {

@@ -52,7 +52,7 @@ export default function LoginPage() {
     setIpWarning(null)
 
     try {
-      const response = await fetch("/api/auth/login", {
+      const response = await fetch("/api/v1/auth/login", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -87,7 +87,8 @@ export default function LoginPage() {
         return
       }
 
-      // Success - redirect to dashboard
+      // Success - store token and redirect to dashboard
+      document.cookie = `accessToken=${result.token}; path=/; max-age=${24 * 60 * 60}; SameSite=Lax`
       router.push("/dashboard")
     } catch (err) {
       setError({
@@ -103,7 +104,7 @@ export default function LoginPage() {
     setError(null)
 
     try {
-      const response = await fetch("/api/auth/login", {
+      const response = await fetch("/api/v1/auth/login", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -125,7 +126,8 @@ export default function LoginPage() {
         return
       }
 
-      // Success - redirect to dashboard
+      // Success - store token and redirect to dashboard
+      document.cookie = `accessToken=${result.token}; path=/; max-age=${24 * 60 * 60}; SameSite=Lax`
       router.push("/dashboard")
     } catch (err) {
       setError({

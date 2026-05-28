@@ -16,7 +16,7 @@ export interface ApiError {
 
 // Create axios instance with default config
 const apiClient: AxiosInstance = axios.create({
-  baseURL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080',
+  baseURL: process.env.NEXT_PUBLIC_API_URL || '',
   headers: {
     'Content-Type': 'application/json',
   },
