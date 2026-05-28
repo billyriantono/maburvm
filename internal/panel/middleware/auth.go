@@ -343,7 +343,7 @@ func RequireAuth(db *gorm.DB) echo.MiddlewareFunc {
 					ID:          user.ID,
 					Email:       user.Email,
 					Role:        user.Role,
-					Permissions: claims.Permissions,
+					Permissions: GetPermissionsForRole(user.Role),
 				}
 
 				c.Set(UserContextKey, userCtx)
@@ -354,7 +354,7 @@ func RequireAuth(db *gorm.DB) echo.MiddlewareFunc {
 					ID:          userID,
 					Email:       claims.Email,
 					Role:        models.UserRole(claims.Role),
-					Permissions: claims.Permissions,
+					Permissions: GetPermissionsForRole(models.UserRole(claims.Role)),
 				}
 
 				c.Set(UserContextKey, userCtx)
