@@ -14,6 +14,7 @@ type Manager struct {
 	nat       *NATManager
 	firewall  *FirewallManager
 	vlan      *VLANManager
+	antiSpoof *AntiSpoofManager
 	mu        sync.RWMutex
 	// vmNetworks tracks network state per VM
 	vmNetworks map[string]*VMNetworkState
@@ -21,12 +22,14 @@ type Manager struct {
 
 // VMNetworkState holds the network configuration state for a VM
 type VMNetworkState struct {
-	VMID          string
-	InternalIP    string
-	VLANID        int
-	Bandwidth     int // Mbps, 0 = unlimited
-	PortForwards  map[int]portForwardEntry
-	FirewallRules []string // Rule IDs
+	VMID             string
+	InternalIP       string
+	MACAddress       string
+	VLANID           int
+	Bandwidth        int // Mbps, 0 = unlimited
+	PortForwards     map[int]portForwardEntry
+	FirewallRules    []string // Rule IDs
+	AntiSpoofEnabled bool
 }
 
 // NewManager creates a new network manager with all sub-managers initialized
@@ -49,11 +52,18 @@ func NewManager() (*Manager, error) {
 	// Initialize VLAN manager
 	vlanManager := NewVLANManager()
 
+	// Initialize Anti-Spoof manager
+	asManager, err := NewAntiSpoofManager()
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize Anti-Spoof manager: %w", err)
+	}
+
 	return &Manager{
 		bandwidth:  bwManager,
 		nat:        natManager,
 		firewall:   fwManager,
 		vlan:       vlanManager,
+		antiSpoof:  asManager,
 		vmNetworks: make(map[string]*VMNetworkState),
 	}, nil
 }
@@ -138,24 +148,29 @@ func (m *Manager) CleanupVMNetwork(vmID string) error {
 
 	// Cleanup in reverse order of setup
 
-	// 1. Remove firewall rules
+	// 1. Remove anti-spoofing rules
+	if err := m.antiSpoof.CleanupVM(vmID); err != nil {
+		errs = append(errs, fmt.Errorf("anti-spoof cleanup: %w", err))
+	}
+
+	// 2. Remove firewall rules
 	if err := m.firewall.CleanupVM(vmID); err != nil {
 		errs = append(errs, fmt.Errorf("firewall cleanup: %w", err))
 	}
 
-	// 2. Remove VLAN assignment
+	// 3. Remove VLAN assignment
 	if state != nil && state.VLANID > 0 {
 		if err := m.vlan.CleanupVM(vmID); err != nil {
 			errs = append(errs, fmt.Errorf("VLAN cleanup: %w", err))
 		}
 	}
 
-	// 3. Remove bandwidth limit
+	// 4. Remove bandwidth limit
 	if err := m.bandwidth.CleanupVM(vmID); err != nil {
 		errs = append(errs, fmt.Errorf("bandwidth cleanup: %w", err))
 	}
 
-	// 4. Remove NAT and port forwards
+	// 5. Remove NAT and port forwards
 	if state != nil && state.InternalIP != "" {
 		if err := m.nat.CleanupVM(vmID, state.InternalIP); err != nil {
 			errs = append(errs, fmt.Errorf("NAT cleanup: %w", err))
@@ -284,12 +299,14 @@ func (m *Manager) GetVMNetworkState(vmID string) (*VMNetworkState, bool) {
 
 	// Return a copy
 	stateCopy := &VMNetworkState{
-		VMID:          state.VMID,
-		InternalIP:    state.InternalIP,
-		VLANID:        state.VLANID,
-		Bandwidth:     state.Bandwidth,
-		PortForwards:  make(map[int]portForwardEntry),
-		FirewallRules: make([]string, len(state.FirewallRules)),
+		VMID:             state.VMID,
+		InternalIP:       state.InternalIP,
+		MACAddress:       state.MACAddress,
+		VLANID:           state.VLANID,
+		Bandwidth:        state.Bandwidth,
+		PortForwards:     make(map[int]portForwardEntry),
+		FirewallRules:    make([]string, len(state.FirewallRules)),
+		AntiSpoofEnabled: state.AntiSpoofEnabled,
 	}
 	for k, v := range state.PortForwards {
 		stateCopy.PortForwards[k] = v
@@ -297,6 +314,50 @@ func (m *Manager) GetVMNetworkState(vmID string) (*VMNetworkState, bool) {
 	copy(stateCopy.FirewallRules, state.FirewallRules)
 
 	return stateCopy, true
+}
+
+// EnableAntiSpoofing applies anti-spoofing rules for a VM.
+// This should be called after VM start, once the vnet interface is known.
+// mac: VM's MAC address, vnetInterface: the tap device name (e.g. vnet0)
+func (m *Manager) EnableAntiSpoofing(vmID, ip, ipv6, mac, vnetInterface string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	state, exists := m.vmNetworks[vmID]
+	if !exists {
+		return fmt.Errorf("VM %s not found in network state", vmID)
+	}
+
+	if err := m.antiSpoof.ApplyAntiSpoofRules(vmID, ip, ipv6, mac, vnetInterface); err != nil {
+		return fmt.Errorf("failed to apply anti-spoof rules: %w", err)
+	}
+
+	state.AntiSpoofEnabled = true
+	state.MACAddress = mac
+
+	log.Printf("[NetworkManager] Anti-spoof rules applied for VM %s (IP: %s, MAC: %s, Interface: %s)",
+		vmID, ip, mac, vnetInterface)
+	return nil
+}
+
+// DisableAntiSpoofing removes anti-spoofing rules for a VM
+func (m *Manager) DisableAntiSpoofing(vmID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	state, exists := m.vmNetworks[vmID]
+	if !exists {
+		return fmt.Errorf("VM %s not found in network state", vmID)
+	}
+
+	if err := m.antiSpoof.RemoveAntiSpoofRules(vmID); err != nil {
+		return fmt.Errorf("failed to remove anti-spoof rules: %w", err)
+	}
+
+	state.AntiSpoofEnabled = false
+
+	log.Printf("[NetworkManager] Anti-spoof rules removed for VM %s", vmID)
+	return nil
 }
 
 // ListActiveVMs returns a list of VMs with active network configuration

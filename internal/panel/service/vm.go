@@ -902,6 +902,11 @@ func (s *VMService) UpdateVM(ctx context.Context, req *UpdateVMRequest) (*models
 		if err := s.validateResources(req.Resources); err != nil {
 			return nil, err
 		}
+		// Disk can only grow — a qcow2/guest filesystem can't be safely shrunk, and
+		// the agent's resize is grow-only, so reject shrink to keep DB == reality.
+		if req.Resources.Disk < vm.Resources.Disk {
+			return nil, fmt.Errorf("disk can only be grown (current %dGB, requested %dGB)", vm.Resources.Disk, req.Resources.Disk)
+		}
 		// Enforce quota on resize (VM count unchanged; usage already includes the old size).
 		if err := s.quotaService.CheckCanResize(ctx, vm.UserID, vm.Resources, *req.Resources); err != nil {
 			return nil, err

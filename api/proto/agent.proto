@@ -679,20 +679,23 @@ message NetworkInterface {
   // bridge_name is the host bridge for bridge type
   string bridge_name = 3;
 
-  // mac_address is the assigned MAC address
+  // mac_address is the interface MAC (empty = auto-generate)
   string mac_address = 4;
 
-  // ip_address is the assigned IP (optional, may use DHCP)
+  // ip_address assigned to this interface
   string ip_address = 5;
 
-  // netmask in CIDR notation (e.g., "24")
+  // netmask CIDR prefix length (e.g. 24)
   int32 netmask = 6;
 
-  // gateway is the default gateway
+  // gateway for the assigned IP
   string gateway = 7;
 
-  // use_dhcp if true, IP is assigned via DHCP
+  // use_dhcp if true, configure via DHCP instead of static
   bool use_dhcp = 8;
+
+  // anti_spoofing enables anti-IP hijacking protection (iptables + ebtables + nwfilter)
+  bool anti_spoofing = 9;
 }
 
 // NetworkInterfaceType enumerates network interface types.

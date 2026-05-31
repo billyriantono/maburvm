@@ -695,3 +695,44 @@ type NATConfigParams struct {
 type FirewallConfigParams struct {
 	Rules []models.FirewallRule `json:"rules"`
 }
+
+// SetAntiSpoofingRequest contains data for toggling anti-spoofing
+type SetAntiSpoofingRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+// SetAntiSpoofing enables or disables anti-spoofing for a network interface
+func (s *NetworkService) SetAntiSpoofing(ctx context.Context, vmID string, networkID string, req *SetAntiSpoofingRequest) error {
+	// Verify VM exists
+	vm, err := s.vmRepo.GetByID(ctx, vmID)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return fmt.Errorf("VM not found")
+		}
+		return fmt.Errorf("failed to get VM: %w", err)
+	}
+
+	// Get network
+	network, err := s.networkRepo.GetByID(ctx, networkID)
+	if err != nil {
+		return ErrNetworkNotFound
+	}
+
+	// Verify network belongs to VM
+	if network.VMID != vmID {
+		return ErrNetworkNotFound
+	}
+
+	// Update anti_spoofing flag
+	if err := s.networkRepo.UpdateAntiSpoofing(ctx, networkID, req.Enabled); err != nil {
+		return fmt.Errorf("failed to update anti-spoofing: %w", err)
+	}
+
+	// Enqueue network config job to agent (anti-spoofing is part of network setup)
+	network.AntiSpoofing = req.Enabled
+	if err := s.enqueueNetworkConfigJob(ctx, vm, network, nil); err != nil {
+		fmt.Printf("failed to enqueue anti-spoofing config job: %v\n", err)
+	}
+
+	return nil
+}

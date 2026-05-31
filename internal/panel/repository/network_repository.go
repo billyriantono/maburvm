@@ -180,3 +180,8 @@ func (r *NetworkRepository) GetIDsByVMID(ctx context.Context, vmID string) ([]st
 	}
 	return ids, nil
 }
+
+// UpdateAntiSpoofing updates a network's anti-spoofing flag
+func (r *NetworkRepository) UpdateAntiSpoofing(ctx context.Context, id string, enabled bool) error {
+	return r.db.WithContext(ctx).Model(&models.Network{}).Where("id = ?", id).Update("anti_spoofing", enabled).Error
+}

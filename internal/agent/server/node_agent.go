@@ -244,6 +244,10 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 	case pb.VMCommandType_VM_COMMAND_TYPE_RESIZE:
 		if req.Config != nil && req.Config.Resources != nil {
 			err = libvirt.ResizeVM(req.VmId, int(req.Config.Resources.Vcpus), int(req.Config.Resources.MemoryMb))
+			// Grow the primary disk too (no-op when unchanged; grow-only).
+			if err == nil && req.Config.Resources.DiskGb > 0 {
+				err = libvirt.ResizeDisk(req.VmId, int(req.Config.Resources.DiskGb))
+			}
 		} else {
 			err = fmt.Errorf("resources required for RESIZE")
 		}

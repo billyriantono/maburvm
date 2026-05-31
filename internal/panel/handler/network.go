@@ -596,6 +596,55 @@ func (h *NetworkHandler) ListFirewallRules(c echo.Context) error {
 	})
 }
 
+// SetAntiSpoofing handles PUT /api/vms/:id/networks/:network_id/anti-spoofing - Toggle anti-spoofing
+func (h *NetworkHandler) SetAntiSpoofing(c echo.Context) error {
+	vmID := c.Param("id")
+	networkID := c.Param("network_id")
+
+	if vmID == "" || networkID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error":   "Bad Request",
+			"message": "VM ID and Network ID are required",
+		})
+	}
+
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error":   "Bad Request",
+			"message": "Invalid request body",
+		})
+	}
+
+	if err := h.service.SetAntiSpoofing(c.Request().Context(), vmID, networkID, &service.SetAntiSpoofingRequest{
+		Enabled: req.Enabled,
+	}); err != nil {
+		switch {
+		case errors.Is(err, service.ErrNetworkNotFound):
+			return c.JSON(http.StatusNotFound, map[string]interface{}{
+				"error":   "Not Found",
+				"message": "Network not found",
+			})
+		case err.Error() == "VM not found":
+			return c.JSON(http.StatusNotFound, map[string]interface{}{
+				"error":   "Not Found",
+				"message": "VM not found",
+			})
+		default:
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+				"error":   "Internal Server Error",
+				"message": err.Error(),
+			})
+		}
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Anti-spoofing setting updated successfully",
+	})
+}
+
 // RegisterNetworkRoutes registers all network routes with the Echo router
 func RegisterNetworkRoutes(e *echo.Echo, handler *NetworkHandler, db interface{}) {
 	// Create VM routes group
@@ -618,6 +667,9 @@ func RegisterNetworkRoutes(e *echo.Echo, handler *NetworkHandler, db interface{}
 
 	// VLAN routes
 	vms.PUT("/:id/networks/:network_id/vlan", handler.SetVLAN, middleware.RequirePermission("vm:update"))
+
+	// Anti-spoofing routes
+	vms.PUT("/:id/networks/:network_id/anti-spoofing", handler.SetAntiSpoofing, middleware.RequirePermission("vm:update"))
 
 	// Firewall routes
 	vms.POST("/:id/firewall-rules", handler.AddFirewallRule, middleware.RequirePermission("vm:update"))

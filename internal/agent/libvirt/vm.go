@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/maburvm/panel/internal/agent/storage"
 	"libvirt.org/go/libvirt"
 	"libvirt.org/go/libvirtxml"
 )
@@ -150,6 +151,17 @@ func generateDomainXML(config VMConfig) (string, error) {
 			Inbound:  &libvirtxml.DomainInterfaceBandwidthParams{Average: &avgIn},
 			Outbound: &libvirtxml.DomainInterfaceBandwidthParams{Average: &avgOut},
 		}
+	}
+
+	// Add libvirt nwfilter for anti-spoofing (Layer 1 protection)
+	// This applies clean-traffic filter that prevents IP/MAC spoofing at the hypervisor level
+	// The filter uses $IP, $IP6, and $MAC variables that libvirt substitutes at runtime
+	iface.FilterRef = &libvirtxml.DomainInterfaceFilterRef{
+		Filter: "clean-traffic",
+		Parameters: []libvirtxml.DomainInterfaceFilterParam{
+			{Name: "IP", Value: config.IPAddress},
+			{Name: "MAC", Value: config.MACAddress},
+		},
 	}
 
 	// Primary disk (the cloned template image).
@@ -544,6 +556,69 @@ func DetachISO(uuidStr string) error {
 			return fmt.Errorf("failed to redefine domain: %w", err)
 		}
 		newDom.Free()
+		return nil
+	})
+}
+
+// ResizeDisk grows the VM's primary disk to diskGB. It only ever grows (a
+// qcow2/guest filesystem can't be safely shrunk online), and is a no-op when the
+// disk is already at least that size — so it's safe to call on every resize even
+// when only CPU/RAM changed. A running VM is resized live via QEMU; a stopped VM
+// has its qcow2 file resized directly. The guest still has to grow its partition
+// and filesystem (cloud images do this automatically via growpart on boot).
+func ResizeDisk(uuidStr string, diskGB int) error {
+	if _, err := uuid.Parse(uuidStr); err != nil {
+		return fmt.Errorf("invalid UUID format: %w", err)
+	}
+	if diskGB <= 0 {
+		return fmt.Errorf("disk size must be positive")
+	}
+	return WithConnection(func(conn *libvirt.Connect) error {
+		dom, err := conn.LookupDomainByUUIDString(uuidStr)
+		if err != nil {
+			return fmt.Errorf("domain not found: %w", err)
+		}
+		defer dom.Free()
+
+		xmlDesc, err := dom.GetXMLDesc(0)
+		if err != nil {
+			return fmt.Errorf("failed to get domain XML: %w", err)
+		}
+		var domain libvirtxml.Domain
+		if err := xml.Unmarshal([]byte(xmlDesc), &domain); err != nil {
+			return fmt.Errorf("failed to parse domain XML: %w", err)
+		}
+		var path, target string
+		if domain.Devices != nil {
+			for _, d := range domain.Devices.Disks {
+				if d.Device == "disk" && d.Target != nil {
+					target = d.Target.Dev
+					if d.Source != nil && d.Source.File != nil {
+						path = d.Source.File.File
+					}
+					break
+				}
+			}
+		}
+		if target == "" || path == "" {
+			return fmt.Errorf("no resizable primary disk found")
+		}
+
+		want := int64(diskGB) * 1024 * 1024 * 1024
+		// Grow-only + idempotent: skip when already at/above the requested size.
+		if info, ierr := storage.NewQCOW2Manager().ImageInfo(path); ierr == nil && want <= info.VirtualSize {
+			return nil
+		}
+
+		if state, _, _ := dom.GetState(); state == libvirt.DOMAIN_RUNNING {
+			if err := dom.BlockResize(target, uint64(want), libvirt.DOMAIN_BLOCK_RESIZE_BYTES); err != nil {
+				return fmt.Errorf("failed to live-resize disk: %w", err)
+			}
+			return nil
+		}
+		if err := storage.NewQCOW2Manager().ResizeImage(path, diskGB); err != nil {
+			return fmt.Errorf("failed to resize disk image: %w", err)
+		}
 		return nil
 	})
 }

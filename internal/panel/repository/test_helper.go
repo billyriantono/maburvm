@@ -83,6 +83,7 @@ func SetupTestDB() (*gorm.DB, error) {
 			bandwidth_limit INTEGER DEFAULT 0,
 			bandwidth_quota_gb INTEGER DEFAULT 0,
 			vlan_id INTEGER,
+			anti_spoofing BOOLEAN DEFAULT 1,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			deleted_at DATETIME
