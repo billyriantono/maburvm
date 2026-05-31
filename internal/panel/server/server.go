@@ -278,6 +278,9 @@ func (s *Server) setupVMRoutes(g *echo.Group) {
 	vncHandler := vnc.NewHandler(vncProxyServer)
 	s.echo.GET("/ws/vnc", vncHandler.HandleWebSocket)
 
+	// In-browser SSH console (xterm.js ↔ SSH shell), sibling of the VNC console.
+	s.setupSSHConsoleRoutes(logger)
+
 	vmHandler := handler.NewVMHandler(vmService, vncService, vncProxyServer, service.NewSSHKeyService(s.db), service.NewRecipeService(s.db))
 
 	handler.RegisterVMRoutes(s.echo, vmHandler, s.db)

@@ -1177,12 +1177,20 @@ export default function VMDetailPage() {
                   <span className="text-xs font-bold uppercase text-gray-500 block mb-1">VNC Port</span>
                   <span className="text-xl font-black font-mono">{vm.vnc_port}</span>
                 </div>
-                <Link href={`/vms/${vm.id}/console`} target="_blank">
-                  <Button variant="accent" className="gap-2">
-                    <ExternalLink className="w-4 h-4" />
-                    Open VNC Console
-                  </Button>
-                </Link>
+                <div className="flex items-center gap-2">
+                  <Link href={`/vms/${vm.id}/ssh`} target="_blank">
+                    <Button variant="secondary" className="gap-2">
+                      <Terminal className="w-4 h-4" />
+                      SSH Console
+                    </Button>
+                  </Link>
+                  <Link href={`/vms/${vm.id}/console`} target="_blank">
+                    <Button variant="accent" className="gap-2">
+                      <ExternalLink className="w-4 h-4" />
+                      Open VNC Console
+                    </Button>
+                  </Link>
+                </div>
               </div>
             </div>
           )}
