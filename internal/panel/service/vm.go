@@ -149,6 +149,9 @@ type CreateVMRequest struct {
 	// CPUModel is the guest CPU model. Empty → the node defaults to a portable,
 	// live-migratable model (kvm64). e.g. "host-passthrough", "host-model", "Haswell".
 	CPUModel string `json:"cpu_model,omitempty" validate:"omitempty,max=64"`
+	// UserData is an optional first-boot script/recipe (run once per instance via
+	// cloud-init). Plain shell (#!/bin/bash …) or a cloud-init script.
+	UserData string `json:"user_data,omitempty" validate:"omitempty,max=65536"`
 	// CloneSourceRef, when set, is used as the disk source instead of the template
 	// image — a "vm://<id>" (same node) or "vm://<srcNodeIP>/<id>" (cross-node)
 	// reference the agent resolves by copying/pulling that VM's disk. Set by CloneVM.
@@ -305,6 +308,7 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		"bandwidth_mbps":   req.BandwidthMbps,
 		"vlan_id":          req.VLANID,
 		"cpu_model":        req.CPUModel,
+		"user_data":        req.UserData,
 	}
 	if allocatedIP != nil {
 		params["ip_address"] = allocatedIP.Address

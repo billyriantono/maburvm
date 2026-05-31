@@ -500,6 +500,7 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 		Gateway:      vmCfg.Gateway,
 		SSHPublicKey: cfg.SshPublicKey,
 		Password:     cfg.RootPassword,
+		UserData:     cfg.UserData,
 	}, seedPath); err != nil {
 		log.Printf("[NodeAgent] cloud-init seed not attached for VM %s (guest will use DHCP): %v", req.VmId, err)
 		seedPath = ""
@@ -581,6 +582,7 @@ func (s *NodeAgentService) rebuildVM(req *pb.VMCommandRequest) error {
 		Gateway:      gateway,
 		SSHPublicKey: cfg.SshPublicKey,
 		Password:     cfg.RootPassword,
+		UserData:     cfg.UserData,
 	}, seedPath); err != nil {
 		// Non-fatal: the rebuilt guest still boots; it just won't pick up the new
 		// password/keys via cloud-init.

@@ -59,6 +59,7 @@ type CreateVMRequest struct {
 	BandwidthMbps int             `json:"bandwidth_mbps,omitempty" validate:"omitempty,min=0,max=10000"`
 	VLANID        int             `json:"vlan_id,omitempty" validate:"omitempty,min=0,max=4094"`
 	CPUModel      string          `json:"cpu_model,omitempty" validate:"omitempty,max=64"`
+	UserData      string          `json:"user_data,omitempty" validate:"omitempty,max=65536"`
 }
 
 // CreateVMResponse represents the response after creating a VM
@@ -112,6 +113,7 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 		BandwidthMbps: req.BandwidthMbps,
 		VLANID:        req.VLANID,
 		CPUModel:      req.CPUModel,
+		UserData:      req.UserData,
 	}
 
 	resp, err := h.service.CreateVM(c.Request().Context(), createReq)

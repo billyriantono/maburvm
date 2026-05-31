@@ -51,6 +51,7 @@ const step2Schema = z.object({
   diskGB: z.number().min(10, "Minimum 10 GB disk").max(2000, "Maximum 2 TB disk"),
   nodeId: z.string().optional(),
   cpuModel: z.string().optional(),
+  userData: z.string().optional(),
 })
 
 const step3Schema = z.object({
@@ -126,6 +127,7 @@ export default function NewVMPage() {
       templateId: "",
       nodeId: "",
       cpuModel: "",
+      userData: "",
       ipPoolId: "",
       ipAddress: "",
       bandwidthMbps: 100,
@@ -193,6 +195,7 @@ export default function NewVMPage() {
         bandwidth_mbps: data.bandwidthMbps,
         vlan_id: vlanId,
         cpu_model: data.cpuModel || undefined,
+        user_data: data.userData || undefined,
       })
       router.push(`/vms/${result.id}`)
     } catch (error) {
@@ -587,6 +590,21 @@ export default function NewVMPage() {
                 </select>
                 <p className="text-xs text-gray-500">
                   Leave default for cross-node live migration. Choose Host Passthrough for best single-node performance.
+                </p>
+              </div>
+
+              {/* Startup script / recipe */}
+              <div className="space-y-2">
+                <label htmlFor="userData" className="text-sm font-bold uppercase tracking-wide">Startup Script (optional)</label>
+                <textarea
+                  id="userData"
+                  {...register("userData")}
+                  rows={5}
+                  placeholder={"#!/bin/bash\napt-get update && apt-get install -y nginx"}
+                  className="w-full border-2 border-black p-3 font-mono text-xs resize-y focus:outline-none focus:ring-2 focus:ring-primary"
+                />
+                <p className="text-xs text-gray-500">
+                  Runs once on first boot via cloud-init (Virtualizor-style recipe). Requires a cloud-init image. Plain shell script or cloud-config.
                 </p>
               </div>
 

@@ -181,14 +181,12 @@ func (s *ImportService) ImportVirtualizor(ctx context.Context, req *ImportVirtua
 		return nil, fmt.Errorf("failed to get template: %w", err)
 	}
 
-	// Prefer gRPC agent scan so runtime status comes from libvirt on the target node.
+	// Scan the target node via the agent (libvirt on the node) — the only place
+	// the source VMs actually live. (There is no panel-side filesystem fallback:
+	// the panel host isn't the node, so scanning its filesystem finds nothing.)
 	discoveredVMs, err := s.ListImportableVMs(ctx, req.NodeID, req.CustomPath)
 	if err != nil {
-		s.logger.WarnContext(ctx, "gRPC agent scan failed, trying filesystem scan", "error", err)
-		discoveredVMs, err = s.scanForVirtualizorVMs(ctx, req)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan for VMs: %w", err)
-		}
+		return nil, fmt.Errorf("failed to scan node %s for importable VMs: %w", req.NodeID, err)
 	}
 
 	if len(discoveredVMs) == 0 {
@@ -252,105 +250,6 @@ func (s *ImportService) ImportVirtualizor(ctx context.Context, req *ImportVirtua
 	)
 
 	return response, nil
-}
-
-// scanForVirtualizorVMs scans the node for Virtualizor VM XML files
-// Common paths scanned:
-//   - /etc/libvirt/qemu/
-//   - /var/lib/libvirt/images/
-//   - /var/virtualizor/
-//   - Custom path if specified
-func (s *ImportService) scanForVirtualizorVMs(ctx context.Context, req *ImportVirtualizorRequest) ([]DiscoveredVM, error) {
-	var discovered []DiscoveredVM
-
-	// Build list of paths to scan
-	pathsToScan := []string{
-		DefaultLibvirtQemuPath,
-		DefaultLibvirtImagesPath,
-		DefaultVirtualizorVMPath,
-	}
-
-	// Add custom path if specified
-	if req.CustomPath != "" {
-		pathsToScan = append([]string{req.CustomPath}, pathsToScan...)
-	}
-
-	// Track discovered UUIDs to avoid duplicates
-	seenUUIDs := make(map[string]bool)
-
-	for _, scanPath := range pathsToScan {
-		// In a real implementation, this would communicate with the agent
-		// to scan files on the node. For now, we simulate local scanning.
-		vms, err := s.scanPathForVMs(scanPath, seenUUIDs)
-		if err != nil {
-			s.logger.WarnContext(ctx, "failed to scan path",
-				"path", scanPath,
-				"error", err,
-			)
-			continue
-		}
-		discovered = append(discovered, vms...)
-	}
-
-	return discovered, nil
-}
-
-// scanPathForVMs scans a specific path for VM XML files
-func (s *ImportService) scanPathForVMs(scanPath string, seenUUIDs map[string]bool) ([]DiscoveredVM, error) {
-	var discovered []DiscoveredVM
-
-	// Check if path exists
-	info, err := os.Stat(scanPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// Path doesn't exist, skip silently
-			return discovered, nil
-		}
-		return nil, err
-	}
-
-	if !info.IsDir() {
-		return nil, fmt.Errorf("path is not a directory: %s", scanPath)
-	}
-
-	// Walk directory looking for XML files
-	err = filepath.Walk(scanPath, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // Continue walking despite errors
-		}
-
-		// Skip directories and non-XML files
-		if info.IsDir() || !strings.HasSuffix(strings.ToLower(path), ".xml") {
-			return nil
-		}
-
-		// Try to parse as Virtualizor domain XML
-		candidate, err := vmimport.ParseVirtualizorDomainXML(path)
-		if err != nil {
-			// Not a valid Virtualizor XML, skip
-			return nil
-		}
-
-		// Check for duplicate UUID
-		if seenUUIDs[candidate.UUID] {
-			return nil
-		}
-		seenUUIDs[candidate.UUID] = true
-
-		discovered = append(discovered, DiscoveredVM{
-			XMLPath:   path,
-			Candidate: candidate,
-			Valid:     true,
-		})
-
-		return nil
-	})
-
-	if err != nil {
-		return nil, err
-	}
-
-	return discovered, nil
 }
 
 // processDiscoveredVM processes a single discovered VM

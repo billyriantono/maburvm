@@ -66,6 +66,7 @@ export interface CreateVMRequest {
   bandwidth_mbps?: number; // network rate cap
   vlan_id?: number;        // 802.1Q VLAN tag
   cpu_model?: string;      // guest CPU model; empty → node default (kvm64, migratable)
+  user_data?: string;      // first-boot script/recipe (cloud-init), run once per instance
 }
 
 // UpdateVMRequest for updating VMs

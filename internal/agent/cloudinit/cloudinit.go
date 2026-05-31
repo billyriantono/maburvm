@@ -5,6 +5,7 @@
 package cloudinit
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
@@ -24,6 +25,7 @@ type Config struct {
 	SSHPublicKey string   // optional authorized key(s); one per line for multiple
 	SSHKeys      []string // optional additional authorized keys
 	Password     string   // optional root password (plaintext) to set via chpasswd
+	UserData     string   // optional first-boot script/recipe run once per instance
 }
 
 // authorizedKeys returns the de-duplicated set of public keys from both
@@ -103,6 +105,19 @@ func userData(cfg Config) string {
 		for _, k := range keys {
 			b.WriteString(fmt.Sprintf("  - %s\n", k))
 		}
+	}
+	// First-boot recipe/startup script (Virtualizor "Recipes" parity). The script
+	// is written, base64-encoded, into the per-instance scripts dir, which
+	// cloud-init runs exactly once per instance on first boot. Base64 keeps any
+	// content (quotes, newlines, YAML-special chars) intact without indentation
+	// gymnastics.
+	if script := strings.TrimSpace(cfg.UserData); script != "" {
+		enc := base64.StdEncoding.EncodeToString([]byte(script))
+		b.WriteString("write_files:\n")
+		b.WriteString("  - path: /var/lib/cloud/scripts/per-instance/maburvm-recipe.sh\n")
+		b.WriteString("    permissions: '0755'\n")
+		b.WriteString("    encoding: b64\n")
+		b.WriteString(fmt.Sprintf("    content: %s\n", enc))
 	}
 	return b.String()
 }

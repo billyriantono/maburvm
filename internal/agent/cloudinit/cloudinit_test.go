@@ -1,6 +1,7 @@
 package cloudinit
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -100,5 +101,24 @@ func TestUserDataNoPasswordOrKeys(t *testing.T) {
 	ud := userData(Config{InstanceID: "vm-6", Hostname: "x"})
 	if strings.Contains(ud, "chpasswd") || strings.Contains(ud, "ssh_authorized_keys") {
 		t.Errorf("user-data should omit password/keys when none set:\n%s", ud)
+	}
+	if strings.Contains(ud, "write_files") {
+		t.Errorf("user-data should omit write_files when no recipe set:\n%s", ud)
+	}
+}
+
+func TestUserDataRecipe(t *testing.T) {
+	script := "#!/bin/bash\necho 'hello' > /root/recipe.out\n"
+	ud := userData(Config{InstanceID: "vm-7", Hostname: "rec", UserData: script})
+	if !strings.Contains(ud, "write_files:") || !strings.Contains(ud, "encoding: b64") {
+		t.Fatalf("recipe should be written via base64 write_files:\n%s", ud)
+	}
+	if !strings.Contains(ud, "/var/lib/cloud/scripts/per-instance/maburvm-recipe.sh") {
+		t.Fatalf("recipe should target the per-instance scripts dir:\n%s", ud)
+	}
+	// The base64 of the (trimmed) script must be present so it's preserved verbatim.
+	enc := base64.StdEncoding.EncodeToString([]byte(strings.TrimSpace(script)))
+	if !strings.Contains(ud, enc) {
+		t.Fatalf("recipe content (base64) missing from user-data:\n%s", ud)
 	}
 }
