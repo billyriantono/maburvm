@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { useForm, Controller } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
@@ -146,6 +146,25 @@ export default function NewVMPage() {
 
   const watchedValues = watch()
 
+  // Only pools usable on the selected node — a pool bound to a different node would
+  // allocate a non-routable IP (the backend rejects it). With no node chosen yet,
+  // show all pools; the backend still validates on submit.
+  const availablePools = useMemo(() => {
+    const nodeId = watchedValues.nodeId
+    if (!nodeId) return pools
+    return pools.filter((p) => {
+      const bound = p.node_ids && p.node_ids.length > 0 ? p.node_ids : p.node_id ? [p.node_id] : []
+      return bound.length === 0 || bound.includes(nodeId)
+    })
+  }, [pools, watchedValues.nodeId])
+
+  // Clear the IP pool if a node change made the current selection unavailable.
+  useEffect(() => {
+    if (watchedValues.ipPoolId && !availablePools.some((p) => p.id === watchedValues.ipPoolId)) {
+      setValue("ipPoolId", "")
+    }
+  }, [availablePools, watchedValues.ipPoolId, setValue])
+
   const handleNext = async () => {
     let fieldsToValidate: (keyof FormData)[] = []
     
@@ -208,7 +227,11 @@ export default function NewVMPage() {
       })
       router.push(`/vms/${result.id}`)
     } catch (error) {
-      setSubmitError((error as Error).message || "Failed to create VM. Please try again.")
+      // Prefer the backend's message (e.g. "IP pool not assigned to this node")
+      // over the generic axios "status code 4xx".
+      const axiosErr = error as { response?: { data?: { message?: string; error?: string } } }
+      const backendMsg = axiosErr.response?.data?.message || axiosErr.response?.data?.error
+      setSubmitError(backendMsg || (error as Error).message || "Failed to create VM. Please try again.")
     }
   }
 
@@ -787,9 +810,11 @@ export default function NewVMPage() {
                 </label>
                 {poolsLoading ? (
                   <Skeleton className="h-12 w-full" />
-                ) : pools.length === 0 ? (
+                ) : availablePools.length === 0 ? (
                   <div className="p-4 border-2 border-black bg-gray-100 text-sm text-gray-600 font-medium">
-                    No IP pools configured — the VM will use DHCP. Create pools under the IP Pools page to assign managed addresses.
+                    {pools.length === 0
+                      ? "No IP pools configured — the VM will use DHCP. Create pools under the IP Pools page to assign managed addresses."
+                      : "No IP pools are assigned to the selected node — the VM will use DHCP. Assign a pool to this node under the IP Pools page."}
                   </div>
                 ) : (
                   <Controller
@@ -801,7 +826,7 @@ export default function NewVMPage() {
                           <SelectValue placeholder="DHCP (no pool)" />
                         </SelectTrigger>
                         <SelectContent>
-                          {pools.map((pool) => (
+                          {availablePools.map((pool) => (
                             <SelectItem key={pool.id} value={pool.id}>
                               <div className="flex items-center gap-2">
                                 <Network className="w-4 h-4" />

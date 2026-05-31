@@ -12,11 +12,12 @@ import (
 )
 
 var (
-	ErrIPPoolNotFound       = errors.New("ip pool not found")
-	ErrIPAddressNotFound    = errors.New("ip address not found")
-	ErrNoAvailableIPAddress = errors.New("no available IP address")
-	ErrInvalidIPFamily      = errors.New("invalid IP family")
-	ErrInvalidIPAddress     = errors.New("invalid IP address")
+	ErrIPPoolNotFound         = errors.New("ip pool not found")
+	ErrIPAddressNotFound      = errors.New("ip address not found")
+	ErrNoAvailableIPAddress   = errors.New("no available IP address")
+	ErrPoolNotAvailableOnNode = errors.New("ip pool is not assigned to the selected node")
+	ErrInvalidIPFamily        = errors.New("invalid IP family")
+	ErrInvalidIPAddress       = errors.New("invalid IP address")
 )
 
 type IPAMService struct {
@@ -266,7 +267,7 @@ func (s *IPAMService) allocateAddressInTx(ctx context.Context, tx *gorm.DB, req 
 			}
 		}
 		if !allowed {
-			return nil, ErrNoAvailableIPAddress
+			return nil, ErrPoolNotAvailableOnNode
 		}
 	}
 

@@ -170,6 +170,16 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 				"error":   "Bad Request",
 				"message": err.Error(),
 			})
+		case errors.Is(err, service.ErrPoolNotAvailableOnNode):
+			return c.JSON(http.StatusConflict, map[string]interface{}{
+				"error":   "Conflict",
+				"message": "The selected IP pool is not assigned to the chosen node. Pick a pool available on that node, or leave the pool empty to use DHCP.",
+			})
+		case errors.Is(err, service.ErrNoAvailableIPAddress):
+			return c.JSON(http.StatusConflict, map[string]interface{}{
+				"error":   "Conflict",
+				"message": "The selected IP pool has no free addresses left.",
+			})
 		case errors.Is(err, service.ErrQuotaExceeded):
 			return c.JSON(http.StatusForbidden, map[string]interface{}{
 				"error":   "Quota Exceeded",

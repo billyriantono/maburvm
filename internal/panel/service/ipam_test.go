@@ -87,6 +87,37 @@ func TestIPAMServiceAllocateAddressReturnsNoAvailable(t *testing.T) {
 	require.ErrorIs(t, err, ErrNoAvailableIPAddress)
 }
 
+// TestIPAMServiceAllocateRejectsWrongNode covers the case the user hit: a pool
+// with plenty of free addresses but bound to a different node. The allocator
+// must return the distinct ErrPoolNotAvailableOnNode (not "no available IP").
+func TestIPAMServiceAllocateRejectsWrongNode(t *testing.T) {
+	db := setupIPAMServiceTestDB(t)
+	svc := NewIPAMService(db, repository.NewIPAMRepository(db))
+	ctx := context.Background()
+
+	pool, err := svc.CreatePool(ctx, &CreateIPPoolRequest{Name: "node-bound", Family: models.IPFamilyIPv4})
+	require.NoError(t, err)
+	_, err = svc.AddAddress(ctx, pool.ID, &CreateIPAddressRequest{Address: "192.0.2.10"})
+	require.NoError(t, err)
+
+	const nodeA = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	const nodeB = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	require.NoError(t, db.Exec(`INSERT INTO ip_pool_nodes (pool_id, node_id) VALUES (?, ?)`, pool.ID, nodeA).Error)
+
+	vmID := "11111111-1111-1111-1111-111111111111"
+
+	// Wrong node → distinct, clear error (even though an address is free).
+	nodeB2 := nodeB
+	_, err = svc.AllocateAddress(ctx, &AllocateIPAddressRequest{PoolID: pool.ID, NodeID: &nodeB2, VMID: &vmID})
+	require.ErrorIs(t, err, ErrPoolNotAvailableOnNode)
+
+	// Matching node → succeeds.
+	nodeA2 := nodeA
+	allocated, err := svc.AllocateAddress(ctx, &AllocateIPAddressRequest{PoolID: pool.ID, NodeID: &nodeA2, VMID: &vmID})
+	require.NoError(t, err)
+	require.Equal(t, "192.0.2.10", allocated.Address)
+}
+
 func TestIPAMServiceRejectsFamilyMismatch(t *testing.T) {
 	db := setupIPAMServiceTestDB(t)
 	svc := NewIPAMService(db, repository.NewIPAMRepository(db))
