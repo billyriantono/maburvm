@@ -32,11 +32,12 @@ import (
 
 // Server represents the HTTP server
 type Server struct {
-	echo        *echo.Echo
-	db          *gorm.DB
-	cfg         *config.Config
-	queueClient *queue.Client
-	riverClient *river.Client[pgx.Tx]
+	echo          *echo.Echo
+	db            *gorm.DB
+	cfg           *config.Config
+	queueClient   *queue.Client
+	riverClient   *river.Client[pgx.Tx]
+	backupService *service.BackupService
 }
 
 // NewServer creates a new HTTP server instance
@@ -465,6 +466,9 @@ func (s *Server) setupBackupRoutes() {
 	vmRepo := repository.NewVMRepository(s.db)
 	nodeRepo := repository.NewNodeRepository(s.db)
 	backupService := service.NewBackupService(s.db, backupRepo, scheduleRepo, vmRepo, nodeRepo, s.riverClient, nil, logger)
+	// Keep a reference so the scheduler (cron) is started at boot and stopped on
+	// shutdown — without Start() scheduled backups never fire.
+	s.backupService = backupService
 	backupHandler := handler.NewBackupHandler(backupService)
 	handler.RegisterBackupRoutes(s.echo, backupHandler, s.db)
 }
@@ -987,6 +991,14 @@ func (s *Server) Start() error {
 	defer stopCollector()
 	go service.NewMetricsCollector(s.db, 60*time.Second, 7*24*time.Hour, slog.Default()).Run(collectorCtx)
 
+	// Start the backup scheduler: starts the cron and (re)loads active schedules
+	// from the DB so they survive restarts. Without this, scheduled backups never run.
+	if s.backupService != nil {
+		if err := s.backupService.Start(); err != nil {
+			slog.Default().Error("failed to start backup scheduler", "error", err)
+		}
+	}
+
 	// Start server in a goroutine
 	go func() {
 		if err := s.echo.Start(address); err != nil && err != http.ErrServerClosed {
@@ -1000,6 +1012,9 @@ func (s *Server) Start() error {
 	<-quit
 
 	stopCollector()
+	if s.backupService != nil {
+		s.backupService.Stop()
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

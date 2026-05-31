@@ -587,6 +587,13 @@ func (s *BackupService) ScheduleBackup(ctx context.Context, schedule *models.Bac
 	s.scheduleMutex.Lock()
 	defer s.scheduleMutex.Unlock()
 
+	// Drop any existing entry for this VM first, so a reschedule (update) doesn't
+	// leak a cron entry that keeps firing the old expression.
+	if old, exists := s.scheduleEntries[schedule.VMID]; exists {
+		s.cron.Remove(old)
+		delete(s.scheduleEntries, schedule.VMID)
+	}
+
 	// Parse cron expression
 	entryID, err := s.cron.AddFunc(schedule.Schedule, func() {
 		s.executeScheduledBackup(schedule.ID)
