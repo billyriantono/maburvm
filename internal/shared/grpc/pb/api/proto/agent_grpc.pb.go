@@ -38,6 +38,8 @@ const (
 	NodeAgent_SyncTemplate_FullMethodName        = "/agent.NodeAgent/SyncTemplate"
 	NodeAgent_AttachDisk_FullMethodName          = "/agent.NodeAgent/AttachDisk"
 	NodeAgent_DetachDisk_FullMethodName          = "/agent.NodeAgent/DetachDisk"
+	NodeAgent_DefineNetwork_FullMethodName       = "/agent.NodeAgent/DefineNetwork"
+	NodeAgent_UndefineNetwork_FullMethodName     = "/agent.NodeAgent/UndefineNetwork"
 )
 
 // NodeAgentClient is the client API for NodeAgent service.
@@ -105,6 +107,10 @@ type NodeAgentClient interface {
 	// next free virtio target. DetachDisk removes it (and optionally deletes it).
 	AttachDisk(ctx context.Context, in *AttachDiskRequest, opts ...grpc.CallOption) (*AttachDiskResponse, error)
 	DetachDisk(ctx context.Context, in *DetachDiskRequest, opts ...grpc.CallOption) (*DetachDiskResponse, error)
+	// DefineNetwork creates+starts an isolated/NAT libvirt network (a managed
+	// bridge for private VPC segments). UndefineNetwork removes it.
+	DefineNetwork(ctx context.Context, in *DefineNetworkRequest, opts ...grpc.CallOption) (*DefineNetworkResponse, error)
+	UndefineNetwork(ctx context.Context, in *UndefineNetworkRequest, opts ...grpc.CallOption) (*UndefineNetworkResponse, error)
 }
 
 type nodeAgentClient struct {
@@ -317,6 +323,26 @@ func (c *nodeAgentClient) DetachDisk(ctx context.Context, in *DetachDiskRequest,
 	return out, nil
 }
 
+func (c *nodeAgentClient) DefineNetwork(ctx context.Context, in *DefineNetworkRequest, opts ...grpc.CallOption) (*DefineNetworkResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DefineNetworkResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_DefineNetwork_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeAgentClient) UndefineNetwork(ctx context.Context, in *UndefineNetworkRequest, opts ...grpc.CallOption) (*UndefineNetworkResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UndefineNetworkResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_UndefineNetwork_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // NodeAgentServer is the server API for NodeAgent service.
 // All implementations must embed UnimplementedNodeAgentServer
 // for forward compatibility.
@@ -382,6 +408,10 @@ type NodeAgentServer interface {
 	// next free virtio target. DetachDisk removes it (and optionally deletes it).
 	AttachDisk(context.Context, *AttachDiskRequest) (*AttachDiskResponse, error)
 	DetachDisk(context.Context, *DetachDiskRequest) (*DetachDiskResponse, error)
+	// DefineNetwork creates+starts an isolated/NAT libvirt network (a managed
+	// bridge for private VPC segments). UndefineNetwork removes it.
+	DefineNetwork(context.Context, *DefineNetworkRequest) (*DefineNetworkResponse, error)
+	UndefineNetwork(context.Context, *UndefineNetworkRequest) (*UndefineNetworkResponse, error)
 	mustEmbedUnimplementedNodeAgentServer()
 }
 
@@ -448,6 +478,12 @@ func (UnimplementedNodeAgentServer) AttachDisk(context.Context, *AttachDiskReque
 }
 func (UnimplementedNodeAgentServer) DetachDisk(context.Context, *DetachDiskRequest) (*DetachDiskResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DetachDisk not implemented")
+}
+func (UnimplementedNodeAgentServer) DefineNetwork(context.Context, *DefineNetworkRequest) (*DefineNetworkResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DefineNetwork not implemented")
+}
+func (UnimplementedNodeAgentServer) UndefineNetwork(context.Context, *UndefineNetworkRequest) (*UndefineNetworkResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UndefineNetwork not implemented")
 }
 func (UnimplementedNodeAgentServer) mustEmbedUnimplementedNodeAgentServer() {}
 func (UnimplementedNodeAgentServer) testEmbeddedByValue()                   {}
@@ -794,6 +830,42 @@ func _NodeAgent_DetachDisk_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NodeAgent_DefineNetwork_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DefineNetworkRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).DefineNetwork(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_DefineNetwork_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).DefineNetwork(ctx, req.(*DefineNetworkRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeAgent_UndefineNetwork_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UndefineNetworkRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).UndefineNetwork(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_UndefineNetwork_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).UndefineNetwork(ctx, req.(*UndefineNetworkRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // NodeAgent_ServiceDesc is the grpc.ServiceDesc for NodeAgent service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -868,6 +940,14 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DetachDisk",
 			Handler:    _NodeAgent_DetachDisk_Handler,
+		},
+		{
+			MethodName: "DefineNetwork",
+			Handler:    _NodeAgent_DefineNetwork_Handler,
+		},
+		{
+			MethodName: "UndefineNetwork",
+			Handler:    _NodeAgent_UndefineNetwork_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

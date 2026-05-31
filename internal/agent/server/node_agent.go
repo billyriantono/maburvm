@@ -754,6 +754,34 @@ func detachDiskErr(msg string) *pb.DetachDiskResponse {
 	return &pb.DetachDiskResponse{Success: false, Error: &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: msg}}
 }
 
+// DefineNetwork creates+starts a managed libvirt network (private VPC segment).
+func (s *NodeAgentService) DefineNetwork(ctx context.Context, req *pb.DefineNetworkRequest) (*pb.DefineNetworkResponse, error) {
+	if _, authenticated := GetNodeIDFromContext(ctx); !authenticated {
+		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
+	}
+	if req.Name == "" {
+		return &pb.DefineNetworkResponse{Success: false, Error: &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: "network name is required"}}, nil
+	}
+	bridge, err := libvirt.DefineNetwork(req.Name, req.Mode, req.Bridge, req.Cidr, req.Dhcp)
+	if err != nil {
+		return &pb.DefineNetworkResponse{Success: false, Error: &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: err.Error()}}, nil
+	}
+	log.Printf("[NodeAgent] Defined %q network %s (bridge=%s)", req.Mode, req.Name, bridge)
+	return &pb.DefineNetworkResponse{Success: true, Bridge: bridge}, nil
+}
+
+// UndefineNetwork stops+removes a managed libvirt network.
+func (s *NodeAgentService) UndefineNetwork(ctx context.Context, req *pb.UndefineNetworkRequest) (*pb.UndefineNetworkResponse, error) {
+	if _, authenticated := GetNodeIDFromContext(ctx); !authenticated {
+		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
+	}
+	if err := libvirt.UndefineNetwork(req.Name); err != nil {
+		return &pb.UndefineNetworkResponse{Success: false, Error: &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: err.Error()}}, nil
+	}
+	log.Printf("[NodeAgent] Undefined network %s", req.Name)
+	return &pb.UndefineNetworkResponse{Success: true}, nil
+}
+
 // MigrateVM live-migrates a domain from this source node to a destination URI.
 func (s *NodeAgentService) MigrateVM(ctx context.Context, req *pb.MigrateVMRequest) (*pb.MigrateVMResponse, error) {
 	if _, authenticated := GetNodeIDFromContext(ctx); !authenticated {

@@ -6,11 +6,13 @@ import { ArrowLeft, Zap, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useCreateNetwork } from "@/lib/hooks/use-networks"
+import { useNodes } from "@/lib/hooks/use-nodes"
 import { toast } from "sonner"
 
 export default function CreateNetworkPage() {
   const router = useRouter()
   const createNetwork = useCreateNetwork()
+  const { data: nodes } = useNodes()
   const [form, setForm] = useState({
     name: "",
     type: "bridge",
@@ -20,6 +22,7 @@ export default function CreateNetworkPage() {
     dhcp_start: "",
     dhcp_end: "",
     vlan_id: "",
+    node_id: "",
   })
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -38,6 +41,7 @@ export default function CreateNetworkPage() {
         dhcp_start: form.dhcp_start || undefined,
         dhcp_end: form.dhcp_end || undefined,
         vlan_id: form.vlan_id ? parseInt(form.vlan_id) : undefined,
+        node_id: form.node_id || undefined,
       })
       toast.success(`Network "${form.name}" created`)
       router.push("/networks")
@@ -70,12 +74,24 @@ export default function CreateNetworkPage() {
           <div>
             <label className="text-xs font-black uppercase text-gray-500 block mb-1">Type</label>
             <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} className="w-full h-12 px-3 border-2 border-black font-medium bg-white">
-              <option value="bridge">Bridge</option>
-              <option value="nat">NAT</option>
-              <option value="isolated">Isolated</option>
+              <option value="bridge">Bridge (use an existing host bridge)</option>
+              <option value="nat">NAT (private subnet, outbound via host)</option>
+              <option value="isolated">Isolated (private VPC, no uplink)</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-xs font-black uppercase text-gray-500 block mb-1">Node</label>
+            <select value={form.node_id} onChange={(e) => setForm({ ...form, node_id: e.target.value })} className="w-full h-12 px-3 border-2 border-black font-medium bg-white">
+              <option value="">— select node —</option>
+              {nodes?.map((n) => (
+                <option key={n.id} value={n.id}>{n.name}</option>
+              ))}
             </select>
           </div>
         </div>
+        {(form.type === "isolated" || form.type === "nat") && !form.node_id && (
+          <p className="text-xs text-warning-dark -mt-2">Isolated/NAT networks are provisioned on a node — select a node so the libvirt network is created.</p>
+        )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>

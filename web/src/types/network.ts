@@ -41,6 +41,7 @@ export interface CreateManagedNetworkRequest {
   dhcp_start?: string;
   dhcp_end?: string;
   vlan_id?: number;
+  node_id?: string;
 }
 
 // PortForward represents a port forwarding (NAT) rule for a VM

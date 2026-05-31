@@ -89,6 +89,11 @@ service NodeAgent {
   // next free virtio target. DetachDisk removes it (and optionally deletes it).
   rpc AttachDisk(AttachDiskRequest) returns (AttachDiskResponse);
   rpc DetachDisk(DetachDiskRequest) returns (DetachDiskResponse);
+
+  // DefineNetwork creates+starts an isolated/NAT libvirt network (a managed
+  // bridge for private VPC segments). UndefineNetwork removes it.
+  rpc DefineNetwork(DefineNetworkRequest) returns (DefineNetworkResponse);
+  rpc UndefineNetwork(UndefineNetworkRequest) returns (UndefineNetworkResponse);
 }
 
 // ============================================================================
@@ -1173,6 +1178,33 @@ message DetachDiskRequest {
 
 // DetachDiskResponse reports the result of a disk detach.
 message DetachDiskResponse {
+  bool success = 1;
+  ErrorResponse error = 2;
+}
+
+// DefineNetworkRequest creates a managed libvirt network for a private segment.
+message DefineNetworkRequest {
+  string name = 1;   // unique libvirt network name
+  string mode = 2;   // "isolated" (no uplink) or "nat"
+  string bridge = 3; // desired bridge name; empty = agent generates one
+  string cidr = 4;   // e.g. 10.20.0.0/24 — host takes the first usable address
+  bool dhcp = 5;     // hand out DHCP leases on this network
+}
+
+// DefineNetworkResponse reports the created bridge.
+message DefineNetworkResponse {
+  bool success = 1;
+  string bridge = 2; // bridge libvirt created/used
+  ErrorResponse error = 3;
+}
+
+// UndefineNetworkRequest removes a managed libvirt network.
+message UndefineNetworkRequest {
+  string name = 1;
+}
+
+// UndefineNetworkResponse reports the result of a network removal.
+message UndefineNetworkResponse {
   bool success = 1;
   ErrorResponse error = 2;
 }

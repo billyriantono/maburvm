@@ -152,6 +152,9 @@ type CreateVMRequest struct {
 	// UserData is an optional first-boot script/recipe (run once per instance via
 	// cloud-init). Plain shell (#!/bin/bash …) or a cloud-init script.
 	UserData string `json:"user_data,omitempty" validate:"omitempty,max=65536"`
+	// ManagedNetworkID, when set, attaches the VM's NIC to that managed/private
+	// network's bridge (VPC) instead of the public pool bridge.
+	ManagedNetworkID string `json:"managed_network_id,omitempty" validate:"omitempty,uuid"`
 	// CloneSourceRef, when set, is used as the disk source instead of the template
 	// image — a "vm://<id>" (same node) or "vm://<srcNodeIP>/<id>" (cross-node)
 	// reference the agent resolves by copying/pulling that VM's disk. Set by CloneVM.
@@ -327,6 +330,20 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 			}
 		}
 	}
+
+	// VPC attach: put the NIC on a managed/private network's bridge. Overrides the
+	// pool bridge (a NIC lives on one bridge); VPC VMs typically omit a public pool.
+	if req.ManagedNetworkID != "" {
+		var mn models.ManagedNetwork
+		if err := s.db.WithContext(ctx).Where("id = ?", req.ManagedNetworkID).First(&mn).Error; err != nil {
+			return nil, fmt.Errorf("managed network not found: %w", err)
+		}
+		if mn.Bridge == "" {
+			return nil, fmt.Errorf("managed network %q has no bridge (not provisioned on a node yet)", mn.Name)
+		}
+		params["bridge"] = mn.Bridge
+	}
+
 	paramsJSON, _ := json.Marshal(params)
 
 	if s.riverClient == nil {

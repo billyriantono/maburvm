@@ -32,6 +32,7 @@ import { useUsers } from "@/lib/hooks/use-users"
 import { useTemplates } from "@/lib/hooks/use-templates"
 import { useNodes } from "@/lib/hooks/use-nodes"
 import { useIPPools } from "@/lib/hooks/use-ipam"
+import { useNetworks } from "@/lib/hooks/use-networks"
 import { usePlans } from "@/lib/hooks/use-plans"
 import { useCreateVM } from "@/lib/hooks/use-vms"
 
@@ -72,6 +73,7 @@ const step4Schema = z.object({
     }, { message: "IP address octets must be 0-255" }),
   bandwidthMbps: z.number().min(1, "Minimum 1 Mbps").max(10000, "Maximum 10 Gbps"),
   vlanId: z.string().optional(),
+  managedNetworkId: z.string().optional(),
 })
 
 const fullSchema = step1Schema.merge(step2Schema).merge(step3Schema).merge(step4Schema)
@@ -97,6 +99,7 @@ export default function NewVMPage() {
   const { data: templatesData, isLoading: templatesLoading } = useTemplates()
   const { data: nodesData, isLoading: nodesLoading } = useNodes()
   const { data: poolsData, isLoading: poolsLoading } = useIPPools()
+  const { data: managedNets } = useNetworks()
   const { data: plansData } = usePlans(true)
   const createVM = useCreateVM()
 
@@ -129,6 +132,7 @@ export default function NewVMPage() {
       cpuModel: "",
       userData: "",
       ipPoolId: "",
+      managedNetworkId: "",
       ipAddress: "",
       bandwidthMbps: 100,
       vlanId: "",
@@ -192,6 +196,7 @@ export default function NewVMPage() {
         // alongside a pool selection).
         ip_pool_id: data.ipPoolId || undefined,
         requested_ip: data.ipPoolId && data.ipAddress ? data.ipAddress : undefined,
+        managed_network_id: data.managedNetworkId || undefined,
         bandwidth_mbps: data.bandwidthMbps,
         vlan_id: vlanId,
         cpu_model: data.cpuModel || undefined,
@@ -720,6 +725,30 @@ export default function NewVMPage() {
                   Note: The IP is allocated from the pool at creation; bandwidth and VLAN apply when the VM boots
                 </p>
               </div>
+
+              {/* Private network / VPC */}
+              {managedNets && managedNets.some((n) => n.type === "isolated" || n.type === "nat") && (
+                <div className="space-y-2 mb-4">
+                  <label htmlFor="managedNetworkId" className="text-sm font-bold uppercase tracking-wide">
+                    Private Network / VPC <span className="text-gray-500">(optional)</span>
+                  </label>
+                  <select
+                    id="managedNetworkId"
+                    {...register("managedNetworkId")}
+                    className="w-full h-12 px-3 border-2 border-black font-medium bg-white"
+                  >
+                    <option value="">None — public network</option>
+                    {managedNets
+                      .filter((n) => n.type === "isolated" || n.type === "nat")
+                      .map((n) => (
+                        <option key={n.id} value={n.id}>{n.name} ({n.type})</option>
+                      ))}
+                  </select>
+                  <p className="text-xs text-gray-500">
+                    Attach the VM&apos;s NIC to a private/isolated network instead of the public bridge.
+                  </p>
+                </div>
+              )}
 
               {/* IP Pool Selection */}
               <div className="space-y-2">

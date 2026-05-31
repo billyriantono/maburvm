@@ -334,6 +334,7 @@ func (s *Server) setupNetworkRoutes() {
 	// Standalone /api/v1/networks endpoint: administrator-defined virtual networks
 	// (bridge/NAT/isolated) — persisted, not phantom. Per-VM IPs live under IP Pools.
 	managedNetRepo := repository.NewManagedNetworkRepository(s.db)
+	mnService := service.NewManagedNetworkService(s.db)
 	networks := s.echo.Group("/api/v1/networks")
 	networks.Use(panelMiddleware.RequireAuth(s.db))
 	networks.GET("", func(c echo.Context) error {
@@ -354,13 +355,15 @@ func (s *Server) setupNetworkRoutes() {
 		if net.Type == "" {
 			net.Type = "bridge"
 		}
-		if err := managedNetRepo.Create(c.Request().Context(), &net); err != nil {
+		// Create persists the record and, for isolated/NAT types on a node,
+		// provisions the real libvirt network there (recording its bridge).
+		if err := mnService.Create(c.Request().Context(), &net); err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 		}
 		return c.JSON(http.StatusCreated, map[string]interface{}{"success": true, "data": net})
 	}, panelMiddleware.RequirePermission("network:create"))
 	networks.DELETE("/:id", func(c echo.Context) error {
-		if err := managedNetRepo.Delete(c.Request().Context(), c.Param("id")); err != nil {
+		if err := mnService.Delete(c.Request().Context(), c.Param("id")); err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 		}
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "Network deleted"})

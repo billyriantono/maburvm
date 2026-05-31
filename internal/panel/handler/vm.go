@@ -60,6 +60,7 @@ type CreateVMRequest struct {
 	VLANID        int             `json:"vlan_id,omitempty" validate:"omitempty,min=0,max=4094"`
 	CPUModel      string          `json:"cpu_model,omitempty" validate:"omitempty,max=64"`
 	UserData      string          `json:"user_data,omitempty" validate:"omitempty,max=65536"`
+	ManagedNetworkID string       `json:"managed_network_id,omitempty" validate:"omitempty,uuid"`
 }
 
 // CreateVMResponse represents the response after creating a VM
@@ -114,6 +115,7 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 		VLANID:        req.VLANID,
 		CPUModel:      req.CPUModel,
 		UserData:      req.UserData,
+		ManagedNetworkID: req.ManagedNetworkID,
 	}
 
 	resp, err := h.service.CreateVM(c.Request().Context(), createReq)
