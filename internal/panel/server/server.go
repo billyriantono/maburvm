@@ -286,6 +286,12 @@ func (s *Server) setupVMRoutes(g *echo.Group) {
 
 	handler.RegisterVMRoutes(s.echo, vmHandler, s.db)
 
+	// Real-time VM status stream (SSE), consumed by the dashboard via the web BFF.
+	eventsHandler := handler.NewEventsHandler(vmService)
+	events := s.echo.Group("/api/v1/events")
+	events.Use(panelMiddleware.RequireAuth(s.db))
+	events.GET("/vm-status", eventsHandler.StreamVMStatus, panelMiddleware.RequirePermission("vm:read"))
+
 	// Bandwidth usage routes (nested under VMs)
 	bwRepo := repository.NewBandwidthUsageRepository(s.db)
 	bwService := service.NewBandwidthService(bwRepo, logger)

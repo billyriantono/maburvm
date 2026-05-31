@@ -20,7 +20,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
-import { useVMs, useDeleteVM, useVMActions } from "@/lib/hooks/use-vms"
+import { useVMs, useDeleteVM, useVMActions, useVMStatusStream } from "@/lib/hooks/use-vms"
 import { useNodes } from "@/lib/hooks/use-nodes"
 import type { VM, VMStatus } from "@/types"
 
@@ -258,7 +258,10 @@ export default function VMListPage() {
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
   
   const itemsPerPage = 10
-  
+
+  // Live-update VM statuses via SSE (pushes refreshes the moment status changes).
+  useVMStatusStream()
+
   // Debounce search query
   useEffect(() => {
     const timer = setTimeout(() => {

@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import {
   useQuery,
   useMutation,
@@ -40,6 +41,34 @@ export function useVMs(params: VMListParams = {}) {
       return response.data as unknown as PaginatedResponse<VM>
     },
   })
+}
+
+// useVMStatusStream subscribes to the live VM-status SSE feed and refreshes the
+// VM list (and any open VM detail) the moment a status changes — pushing updates
+// faster than the periodic poll, which stays as a fallback. Reconnection is
+// handled by the browser's EventSource automatically.
+export function useVMStatusStream() {
+  const queryClient = useQueryClient()
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof EventSource === 'undefined') return
+
+    const source = new EventSource('/api/vm-events')
+    source.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data)
+        if (message?.type === 'vm_status' || message?.type === 'vm_list') {
+          queryClient.invalidateQueries({ queryKey: ['vms', 'list'] })
+          queryClient.invalidateQueries({ queryKey: ['vms', 'detail'] })
+        }
+      } catch {
+        // ignore non-JSON frames (e.g. keepalive comments)
+      }
+    }
+    // On error the browser auto-reconnects; nothing to do here.
+
+    return () => source.close()
+  }, [queryClient])
 }
 
 export function useVM(id: string, options?: UseQueryOptions<VM>) {
