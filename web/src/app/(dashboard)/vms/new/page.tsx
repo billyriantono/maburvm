@@ -147,14 +147,15 @@ export default function NewVMPage() {
   const watchedValues = watch()
 
   // Only pools usable on the selected node — a pool bound to a different node would
-  // allocate a non-routable IP (the backend rejects it). With no node chosen yet,
-  // show all pools; the backend still validates on submit.
+  // allocate a non-routable IP (the backend rejects it). A pool with no node
+  // binding works on any node; a node-bound pool only shows once its node is
+  // selected (node is picked in step 1, before this step 4).
   const availablePools = useMemo(() => {
     const nodeId = watchedValues.nodeId
-    if (!nodeId) return pools
     return pools.filter((p) => {
       const bound = p.node_ids && p.node_ids.length > 0 ? p.node_ids : p.node_id ? [p.node_id] : []
-      return bound.length === 0 || bound.includes(nodeId)
+      if (bound.length === 0) return true // unbound → usable on any node
+      return !!nodeId && bound.includes(nodeId) // node-bound → only when that node is selected
     })
   }, [pools, watchedValues.nodeId])
 
