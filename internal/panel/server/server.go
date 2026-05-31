@@ -2,33 +2,41 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+	"github.com/riverqueue/river"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/maburvm/panel/internal/panel/handler"
 	panelMiddleware "github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/panel/repository"
 	"github.com/maburvm/panel/internal/panel/service"
+	"github.com/maburvm/panel/internal/panel/vnc"
 	"github.com/maburvm/panel/internal/shared/config"
 	"github.com/maburvm/panel/internal/shared/models"
+	"github.com/maburvm/panel/internal/shared/queue"
 	"gorm.io/gorm"
 )
 
 // Server represents the HTTP server
 type Server struct {
-	echo *echo.Echo
-	db   *gorm.DB
-	cfg  *config.Config
+	echo        *echo.Echo
+	db          *gorm.DB
+	cfg         *config.Config
+	queueClient *queue.Client
+	riverClient *river.Client[pgx.Tx]
 }
 
 // NewServer creates a new HTTP server instance
@@ -67,6 +75,29 @@ func NewServer(db *gorm.DB, cfg *config.Config) *Server {
 	}
 }
 
+// SetQueueClient wires the River queue into HTTP services that enqueue asynchronous work.
+func (s *Server) SetQueueClient(client *queue.Client) {
+	s.queueClient = client
+	if client != nil {
+		s.riverClient = client.RiverClient()
+	}
+}
+
+func databaseURL(cfg config.DatabaseConfig) string {
+	u := &url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(cfg.User, cfg.Password),
+		Host:   fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
+		Path:   cfg.Name,
+	}
+	q := u.Query()
+	if cfg.SSLMode != "" {
+		q.Set("sslmode", cfg.SSLMode)
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
 // SetupRoutes configures all API routes
 func (s *Server) SetupRoutes() {
 	// Health check
@@ -97,6 +128,30 @@ func (s *Server) SetupRoutes() {
 
 	// Network routes
 	s.setupNetworkRoutes()
+
+	// IPAM / IP pool routes
+	s.setupIPAMRoutes()
+
+	// VPS plan (flavor) routes
+	s.setupPlanRoutes()
+
+	// API key routes (per-user automation credentials)
+	s.setupAPIKeyRoutes()
+
+	// SSH key routes (per-user public keys for VM provisioning)
+	s.setupSSHKeyRoutes()
+
+	// Public node bootstrap endpoints (install-agent.sh + prebuilt agent binary)
+	s.setupProvisionRoutes()
+
+	// Quota routes (per-user resource limits)
+	s.setupQuotaRoutes()
+
+	// Metrics history routes (persisted node monitoring)
+	s.setupMetricsRoutes()
+
+	// DNS routes (forward zones + records)
+	s.setupDNSRoutes()
 
 	// Snapshot routes
 	s.setupSnapshotRoutes()
@@ -145,6 +200,7 @@ func (s *Server) setupAuthRoutes(g *echo.Group) {
 	auth.POST("/login", authHandler.Login)
 	auth.POST("/register", authHandler.Register)
 	auth.POST("/logout", authHandler.Logout)
+	auth.POST("/refresh", panelMiddleware.RefreshTokenHandler(s.db))
 	auth.GET("/me", authHandler.Me, panelMiddleware.RequireAuth(s.db))
 }
 
@@ -183,6 +239,12 @@ func (s *Server) setupNodeRoutes(g *echo.Group) {
 
 	// Regenerate token - requires node:update permission
 	nodes.POST("/:id/regenerate-token", nodeHandler.RegenerateToken, panelMiddleware.RequirePermission("node:update"))
+
+	// Get node token - requires node:update permission
+	nodes.GET("/:id/token", nodeHandler.GetNodeToken, panelMiddleware.RequirePermission("node:update"))
+
+	// Get node metrics - requires node:read permission
+	nodes.GET("/:id/metrics", nodeHandler.GetNodeMetrics, panelMiddleware.RequirePermission("node:read"))
 }
 
 // setupVMRoutes configures VM-related routes
@@ -193,7 +255,7 @@ func (s *Server) setupVMRoutes(g *echo.Group) {
 	nodeRepo := repository.NewNodeRepository(s.db)
 	templateRepo := repository.NewTemplateRepository(s.db)
 
-	vmService := service.NewVMService(s.db, vmRepo, nodeRepo, templateRepo, nil, logger)
+	vmService := service.NewVMService(s.db, vmRepo, nodeRepo, templateRepo, s.riverClient, logger)
 
 	wsHost := ""
 	if s.cfg.Server.Host != "" {
@@ -206,7 +268,14 @@ func (s *Server) setupVMRoutes(g *echo.Group) {
 		logger.Error("failed to migrate console tokens table", "error", err)
 	}
 
-	vmHandler := handler.NewVMHandler(vmService, vncService)
+	// Create VNC proxy server for WebSocket proxying
+	vncProxyServer := vnc.NewProxyServer(s.cfg, nil, logger, s.cfg.JWT.SecretKey)
+
+	// Register VNC WebSocket endpoint
+	vncHandler := vnc.NewHandler(vncProxyServer)
+	s.echo.GET("/ws/vnc", vncHandler.HandleWebSocket)
+
+	vmHandler := handler.NewVMHandler(vmService, vncService, vncProxyServer, service.NewSSHKeyService(s.db))
 
 	handler.RegisterVMRoutes(s.echo, vmHandler, s.db)
 
@@ -221,7 +290,12 @@ func (s *Server) setupVMRoutes(g *echo.Group) {
 // setupStorageRoutes configures storage-related routes
 func (s *Server) setupStorageRoutes(g *echo.Group) {
 	storageRepo := repository.NewStorageRepository(s.db)
-	storageService := service.NewStorageService(storageRepo)
+	// Provision real volumes on node agents (qcow2/raw via qemu-img), not just metadata.
+	storageService := service.NewStorageServiceWithProvisioner(
+		storageRepo,
+		repository.NewNodeRepository(s.db),
+		service.NewAgentVolumeProvisioner(0),
+	)
 	storageHandler := handler.NewStorageHandler(storageService)
 
 	storage := g.Group("/storage")
@@ -233,8 +307,8 @@ func (s *Server) setupStorageRoutes(g *echo.Group) {
 	storage.PUT("/pools/:id", storageHandler.UpdatePool, panelMiddleware.RequirePermission("storage:update"))
 	storage.DELETE("/pools/:id", storageHandler.DeletePool, panelMiddleware.RequirePermission("storage:delete"))
 
-	storage.GET("/pools/:id/volumes", storageHandler.GetVolumes)
-	storage.POST("/pools/:id/volumes", storageHandler.CreateVolume, panelMiddleware.RequirePermission("storage:create"))
+	storage.GET("/pools/:poolId/volumes", storageHandler.GetVolumes)
+	storage.POST("/pools/:poolId/volumes", storageHandler.CreateVolume, panelMiddleware.RequirePermission("storage:create"))
 	storage.DELETE("/pools/:poolId/volumes/:volumeId", storageHandler.DeleteVolume, panelMiddleware.RequirePermission("storage:delete"))
 }
 
@@ -242,7 +316,7 @@ func (s *Server) setupStorageRoutes(g *echo.Group) {
 func (s *Server) setupTemplateRoutes(g *echo.Group) {
 	templateRepo := repository.NewTemplateRepository(s.db)
 	nodeRepo := repository.NewNodeRepository(s.db)
-	templateService := service.NewTemplateService(s.db, templateRepo, nodeRepo, nil)
+	templateService := service.NewTemplateService(s.db, templateRepo, nodeRepo, s.riverClient)
 	templateHandler := handler.NewTemplateHandler(templateService)
 	templateHandler.RegisterRoutes(s.echo, panelMiddleware.RequireAuth(s.db))
 }
@@ -253,9 +327,106 @@ func (s *Server) setupNetworkRoutes() {
 	firewallRepo := repository.NewFirewallRepository(s.db)
 	vmRepo := repository.NewVMRepository(s.db)
 	nodeRepo := repository.NewNodeRepository(s.db)
-	networkService := service.NewNetworkService(s.db, networkRepo, firewallRepo, vmRepo, nodeRepo, nil)
+	networkService := service.NewNetworkService(s.db, networkRepo, firewallRepo, vmRepo, nodeRepo, s.riverClient)
 	networkHandler := handler.NewNetworkHandler(networkService)
 	handler.RegisterNetworkRoutes(s.echo, networkHandler, s.db)
+
+	// Standalone /api/v1/networks endpoint: administrator-defined virtual networks
+	// (bridge/NAT/isolated) — persisted, not phantom. Per-VM IPs live under IP Pools.
+	managedNetRepo := repository.NewManagedNetworkRepository(s.db)
+	networks := s.echo.Group("/api/v1/networks")
+	networks.Use(panelMiddleware.RequireAuth(s.db))
+	networks.GET("", func(c echo.Context) error {
+		nets, err := managedNetRepo.List(c.Request().Context())
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to list networks"})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": nets})
+	})
+	networks.POST("", func(c echo.Context) error {
+		var net models.ManagedNetwork
+		if err := c.Bind(&net); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request"})
+		}
+		if net.Name == "" {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Network name is required"})
+		}
+		if net.Type == "" {
+			net.Type = "bridge"
+		}
+		if err := managedNetRepo.Create(c.Request().Context(), &net); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+		}
+		return c.JSON(http.StatusCreated, map[string]interface{}{"success": true, "data": net})
+	}, panelMiddleware.RequirePermission("network:create"))
+	networks.DELETE("/:id", func(c echo.Context) error {
+		if err := managedNetRepo.Delete(c.Request().Context(), c.Param("id")); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "Network deleted"})
+	}, panelMiddleware.RequirePermission("network:delete"))
+}
+
+// setupIPAMRoutes configures first-class IPAM / IP pool routes.
+func (s *Server) setupIPAMRoutes() {
+	ipamRepo := repository.NewIPAMRepository(s.db)
+	ipamService := service.NewIPAMService(s.db, ipamRepo)
+	// Live PTR push (PowerDNS) when configured — rDNS works without a forward zone.
+	ipamService.SetDNSProvider(service.NewDNSProviderFromEnv())
+	ipamHandler := handler.NewIPAMHandler(ipamService)
+	handler.RegisterIPAMRoutes(s.echo, ipamHandler, s.db)
+}
+
+// setupPlanRoutes configures VPS plan (flavor) routes.
+func (s *Server) setupPlanRoutes() {
+	planRepo := repository.NewPlanRepository(s.db)
+	planService := service.NewPlanService(planRepo)
+	planHandler := handler.NewPlanHandler(planService)
+	handler.RegisterPlanRoutes(s.echo, planHandler, s.db)
+}
+
+// setupAPIKeyRoutes configures per-user API key routes for automation.
+func (s *Server) setupAPIKeyRoutes() {
+	apiKeyService := service.NewAPIKeyService(s.db)
+	apiKeyHandler := handler.NewAPIKeyHandler(apiKeyService)
+	handler.RegisterAPIKeyRoutes(s.echo, apiKeyHandler, s.db)
+}
+
+// setupSSHKeyRoutes configures per-user SSH public key routes for VM provisioning.
+func (s *Server) setupSSHKeyRoutes() {
+	sshKeyService := service.NewSSHKeyService(s.db)
+	sshKeyHandler := handler.NewSSHKeyHandler(sshKeyService)
+	handler.RegisterSSHKeyRoutes(s.echo, sshKeyHandler, s.db)
+}
+
+// setupProvisionRoutes serves the node bootstrap installer + prebuilt agent
+// binary so a new node can be enrolled with a single copy-paste command.
+func (s *Server) setupProvisionRoutes() {
+	binaryDir := os.Getenv("AGENT_BINARY_DIR")
+	publicURL := os.Getenv("PANEL_PUBLIC_URL")
+	handler.RegisterProvisionRoutes(s.echo, handler.NewProvisionHandler(binaryDir, publicURL))
+}
+
+// setupQuotaRoutes configures per-user resource quota routes.
+func (s *Server) setupQuotaRoutes() {
+	quotaService := service.NewQuotaService(s.db, repository.NewVMRepository(s.db))
+	quotaHandler := handler.NewQuotaHandler(quotaService)
+	handler.RegisterQuotaRoutes(s.echo, quotaHandler, s.db)
+}
+
+// setupMetricsRoutes configures persisted metric history routes.
+func (s *Server) setupMetricsRoutes() {
+	metricsService := service.NewMetricsService(s.db)
+	metricsHandler := handler.NewMetricsHandler(metricsService)
+	handler.RegisterMetricsRoutes(s.echo, metricsHandler, s.db)
+}
+
+// setupDNSRoutes configures forward DNS zone/record routes. A live nameserver
+// provider (PowerDNS) is wired from env when configured; otherwise export-only.
+func (s *Server) setupDNSRoutes() {
+	dnsService := service.NewDNSServiceWithProvider(s.db, service.NewDNSProviderFromEnv(), slog.Default())
+	dnsHandler := handler.NewDNSHandler(dnsService)
+	handler.RegisterDNSRoutes(s.echo, dnsHandler, s.db)
 }
 
 // setupSnapshotRoutes configures snapshot-related routes
@@ -264,7 +435,7 @@ func (s *Server) setupSnapshotRoutes() {
 	snapshotRepo := repository.NewSnapshotRepository(s.db)
 	vmRepo := repository.NewVMRepository(s.db)
 	nodeRepo := repository.NewNodeRepository(s.db)
-	snapshotService := service.NewSnapshotService(s.db, snapshotRepo, vmRepo, nodeRepo, nil, logger)
+	snapshotService := service.NewSnapshotService(s.db, snapshotRepo, vmRepo, nodeRepo, s.riverClient, logger)
 	snapshotHandler := handler.NewSnapshotHandler(snapshotService)
 	handler.RegisterSnapshotRoutes(s.echo, snapshotHandler, s.db)
 }
@@ -276,7 +447,7 @@ func (s *Server) setupBackupRoutes() {
 	scheduleRepo := repository.NewBackupScheduleRepository(s.db)
 	vmRepo := repository.NewVMRepository(s.db)
 	nodeRepo := repository.NewNodeRepository(s.db)
-	backupService := service.NewBackupService(s.db, backupRepo, scheduleRepo, vmRepo, nodeRepo, nil, nil, logger)
+	backupService := service.NewBackupService(s.db, backupRepo, scheduleRepo, vmRepo, nodeRepo, s.riverClient, nil, logger)
 	backupHandler := handler.NewBackupHandler(backupService)
 	handler.RegisterBackupRoutes(s.echo, backupHandler, s.db)
 }
@@ -287,7 +458,8 @@ func (s *Server) setupImportRoutes() {
 	vmRepo := repository.NewVMRepository(s.db)
 	nodeRepo := repository.NewNodeRepository(s.db)
 	templateRepo := repository.NewTemplateRepository(s.db)
-	importService := service.NewImportService(s.db, vmRepo, nodeRepo, templateRepo, nil, logger)
+	networkRepo := repository.NewNetworkRepository(s.db)
+	importService := service.NewImportService(s.db, vmRepo, nodeRepo, templateRepo, networkRepo, s.riverClient, logger)
 	importHandler := handler.NewImportHandler(importService)
 	handler.RegisterImportRoutes(s.echo, importHandler)
 }
@@ -328,6 +500,50 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 		}
 		return c.JSON(http.StatusOK, map[string]interface{}{"data": user})
 	})
+
+	users.POST("", func(c echo.Context) error {
+		var req struct {
+			Email       string          `json:"email"`
+			Password    string          `json:"password"`
+			Role        models.UserRole `json:"role"`
+			IPWhitelist []string        `json:"ip_whitelist"`
+		}
+		if err := c.Bind(&req); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request body"})
+		}
+		if req.Email == "" || req.Password == "" {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Email and password are required"})
+		}
+		if req.Role == "" {
+			req.Role = models.RoleClient
+		}
+		if req.Role != models.RoleAdmin && req.Role != models.RoleClient {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid role"})
+		}
+		if err := models.ValidateIPWhitelist(req.IPWhitelist); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+		}
+		if exists, err := userRepo.EmailExists(c.Request().Context(), req.Email); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to check email"})
+		} else if exists {
+			return c.JSON(http.StatusConflict, map[string]interface{}{"error": "Email already exists"})
+		}
+
+		hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to hash password"})
+		}
+		user := &models.User{
+			Email:        req.Email,
+			PasswordHash: string(hash),
+			Role:         req.Role,
+			IPWhitelist:  req.IPWhitelist,
+		}
+		if err := userRepo.Create(c.Request().Context(), user); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to create user"})
+		}
+		return c.JSON(http.StatusCreated, map[string]interface{}{"data": user})
+	}, panelMiddleware.RequirePermission("user:create"))
 
 	users.PUT("/:id", func(c echo.Context) error {
 		id, err := parseUUID(c.Param("id"))
@@ -495,7 +711,7 @@ func (s *Server) setupBillingRoutes() {
 	nodeRepo := repository.NewNodeRepository(s.db)
 	templateRepo := repository.NewTemplateRepository(s.db)
 
-	vmService := service.NewVMService(s.db, vmRepo, nodeRepo, templateRepo, nil, logger)
+	vmService := service.NewVMService(s.db, vmRepo, nodeRepo, templateRepo, s.riverClient, logger)
 
 	billingHandler := handler.NewBillingHandler(vmService, logger)
 	handler.RegisterBillingRoutes(s.echo, billingHandler)
@@ -504,6 +720,11 @@ func (s *Server) setupBillingRoutes() {
 // setupSettingsRoutes configures user settings routes (profile, password, 2FA)
 func (s *Server) setupSettingsRoutes(g *echo.Group) {
 	userRepo := repository.NewUserRepository(s.db)
+	// Real TOTP-backed 2FA service (encrypted secrets, QR, backup codes).
+	userService, userSvcErr := service.NewUserService(s.db, s.cfg.JWT.AESKey, s.cfg.JWT.SecretKey, "maburvm-panel")
+	if userSvcErr != nil {
+		slog.Default().Error("settings: failed to init user service for 2FA", "error", userSvcErr)
+	}
 
 	settings := g.Group("/settings")
 	settings.Use(panelMiddleware.RequireAuth(s.db))
@@ -585,18 +806,21 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		if !ok {
 			return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Not authenticated"})
 		}
-		user, err := userRepo.GetByID(c.Request().Context(), userCtx.ID)
-		if err != nil {
-			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "User not found"})
+		if userService == nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "2FA service unavailable"})
 		}
-		// Generate TOTP secret
-		secret := fmt.Sprintf("MABURVM%s%d", user.ID.String()[:8], time.Now().UnixNano()%100000)
-		otpURL := fmt.Sprintf("otpauth://totp/MaburVM:%s?secret=%s&issuer=MaburVM", user.Email, secret)
+		// Generate a real TOTP secret + QR + backup codes (encrypted at rest).
+		resp, err := userService.Setup2FA(&service.Setup2FARequest{UserID: userCtx.ID})
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+		}
 		return c.JSON(http.StatusOK, map[string]interface{}{
 			"success": true,
 			"data": map[string]interface{}{
-				"secret":  secret,
-				"otp_url": otpURL,
+				"secret":       resp.Secret,
+				"otp_url":      resp.QRCodeURL,
+				"qr_code_png":  resp.QRCodePNG,
+				"backup_codes": resp.BackupCodes,
 			},
 		})
 	})
@@ -613,12 +837,12 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		if err := c.Bind(&req); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request"})
 		}
-		// For now, accept any 6-digit code to enable 2FA
-		if len(req.Code) != 6 {
-			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid code format"})
+		if userService == nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "2FA service unavailable"})
 		}
-		if err := userRepo.UpdateTwoFactorSecret(c.Request().Context(), userCtx.ID, "enabled"); err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to enable 2FA"})
+		// Verify the TOTP code against the real encrypted secret.
+		if err := userService.Verify2FASetup(&service.Verify2FASetupRequest{UserID: userCtx.ID, TOTPCode: req.Code}); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 		}
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "2FA enabled"})
 	})
@@ -629,10 +853,49 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		if !ok {
 			return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Not authenticated"})
 		}
-		if err := userRepo.ClearTwoFactorSecret(c.Request().Context(), userCtx.ID); err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to disable 2FA"})
+		if userService == nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "2FA service unavailable"})
+		}
+		if err := userService.Disable2FA(userCtx.ID); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 		}
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "2FA disabled"})
+	})
+
+	// System settings (admin-only): one JSON row per section in system_settings.
+	sys := settings.Group("/system")
+	sys.Use(panelMiddleware.RequirePermission("admin:access"))
+	sys.GET("", func(c echo.Context) error {
+		type settingRow struct {
+			Section string
+			Data    string
+		}
+		var rows []settingRow
+		if err := s.db.WithContext(c.Request().Context()).
+			Raw("SELECT section, data::text AS data FROM system_settings").Scan(&rows).Error; err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to load settings"})
+		}
+		out := map[string]json.RawMessage{}
+		for _, r := range rows {
+			out[r.Section] = json.RawMessage(r.Data)
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": out})
+	})
+	sys.PUT("", func(c echo.Context) error {
+		var body map[string]json.RawMessage
+		if err := json.NewDecoder(c.Request().Body).Decode(&body); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request body"})
+		}
+		for section, data := range body {
+			if err := s.db.WithContext(c.Request().Context()).Exec(
+				"INSERT INTO system_settings (section, data, updated_at) VALUES (?, ?::jsonb, NOW()) "+
+					"ON CONFLICT (section) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()",
+				section, string(data),
+			).Error; err != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to save settings"})
+			}
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "Settings saved"})
 	})
 }
 
@@ -668,6 +931,11 @@ func (s *Server) Start() error {
 
 	address := fmt.Sprintf("%s:%d", s.cfg.Server.Host, s.cfg.Server.Port)
 
+	// Start the background node-metrics collector (persists samples for history).
+	collectorCtx, stopCollector := context.WithCancel(context.Background())
+	defer stopCollector()
+	go service.NewMetricsCollector(s.db, 60*time.Second, 7*24*time.Hour, slog.Default()).Run(collectorCtx)
+
 	// Start server in a goroutine
 	go func() {
 		if err := s.echo.Start(address); err != nil && err != http.ErrServerClosed {
@@ -679,6 +947,8 @@ func (s *Server) Start() error {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
+
+	stopCollector()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -701,8 +971,38 @@ func Run() error {
 		return fmt.Errorf("failed to initialize database: %w", err)
 	}
 
+	// Auto-apply SQL migrations
+	if err := runMigrations(databaseURL(cfg.Database)); err != nil {
+		return fmt.Errorf("failed to run migrations: %w", err)
+	}
+
+	// Initialize River queue before routes are registered so services receive a non-nil client.
+	queueClient, err := queue.NewClient(queue.DefaultConfig(databaseURL(cfg.Database)), slog.Default())
+	if err != nil {
+		return fmt.Errorf("failed to initialize queue: %w", err)
+	}
+	migrateCtx, migrateCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := queue.RunMigrationsWithLogger(migrateCtx, queueClient.Pool(), slog.Default()); err != nil {
+		migrateCancel()
+		_ = queueClient.Stop(context.Background())
+		return fmt.Errorf("failed to run queue migrations: %w", err)
+	}
+	migrateCancel()
+	if err := queueClient.Start(context.Background()); err != nil {
+		_ = queueClient.Stop(context.Background())
+		return fmt.Errorf("failed to start queue: %w", err)
+	}
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
+		if err := queueClient.Stop(shutdownCtx); err != nil {
+			slog.Default().Error("failed to stop queue", "error", err)
+		}
+	}()
+
 	// Create and start server
 	server := NewServer(db, cfg)
+	server.SetQueueClient(queueClient)
 	fmt.Printf("Panel server starting on %s:%d\n", cfg.Server.Host, cfg.Server.Port)
 
 	return server.Start()

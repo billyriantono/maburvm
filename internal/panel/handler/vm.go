@@ -2,27 +2,35 @@
 package handler
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/panel/service"
+	"github.com/maburvm/panel/internal/panel/vnc"
 	"github.com/maburvm/panel/internal/shared/models"
 )
 
 // VMHandler handles HTTP requests for VM management
 type VMHandler struct {
-	service    *service.VMService
-	vncService *service.VNCService
+	service       *service.VMService
+	vncService    *service.VNCService
+	vncProxy      *vnc.ProxyServer
+	sshKeyService *service.SSHKeyService
 }
 
 // NewVMHandler creates a new VMHandler instance
-func NewVMHandler(service *service.VMService, vncService *service.VNCService) *VMHandler {
+func NewVMHandler(service *service.VMService, vncService *service.VNCService, vncProxy *vnc.ProxyServer, sshKeyService *service.SSHKeyService) *VMHandler {
 	return &VMHandler{
-		service:    service,
-		vncService: vncService,
+		service:       service,
+		vncService:    vncService,
+		vncProxy:      vncProxy,
+		sshKeyService: sshKeyService,
 	}
 }
 
@@ -31,6 +39,7 @@ func NewVMHandlerWithoutVNC(service *service.VMService) *VMHandler {
 	return &VMHandler{
 		service:    service,
 		vncService: nil,
+		vncProxy:   nil,
 	}
 }
 
@@ -44,6 +53,12 @@ type CreateVMRequest struct {
 	OSTemplateID string           `json:"os_template_id" validate:"required,uuid"`
 	Resources    models.Resources `json:"resources" validate:"required"`
 	NodeID       string           `json:"node_id,omitempty" validate:"omitempty,uuid"`
+	PlanID       string           `json:"plan_id,omitempty" validate:"omitempty,uuid"`
+	IPPoolID     string           `json:"ip_pool_id,omitempty" validate:"omitempty,uuid"`
+	RequestedIP  string           `json:"requested_ip,omitempty" validate:"omitempty,ip"`
+	BandwidthMbps int             `json:"bandwidth_mbps,omitempty" validate:"omitempty,min=0,max=10000"`
+	VLANID        int             `json:"vlan_id,omitempty" validate:"omitempty,min=0,max=4094"`
+	CPUModel      string          `json:"cpu_model,omitempty" validate:"omitempty,max=64"`
 }
 
 // CreateVMResponse represents the response after creating a VM
@@ -91,6 +106,12 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 		OSTemplateID: req.OSTemplateID,
 		Resources:    req.Resources,
 		NodeID:       req.NodeID,
+		PlanID:       req.PlanID,
+		IPPoolID:     req.IPPoolID,
+		RequestedIP:  req.RequestedIP,
+		BandwidthMbps: req.BandwidthMbps,
+		VLANID:        req.VLANID,
+		CPUModel:      req.CPUModel,
 	}
 
 	resp, err := h.service.CreateVM(c.Request().Context(), createReq)
@@ -119,6 +140,11 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 		case errors.Is(err, service.ErrInvalidResources):
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{
 				"error":   "Bad Request",
+				"message": err.Error(),
+			})
+		case errors.Is(err, service.ErrQuotaExceeded):
+			return c.JSON(http.StatusForbidden, map[string]interface{}{
+				"error":   "Quota Exceeded",
 				"message": err.Error(),
 			})
 		default:
@@ -154,18 +180,24 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 
 // VMListItem represents a VM in the list response
 type VMListItem struct {
-	ID           string `json:"id"`
-	Hostname     string `json:"hostname"`
-	Status       string `json:"status"`
-	NodeID       string `json:"node_id"`
-	UserID       string `json:"user_id"`
-	OSTemplateID string `json:"os_template_id"`
-	CPU          int    `json:"cpu"`
-	RAM          int    `json:"ram_mb"`
-	Disk         int    `json:"disk_gb"`
-	VNCPort      int    `json:"vnc_port,omitempty"`
-	CreatedAt    string `json:"created_at"`
-	UpdatedAt    string `json:"updated_at"`
+	ID           string      `json:"id"`
+	Hostname     string      `json:"hostname"`
+	Status       string      `json:"status"`
+	NodeID       string      `json:"node_id"`
+	NodeName     string      `json:"node_name"`
+	UserID       string      `json:"user_id"`
+	OSTemplateID string      `json:"os_template_id"`
+	Resources    VMResources `json:"resources"`
+	VNCPort      int         `json:"vnc_port,omitempty"`
+	CreatedAt    string      `json:"created_at"`
+	UpdatedAt    string      `json:"updated_at"`
+}
+
+// VMResources for list response
+type VMResources struct {
+	CPU  int `json:"cpu"`
+	RAM  int `json:"ram"`
+	Disk int `json:"disk"`
 }
 
 // ListVMs handles GET /api/vms - List VMs with filtering and pagination
@@ -176,6 +208,8 @@ func (h *VMHandler) ListVMs(c echo.Context) error {
 	userID := c.QueryParam("user_id")
 	limitStr := c.QueryParam("limit")
 	offsetStr := c.QueryParam("offset")
+	pageStr := c.QueryParam("page")
+	pageSizeStr := c.QueryParam("page_size")
 
 	var limit, offset int
 	if limitStr != "" {
@@ -183,6 +217,19 @@ func (h *VMHandler) ListVMs(c echo.Context) error {
 	}
 	if offsetStr != "" {
 		offset, _ = strconv.Atoi(offsetStr)
+	}
+
+	// Support page/page_size params from frontend
+	if pageStr != "" && pageSizeStr != "" {
+		page, _ := strconv.Atoi(pageStr)
+		pageSize, _ := strconv.Atoi(pageSizeStr)
+		if page < 1 {
+			page = 1
+		}
+		if pageSize > 0 {
+			limit = pageSize
+			offset = (page - 1) * pageSize
+		}
 	}
 
 	// Build request
@@ -210,6 +257,13 @@ func (h *VMHandler) ListVMs(c echo.Context) error {
 		})
 	}
 
+	// Build node name lookup map
+	nodeNames := make(map[string]string)
+	if len(resp.VMs) > 0 {
+		nodes, _ := h.service.GetNodeNames(c.Request().Context())
+		nodeNames = nodes
+	}
+
 	// Map to response format
 	items := make([]VMListItem, len(resp.VMs))
 	for i, vm := range resp.VMs {
@@ -218,26 +272,42 @@ func (h *VMHandler) ListVMs(c echo.Context) error {
 			Hostname:     vm.Hostname,
 			Status:       string(vm.Status),
 			NodeID:       vm.NodeID,
+			NodeName:     nodeNames[vm.NodeID],
 			UserID:       vm.UserID,
 			OSTemplateID: vm.OSTemplateID,
-			CPU:          vm.Resources.CPU,
-			RAM:          vm.Resources.RAM,
-			Disk:         vm.Resources.Disk,
-			CreatedAt:    vm.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			UpdatedAt:    vm.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			Resources: VMResources{
+				CPU:  vm.Resources.CPU,
+				RAM:  vm.Resources.RAM,
+				Disk: vm.Resources.Disk,
+			},
+			CreatedAt: vm.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			UpdatedAt: vm.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 		}
 		if vm.VNCPort != nil {
 			items[i].VNCPort = *vm.VNCPort
 		}
 	}
 
+	// Calculate page info for frontend
+	currentPage := 1
+	pageSize := resp.Limit
+	if pageSize > 0 {
+		currentPage = (resp.Offset / pageSize) + 1
+	}
+	totalPages := 1
+	if resp.Total > 0 && pageSize > 0 {
+		totalPages = int((resp.Total + int64(pageSize) - 1) / int64(pageSize))
+	}
+
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"message":  "VMs retrieved successfully",
-		"data":     items,
-		"total":    resp.Total,
-		"limit":    resp.Limit,
-		"offset":   resp.Offset,
-		"has_more": resp.HasMore,
+		"message":    "VMs retrieved successfully",
+		"data":       items,
+		"total":      resp.Total,
+		"page":       currentPage,
+		"limit":      resp.Limit,
+		"totalPages": totalPages,
+		"offset":     resp.Offset,
+		"has_more":   resp.HasMore,
 	})
 }
 
@@ -253,11 +323,13 @@ type VMDetailResponse struct {
 	NodeID       string                 `json:"node_id"`
 	UserID       string                 `json:"user_id"`
 	OSTemplateID string                 `json:"os_template_id"`
-	Resources    models.Resources       `json:"resources"`
-	VNCPort      int                    `json:"vnc_port,omitempty"`
-	AgentStatus  map[string]interface{} `json:"agent_status,omitempty"`
-	CreatedAt    string                 `json:"created_at"`
-	UpdatedAt    string                 `json:"updated_at"`
+	Resources      models.Resources       `json:"resources"`
+	VNCPort        int                    `json:"vnc_port,omitempty"`
+	ConsoleEnabled bool                   `json:"console_enabled"`
+	RescueMode     bool                   `json:"rescue_mode"`
+	AgentStatus    map[string]interface{} `json:"agent_status,omitempty"`
+	CreatedAt      string                 `json:"created_at"`
+	UpdatedAt      string                 `json:"updated_at"`
 }
 
 // GetVM handles GET /api/vms/:id - Get VM details and status
@@ -291,15 +363,17 @@ func (h *VMHandler) GetVM(c echo.Context) error {
 	}
 
 	resp := VMDetailResponse{
-		ID:           vm.VM.ID,
-		Hostname:     vm.VM.Hostname,
-		Status:       string(vm.VM.Status),
-		NodeID:       vm.VM.NodeID,
-		UserID:       vm.VM.UserID,
-		OSTemplateID: vm.VM.OSTemplateID,
-		Resources:    vm.VM.Resources,
-		CreatedAt:    vm.VM.CreatedAt.Format("2006-01-02T15:04:05Z"),
-		UpdatedAt:    vm.VM.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+		ID:             vm.VM.ID,
+		Hostname:       vm.VM.Hostname,
+		Status:         string(vm.VM.Status),
+		NodeID:         vm.VM.NodeID,
+		UserID:         vm.VM.UserID,
+		OSTemplateID:   vm.VM.OSTemplateID,
+		Resources:      vm.VM.Resources,
+		ConsoleEnabled: vm.VM.ConsoleEnabled,
+		RescueMode:     vm.VM.RescueMode,
+		CreatedAt:      vm.VM.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		UpdatedAt:      vm.VM.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 	}
 
 	if vm.VM.VNCPort != nil {
@@ -393,6 +467,11 @@ func (h *VMHandler) UpdateVM(c echo.Context) error {
 		case errors.Is(err, service.ErrInvalidResources):
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{
 				"error":   "Bad Request",
+				"message": err.Error(),
+			})
+		case errors.Is(err, service.ErrQuotaExceeded):
+			return c.JSON(http.StatusForbidden, map[string]interface{}{
+				"error":   "Quota Exceeded",
 				"message": err.Error(),
 			})
 		default:
@@ -490,6 +569,16 @@ func (h *VMHandler) RestartVM(c echo.Context) error {
 	return h.handleLifecycleCommand(c, service.LifecycleRestart)
 }
 
+// SuspendVM handles POST /api/vms/:id/suspend - Pause a VM (keep in memory)
+func (h *VMHandler) SuspendVM(c echo.Context) error {
+	return h.handleLifecycleCommand(c, service.LifecycleSuspend)
+}
+
+// UnsuspendVM handles POST /api/vms/:id/unsuspend - Resume a paused VM
+func (h *VMHandler) UnsuspendVM(c echo.Context) error {
+	return h.handleLifecycleCommand(c, service.LifecycleUnsuspend)
+}
+
 // handleLifecycleCommand handles lifecycle commands with common logic
 func (h *VMHandler) handleLifecycleCommand(c echo.Context, command service.LifecycleCommand) error {
 	id := c.Param("id")
@@ -554,6 +643,12 @@ func (h *VMHandler) handleLifecycleCommand(c echo.Context, command service.Lifec
 type RebuildVMRequest struct {
 	TemplateID string `json:"template_id,omitempty"`
 	PreserveIP bool   `json:"preserve_ip,omitempty"`
+	// Password sets the rebuilt guest's root password. RegeneratePassword asks
+	// the server to generate one (returned once in the response).
+	Password           string `json:"password,omitempty"`
+	RegeneratePassword bool   `json:"regenerate_password,omitempty"`
+	// SSHKeyIDs are the user's saved SSH keys to inject into the rebuilt guest.
+	SSHKeyIDs []string `json:"ssh_key_ids,omitempty"`
 }
 
 // RebuildVMResponse represents the response after rebuilding a VM
@@ -562,6 +657,8 @@ type RebuildVMResponse struct {
 	Status  string `json:"status"`
 	JobID   int64  `json:"job_id"`
 	Message string `json:"message,omitempty"`
+	// RootPassword is present only when a password was generated for this rebuild.
+	RootPassword string `json:"root_password,omitempty"`
 }
 
 // RebuildVM handles POST /api/vms/:id/rebuild - Rebuild a VM (reinstall OS)
@@ -582,11 +679,29 @@ func (h *VMHandler) RebuildVM(c echo.Context) error {
 		})
 	}
 
+	// Resolve the selected SSH keys to authorized_keys lines (ownership-enforced).
+	var sshPublicKeys []string
+	if len(req.SSHKeyIDs) > 0 && h.sshKeyService != nil {
+		if user, ok := middleware.GetUserContext(c); ok {
+			keys, kerr := h.sshKeyService.ResolvePublicKeys(c.Request().Context(), user.ID.String(), req.SSHKeyIDs)
+			if kerr != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+					"error":   "Internal Server Error",
+					"message": "failed to resolve SSH keys: " + kerr.Error(),
+				})
+			}
+			sshPublicKeys = keys
+		}
+	}
+
 	// Rebuild VM
 	rebuildReq := &service.RebuildVMRequest{
-		VMID:       id,
-		TemplateID: req.TemplateID,
-		PreserveIP: req.PreserveIP,
+		VMID:               id,
+		TemplateID:         req.TemplateID,
+		PreserveIP:         req.PreserveIP,
+		Password:           req.Password,
+		RegeneratePassword: req.RegeneratePassword,
+		SSHPublicKeys:      sshPublicKeys,
 	}
 
 	resp, err := h.service.RebuildVM(c.Request().Context(), rebuildReq)
@@ -613,12 +728,90 @@ func (h *VMHandler) RebuildVM(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "VM rebuild initiated",
 		"data": RebuildVMResponse{
-			VMID:    resp.VMID,
-			Status:  resp.Status,
-			JobID:   resp.JobID,
-			Message: resp.Message,
+			VMID:         resp.VMID,
+			Status:       resp.Status,
+			JobID:        resp.JobID,
+			Message:      resp.Message,
+			RootPassword: resp.RootPassword,
 		},
 	})
+}
+
+// CloneVM handles POST /api/vms/:id/clone - clone an existing (stopped) VM.
+func (h *VMHandler) CloneVM(c echo.Context) error {
+	id := c.Param("id")
+	if id == "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error":   "Bad Request",
+			"message": "VM ID is required",
+		})
+	}
+	var req struct {
+		Hostname   string `json:"hostname"`
+		DestNodeID string `json:"dest_node_id"`
+	}
+	_ = c.Bind(&req) // both optional (hostname → "<source>-clone", node → source's)
+
+	resp, err := h.service.CloneVM(c.Request().Context(), &service.CloneVMRequest{SourceVMID: id, Hostname: req.Hostname, DestNodeID: req.DestNodeID})
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrVMNotFound):
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
+		case errors.Is(err, service.ErrTemplateNotFound):
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "OS template not found"})
+		default:
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
+		}
+	}
+
+	return c.JSON(http.StatusCreated, map[string]interface{}{
+		"message": "VM clone initiated",
+		"data": map[string]interface{}{
+			"vm":     resp.VM,
+			"job_id": resp.JobID,
+			"status": resp.Status,
+		},
+	})
+}
+
+// ListVMDisks handles GET /api/vms/:id/disks - list extra data disks.
+func (h *VMHandler) ListVMDisks(c echo.Context) error {
+	disks, err := h.service.ListDisks(c.Request().Context(), c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Internal Server Error", "message": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": disks})
+}
+
+// AttachVMDisk handles POST /api/vms/:id/disks - provision + attach a data disk.
+func (h *VMHandler) AttachVMDisk(c echo.Context) error {
+	var req struct {
+		SizeGB int `json:"size_gb"`
+	}
+	if err := c.Bind(&req); err != nil || req.SizeGB <= 0 {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "size_gb must be a positive integer"})
+	}
+	disk, err := h.service.AttachDisk(c.Request().Context(), c.Param("id"), req.SizeGB)
+	if err != nil {
+		if errors.Is(err, service.ErrVMNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
+		}
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
+	}
+	return c.JSON(http.StatusCreated, map[string]interface{}{"success": true, "data": disk})
+}
+
+// DetachVMDisk handles DELETE /api/vms/:id/disks/:device?delete_volume=true.
+func (h *VMHandler) DetachVMDisk(c echo.Context) error {
+	deleteVolume := c.QueryParam("delete_volume") == "true"
+	err := h.service.DetachDisk(c.Request().Context(), c.Param("id"), c.Param("device"), deleteVolume)
+	if err != nil {
+		if errors.Is(err, service.ErrVMNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
+		}
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "Disk detached"})
 }
 
 // ============================================================================
@@ -644,12 +837,18 @@ func (h *VMHandler) GetVNCConfig(c echo.Context) error {
 		})
 	}
 
+	// Get user ID from context
+	userID, _ := c.Get("user_id").(string)
+	if userID == "" {
+		userID = "system"
+	}
+
 	// Check if user is admin or VM owner to include password
 	// For now, include password for simplicity
 	includePassword := true
 
-	// Get VNC config
-	vnc, err := h.service.GetVNCConfig(c.Request().Context(), id, includePassword)
+	// Get VNC config (host + port from DB)
+	vncConfig, err := h.service.GetVNCConfig(c.Request().Context(), id, includePassword)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrVMNotFound):
@@ -665,14 +864,39 @@ func (h *VMHandler) GetVNCConfig(c echo.Context) error {
 		}
 	}
 
+	// Generate VNC proxy token with host and port embedded
+	var wsURL string
+	if h.vncProxy != nil && vncConfig.Host != "" && vncConfig.Port > 0 {
+		token, _, err := h.vncProxy.GenerateVNCToken(
+			id, userID, "", // nodeID not needed for direct connection
+			vncConfig.Host, vncConfig.Port,
+			vnc.TokenExpiry,
+		)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+				"error":   "Internal Server Error",
+				"message": fmt.Sprintf("failed to generate VNC token: %v", err),
+			})
+		}
+
+		// Build WebSocket URL pointing to panel's proxy endpoint
+		// Use the request's scheme and host so it works behind reverse proxy
+		scheme := "ws"
+		if c.Request().TLS != nil || c.Request().Header.Get("X-Forwarded-Proto") == "https" {
+			scheme = "wss"
+		}
+		host := c.Request().Host
+		wsURL = fmt.Sprintf("%s://%s/ws/vnc?token=%s", scheme, host, token)
+	}
+
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "VNC configuration retrieved",
 		"data": VNCConfigResponse{
-			VMID:         vnc.VMID,
-			Host:         vnc.Host,
-			Port:         vnc.Port,
-			Password:     vnc.Password,
-			WebSocketURL: vnc.WebSocketURL,
+			VMID:         vncConfig.VMID,
+			Host:         vncConfig.Host,
+			Port:         vncConfig.Port,
+			Password:     vncConfig.Password,
+			WebSocketURL: wsURL,
 		},
 	})
 }
@@ -713,9 +937,179 @@ func (h *VMHandler) RefreshVNCPassword(c echo.Context) error {
 	})
 }
 
+// EnableConsole handles POST /api/vms/:id/console/enable
+func (h *VMHandler) EnableConsole(c echo.Context) error { return h.setConsole(c, true) }
+
+// DisableConsole handles POST /api/vms/:id/console/disable
+func (h *VMHandler) DisableConsole(c echo.Context) error { return h.setConsole(c, false) }
+
+// setConsole toggles VNC console access for a VM.
+func (h *VMHandler) setConsole(c echo.Context, enabled bool) error {
+	id := c.Param("id")
+	if id == "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error":   "Bad Request",
+			"message": "VM ID is required",
+		})
+	}
+
+	vm, err := h.service.SetConsoleEnabled(c.Request().Context(), id, enabled)
+	if err != nil {
+		if errors.Is(err, service.ErrVMNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{
+				"error":   "Not Found",
+				"message": "VM not found",
+			})
+		}
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+			"error":   "Internal Server Error",
+			"message": err.Error(),
+		})
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Console state updated",
+		"data": map[string]interface{}{
+			"console_enabled": vm.ConsoleEnabled,
+		},
+	})
+}
+
 // ============================================================================
 // Register Routes
 // ============================================================================
+
+// ResetPasswordVM handles POST /api/vms/:id/reset-password - Reset guest root password
+func (h *VMHandler) ResetPasswordVM(c echo.Context) error {
+	id := c.Param("id")
+	if id == "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "VM ID is required"})
+	}
+	var req struct {
+		Password string `json:"password"`
+	}
+	if err := c.Bind(&req); err != nil || req.Password == "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "password is required"})
+	}
+	resp, err := h.service.ResetPassword(c.Request().Context(), &service.VMResetPasswordRequest{VMID: id, Password: req.Password})
+	if err != nil {
+		if errors.Is(err, service.ErrVMNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
+		}
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"message": "Password reset enqueued", "data": resp})
+}
+
+// AttachISOVM handles POST /api/vms/:id/iso/attach - Attach a bootable ISO
+func (h *VMHandler) AttachISOVM(c echo.Context) error {
+	id := c.Param("id")
+	var req struct {
+		ISOURL string `json:"iso_url"`
+	}
+	if err := c.Bind(&req); err != nil || req.ISOURL == "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "iso_url is required"})
+	}
+	jobID, err := h.service.AttachISO(c.Request().Context(), id, req.ISOURL)
+	if err != nil {
+		if errors.Is(err, service.ErrVMNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
+		}
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"message": "ISO attach enqueued", "data": map[string]interface{}{"job_id": jobID, "status": "pending"}})
+}
+
+// DetachISOVM handles POST /api/vms/:id/iso/detach - Detach the install/rescue ISO
+func (h *VMHandler) DetachISOVM(c echo.Context) error {
+	id := c.Param("id")
+	jobID, err := h.service.DetachISO(c.Request().Context(), id)
+	if err != nil {
+		if errors.Is(err, service.ErrVMNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
+		}
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"message": "ISO detach enqueued", "data": map[string]interface{}{"job_id": jobID, "status": "pending"}})
+}
+
+// RescueVM handles POST /api/vms/:id/rescue - Boot the VM from a rescue ISO.
+// Body: optional {iso_url}; falls back to the RESCUE_ISO_URL env var.
+func (h *VMHandler) RescueVM(c echo.Context) error {
+	id := c.Param("id")
+	var req struct {
+		ISOURL string `json:"iso_url"`
+	}
+	_ = c.Bind(&req) // body is optional
+	jobID, err := h.service.RescueVM(c.Request().Context(), id, req.ISOURL)
+	if err != nil {
+		if errors.Is(err, service.ErrVMNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
+		}
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Rescue ISO attached — start the VM to boot into rescue",
+		"data":    map[string]interface{}{"job_id": jobID, "status": "pending"},
+	})
+}
+
+// UnrescueVM handles POST /api/vms/:id/unrescue - Detach the rescue ISO.
+func (h *VMHandler) UnrescueVM(c echo.Context) error {
+	id := c.Param("id")
+	jobID, err := h.service.UnrescueVM(c.Request().Context(), id)
+	if err != nil {
+		if errors.Is(err, service.ErrVMNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
+		}
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Rescue ISO detached — start the VM to boot from disk",
+		"data":    map[string]interface{}{"job_id": jobID, "status": "pending"},
+	})
+}
+
+// MigrateVM handles POST /api/vms/:id/migrate - Live-migrate a VM to another node.
+// Body: {dest_node_id, live?, copy_storage?}. copy_storage defaults to true
+// (the nodes do not share storage).
+func (h *VMHandler) MigrateVM(c echo.Context) error {
+	id := c.Param("id")
+	var req struct {
+		DestNodeID  string `json:"dest_node_id"`
+		Live        *bool  `json:"live"`
+		CopyStorage *bool  `json:"copy_storage"`
+	}
+	if err := c.Bind(&req); err != nil || req.DestNodeID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "dest_node_id is required"})
+	}
+	live := true
+	if req.Live != nil {
+		live = *req.Live
+	}
+	copyStorage := true
+	if req.CopyStorage != nil {
+		copyStorage = *req.CopyStorage
+	}
+
+	err := h.service.MigrateVM(c.Request().Context(), &service.MigrateVMRequest{
+		VMID:        id,
+		DestNodeID:  req.DestNodeID,
+		Live:        live,
+		CopyStorage: copyStorage,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrVMNotFound):
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
+		case errors.Is(err, service.ErrNodeNotFound):
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "Destination node not found"})
+		default:
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Migration Failed", "message": err.Error()})
+		}
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "VM migrated to destination node"})
+}
 
 // RegisterVMRoutes registers all VM routes with the Echo router
 func RegisterVMRoutes(e *echo.Echo, handler *VMHandler, db interface{}) {
@@ -752,6 +1146,24 @@ func RegisterVMRoutes(e *echo.Echo, handler *VMHandler, db interface{}) {
 		lifecycle.POST("/force-stop", handler.ForceStopVM)
 		lifecycle.POST("/restart", handler.RestartVM)
 		lifecycle.POST("/rebuild", handler.RebuildVM)
+		lifecycle.POST("/suspend", handler.SuspendVM)
+		lifecycle.POST("/unsuspend", handler.UnsuspendVM)
+		lifecycle.POST("/reset-password", handler.ResetPasswordVM)
+		lifecycle.POST("/iso/attach", handler.AttachISOVM)
+		lifecycle.POST("/iso/detach", handler.DetachISOVM)
+		lifecycle.POST("/rescue", handler.RescueVM)
+		lifecycle.POST("/unrescue", handler.UnrescueVM)
+		lifecycle.POST("/migrate", handler.MigrateVM)
+		lifecycle.POST("/clone", handler.CloneVM)
+	}
+
+	// Additional data disks - require vm:lifecycle (attach/detach is management)
+	disks := vms.Group("/:id/disks")
+	disks.Use(middleware.RequirePermission("vm:lifecycle"))
+	{
+		disks.GET("", handler.ListVMDisks)
+		disks.POST("", handler.AttachVMDisk)
+		disks.DELETE("/:device", handler.DetachVMDisk)
 	}
 
 	// VNC operations - require vm:console
@@ -762,12 +1174,17 @@ func RegisterVMRoutes(e *echo.Echo, handler *VMHandler, db interface{}) {
 		vnc.POST("/refresh", handler.RefreshVNCPassword)
 	}
 
+	// VM metrics - require vm:read
+	vms.GET("/:id/metrics", handler.GetVMMetrics)
+
 	// Console token operations - require vm:console
 	consoleToken := vms.Group("/:id/console")
 	consoleToken.Use(middleware.RequirePermission("vm:console"))
 	{
 		consoleToken.POST("/token", handler.GenerateConsoleToken)
 		consoleToken.DELETE("/token", handler.RevokeConsoleToken)
+		consoleToken.POST("/enable", handler.EnableConsole)
+		consoleToken.POST("/disable", handler.DisableConsole)
 	}
 }
 
@@ -807,6 +1224,11 @@ func (h *VMHandler) GenerateConsoleToken(c echo.Context) error {
 			return c.JSON(http.StatusForbidden, map[string]interface{}{
 				"error":   "Forbidden",
 				"message": "User not authorized to access this VM",
+			})
+		case errors.Is(err, service.ErrConsoleDisabled):
+			return c.JSON(http.StatusForbidden, map[string]interface{}{
+				"error":   "Forbidden",
+				"message": "Console is disabled for this VM",
 			})
 		default:
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
@@ -861,5 +1283,68 @@ func (h *VMHandler) RevokeConsoleToken(c echo.Context) error {
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "Console token revoked",
+	})
+}
+
+// GetVMMetrics handles GET /api/v1/vms/:id/metrics - Get VM resource metrics
+func (h *VMHandler) GetVMMetrics(c echo.Context) error {
+	id := c.Param("id")
+	if id == "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error":   "Bad Request",
+			"message": "VM ID is required",
+		})
+	}
+
+	// Get VM to find its node
+	vm, err := h.service.GetVM(c.Request().Context(), id, false)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrVMNotFound):
+			return c.JSON(http.StatusNotFound, map[string]interface{}{
+				"error":   "Not Found",
+				"message": "VM not found",
+			})
+		default:
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+				"error":   "Internal Server Error",
+				"message": err.Error(),
+			})
+		}
+	}
+
+	// Try to get live metrics from agent via streaming (1 sample)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), 5*time.Second)
+	defer cancel()
+
+	metrics, err := h.service.GetVMMetrics(ctx, vm.VM.NodeID, id)
+	if err == nil {
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"data": map[string]interface{}{
+				"cpu_percent":              metrics.CpuPercent,
+				"memory_used":              metrics.MemoryUsed,
+				"memory_total":             metrics.MemoryTotal,
+				"memory_used_percent":      metrics.MemoryUsedPercent,
+				"disk_read_bytes_per_sec":  metrics.DiskReadBytesPerSec,
+				"disk_write_bytes_per_sec": metrics.DiskWriteBytesPerSec,
+				"network_rx_bytes_per_sec": metrics.NetworkRxBytesPerSec,
+				"network_tx_bytes_per_sec": metrics.NetworkTxBytesPerSec,
+			},
+		})
+	}
+
+	// Fallback: return allocated resources as static metrics
+	ramMB := vm.VM.Resources.RAM
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"data": map[string]interface{}{
+			"cpu_percent":              float64(0),
+			"memory_used":              int64(0),
+			"memory_total":             int64(ramMB) * 1024 * 1024,
+			"memory_used_percent":      float64(0),
+			"disk_read_bytes_per_sec":  int64(0),
+			"disk_write_bytes_per_sec": int64(0),
+			"network_rx_bytes_per_sec": int64(0),
+			"network_tx_bytes_per_sec": int64(0),
+		},
 	})
 }

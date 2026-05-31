@@ -381,6 +381,40 @@ type RegenerateTokenResponse struct {
 	Token string `json:"token"`
 }
 
+// GetNodeToken handles GET /api/nodes/:id/token - Get node auth token
+func (h *NodeHandler) GetNodeToken(c echo.Context) error {
+	id := c.Param("id")
+	if id == "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error":   "Bad Request",
+			"message": "Node ID is required",
+		})
+	}
+
+	node, err := h.service.GetNode(c.Request().Context(), id)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrNodeNotFound):
+			return c.JSON(http.StatusNotFound, map[string]interface{}{
+				"error":   "Not Found",
+				"message": "Node not found",
+			})
+		default:
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+				"error":   "Internal Server Error",
+				"message": err.Error(),
+			})
+		}
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Token retrieved",
+		"data": map[string]interface{}{
+			"token": node.Token,
+		},
+	})
+}
+
 // RegenerateToken handles POST /api/nodes/:id/regenerate-token - Rotate auth token
 func (h *NodeHandler) RegenerateToken(c echo.Context) error {
 	id := c.Param("id")
@@ -416,6 +450,53 @@ func (h *NodeHandler) RegenerateToken(c echo.Context) error {
 	})
 }
 
+// GetNodeMetrics handles GET /api/nodes/:id/metrics - Get node metrics
+func (h *NodeHandler) GetNodeMetrics(c echo.Context) error {
+	id := c.Param("id")
+	if id == "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error":   "Bad Request",
+			"message": "Node ID is required",
+		})
+	}
+
+	metrics, err := h.service.GetNodeMetrics(c.Request().Context(), id)
+	if err != nil {
+		if errors.Is(err, service.ErrNodeNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{
+				"error":   "Not Found",
+				"message": "Node not found",
+			})
+		}
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+			"error":   "Internal Server Error",
+			"message": err.Error(),
+		})
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Node metrics retrieved successfully",
+		"data": map[string]interface{}{
+			"cpu_percent":              metrics.CPUUsage,
+			"memory_used":              metrics.MemoryUsed,
+			"memory_total":             metrics.MemoryTotal,
+			"memory_used_percent":      metrics.MemoryUsage,
+			"disk_used":               metrics.DiskUsed,
+			"disk_total":              metrics.DiskTotal,
+			"disk_used_percent":        metrics.DiskUsage,
+			"network_rx_bytes_per_sec": metrics.NetworkRxBytesPerSec,
+			"network_tx_bytes_per_sec": metrics.NetworkTxBytesPerSec,
+			"disk_read_bytes_per_sec":  metrics.DiskReadBytesPerSec,
+			"disk_write_bytes_per_sec": metrics.DiskWriteBytesPerSec,
+			"running_vm_count":         metrics.VMCount,
+			"available_cpus":           metrics.AvailableCPUs,
+			"available_memory_mb":      metrics.AvailableMemoryMB,
+			"available_disk_gb":        metrics.AvailableDiskGB,
+			"load_avg":                 metrics.LoadAvg,
+		},
+	})
+}
+
 // RegisterNodeRoutes registers all node routes with the Echo router
 func RegisterNodeRoutes(e *echo.Echo, handler *NodeHandler, db interface{}) {
 	// Create node routes group
@@ -444,4 +525,7 @@ func RegisterNodeRoutes(e *echo.Echo, handler *NodeHandler, db interface{}) {
 
 	// Regenerate token - requires node:update
 	nodes.POST("/:id/regenerate-token", handler.RegenerateToken, middleware.RequirePermission("node:update"))
+
+	// Get token - requires node:update
+	nodes.GET("/:id/token", handler.GetNodeToken, middleware.RequirePermission("node:update"))
 }

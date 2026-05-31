@@ -102,7 +102,7 @@ func (suite *NetworkRepositoryTestSuite) TestNetworkRepository_Update() {
 	assert.NoError(suite.T(), err)
 
 	var found models.Network
-	err = suite.DB.First(&found, network.ID).Error
+	err = suite.DB.First(&found, "id = ?", network.ID).Error
 	assert.NoError(suite.T(), err)
 	assert.Equal(suite.T(), int64(1000), found.BandwidthLimit)
 }

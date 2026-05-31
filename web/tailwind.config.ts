@@ -35,9 +35,9 @@ const config: Config = {
           DEFAULT: "#FF4444",
           foreground: "#FFFFFF",
         },
-        muted: {
+                muted: {
           DEFAULT: "#E5E5E5",
-          foreground: "#666666",
+          foreground: "#525252",
         },
         accent: {
           DEFAULT: "#FF00A0",
@@ -51,13 +51,15 @@ const config: Config = {
           DEFAULT: "#FFFFFF",
           foreground: "#000000",
         },
-        success: {
+                success: {
           DEFAULT: "#CCFF00",
           foreground: "#000000",
+          dark: "#3D7A00",
         },
         warning: {
           DEFAULT: "#FFAA00",
           foreground: "#000000",
+          dark: "#8B5E00",
         },
         danger: {
           DEFAULT: "#FF4444",

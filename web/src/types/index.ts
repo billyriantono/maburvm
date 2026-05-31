@@ -8,3 +8,5 @@ export * from './snapshot';
 export * from './backup';
 export * from './audit';
 export * from './storage';
+export * from './ipam';
+export * from './ssh-key';

@@ -89,3 +89,27 @@ export function useDisable2FA() {
     },
   })
 }
+
+// System settings (admin) — one object per section: general/security/backup/api/email.
+export function useSystemSettings() {
+  return useQuery<Record<string, Record<string, unknown>>>({
+    queryKey: ['settings', 'system'],
+    queryFn: async () => {
+      const response = await api.get<Record<string, Record<string, unknown>>>('/api/v1/settings/system')
+      return response.data.data || {}
+    },
+  })
+}
+
+export function useSaveSystemSettings() {
+  const queryClient = useQueryClient()
+
+  return useMutation<void, Error, Record<string, unknown>>({
+    mutationFn: async (data) => {
+      await api.put('/api/v1/settings/system', data)
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings', 'system'] })
+    },
+  })
+}

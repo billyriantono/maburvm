@@ -126,6 +126,37 @@ func (h *BandwidthHandler) GetVMBandwidthHistory(c echo.Context) error {
 	})
 }
 
+// SetVMBandwidthQuota handles PUT /api/v1/vms/:id/bandwidth/quota
+// Sets the VM's monthly bandwidth quota in GB (0 = unlimited).
+func (h *BandwidthHandler) SetVMBandwidthQuota(c echo.Context) error {
+	vmID := c.Param("id")
+	if vmID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error":   "Bad Request",
+			"message": "VM ID is required",
+		})
+	}
+	var req struct {
+		QuotaGB int64 `json:"quota_gb"`
+	}
+	if err := c.Bind(&req); err != nil || req.QuotaGB < 0 {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error":   "Bad Request",
+			"message": "quota_gb must be a non-negative integer (0 = unlimited)",
+		})
+	}
+	if err := h.service.SetVMQuota(c.Request().Context(), vmID, req.QuotaGB); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+			"error":   "Internal Server Error",
+			"message": err.Error(),
+		})
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Bandwidth quota updated",
+		"data":    map[string]interface{}{"quota_gb": req.QuotaGB},
+	})
+}
+
 // RegisterBandwidthRoutes registers bandwidth usage routes
 func RegisterBandwidthRoutes(e *echo.Echo, h *BandwidthHandler, db *gorm.DB) {
 	bwGroup := e.Group("/api/v1/vms/:id/bandwidth")
@@ -133,4 +164,5 @@ func RegisterBandwidthRoutes(e *echo.Echo, h *BandwidthHandler, db *gorm.DB) {
 
 	bwGroup.GET("", h.GetVMBandwidth)
 	bwGroup.GET("/history", h.GetVMBandwidthHistory)
+	bwGroup.PUT("/quota", h.SetVMBandwidthQuota)
 }

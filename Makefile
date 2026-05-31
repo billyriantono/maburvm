@@ -26,13 +26,20 @@ run-agent:
 	@echo "Starting agent with token: $(TOKEN)..."
 	@go run ./cmd/agent -token=$(TOKEN)
 
-# Build agent for Linux (cross-compile)
+# Build agent for Linux — the artifact the panel serves to new nodes.
+#
+# Uses -tags libvirt_dlopen so the binary loads libvirt at RUNTIME via dlopen:
+#   * build host needs NO libvirt-dev / headers
+#   * target node needs only the libvirt RUNTIME (present on every KVM host)
+# CGO is still required (dlopen is via cgo), so run this on a Linux host/CI
+# (native) or with a linux cross C toolchain (e.g. CC=x86_64-linux-gnu-gcc).
 build-agent-linux:
-	@echo "Building agent for Linux..."
+	@echo "Building agent for Linux (libvirt_dlopen, no libvirt-dev needed)..."
 	@mkdir -p bin/linux
-	@GOOS=linux GOARCH=amd64 go build -o bin/linux/agent-amd64 ./cmd/agent
+	@CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -tags libvirt_dlopen -o bin/linux/agent-amd64 ./cmd/agent
 	@echo "Linux agent built: bin/linux/agent-amd64"
-	@echo "To build for ARM64: GOOS=linux GOARCH=arm64 go build -o bin/linux/agent-arm64 ./cmd/agent"
+	@echo "Drop it where the panel serves it (AGENT_BINARY_DIR, default ./bin/linux)."
+	@echo "ARM64: CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc go build -tags libvirt_dlopen -o bin/linux/agent-arm64 ./cmd/agent"
 
 # Run frontend dev server on all interfaces
 run-web:

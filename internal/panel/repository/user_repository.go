@@ -113,5 +113,5 @@ func (r *UserRepository) ClearTwoFactorSecret(ctx context.Context, id uuid.UUID)
 
 // UpdateIPWhitelist updates a user's IP whitelist
 func (r *UserRepository) UpdateIPWhitelist(ctx context.Context, id uuid.UUID, whitelist []string) error {
-	return r.db.WithContext(ctx).Model(&models.User{}).Where("id = ?", id).Update("ip_whitelist", whitelist).Error
+	return r.db.WithContext(ctx).Model(&models.User{}).Where("id = ?", id).Select("IPWhitelist").Updates(&models.User{IPWhitelist: whitelist}).Error
 }

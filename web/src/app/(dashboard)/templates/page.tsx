@@ -2,14 +2,13 @@
 
 import { useState, useMemo, useEffect, useCallback } from "react"
 import Link from "next/link"
-import { 
-  Plus, 
+import {
+  Plus,
   Search,
   Trash2,
   FileArchive,
   CheckCircle2,
   XCircle,
-  HardDrive,
   Loader2,
   AlertCircle,
   X
@@ -18,7 +17,6 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useTemplates, useDeleteTemplate } from "@/lib/hooks/use-templates"
-import type { OSTemplate } from "@/types"
 
 function formatDate(dateString: string): string {
   return new Date(dateString).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })
@@ -160,17 +158,22 @@ export default function TemplateListPage() {
             {filteredTemplates.length} templates
           </p>
         </div>
-        <Link href="/templates/new">
-          <Button className="gap-2"><Plus className="w-4 h-4" />Add Template</Button>
-        </Link>
+        <div className="flex items-center gap-3">
+          <Link href="/templates/catalog">
+            <Button variant="secondary" className="gap-2"><FileArchive className="w-4 h-4" />Browse Catalog</Button>
+          </Link>
+          <Link href="/templates/new">
+            <Button className="gap-2"><Plus className="w-4 h-4" />Add Template</Button>
+          </Link>
+        </div>
       </div>
 
       {/* Filters */}
       <div className="bg-white border-4 border-black p-4 shadow-neo mb-6">
         <div className="flex flex-col md:flex-row gap-4">
           <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-            <Input type="text" placeholder="Search templates..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="pl-10 border-2 border-black" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+            <Input type="text" placeholder="Search templates..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="pl-10 h-12 border-2 border-black" />
           </div>
           <select value={activeFilter} onChange={(e) => setActiveFilter(e.target.value)} className="h-12 px-4 border-2 border-black font-medium bg-white focus:outline-none focus:shadow-neo-sm">
             <option value="">All</option>
@@ -195,7 +198,7 @@ export default function TemplateListPage() {
 
         {filteredTemplates.length === 0 ? (
           <div className="p-12 text-center">
-            <FileArchive className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+            <FileArchive className="w-12 h-12 text-gray-500 mx-auto mb-4" />
             <p className="text-gray-500 font-bold uppercase">No templates found</p>
             {hasFilters && (
               <Button variant="ghost" onClick={clearFilters} className="mt-4 border-2 border-black">Clear filters</Button>

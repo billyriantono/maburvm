@@ -31,6 +31,8 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { useUsers } from "@/lib/hooks/use-users"
 import { useTemplates } from "@/lib/hooks/use-templates"
 import { useNodes } from "@/lib/hooks/use-nodes"
+import { useIPPools } from "@/lib/hooks/use-ipam"
+import { usePlans } from "@/lib/hooks/use-plans"
 import { useCreateVM } from "@/lib/hooks/use-vms"
 
 // Validation schemas for each step
@@ -43,10 +45,12 @@ const step1Schema = z.object({
 })
 
 const step2Schema = z.object({
+  planId: z.string().optional(),
   cpuCores: z.number().min(1, "Minimum 1 CPU core").max(64, "Maximum 64 CPU cores"),
   ramGB: z.number().min(1, "Minimum 1 GB RAM").max(512, "Maximum 512 GB RAM"),
   diskGB: z.number().min(10, "Minimum 10 GB disk").max(2000, "Maximum 2 TB disk"),
   nodeId: z.string().optional(),
+  cpuModel: z.string().optional(),
 })
 
 const step3Schema = z.object({
@@ -54,6 +58,7 @@ const step3Schema = z.object({
 })
 
 const step4Schema = z.object({
+  ipPoolId: z.string().optional(),
   ipAddress: z.string()
     .optional()
     .refine((val) => !val || /^(\d{1,3}\.){3}\d{1,3}$/.test(val), {
@@ -90,12 +95,16 @@ export default function NewVMPage() {
   const { data: usersData, isLoading: usersLoading } = useUsers({ pageSize: 100 })
   const { data: templatesData, isLoading: templatesLoading } = useTemplates()
   const { data: nodesData, isLoading: nodesLoading } = useNodes()
+  const { data: poolsData, isLoading: poolsLoading } = useIPPools()
+  const { data: plansData } = usePlans(true)
   const createVM = useCreateVM()
 
   const users = useMemo(() => usersData?.data || [], [usersData?.data])
   const templates = useMemo(() => templatesData || [], [templatesData])
   const nodes = useMemo(() => nodesData || [], [nodesData])
   const activeNodes = useMemo(() => nodes.filter(n => n.status === "active"), [nodes])
+  const pools = useMemo(() => poolsData || [], [poolsData])
+  const plans = useMemo(() => plansData || [], [plansData])
 
   const {
     register,
@@ -110,11 +119,14 @@ export default function NewVMPage() {
     defaultValues: {
       hostname: "",
       userId: "",
+      planId: "",
       cpuCores: 2,
       ramGB: 4,
       diskGB: 50,
       templateId: "",
       nodeId: "",
+      cpuModel: "",
+      ipPoolId: "",
       ipAddress: "",
       bandwidthMbps: 100,
       vlanId: "",
@@ -158,15 +170,29 @@ export default function NewVMPage() {
     setSubmitError(null)
 
     try {
+      // VLAN is collected as free text; only forward a valid numeric tag.
+      const vlanParsed = data.vlanId ? Number(data.vlanId) : NaN
+      const vlanId = Number.isInteger(vlanParsed) && vlanParsed > 0 ? vlanParsed : undefined
+
       const result = await createVM.mutateAsync({
         hostname: data.hostname,
         os_template_id: data.templateId,
         node_id: data.nodeId || undefined,
+        // When a plan is selected the backend derives resources from it; we still
+        // send the (plan-synced) sliders for display consistency.
+        plan_id: data.planId || undefined,
         resources: {
           cpu: data.cpuCores,
           ram: data.ramGB * 1024, // Convert GB to MB
           disk: data.diskGB,
         },
+        // Network: allocate from a managed pool (a specific IP is only valid
+        // alongside a pool selection).
+        ip_pool_id: data.ipPoolId || undefined,
+        requested_ip: data.ipPoolId && data.ipAddress ? data.ipAddress : undefined,
+        bandwidth_mbps: data.bandwidthMbps,
+        vlan_id: vlanId,
+        cpu_model: data.cpuModel || undefined,
       })
       router.push(`/vms/${result.id}`)
     } catch (error) {
@@ -184,6 +210,10 @@ export default function NewVMPage() {
 
   const getSelectedNode = () => {
     return nodes.find(n => n.id === watchedValues.nodeId)
+  }
+
+  const getSelectedPool = () => {
+    return pools.find(p => p.id === watchedValues.ipPoolId)
   }
 
   // Get OS icon based on template name
@@ -233,11 +263,11 @@ export default function NewVMPage() {
                     {isCompleted ? (
                       <Check className="w-6 h-6" />
                     ) : (
-                      <Icon className={`w-6 h-6 ${isActive ? "" : "text-gray-400"}`} />
+                      <Icon className={`w-6 h-6 ${isActive ? "" : "text-gray-600"}`} />
                     )}
                   </div>
                   <span className={`mt-2 text-xs font-bold uppercase tracking-wider ${
-                    isActive ? "text-black" : "text-gray-400"
+                    isActive ? "text-black" : "text-gray-600"
                   }`}>
                     {step.title}
                   </span>
@@ -305,7 +335,7 @@ export default function NewVMPage() {
               {/* User Assignment (optional) */}
               <div className="space-y-2">
                 <label htmlFor="userId" className="text-sm font-bold uppercase tracking-wide">
-                  Assign to User <span className="text-gray-400">(optional)</span>
+                  Assign to User <span className="text-gray-600">(optional)</span>
                 </label>
                 {usersLoading ? (
                   <Skeleton className="h-12 w-full" />
@@ -324,7 +354,7 @@ export default function NewVMPage() {
                               <div className="flex items-center gap-2">
                                 <User className="w-4 h-4" />
                                 <span>{user.email}</span>
-                                <span className="text-gray-400 text-sm">({user.role})</span>
+                                <span className="text-gray-600 text-sm">({user.role})</span>
                               </div>
                             </SelectItem>
                           ))}
@@ -338,7 +368,7 @@ export default function NewVMPage() {
               {/* Node Selection (optional) */}
               <div className="space-y-2">
                 <label htmlFor="nodeId" className="text-sm font-bold uppercase tracking-wide">
-                  Target Node <span className="text-gray-400">(optional — auto-select if empty)</span>
+                  Target Node <span className="text-gray-600">(optional — auto-select if empty)</span>
                 </label>
                 {nodesLoading ? (
                   <Skeleton className="h-12 w-full" />
@@ -357,7 +387,7 @@ export default function NewVMPage() {
                               <div className="flex items-center gap-2">
                                 <Server className="w-4 h-4" />
                                 <span>{node.name}</span>
-                                <span className="text-gray-400 text-sm">({node.ip_address})</span>
+                                <span className="text-gray-600 text-sm">({node.ip_address})</span>
                               </div>
                             </SelectItem>
                           ))}
@@ -382,6 +412,47 @@ export default function NewVMPage() {
                   <p className="text-sm text-gray-500">Select CPU, RAM, and disk size</p>
                 </div>
               </div>
+
+              {/* Plan (flavor) selector — auto-fills the sliders below */}
+              {plans.length > 0 && (
+                <div className="space-y-2">
+                  <label htmlFor="planId" className="text-sm font-bold uppercase tracking-wide">
+                    Plan <span className="text-gray-500">(optional)</span>
+                  </label>
+                  <Select
+                    value={watchedValues.planId || "custom"}
+                    onValueChange={(val) => {
+                      if (val === "custom") {
+                        setValue("planId", "")
+                        return
+                      }
+                      setValue("planId", val)
+                      const p = plans.find((pl) => pl.id === val)
+                      if (p) {
+                        setValue("cpuCores", p.cpu, { shouldValidate: true })
+                        setValue("ramGB", Math.max(1, Math.round(p.ram / 1024)), { shouldValidate: true })
+                        setValue("diskGB", p.disk, { shouldValidate: true })
+                      }
+                    }}
+                  >
+                    <SelectTrigger id="planId" className="h-12">
+                      <SelectValue placeholder="Custom (use sliders)" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="custom">Custom (use sliders)</SelectItem>
+                      {plans.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>
+                          <span>{p.name}</span>
+                          <span className="text-gray-600 text-sm ml-2">
+                            ({p.cpu} vCPU · {Math.round(p.ram / 1024)} GB · {p.disk} GB)
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-gray-500">Pick a plan to auto-fill resources, or choose Custom.</p>
+                </div>
+              )}
 
               {/* CPU Cores */}
               <div className="space-y-3">
@@ -499,6 +570,26 @@ export default function NewVMPage() {
                 </div>
               </div>
 
+              {/* CPU Model */}
+              <div className="space-y-2">
+                <label htmlFor="cpuModel" className="text-sm font-bold uppercase tracking-wide">CPU Model</label>
+                <select
+                  id="cpuModel"
+                  {...register("cpuModel")}
+                  className="w-full h-12 px-3 border-2 border-black font-medium bg-white"
+                >
+                  <option value="">Default — kvm64 (portable, live-migratable)</option>
+                  <option value="host-passthrough">Host Passthrough (max performance, not migratable)</option>
+                  <option value="host-model">Host Model (near-host features)</option>
+                  <option value="qemu64">qemu64 (generic)</option>
+                  <option value="Haswell-noTSX">Haswell-noTSX (Intel baseline)</option>
+                  <option value="EPYC">EPYC (AMD baseline)</option>
+                </select>
+                <p className="text-xs text-gray-500">
+                  Leave default for cross-node live migration. Choose Host Passthrough for best single-node performance.
+                </p>
+              </div>
+
               {/* Resource Summary */}
               <div className="bg-primary/20 border-2 border-black p-4 mt-6">
                 <p className="text-xs font-bold uppercase mb-2">Selected Resources</p>
@@ -541,9 +632,9 @@ export default function NewVMPage() {
                 </div>
               ) : templates.length === 0 ? (
                 <div className="p-8 text-center border-2 border-black">
-                  <HardDrive className="w-10 h-10 mx-auto text-gray-300 mb-3" />
+                  <HardDrive className="w-10 h-10 mx-auto text-gray-500 mb-3" />
                   <p className="text-gray-500 font-bold uppercase text-sm">No templates available</p>
-                  <p className="text-gray-400 text-xs mt-1">Please create OS templates first</p>
+                  <p className="text-gray-600 text-xs mt-1">Please create OS templates first</p>
                 </div>
               ) : (
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
@@ -601,27 +692,70 @@ export default function NewVMPage() {
                 </div>
                 <div>
                   <h2 className="text-xl font-black uppercase">Network Configuration</h2>
-                  <p className="text-sm text-gray-500">Configure network settings (applied after VM creation)</p>
+                  <p className="text-sm text-gray-500">IP allocation, bandwidth, and VLAN</p>
                 </div>
               </div>
 
               <div className="bg-gray-100 border-2 border-black p-4 mb-4">
                 <p className="text-xs font-bold uppercase text-gray-600 flex items-center gap-2">
                   <AlertCircle className="w-4 h-4" />
-                  Note: Network configuration is applied after VM creation
+                  Note: The IP is allocated from the pool at creation; bandwidth and VLAN apply when the VM boots
                 </p>
               </div>
 
-              {/* IP Address (Optional) */}
+              {/* IP Pool Selection */}
+              <div className="space-y-2">
+                <label htmlFor="ipPoolId" className="text-sm font-bold uppercase tracking-wide">
+                  IP Pool <span className="text-gray-500">(optional — DHCP if empty)</span>
+                </label>
+                {poolsLoading ? (
+                  <Skeleton className="h-12 w-full" />
+                ) : pools.length === 0 ? (
+                  <div className="p-4 border-2 border-black bg-gray-100 text-sm text-gray-600 font-medium">
+                    No IP pools configured — the VM will use DHCP. Create pools under the IP Pools page to assign managed addresses.
+                  </div>
+                ) : (
+                  <Controller
+                    name="ipPoolId"
+                    control={control}
+                    render={({ field }) => (
+                      <Select onValueChange={field.onChange} value={field.value}>
+                        <SelectTrigger id="ipPoolId" className="h-12">
+                          <SelectValue placeholder="DHCP (no pool)" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {pools.map((pool) => (
+                            <SelectItem key={pool.id} value={pool.id}>
+                              <div className="flex items-center gap-2">
+                                <Network className="w-4 h-4" />
+                                <span>{pool.name}</span>
+                                {pool.cidr && (
+                                  <span className="text-gray-600 text-sm">({pool.cidr})</span>
+                                )}
+                              </div>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  />
+                )}
+                <p className="text-xs text-gray-500">
+                  Selecting a pool assigns the next available public IP automatically.
+                </p>
+              </div>
+
+              {/* Specific IP within the pool (optional) */}
               <div className="space-y-2">
                 <label htmlFor="ipAddress" className="text-sm font-bold uppercase tracking-wide">
-                  IP Address <span className="text-gray-400">(optional)</span>
+                  Specific IP <span className="text-gray-500">(optional)</span>
                 </label>
                 <Input
                   id="ipAddress"
                   {...register("ipAddress")}
-                  placeholder="e.g., 192.168.1.100"
-                  className={`h-12 ${errors.ipAddress ? "border-danger ring-2 ring-danger/30" : ""}`}
+                  placeholder={watchedValues.ipPoolId ? "e.g., 192.168.1.100" : "Select an IP pool first"}
+                  disabled={!watchedValues.ipPoolId}
+                  className={`h-12 ${errors.ipAddress ? "border-danger ring-2 ring-danger/30" : ""} ${!watchedValues.ipPoolId ? "opacity-50 cursor-not-allowed" : ""}`}
                 />
                 {errors.ipAddress && (
                   <p className="text-sm font-medium text-danger flex items-center gap-1">
@@ -630,7 +764,7 @@ export default function NewVMPage() {
                   </p>
                 )}
                 <p className="text-xs text-gray-500">
-                  Leave blank for automatic IP allocation via DHCP
+                  Leave blank to auto-allocate the next free IP from the selected pool.
                 </p>
               </div>
 
@@ -669,7 +803,7 @@ export default function NewVMPage() {
               {/* VLAN ID (optional text input) */}
               <div className="space-y-2">
                 <label htmlFor="vlanId" className="text-sm font-bold uppercase tracking-wide">
-                  VLAN ID <span className="text-gray-400">(optional)</span>
+                  VLAN ID <span className="text-gray-600">(optional)</span>
                 </label>
                 <Input
                   id="vlanId"
@@ -690,8 +824,14 @@ export default function NewVMPage() {
                 </div>
                 <div className="grid grid-cols-2 gap-4 text-sm">
                   <div>
+                    <span className="text-gray-500">IP Pool:</span>
+                    <span className="ml-2 font-bold">{getSelectedPool()?.name || "DHCP"}</span>
+                  </div>
+                  <div>
                     <span className="text-gray-500">IP Address:</span>
-                    <span className="ml-2 font-bold">{watchedValues.ipAddress || "Auto (DHCP)"}</span>
+                    <span className="ml-2 font-bold">
+                      {getSelectedPool() ? (watchedValues.ipAddress || "Auto (next free)") : "Auto (DHCP)"}
+                    </span>
                   </div>
                   <div>
                     <span className="text-gray-500">Bandwidth:</span>
@@ -790,8 +930,14 @@ export default function NewVMPage() {
                   </p>
                   <div className="space-y-2 text-sm">
                     <div className="flex justify-between">
+                      <span className="text-gray-500">IP Pool:</span>
+                      <span className="font-bold">{getSelectedPool()?.name || "DHCP"}</span>
+                    </div>
+                    <div className="flex justify-between">
                       <span className="text-gray-500">IP Address:</span>
-                      <span className="font-bold">{watchedValues.ipAddress || "Auto (DHCP)"}</span>
+                      <span className="font-bold">
+                        {getSelectedPool() ? (watchedValues.ipAddress || "Auto (next free)") : "Auto (DHCP)"}
+                      </span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-500">Bandwidth:</span>
@@ -802,8 +948,8 @@ export default function NewVMPage() {
                       <span className="font-bold">{watchedValues.vlanId || "None"}</span>
                     </div>
                   </div>
-                  <p className="text-[10px] text-gray-400 mt-2 italic">
-                    Network settings will be configured after VM creation
+                  <p className="text-[10px] text-gray-600 mt-2 italic">
+                    Network settings are provisioned together with the VM
                   </p>
                 </div>
               </div>

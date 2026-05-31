@@ -56,6 +56,7 @@ const (
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  4096,
 	WriteBufferSize: 4096,
+	Subprotocols:    []string{"binary"},
 	CheckOrigin: func(r *http.Request) bool {
 		// In production, this should validate the origin against allowed domains
 		return true
@@ -64,10 +65,12 @@ var upgrader = websocket.Upgrader{
 
 // VNCTokenClaims represents the JWT claims for VNC tokens
 type VNCTokenClaims struct {
-	VMID   string `json:"vm_id"`
-	UserID string `json:"user_id"`
-	NodeID string `json:"node_id"`
-	Type   string `json:"type"`
+	VMID    string `json:"vm_id"`
+	UserID  string `json:"user_id"`
+	NodeID  string `json:"node_id"`
+	Host    string `json:"host"`
+	VNCPort int    `json:"vnc_port"`
+	Type    string `json:"type"`
 	jwt.RegisteredClaims
 }
 
@@ -167,6 +170,8 @@ type ProxyConnection struct {
 	VMID      string
 	UserID    string
 	NodeID    string
+	Host      string
+	VNCPort   int
 	Token     string
 	CreatedAt time.Time
 	ExpiresAt time.Time
@@ -209,7 +214,7 @@ func generateFallbackSecret() []byte {
 }
 
 // GenerateVNCToken creates a new short-lived VNC access token
-func (s *ProxyServer) GenerateVNCToken(vmID, userID, nodeID string, expiry time.Duration) (string, time.Time, error) {
+func (s *ProxyServer) GenerateVNCToken(vmID, userID, nodeID, host string, vncPort int, expiry time.Duration) (string, time.Time, error) {
 	// Check rate limiting
 	if !s.rateLimiter.CanCreateToken(userID) {
 		return "", time.Time{}, fmt.Errorf("rate limit exceeded: too many token requests")
@@ -224,10 +229,12 @@ func (s *ProxyServer) GenerateVNCToken(vmID, userID, nodeID string, expiry time.
 	expiresAt := now.Add(expiry)
 
 	claims := VNCTokenClaims{
-		VMID:   vmID,
-		UserID: userID,
-		NodeID: nodeID,
-		Type:   "vnc_access",
+		VMID:    vmID,
+		UserID:  userID,
+		NodeID:  nodeID,
+		Host:    host,
+		VNCPort: vncPort,
+		Type:    "vnc_access",
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
 			IssuedAt:  jwt.NewNumericDate(now),
@@ -247,6 +254,8 @@ func (s *ProxyServer) GenerateVNCToken(vmID, userID, nodeID string, expiry time.
 	s.logger.Info("Generated VNC token",
 		"vm_id", vmID,
 		"user_id", userID,
+		"host", host,
+		"vnc_port", vncPort,
 		"expires_at", expiresAt,
 	)
 
@@ -347,6 +356,8 @@ func (s *ProxyServer) HandleWebSocket(c echo.Context) error {
 		VMID:      claims.VMID,
 		UserID:    claims.UserID,
 		NodeID:    claims.NodeID,
+		Host:      claims.Host,
+		VNCPort:   claims.VNCPort,
 		Token:     tokenString,
 		CreatedAt: time.Now(),
 		ExpiresAt: claims.ExpiresAt.Time,
@@ -362,8 +373,8 @@ func (s *ProxyServer) HandleWebSocket(c echo.Context) error {
 		"remote_addr", c.Request().RemoteAddr,
 	)
 
-	// Start proxying
-	go s.proxyConnection(proxyConn)
+	// Start proxying (blocking - must not return or Echo will close the connection)
+	s.proxyConnection(proxyConn)
 
 	return nil
 }
@@ -446,22 +457,19 @@ func (s *ProxyServer) proxyConnection(pc *ProxyConnection) {
 	}
 }
 
-// getVNCAddress retrieves the VNC server address from the agent
+// getVNCAddress retrieves the VNC server address from the token claims
 func (s *ProxyServer) getVNCAddress(ctx context.Context, pc *ProxyConnection) (string, error) {
+	// Use host and VNC port from the token claims (set during token generation)
+	if pc.Host != "" && pc.VNCPort > 0 {
+		return fmt.Sprintf("%s:%d", pc.Host, pc.VNCPort), nil
+	}
+
+	// Fallback for testing: use local VNC server
 	if s.agentClient == nil {
-		// Fallback for testing: use local VNC server
 		return fmt.Sprintf("localhost:%d", 5900), nil
 	}
 
-	// Request VNC proxy from agent with extended expiry
-	result, err := s.agentClient.StartVNCProxy(ctx, pc.NodeID, pc.VMID, int32(TokenExpiry.Seconds()))
-	if err != nil {
-		return "", fmt.Errorf("failed to start VNC proxy: %w", err)
-	}
-
-	// Build TCP address from agent response
-	// The agent should return a local TCP port for VNC connection
-	return fmt.Sprintf("localhost:%d", result.WebSocketPort), nil
+	return "", fmt.Errorf("VNC host/port not available in token claims")
 }
 
 // wsToTCP copies data from WebSocket to TCP

@@ -51,7 +51,7 @@ func (h *StorageHandler) GetPools(c echo.Context) error {
 		})
 	}
 
-	return c.JSON(http.StatusOK, pools)
+	return c.JSON(http.StatusOK, map[string]interface{}{"data": pools})
 }
 
 // GetPoolByID returns a specific storage pool
@@ -103,11 +103,11 @@ func (h *StorageHandler) CreatePool(c echo.Context) error {
 
 	if err := h.storageService.CreatePool(&pool); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"error": "failed to create storage pool",
+			"error": err.Error(),
 		})
 	}
 
-	return c.JSON(http.StatusCreated, pool)
+	return c.JSON(http.StatusCreated, map[string]interface{}{"data": pool})
 }
 
 // UpdatePool updates an existing storage pool
@@ -171,7 +171,7 @@ func (h *StorageHandler) GetVolumes(c echo.Context) error {
 		})
 	}
 
-	return c.JSON(http.StatusOK, volumes)
+	return c.JSON(http.StatusOK, map[string]interface{}{"data": volumes})
 }
 
 // GetVolumeByID returns a specific volume
@@ -191,7 +191,7 @@ func (h *StorageHandler) GetVolumeByID(c echo.Context) error {
 		})
 	}
 
-	return c.JSON(http.StatusOK, volume)
+	return c.JSON(http.StatusOK, map[string]interface{}{"data": volume})
 }
 
 // CreateVolume creates a new storage volume
@@ -212,16 +212,20 @@ func (h *StorageHandler) CreateVolume(c echo.Context) error {
 
 	if err := h.storageService.CreateVolume(&volume); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"error": "failed to create volume",
+			"error": err.Error(),
 		})
 	}
 
-	return c.JSON(http.StatusCreated, volume)
+	return c.JSON(http.StatusCreated, map[string]interface{}{"data": volume})
 }
 
 // DeleteVolume deletes a storage volume
 func (h *StorageHandler) DeleteVolume(c echo.Context) error {
-	id := c.Param("id")
+	// The active route param is :volumeId; fall back to :id for the alt registration.
+	id := c.Param("volumeId")
+	if id == "" {
+		id = c.Param("id")
+	}
 
 	if err := h.storageService.DeleteVolume(id); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{

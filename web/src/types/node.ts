@@ -31,6 +31,20 @@ export interface NodeMetrics {
   load_avg: number[];
 }
 
+// NodeMetricSample is one persisted historical point (matches the Go model's JSON).
+export interface NodeMetricSample {
+  id: number;
+  node_id: string;
+  cpu_usage: number;
+  memory_usage: number;
+  disk_usage: number;
+  network_rx_bytes_per_sec: number;
+  network_tx_bytes_per_sec: number;
+  vm_count: number;
+  status: string;
+  recorded_at: string;
+}
+
 // CreateNodeRequest for registering new nodes
 export interface CreateNodeRequest {
   name: string;

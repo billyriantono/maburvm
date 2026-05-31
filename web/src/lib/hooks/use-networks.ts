@@ -6,19 +6,54 @@ import {
 import { api } from '@/lib/api-client'
 import type {
   Network,
+  ManagedNetwork,
+  CreateManagedNetworkRequest,
   PortForward,
   FirewallRule,
   CreatePortForwardRequest,
   CreateFirewallRuleRequest,
 } from '@/types'
 
+// useNetworks lists administrator-defined managed networks (bridge/NAT/isolated).
 export function useNetworks() {
-  return useQuery<Network[]>({
+  return useQuery<ManagedNetwork[]>({
     queryKey: ['networks', 'list'],
     queryFn: async () => {
-      const response = await api.get<Network[]>('/api/v1/networks')
+      const response = await api.get<ManagedNetwork[]>('/api/v1/networks')
       return response.data.data
     },
+  })
+}
+
+export function useCreateNetwork() {
+  const queryClient = useQueryClient()
+  return useMutation<ManagedNetwork, Error, CreateManagedNetworkRequest>({
+    mutationFn: async (data) => {
+      const response = await api.post<ManagedNetwork>('/api/v1/networks', data)
+      return response.data.data
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['networks', 'list'] }),
+  })
+}
+
+export function useDeleteNetwork() {
+  const queryClient = useQueryClient()
+  return useMutation<void, Error, string>({
+    mutationFn: async (id) => {
+      await api.delete(`/api/v1/networks/${id}`)
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['networks', 'list'] }),
+  })
+}
+
+export function useVMNetworks(vmId: string) {
+  return useQuery<Network[]>({
+    queryKey: ['networks', 'vm', vmId],
+    queryFn: async () => {
+      const response = await api.get<Network[]>(`/api/v1/vms/${vmId}/networks`)
+      return response.data.data
+    },
+    enabled: !!vmId,
   })
 }
 

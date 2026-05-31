@@ -28,8 +28,8 @@
     --input: 0 0% 0%;
     --ring: 0 0% 0%;
     
-    --muted: 0 0% 90%;
-    --muted-foreground: 0 0% 40%;
+        --muted: 0 0% 90%;
+    --muted-foreground: 0 0% 32%;
     
     --popover: 0 0% 100%;
     --popover-foreground: 0 0% 0%;
@@ -80,7 +80,7 @@
            shadow-neo hover:shadow-neo-hover active:shadow-neo-active
            hover:translate-x-[-2px] hover:translate-y-[-2px]
            active:translate-x-[2px] active:translate-y-[2px]
-           disabled:opacity-50 disabled:pointer-events-none disabled:translate-x-0 disabled:translate-y-0 disabled:shadow-neo;
+                      disabled:opacity-60 disabled:pointer-events-none disabled:translate-x-0 disabled:translate-y-0 disabled:shadow-neo;
   }
 
   /* Primary button - Yellow */
@@ -140,7 +140,7 @@
   .neo-input {
     @apply w-full px-4 py-3 bg-white border-2 border-black
            focus:outline-none focus:shadow-neo-hover focus:translate-x-[-2px] focus:translate-y-[-2px]
-           placeholder:text-gray-500;
+                      placeholder:text-gray-600;
   }
 
   /* Neo-Brutalist Badge */

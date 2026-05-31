@@ -142,7 +142,7 @@ func (suite *UserRepositoryTestSuite) TestUserRepository_Update() {
 	assert.NoError(suite.T(), err)
 
 	var found models.User
-	err = suite.DB.First(&found, user.ID).Error
+	err = suite.DB.First(&found, "id = ?", user.ID).Error
 	assert.NoError(suite.T(), err)
 	assert.Equal(suite.T(), models.RoleAdmin, found.Role)
 }
@@ -256,7 +256,7 @@ func (suite *UserRepositoryTestSuite) TestUserRepository_UpdatePassword() {
 	assert.NoError(suite.T(), err)
 
 	var found models.User
-	err = suite.DB.First(&found, user.ID).Error
+	err = suite.DB.First(&found, "id = ?", user.ID).Error
 	assert.NoError(suite.T(), err)
 	assert.Equal(suite.T(), newHash, found.PasswordHash)
 }
@@ -277,7 +277,7 @@ func (suite *UserRepositoryTestSuite) TestUserRepository_UpdateTwoFactorSecret()
 	assert.NoError(suite.T(), err)
 
 	var found models.User
-	err = suite.DB.First(&found, user.ID).Error
+	err = suite.DB.First(&found, "id = ?", user.ID).Error
 	assert.NoError(suite.T(), err)
 	assert.Equal(suite.T(), secret, found.TwoFactorSecret)
 }
@@ -298,7 +298,7 @@ func (suite *UserRepositoryTestSuite) TestUserRepository_ClearTwoFactorSecret() 
 	assert.NoError(suite.T(), err)
 
 	var found models.User
-	err = suite.DB.First(&found, user.ID).Error
+	err = suite.DB.First(&found, "id = ?", user.ID).Error
 	assert.NoError(suite.T(), err)
 	assert.Empty(suite.T(), found.TwoFactorSecret)
 }
@@ -319,7 +319,7 @@ func (suite *UserRepositoryTestSuite) TestUserRepository_UpdateIPWhitelist() {
 	assert.NoError(suite.T(), err)
 
 	var found models.User
-	err = suite.DB.First(&found, user.ID).Error
+	err = suite.DB.First(&found, "id = ?", user.ID).Error
 	assert.NoError(suite.T(), err)
 	assert.Equal(suite.T(), whitelist, found.IPWhitelist)
 }

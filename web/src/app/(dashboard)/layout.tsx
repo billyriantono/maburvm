@@ -104,7 +104,7 @@ export default function DashboardLayout({
                 >
                   <Home className="w-4 h-4" />
                 </Link>
-                <ChevronRight className="w-4 h-4 text-gray-400" />
+                <ChevronRight className="w-4 h-4 text-gray-600" />
                 <span className="text-sm font-bold uppercase text-black">
                   Dashboard
                 </span>
@@ -116,11 +116,11 @@ export default function DashboardLayout({
               {/* Search - Desktop */}
               <div className="hidden md:flex items-center">
                 <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
                   <input
                     type="text"
                     placeholder="Search..."
-                    className="w-48 lg:w-64 h-10 pl-10 pr-4 bg-white border-2 border-black text-sm font-medium placeholder:text-gray-400 focus:outline-none focus:shadow-neo-sm transition-all"
+                    className="w-48 lg:w-64 h-10 pl-10 pr-4 bg-white border-2 border-black text-sm font-medium placeholder:text-gray-600 focus:outline-none focus:shadow-neo-sm transition-all"
                   />
                 </div>
               </div>
@@ -157,7 +157,7 @@ export default function DashboardLayout({
                           <p className="text-xs text-gray-500">
                             {activity.resource_id ? `Resource ${activity.resource_id.slice(0, 8)}...` : 'System event'}
                           </p>
-                          <p className="text-[10px] text-gray-400">
+                          <p className="text-[10px] text-gray-600">
                             {new Date(activity.created_at).toLocaleString()}
                           </p>
                         </DropdownMenuItem>

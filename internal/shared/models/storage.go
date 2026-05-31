@@ -17,6 +17,10 @@ type StoragePool struct {
 	UsedSpace      int64          `json:"used_space" gorm:"not null;default:0"`                      // bytes
 	AvailableSpace int64          `json:"available_space" gorm:"not null;default:0"`                 // bytes
 	Path           string         `json:"path" gorm:"type:varchar(255);not null"`                    // filesystem path
+	FileFormat     string         `json:"file_format" gorm:"type:varchar(20);not null;default:'raw'"` // raw, qcow2
+	AlertThreshold int            `json:"alert_threshold" gorm:"not null;default:90"`                 // 0-100 percent
+	Overcommit     int64          `json:"overcommit" gorm:"not null;default:0"`                       // bytes, 0 = disabled
+	IsPrimary      bool           `json:"is_primary" gorm:"not null;default:false"`
 	NodeID         string         `json:"node_id" gorm:"type:uuid;not null;uniqueIndex:idx_storage_pool_name_node;index"`
 	CreatedAt      time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
 	UpdatedAt      time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`

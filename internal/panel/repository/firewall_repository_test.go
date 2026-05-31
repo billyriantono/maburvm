@@ -129,7 +129,7 @@ func (suite *FirewallRepositoryTestSuite) TestFirewallRepository_Update() {
 	assert.NoError(suite.T(), err)
 
 	var found models.FirewallRule
-	err = suite.DB.First(&found, rule.ID).Error
+	err = suite.DB.First(&found, "id = ?", rule.ID).Error
 	assert.NoError(suite.T(), err)
 	assert.Equal(suite.T(), 50, found.Priority)
 }
@@ -181,7 +181,7 @@ func (suite *FirewallRepositoryTestSuite) TestFirewallRepository_UpdatePriority(
 	assert.NoError(suite.T(), err)
 
 	var found models.FirewallRule
-	err = suite.DB.First(&found, rule.ID).Error
+	err = suite.DB.First(&found, "id = ?", rule.ID).Error
 	assert.NoError(suite.T(), err)
 	assert.Equal(suite.T(), 200, found.Priority)
 }

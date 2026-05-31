@@ -27,8 +27,10 @@ func (h *Handler) HandleWebSocket(c echo.Context) error {
 
 // TokenRequest represents a request to generate a VNC token
 type TokenRequest struct {
-	VMID   string `json:"vm_id" validate:"required,uuid"`
-	NodeID string `json:"node_id" validate:"required,uuid"`
+	VMID    string `json:"vm_id" validate:"required,uuid"`
+	NodeID  string `json:"node_id" validate:"required,uuid"`
+	Host    string `json:"host" validate:"required"`
+	VNCPort int    `json:"vnc_port" validate:"required"`
 }
 
 // TokenResponse represents the response with a VNC token
@@ -65,7 +67,7 @@ func (h *Handler) GenerateToken(c echo.Context) error {
 	}
 
 	// Generate token
-	token, expiresAt, err := h.proxyServer.GenerateVNCToken(req.VMID, userID, req.NodeID, TokenExpiry)
+	token, expiresAt, err := h.proxyServer.GenerateVNCToken(req.VMID, userID, req.NodeID, req.Host, req.VNCPort, TokenExpiry)
 	if err != nil {
 		return c.JSON(http.StatusTooManyRequests, map[string]interface{}{
 			"error":   "Rate Limited",

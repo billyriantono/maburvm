@@ -70,6 +70,8 @@ func SetupTestDB() (*gorm.DB, error) {
 			source_migration TEXT,
 			vnc_port INTEGER,
 			vnc_password TEXT,
+			console_enabled BOOLEAN DEFAULT 1,
+			rescue_mode BOOLEAN DEFAULT 0,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			deleted_at DATETIME
@@ -79,6 +81,7 @@ func SetupTestDB() (*gorm.DB, error) {
 			vm_id TEXT NOT NULL,
 			ip_address TEXT NOT NULL,
 			bandwidth_limit INTEGER DEFAULT 0,
+			bandwidth_quota_gb INTEGER DEFAULT 0,
 			vlan_id INTEGER,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,

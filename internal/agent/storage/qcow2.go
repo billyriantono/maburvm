@@ -65,6 +65,40 @@ func (q *QCOW2Manager) CreateImage(path string, sizeGB int) error {
 	return nil
 }
 
+// CreateVolume provisions a new disk image of the given format ("qcow2" or
+// "raw") and virtual size in GB, returning the on-disk (actual) size in bytes.
+// It is the storage-pool counterpart of CreateImage (which is qcow2-only).
+func (q *QCOW2Manager) CreateVolume(path, format string, sizeGB int) (int64, error) {
+	if sizeGB <= 0 {
+		return 0, fmt.Errorf("size must be positive, got %d", sizeGB)
+	}
+	if format != "qcow2" && format != "raw" {
+		return 0, fmt.Errorf("unsupported volume format %q (want qcow2 or raw)", format)
+	}
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return 0, fmt.Errorf("failed to create directory %s: %w", dir, err)
+	}
+	if _, err := os.Stat(path); err == nil {
+		return 0, fmt.Errorf("volume already exists: %s", path)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), q.timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, q.qemuImgPath, "create", "-f", format, path, fmt.Sprintf("%dG", sizeGB))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return 0, fmt.Errorf("failed to create volume: %w (output: %s)", err, string(output))
+	}
+
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0, fmt.Errorf("volume created but stat failed: %w", err)
+	}
+	return fi.Size(), nil
+}
+
 // ResizeImage resizes an existing QCOW2 image to the new size in GB
 func (q *QCOW2Manager) ResizeImage(path string, newSizeGB int) error {
 	if newSizeGB <= 0 {
@@ -118,6 +152,56 @@ func (q *QCOW2Manager) CloneImage(source string, dest string) error {
 		return fmt.Errorf("failed to clone QCOW2 image: %w (output: %s)", err, string(output))
 	}
 
+	return nil
+}
+
+// ConvertCompressed exports source into a standalone, compressed qcow2 at dest.
+// Used for disk backups (independent of any backing chain).
+func (q *QCOW2Manager) ConvertCompressed(source string, dest string) error {
+	if _, err := os.Stat(source); err != nil {
+		return fmt.Errorf("source image not found: %s", source)
+	}
+	dir := filepath.Dir(dest)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory %s: %w", dir, err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), q.timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, q.qemuImgPath, "convert", "-O", "qcow2", "-c", source, dest)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to export compressed QCOW2 image: %w (output: %s)", err, string(output))
+	}
+
+	return nil
+}
+
+// ConvertImage converts/copies a source disk image to dest in the given format
+// ("qcow2" or "raw"), creating the destination directory if needed. qemu-img
+// convert handles cross-format imports (e.g. vmdk/raw/vdi -> qcow2).
+func (q *QCOW2Manager) ConvertImage(source, dest, format string) error {
+	if format == "" {
+		format = "qcow2"
+	}
+	if format != "qcow2" && format != "raw" {
+		return fmt.Errorf("unsupported target format %q (want qcow2 or raw)", format)
+	}
+	if _, err := os.Stat(source); err != nil {
+		return fmt.Errorf("source image not found: %s", source)
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), q.timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, q.qemuImgPath, "convert", "-O", format, source, dest)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to convert image: %w (output: %s)", err, string(output))
+	}
 	return nil
 }
 

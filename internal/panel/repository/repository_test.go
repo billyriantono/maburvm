@@ -94,7 +94,7 @@ func (suite *RepositoryTestSuite) TestBaseRepository_Update() {
 
 	// Verify update
 	var found models.User
-	err = suite.DB.First(&found, user.ID).Error
+	err = suite.DB.First(&found, "id = ?", user.ID).Error
 	assert.NoError(suite.T(), err)
 	assert.Equal(suite.T(), models.RoleAdmin, found.Role)
 }

@@ -84,6 +84,16 @@ func validateConfig(cfg *config.AgentServerConfig) error {
 		}
 	}
 
+	// An auth token is mandatory in production: without one the interceptor would
+	// have no secret to check against. (The interceptor fails closed regardless,
+	// but refusing to start surfaces the misconfiguration immediately.)
+	if cfg.Environment == "production" && cfg.AuthToken == "" {
+		return fmt.Errorf("AGENT_AUTH_TOKEN is required in production")
+	}
+	if cfg.AuthToken == "" {
+		log.Println("WARNING: AGENT_AUTH_TOKEN is not set — all authenticated RPCs will be rejected (fail-closed).")
+	}
+
 	// Validate bind address - should not be 0.0.0.0 in production
 	if cfg.Environment == "production" && cfg.BindAddress == "0.0.0.0" {
 		log.Println("WARNING: gRPC server binding to 0.0.0.0 in production. Consider binding to a private interface.")
@@ -308,6 +318,14 @@ func (s *Server) Start() error {
 	s.healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
 
 	// Initialize dependencies for NodeAgent service
+	libvirtCfg := config.LibvirtConfig{
+		URI:         getEnvOrDefault("LIBVIRT_URI", "qemu:///system"),
+		PoolMinSize: 2,
+		PoolMaxSize: 10,
+	}
+	if err := libvirt.Initialize(libvirtCfg); err != nil {
+		log.Printf("[Server] Failed to initialize libvirt pool: %v (VM operations will be unavailable)", err)
+	}
 	libvirtMgr := libvirt.NewVMManager()
 	var networkMgr *network.Manager
 	var healthColl *healthcollector.MetricsCollector

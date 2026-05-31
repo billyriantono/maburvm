@@ -59,6 +59,7 @@ func (h *TemplateHandler) RegisterRoutes(e *echo.Echo, authMiddleware echo.Middl
 
 	api.POST("", h.CreateTemplate)
 	api.GET("", h.ListTemplates)
+	api.POST("/download-url", h.DownloadFromURL)
 	api.GET("/:id", h.GetTemplate)
 	api.PUT("/:id", h.UpdateTemplate)
 	api.DELETE("/:id", h.DeleteTemplate)
@@ -266,6 +267,64 @@ func (h *TemplateHandler) DeleteTemplate(c echo.Context) error {
 
 	return c.JSON(http.StatusOK, SuccessResponse{
 		Message: "Template deleted successfully",
+	})
+}
+
+// DownloadFromURL handles POST /api/v1/templates/download-url
+// Initiates download of an ISO/template from a remote URL
+func (h *TemplateHandler) DownloadFromURL(c echo.Context) error {
+	var req struct {
+		URL      string `json:"url"`
+		Filename string `json:"filename"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error:   "invalid_request",
+			Message: "Failed to parse request body",
+		})
+	}
+	if req.URL == "" {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error:   "validation_error",
+			Message: "URL is required",
+		})
+	}
+	if req.Filename == "" {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error:   "validation_error",
+			Message: "Filename is required",
+		})
+	}
+
+	// Create template record with the download URL
+	svcReq := service.CreateTemplateRequest{
+		Name:    req.Filename,
+		Version: "1.0",
+		FileURL: req.URL,
+	}
+
+	resp, err := h.templateService.CreateTemplate(c.Request().Context(), &svcReq)
+	if err != nil {
+		// If already exists, that's fine — just report success
+		if err == service.ErrTemplateAlreadyExists {
+			return c.JSON(http.StatusOK, SuccessResponse{
+				Message: "Template already exists, download skipped",
+			})
+		}
+		return c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error:   "internal_error",
+			Message: err.Error(),
+		})
+	}
+
+	return c.JSON(http.StatusOK, SuccessResponse{
+		Message: "Download initiated successfully",
+		Data: map[string]interface{}{
+			"template_id": resp.Template.ID,
+			"filename":    req.Filename,
+			"url":         req.URL,
+			"status":      "downloading",
+		},
 	})
 }
 

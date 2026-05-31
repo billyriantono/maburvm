@@ -39,11 +39,24 @@ type NodeService struct {
 }
 
 // NewNodeService creates a new NodeService instance
-func NewNodeService(repo *repository.NodeRepository, db *gorm.DB) *NodeService {
-	agentClient, _ := client.NewAgentClient(nil)
+func NewNodeService(repo *repository.NodeRepository, db ...*gorm.DB) *NodeService {
+	var database *gorm.DB
+	if len(db) > 0 {
+		database = db[0]
+	}
+	agentCfg := &client.ClientConfig{
+		MaxRetries:         2,
+		InitialBackoff:     100 * time.Millisecond,
+		MaxBackoff:         5 * time.Second,
+		BackoffMultiplier:  2.0,
+		RequestTimeout:     10 * time.Second,
+		ConnectionTimeout:  5 * time.Second,
+		InsecureSkipVerify: true, // Agent uses self-signed TLS certs
+	}
+	agentClient, _ := client.NewAgentClient(agentCfg)
 	return &NodeService{
 		repo:        repo,
-		db:          db,
+		db:          database,
 		agentPort:   DefaultAgentPort,
 		timeout:     5 * time.Second,
 		agentClient: agentClient,
@@ -294,6 +307,15 @@ func (s *NodeService) GetNodesWithHealth(ctx context.Context) ([]NodeWithHealth,
 			Node:   node,
 			Online: online,
 		}
+
+		// Auto-sync status based on health check
+		if online && node.Status == models.NodeStatusOffline {
+			_ = s.repo.UpdateStatus(ctx, node.ID, models.NodeStatusActive)
+			result[i].Node.Status = models.NodeStatusActive
+		} else if !online && node.Status == models.NodeStatusActive {
+			_ = s.repo.UpdateStatus(ctx, node.ID, models.NodeStatusOffline)
+			result[i].Node.Status = models.NodeStatusOffline
+		}
 	}
 
 	return result, nil
@@ -348,6 +370,10 @@ func (s *NodeService) GetNodeMetrics(ctx context.Context, id string) (*NodeMetri
 		return nil, fmt.Errorf("failed to check node health: %w", err)
 	}
 
+	// Get VM count from database
+	var vmCount int64
+	s.db.WithContext(ctx).Model(&models.VM{}).Where("node_id = ?", id).Count(&vmCount)
+
 	if !online {
 		return &NodeMetrics{
 			NodeID:      id,
@@ -355,48 +381,94 @@ func (s *NodeService) GetNodeMetrics(ctx context.Context, id string) (*NodeMetri
 			CPUUsage:    0,
 			MemoryUsage: 0,
 			DiskUsage:   0,
-			VMCount:     0,
+			VMCount:     int(vmCount),
 			Status:      "offline",
 		}, nil
 	}
 
-	// Get real metrics from agent
-	metricsResult, err := s.agentClient.GetNodeMetrics(ctx, id)
-	if err != nil {
-		// If failed to get metrics, return online status with zero values
-		return &NodeMetrics{
-			NodeID:      id,
-			Timestamp:   time.Now(),
-			CPUUsage:    0,
-			MemoryUsage: 0,
-			DiskUsage:   0,
-			VMCount:     0,
-			Status:      "online",
-		}, nil
+	// Register node with agent client and try to get metrics
+	if s.agentClient != nil {
+		nodeInfo := client.NodeInfo{
+			ID:         node.ID,
+			Address:    fmt.Sprintf("%s:%d", node.IPAddress, s.agentPort),
+			Token:      node.Token,
+			TLSEnabled: true,
+		}
+		s.agentClient.RegisterNode(nodeInfo)
+
+		// Get system info from agent
+		sysInfo, err := s.agentClient.GetNodeInfo(ctx, id)
+		if err == nil {
+			memTotalMB := sysInfo.MemoryTotal / (1024 * 1024)
+			diskTotalGB := sysInfo.DiskTotal / (1024 * 1024 * 1024)
+
+			return &NodeMetrics{
+				NodeID:               id,
+				Timestamp:            time.Now(),
+				CPUUsage:             sysInfo.CpuPercent,
+				MemoryUsage:          sysInfo.MemoryUsedPercent,
+				MemoryUsed:           sysInfo.MemoryUsedBytes,
+				MemoryTotal:          sysInfo.MemoryTotal,
+				DiskUsage:            sysInfo.DiskUsedPercent,
+				DiskUsed:             sysInfo.DiskUsedBytes,
+				DiskTotal:            sysInfo.DiskTotal,
+				NetworkRxBytesPerSec: float64(sysInfo.NetworkRxBytesPerSec),
+				NetworkTxBytesPerSec: float64(sysInfo.NetworkTxBytesPerSec),
+				DiskReadBytesPerSec:  float64(sysInfo.DiskReadBytesPerSec),
+				DiskWriteBytesPerSec: float64(sysInfo.DiskWriteBytesPerSec),
+				VMCount:              int(vmCount),
+				AvailableCPUs:        int(sysInfo.AvailableCpus),
+				AvailableMemoryMB:    memTotalMB,
+				AvailableDiskGB:      diskTotalGB,
+				LoadAvg:              []float64{sysInfo.LoadAvg1, sysInfo.LoadAvg5, sysInfo.LoadAvg15},
+				Status:               "online",
+			}, nil
+		}
+		// If gRPC call fails, fall through to return online with zero metrics
 	}
 
-	// Fill VM count from database (more reliable than agent-reported count)
-	var vmCount int64
-	s.db.WithContext(ctx).Model(&models.VM{}).Where("node_id = ?", id).Count(&vmCount)
-
 	return &NodeMetrics{
-		NodeID:      id,
-		Timestamp:   metricsResult.Timestamp,
-		CPUUsage:    metricsResult.CPUUsage,
-		MemoryUsage: metricsResult.MemoryUsage,
-		DiskUsage:   metricsResult.DiskUsage,
-		VMCount:     int(vmCount),
-		Status:      "online",
+		NodeID:               id,
+		Timestamp:            time.Now(),
+		CPUUsage:             0,
+		MemoryUsage:          0,
+		MemoryUsed:           0,
+		MemoryTotal:          0,
+		DiskUsage:            0,
+		DiskUsed:             0,
+		DiskTotal:            0,
+		NetworkRxBytesPerSec: 0,
+		NetworkTxBytesPerSec: 0,
+		DiskReadBytesPerSec:  0,
+		DiskWriteBytesPerSec: 0,
+		VMCount:              int(vmCount),
+		AvailableCPUs:        0,
+		AvailableMemoryMB:    0,
+		AvailableDiskGB:      0,
+		LoadAvg:              []float64{0, 0, 0},
+		Status:               "online",
 	}, nil
 }
 
 // NodeMetrics represents node performance metrics
 type NodeMetrics struct {
-	NodeID      string    `json:"node_id"`
-	Timestamp   time.Time `json:"timestamp"`
-	CPUUsage    float64   `json:"cpu_usage"`    // Percentage
-	MemoryUsage float64   `json:"memory_usage"` // Percentage
-	DiskUsage   float64   `json:"disk_usage"`   // Percentage
-	VMCount     int       `json:"vm_count"`
-	Status      string    `json:"status"` // online, offline
+	NodeID               string    `json:"node_id"`
+	Timestamp            time.Time `json:"timestamp"`
+	CPUUsage             float64   `json:"cpu_usage"`    // Percentage
+	MemoryUsage          float64   `json:"memory_usage"` // Percentage
+	MemoryUsed           int64     `json:"memory_used"`  // Bytes
+	MemoryTotal          int64     `json:"memory_total"` // Bytes
+	DiskUsage            float64   `json:"disk_usage"`   // Percentage
+	DiskUsed             int64     `json:"disk_used"`    // Bytes
+	DiskTotal            int64     `json:"disk_total"`   // Bytes
+	NetworkRxBytesPerSec float64   `json:"network_rx_bytes_per_sec"`
+	NetworkTxBytesPerSec float64   `json:"network_tx_bytes_per_sec"`
+	DiskReadBytesPerSec  float64   `json:"disk_read_bytes_per_sec"`
+	DiskWriteBytesPerSec float64   `json:"disk_write_bytes_per_sec"`
+	VMCount              int       `json:"vm_count"`
+	AvailableCPUs        int       `json:"available_cpus"`
+	AvailableMemoryMB    int64     `json:"available_memory_mb"`
+	AvailableDiskGB      int64     `json:"available_disk_gb"`
+	LoadAvg              []float64 `json:"load_avg"`
+	Status               string    `json:"status"` // online, offline
 }

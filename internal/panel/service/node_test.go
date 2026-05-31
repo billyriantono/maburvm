@@ -27,8 +27,19 @@ func (s *NodeServiceTestSuite) SetupSuite() {
 	s.db, err = gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
 	s.Require().NoError(err)
 
-	// Auto migrate
-	err = s.db.AutoMigrate(&models.Node{})
+	// Create a SQLite-compatible nodes table. The production model uses
+	// PostgreSQL-specific types/defaults (uuid, inet, node_status,
+	// gen_random_uuid()) that SQLite cannot auto-migrate.
+	err = s.db.Exec(`CREATE TABLE IF NOT EXISTS nodes (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		ip_address TEXT NOT NULL,
+		status TEXT DEFAULT 'offline',
+		token TEXT UNIQUE NOT NULL,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		deleted_at DATETIME
+	)`).Error
 	s.Require().NoError(err)
 
 	s.repo = repository.NewNodeRepository(s.db)

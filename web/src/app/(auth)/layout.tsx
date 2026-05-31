@@ -28,7 +28,7 @@ export default function AuthLayout({
         </div>
         
         {/* Footer */}
-        <p className="text-center text-xs text-gray-400 mt-6 font-medium uppercase tracking-wider">
+        <p className="text-center text-xs text-gray-600 mt-6 font-medium uppercase tracking-wider">
           Secured with enterprise-grade encryption
         </p>
       </div>

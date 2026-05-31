@@ -18,7 +18,7 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { useTemplates } from "@/lib/hooks/use-templates"
+import { useTemplates, useDeleteTemplate } from "@/lib/hooks/use-templates"
 import { api } from "@/lib/api-client"
 import { cn } from "@/lib/utils"
 
@@ -200,7 +200,7 @@ function UploadDialog({
               </div>
             ) : (
               <div className="flex flex-col items-center gap-2">
-                <Upload className="w-12 h-12 text-gray-400" />
+                <Upload className="w-12 h-12 text-gray-600" />
                 <p className="font-bold">Click or drag ISO file</p>
                 <p className="text-sm text-gray-500">Only .iso files are supported</p>
               </div>
@@ -275,7 +275,8 @@ function Toast({ message, type, onClose }: { message: string, type: "success" | 
 }
 
 export default function ISOListPage() {
-  const { data: templates, isLoading, error } = useTemplates({ type: 'iso' })
+  const { data: templates, isLoading, error, refetch } = useTemplates({ type: 'iso' })
+  const deleteTemplate = useDeleteTemplate()
   const [searchQuery, setSearchQuery] = useState("")
   const [osFilter, setOsFilter] = useState("")
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string } | null>(null)
@@ -301,13 +302,20 @@ export default function ISOListPage() {
 
   const handleDelete = useCallback(async () => {
     if (!deleteConfirm) return
-    setToast({ message: `ISO "${deleteConfirm.name}" deleted`, type: "success" })
-    setDeleteConfirm(null)
-  }, [deleteConfirm])
+    try {
+      await deleteTemplate.mutateAsync(deleteConfirm.id)
+      setToast({ message: `ISO "${deleteConfirm.name}" deleted`, type: "success" })
+      setDeleteConfirm(null)
+      refetch()
+    } catch (err) {
+      setToast({ message: `Failed to delete: ${(err as Error).message}`, type: "error" })
+    }
+  }, [deleteConfirm, deleteTemplate, refetch])
 
   const handleUpload = useCallback(() => {
     setUploadDialogOpen(false)
-    setToast({ message: "ISO upload started. Check templates page for progress.", type: "success" })
+    // Direct file upload isn't supported (the node fetches images by URL).
+    setToast({ message: "Local upload isn't supported — use Remote URL so the node can fetch the ISO.", type: "error" })
   }, [])
 
   const handleRemoteUpload = useCallback((url: string, filename: string) => {
@@ -367,7 +375,7 @@ export default function ISOListPage() {
       <div className="bg-white border-4 border-black p-4 shadow-neo mb-6">
         <div className="flex flex-col md:flex-row gap-4">
           <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
             <Input
               type="text"
               placeholder="Search ISOs..."
@@ -433,7 +441,7 @@ export default function ISOListPage() {
               
               <div className="col-span-2">
                 <div className="flex items-center gap-2">
-                  <HardDrive className="w-4 h-4 text-gray-400" />
+                  <HardDrive className="w-4 h-4 text-gray-600" />
                   <span className="font-mono text-sm font-bold">-</span>
                 </div>
               </div>

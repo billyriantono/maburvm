@@ -240,7 +240,7 @@ export default function TemplateDetailPage() {
             </div>
           ) : templateVMs.length === 0 ? (
             <div className="p-8 text-center">
-              <Monitor className="w-10 h-10 text-gray-300 mx-auto mb-3" />
+              <Monitor className="w-10 h-10 text-gray-500 mx-auto mb-3" />
               <p className="text-gray-500 text-sm font-medium">No VMs are using this template</p>
             </div>
           ) : (

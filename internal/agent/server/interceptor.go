@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"log"
 	"strings"
 
@@ -117,10 +118,14 @@ func (s *Server) validateToken(ctx context.Context) (string, error) {
 		return "", err
 	}
 
-	// Validate token against configured auth token
-	// In a real implementation, this would validate against a token store
-	// and potentially use JWT or similar
-	if s.config.AuthToken != "" && token != s.config.AuthToken {
+	// Validate against the agent's configured token. Fail closed: if no token is
+	// configured there is no valid credential, so reject rather than accept any
+	// token (the previous behaviour was an auth bypass). Constant-time compare
+	// avoids leaking the token via response timing.
+	if s.config.AuthToken == "" {
+		return "", status.Errorf(codes.Unauthenticated, "agent has no auth token configured")
+	}
+	if subtle.ConstantTimeCompare([]byte(token), []byte(s.config.AuthToken)) != 1 {
 		return "", status.Errorf(codes.PermissionDenied, "invalid token")
 	}
 

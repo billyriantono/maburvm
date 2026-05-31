@@ -37,3 +37,6 @@ go.work.sum
 
 web/.next
 node_modules/
+
+# Local tooling artifacts
+.commandcode/

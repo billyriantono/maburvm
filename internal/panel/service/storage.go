@@ -1,11 +1,16 @@
 package service
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"time"
 
 	"github.com/maburvm/panel/internal/panel/repository"
 	"github.com/maburvm/panel/internal/shared/models"
 )
+
+const bytesPerGB = 1024 * 1024 * 1024
 
 // StorageService defines the interface for storage business logic
 type StorageService interface {
@@ -24,13 +29,25 @@ type StorageService interface {
 
 // storageService implements StorageService
 type storageService struct {
-	repo repository.StorageRepository
+	repo        repository.StorageRepository
+	nodeRepo    *repository.NodeRepository
+	provisioner VolumeProvisioner
 }
 
-// NewStorageService creates a new storage service
+// NewStorageService creates a storage service that persists metadata only.
 func NewStorageService(repo repository.StorageRepository) StorageService {
 	return &storageService{
 		repo: repo,
+	}
+}
+
+// NewStorageServiceWithProvisioner creates a storage service that provisions
+// real volumes on node agents (and removes them on delete).
+func NewStorageServiceWithProvisioner(repo repository.StorageRepository, nodeRepo *repository.NodeRepository, provisioner VolumeProvisioner) StorageService {
+	return &storageService{
+		repo:        repo,
+		nodeRepo:    nodeRepo,
+		provisioner: provisioner,
 	}
 }
 
@@ -145,7 +162,9 @@ func (s *storageService) GetVolumeByID(id string) (*models.StorageVolume, error)
 	return s.repo.GetVolumeByID(id)
 }
 
-// CreateVolume creates a new storage volume
+// CreateVolume creates a new storage volume. When a provisioner is wired, it
+// first provisions a real disk image on the pool's node (recording the actual
+// path) and only persists the record if provisioning succeeds.
 func (s *storageService) CreateVolume(volume *models.StorageVolume) error {
 	if volume.Name == "" {
 		return errors.New("volume name is required")
@@ -159,10 +178,43 @@ func (s *storageService) CreateVolume(volume *models.StorageVolume) error {
 		volume.Format = "qcow2"
 	}
 
+	if s.provisioner != nil && s.nodeRepo != nil {
+		pool, err := s.repo.GetPoolByID(volume.PoolID)
+		if err != nil {
+			return err
+		}
+		if pool == nil {
+			return errors.New("pool not found")
+		}
+
+		sizeGB := volume.Size / bytesPerGB
+		if volume.Size%bytesPerGB != 0 {
+			sizeGB++ // round up to the next whole GB
+		}
+		if sizeGB <= 0 {
+			return errors.New("volume size must be at least 1 GB")
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+
+		node, err := s.nodeRepo.GetByID(ctx, pool.NodeID)
+		if err != nil {
+			return fmt.Errorf("failed to get node for pool: %w", err)
+		}
+		path, _, err := s.provisioner.CreateVolume(ctx, node, pool.Type, pool.Path, volume.Name, volume.Format, sizeGB)
+		if err != nil {
+			return fmt.Errorf("failed to provision volume: %w", err)
+		}
+		volume.Path = path
+	}
+
 	return s.repo.CreateVolume(volume)
 }
 
-// DeleteVolume deletes a storage volume
+// DeleteVolume deletes a storage volume. When a provisioner is wired, it removes
+// the real disk image from the node first and fails (keeping the record) if that
+// cannot be done, so the DB never claims a volume is gone while its file remains.
 func (s *storageService) DeleteVolume(id string) error {
 	if id == "" {
 		return errors.New("volume ID is required")
@@ -174,6 +226,27 @@ func (s *storageService) DeleteVolume(id string) error {
 	}
 	if existing == nil {
 		return errors.New("volume not found")
+	}
+
+	if s.provisioner != nil && s.nodeRepo != nil && existing.Path != "" {
+		pool, err := s.repo.GetPoolByID(existing.PoolID)
+		if err != nil {
+			return err
+		}
+		if pool == nil {
+			return errors.New("pool not found")
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+
+		node, err := s.nodeRepo.GetByID(ctx, pool.NodeID)
+		if err != nil {
+			return fmt.Errorf("failed to get node for pool: %w", err)
+		}
+		if err := s.provisioner.DeleteVolume(ctx, node, pool.Type, existing.Path); err != nil {
+			return fmt.Errorf("failed to delete volume file: %w", err)
+		}
 	}
 
 	return s.repo.DeleteVolume(id)

@@ -142,6 +142,34 @@ func (r *BandwidthUsageRepository) MarkExceeded(ctx context.Context, vmID string
 		}).Error
 }
 
+// SetQuota updates a VM's monthly bandwidth quota (GB) on its network config and
+// applies it to the current period. When the new quota is unlimited (0) or the
+// VM is now back under quota, the exceeded flag is cleared so raising the quota
+// lifts a bandwidth suspension (the VM still has to be started again manually).
+func (r *BandwidthUsageRepository) SetQuota(ctx context.Context, vmID string, quotaGB int64) error {
+	quotaBytes := quotaGB * 1024 * 1024 * 1024
+	now := time.Now()
+	periodStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Persist on the VM's network interface(s) — the source of truth.
+		if err := tx.Model(&models.Network{}).Where("vm_id = ?", vmID).
+			Update("bandwidth_quota_gb", quotaGB).Error; err != nil {
+			return err
+		}
+		// Apply to the current period record (if one exists yet).
+		if err := tx.Model(&models.BandwidthUsage{}).
+			Where("vm_id = ? AND period_start = ?", vmID, periodStart).
+			Update("quota_bytes", quotaBytes).Error; err != nil {
+			return err
+		}
+		// Clear overage flag when unlimited or now under the new quota.
+		return tx.Model(&models.BandwidthUsage{}).
+			Where("vm_id = ? AND period_start = ? AND (? = 0 OR total_bytes < ?)", vmID, periodStart, quotaBytes, quotaBytes).
+			Updates(map[string]interface{}{"exceeded": false, "blocked_at": nil}).Error
+	})
+}
+
 // ResetPeriod creates a new period record (called at billing cycle reset)
 func (r *BandwidthUsageRepository) ResetPeriod(ctx context.Context, vmID, nodeID string) error {
 	now := time.Now()

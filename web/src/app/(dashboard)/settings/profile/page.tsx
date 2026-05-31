@@ -1,7 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
-import { useRouter } from "next/navigation"
+import { useState, useEffect } from "react"
 import { toast } from "sonner"
 import QRCode from "qrcode"
 import { zodResolver } from "@hookform/resolvers/zod"
@@ -16,7 +15,6 @@ import {
   ShieldOff,
   Key,
   Copy,
-  RefreshCw,
   Eye,
   EyeOff,
   CheckCircle,
@@ -24,6 +22,11 @@ import {
   AlertCircle,
   Save,
   Loader2,
+  Gauge,
+  Cpu,
+  MemoryStick,
+  HardDrive,
+  Server,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -39,6 +42,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { useCurrentUser } from "@/lib/hooks/use-auth"
+import { useChangePassword, useSetup2FA, useVerify2FA, useDisable2FA } from "@/lib/hooks/use-settings"
+import { useMyQuota } from "@/lib/hooks/use-quota"
 
 // Password change schema
 const passwordSchema = z.object({
@@ -64,26 +69,57 @@ const totpSchema = z.object({
 type PasswordFormData = z.infer<typeof passwordSchema>
 type TOTPFormData = z.infer<typeof totpSchema>
 
-// Generate backup codes
-function generateBackupCodes(): string[] {
-  const codes: string[] = []
-  for (let i = 0; i < 10; i++) {
-    const code = Array.from({ length: 8 }, () =>
-      Math.random() > 0.5
-        ? String.fromCharCode(65 + Math.floor(Math.random() * 26))
-        : Math.floor(Math.random() * 10)
-    ).join("")
-    codes.push(code)
-  }
-  return codes
+// QuotaMeter renders one resource dimension as a labelled usage bar.
+// A limit of 0 means unlimited (shown as ∞ with an empty track).
+function QuotaMeter({
+  icon: Icon,
+  label,
+  used,
+  limit,
+  unit = "",
+}: {
+  icon: typeof Cpu
+  label: string
+  used: number
+  limit: number
+  unit?: string
+}) {
+  const unlimited = !limit || limit <= 0
+  const pct = unlimited ? 0 : Math.min(100, Math.round((used / limit) * 100))
+  const over = !unlimited && used > limit
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <span className="flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-gray-500">
+          <Icon className="w-4 h-4" />
+          {label}
+        </span>
+        <span className="text-sm font-mono font-bold text-black">
+          {used.toLocaleString()}{unit} / {unlimited ? "∞" : `${limit.toLocaleString()}${unit}`}
+        </span>
+      </div>
+      <div className="h-3 w-full border-2 border-black bg-white">
+        <div
+          className={over ? "h-full bg-danger" : "h-full bg-success"}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+    </div>
+  )
 }
 
 export default function ProfileSettingsPage() {
-  const router = useRouter()
-  
   // Data hook
   const { data: user, isLoading: userLoading, error: userError } = useCurrentUser()
-  
+  const { data: quota } = useMyQuota()
+
+  // Real settings mutations (backend-backed)
+  const changePassword = useChangePassword()
+  const setup2FA = useSetup2FA()
+  const verify2FA = useVerify2FA()
+  const disable2FA = useDisable2FA()
+  const [setupSecret, setSetupSecret] = useState("")
+
   const [showPasswordForm, setShowPasswordForm] = useState(false)
   const [showCurrentPassword, setShowCurrentPassword] = useState(false)
   const [showNewPassword, setShowNewPassword] = useState(false)
@@ -96,7 +132,6 @@ export default function ProfileSettingsPage() {
   const [showBackupCodes, setShowBackupCodes] = useState(false)
   const [showDisableDialog, setShowDisableDialog] = useState(false)
   const [setupStep, setSetupStep] = useState<"qr" | "verify" | "backup">("qr")
-  const [qrCodeUrl, setQrCodeUrl] = useState<string>("")
   const [qrCodeImage, setQrCodeImage] = useState<string>("")
   const [backupCodes, setBackupCodes] = useState<string[]>([])
   const [isVerifying, setIsVerifying] = useState(false)
@@ -126,64 +161,74 @@ export default function ProfileSettingsPage() {
     },
   })
 
-  // Generate TOTP secret and QR code
+  // Render the QR for the real secret returned by the backend setup call.
   useEffect(() => {
-    if (showSetupDialog && setupStep === "qr" && user) {
-      // TODO: Replace with useSetup2FA() hook when 2FA setup endpoint is production-ready
-      const secret = "JBSWY3DPEHPK3PXP"
-      const otpauthUrl = `otpauth://totp/MaburVM:${user.email}?secret=${secret}&issuer=MaburVM`
-      
-      setQrCodeUrl(otpauthUrl)
-
-      // Generate QR code as data URL
+    if (showSetupDialog && setupStep === "qr" && user && setupSecret) {
+      const otpauthUrl = `otpauth://totp/MaburVM:${user.email}?secret=${setupSecret}&issuer=MaburVM`
       QRCode.toDataURL(otpauthUrl, {
         width: 200,
         margin: 2,
-        color: {
-          dark: "#000000",
-          light: "#FFFFFF",
-        },
+        color: { dark: "#000000", light: "#FFFFFF" },
       }).then(setQrCodeImage).catch(console.error)
     }
-  }, [showSetupDialog, setupStep, user])
+  }, [showSetupDialog, setupStep, user, setupSecret])
 
   const handlePasswordChange = async (data: PasswordFormData) => {
     setIsLoading(true)
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-    
-    toast.success("Password changed successfully!", {
-      description: "Your password has been updated. Please use your new password next time you log in.",
-    })
-    
-    setShowPasswordForm(false)
-    passwordForm.reset()
-    setIsLoading(false)
+    try {
+      await changePassword.mutateAsync({
+        current_password: data.oldPassword,
+        new_password: data.newPassword,
+      })
+      toast.success("Password changed successfully!", {
+        description: "Your password has been updated. Use it next time you log in.",
+      })
+      setShowPasswordForm(false)
+      passwordForm.reset()
+    } catch (err) {
+      toast.error("Failed to change password", {
+        description: (err as Error).message || "Check your current password and try again.",
+      })
+    } finally {
+      setIsLoading(false)
+    }
   }
 
-  const handleStart2FASetup = () => {
+  const handleStart2FASetup = async () => {
     setShowSetupDialog(true)
     setSetupStep("qr")
     setQrCodeImage("")
+    setSetupSecret("")
+    try {
+      // Backend generates a real TOTP secret + backup codes (encrypted at rest).
+      const res = await setup2FA.mutateAsync()
+      setSetupSecret(res.secret)
+      setBackupCodes(res.backup_codes || [])
+    } catch (err) {
+      toast.error("Failed to start 2FA setup", {
+        description: (err as Error).message,
+      })
+      setShowSetupDialog(false)
+    }
   }
 
   const handleVerifySetup = async (data: TOTPFormData) => {
     setIsVerifying(true)
-    
-    // Simulate verification (accept any 6-digit code for demo)
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-    
-    // Generate backup codes
-    const codes = generateBackupCodes()
-    setBackupCodes(codes)
-    setSetupStep("backup")
-    
-    toast.success("2FA enabled successfully!", {
-      description: "Save your backup codes in a secure location.",
-    })
-    
-    setTwoFactorEnabled(true)
-    setIsVerifying(false)
+    try {
+      // Verifies the TOTP code against the real secret server-side.
+      await verify2FA.mutateAsync(data.code)
+      setSetupStep("backup") // backup codes already returned by setup
+      setTwoFactorEnabled(true)
+      toast.success("2FA enabled successfully!", {
+        description: "Save your backup codes in a secure location.",
+      })
+    } catch (err) {
+      toast.error("Invalid code", {
+        description: (err as Error).message || "The code did not match. Try again.",
+      })
+    } finally {
+      setIsVerifying(false)
+    }
   }
 
   const handleCopyBackupCodes = () => {
@@ -193,28 +238,25 @@ export default function ProfileSettingsPage() {
     })
   }
 
-  const handleRegenerateBackupCodes = () => {
-    const codes = generateBackupCodes()
-    setBackupCodes(codes)
-    toast.info("New backup codes generated!", {
-      description: "Previous backup codes are no longer valid.",
-    })
-  }
-
   const handleDisable2FA = async () => {
     setIsLoading(true)
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-    
-    setTwoFactorEnabled(false)
-    setShowDisableDialog(false)
-    setShowBackupCodes(false)
-    setShowSetupDialog(false)
-    
-    toast.success("2FA disabled", {
-      description: "Two-factor authentication has been disabled for your account.",
-    })
-    
-    setIsLoading(false)
+    try {
+      await disable2FA.mutateAsync("")
+      setTwoFactorEnabled(false)
+      setShowDisableDialog(false)
+      setShowBackupCodes(false)
+      setShowSetupDialog(false)
+      setBackupCodes([])
+      toast.success("2FA disabled", {
+        description: "Two-factor authentication has been disabled for your account.",
+      })
+    } catch (err) {
+      toast.error("Failed to disable 2FA", {
+        description: (err as Error).message,
+      })
+    } finally {
+      setIsLoading(false)
+    }
   }
 
   const handleCloseSetupDialog = () => {
@@ -328,6 +370,25 @@ export default function ProfileSettingsPage() {
           </CardContent>
         </Card>
 
+        {/* Resource Quota Card */}
+        {quota && (
+          <Card>
+            <CardHeader className="border-b-2 border-black">
+              <CardTitle className="flex items-center gap-2">
+                <Gauge className="w-5 h-5" />
+                Resource Quota
+              </CardTitle>
+              <CardDescription>Your usage against account limits (∞ = unlimited)</CardDescription>
+            </CardHeader>
+            <CardContent className="p-6 space-y-4">
+              <QuotaMeter icon={Server} label="Virtual Machines" used={quota.usage.vms} limit={quota.quota.max_vms} />
+              <QuotaMeter icon={Cpu} label="vCPU" used={quota.usage.vcpu} limit={quota.quota.max_vcpu} />
+              <QuotaMeter icon={MemoryStick} label="Memory" used={quota.usage.ram_mb} limit={quota.quota.max_ram_mb} unit=" MB" />
+              <QuotaMeter icon={HardDrive} label="Disk" used={quota.usage.disk_gb} limit={quota.quota.max_disk_gb} unit=" GB" />
+            </CardContent>
+          </Card>
+        )}
+
         {/* Change Password Card */}
         <Card>
           <CardHeader className="border-b-2 border-black">
@@ -371,7 +432,7 @@ export default function ProfileSettingsPage() {
                     <button
                       type="button"
                       onClick={() => setShowCurrentPassword(!showCurrentPassword)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-black"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-600 hover:text-black"
                     >
                       {showCurrentPassword ? (
                         <EyeOff className="w-4 h-4" />
@@ -403,7 +464,7 @@ export default function ProfileSettingsPage() {
                     <button
                       type="button"
                       onClick={() => setShowNewPassword(!showNewPassword)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-black"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-600 hover:text-black"
                     >
                       {showNewPassword ? (
                         <EyeOff className="w-4 h-4" />
@@ -421,19 +482,19 @@ export default function ProfileSettingsPage() {
                   <div className="mt-2 p-3 bg-gray-50 border-2 border-black">
                     <p className="text-xs font-bold uppercase mb-2">Password requirements:</p>
                     <ul className="text-xs space-y-1">
-                      <li className={passwordForm.watch("newPassword")?.length >= 8 ? "text-success" : "text-gray-400"}>
+                      <li className={passwordForm.watch("newPassword")?.length >= 8 ? "text-success" : "text-gray-600"}>
                         {passwordForm.watch("newPassword")?.length >= 8 ? "✓" : "○"} At least 8 characters
                       </li>
-                      <li className={/[A-Z]/.test(passwordForm.watch("newPassword") || "") ? "text-success" : "text-gray-400"}>
+                      <li className={/[A-Z]/.test(passwordForm.watch("newPassword") || "") ? "text-success" : "text-gray-600"}>
                         {/[A-Z]/.test(passwordForm.watch("newPassword") || "") ? "✓" : "○"} One uppercase letter
                       </li>
-                      <li className={/[a-z]/.test(passwordForm.watch("newPassword") || "") ? "text-success" : "text-gray-400"}>
+                      <li className={/[a-z]/.test(passwordForm.watch("newPassword") || "") ? "text-success" : "text-gray-600"}>
                         {/[a-z]/.test(passwordForm.watch("newPassword") || "") ? "✓" : "○"} One lowercase letter
                       </li>
-                      <li className={/[0-9]/.test(passwordForm.watch("newPassword") || "") ? "text-success" : "text-gray-400"}>
+                      <li className={/[0-9]/.test(passwordForm.watch("newPassword") || "") ? "text-success" : "text-gray-600"}>
                         {/[0-9]/.test(passwordForm.watch("newPassword") || "") ? "✓" : "○"} One number
                       </li>
-                      <li className={/[^A-Za-z0-9]/.test(passwordForm.watch("newPassword") || "") ? "text-success" : "text-gray-400"}>
+                      <li className={/[^A-Za-z0-9]/.test(passwordForm.watch("newPassword") || "") ? "text-success" : "text-gray-600"}>
                         {/[^A-Za-z0-9]/.test(passwordForm.watch("newPassword") || "") ? "✓" : "○"} One special character
                       </li>
                     </ul>
@@ -456,7 +517,7 @@ export default function ProfileSettingsPage() {
                     <button
                       type="button"
                       onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-black"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-600 hover:text-black"
                     >
                       {showConfirmPassword ? (
                         <EyeOff className="w-4 h-4" />
@@ -592,7 +653,7 @@ export default function ProfileSettingsPage() {
               </div>
               <div className="text-center">
                 <p className="text-sm font-medium">Manual entry code:</p>
-                <code className="text-xs bg-gray-100 px-2 py-1 border border-black">JBSWY3DPEHPK3PXP</code>
+                <code className="text-xs bg-gray-100 px-2 py-1 border border-black break-all">{setupSecret || "…"}</code>
               </div>
               <Button onClick={() => setSetupStep("verify")} className="w-full">
                 Next: Verify Code
@@ -616,10 +677,10 @@ export default function ProfileSettingsPage() {
                   </p>
                 )}
               </div>
-              <div className="flex items-center gap-2 p-3 bg-warning border-2 border-black">
-                <AlertTriangle className="w-4 h-4" />
+              <div className="flex items-center gap-2 p-3 bg-gray-100 border-2 border-black">
+                <Shield className="w-4 h-4" />
                 <p className="text-xs font-bold">
-                  For demo: Enter any 6-digit code
+                  Enter the current 6-digit code from your authenticator app
                 </p>
               </div>
               <Button type="submit" className="w-full" disabled={isVerifying}>
@@ -662,10 +723,6 @@ export default function ProfileSettingsPage() {
                 <Button variant="secondary" onClick={handleCopyBackupCodes} className="flex-1">
                   <Copy className="w-4 h-4 mr-2" />
                   Copy Codes
-                </Button>
-                <Button variant="secondary" onClick={handleRegenerateBackupCodes} className="flex-1">
-                  <RefreshCw className="w-4 h-4 mr-2" />
-                  Regenerate
                 </Button>
               </div>
               <Button onClick={handleCloseSetupDialog} className="w-full">

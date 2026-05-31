@@ -57,6 +57,38 @@ service NodeAgent {
   // ImportDisk imports a disk image from a source path to the VM's storage.
   // Used for VM migration from external sources like Virtualizor.
   rpc ImportDisk(DiskImportRequest) returns (DiskImportResponse);
+
+  // BackupDisk exports a VM's primary disk (compressed qcow2) and uploads it to
+  // the node's configured object storage, returning the object key, size and
+  // checksum. This is the real backup payload (not just metadata).
+  rpc BackupDisk(BackupDiskRequest) returns (BackupDiskResponse);
+
+  // GetLiveMetrics retrieves real-time system metrics from the node including
+  // CPU usage, memory usage, disk usage, network I/O, disk I/O, and load average.
+  rpc GetLiveMetrics(GetLiveMetricsRequest) returns (GetLiveMetricsResponse);
+
+  // ScanVMs scans the node for all VMs via libvirt and returns their info for import
+  rpc ScanVMs(ScanVMsRequest) returns (ScanVMsResponse);
+
+  // CreateStorageVolume provisions a real disk image (qcow2/raw) in a storage
+  // pool directory on the node, returning its path and actual size.
+  rpc CreateStorageVolume(CreateStorageVolumeRequest) returns (CreateStorageVolumeResponse);
+
+  // DeleteStorageVolume removes a previously provisioned volume file from the node.
+  rpc DeleteStorageVolume(DeleteStorageVolumeRequest) returns (DeleteStorageVolumeResponse);
+
+  // MigrateVM live-migrates a domain from this (source) node to a destination
+  // libvirt URI using peer-to-peer migration.
+  rpc MigrateVM(MigrateVMRequest) returns (MigrateVMResponse);
+
+  // SyncTemplate downloads/caches an OS template image on this node and returns
+  // its local path, size and checksum (idempotent — reuses a cached copy).
+  rpc SyncTemplate(SyncTemplateRequest) returns (SyncTemplateResponse);
+
+  // AttachDisk provisions a new data volume and hot-plugs it into a VM as the
+  // next free virtio target. DetachDisk removes it (and optionally deletes it).
+  rpc AttachDisk(AttachDiskRequest) returns (AttachDiskResponse);
+  rpc DetachDisk(DetachDiskRequest) returns (DetachDiskResponse);
 }
 
 // ============================================================================
@@ -222,6 +254,11 @@ enum VMCommandType {
   VM_COMMAND_TYPE_DESTROY = 6;   // Delete the VM and its data
   VM_COMMAND_TYPE_PAUSE = 7;     // Pause execution
   VM_COMMAND_TYPE_RESUME = 8;    // Resume from pause
+  VM_COMMAND_TYPE_REBUILD = 9;   // Reinstall OS (replace disk from template)
+  VM_COMMAND_TYPE_RESIZE = 10;   // Change vCPU/memory allocation
+  VM_COMMAND_TYPE_RESET_PASSWORD = 11; // Reset the guest root password
+  VM_COMMAND_TYPE_ATTACH_ISO = 12; // Attach a bootable install/rescue ISO
+  VM_COMMAND_TYPE_DETACH_ISO = 13; // Detach the install/rescue ISO
 }
 
 // VMCommandRequest sends a lifecycle command to a VM.
@@ -291,6 +328,10 @@ message VMConfig {
 
   // vnc_password sets a password for VNC access (optional)
   string vnc_password = 9;
+
+  // root_password, when set (RESET_PASSWORD command), is the new guest root
+  // password to apply via the guest agent.
+  string root_password = 10;
 }
 
 // ============================================================================
@@ -896,6 +937,56 @@ message GetNodeInfoResponse {
 
   // error details if failed
   ErrorResponse error = 7;
+
+  // === Live metrics fields (added for real-time monitoring) ===
+
+  // cpu_percent is the current CPU usage percentage (0-100)
+  double cpu_percent = 8;
+
+  // memory_used_bytes is the current memory usage in bytes
+  int64 memory_used_bytes = 9;
+
+  // memory_used_percent is the memory usage percentage (0-100)
+  double memory_used_percent = 10;
+
+  // disk_used_bytes is the current disk usage in bytes
+  int64 disk_used_bytes = 11;
+
+  // disk_used_percent is the disk usage percentage (0-100)
+  double disk_used_percent = 12;
+
+  // network_rx_bytes_per_sec is the network receive rate
+  int64 network_rx_bytes_per_sec = 13;
+
+  // network_tx_bytes_per_sec is the network transmit rate
+  int64 network_tx_bytes_per_sec = 14;
+
+  // disk_read_bytes_per_sec is the disk read rate
+  int64 disk_read_bytes_per_sec = 15;
+
+  // disk_write_bytes_per_sec is the disk write rate
+  int64 disk_write_bytes_per_sec = 16;
+
+  // load_avg_1 is the 1-minute load average
+  double load_avg_1 = 17;
+
+  // load_avg_5 is the 5-minute load average
+  double load_avg_5 = 18;
+
+  // load_avg_15 is the 15-minute load average
+  double load_avg_15 = 19;
+
+  // running_vm_count is the number of running VMs
+  int32 running_vm_count = 20;
+
+  // available_cpus is the number of available CPU cores
+  int32 available_cpus = 21;
+
+  // available_memory_mb is the available memory in MB
+  int64 available_memory_mb = 22;
+
+  // available_disk_gb is the available disk space in GB
+  int64 available_disk_gb = 23;
 }
 
 // OSInfo contains operating system information.
@@ -969,4 +1060,283 @@ message DiskImportResponse {
 
   // error details if failed
   ErrorResponse error = 5;
+}
+
+// BackupDiskRequest requests a compressed disk backup of a VM to object storage.
+message BackupDiskRequest {
+  // vm_id is the VM whose primary disk should be backed up
+  string vm_id = 1;
+
+  // destination_key is the object storage key to upload the backup to
+  string destination_key = 2;
+
+  // compress enables qcow2 compression of the exported image
+  bool compress = 3;
+}
+
+// BackupDiskResponse reports the result of a disk backup.
+message BackupDiskResponse {
+  // success indicates if the backup+upload succeeded
+  bool success = 1;
+
+  // object_key is the storage key the disk was uploaded to
+  string object_key = 2;
+
+  // size_bytes is the size of the uploaded backup image
+  int64 size_bytes = 3;
+
+  // checksum is the SHA256 (hex) of the uploaded image
+  string checksum = 4;
+
+  // error details if failed
+  ErrorResponse error = 5;
+}
+
+// ============================================================================
+// Storage Volume Provisioning
+// ============================================================================
+
+// CreateStorageVolumeRequest provisions a new volume in a storage pool.
+message CreateStorageVolumeRequest {
+  // pool_path is the pool's backing identifier: a directory for dir/file pools,
+  // an LVM volume group for lvm pools, or a ZFS dataset for zfs pools.
+  string pool_path = 1;
+
+  // name is the volume name (a file extension is added for dir/file pools)
+  string name = 2;
+
+  // format is "qcow2" or "raw" (used by dir/file pools only)
+  string format = 3;
+
+  // size_gb is the size of the volume in GB
+  int64 size_gb = 4;
+
+  // pool_type selects the provisioning backend: "dir"/"file" (qemu-img),
+  // "lvm" (lvcreate), or "zfs" (zfs create -V). Empty defaults to dir.
+  string pool_type = 5;
+}
+
+// CreateStorageVolumeResponse reports the provisioned volume.
+message CreateStorageVolumeResponse {
+  bool success = 1;
+  // path is the absolute path of the created volume on the node
+  string path = 2;
+  // actual_size_bytes is the on-disk size after creation
+  int64 actual_size_bytes = 3;
+  ErrorResponse error = 4;
+}
+
+// DeleteStorageVolumeRequest removes a provisioned volume.
+message DeleteStorageVolumeRequest {
+  // path is the absolute path/device of the volume to delete
+  string path = 1;
+
+  // pool_type selects the removal backend (dir/file=rm, lvm=lvremove, zfs=destroy)
+  string pool_type = 2;
+}
+
+// DeleteStorageVolumeResponse reports the result of a volume deletion.
+message DeleteStorageVolumeResponse {
+  bool success = 1;
+  ErrorResponse error = 2;
+}
+
+// AttachDiskRequest provisions a data disk and attaches it to a VM.
+message AttachDiskRequest {
+  string vm_id = 1;
+  int64 size_gb = 2;
+  // pool_type selects the volume backend (dir/lvm/zfs); empty = dir.
+  string pool_type = 3;
+  // pool_path is the backing dir / VG / dataset; empty = node default image dir.
+  string pool_path = 4;
+}
+
+// AttachDiskResponse reports the attached device and its backing path.
+message AttachDiskResponse {
+  bool success = 1;
+  string device = 2; // e.g. "vdb"
+  string path = 3;   // backing volume path
+  ErrorResponse error = 4;
+}
+
+// DetachDiskRequest removes a data disk from a VM.
+message DetachDiskRequest {
+  string vm_id = 1;
+  string device = 2; // e.g. "vdb"
+  string path = 3;   // backing volume path
+  bool delete_volume = 4;
+  string pool_type = 5; // for deletion backend; empty = dir
+}
+
+// DetachDiskResponse reports the result of a disk detach.
+message DetachDiskResponse {
+  bool success = 1;
+  ErrorResponse error = 2;
+}
+
+// MigrateVMRequest live-migrates a domain to a destination node.
+message MigrateVMRequest {
+  // vm_id is the domain UUID to migrate (must exist on this source node)
+  string vm_id = 1;
+
+  // dest_uri is the destination libvirt connection URI, e.g.
+  // "qemu+ssh://root@203.0.113.131/system"
+  string dest_uri = 2;
+
+  // live performs a live migration (no downtime) when true
+  bool live = 3;
+
+  // copy_storage enables full block migration (disks copied; no shared storage)
+  bool copy_storage = 4;
+}
+
+// MigrateVMResponse reports the result of a migration.
+message MigrateVMResponse {
+  bool success = 1;
+  string message = 2;
+  ErrorResponse error = 3;
+}
+
+// SyncTemplateRequest asks the node to cache an OS template image locally.
+message SyncTemplateRequest {
+  // image_url is the template source (http(s) URL or an absolute path on the node)
+  string image_url = 1;
+
+  // expected_checksum, when set, is verified (sha256 hex) after download
+  string expected_checksum = 2;
+}
+
+// SyncTemplateResponse reports the cached template on the node.
+message SyncTemplateResponse {
+  bool success = 1;
+  // local_path is where the image is cached on the node
+  string local_path = 2;
+  // size_bytes is the cached image size
+  int64 size_bytes = 3;
+  // checksum is the sha256 (hex) of the cached image
+  string checksum = 4;
+  ErrorResponse error = 5;
+}
+
+// ============================================================================
+// Live Metrics
+// ============================================================================
+
+// GetLiveMetricsRequest requests real-time system metrics from the node.
+message GetLiveMetricsRequest {
+  // Empty request - node is identified by connection context
+}
+
+// GetLiveMetricsResponse contains real-time system metrics.
+message GetLiveMetricsResponse {
+  // success indicates if the operation succeeded
+  bool success = 1;
+
+  // cpu_percent is the current CPU usage percentage (0-100)
+  double cpu_percent = 2;
+
+  // memory_used_bytes is the current memory usage in bytes
+  int64 memory_used_bytes = 3;
+
+  // memory_total_bytes is the total system memory in bytes
+  int64 memory_total_bytes = 4;
+
+  // memory_used_percent is the memory usage percentage (0-100)
+  double memory_used_percent = 5;
+
+  // disk_used_bytes is the current disk usage in bytes
+  int64 disk_used_bytes = 6;
+
+  // disk_total_bytes is the total disk space in bytes
+  int64 disk_total_bytes = 7;
+
+  // disk_used_percent is the disk usage percentage (0-100)
+  double disk_used_percent = 8;
+
+  // network_rx_bytes_per_sec is the network receive rate in bytes/sec
+  int64 network_rx_bytes_per_sec = 9;
+
+  // network_tx_bytes_per_sec is the network transmit rate in bytes/sec
+  int64 network_tx_bytes_per_sec = 10;
+
+  // disk_read_bytes_per_sec is the disk read rate in bytes/sec
+  int64 disk_read_bytes_per_sec = 11;
+
+  // disk_write_bytes_per_sec is the disk write rate in bytes/sec
+  int64 disk_write_bytes_per_sec = 12;
+
+  // load_avg_1 is the 1-minute load average
+  double load_avg_1 = 13;
+
+  // load_avg_5 is the 5-minute load average
+  double load_avg_5 = 14;
+
+  // load_avg_15 is the 15-minute load average
+  double load_avg_15 = 15;
+
+  // running_vm_count is the number of running VMs
+  int32 running_vm_count = 16;
+
+  // available_cpus is the number of available CPU cores
+  int32 available_cpus = 17;
+
+  // available_memory_mb is the available memory in MB
+  int64 available_memory_mb = 18;
+
+  // available_disk_gb is the available disk space in GB
+  int64 available_disk_gb = 19;
+
+  // error details if failed
+  ErrorResponse error = 20;
+}
+
+// ============================================================================
+// VM Scanning for Import
+// ============================================================================
+
+// ScanVMsRequest requests a scan of all VMs on the node
+message ScanVMsRequest {
+  // scan_path is an optional custom path to scan for XML files
+  string scan_path = 1;
+}
+
+// ScanVMsResponse contains the list of discovered VMs
+message ScanVMsResponse {
+  bool success = 1;
+  repeated ScannedVM vms = 2;
+  int32 total_found = 3;
+  ErrorResponse error = 4;
+}
+
+// ScannedVM represents a VM discovered on the node
+message ScannedVM {
+  string uuid = 1;
+  string name = 2;
+  string hostname = 3;
+  int32 cpu = 4;
+  int64 memory_mb = 5;
+  int32 vnc_port = 6;
+  string vnc_password = 7;
+  string status = 8;
+  repeated ScannedDisk disks = 9;
+  repeated ScannedNetwork networks = 10;
+  string xml_path = 11;
+}
+
+// ScannedDisk represents a disk found on a scanned VM
+message ScannedDisk {
+  string source_file = 1;
+  string format = 2;
+  string device = 3;
+  string bus = 4;
+  string target_dev = 5;
+  int64 size_bytes = 6;
+}
+
+// ScannedNetwork represents a network interface found on a scanned VM
+message ScannedNetwork {
+  string mac_address = 1;
+  string bridge = 2;
+  string model = 3;
+  string ip_address = 4;
 }

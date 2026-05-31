@@ -5,13 +5,13 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,7 +25,8 @@ import (
 	"github.com/riverqueue/river"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"gorm.io/gorm"
 )
@@ -160,8 +161,11 @@ func (c *AgentClient) GetClient(nodeAddress string) (pb.NodeAgentClient, error) 
 	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
 	defer cancel()
 
+	// The agent gRPC server requires TLS. Certs are node-managed, so skip
+	// verification here (the panel↔agent channel is on a trusted network).
+	creds := credentials.NewTLS(&tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12})
 	conn, err := grpc.DialContext(ctx, nodeAddress+":50051",
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(creds),
 		grpc.WithBlock(),
 	)
 	if err != nil {
@@ -324,6 +328,30 @@ func NewVMOperationWorker(logger *slog.Logger) *VMOperationWorker {
 	return w
 }
 
+// agentAuthContext attaches the node's auth token and id to the outgoing gRPC
+// context so the agent's auth interceptor accepts the call. Without this every
+// queued VM command is rejected as Unauthenticated.
+func agentAuthContext(ctx context.Context, node *models.Node) context.Context {
+	if node == nil || node.Token == "" {
+		return ctx
+	}
+	return metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+node.Token, "x-node-id", node.ID)
+}
+
+// markBackupFailed records a failed backup status (best-effort).
+func markBackupFailed(ctx context.Context, backupID, msg string) {
+	if backupID == "" || globalWorkerContext == nil {
+		return
+	}
+	_ = globalWorkerContext.DB.WithContext(ctx).
+		Model(&models.Backup{}).
+		Where("id = ?", backupID).
+		Updates(map[string]interface{}{
+			"status":        models.BackupStatusFailed,
+			"error_message": msg,
+		}).Error
+}
+
 // Work implements the VM operation job handler
 func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperationJob]) error {
 	startTime := time.Now()
@@ -408,20 +436,43 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 		command = pb.VMCommandType_VM_COMMAND_TYPE_PAUSE
 	case VMOpUnsuspend:
 		command = pb.VMCommandType_VM_COMMAND_TYPE_RESUME
+	case VMOpRebuild:
+		command = pb.VMCommandType_VM_COMMAND_TYPE_REBUILD
+	case VMOpResize:
+		command = pb.VMCommandType_VM_COMMAND_TYPE_RESIZE
+	case VMOpResetPassword:
+		command = pb.VMCommandType_VM_COMMAND_TYPE_RESET_PASSWORD
+	case VMOpAttachISO:
+		command = pb.VMCommandType_VM_COMMAND_TYPE_ATTACH_ISO
+	case VMOpDetachISO:
+		command = pb.VMCommandType_VM_COMMAND_TYPE_DETACH_ISO
 	default:
 		return fmt.Errorf("unsupported operation: %s", job.Args.Operation)
 	}
 
 	// Build VM config from params
 	var vmConfig *pb.VMConfig
-	if len(job.Args.Params) > 0 && job.Args.Operation == VMOpCreate {
+	needsConfig := job.Args.Operation == VMOpCreate || job.Args.Operation == VMOpRebuild ||
+		job.Args.Operation == VMOpResize || job.Args.Operation == VMOpResetPassword ||
+		job.Args.Operation == VMOpAttachISO
+	if len(job.Args.Params) > 0 && needsConfig {
 		var params struct {
-			ImageID      string            `json:"image_id"`
-			SSHPublicKey string            `json:"ssh_public_key"`
-			UserData     string            `json:"user_data"`
-			Metadata     map[string]string `json:"metadata"`
-			VNCEnabled   bool              `json:"vnc_enabled"`
-			VNCPassword  string            `json:"vnc_password"`
+			Hostname      string            `json:"hostname"`
+			ImagePath     string            `json:"image_path"`
+			RootPassword  string            `json:"root_password"`
+			VNCPort       int               `json:"vnc_port"`
+			VNCPassword   string            `json:"vnc_password"`
+			IPAddress     string            `json:"ip_address"`
+			Gateway       string            `json:"gateway"`
+			Netmask       int               `json:"netmask"`
+			Bridge        string            `json:"bridge"`
+			VLANID        int               `json:"vlan_id"`
+			BandwidthMbps int               `json:"bandwidth_mbps"`
+			MACAddress    string            `json:"mac_address"`
+			CPUModel      string            `json:"cpu_model"`
+			SSHPublicKey  string            `json:"ssh_public_key"`
+			UserData      string            `json:"user_data"`
+			Metadata      map[string]string `json:"metadata"`
 		}
 
 		if err := json.Unmarshal(job.Args.Params, &params); err != nil {
@@ -429,24 +480,65 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 				"error", err,
 			)
 		} else {
+			metadata := params.Metadata
+			if metadata == nil {
+				metadata = map[string]string{}
+			}
+			// The proto VMConfig has no dedicated VNC-port / VLAN fields, so carry
+			// them to the agent through the metadata map.
+			metadata["vnc_port"] = strconv.Itoa(params.VNCPort)
+			metadata["vlan_id"] = strconv.Itoa(params.VLANID)
+			if params.Hostname != "" {
+				metadata["hostname"] = params.Hostname
+			}
+			// CPU model (empty → the agent defaults to a portable, migratable model).
+			if params.CPUModel != "" {
+				metadata["cpu_model"] = params.CPUModel
+			}
+
+			iopsLimit := int32(0)
+			if vm.Resources.IOPS != nil {
+				iopsLimit = int32(*vm.Resources.IOPS)
+			}
+			swapMb := int64(0)
+			if vm.Resources.Swap != nil {
+				swapMb = int64(*vm.Resources.Swap)
+			}
+
 			vmConfig = &pb.VMConfig{
 				Resources: &pb.VMResources{
-					Vcpus:    int32(vm.Resources.CPU),
-					MemoryMb: int64(vm.Resources.RAM),
-					DiskGb:   int64(vm.Resources.Disk),
-					NetworkBandwidthMbps: func() int32 {
-						if vm.Resources.IOPS != nil {
-							return int32(*vm.Resources.IOPS)
-						}
-						return 0
-					}(),
+					Vcpus:                int32(vm.Resources.CPU),
+					MemoryMb:             int64(vm.Resources.RAM),
+					DiskGb:               int64(vm.Resources.Disk),
+					SwapMb:               swapMb,
+					IopsLimit:            iopsLimit,
+					NetworkBandwidthMbps: int32(params.BandwidthMbps),
 				},
-				ImageId:      params.ImageID,
+				ImageId:      params.ImagePath,
 				SshPublicKey: params.SSHPublicKey,
 				UserData:     params.UserData,
-				Metadata:     params.Metadata,
-				VncEnabled:   params.VNCEnabled,
+				Metadata:     metadata,
+				VncEnabled:   true,
 				VncPassword:  params.VNCPassword,
+				RootPassword: params.RootPassword,
+				NetworkConfig: &pb.VMNetworkConfig{
+					Interfaces: []*pb.NetworkInterface{
+						{
+							Name:       "eth0",
+							Type:       pb.NetworkInterfaceType_NETWORK_INTERFACE_TYPE_BRIDGE,
+							BridgeName: params.Bridge,
+							MacAddress: params.MACAddress,
+							IpAddress:  params.IPAddress,
+							Netmask:    int32(params.Netmask),
+							Gateway:    params.Gateway,
+							UseDhcp:    params.IPAddress == "",
+						},
+					},
+					BandwidthLimits: &pb.BandwidthLimit{
+						IngressRateMbps: int32(params.BandwidthMbps),
+						EgressRateMbps:  int32(params.BandwidthMbps),
+					},
+				},
 			}
 		}
 	}
@@ -459,7 +551,9 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 		TimeoutSeconds: 300, // 5 minutes
 	}
 
-	resp, err := client.ExecuteVMCommand(ctx, req)
+	// Attach the node's auth token + id; the agent's auth interceptor requires a
+	// Bearer token over TLS, otherwise the call is rejected as Unauthenticated.
+	resp, err := client.ExecuteVMCommand(agentAuthContext(ctx, node), req)
 	if err != nil {
 		w.logger.ErrorContext(ctx, "failed to execute VM command",
 			"error", err,
@@ -661,25 +755,46 @@ func (w *TemplateSyncWorker) syncTemplateToNode(ctx context.Context, template *m
 		return fmt.Errorf("node %s is not active", nodeID)
 	}
 
-	// In a real implementation, this would:
-	// 1. Connect to node's storage service
-	// 2. Download/check template image
-	// 3. Verify checksum
-	// 4. Update node-local template registry
+	// Drive the node's agent to actually download + checksum the template image
+	// into its local cache (idempotent). This replaces the previous simulated sleep.
+	if globalWorkerContext == nil || globalWorkerContext.AgentClient == nil {
+		w.updateSyncStatus(ctx, template.ID, nodeID, "error", "agent client unavailable")
+		return fmt.Errorf("agent client unavailable")
+	}
+	client, err := globalWorkerContext.AgentClient.GetClient(node.IPAddress)
+	if err != nil {
+		w.updateSyncStatus(ctx, template.ID, nodeID, "error", err.Error())
+		return fmt.Errorf("failed to connect to node agent: %w", err)
+	}
 
-	w.logger.InfoContext(ctx, "template sync initiated to node",
+	// Template images can be large; allow a generous timeout for the download.
+	syncCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
+
+	resp, err := client.SyncTemplate(agentAuthContext(syncCtx, node), &pb.SyncTemplateRequest{
+		ImageUrl: template.ImagePath,
+	})
+	if err != nil {
+		w.updateSyncStatus(ctx, template.ID, nodeID, "error", err.Error())
+		return fmt.Errorf("template sync RPC failed: %w", err)
+	}
+	if !resp.Success {
+		msg := "unknown error"
+		if resp.Error != nil {
+			msg = resp.Error.Message
+		}
+		w.updateSyncStatus(ctx, template.ID, nodeID, "error", msg)
+		return fmt.Errorf("template sync failed on node %s: %s", nodeID, msg)
+	}
+
+	w.logger.InfoContext(ctx, "template cached on node",
 		"template_id", template.ID,
 		"node_id", nodeID,
-		"node_address", node.IPAddress,
-		"image_path", template.ImagePath,
+		"local_path", resp.LocalPath,
+		"size_bytes", resp.SizeBytes,
+		"checksum", resp.Checksum,
 	)
-
-	// Simulate download and verification
-	time.Sleep(100 * time.Millisecond)
-
-	// Update sync status to available
 	w.updateSyncStatus(ctx, template.ID, nodeID, "available", "")
-
 	return nil
 }
 
@@ -841,7 +956,7 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 		Quiesce:     true,
 	}
 
-	resp, err := client.CreateSnapshot(ctx, req)
+	resp, err := client.CreateSnapshot(agentAuthContext(ctx, node), req)
 	if err != nil {
 		w.logger.ErrorContext(ctx, "failed to create backup snapshot",
 			"error", err,
@@ -882,57 +997,33 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 		return fmt.Errorf("snapshot creation failed: %s", resp.Error.GetMessage())
 	}
 
-	archiveData, err := buildBackupArchive(job, vm.ID, resp.Snapshot.GetSnapshotId())
+	// Export the actual disk image and upload it to object storage VIA THE AGENT
+	// (the agent has the disk file and storage credentials). This replaces the
+	// old manifest-only archive, which contained no disk data.
+	backupResp, err := client.BackupDisk(agentAuthContext(ctx, node), &pb.BackupDiskRequest{
+		VmId:           vm.ID,
+		DestinationKey: job.Args.Destination,
+		Compress:       true,
+	})
 	if err != nil {
 		if w.metrics != nil {
 			w.metrics.RecordJobFailed()
 		}
-		if job.Args.BackupID != "" {
-			_ = globalWorkerContext.DB.WithContext(ctx).
-				Model(&models.Backup{}).
-				Where("id = ?", job.Args.BackupID).
-				Updates(map[string]interface{}{
-					"status":        models.BackupStatusFailed,
-					"error_message": err.Error(),
-				}).Error
-		}
-		return fmt.Errorf("failed to build backup archive: %w", err)
+		markBackupFailed(ctx, job.Args.BackupID, err.Error())
+		return fmt.Errorf("failed to back up disk: %w", err)
 	}
-
-	storageClient, err := newBackupStorageClient(job.Args.StorageProvider)
-	if err != nil {
+	if !backupResp.Success {
+		msg := "disk backup failed"
+		if backupResp.Error != nil {
+			msg = backupResp.Error.GetMessage()
+		}
 		if w.metrics != nil {
 			w.metrics.RecordJobFailed()
 		}
-		if job.Args.BackupID != "" {
-			_ = globalWorkerContext.DB.WithContext(ctx).
-				Model(&models.Backup{}).
-				Where("id = ?", job.Args.BackupID).
-				Updates(map[string]interface{}{
-					"status":        models.BackupStatusFailed,
-					"error_message": err.Error(),
-				}).Error
-		}
-		return fmt.Errorf("failed to initialize storage client: %w", err)
+		markBackupFailed(ctx, job.Args.BackupID, msg)
+		return fmt.Errorf("disk backup failed: %s", msg)
 	}
 
-	if err := storageClient.Upload(ctx, job.Args.Destination, bytes.NewReader(archiveData), int64(len(archiveData)), "application/octet-stream"); err != nil {
-		if w.metrics != nil {
-			w.metrics.RecordJobFailed()
-		}
-		if job.Args.BackupID != "" {
-			_ = globalWorkerContext.DB.WithContext(ctx).
-				Model(&models.Backup{}).
-				Where("id = ?", job.Args.BackupID).
-				Updates(map[string]interface{}{
-					"status":        models.BackupStatusFailed,
-					"error_message": err.Error(),
-				}).Error
-		}
-		return fmt.Errorf("failed to upload archive to object storage: %w", err)
-	}
-
-	checksum := sha256.Sum256(archiveData)
 	if job.Args.BackupID != "" {
 		completedAt := time.Now()
 		if err := globalWorkerContext.DB.WithContext(ctx).
@@ -940,8 +1031,8 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 			Where("id = ?", job.Args.BackupID).
 			Updates(map[string]interface{}{
 				"status":       models.BackupStatusCompleted,
-				"size":         int64(len(archiveData)),
-				"checksum":     hex.EncodeToString(checksum[:]),
+				"size":         backupResp.SizeBytes,
+				"checksum":     backupResp.Checksum,
 				"completed_at": completedAt,
 			}).Error; err != nil {
 			w.logger.WarnContext(ctx, "failed to update completed backup metadata",
@@ -962,7 +1053,7 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 		"snapshot_id", resp.Snapshot.GetSnapshotId(),
 		"backup_type", job.Args.BackupType,
 		"backup_id", job.Args.BackupID,
-		"archive_size", len(archiveData),
+		"backup_size", backupResp.SizeBytes,
 		"latency_ms", latency.Milliseconds(),
 	)
 
@@ -1730,7 +1821,7 @@ func (w *SnapshotWorker) Work(ctx context.Context, job *river.Job[SnapshotJob]) 
 		Quiesce:     true,
 	}
 
-	resp, err := client.CreateSnapshot(ctx, req)
+	resp, err := client.CreateSnapshot(agentAuthContext(ctx, node), req)
 	if err != nil {
 		w.logger.ErrorContext(ctx, "failed to execute snapshot command",
 			"error", err,

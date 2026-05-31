@@ -22,6 +22,11 @@ func NewNetworkRepository(db *gorm.DB) *NetworkRepository {
 	}
 }
 
+// WithDB returns a NetworkRepository bound to the supplied database handle/transaction.
+func (r *NetworkRepository) WithDB(db *gorm.DB) *NetworkRepository {
+	return NewNetworkRepository(db)
+}
+
 // GetByID retrieves a network configuration by ID
 func (r *NetworkRepository) GetByID(ctx context.Context, id string) (*models.Network, error) {
 	return r.base.GetByID(ctx, id)

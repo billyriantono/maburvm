@@ -46,7 +46,13 @@ export function useLogout() {
 
   return useMutation<void, Error, void>({
     mutationFn: async () => {
-      await api.post('/api/v1/auth/logout')
+      try {
+        await api.post('/api/v1/auth/logout')
+      } catch {
+        // Ignore logout API errors
+      }
+      // Always clear the cookie client-side
+      document.cookie = 'accessToken=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT'
     },
     onSuccess: () => {
       queryClient.clear()

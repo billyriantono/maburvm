@@ -18,7 +18,8 @@ import {
   Loader2,
   AlertCircle,
   Users,
-  X
+  X,
+  Gauge
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -32,6 +33,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { useUsers, useDeleteUser } from "@/lib/hooks/use-users"
+import { useUserQuota, useSetUserQuota } from "@/lib/hooks/use-quota"
+import type { SetQuotaRequest } from "@/types/quota"
 import type { User } from "@/types"
 
 function Toast({ message, type, onClose }: { message: string; type: "success" | "error"; onClose: () => void }) {
@@ -75,10 +78,89 @@ function formatDate(dateString: string): string {
   return new Date(dateString).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })
 }
 
+// QuotaDialog lets an admin view a user's current usage and set their resource
+// limits (0 = unlimited). Fetches per-user quota lazily when opened.
+function QuotaDialog({ user, onClose, onNotify }: {
+  user: User | null
+  onClose: () => void
+  onNotify: (message: string, type: "success" | "error") => void
+}) {
+  const { data: status, isLoading } = useUserQuota(user?.id ?? "")
+  const setQuota = useSetUserQuota()
+  const [form, setForm] = useState<SetQuotaRequest>({ max_vms: 0, max_vcpu: 0, max_ram_mb: 0, max_disk_gb: 0 })
+
+  useEffect(() => {
+    if (status) {
+      setForm({
+        max_vms: status.quota.max_vms,
+        max_vcpu: status.quota.max_vcpu,
+        max_ram_mb: status.quota.max_ram_mb,
+        max_disk_gb: status.quota.max_disk_gb,
+      })
+    }
+  }, [status])
+
+  if (!user) return null
+
+  const fields: { key: keyof SetQuotaRequest; label: string; used?: number }[] = [
+    { key: "max_vms", label: "Max VMs", used: status?.usage.vms },
+    { key: "max_vcpu", label: "Max vCPU", used: status?.usage.vcpu },
+    { key: "max_ram_mb", label: "Max RAM (MB)", used: status?.usage.ram_mb },
+    { key: "max_disk_gb", label: "Max Disk (GB)", used: status?.usage.disk_gb },
+  ]
+
+  const handleSave = async () => {
+    try {
+      await setQuota.mutateAsync({ userId: user.id, data: form })
+      onNotify(`Quota updated for ${user.email}`, "success")
+      onClose()
+    } catch (err) {
+      onNotify(`Failed to update quota: ${(err as Error).message}`, "error")
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-label="Edit quota">
+      <button type="button" className="absolute inset-0 bg-black/50 cursor-default focus:outline-none" onClick={onClose} aria-label="Close dialog" />
+      <div className="relative bg-white border-4 border-black p-6 shadow-neo-xl max-w-lg w-full mx-4">
+        <h3 className="text-xl font-black uppercase mb-1 flex items-center gap-2"><Gauge className="w-5 h-5" />Resource Quota</h3>
+        <p className="text-gray-500 font-medium text-sm mb-5 truncate">{user.email} — 0 = unlimited</p>
+        {isLoading ? (
+          <div className="flex items-center justify-center py-10"><Loader2 className="w-6 h-6 animate-spin" /></div>
+        ) : (
+          <div className="space-y-4">
+            {fields.map((f) => (
+              <div key={f.key} className="grid grid-cols-3 items-center gap-3">
+                <label className="col-span-1 text-xs font-black uppercase text-gray-500">{f.label}</label>
+                <Input
+                  type="number"
+                  min={0}
+                  value={form[f.key]}
+                  onChange={(e) => setForm({ ...form, [f.key]: Number(e.target.value) })}
+                  className="col-span-1 border-2 border-black"
+                />
+                <span className="col-span-1 text-xs font-bold text-gray-500">used: {f.used ?? 0}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="flex gap-3 justify-end mt-6">
+          <Button variant="ghost" onClick={onClose} className="border-2 border-black" disabled={setQuota.isPending}>Cancel</Button>
+          <Button onClick={handleSave} disabled={setQuota.isPending || isLoading}>
+            {setQuota.isPending && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
+            Save Quota
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function UsersPage() {
   const [searchQuery, setSearchQuery] = useState("")
   const [roleFilter, setRoleFilter] = useState<string>("")
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; email: string } | null>(null)
+  const [quotaUser, setQuotaUser] = useState<User | null>(null)
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
 
   // Data hooks
@@ -181,7 +263,7 @@ export default function UsersPage() {
       <div className="bg-white border-4 border-black p-4 shadow-neo mb-6">
         <div className="flex flex-col md:flex-row gap-4">
           <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
             <Input
               placeholder="Search users by email..."
               value={searchQuery}
@@ -216,7 +298,7 @@ export default function UsersPage() {
 
         {filteredUsers.length === 0 ? (
           <div className="p-12 text-center">
-            <Users className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+            <Users className="w-12 h-12 text-gray-500 mx-auto mb-4" />
             <p className="text-gray-500 font-bold uppercase">No users found</p>
             {hasFilters && (
               <Button variant="ghost" onClick={clearFilters} className="mt-4 border-2 border-black">Clear filters</Button>
@@ -263,7 +345,7 @@ export default function UsersPage() {
                     <span className="text-xs font-bold uppercase">Enabled</span>
                   </div>
                 ) : (
-                  <div className="flex items-center gap-1 text-gray-400">
+                  <div className="flex items-center gap-1 text-gray-600">
                     <XCircle className="w-4 h-4" />
                     <span className="text-xs font-bold uppercase">Disabled</span>
                   </div>
@@ -280,6 +362,15 @@ export default function UsersPage() {
                 <Link href={`/users/${user.id}`}>
                   <Button variant="secondary" size="sm" className="h-8">Details</Button>
                 </Link>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setQuotaUser(user)}
+                  className="h-8 w-8 p-0 border-2 border-black hover:bg-primary"
+                  title="Edit quota"
+                >
+                  <Gauge className="w-4 h-4" />
+                </Button>
                 <Button
                   variant="ghost"
                   size="sm"
@@ -305,6 +396,12 @@ export default function UsersPage() {
         variant="destructive"
         onConfirm={handleDelete}
         onCancel={() => setDeleteConfirm(null)}
+      />
+
+      <QuotaDialog
+        user={quotaUser}
+        onClose={() => setQuotaUser(null)}
+        onNotify={(message, type) => setToast({ message, type })}
       />
 
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}

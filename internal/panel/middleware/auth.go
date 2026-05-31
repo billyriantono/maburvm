@@ -268,10 +268,70 @@ func ParseAndValidateToken(tokenString string) (*JWTClaims, error) {
 	return nil, errors.New("invalid token claims")
 }
 
+// extractAPIToken returns a presented API token from either the X-API-Key header
+// or an "Authorization: Bearer mvk_..." header, and whether one was found. A
+// Bearer value that is not an API token (e.g. a JWT) is left for the JWT path.
+func extractAPIToken(c echo.Context) (string, bool) {
+	if v := strings.TrimSpace(c.Request().Header.Get("X-API-Key")); v != "" {
+		return v, true
+	}
+	parts := strings.SplitN(c.Request().Header.Get("Authorization"), " ", 2)
+	if len(parts) == 2 && strings.EqualFold(parts[0], "bearer") {
+		if v := strings.TrimSpace(parts[1]); strings.HasPrefix(v, models.APITokenPrefix) {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+// authenticateAPIKey validates a presented API token against the database and,
+// on success, returns a populated UserContext. This lets automation clients call
+// the API with a long-lived key instead of a session JWT. The lookup is done
+// directly here (not via the service layer) to keep the middleware dependency-free.
+func authenticateAPIKey(db *gorm.DB, token string) (*UserContext, bool) {
+	if db == nil {
+		return nil, false
+	}
+	var key models.APIKey
+	if err := db.Where("key_hash = ?", models.HashAPIToken(token)).First(&key).Error; err != nil {
+		return nil, false
+	}
+	if !key.IsValid() {
+		return nil, false
+	}
+	var user models.User
+	if err := db.Where("id = ?", key.UserID).First(&user).Error; err != nil || user.DeletedAt.Valid {
+		return nil, false
+	}
+	// Best-effort last-used bookkeeping; never blocks auth.
+	db.Model(&models.APIKey{}).Where("id = ?", key.ID).Update("last_used_at", time.Now())
+
+	return &UserContext{
+		ID:          user.ID,
+		Email:       user.Email,
+		Role:        user.Role,
+		Permissions: GetPermissionsForRole(user.Role),
+	}, true
+}
+
 // RequireAuth middleware validates the access token and extracts user claims
 func RequireAuth(db *gorm.DB) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
+			// API-key auth (automation clients) takes precedence when a key is
+			// explicitly presented; an invalid key is rejected, not fallen through.
+			if token, ok := extractAPIToken(c); ok {
+				userCtx, ok := authenticateAPIKey(db, token)
+				if !ok {
+					return c.JSON(http.StatusUnauthorized, map[string]interface{}{
+						"error":   "Unauthorized",
+						"message": "Invalid or expired API key",
+					})
+				}
+				c.Set(UserContextKey, userCtx)
+				return next(c)
+			}
+
 			// Try to extract token from cookie first, then header
 			var tokenString string
 			var err error

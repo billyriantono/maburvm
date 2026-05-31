@@ -123,7 +123,7 @@ func (suite *NodeRepositoryTestSuite) TestNodeRepository_Update() {
 	assert.NoError(suite.T(), err)
 
 	var found models.Node
-	err = suite.DB.First(&found, node.ID).Error
+	err = suite.DB.First(&found, "id = ?", node.ID).Error
 	assert.NoError(suite.T(), err)
 	assert.Equal(suite.T(), models.NodeStatusActive, found.Status)
 }
@@ -172,7 +172,7 @@ func (suite *NodeRepositoryTestSuite) TestNodeRepository_UpdateStatus() {
 	assert.NoError(suite.T(), err)
 
 	var found models.Node
-	err = suite.DB.First(&found, node.ID).Error
+	err = suite.DB.First(&found, "id = ?", node.ID).Error
 	assert.NoError(suite.T(), err)
 	assert.Equal(suite.T(), models.NodeStatusActive, found.Status)
 }

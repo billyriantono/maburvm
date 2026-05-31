@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 
@@ -135,6 +136,15 @@ func (s *BandwidthService) GetVMUsageHistory(ctx context.Context, vmID string) (
 // GetNodeUsage returns current period usage for all VMs on a node
 func (s *BandwidthService) GetNodeUsage(ctx context.Context, nodeID string) ([]models.BandwidthUsage, error) {
 	return s.repo.GetByNodeID(ctx, nodeID)
+}
+
+// SetVMQuota sets a VM's monthly bandwidth quota in GB (0 = unlimited) and
+// applies it to the current period, clearing any overage flag once under quota.
+func (s *BandwidthService) SetVMQuota(ctx context.Context, vmID string, quotaGB int64) error {
+	if quotaGB < 0 {
+		return fmt.Errorf("quota must be >= 0")
+	}
+	return s.repo.SetQuota(ctx, vmID, quotaGB)
 }
 
 // ClearVMCounters removes cached counters for a VM (call on VM delete/stop)

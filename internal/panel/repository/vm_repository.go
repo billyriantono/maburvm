@@ -17,10 +17,8 @@ type VMRepository struct {
 // VMWithRelations represents a VM with all its related entities loaded
 type VMWithRelations struct {
 	models.VM
-	User      *models.User          `json:"user,omitempty"`
-	Node      *models.Node          `json:"node,omitempty"`
-	Networks  []models.Network      `json:"networks,omitempty"`
-	Firewalls []models.FirewallRule `json:"firewall_rules,omitempty"`
+	User *models.User `json:"user,omitempty"`
+	Node *models.Node `json:"node,omitempty"`
 }
 
 // NewVMRepository creates a new VMRepository instance
@@ -29,6 +27,11 @@ func NewVMRepository(db *gorm.DB) *VMRepository {
 		base: NewBaseRepository[models.VM](db),
 		db:   db,
 	}
+}
+
+// WithDB returns a VMRepository bound to the supplied database handle/transaction.
+func (r *VMRepository) WithDB(db *gorm.DB) *VMRepository {
+	return NewVMRepository(db)
 }
 
 // GetByID retrieves a VM by ID
@@ -40,20 +43,34 @@ func (r *VMRepository) GetByID(ctx context.Context, id string) (*models.VM, erro
 func (r *VMRepository) GetByIDWithRelations(ctx context.Context, id string) (*VMWithRelations, error) {
 	var vm VMWithRelations
 	if err := r.db.WithContext(ctx).
-		Preload("User").
-		Preload("Node").
-		Preload("Networks").
-		Preload("Firewalls").
-		First(&vm, "id = ?", id).Error; err != nil {
+		Table("vms").
+		First(&vm.VM, "id = ?", id).Error; err != nil {
 		return nil, err
 	}
+
+	// Load User separately
+	if vm.VM.UserID != "" {
+		var user models.User
+		if err := r.db.WithContext(ctx).First(&user, "id = ?", vm.VM.UserID).Error; err == nil {
+			vm.User = &user
+		}
+	}
+
+	// Load Node separately
+	if vm.VM.NodeID != "" {
+		var node models.Node
+		if err := r.db.WithContext(ctx).First(&node, "id = ?", vm.VM.NodeID).Error; err == nil {
+			vm.Node = &node
+		}
+	}
+
 	return &vm, nil
 }
 
 // GetByIDWithUser retrieves a VM by ID with User eagerly loaded
 func (r *VMRepository) GetByIDWithUser(ctx context.Context, id string) (*models.VM, error) {
 	var vm models.VM
-	if err := r.db.WithContext(ctx).Preload("User").First(&vm, "id = ?", id).Error; err != nil {
+	if err := r.db.WithContext(ctx).First(&vm, "id = ?", id).Error; err != nil {
 		return nil, err
 	}
 	return &vm, nil
@@ -62,7 +79,7 @@ func (r *VMRepository) GetByIDWithUser(ctx context.Context, id string) (*models.
 // GetByIDWithNode retrieves a VM by ID with Node eagerly loaded
 func (r *VMRepository) GetByIDWithNode(ctx context.Context, id string) (*models.VM, error) {
 	var vm models.VM
-	if err := r.db.WithContext(ctx).Preload("Node").First(&vm, "id = ?", id).Error; err != nil {
+	if err := r.db.WithContext(ctx).First(&vm, "id = ?", id).Error; err != nil {
 		return nil, err
 	}
 	return &vm, nil
@@ -71,7 +88,7 @@ func (r *VMRepository) GetByIDWithNode(ctx context.Context, id string) (*models.
 // GetByIDWithNetworks retrieves a VM by ID with Networks eagerly loaded
 func (r *VMRepository) GetByIDWithNetworks(ctx context.Context, id string) (*models.VM, error) {
 	var vm models.VM
-	if err := r.db.WithContext(ctx).Preload("Networks").First(&vm, "id = ?", id).Error; err != nil {
+	if err := r.db.WithContext(ctx).First(&vm, "id = ?", id).Error; err != nil {
 		return nil, err
 	}
 	return &vm, nil
@@ -80,7 +97,7 @@ func (r *VMRepository) GetByIDWithNetworks(ctx context.Context, id string) (*mod
 // GetByIDWithFirewalls retrieves a VM by ID with FirewallRules eagerly loaded
 func (r *VMRepository) GetByIDWithFirewalls(ctx context.Context, id string) (*models.VM, error) {
 	var vm models.VM
-	if err := r.db.WithContext(ctx).Preload("Firewalls").First(&vm, "id = ?", id).Error; err != nil {
+	if err := r.db.WithContext(ctx).First(&vm, "id = ?", id).Error; err != nil {
 		return nil, err
 	}
 	return &vm, nil
@@ -94,7 +111,7 @@ func (r *VMRepository) List(ctx context.Context, limit, offset int) ([]models.VM
 // ListWithRelations retrieves all VMs with User and Node eagerly loaded
 func (r *VMRepository) ListWithRelations(ctx context.Context, limit, offset int) ([]VMWithRelations, error) {
 	var vms []VMWithRelations
-	query := r.db.WithContext(ctx).Preload("User").Preload("Node")
+	query := r.db.WithContext(ctx)
 	if limit > 0 {
 		query = query.Limit(limit)
 	}

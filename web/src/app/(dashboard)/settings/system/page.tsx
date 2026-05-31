@@ -1,6 +1,7 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
+import { useSystemSettings, useSaveSystemSettings } from "@/lib/hooks/use-settings"
 import { toast } from "sonner"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
@@ -147,6 +148,8 @@ const schedulePresets = [
 export default function SystemSettingsPage() {
   const [isSaving, setIsSaving] = useState<string | null>(null)
   const [showHmacSecret, setShowHmacSecret] = useState(false)
+  const { data: sysSettings } = useSystemSettings()
+  const saveSettings = useSaveSystemSettings()
 
   // General form
   const generalForm = useForm<GeneralFormData>({
@@ -178,68 +181,67 @@ export default function SystemSettingsPage() {
     defaultValues: defaultEmailSettings,
   })
 
-  const handleSaveGeneral = async (data: GeneralFormData) => {
-    setIsSaving("general")
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-    toast.success("General settings saved!", {
-      description: `Panel name: ${data.panelName}, Timezone: ${data.timezone}`,
-    })
-    setIsSaving(null)
+  // Populate forms from persisted settings once loaded.
+  useEffect(() => {
+    if (!sysSettings) return
+    if (sysSettings.general) generalForm.reset({ ...defaultGeneralSettings, ...sysSettings.general })
+    if (sysSettings.security) securityForm.reset({ ...defaultSecuritySettings, ...sysSettings.security })
+    if (sysSettings.backup) backupForm.reset({ ...defaultBackupSettings, ...sysSettings.backup })
+    if (sysSettings.api) apiForm.reset({ ...defaultApiSettings, ...sysSettings.api })
+    if (sysSettings.email) emailForm.reset({ ...defaultEmailSettings, ...sysSettings.email })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sysSettings])
+
+  const saveSection = async (section: string, data: unknown, label: string, description: string) => {
+    setIsSaving(section)
+    try {
+      await saveSettings.mutateAsync({ [section]: data })
+      toast.success(`${label} saved!`, { description })
+    } catch (err) {
+      toast.error(`Failed to save ${label.toLowerCase()}`, { description: (err as Error).message })
+    } finally {
+      setIsSaving(null)
+    }
   }
 
-  const handleSaveSecurity = async (data: SecurityFormData) => {
-    setIsSaving("security")
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-    toast.success("Security settings saved!", {
-      description: `Session timeout: ${data.sessionTimeout} minutes`,
-    })
-    setIsSaving(null)
-  }
+  const handleSaveGeneral = (data: GeneralFormData) =>
+    saveSection("general", data, "General settings", `Panel name: ${data.panelName}, Timezone: ${data.timezone}`)
 
-  const handleSaveBackup = async (data: BackupFormData) => {
-    setIsSaving("backup")
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-    toast.success("Backup settings saved!", {
-      description: `Retention: ${data.defaultRetention} days`,
-    })
-    setIsSaving(null)
-  }
+  const handleSaveSecurity = (data: SecurityFormData) =>
+    saveSection("security", data, "Security settings", `Session timeout: ${data.sessionTimeout} minutes`)
 
-  const handleSaveApi = async (data: APIFormData) => {
-    setIsSaving("api")
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-    toast.success("API settings saved!", {
-      description: data.enableApi ? "API access is enabled" : "API access is disabled",
-    })
-    setIsSaving(null)
-  }
+  const handleSaveBackup = (data: BackupFormData) =>
+    saveSection("backup", data, "Backup settings", `Retention: ${data.defaultRetention} days`)
 
-  const handleSaveEmail = async (data: EmailFormData) => {
-    setIsSaving("email")
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-    toast.success("Email settings saved!", {
-      description: `SMTP configured for ${data.smtpHost}`,
-    })
-    setIsSaving(null)
-  }
+  const handleSaveApi = (data: APIFormData) =>
+    saveSection("api", data, "API settings", data.enableApi ? "API access is enabled" : "API access is disabled")
+
+  const handleSaveEmail = (data: EmailFormData) =>
+    saveSection("email", data, "Email settings", `SMTP configured for ${data.smtpHost}`)
 
   const handleTestEmail = async () => {
-    toast.info("Sending test email...", {
-      description: "Please wait...",
-    })
-    await new Promise((resolve) => setTimeout(resolve, 1500))
-    toast.success("Test email sent!", {
-      description: "Check your inbox for the test email.",
+    // Persist the email config; actual SMTP send-test is not implemented yet.
+    await saveSection("email", emailForm.getValues(), "Email settings", "SMTP settings saved")
+    toast.info("Test send not available yet", {
+      description: "SMTP settings are saved; a live test-send endpoint is not implemented.",
     })
   }
 
   const handleResetSettings = (type: string) => {
+    const resets: Record<string, () => void> = {
+      General: () => generalForm.reset(defaultGeneralSettings),
+      Security: () => securityForm.reset(defaultSecuritySettings),
+      Backup: () => backupForm.reset(defaultBackupSettings),
+      API: () => apiForm.reset(defaultApiSettings),
+      Email: () => emailForm.reset(defaultEmailSettings),
+    }
     toast.info(`Reset ${type} settings to defaults?`, {
-      description: "This will reset all settings in this section to defaults.",
+      description: "Resets the fields in this section. Click Save to persist.",
       action: {
         label: "Reset",
         onClick: () => {
-          toast.success(`${type} settings reset to defaults`)
+          resets[type]?.()
+          toast.success(`${type} fields reset to defaults`)
         },
       },
     })
@@ -402,7 +404,7 @@ export default function SystemSettingsPage() {
                       Session Timeout (minutes)
                     </label>
                     <div className="relative">
-                      <Timer className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                      <Timer className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
                       <Input
                         id="sessionTimeout"
                         type="number"
@@ -545,7 +547,7 @@ export default function SystemSettingsPage() {
                       Default Retention (days)
                     </label>
                     <div className="relative">
-                      <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                      <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
                       <Input
                         id="defaultRetention"
                         type="number"
@@ -563,7 +565,7 @@ export default function SystemSettingsPage() {
                       Backup Schedule
                     </label>
                     <div className="relative">
-                      <Clock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                      <Clock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
                       <select
                         id="schedule"
                         {...backupForm.register("schedule")}
@@ -660,7 +662,7 @@ export default function SystemSettingsPage() {
                       Webhook URL
                     </label>
                     <div className="relative">
-                      <Link className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                      <Link className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
                       <Input
                         id="webhookUrl"
                         {...apiForm.register("webhookUrl")}
@@ -705,7 +707,7 @@ export default function SystemSettingsPage() {
                     <button
                       type="button"
                       onClick={() => setShowHmacSecret(!showHmacSecret)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-black"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-600 hover:text-black"
                     >
                       {showHmacSecret ? (
                         <EyeOff className="w-4 h-4" />
@@ -766,7 +768,7 @@ export default function SystemSettingsPage() {
                       SMTP Host
                     </label>
                     <div className="relative">
-                      <Server className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                      <Server className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
                       <Input
                         id="smtpHost"
                         {...emailForm.register("smtpHost")}
@@ -813,7 +815,7 @@ export default function SystemSettingsPage() {
                       SMTP Password
                     </label>
                     <div className="relative">
-                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
                       <Input
                         id="smtpPassword"
                         type="password"

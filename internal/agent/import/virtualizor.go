@@ -17,7 +17,8 @@ type ImportCandidate struct {
 	Name   string `json:"name"`
 	UUID   string `json:"uuid"`
 	CPU    int    `json:"cpu"`
-	Memory int    `json:"memory"` // Memory in MB
+	Memory int    `json:"memory"`           // Memory in MB
+	Status string `json:"status,omitempty"` // Runtime status from source hypervisor, if available
 
 	// Disk Info
 	Disks []DiskInfo `json:"disks"`

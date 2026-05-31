@@ -180,13 +180,10 @@ func (s *TemplateService) CreateTemplate(ctx context.Context, req *CreateTemplat
 		return nil, ErrTemplateAlreadyExists
 	}
 
-	// Calculate checksum from file URL
-	checksum, err := s.calculateChecksum(req.FileURL)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create template
+	// Store the source URL (or local path) as the image reference. The node
+	// agent downloads and caches the image on first use, so we intentionally do
+	// NOT pull the (potentially multi-GB) image here just to hash it — that made
+	// template creation hang and duplicated bytes onto the panel host.
 	template := &models.OSTemplate{
 		Name:        req.Name,
 		Version:     req.Version,
@@ -199,13 +196,8 @@ func (s *TemplateService) CreateTemplate(ctx context.Context, req *CreateTemplat
 		return nil, fmt.Errorf("failed to create template: %w", err)
 	}
 
-	// Store checksum in metadata (in a real implementation, this could be a separate table)
-	// For now, we'll store it as JSON in the description or use a separate metadata field
-	// Here we'll update the image_path to include checksum as query param or use a separate mechanism
-
 	return &CreateTemplateResponse{
 		Template: template,
-		Checksum: checksum,
 	}, nil
 }
 

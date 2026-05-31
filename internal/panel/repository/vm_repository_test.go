@@ -158,7 +158,7 @@ func (suite *VMRepositoryTestSuite) TestVMRepository_Update() {
 	assert.NoError(suite.T(), err)
 
 	var found models.VM
-	err = suite.DB.First(&found, vm.ID).Error
+	err = suite.DB.First(&found, "id = ?", vm.ID).Error
 	assert.NoError(suite.T(), err)
 	assert.Equal(suite.T(), models.VMStatusRunning, found.Status)
 }
@@ -216,7 +216,7 @@ func (suite *VMRepositoryTestSuite) TestVMRepository_UpdateStatus() {
 	assert.NoError(suite.T(), err)
 
 	var found models.VM
-	err = suite.DB.First(&found, vm.ID).Error
+	err = suite.DB.First(&found, "id = ?", vm.ID).Error
 	assert.NoError(suite.T(), err)
 	assert.Equal(suite.T(), models.VMStatusRunning, found.Status)
 }

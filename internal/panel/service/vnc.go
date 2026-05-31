@@ -27,6 +27,8 @@ var (
 	ErrConsoleTokenVMNotFound = fmt.Errorf("VM not found")
 	// ErrConsoleTokenUnauthorized is returned when user is not authorized
 	ErrConsoleTokenUnauthorized = fmt.Errorf("user not authorized to access this VM")
+	// ErrConsoleDisabled is returned when the VM's console has been disabled
+	ErrConsoleDisabled = fmt.Errorf("console is disabled for this VM")
 )
 
 // ConsoleTokenTTL is the default TTL for console tokens (5 minutes)
@@ -128,6 +130,11 @@ func (s *VNCService) GenerateConsoleToken(ctx context.Context, vmID, userID stri
 	// Verify user owns the VM (or is admin - handled at handler level)
 	if vm.UserID != userID {
 		return nil, ErrConsoleTokenUnauthorized
+	}
+
+	// Refuse if the operator disabled the console for this VM.
+	if !vm.ConsoleEnabled {
+		return nil, ErrConsoleDisabled
 	}
 
 	// Check VM has VNC configured
@@ -249,13 +256,17 @@ func (s *VNCService) ValidateConsoleToken(ctx context.Context, tokenString strin
 		return nil, ErrConsoleTokenRevoked
 	}
 
-	// Verify VM still exists
-	_, err = s.vmRepo.GetByID(ctx, claims.VMID)
+	// Verify VM still exists and its console is still enabled (disabling the
+	// console must drop in-flight sessions, not just block new tokens).
+	vm, err := s.vmRepo.GetByID(ctx, claims.VMID)
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return nil, ErrConsoleTokenVMNotFound
 		}
 		return nil, fmt.Errorf("failed to verify VM: %w", err)
+	}
+	if !vm.ConsoleEnabled {
+		return nil, ErrConsoleDisabled
 	}
 
 	return claims, nil
@@ -379,6 +390,11 @@ func (s *VNCService) CheckAuthForVNC(ctx context.Context, vmID, userID string) e
 	// User must own the VM
 	if vm.UserID != userID {
 		return ErrConsoleTokenUnauthorized
+	}
+
+	// Refuse if the operator disabled the console for this VM.
+	if !vm.ConsoleEnabled {
+		return ErrConsoleDisabled
 	}
 
 	return nil

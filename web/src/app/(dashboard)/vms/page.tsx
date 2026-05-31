@@ -21,6 +21,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useVMs, useDeleteVM, useVMActions } from "@/lib/hooks/use-vms"
+import { useNodes } from "@/lib/hooks/use-nodes"
 import type { VM, VMStatus } from "@/types"
 
 // Status badge component
@@ -223,7 +224,7 @@ function ErrorState({ message, onRetry }: { message: string, onRetry: () => void
 function EmptyState({ hasFilters, onClearFilters }: { hasFilters: boolean, onClearFilters: () => void }) {
   return (
     <div className="p-12 text-center">
-      <Server className="w-12 h-12 mx-auto text-gray-300 mb-4" />
+      <Server className="w-12 h-12 mx-auto text-gray-500 mb-4" />
       <p className="text-gray-700 font-bold uppercase mb-2">No VMs found</p>
       <p className="text-gray-500 text-sm mb-4">
         {hasFilters ? "Try adjusting your filters to see more results." : "Get started by creating your first VM."}
@@ -250,6 +251,7 @@ export default function VMListPage() {
   const [currentPage, setCurrentPage] = useState(1)
   const [searchQuery, setSearchQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState<string>("")
+  const [nodeFilter, setNodeFilter] = useState<string>("")
   const [debouncedSearch, setDebouncedSearch] = useState("")
   const [deleteConfirm, setDeleteConfirm] = useState<VM | null>(null)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
@@ -269,14 +271,17 @@ export default function VMListPage() {
   // Reset to page 1 when status filter changes
   useEffect(() => {
     setCurrentPage(1)
-  }, [statusFilter])
+  }, [statusFilter, nodeFilter])
   
   // Fetch VMs with pagination
   const { data, isLoading, error, refetch } = useVMs({
     page: currentPage,
     pageSize: itemsPerPage,
     status: statusFilter || undefined,
+    nodeId: nodeFilter || undefined,
   })
+  
+  const { data: nodes } = useNodes()
   
   const deleteVM = useDeleteVM()
   const vmActions = useVMActions()
@@ -302,10 +307,11 @@ export default function VMListPage() {
   const clearFilters = () => {
     setSearchQuery("")
     setStatusFilter("")
+    setNodeFilter("")
     setCurrentPage(1)
   }
   
-  const hasFilters = Boolean(searchQuery || statusFilter)
+  const hasFilters = Boolean(searchQuery || statusFilter || nodeFilter)
   
   // Action handlers
   const handleAction = useCallback(async (vm: VM, action: "start" | "stop" | "restart" | "console") => {
@@ -368,13 +374,13 @@ export default function VMListPage() {
         <div className="flex flex-col lg:flex-row gap-4">
           {/* Search */}
           <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
             <Input
               type="text"
               placeholder="Search by hostname or ID..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-10 border-2 border-black"
+              className="pl-10 h-12 border-2 border-black"
             />
           </div>
           
@@ -390,6 +396,18 @@ export default function VMListPage() {
             <option value="suspended">Suspended</option>
             <option value="creating">Creating</option>
             <option value="error">Error</option>
+          </select>
+          
+          {/* Node Filter */}
+          <select
+            value={nodeFilter}
+            onChange={(e) => setNodeFilter(e.target.value)}
+            className="h-12 px-4 border-2 border-black font-medium bg-white focus:outline-none focus:shadow-neo-sm"
+          >
+            <option value="">All Nodes</option>
+            {nodes?.map((node: { id: string; name: string }) => (
+              <option key={node.id} value={node.id}>{node.name}</option>
+            ))}
           </select>
           
           {/* Clear filters */}
@@ -443,7 +461,7 @@ export default function VMListPage() {
               </div>
               <div className="col-span-2">
                 <span className="inline-flex items-center px-2 py-1 text-xs font-bold border border-black bg-gray-100">
-                  {vm.node_id}
+                  {vm.node_name || vm.node_id?.slice(0, 8)}
                 </span>
               </div>
               <div className="col-span-2">

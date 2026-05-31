@@ -39,6 +39,8 @@ type VM struct {
 	SourceMigration string         `json:"source_migration,omitempty" gorm:"type:varchar(50);default:null"`
 	VNCPort         *int           `json:"vnc_port" gorm:"type:integer" validate:"omitempty,min=5900,max=5999"`
 	VNCPassword     string         `json:"-" gorm:"type:varchar(255)"` // Never exposed in JSON
+	ConsoleEnabled  bool           `json:"console_enabled" gorm:"column:console_enabled;not null;default:true"`
+	RescueMode      bool           `json:"rescue_mode" gorm:"column:rescue_mode;not null;default:false"`
 	CreatedAt       time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
 	UpdatedAt       time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
 	DeletedAt       gorm.DeletedAt `json:"-" gorm:"index"`

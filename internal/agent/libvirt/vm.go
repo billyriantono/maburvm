@@ -1,6 +1,7 @@
 package libvirt
 
 import (
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -29,6 +30,22 @@ type VMConfig struct {
 	VNCPassword string
 	OSType      string
 	OSVariant   string
+	// CPUModel selects the guest CPU. Empty defaults to a portable, live-migratable
+	// model ("kvm64"); "host-model"/"host-passthrough" maximize performance but
+	// reduce cross-host migratability; any other value is used as a custom model.
+	CPUModel string
+
+	// Network interface configuration
+	MACAddress    string // optional; libvirt auto-generates one if empty
+	IPAddress     string // assigned IP (recorded on the interface metadata)
+	Netmask       int    // CIDR prefix length (e.g. 24)
+	Gateway       string // default gateway for the assigned IP
+	VLANID        int    // 802.1Q VLAN tag; 0 = untagged
+	BandwidthMbps int    // inbound/outbound rate cap in Mbps; 0 = unlimited
+
+	// CloudInitISOPath, when set, is attached as a read-only "cidata" cdrom so
+	// cloud-init configures the guest (static IP, hostname, SSH key) on boot.
+	CloudInitISOPath string
 }
 
 // VMInfo holds information about a VM
@@ -72,6 +89,28 @@ func NewVMManager() *VMManager {
 }
 
 // generateDomainXML creates a libvirt domain XML configuration using libvirtxml
+// buildDomainCPU returns the <cpu> element for a guest. An empty model defaults
+// to "kvm64" — a portable baseline that live-migrates across heterogeneous hosts
+// (used when the user doesn't pick a CPU model, à la Virtualizor). "host-model"
+// and "host-passthrough" maximize performance but reduce migratability; any other
+// value is treated as a named custom model.
+func buildDomainCPU(model string) *libvirtxml.DomainCPU {
+	switch model {
+	case "host-model":
+		return &libvirtxml.DomainCPU{Mode: "host-model"}
+	case "host-passthrough":
+		return &libvirtxml.DomainCPU{Mode: "host-passthrough"}
+	}
+	if model == "" {
+		model = "kvm64"
+	}
+	return &libvirtxml.DomainCPU{
+		Mode:  "custom",
+		Match: "exact",
+		Model: &libvirtxml.DomainCPUModel{Fallback: "allow", Value: model},
+	}
+}
+
 func generateDomainXML(config VMConfig) (string, error) {
 	// Validate UUID
 	vmUUID, err := uuid.Parse(config.UUID)
@@ -81,6 +120,60 @@ func generateDomainXML(config VMConfig) (string, error) {
 
 	// Calculate memory in KiB
 	memoryKiB := config.Memory * 1024
+
+	// Build the primary network interface on the host bridge. MAC, VLAN tag and
+	// bandwidth QoS are applied via the domain XML so libvirt enforces them when
+	// the VM starts (no separate tc/bridge-vlan step required at create time).
+	iface := libvirtxml.DomainInterface{
+		Source: &libvirtxml.DomainInterfaceSource{
+			Bridge: &libvirtxml.DomainInterfaceSourceBridge{
+				Bridge: config.Bridge,
+			},
+		},
+		Model: &libvirtxml.DomainInterfaceModel{
+			Type: "virtio",
+		},
+	}
+	if config.MACAddress != "" {
+		iface.MAC = &libvirtxml.DomainInterfaceMAC{Address: config.MACAddress}
+	}
+	if config.VLANID > 0 {
+		iface.VLan = &libvirtxml.DomainInterfaceVLan{
+			Tags: []libvirtxml.DomainInterfaceVLanTag{{ID: uint(config.VLANID)}},
+		}
+	}
+	if config.BandwidthMbps > 0 {
+		// libvirt expresses bandwidth average in kilobytes/sec: Mbps * 1000 / 8.
+		avgIn := config.BandwidthMbps * 125
+		avgOut := config.BandwidthMbps * 125
+		iface.Bandwidth = &libvirtxml.DomainInterfaceBandwidth{
+			Inbound:  &libvirtxml.DomainInterfaceBandwidthParams{Average: &avgIn},
+			Outbound: &libvirtxml.DomainInterfaceBandwidthParams{Average: &avgOut},
+		}
+	}
+
+	// Primary disk (the cloned template image).
+	disks := []libvirtxml.DomainDisk{
+		{
+			Device: "disk",
+			Driver: &libvirtxml.DomainDiskDriver{Name: "qemu", Type: "qcow2"},
+			Source: &libvirtxml.DomainDiskSource{
+				File: &libvirtxml.DomainDiskSourceFile{File: config.DiskPath},
+			},
+			Target: &libvirtxml.DomainDiskTarget{Dev: "vda", Bus: "virtio"},
+		},
+	}
+	// Attach the cloud-init NoCloud seed as a read-only cdrom when present so the
+	// guest configures its static IP / hostname / SSH key on first boot.
+	if config.CloudInitISOPath != "" {
+		disks = append(disks, libvirtxml.DomainDisk{
+			Device:   "cdrom",
+			Driver:   &libvirtxml.DomainDiskDriver{Name: "qemu", Type: "raw"},
+			Source:   &libvirtxml.DomainDiskSource{File: &libvirtxml.DomainDiskSourceFile{File: config.CloudInitISOPath}},
+			Target:   &libvirtxml.DomainDiskTarget{Dev: "sda", Bus: "sata"},
+			ReadOnly: &libvirtxml.DomainDiskReadOnly{},
+		})
+	}
 
 	domain := &libvirtxml.Domain{
 		Type: "kvm",
@@ -112,9 +205,7 @@ func generateDomainXML(config VMConfig) (string, error) {
 			ACPI: &libvirtxml.DomainFeature{},
 			APIC: &libvirtxml.DomainFeatureAPIC{},
 		},
-		CPU: &libvirtxml.DomainCPU{
-			Mode: "host-model",
-		},
+		CPU: buildDomainCPU(config.CPUModel),
 		Clock: &libvirtxml.DomainClock{
 			Offset: "utc",
 			Timer: []libvirtxml.DomainTimer{
@@ -128,36 +219,8 @@ func generateDomainXML(config VMConfig) (string, error) {
 		OnCrash:    "destroy",
 		Devices: &libvirtxml.DomainDeviceList{
 			Emulator: "/usr/bin/qemu-system-x86_64",
-			Disks: []libvirtxml.DomainDisk{
-				{
-					Device: "disk",
-					Driver: &libvirtxml.DomainDiskDriver{
-						Name: "qemu",
-						Type: "qcow2",
-					},
-					Source: &libvirtxml.DomainDiskSource{
-						File: &libvirtxml.DomainDiskSourceFile{
-							File: config.DiskPath,
-						},
-					},
-					Target: &libvirtxml.DomainDiskTarget{
-						Dev: "vda",
-						Bus: "virtio",
-					},
-				},
-			},
-			Interfaces: []libvirtxml.DomainInterface{
-				{
-					Source: &libvirtxml.DomainInterfaceSource{
-						Bridge: &libvirtxml.DomainInterfaceSourceBridge{
-							Bridge: config.Bridge,
-						},
-					},
-					Model: &libvirtxml.DomainInterfaceModel{
-						Type: "virtio",
-					},
-				},
-			},
+			Disks:      disks,
+			Interfaces: []libvirtxml.DomainInterface{iface},
 			Graphics: []libvirtxml.DomainGraphic{
 				{
 					VNC: &libvirtxml.DomainGraphicVNC{
@@ -366,6 +429,347 @@ func RestartVM(uuidStr string) error {
 	})
 }
 
+// installISOTarget is the target dev used for an attached install/rescue ISO,
+// distinct from the cloud-init seed cdrom (sda).
+const installISOTarget = "sdb"
+
+func removeDiskByTarget(disks []libvirtxml.DomainDisk, dev string) []libvirtxml.DomainDisk {
+	out := make([]libvirtxml.DomainDisk, 0, len(disks))
+	for _, d := range disks {
+		if d.Target != nil && d.Target.Dev == dev {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+// AttachISO attaches an ISO as a bootable cdrom (first in boot order) to a
+// stopped VM, for OS install or rescue. Idempotent (replaces any prior ISO).
+func AttachISO(uuidStr, isoPath string) error {
+	if _, err := uuid.Parse(uuidStr); err != nil {
+		return fmt.Errorf("invalid UUID format: %w", err)
+	}
+	if _, err := os.Stat(isoPath); err != nil {
+		return fmt.Errorf("ISO not found at %s: %w", isoPath, err)
+	}
+	return WithConnection(func(conn *libvirt.Connect) error {
+		dom, err := conn.LookupDomainByUUIDString(uuidStr)
+		if err != nil {
+			return fmt.Errorf("domain not found: %w", err)
+		}
+		defer dom.Free()
+		if state, _, err := dom.GetState(); err == nil && state == libvirt.DOMAIN_RUNNING {
+			return fmt.Errorf("stop the VM before attaching an install ISO")
+		}
+		xmlDesc, err := dom.GetXMLDesc(0)
+		if err != nil {
+			return fmt.Errorf("failed to get domain XML: %w", err)
+		}
+		var domain libvirtxml.Domain
+		if err := xml.Unmarshal([]byte(xmlDesc), &domain); err != nil {
+			return fmt.Errorf("failed to parse domain XML: %w", err)
+		}
+		if domain.Devices == nil {
+			return fmt.Errorf("domain has no devices")
+		}
+		// Per-device boot order requires clearing the OS-level boot list.
+		if domain.OS != nil {
+			domain.OS.BootDevices = nil
+		}
+		domain.Devices.Disks = removeDiskByTarget(domain.Devices.Disks, installISOTarget)
+		domain.Devices.Disks = append(domain.Devices.Disks, libvirtxml.DomainDisk{
+			Device:   "cdrom",
+			Driver:   &libvirtxml.DomainDiskDriver{Name: "qemu", Type: "raw"},
+			Source:   &libvirtxml.DomainDiskSource{File: &libvirtxml.DomainDiskSourceFile{File: isoPath}},
+			Target:   &libvirtxml.DomainDiskTarget{Dev: installISOTarget, Bus: "sata"},
+			ReadOnly: &libvirtxml.DomainDiskReadOnly{},
+			Boot:     &libvirtxml.DomainDeviceBoot{Order: 1},
+		})
+		// Primary disk boots second.
+		for i := range domain.Devices.Disks {
+			if domain.Devices.Disks[i].Device == "disk" {
+				domain.Devices.Disks[i].Boot = &libvirtxml.DomainDeviceBoot{Order: 2}
+			}
+		}
+		out, err := xml.Marshal(&domain)
+		if err != nil {
+			return fmt.Errorf("failed to marshal domain XML: %w", err)
+		}
+		newDom, err := conn.DomainDefineXML(string(out))
+		if err != nil {
+			return fmt.Errorf("failed to redefine domain with ISO: %w", err)
+		}
+		newDom.Free()
+		return nil
+	})
+}
+
+// DetachISO removes an attached install ISO and restores normal disk boot order.
+func DetachISO(uuidStr string) error {
+	if _, err := uuid.Parse(uuidStr); err != nil {
+		return fmt.Errorf("invalid UUID format: %w", err)
+	}
+	return WithConnection(func(conn *libvirt.Connect) error {
+		dom, err := conn.LookupDomainByUUIDString(uuidStr)
+		if err != nil {
+			return fmt.Errorf("domain not found: %w", err)
+		}
+		defer dom.Free()
+		xmlDesc, err := dom.GetXMLDesc(0)
+		if err != nil {
+			return fmt.Errorf("failed to get domain XML: %w", err)
+		}
+		var domain libvirtxml.Domain
+		if err := xml.Unmarshal([]byte(xmlDesc), &domain); err != nil {
+			return fmt.Errorf("failed to parse domain XML: %w", err)
+		}
+		if domain.Devices == nil {
+			return nil
+		}
+		domain.Devices.Disks = removeDiskByTarget(domain.Devices.Disks, installISOTarget)
+		// Clear per-device boot order and restore OS-level boot list.
+		for i := range domain.Devices.Disks {
+			domain.Devices.Disks[i].Boot = nil
+		}
+		if domain.OS != nil {
+			domain.OS.BootDevices = []libvirtxml.DomainBootDevice{{Dev: "hd"}, {Dev: "cdrom"}}
+		}
+		out, err := xml.Marshal(&domain)
+		if err != nil {
+			return fmt.Errorf("failed to marshal domain XML: %w", err)
+		}
+		newDom, err := conn.DomainDefineXML(string(out))
+		if err != nil {
+			return fmt.Errorf("failed to redefine domain: %w", err)
+		}
+		newDom.Free()
+		return nil
+	})
+}
+
+// nextFreeVirtioTarget returns the next unused virtio disk target (vdb, vdc, …).
+// vda is reserved for the primary disk. Returns "" when all slots are taken.
+func nextFreeVirtioTarget(domain *libvirtxml.Domain) string {
+	used := map[string]bool{}
+	if domain.Devices != nil {
+		for _, d := range domain.Devices.Disks {
+			if d.Target != nil {
+				used[d.Target.Dev] = true
+			}
+		}
+	}
+	for c := byte('b'); c <= 'z'; c++ {
+		dev := "vd" + string(c)
+		if !used[dev] {
+			return dev
+		}
+	}
+	return ""
+}
+
+// AttachDisk attaches an existing qcow2 image to the domain as the next free
+// virtio target. It persists to the domain config and, when the VM is running,
+// hot-plugs it live. Returns the assigned target device (e.g. "vdb").
+func AttachDisk(uuidStr, diskPath string) (string, error) {
+	if _, err := uuid.Parse(uuidStr); err != nil {
+		return "", fmt.Errorf("invalid UUID format: %w", err)
+	}
+	if _, err := os.Stat(diskPath); err != nil {
+		return "", fmt.Errorf("disk image not found at %s: %w", diskPath, err)
+	}
+	var device string
+	err := WithConnection(func(conn *libvirt.Connect) error {
+		dom, err := conn.LookupDomainByUUIDString(uuidStr)
+		if err != nil {
+			return fmt.Errorf("domain not found: %w", err)
+		}
+		defer dom.Free()
+
+		xmlDesc, err := dom.GetXMLDesc(0)
+		if err != nil {
+			return fmt.Errorf("failed to get domain XML: %w", err)
+		}
+		var domain libvirtxml.Domain
+		if err := xml.Unmarshal([]byte(xmlDesc), &domain); err != nil {
+			return fmt.Errorf("failed to parse domain XML: %w", err)
+		}
+		device = nextFreeVirtioTarget(&domain)
+		if device == "" {
+			return fmt.Errorf("no free virtio disk slot available")
+		}
+
+		diskXML := fmt.Sprintf(`<disk type='file' device='disk'><driver name='qemu' type='qcow2'/><source file='%s'/><target dev='%s' bus='virtio'/></disk>`, diskPath, device)
+		flags := libvirt.DOMAIN_DEVICE_MODIFY_CONFIG
+		if state, _, _ := dom.GetState(); state == libvirt.DOMAIN_RUNNING {
+			flags |= libvirt.DOMAIN_DEVICE_MODIFY_LIVE
+		}
+		if err := dom.AttachDeviceFlags(diskXML, flags); err != nil {
+			return fmt.Errorf("failed to attach disk: %w", err)
+		}
+		return nil
+	})
+	return device, err
+}
+
+// DetachDisk detaches the disk at the given target device (e.g. "vdb") from the
+// domain (config + live when running). The primary disk (vda) cannot be detached.
+func DetachDisk(uuidStr, device, diskPath string) error {
+	if _, err := uuid.Parse(uuidStr); err != nil {
+		return fmt.Errorf("invalid UUID format: %w", err)
+	}
+	if device == "" || device == "vda" {
+		return fmt.Errorf("refusing to detach primary or empty disk target %q", device)
+	}
+	return WithConnection(func(conn *libvirt.Connect) error {
+		dom, err := conn.LookupDomainByUUIDString(uuidStr)
+		if err != nil {
+			return fmt.Errorf("domain not found: %w", err)
+		}
+		defer dom.Free()
+		diskXML := fmt.Sprintf(`<disk type='file' device='disk'><driver name='qemu' type='qcow2'/><source file='%s'/><target dev='%s' bus='virtio'/></disk>`, diskPath, device)
+		flags := libvirt.DOMAIN_DEVICE_MODIFY_CONFIG
+		if state, _, _ := dom.GetState(); state == libvirt.DOMAIN_RUNNING {
+			flags |= libvirt.DOMAIN_DEVICE_MODIFY_LIVE
+		}
+		if err := dom.DetachDeviceFlags(diskXML, flags); err != nil {
+			return fmt.Errorf("failed to detach disk: %w", err)
+		}
+		return nil
+	})
+}
+
+// SuspendVM pauses a running VM (keeps it in memory).
+func SuspendVM(uuidStr string) error {
+	if _, err := uuid.Parse(uuidStr); err != nil {
+		return fmt.Errorf("invalid UUID format: %w", err)
+	}
+	return WithConnection(func(conn *libvirt.Connect) error {
+		dom, err := conn.LookupDomainByUUIDString(uuidStr)
+		if err != nil {
+			return fmt.Errorf("domain not found: %w", err)
+		}
+		defer dom.Free()
+		state, _, err := dom.GetState()
+		if err != nil {
+			return fmt.Errorf("failed to get domain state: %w", err)
+		}
+		if state == libvirt.DOMAIN_PAUSED {
+			return nil // already paused
+		}
+		if state != libvirt.DOMAIN_RUNNING {
+			return fmt.Errorf("domain is not running")
+		}
+		if err := dom.Suspend(); err != nil {
+			return fmt.Errorf("failed to suspend domain: %w", err)
+		}
+		return nil
+	})
+}
+
+// MigrateVM live-migrates a domain to a destination libvirt URI using
+// peer-to-peer migration (the source daemon drives the transfer). The domain is
+// persisted on the destination and undefined on the source on success.
+//
+// destURI example: "qemu+ssh://root@203.0.113.131/system".
+// When copyStorage is true, full block migration is used (no shared storage).
+func MigrateVM(uuidStr, destURI string, live, copyStorage bool) error {
+	if _, err := uuid.Parse(uuidStr); err != nil {
+		return fmt.Errorf("invalid UUID format: %w", err)
+	}
+	if destURI == "" {
+		return fmt.Errorf("destination URI is required")
+	}
+	return WithConnection(func(conn *libvirt.Connect) error {
+		dom, err := conn.LookupDomainByUUIDString(uuidStr)
+		if err != nil {
+			return fmt.Errorf("domain not found: %w", err)
+		}
+		defer dom.Free()
+
+		flags := libvirt.MIGRATE_PEER2PEER | libvirt.MIGRATE_PERSIST_DEST | libvirt.MIGRATE_UNDEFINE_SOURCE
+		if live {
+			flags |= libvirt.MIGRATE_LIVE
+		}
+		if copyStorage {
+			// Full block migration: copy the disk(s) to the destination since
+			// the nodes do not share storage.
+			flags |= libvirt.MIGRATE_NON_SHARED_DISK
+		}
+
+		params := &libvirt.DomainMigrateParameters{}
+		if err := dom.MigrateToURI3(destURI, params, flags); err != nil {
+			return fmt.Errorf("migration to %s failed: %w", destURI, err)
+		}
+		return nil
+	})
+}
+
+// ResumeVM resumes a paused VM.
+func ResumeVM(uuidStr string) error {
+	if _, err := uuid.Parse(uuidStr); err != nil {
+		return fmt.Errorf("invalid UUID format: %w", err)
+	}
+	return WithConnection(func(conn *libvirt.Connect) error {
+		dom, err := conn.LookupDomainByUUIDString(uuidStr)
+		if err != nil {
+			return fmt.Errorf("domain not found: %w", err)
+		}
+		defer dom.Free()
+		state, _, err := dom.GetState()
+		if err != nil {
+			return fmt.Errorf("failed to get domain state: %w", err)
+		}
+		if state == libvirt.DOMAIN_RUNNING {
+			return nil // already running
+		}
+		if state != libvirt.DOMAIN_PAUSED {
+			return fmt.Errorf("domain is not paused")
+		}
+		if err := dom.Resume(); err != nil {
+			return fmt.Errorf("failed to resume domain: %w", err)
+		}
+		return nil
+	})
+}
+
+// ResizeVM updates a (stopped) VM's vCPU and memory allocation in its
+// persistent config. Takes effect on next boot.
+func ResizeVM(uuidStr string, vcpus int, memoryMB int) error {
+	if _, err := uuid.Parse(uuidStr); err != nil {
+		return fmt.Errorf("invalid UUID format: %w", err)
+	}
+	if vcpus <= 0 && memoryMB <= 0 {
+		return fmt.Errorf("nothing to resize")
+	}
+	return WithConnection(func(conn *libvirt.Connect) error {
+		dom, err := conn.LookupDomainByUUIDString(uuidStr)
+		if err != nil {
+			return fmt.Errorf("domain not found: %w", err)
+		}
+		defer dom.Free()
+		// Apply to persistent config (affects next boot); avoids live-resize edge cases.
+		if memoryMB > 0 {
+			memKiB := uint64(memoryMB) * 1024
+			if err := dom.SetMemoryFlags(memKiB, libvirt.DOMAIN_MEM_CONFIG|libvirt.DOMAIN_MEM_MAXIMUM); err != nil {
+				return fmt.Errorf("failed to set max memory: %w", err)
+			}
+			if err := dom.SetMemoryFlags(memKiB, libvirt.DOMAIN_MEM_CONFIG); err != nil {
+				return fmt.Errorf("failed to set memory: %w", err)
+			}
+		}
+		if vcpus > 0 {
+			if err := dom.SetVcpusFlags(uint(vcpus), libvirt.DOMAIN_VCPU_CONFIG|libvirt.DOMAIN_VCPU_MAXIMUM); err != nil {
+				return fmt.Errorf("failed to set max vcpus: %w", err)
+			}
+			if err := dom.SetVcpusFlags(uint(vcpus), libvirt.DOMAIN_VCPU_CONFIG); err != nil {
+				return fmt.Errorf("failed to set vcpus: %w", err)
+			}
+		}
+		return nil
+	})
+}
+
 // DeleteVM deletes a VM and its associated storage
 func DeleteVM(uuidStr string) error {
 	if _, err := uuid.Parse(uuidStr); err != nil {
@@ -434,6 +838,43 @@ func extractDiskPaths(xmlDesc string) []string {
 	}
 
 	return paths
+}
+
+// PrimaryDiskPath returns the source file path of the VM's primary disk
+// (the device='disk' entry, not cdrom/seed images).
+func PrimaryDiskPath(uuidStr string) (string, error) {
+	if _, err := uuid.Parse(uuidStr); err != nil {
+		return "", fmt.Errorf("invalid UUID format: %w", err)
+	}
+	var path string
+	err := WithConnection(func(conn *libvirt.Connect) error {
+		dom, err := conn.LookupDomainByUUIDString(uuidStr)
+		if err != nil {
+			return fmt.Errorf("domain not found: %w", err)
+		}
+		defer dom.Free()
+		xmlDesc, err := dom.GetXMLDesc(0)
+		if err != nil {
+			return fmt.Errorf("failed to get domain XML: %w", err)
+		}
+		var domain libvirtxml.Domain
+		if err := xml.Unmarshal([]byte(xmlDesc), &domain); err != nil {
+			return fmt.Errorf("failed to parse domain XML: %w", err)
+		}
+		if domain.Devices != nil {
+			for _, disk := range domain.Devices.Disks {
+				if disk.Device == "disk" && disk.Source != nil && disk.Source.File != nil && disk.Source.File.File != "" {
+					path = disk.Source.File.File
+					return nil
+				}
+			}
+		}
+		return fmt.Errorf("no primary disk found for domain %s", uuidStr)
+	})
+	if err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 // GetVMStatus returns the current status of a VM
@@ -1075,4 +1516,86 @@ func GetVMStats(uuidStr string) (*VMStats, error) {
 		return nil, err
 	}
 	return &stats, nil
+}
+
+// SetVNCPassword sets the VNC password for a running VM using QEMU monitor command
+func SetVNCPassword(uuidStr string, password string) error {
+	if _, err := uuid.Parse(uuidStr); err != nil {
+		return fmt.Errorf("invalid UUID format: %w", err)
+	}
+
+	if password == "" {
+		return fmt.Errorf("password cannot be empty")
+	}
+
+	return WithConnection(func(conn *libvirt.Connect) error {
+		dom, err := conn.LookupDomainByUUIDString(uuidStr)
+		if err != nil {
+			return fmt.Errorf("domain not found: %w", err)
+		}
+		defer dom.Free()
+
+		// Check if domain is running
+		state, _, err := dom.GetState()
+		if err != nil {
+			return fmt.Errorf("failed to get domain state: %w", err)
+		}
+		if libvirt.DomainState(state) != libvirt.DOMAIN_RUNNING {
+			return fmt.Errorf("VM must be running to set VNC password")
+		}
+
+		// Set the VNC password via QMP (structured JSON) rather than HMP. HMP is a
+		// shell-like parser, so a password containing spaces or characters like
+		// $ ^ & * # would be mangled — QEMU would store a different value than the
+		// one the browser presents, causing "Authentication failed". QMP passes the
+		// password as a JSON string argument, so any byte is preserved verbatim.
+		payload, err := json.Marshal(map[string]interface{}{
+			"execute": "set_password",
+			"arguments": map[string]interface{}{
+				"protocol": "vnc",
+				"password": password,
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("failed to encode set_password command: %w", err)
+		}
+		if _, err = dom.QemuMonitorCommand(string(payload), libvirt.DOMAIN_QEMU_MONITOR_COMMAND_DEFAULT); err != nil {
+			return fmt.Errorf("failed to set VNC password: %w", err)
+		}
+
+		return nil
+	})
+}
+
+// SetVMPassword sets a guest user's password via the qemu-guest-agent (the VM
+// must be running with the guest agent installed — true for cloud images).
+func SetVMPassword(uuidStr, user, password string) error {
+	if _, err := uuid.Parse(uuidStr); err != nil {
+		return fmt.Errorf("invalid UUID format: %w", err)
+	}
+	if user == "" {
+		user = "root"
+	}
+	if password == "" {
+		return fmt.Errorf("password cannot be empty")
+	}
+	return WithConnection(func(conn *libvirt.Connect) error {
+		dom, err := conn.LookupDomainByUUIDString(uuidStr)
+		if err != nil {
+			return fmt.Errorf("domain not found: %w", err)
+		}
+		defer dom.Free()
+		state, _, err := dom.GetState()
+		if err != nil {
+			return fmt.Errorf("failed to get domain state: %w", err)
+		}
+		if state != libvirt.DOMAIN_RUNNING {
+			return fmt.Errorf("VM must be running to reset password (guest agent required)")
+		}
+		// flags 0 = plaintext password (libvirt hashes via guest agent).
+		if err := dom.SetUserPassword(user, password, 0); err != nil {
+			return fmt.Errorf("failed to set %s password (qemu-guest-agent required in guest): %w", user, err)
+		}
+		return nil
+	})
 }

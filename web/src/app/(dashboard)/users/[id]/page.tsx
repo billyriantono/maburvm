@@ -222,7 +222,7 @@ export default function UserDetailPage() {
                   <span className="text-xs font-bold uppercase">Enabled</span>
                 </div>
               ) : (
-                <div className="flex items-center gap-1 text-gray-400">
+                <div className="flex items-center gap-1 text-gray-600">
                   <XCircle className="w-4 h-4" />
                   <span className="text-xs font-bold uppercase">Disabled</span>
                 </div>
@@ -263,7 +263,7 @@ export default function UserDetailPage() {
             </div>
           ) : userVMs.length === 0 ? (
             <div className="p-8 text-center">
-              <Monitor className="w-10 h-10 text-gray-300 mx-auto mb-3" />
+              <Monitor className="w-10 h-10 text-gray-500 mx-auto mb-3" />
               <p className="text-gray-500 text-sm font-medium">No VMs owned by this user</p>
             </div>
           ) : (

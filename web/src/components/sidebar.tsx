@@ -12,9 +12,14 @@ import {
   Users,
   Activity,
   Zap,
+  Network,
   Database,
   User as UserIcon,
-  Shield
+  Shield,
+  KeyRound,
+  KeySquare,
+  Boxes,
+  Globe
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { User } from "@/types"
@@ -22,11 +27,14 @@ import type { User } from "@/types"
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/vms", label: "Virtual Machines", icon: Monitor },
+  { href: "/plans", label: "Plans", icon: Boxes },
   { href: "/templates", label: "Templates", icon: Box },
   { href: "/nodes", label: "Nodes", icon: HardDrive },
   { href: "/storage", label: "Storage", icon: Database },
   { href: "/isos", label: "ISOs", icon: Folder },
   { href: "/networks", label: "Networks", icon: Zap },
+  { href: "/ip-pools", label: "IP Pools", icon: Network },
+  { href: "/dns", label: "DNS", icon: Globe },
   { href: "/users", label: "Users", icon: Users },
   { href: "/monitoring", label: "Monitoring", icon: Activity },
 ]
@@ -34,6 +42,8 @@ const navItems = [
 // Settings navigation with sub-items
 const settingsNav = [
   { href: "/settings/profile", label: "Profile", icon: UserIcon },
+  { href: "/settings/api-keys", label: "API Keys", icon: KeyRound },
+  { href: "/settings/ssh-keys", label: "SSH Keys", icon: KeySquare },
   { href: "/settings/system", label: "System", icon: Shield },
 ]
 
@@ -57,7 +67,7 @@ export function Sidebar({ user }: SidebarProps) {
             <span className="text-lg font-black uppercase tracking-tighter leading-none">
               MaburVM
             </span>
-            <span className="text-[10px] font-bold uppercase tracking-widest text-black/70">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-black">
               Virtualization
             </span>
           </div>
@@ -91,7 +101,7 @@ export function Sidebar({ user }: SidebarProps) {
           {/* Settings Section */}
           <div className="pt-4 mt-4 border-t-2 border-black">
             <div className="px-4 py-2">
-              <span className="text-xs font-black uppercase tracking-wider text-gray-400">
+              <span className="text-xs font-black uppercase tracking-wider text-gray-600">
                 Settings
               </span>
             </div>

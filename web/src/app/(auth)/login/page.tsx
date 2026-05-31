@@ -195,7 +195,7 @@ export default function LoginPage() {
             id="email"
             type="email"
             placeholder="you@company.com"
-            className="text-lg font-medium border-2 border-black placeholder:text-gray-400 focus:border-black focus:ring-0"
+            className="text-lg font-medium border-2 border-black placeholder:text-gray-600 focus:border-black focus:ring-0"
             {...register("email")}
             disabled={isLoading}
           />
@@ -219,7 +219,7 @@ export default function LoginPage() {
               id="password"
               type={showPassword ? "text" : "password"}
               placeholder="Enter your password"
-              className="text-lg font-medium border-2 border-black placeholder:text-gray-400 focus:border-black focus:ring-0 pr-12"
+              className="text-lg font-medium border-2 border-black placeholder:text-gray-600 focus:border-black focus:ring-0 pr-12"
               {...register("password")}
               disabled={isLoading}
             />
@@ -262,7 +262,7 @@ export default function LoginPage() {
               pattern="[0-9]*"
               maxLength={6}
               placeholder="123456"
-              className="text-lg font-medium border-2 border-black placeholder:text-gray-400 focus:border-black focus:ring-0 tracking-widest text-center"
+              className="text-lg font-medium border-2 border-black placeholder:text-gray-600 focus:border-black focus:ring-0 tracking-widest text-center"
               {...register("totpCode")}
               disabled={isLoading}
             />

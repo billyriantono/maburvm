@@ -4,18 +4,23 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math/big"
+	"net"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
 	"gorm.io/gorm"
 
 	"github.com/maburvm/panel/internal/panel/repository"
@@ -62,6 +67,10 @@ type VMService struct {
 	vmRepo       *repository.VMRepository
 	nodeRepo     *repository.NodeRepository
 	templateRepo *repository.TemplateRepository
+	networkRepo  *repository.NetworkRepository
+	planRepo     *repository.PlanRepository
+	ipamService  *IPAMService
+	quotaService *QuotaService
 	riverClient  *river.Client[pgx.Tx]
 	logger       *slog.Logger
 
@@ -89,6 +98,10 @@ func NewVMService(
 		vmRepo:                vmRepo,
 		nodeRepo:              nodeRepo,
 		templateRepo:          templateRepo,
+		networkRepo:           repository.NewNetworkRepository(db),
+		planRepo:              repository.NewPlanRepository(db),
+		ipamService:           NewIPAMService(db, repository.NewIPAMRepository(db)),
+		quotaService:          NewQuotaService(db, vmRepo),
 		riverClient:           riverClient,
 		logger:                logger,
 		nodeSelectionStrategy: NodeSelectionRoundRobin,
@@ -104,6 +117,19 @@ func (s *VMService) SetNodeSelectionStrategy(strategy NodeSelectionStrategy) {
 	s.nodeSelectionStrategy = strategy
 }
 
+// GetNodeNames returns a map of node ID to node name
+func (s *VMService) GetNodeNames(ctx context.Context) (map[string]string, error) {
+	nodes, err := s.nodeRepo.List(ctx, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]string, len(nodes))
+	for _, n := range nodes {
+		result[n.ID] = n.Name
+	}
+	return result, nil
+}
+
 // ============================================================================
 // Create VM
 // ============================================================================
@@ -115,6 +141,18 @@ type CreateVMRequest struct {
 	OSTemplateID string           `json:"os_template_id" validate:"required,uuid"`
 	Resources    models.Resources `json:"resources" validate:"required"`
 	NodeID       string           `json:"node_id,omitempty" validate:"omitempty,uuid"` // Optional: specific node
+	PlanID       string           `json:"plan_id,omitempty" validate:"omitempty,uuid"` // Optional: derive resources from a plan
+	IPPoolID     string           `json:"ip_pool_id,omitempty" validate:"omitempty,uuid"`
+	RequestedIP  string           `json:"requested_ip,omitempty" validate:"omitempty,ip"`
+	BandwidthMbps int             `json:"bandwidth_mbps,omitempty" validate:"omitempty,min=0,max=10000"`
+	VLANID        int             `json:"vlan_id,omitempty" validate:"omitempty,min=0,max=4094"`
+	// CPUModel is the guest CPU model. Empty → the node defaults to a portable,
+	// live-migratable model (kvm64). e.g. "host-passthrough", "host-model", "Haswell".
+	CPUModel string `json:"cpu_model,omitempty" validate:"omitempty,max=64"`
+	// CloneSourceRef, when set, is used as the disk source instead of the template
+	// image — a "vm://<id>" (same node) or "vm://<srcNodeIP>/<id>" (cross-node)
+	// reference the agent resolves by copying/pulling that VM's disk. Set by CloneVM.
+	CloneSourceRef string `json:"-"`
 }
 
 // CreateVMResponse contains the created VM and job information
@@ -126,8 +164,31 @@ type CreateVMResponse struct {
 
 // CreateVM creates a new VM and enqueues a creation job
 func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*CreateVMResponse, error) {
+	// If a plan (flavor) is selected, derive resources + bandwidth from it.
+	if req.PlanID != "" {
+		plan, err := s.planRepo.GetByID(ctx, req.PlanID)
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, fmt.Errorf("plan not found")
+			}
+			return nil, fmt.Errorf("failed to get plan: %w", err)
+		}
+		if !plan.IsActive {
+			return nil, fmt.Errorf("plan is not active")
+		}
+		req.Resources = models.Resources{CPU: plan.CPU, RAM: plan.RAM, Disk: plan.Disk}
+		if plan.BandwidthMbps > 0 && req.BandwidthMbps == 0 {
+			req.BandwidthMbps = plan.BandwidthMbps
+		}
+	}
+
 	// Validate resources
 	if err := s.validateResources(&req.Resources); err != nil {
+		return nil, err
+	}
+
+	// Enforce the owner's resource quota before allocating anything.
+	if err := s.quotaService.CheckCanCreate(ctx, req.UserID, req.Resources); err != nil {
 		return nil, err
 	}
 
@@ -176,7 +237,7 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 	// Generate VNC credentials
 	vncConfig := s.generateVNCCredentials()
 
-	// Create VM record
+	// Create VM record and any requested IP/network allocation atomically.
 	vm := &models.VM{
 		UserID:       req.UserID,
 		NodeID:       nodeID,
@@ -188,8 +249,48 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		VNCPassword:  vncConfig.Password,
 	}
 
-	if err := s.vmRepo.Create(ctx, vm); err != nil {
-		return nil, fmt.Errorf("failed to create VM record: %w", err)
+	var allocatedIP *models.IPAddress
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := s.vmRepo.WithDB(tx).Create(ctx, vm); err != nil {
+			return fmt.Errorf("failed to create VM record: %w", err)
+		}
+		if req.RequestedIP != "" && req.IPPoolID == "" {
+			return fmt.Errorf("ip_pool_id is required when requested_ip is set")
+		}
+		if req.IPPoolID != "" {
+			nodeIDPtr := nodeID
+			allocated, err := s.ipamService.AllocateAddressInTx(ctx, tx, &AllocateIPAddressRequest{
+				PoolID:      req.IPPoolID,
+				NodeID:      &nodeIDPtr,
+				VMID:        &vm.ID,
+				RequestedIP: req.RequestedIP,
+			})
+			if err != nil {
+				return err
+			}
+			allocatedIP = allocated
+			network := &models.Network{VMID: vm.ID, IPAddress: allocated.Address}
+			if req.BandwidthMbps > 0 {
+				network.BandwidthLimit = int64(req.BandwidthMbps)
+			}
+			if req.VLANID > 0 {
+				vlan := req.VLANID
+				network.VLANID = &vlan
+			}
+			if err := s.networkRepo.WithDB(tx).Create(ctx, network); err != nil {
+				return fmt.Errorf("failed to create network record: %w", err)
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	// Disk source: the template image, or — for a clone — a vm:// reference the
+	// agent resolves by copying the source VM's disk (locally or pulled over SSH).
+	imagePath := template.ImagePath
+	if req.CloneSourceRef != "" {
+		imagePath = req.CloneSourceRef
 	}
 
 	// Prepare VM creation params
@@ -197,12 +298,37 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		"hostname":         req.Hostname,
 		"os_template":      template.Name,
 		"template_version": template.Version,
-		"image_path":       template.ImagePath,
+		"image_path":       imagePath,
 		"resources":        req.Resources,
 		"vnc_port":         vncConfig.Port,
 		"vnc_password":     vncConfig.Password,
+		"bandwidth_mbps":   req.BandwidthMbps,
+		"vlan_id":          req.VLANID,
+		"cpu_model":        req.CPUModel,
+	}
+	if allocatedIP != nil {
+		params["ip_address"] = allocatedIP.Address
+		params["ip_pool_id"] = allocatedIP.PoolID
+		// Carry the pool's gateway and prefix length so the agent can configure
+		// the guest NIC with a static address.
+		if pool, perr := s.ipamService.GetPool(ctx, allocatedIP.PoolID); perr == nil && pool != nil {
+			if pool.Gateway != "" {
+				params["gateway"] = pool.Gateway
+			}
+			if prefix := cidrPrefixLen(pool.CIDR); prefix > 0 {
+				params["netmask"] = prefix
+			}
+			if pool.Bridge != "" {
+				params["bridge"] = pool.Bridge
+			}
+		}
 	}
 	paramsJSON, _ := json.Marshal(params)
+
+	if s.riverClient == nil {
+		s.logger.WarnContext(ctx, "VM creation queue disabled; VM record created without background job", "vm_id", vm.ID)
+		return &CreateVMResponse{VM: vm, JobID: 0, Status: "pending"}, nil
+	}
 
 	// Enqueue VM creation job
 	job := queue.VMOperationJob{
@@ -214,8 +340,9 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 
 	result, err := s.riverClient.Insert(ctx, job, nil)
 	if err != nil {
-		// Rollback VM creation on job enqueue failure
-		if delErr := s.vmRepo.Delete(ctx, vm.ID); delErr != nil {
+		// Rollback VM creation on job enqueue failure. This also releases IPAM allocations
+		// and removes network rows created for this VM.
+		if delErr := s.cleanupVMAllocation(ctx, vm.ID, true); delErr != nil {
 			s.logger.ErrorContext(ctx, "failed to rollback VM creation after job enqueue failure",
 				"vm_id", vm.ID, "error", delErr)
 		}
@@ -233,6 +360,75 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		JobID:  result.Job.ID,
 		Status: "pending",
 	}, nil
+}
+
+// CloneVMRequest describes a VM-clone operation.
+type CloneVMRequest struct {
+	SourceVMID string `json:"-"`
+	Hostname   string `json:"hostname"`     // new hostname; defaults to "<source>-clone"
+	DestNodeID string `json:"dest_node_id"` // target node; defaults to the source's node
+}
+
+// CloneVM provisions a new VM as an independent copy of an existing one: same
+// template/resources/owner, a fresh hostname/IP/MAC/VNC, and a disk copied from
+// the source. The source must be stopped so the copy is consistent. The clone
+// can target a different node (Virtualizor From → To server), in which case the
+// destination node pulls the source disk over SSH. Reuses the create pipeline.
+func (s *VMService) CloneVM(ctx context.Context, req *CloneVMRequest) (*CreateVMResponse, error) {
+	src, err := s.vmRepo.GetByID(ctx, req.SourceVMID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrVMNotFound
+		}
+		return nil, fmt.Errorf("failed to get source VM: %w", err)
+	}
+	if src.Status == models.VMStatusRunning {
+		return nil, fmt.Errorf("source VM must be stopped before cloning")
+	}
+
+	hostname := strings.TrimSpace(req.Hostname)
+	if hostname == "" {
+		hostname = src.Hostname + "-clone"
+	}
+
+	destNodeID := req.DestNodeID
+	if destNodeID == "" {
+		destNodeID = src.NodeID
+	}
+
+	// Same node → local disk copy. Different node → the destination agent pulls
+	// the source disk over SSH (encode the source node's IP in the ref).
+	cloneRef := "vm://" + src.ID
+	if destNodeID != src.NodeID {
+		srcNode, nerr := s.nodeRepo.GetByID(ctx, src.NodeID)
+		if nerr != nil {
+			return nil, fmt.Errorf("failed to resolve source node for cross-node clone: %w", nerr)
+		}
+		cloneRef = fmt.Sprintf("vm://%s/%s", srcNode.IPAddress, src.ID)
+	}
+
+	return s.CreateVM(ctx, &CreateVMRequest{
+		UserID:         src.UserID,
+		Hostname:       hostname,
+		OSTemplateID:   src.OSTemplateID,
+		Resources:      src.Resources,
+		NodeID:         destNodeID,
+		CloneSourceRef: cloneRef,
+	})
+}
+
+// cidrPrefixLen returns the prefix length (e.g. 24) from a CIDR string such as
+// "192.168.1.0/24". It returns 0 when the CIDR is empty or invalid.
+func cidrPrefixLen(cidr string) int {
+	if cidr == "" {
+		return 0
+	}
+	_, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil || ipnet == nil {
+		return 0
+	}
+	ones, _ := ipnet.Mask.Size()
+	return ones
 }
 
 // validateResources validates VM resource requirements
@@ -289,13 +485,25 @@ func (s *VMService) generateVNCCredentials() *VNCConfig {
 	// Generate random port between 5900 and 5999
 	port := 5900 + int(randInt(100))
 
-	// Generate random 12-character password
-	password := s.generateRandomPassword(12)
-
 	return &VNCConfig{
 		Port:     port,
-		Password: password,
+		Password: generateVNCPassword(),
 	}
+}
+
+// generateVNCPassword returns an 8-char alphanumeric password. VNC's classic
+// "VNC Auth" uses at most 8 bytes, so a longer or symbol-laden password only
+// invites mismatches: the browser sends the literal value while QEMU stores a
+// truncated/mangled one (it's set via the QEMU monitor). Keeping it 8 chars and
+// free of shell/JSON-special characters makes the value the browser sends and
+// the value QEMU enforces identical. Ambiguous chars (0/O, 1/l) are omitted.
+func generateVNCPassword() string {
+	const charset = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	b := make([]byte, 8)
+	for i := range b {
+		b[i] = charset[randInt(int64(len(charset)))]
+	}
+	return string(b)
 }
 
 // randInt generates a random integer between 0 and max-1 using crypto/rand
@@ -313,6 +521,21 @@ func (s *VMService) generateRandomPassword(length int) string {
 		password[i] = charset[n]
 	}
 	return string(password)
+}
+
+func (s *VMService) cleanupVMAllocation(ctx context.Context, vmID string, deleteVM bool) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := s.ipamService.ReleaseAddressesByVMIDInTx(ctx, tx, vmID); err != nil {
+			return err
+		}
+		if err := s.networkRepo.WithDB(tx).DeleteByVMID(ctx, vmID); err != nil {
+			return err
+		}
+		if !deleteVM {
+			return nil
+		}
+		return s.vmRepo.WithDB(tx).Delete(ctx, vmID)
+	})
 }
 
 // ============================================================================
@@ -464,7 +687,144 @@ func (s *VMService) getVMAgentStatus(ctx context.Context, vmID, nodeID string) (
 		IncludeMetrics: true,
 	}
 
-	return client.GetVMStatus(ctx, req)
+	authCtx, err := s.agentAuthContext(ctx, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	return client.GetVMStatus(authCtx, req)
+}
+
+// GetVMTrafficCounters returns the VM's cumulative network counters (total bytes
+// rx/tx since boot) from the agent, for bandwidth accounting. Returns (0,0,nil)
+// when the agent reports no resource usage yet.
+func (s *VMService) GetVMTrafficCounters(ctx context.Context, nodeID, vmID string) (rxBytes, txBytes int64, err error) {
+	status, err := s.getVMAgentStatus(ctx, vmID, nodeID)
+	if err != nil {
+		return 0, 0, err
+	}
+	if cr := status.GetCurrentResources(); cr != nil {
+		return cr.GetNetworkRxBytes(), cr.GetNetworkTxBytes(), nil
+	}
+	return 0, 0, nil
+}
+
+// StopVMForEnforcement force-stops a VM on its node (used by bandwidth-quota
+// enforcement) and reflects the stopped state in the DB.
+func (s *VMService) StopVMForEnforcement(ctx context.Context, nodeID, vmID string) error {
+	client, err := s.getAgentClient(ctx, nodeID)
+	if err != nil {
+		return err
+	}
+	authCtx, err := s.agentAuthContext(ctx, nodeID)
+	if err != nil {
+		return err
+	}
+	if _, err := client.ExecuteVMCommand(authCtx, &pb.VMCommandRequest{
+		VmId:    vmID,
+		Command: pb.VMCommandType_VM_COMMAND_TYPE_STOP,
+		Async:   false,
+	}); err != nil {
+		return err
+	}
+	if err := s.vmRepo.UpdateStatus(ctx, vmID, models.VMStatusStopped); err != nil {
+		s.logger.WarnContext(ctx, "failed to persist stopped status after bandwidth enforcement", "vm_id", vmID, "error", err)
+	}
+	return nil
+}
+
+// ============================================================================
+// Additional Disks
+// ============================================================================
+
+// ListDisks returns the extra data disks attached to a VM (newest device last).
+func (s *VMService) ListDisks(ctx context.Context, vmID string) ([]models.VMDisk, error) {
+	var disks []models.VMDisk
+	if err := s.db.WithContext(ctx).Where("vm_id = ?", vmID).Order("device ASC").Find(&disks).Error; err != nil {
+		return nil, fmt.Errorf("failed to list disks: %w", err)
+	}
+	return disks, nil
+}
+
+// AttachDisk provisions and hot-plugs a new data disk of sizeGB onto the VM,
+// then records it. The agent picks the next free virtio target.
+func (s *VMService) AttachDisk(ctx context.Context, vmID string, sizeGB int) (*models.VMDisk, error) {
+	if sizeGB <= 0 {
+		return nil, fmt.Errorf("disk size must be a positive number of GB")
+	}
+	vm, err := s.vmRepo.GetByID(ctx, vmID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrVMNotFound
+		}
+		return nil, fmt.Errorf("failed to get VM: %w", err)
+	}
+	client, err := s.getAgentClient(ctx, vm.NodeID)
+	if err != nil {
+		return nil, err
+	}
+	authCtx, err := s.agentAuthContext(ctx, vm.NodeID)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.AttachDisk(authCtx, &pb.AttachDiskRequest{VmId: vmID, SizeGb: int64(sizeGB)})
+	if err != nil {
+		return nil, fmt.Errorf("agent attach disk failed: %w", err)
+	}
+	if !resp.Success {
+		return nil, fmt.Errorf("attach disk failed: %s", agentErrorMessage(resp.Error))
+	}
+
+	disk := &models.VMDisk{VMID: vmID, Device: resp.Device, SizeGB: sizeGB, Path: resp.Path}
+	if err := s.db.WithContext(ctx).Create(disk).Error; err != nil {
+		return nil, fmt.Errorf("disk attached on node but failed to record it: %w", err)
+	}
+	return disk, nil
+}
+
+// DetachDisk detaches a data disk (by virtio device, e.g. "vdb") from the VM and
+// optionally deletes its backing volume.
+func (s *VMService) DetachDisk(ctx context.Context, vmID, device string, deleteVolume bool) error {
+	vm, err := s.vmRepo.GetByID(ctx, vmID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrVMNotFound
+		}
+		return fmt.Errorf("failed to get VM: %w", err)
+	}
+	var disk models.VMDisk
+	if err := s.db.WithContext(ctx).Where("vm_id = ? AND device = ?", vmID, device).First(&disk).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("disk %s not found on this VM", device)
+		}
+		return err
+	}
+	client, err := s.getAgentClient(ctx, vm.NodeID)
+	if err != nil {
+		return err
+	}
+	authCtx, err := s.agentAuthContext(ctx, vm.NodeID)
+	if err != nil {
+		return err
+	}
+	resp, err := client.DetachDisk(authCtx, &pb.DetachDiskRequest{VmId: vmID, Device: device, Path: disk.Path, DeleteVolume: deleteVolume})
+	if err != nil {
+		return fmt.Errorf("agent detach disk failed: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("detach disk failed: %s", agentErrorMessage(resp.Error))
+	}
+	if err := s.db.WithContext(ctx).Delete(&disk).Error; err != nil {
+		return fmt.Errorf("disk detached on node but failed to remove record: %w", err)
+	}
+	return nil
+}
+
+// agentErrorMessage extracts a human-readable message from an agent ErrorResponse.
+func agentErrorMessage(e *pb.ErrorResponse) string {
+	if e != nil && e.Message != "" {
+		return e.Message
+	}
+	return "unknown agent error"
 }
 
 // syncVMStatus updates the VM status in the database based on agent state
@@ -542,6 +902,10 @@ func (s *VMService) UpdateVM(ctx context.Context, req *UpdateVMRequest) (*models
 		if err := s.validateResources(req.Resources); err != nil {
 			return nil, err
 		}
+		// Enforce quota on resize (VM count unchanged; usage already includes the old size).
+		if err := s.quotaService.CheckCanResize(ctx, vm.UserID, vm.Resources, *req.Resources); err != nil {
+			return nil, err
+		}
 		vm.Resources = *req.Resources
 
 		// Enqueue resize job
@@ -585,16 +949,24 @@ func (s *VMService) DeleteVM(ctx context.Context, vmID string) error {
 		return fmt.Errorf("failed to get VM: %w", err)
 	}
 
-	// Enqueue delete job
-	job := queue.VMOperationJob{
-		VMID:      vm.ID,
-		Operation: queue.VMOpDelete,
-		NodeID:    vm.NodeID,
+	if s.riverClient != nil {
+		// Enqueue delete job
+		job := queue.VMOperationJob{
+			VMID:      vm.ID,
+			Operation: queue.VMOpDelete,
+			NodeID:    vm.NodeID,
+		}
+
+		_, err = s.riverClient.Insert(ctx, job, nil)
+		if err != nil {
+			return fmt.Errorf("failed to enqueue VM delete job: %w", err)
+		}
+	} else {
+		s.logger.WarnContext(ctx, "VM deletion queue disabled; cleaning local VM records only", "vm_id", vm.ID)
 	}
 
-	_, err = s.riverClient.Insert(ctx, job, nil)
-	if err != nil {
-		return fmt.Errorf("failed to enqueue VM delete job: %w", err)
+	if err := s.cleanupVMAllocation(ctx, vm.ID, s.riverClient == nil); err != nil {
+		return fmt.Errorf("failed to release VM IP/network allocation: %w", err)
 	}
 
 	s.logger.InfoContext(ctx, "VM deletion job enqueued",
@@ -623,6 +995,10 @@ const (
 	LifecycleRestart LifecycleCommand = "restart"
 	// LifecycleRebuild rebuilds the VM (reinstall OS)
 	LifecycleRebuild LifecycleCommand = "rebuild"
+	// LifecycleSuspend pauses the VM (keeps it in memory)
+	LifecycleSuspend LifecycleCommand = "suspend"
+	// LifecycleUnsuspend resumes a paused VM
+	LifecycleUnsuspend LifecycleCommand = "unsuspend"
 )
 
 // LifecycleRequest contains parameters for lifecycle operations
@@ -673,6 +1049,12 @@ func (s *VMService) ExecuteLifecycleCommand(ctx context.Context, req *LifecycleR
 	case LifecycleRebuild:
 		operation = queue.VMOpRebuild
 		vmCommand = pb.VMCommandType_VM_COMMAND_TYPE_CREATE
+	case LifecycleSuspend:
+		operation = queue.VMOpSuspend
+		vmCommand = pb.VMCommandType_VM_COMMAND_TYPE_PAUSE
+	case LifecycleUnsuspend:
+		operation = queue.VMOpUnsuspend
+		vmCommand = pb.VMCommandType_VM_COMMAND_TYPE_RESUME
 	default:
 		return nil, fmt.Errorf("invalid lifecycle command: %s", req.Command)
 	}
@@ -775,6 +1157,10 @@ func (s *VMService) executeSyncLifecycle(
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	ctx, err = s.agentAuthContext(ctx, vm.NodeID)
+	if err != nil {
+		return nil, err
+	}
 	resp, err := client.ExecuteVMCommand(ctx, grpcReq)
 	if err != nil {
 		s.logger.ErrorContext(ctx, "lifecycle command failed",
@@ -874,13 +1260,14 @@ func (s *VMService) getAgentClient(ctx context.Context, nodeID string) (pb.NodeA
 		return nil, fmt.Errorf("failed to get node: %w", err)
 	}
 
-	// Create new connection
+	// Create new connection (agent uses self-signed TLS)
 	address := fmt.Sprintf("%s:50051", node.IPAddress)
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
+	tlsCreds := credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})
 	conn, err = grpc.DialContext(ctx, address,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(tlsCreds),
 		grpc.WithBlock(),
 	)
 	if err != nil {
@@ -893,6 +1280,19 @@ func (s *VMService) getAgentClient(ctx context.Context, nodeID string) (pb.NodeA
 	s.connMutex.Unlock()
 
 	return pb.NewNodeAgentClient(conn), nil
+}
+
+// agentAuthContext augments ctx with the node's Bearer token, which the agent's
+// interceptor requires on every RPC. getAgentClient returns a raw client (no
+// per-call credentials), so each caller must attach this — omitting it fails
+// with "missing authorization header".
+func (s *VMService) agentAuthContext(ctx context.Context, nodeID string) (context.Context, error) {
+	node, err := s.nodeRepo.GetByID(ctx, nodeID)
+	if err != nil {
+		return ctx, fmt.Errorf("failed to load node for agent auth: %w", err)
+	}
+	md := metadata.New(map[string]string{"authorization": "Bearer " + node.Token})
+	return metadata.NewOutgoingContext(ctx, md), nil
 }
 
 // Close closes all gRPC connections
@@ -924,6 +1324,239 @@ type RebuildVMRequest struct {
 	VMID       string `json:"vm_id" validate:"required,uuid"`
 	TemplateID string `json:"template_id,omitempty" validate:"omitempty,uuid"` // Optional: new template
 	PreserveIP bool   `json:"preserve_ip"`                                     // Keep the same IP addresses
+	// Password, when set, becomes the rebuilt guest's root password (applied via
+	// cloud-init on first boot). Empty means no password is injected.
+	Password string `json:"-"`
+	// RegeneratePassword, when true and Password is empty, makes the service
+	// generate a random root password and return it in the response.
+	RegeneratePassword bool `json:"-"`
+	// SSHPublicKeys are the authorized_keys lines to inject (resolved from the
+	// user's saved keys by the handler). Empty means none.
+	SSHPublicKeys []string `json:"-"`
+}
+
+// VMResetPasswordRequest contains parameters for resetting the guest root password.
+type VMResetPasswordRequest struct {
+	VMID     string
+	Password string
+}
+
+// VMResetPasswordResponse is the result of a password reset request.
+type VMResetPasswordResponse struct {
+	VMID   string `json:"vm_id"`
+	JobID  int64  `json:"job_id"`
+	Status string `json:"status"`
+}
+
+// ResetPassword resets the guest root password. It is applied via the guest
+// agent on the running VM (cloud images ship qemu-guest-agent).
+func (s *VMService) ResetPassword(ctx context.Context, req *VMResetPasswordRequest) (*VMResetPasswordResponse, error) {
+	vm, err := s.vmRepo.GetByID(ctx, req.VMID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrVMNotFound
+		}
+		return nil, fmt.Errorf("failed to get VM: %w", err)
+	}
+	if vm.Status != models.VMStatusRunning {
+		return nil, fmt.Errorf("VM must be running to reset the root password")
+	}
+	if s.riverClient == nil {
+		return nil, fmt.Errorf("job queue unavailable")
+	}
+	paramsJSON, _ := json.Marshal(map[string]interface{}{"root_password": req.Password})
+	result, err := s.riverClient.Insert(ctx, queue.VMOperationJob{
+		VMID:      vm.ID,
+		Operation: queue.VMOpResetPassword,
+		NodeID:    vm.NodeID,
+		Params:    paramsJSON,
+	}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to enqueue password reset job: %w", err)
+	}
+	return &VMResetPasswordResponse{VMID: vm.ID, JobID: result.Job.ID, Status: "pending"}, nil
+}
+
+// AttachISO enqueues attaching a bootable install/rescue ISO (by image URL or
+// on-node path) to a stopped VM.
+func (s *VMService) AttachISO(ctx context.Context, vmID, isoImage string) (int64, error) {
+	if isoImage == "" {
+		return 0, fmt.Errorf("iso image is required")
+	}
+	vm, err := s.vmRepo.GetByID(ctx, vmID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, ErrVMNotFound
+		}
+		return 0, fmt.Errorf("failed to get VM: %w", err)
+	}
+	if vm.Status == models.VMStatusRunning {
+		return 0, fmt.Errorf("stop the VM before attaching an ISO")
+	}
+	if s.riverClient == nil {
+		return 0, fmt.Errorf("job queue unavailable")
+	}
+	paramsJSON, _ := json.Marshal(map[string]interface{}{"image_path": isoImage})
+	res, err := s.riverClient.Insert(ctx, queue.VMOperationJob{
+		VMID: vm.ID, Operation: queue.VMOpAttachISO, NodeID: vm.NodeID, Params: paramsJSON,
+	}, nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to enqueue attach-iso job: %w", err)
+	}
+	return res.Job.ID, nil
+}
+
+// DetachISO enqueues removing the install/rescue ISO from a VM.
+func (s *VMService) DetachISO(ctx context.Context, vmID string) (int64, error) {
+	vm, err := s.vmRepo.GetByID(ctx, vmID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, ErrVMNotFound
+		}
+		return 0, fmt.Errorf("failed to get VM: %w", err)
+	}
+	if s.riverClient == nil {
+		return 0, fmt.Errorf("job queue unavailable")
+	}
+	res, err := s.riverClient.Insert(ctx, queue.VMOperationJob{
+		VMID: vm.ID, Operation: queue.VMOpDetachISO, NodeID: vm.NodeID,
+	}, nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to enqueue detach-iso job: %w", err)
+	}
+	return res.Job.ID, nil
+}
+
+// rescueISOEnv is the env var holding a fallback rescue ISO URL.
+const rescueISOEnv = "RESCUE_ISO_URL"
+
+// RescueVM attaches a rescue ISO (which boots first) and marks the VM as in
+// rescue mode. The VM must be stopped; starting it afterward boots into rescue.
+// isoURL falls back to the RESCUE_ISO_URL env var when empty.
+func (s *VMService) RescueVM(ctx context.Context, vmID, isoURL string) (int64, error) {
+	if isoURL == "" {
+		isoURL = os.Getenv(rescueISOEnv)
+	}
+	if isoURL == "" {
+		return 0, fmt.Errorf("no rescue ISO configured: provide iso_url or set %s", rescueISOEnv)
+	}
+	// AttachISO validates the VM exists, is stopped, and enqueues the boot-first ISO.
+	jobID, err := s.AttachISO(ctx, vmID, isoURL)
+	if err != nil {
+		return 0, err
+	}
+	if err := s.db.WithContext(ctx).Model(&models.VM{}).Where("id = ?", vmID).Update("rescue_mode", true).Error; err != nil {
+		return 0, fmt.Errorf("failed to mark rescue mode: %w", err)
+	}
+	return jobID, nil
+}
+
+// UnrescueVM detaches the rescue ISO and clears rescue mode. Start the VM to
+// boot from disk again.
+func (s *VMService) UnrescueVM(ctx context.Context, vmID string) (int64, error) {
+	jobID, err := s.DetachISO(ctx, vmID)
+	if err != nil {
+		return 0, err
+	}
+	if err := s.db.WithContext(ctx).Model(&models.VM{}).Where("id = ?", vmID).Update("rescue_mode", false).Error; err != nil {
+		return 0, fmt.Errorf("failed to clear rescue mode: %w", err)
+	}
+	return jobID, nil
+}
+
+// MigrateVMRequest contains parameters for a live migration.
+type MigrateVMRequest struct {
+	VMID        string `json:"vm_id" validate:"required,uuid"`
+	DestNodeID  string `json:"dest_node_id" validate:"required,uuid"`
+	Live        bool   `json:"live"`
+	CopyStorage bool   `json:"copy_storage"`
+}
+
+// MigrateVM live-migrates a VM to another node by driving libvirt migration on
+// the source node's agent, then reassigns the VM to the destination node.
+// Nodes do not share storage, so block migration (copy_storage) is the default.
+func (s *VMService) MigrateVM(ctx context.Context, req *MigrateVMRequest) error {
+	vm, err := s.vmRepo.GetByID(ctx, req.VMID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrVMNotFound
+		}
+		return fmt.Errorf("failed to get VM: %w", err)
+	}
+	if vm.NodeID == req.DestNodeID {
+		return fmt.Errorf("VM is already on the target node")
+	}
+
+	destNode, err := s.nodeRepo.GetByID(ctx, req.DestNodeID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNodeNotFound
+		}
+		return fmt.Errorf("failed to get destination node: %w", err)
+	}
+	if destNode.Status != models.NodeStatusActive {
+		return fmt.Errorf("destination node is not active")
+	}
+
+	srcNode, err := s.nodeRepo.GetByID(ctx, vm.NodeID)
+	if err != nil {
+		return fmt.Errorf("failed to get source node: %w", err)
+	}
+
+	agentClient, err := s.getAgentClient(ctx, vm.NodeID)
+	if err != nil {
+		return fmt.Errorf("failed to connect to source agent: %w", err)
+	}
+
+	// Pre-create the destination disk: block migration (copy-storage-all) needs a
+	// target file, and the destination node may not have a libvirt storage pool
+	// covering the image directory. Best-effort — a pre-existing disk is fine.
+	// (Validated live on 167->185: without this, libvirt errors "Storage pool not found".)
+	if destAgent, derr := s.getAgentClient(ctx, destNode.ID); derr == nil {
+		destCtx := metadata.NewOutgoingContext(ctx, metadata.New(map[string]string{
+			"authorization": "Bearer " + destNode.Token,
+			"x-node-id":     destNode.ID,
+		}))
+		_, _ = destAgent.CreateStorageVolume(destCtx, &pb.CreateStorageVolumeRequest{
+			PoolType: "dir",
+			PoolPath: "", // empty → the destination node's agent uses its own default image dir
+			Name:     vm.ID,
+			Format:   "qcow2",
+			SizeGb:   int64(vm.Resources.Disk),
+		})
+	}
+
+	// SSH transport so no libvirtd TCP/TLS listener is required on the nodes.
+	destURI := fmt.Sprintf("qemu+ssh://root@%s/system", destNode.IPAddress)
+
+	md := metadata.New(map[string]string{
+		"authorization": "Bearer " + srcNode.Token,
+		"x-node-id":     srcNode.ID,
+	})
+	authCtx := metadata.NewOutgoingContext(ctx, md)
+
+	resp, err := agentClient.MigrateVM(authCtx, &pb.MigrateVMRequest{
+		VmId:        vm.ID,
+		DestUri:     destURI,
+		Live:        req.Live,
+		CopyStorage: req.CopyStorage,
+	})
+	if err != nil {
+		return fmt.Errorf("migration RPC failed: %w", err)
+	}
+	if !resp.Success {
+		msg := resp.Message
+		if msg == "" && resp.Error != nil {
+			msg = resp.Error.Message
+		}
+		return fmt.Errorf("migration failed: %s", msg)
+	}
+
+	// The domain now lives on the destination node.
+	if err := s.vmRepo.UpdateNodeID(ctx, vm.ID, req.DestNodeID); err != nil {
+		return fmt.Errorf("migration succeeded but failed to update node assignment: %w", err)
+	}
+	return nil
 }
 
 // RebuildVMResponse contains the result of a rebuild operation
@@ -932,6 +1565,9 @@ type RebuildVMResponse struct {
 	Status  string `json:"status"`
 	JobID   int64  `json:"job_id"`
 	Message string `json:"message,omitempty"`
+	// RootPassword is returned only when a password was generated for this
+	// rebuild (regenerate requested with no explicit password). Shown once.
+	RootPassword string `json:"root_password,omitempty"`
 }
 
 // RebuildVM rebuilds a VM by reinstalling the OS
@@ -984,12 +1620,40 @@ func (s *VMService) RebuildVM(ctx context.Context, req *RebuildVMRequest) (*Rebu
 		return nil, fmt.Errorf("failed to update VNC credentials: %w", err)
 	}
 
+	// Resolve the template image path so the agent can fetch/clone it.
+	rebuildTmpl, err := s.templateRepo.GetByID(ctx, templateID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load template for rebuild: %w", err)
+	}
+
+	// Resolve the root password: explicit wins, else generate one when asked.
+	rootPassword := req.Password
+	generatedPassword := ""
+	if rootPassword == "" && req.RegeneratePassword {
+		rootPassword = generateRootPassword()
+		generatedPassword = rootPassword
+	}
+
+	// Preserve the VM's identity & static networking so cloud-init re-applies it
+	// on the fresh disk (the regenerated seed replaces the create-time one), and
+	// inject the (optional) new root password / selected SSH keys.
+	ip, gateway, bridge, prefix, vlan := s.primaryNetworkConfig(ctx, vm.ID)
+
 	// Prepare rebuild params
 	params := map[string]interface{}{
-		"template_id":  templateID,
-		"preserve_ip":  req.PreserveIP,
-		"vnc_port":     vncConfig.Port,
-		"vnc_password": vncConfig.Password,
+		"template_id":    templateID,
+		"image_path":     rebuildTmpl.ImagePath,
+		"preserve_ip":    req.PreserveIP,
+		"vnc_port":       vncConfig.Port,
+		"vnc_password":   vncConfig.Password,
+		"hostname":       vm.Hostname,
+		"root_password":  rootPassword,
+		"ssh_public_key": strings.Join(req.SSHPublicKeys, "\n"),
+		"ip_address":     ip,
+		"gateway":        gateway,
+		"netmask":        prefix,
+		"bridge":         bridge,
+		"vlan_id":        vlan,
 	}
 	paramsJSON, _ := json.Marshal(params)
 
@@ -1013,11 +1677,52 @@ func (s *VMService) RebuildVM(ctx context.Context, req *RebuildVMRequest) (*Rebu
 	)
 
 	return &RebuildVMResponse{
-		VMID:    vm.ID,
-		Status:  "pending",
-		JobID:   result.Job.ID,
-		Message: "VM rebuild initiated",
+		VMID:         vm.ID,
+		Status:       "pending",
+		JobID:        result.Job.ID,
+		Message:      "VM rebuild initiated",
+		RootPassword: generatedPassword,
 	}, nil
+}
+
+// generateRootPassword returns a random 16-char alphanumeric password for a
+// freshly rebuilt guest's root account (ambiguous characters omitted).
+func generateRootPassword() string {
+	const charset = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	b := make([]byte, 16)
+	for i := range b {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
+		if err != nil {
+			return generateSecureToken(16)
+		}
+		b[i] = charset[n.Int64()]
+	}
+	return string(b)
+}
+
+// primaryNetworkConfig returns the static network parameters for a VM's first
+// interface (IP, gateway, bridge, prefix length, VLAN), resolved from the owning
+// IPAM pool. Zero values mean "not tracked" (the guest then falls back to DHCP).
+func (s *VMService) primaryNetworkConfig(ctx context.Context, vmID string) (ip, gateway, bridge string, prefix, vlan int) {
+	var netIface models.Network
+	if err := s.db.WithContext(ctx).Where("vm_id = ?", vmID).Order("created_at ASC").First(&netIface).Error; err != nil {
+		return
+	}
+	ip = hostOnlyIP(netIface.IPAddress)
+	if netIface.VLANID != nil {
+		vlan = *netIface.VLANID
+	}
+	// Resolve gateway/prefix/bridge from the IP's pool via the IPAM address record.
+	var addr models.IPAddress
+	if err := s.db.WithContext(ctx).Where("vm_id = ?", vmID).First(&addr).Error; err == nil {
+		var pool models.IPPool
+		if err := s.db.WithContext(ctx).Where("id = ?", addr.PoolID).First(&pool).Error; err == nil {
+			gateway = pool.Gateway
+			bridge = pool.Bridge
+			prefix = prefixFromCIDR(pool.CIDR)
+		}
+	}
+	return
 }
 
 // ============================================================================
@@ -1047,6 +1752,26 @@ func (s *VMService) GetVNCConfig(ctx context.Context, vmID string, includePasswo
 		return nil, fmt.Errorf("VNC is not configured for this VM")
 	}
 
+	// Generate VNC password if empty
+	if vm.VNCPassword == "" {
+		vncConfig := s.generateVNCCredentials()
+		vm.VNCPassword = vncConfig.Password
+		if err := s.db.Model(&models.VM{}).Where("id = ?", vmID).Update("vnc_password", vm.VNCPassword).Error; err != nil {
+			s.logger.Error("failed to save generated VNC password", "vm_id", vmID, "error", err)
+		}
+	}
+
+	// Apply the password to the live domain so the browser (which authenticates
+	// against QEMU with exactly this password) matches. Only meaningful while the
+	// VM is running; a failure here would otherwise show up as a baffling
+	// client-side "Authentication failed", so surface it instead of swallowing it.
+	node, err := s.nodeRepo.GetByID(ctx, vm.NodeID)
+	if vm.Status == models.VMStatusRunning {
+		if syncErr := s.syncVNCPassword(ctx, vm.NodeID, vmID, vm.VNCPassword); syncErr != nil {
+			return nil, fmt.Errorf("failed to apply VNC password to the running VM: %w", syncErr)
+		}
+	}
+
 	response := &GetVNCResponse{
 		VMID: vmID,
 		Port: *vm.VNCPort,
@@ -1056,14 +1781,51 @@ func (s *VMService) GetVNCConfig(ctx context.Context, vmID string, includePasswo
 		response.Password = vm.VNCPassword
 	}
 
-	// Get node IP for connection
-	node, err := s.nodeRepo.GetByID(ctx, vm.NodeID)
 	if err == nil {
 		response.Host = node.IPAddress
-		response.WebSocketURL = fmt.Sprintf("wss://%s/vnc/%s", node.IPAddress, vmID)
 	}
 
 	return response, nil
+}
+
+// syncVNCPassword applies the VNC password to the live domain via the agent
+// (QEMU monitor). Returns an error so callers can decide whether a failure is
+// fatal — for the console flow it is, because the browser authenticates against
+// QEMU with exactly this password, so a failed sync surfaces as a confusing
+// client-side "Authentication failed".
+func (s *VMService) syncVNCPassword(ctx context.Context, nodeID, vmID, password string) error {
+	if password == "" {
+		return fmt.Errorf("no VNC password to sync")
+	}
+
+	client, err := s.getAgentClient(ctx, nodeID)
+	if err != nil {
+		return fmt.Errorf("agent unavailable: %w", err)
+	}
+
+	// getAgentClient returns a raw client, so every call must carry the node's
+	// auth token itself. Send the Bearer token alongside the password — omitting
+	// it is what made this call always fail with "missing authorization header".
+	node, err := s.nodeRepo.GetByID(ctx, nodeID)
+	if err != nil {
+		return fmt.Errorf("failed to load node for VNC sync: %w", err)
+	}
+	md := metadata.New(map[string]string{
+		"authorization": "Bearer " + node.Token,
+		"vnc-password":  password,
+	})
+	mdCtx := metadata.NewOutgoingContext(ctx, md)
+
+	req := &pb.VNCProxyRequest{
+		VmId:          vmID,
+		ExpirySeconds: 60,
+	}
+
+	if _, err = client.StartVNCProxy(mdCtx, req); err != nil {
+		return fmt.Errorf("failed to apply VNC password on node: %w", err)
+	}
+	s.logger.Info("VNC password synced to agent", "vm_id", vmID)
+	return nil
 }
 
 // RefreshVNCPassword generates a new VNC password for a VM
@@ -1087,15 +1849,39 @@ func (s *VMService) RefreshVNCPassword(ctx context.Context, vmID string) (*VNCCo
 		return nil, fmt.Errorf("failed to update VNC port: %w", err)
 	}
 
-	// Notify agent of password change if VM is running
+	// Apply the new password to the live domain via the agent (QEMU monitor)
+	// when the VM is running, so it takes effect immediately on the next
+	// console connect rather than only after a restart.
 	if vm.Status == models.VMStatusRunning {
-		// This would require an agent API to update VNC password dynamically
-		// For now, password will take effect on next VM restart
-		s.logger.InfoContext(ctx, "VNC password updated, will take effect on next restart",
-			"vm_id", vmID)
+		if syncErr := s.syncVNCPassword(ctx, vm.NodeID, vmID, vncConfig.Password); syncErr != nil {
+			return nil, fmt.Errorf("failed to apply new VNC password to the running VM: %w", syncErr)
+		}
 	}
 
 	return vncConfig, nil
+}
+
+// SetConsoleEnabled toggles VNC console access for a VM. When disabling, the
+// gate in the VNC service drops in-flight sessions and blocks new tokens; the
+// underlying VNC password is left untouched so re-enabling restores access.
+func (s *VMService) SetConsoleEnabled(ctx context.Context, vmID string, enabled bool) (*models.VM, error) {
+	vm, err := s.vmRepo.GetByID(ctx, vmID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrVMNotFound
+		}
+		return nil, fmt.Errorf("failed to get VM: %w", err)
+	}
+
+	if err := s.db.WithContext(ctx).Model(&models.VM{}).
+		Where("id = ?", vmID).
+		Update("console_enabled", enabled).Error; err != nil {
+		return nil, fmt.Errorf("failed to update console state: %w", err)
+	}
+	vm.ConsoleEnabled = enabled
+
+	s.logger.InfoContext(ctx, "VM console access toggled", "vm_id", vmID, "enabled", enabled)
+	return vm, nil
 }
 
 // ============================================================================
@@ -1154,4 +1940,74 @@ func (s *VMService) GetVMStatusMetrics(ctx context.Context, vmID string) (*pb.VM
 	}
 
 	return s.getVMAgentStatus(ctx, vmID, vm.NodeID)
+}
+
+// VMMetricsResult contains per-VM live metrics
+type VMMetricsResult struct {
+	CpuPercent           float64
+	MemoryUsed           int64
+	MemoryTotal          int64
+	MemoryUsedPercent    float64
+	DiskReadBytesPerSec  int64
+	DiskWriteBytesPerSec int64
+	NetworkRxBytesPerSec int64
+	NetworkTxBytesPerSec int64
+}
+
+// GetVMMetrics gets live metrics for a specific VM from agent
+func (s *VMService) GetVMMetrics(ctx context.Context, nodeID string, vmID string) (*VMMetricsResult, error) {
+	agentClient, err := s.getAgentClient(ctx, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to agent: %w", err)
+	}
+
+	// Get node for auth token
+	node, err := s.nodeRepo.GetByID(ctx, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get node: %w", err)
+	}
+
+	// Create auth context
+	md := metadata.New(map[string]string{
+		"authorization": "Bearer " + node.Token,
+	})
+	authCtx := metadata.NewOutgoingContext(ctx, md)
+
+	req := &pb.VMMetricsRequest{
+		VmIds:      []string{vmID},
+		IntervalMs: 1000,
+	}
+
+	stream, err := agentClient.StreamVMMetrics(authCtx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start metrics stream: %w", err)
+	}
+
+	// Get first sample
+	sample, err := stream.Recv()
+	if err != nil {
+		return nil, fmt.Errorf("failed to receive metrics: %w", err)
+	}
+
+	result := &VMMetricsResult{}
+	if sample.Cpu != nil {
+		result.CpuPercent = sample.Cpu.UsagePercent
+	}
+	if sample.Memory != nil {
+		result.MemoryUsed = sample.Memory.UsedBytes
+		result.MemoryTotal = sample.Memory.TotalBytes
+		if result.MemoryTotal > 0 {
+			result.MemoryUsedPercent = float64(result.MemoryUsed) / float64(result.MemoryTotal) * 100
+		}
+	}
+	if sample.Disk != nil {
+		result.DiskReadBytesPerSec = sample.Disk.ReadBytesPerSec
+		result.DiskWriteBytesPerSec = sample.Disk.WriteBytesPerSec
+	}
+	if sample.Network != nil {
+		result.NetworkRxBytesPerSec = sample.Network.RxBytesPerSec
+		result.NetworkTxBytesPerSec = sample.Network.TxBytesPerSec
+	}
+
+	return result, nil
 }

@@ -187,16 +187,17 @@ func (pc *PooledConnection) Close() error {
 
 // ClientConfig holds configuration for the agent client
 type ClientConfig struct {
-	MaxRetries        int
-	InitialBackoff    time.Duration
-	MaxBackoff        time.Duration
-	BackoffMultiplier float64
-	RequestTimeout    time.Duration
-	ConnectionTimeout time.Duration
-	TLSCertFile       string
-	TLSKeyFile        string
-	TLSCAFile         string
-	Insecure          bool
+	MaxRetries         int
+	InitialBackoff     time.Duration
+	MaxBackoff         time.Duration
+	BackoffMultiplier  float64
+	RequestTimeout     time.Duration
+	ConnectionTimeout  time.Duration
+	TLSCertFile        string
+	TLSKeyFile         string
+	TLSCAFile          string
+	Insecure           bool // No TLS at all (plain text)
+	InsecureSkipVerify bool // Use TLS but skip certificate verification
 }
 
 // DefaultClientConfig returns default configuration
@@ -231,7 +232,12 @@ func NewAgentClient(config *ClientConfig) (*AgentClient, error) {
 		connections: make(map[string]*PooledConnection),
 	}
 
-	if !config.Insecure {
+	if config.InsecureSkipVerify {
+		client.tlsConfig = &tls.Config{
+			InsecureSkipVerify: true,
+			MinVersion:         tls.VersionTLS12,
+		}
+	} else if !config.Insecure {
 		tlsConfig, err := client.loadTLSConfig()
 		if err != nil {
 			return nil, fmt.Errorf("failed to load TLS config: %w", err)
@@ -634,16 +640,33 @@ type NodeMetricsResult struct {
 
 // NodeSystemInfo holds detailed system information about a node
 type NodeSystemInfo struct {
-	OSName         string
-	OSVersion      string
-	KernelVersion  string
-	Architecture   string
-	CPUModel       string
-	CPUCores       int32
-	CPUThreads     int32
-	MemoryTotal    int64
-	DiskTotal      int64
-	LibvirtVersion string
+	OSName               string
+	OSVersion            string
+	KernelVersion        string
+	Architecture         string
+	CPUModel             string
+	CPUCores             int32
+	CPUThreads           int32
+	MemoryTotal          int64
+	DiskTotal            int64
+	LibvirtVersion       string
+	// Live metrics
+	CpuPercent           float64
+	MemoryUsedBytes      int64
+	MemoryUsedPercent    float64
+	DiskUsedBytes        int64
+	DiskUsedPercent      float64
+	NetworkRxBytesPerSec int64
+	NetworkTxBytesPerSec int64
+	DiskReadBytesPerSec  int64
+	DiskWriteBytesPerSec int64
+	LoadAvg1             float64
+	LoadAvg5             float64
+	LoadAvg15            float64
+	RunningVmCount       int32
+	AvailableCpus        int32
+	AvailableMemoryMb    int64
+	AvailableDiskGb      int64
 }
 
 // GetNodeMetrics retrieves metrics from the node agent via GetNodeInfo
@@ -704,16 +727,32 @@ func (c *AgentClient) GetNodeInfo(ctx context.Context, nodeID string) (*NodeSyst
 		}
 
 		result = &NodeSystemInfo{
-			OSName:         resp.OsInfo.GetOsName(),
-			OSVersion:      resp.OsInfo.GetOsVersion(),
-			KernelVersion:  resp.OsInfo.GetKernelVersion(),
-			Architecture:   resp.OsInfo.GetArchitecture(),
-			CPUModel:       resp.CpuInfo.GetModel(),
-			CPUCores:       resp.CpuInfo.GetCores(),
-			CPUThreads:     resp.CpuInfo.GetThreads(),
-			MemoryTotal:    resp.MemoryTotalBytes,
-			DiskTotal:      resp.DiskTotalBytes,
-			LibvirtVersion: resp.LibvirtVersion,
+			OSName:               resp.OsInfo.GetOsName(),
+			OSVersion:            resp.OsInfo.GetOsVersion(),
+			KernelVersion:        resp.OsInfo.GetKernelVersion(),
+			Architecture:         resp.OsInfo.GetArchitecture(),
+			CPUModel:             resp.CpuInfo.GetModel(),
+			CPUCores:             resp.CpuInfo.GetCores(),
+			CPUThreads:           resp.CpuInfo.GetThreads(),
+			MemoryTotal:          resp.MemoryTotalBytes,
+			DiskTotal:            resp.DiskTotalBytes,
+			LibvirtVersion:       resp.LibvirtVersion,
+			CpuPercent:           resp.GetCpuPercent(),
+			MemoryUsedBytes:      resp.GetMemoryUsedBytes(),
+			MemoryUsedPercent:    resp.GetMemoryUsedPercent(),
+			DiskUsedBytes:        resp.GetDiskUsedBytes(),
+			DiskUsedPercent:      resp.GetDiskUsedPercent(),
+			NetworkRxBytesPerSec: resp.GetNetworkRxBytesPerSec(),
+			NetworkTxBytesPerSec: resp.GetNetworkTxBytesPerSec(),
+			DiskReadBytesPerSec:  resp.GetDiskReadBytesPerSec(),
+			DiskWriteBytesPerSec: resp.GetDiskWriteBytesPerSec(),
+			LoadAvg1:             resp.GetLoadAvg_1(),
+			LoadAvg5:             resp.GetLoadAvg_5(),
+			LoadAvg15:            resp.GetLoadAvg_15(),
+			RunningVmCount:       resp.GetRunningVmCount(),
+			AvailableCpus:        resp.GetAvailableCpus(),
+			AvailableMemoryMb:    resp.GetAvailableMemoryMb(),
+			AvailableDiskGb:      resp.GetAvailableDiskGb(),
 		}
 		return nil
 	})
@@ -797,8 +836,23 @@ func (c *AgentClient) RegisterNode(node NodeInfo) {
 	defer c.mu.Unlock()
 
 	if existing, exists := c.connections[node.ID]; exists {
-		_ = existing.Close()
-		delete(c.connections, node.ID)
+		// Update token if changed
+		if existing.token != node.Token {
+			_ = existing.Close()
+			delete(c.connections, node.ID)
+		} else {
+			return
+		}
+	}
+
+	// Store a placeholder connection entry so getNodeInfo can find it
+	c.connections[node.ID] = &PooledConnection{
+		nodeID:   node.ID,
+		address:  node.Address,
+		token:    node.Token,
+		cb:       NewCircuitBreaker(defaultCircuitBreakerThreshold, defaultCircuitBreakerResetTimeout),
+		lastUsed: time.Now().UnixNano(),
+		closed:   true, // Not yet connected — will connect on first use
 	}
 }
 

@@ -66,7 +66,7 @@ function ActionBadge({ action }: { action: string }) {
 
 // JSON Viewer component
 function JsonViewer({ data, title }: { data: Record<string, unknown> | undefined; title: string }) {
-  if (!data || Object.keys(data).length === 0) return <p className="text-gray-400 italic">No data</p>
+  if (!data || Object.keys(data).length === 0) return <p className="text-gray-600 italic">No data</p>
   
   return (
     <div className="bg-gray-50 border-2 border-black p-4 font-mono text-xs overflow-x-auto">
@@ -324,7 +324,7 @@ export default function AuditLogsPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
           {/* Search */}
           <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
             <Input
               type="text"
               placeholder="Search resource, user..."
@@ -407,7 +407,7 @@ export default function AuditLogsPage() {
               {filteredLogs.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="px-4 py-12 text-center">
-                    <FileText className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+                    <FileText className="w-12 h-12 text-gray-500 mx-auto mb-4" />
                     <p className="text-gray-500 font-bold uppercase">No audit logs found</p>
                     {hasActiveFilters && (
                       <Button variant="ghost" onClick={clearFilters} className="mt-4 border-2 border-black">Clear filters</Button>
@@ -422,7 +422,7 @@ export default function AuditLogsPage() {
                     </td>
                     <td className="px-4 py-3">
                       <span className="inline-flex items-center gap-2 text-sm font-bold">
-                        <User className="w-4 h-4 text-gray-400" />
+                        <User className="w-4 h-4 text-gray-600" />
                         <span className="font-mono text-xs">{log.user_id ? log.user_id.slice(0, 12) + "..." : "system"}</span>
                       </span>
                     </td>
@@ -432,7 +432,7 @@ export default function AuditLogsPage() {
                     <td className="px-4 py-3 text-sm font-medium">
                       <span className="font-mono">{log.resource_id ? log.resource_id.slice(0, 12) + "..." : "-"}</span>
                       {log.resource_type && (
-                        <span className="text-gray-400 text-xs ml-2">({log.resource_type})</span>
+                        <span className="text-gray-600 text-xs ml-2">({log.resource_type})</span>
                       )}
                     </td>
                     <td className="px-4 py-3 text-sm font-mono text-gray-500">

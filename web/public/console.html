@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>VM Console</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; overflow: hidden; }
+    #header { 
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 16px; background: #fff; border-bottom: 2px solid #000;
+    }
+    #header .left { display: flex; align-items: center; gap: 12px; }
+    #header button { 
+      padding: 4px 12px; font-size: 12px; font-weight: bold;
+      border: 2px solid #000; background: #fff; cursor: pointer;
+    }
+    #header button:hover { background: #f0f0f0; }
+    #header h1 { font-size: 18px; font-weight: bold; }
+    #header .id { font-size: 12px; color: #666; }
+    #status {
+      display: inline-flex; align-items: center; padding: 4px 8px;
+      font-size: 11px; font-weight: bold; border: 1px solid;
+    }
+    .status-connecting { border-color: #ca8a04; background: #fef9c3; color: #854d0e; }
+    .status-connected { border-color: #16a34a; background: #dcfce7; color: #166534; }
+    .status-error { border-color: #dc2626; background: #fee2e2; color: #991b1b; }
+    .status-disconnected { border-color: #6b7280; background: #f3f4f6; color: #374151; }
+    #console { width: 100%; height: calc(100vh - 42px); }
+    #overlay {
+      position: absolute; top: 42px; left: 0; right: 0; bottom: 0;
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; text-align: center;
+    }
+    #overlay.hidden { display: none; }
+    #overlay h2 { font-size: 20px; margin-bottom: 8px; }
+    #overlay p { font-size: 14px; color: #aaa; margin-bottom: 16px; }
+    #overlay .info { 
+      text-align: left; background: #111; padding: 16px; border-radius: 4px;
+      border: 1px solid #333; font-size: 12px; color: #888; margin-bottom: 16px;
+    }
+    #overlay .info span { color: #fff; }
+    #retry {
+      padding: 8px 16px; background: #fff; color: #000; font-weight: bold;
+      font-size: 12px; border: 2px solid #fff; cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div id="header">
+    <div class="left">
+      <button onclick="history.back()">← BACK</button>
+      <h1>VM CONSOLE</h1>
+      <span class="id" id="vm-id"></span>
+    </div>
+    <span id="status" class="status-connecting">CONNECTING</span>
+  </div>
+  <div id="console"></div>
+  <div id="overlay">
+    <div>
+      <h2 id="overlay-title">Connecting...</h2>
+      <p id="overlay-msg">Establishing VNC connection</p>
+      <div class="info" id="overlay-info" style="display:none"></div>
+      <button id="retry" style="display:none" onclick="location.reload()">RETRY</button>
+    </div>
+  </div>
+
+  <script type="module">
+    import RFB from '/novnc/core/rfb.js';
+
+    const vmId = new URLSearchParams(window.location.search).get('vm') || window.location.pathname.split('/')[2];
+    document.getElementById('vm-id').textContent = vmId.slice(0, 8);
+
+    // Fetch VNC config from API
+    const token = document.cookie.split(';').map(c => c.trim())
+      .find(c => c.startsWith('accessToken='))?.split('=')[1];
+
+    try {
+      const resp = await fetch(`/api/v1/vms/${vmId}/vnc`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const json = await resp.json();
+      const config = json.data || json;
+
+      if (!config.websocket_url) throw new Error('No WebSocket URL');
+
+      const container = document.getElementById('console');
+      const rfb = new RFB(container, config.websocket_url, {
+        credentials: { password: config.password || '' },
+        wsProtocols: ['binary'],
+      });
+
+      rfb.scaleViewport = true;
+      rfb.resizeSession = true;
+
+      rfb.addEventListener('connect', () => {
+        document.getElementById('status').className = 'status-connected';
+        document.getElementById('status').textContent = 'CONNECTED';
+        document.getElementById('overlay').classList.add('hidden');
+      });
+
+      rfb.addEventListener('disconnect', (e) => {
+        document.getElementById('status').className = 'status-disconnected';
+        document.getElementById('status').textContent = 'DISCONNECTED';
+        document.getElementById('overlay').classList.remove('hidden');
+        document.getElementById('overlay-title').textContent = 'Disconnected';
+        document.getElementById('overlay-title').style.color = '#facc15';
+        document.getElementById('overlay-msg').textContent = e.detail.clean ? 'Session ended' : 'Connection lost';
+        document.getElementById('retry').style.display = '';
+      });
+
+      rfb.addEventListener('securityfailure', (e) => {
+        showError('Authentication Failed', e.detail.reason, config);
+      });
+
+    } catch (err) {
+      showError('Connection Error', err.message, null);
+    }
+
+    function showError(title, msg, config) {
+      document.getElementById('status').className = 'status-error';
+      document.getElementById('status').textContent = 'ERROR';
+      document.getElementById('overlay-title').textContent = title;
+      document.getElementById('overlay-title').style.color = '#f87171';
+      document.getElementById('overlay-msg').textContent = msg;
+      document.getElementById('retry').style.display = '';
+      if (config) {
+        const info = document.getElementById('overlay-info');
+        info.style.display = '';
+        info.innerHTML = `
+          <p>VNC Host: <span>${config.host}</span></p>
+          <p>VNC Port: <span>${config.port}</span></p>
+          ${config.websocket_url ? `<p>WebSocket: <span>${config.websocket_url}</span></p>` : ''}
+        `;
+      }
+    }
+  </script>
+</body>
+</html>

@@ -80,8 +80,10 @@ func (suite *TemplateRepositoryTestSuite) TestTemplateRepository_ListActive() {
 	}
 
 	for i := 0; i < 2; i++ {
-		template := &models.OSTemplate{Name: "InactiveOS" + string(rune('0'+i)), Version: "1.0", ImagePath: "/images/inactive" + string(rune('0'+i)) + ".img", IsActive: false}
+		template := &models.OSTemplate{Name: "InactiveOS" + string(rune('0'+i)), Version: "1.0", ImagePath: "/images/inactive" + string(rune('0'+i)) + ".img", IsActive: true}
 		err := suite.DB.Create(template).Error
+		assert.NoError(suite.T(), err)
+		err = suite.templateRepo.UpdateActiveStatus(ctx, template.ID, false)
 		assert.NoError(suite.T(), err)
 	}
 
@@ -111,7 +113,7 @@ func (suite *TemplateRepositoryTestSuite) TestTemplateRepository_Update() {
 	assert.NoError(suite.T(), err)
 
 	var found models.OSTemplate
-	err = suite.DB.First(&found, template.ID).Error
+	err = suite.DB.First(&found, "id = ?", template.ID).Error
 	assert.NoError(suite.T(), err)
 	assert.Equal(suite.T(), "40", found.Version)
 }
@@ -176,7 +178,7 @@ func (suite *TemplateRepositoryTestSuite) TestTemplateRepository_UpdateActiveSta
 	assert.NoError(suite.T(), err)
 
 	var found models.OSTemplate
-	err = suite.DB.First(&found, template.ID).Error
+	err = suite.DB.First(&found, "id = ?", template.ID).Error
 	assert.NoError(suite.T(), err)
 	assert.False(suite.T(), found.IsActive)
 }

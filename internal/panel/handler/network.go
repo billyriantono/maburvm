@@ -35,6 +35,11 @@ type NetworkResponse struct {
 	IPAddress      string `json:"ip_address"`
 	BandwidthLimit int64  `json:"bandwidth_limit"`
 	VLANID         *int   `json:"vlan_id,omitempty"`
+	Gateway        string `json:"gateway,omitempty"`
+	Netmask        string `json:"netmask,omitempty"`
+	Bridge         string `json:"bridge,omitempty"`
+	RDNS           string `json:"rdns,omitempty"`
+	PoolID         string `json:"pool_id,omitempty"`
 	CreatedAt      string `json:"created_at"`
 	UpdatedAt      string `json:"updated_at"`
 }
@@ -473,7 +478,7 @@ func (h *NetworkHandler) ListNetworkInterfaces(c echo.Context) error {
 		})
 	}
 
-	networks, err := h.service.GetNetworkInterfaces(c.Request().Context(), vmID)
+	networks, err := h.service.GetNetworkInterfaceDetails(c.Request().Context(), vmID)
 	if err != nil {
 		if err.Error() == "VM not found" {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{
@@ -495,6 +500,11 @@ func (h *NetworkHandler) ListNetworkInterfaces(c echo.Context) error {
 			IPAddress:      net.IPAddress,
 			BandwidthLimit: net.BandwidthLimit,
 			VLANID:         net.VLANID,
+			Gateway:        net.Gateway,
+			Netmask:        net.Netmask,
+			Bridge:         net.Bridge,
+			RDNS:           net.RDNS,
+			PoolID:         net.PoolID,
 			CreatedAt:      net.CreatedAt.Format("2006-01-02T15:04:05Z"),
 			UpdatedAt:      net.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 		}

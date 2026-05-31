@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/maburvm/panel/internal/panel/repository"
@@ -18,7 +19,6 @@ import (
 var (
 	ErrNetworkNotFound      = fmt.Errorf("network not found")
 	ErrNetworkAlreadyExists = fmt.Errorf("network already exists for this VM")
-	ErrInvalidIPAddress     = fmt.Errorf("invalid IP address")
 	ErrIPAlreadyInUse       = fmt.Errorf("IP address already in use")
 	ErrFirewallRuleNotFound = fmt.Errorf("firewall rule not found")
 	ErrPortForwardNotFound  = fmt.Errorf("port forward not found")
@@ -414,6 +414,112 @@ func (s *NetworkService) GetNetworkInterfaces(ctx context.Context, vmID string) 
 	}
 
 	return s.networkRepo.ListByVMID(ctx, vmID)
+}
+
+// NetworkInterfaceDetail enriches a VM interface with the gateway, netmask,
+// bridge and rDNS resolved from the owning IPAM pool/address, so the VM detail
+// page can show full per-IP networking like Virtualizor.
+type NetworkInterfaceDetail struct {
+	models.Network
+	Gateway string `json:"gateway,omitempty"`
+	Netmask string `json:"netmask,omitempty"`
+	Bridge  string `json:"bridge,omitempty"`
+	RDNS    string `json:"rdns,omitempty"`
+	PoolID  string `json:"pool_id,omitempty"`
+}
+
+// GetNetworkInterfaceDetails returns a VM's interfaces enriched with gateway,
+// netmask, bridge and rDNS looked up from the IPAM tables by matching each
+// interface IP to a managed address and its pool. Enrichment is best-effort:
+// interfaces whose IP isn't tracked in IPAM still return with the base fields.
+func (s *NetworkService) GetNetworkInterfaceDetails(ctx context.Context, vmID string) ([]NetworkInterfaceDetail, error) {
+	nets, err := s.GetNetworkInterfaces(ctx, vmID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Load IPAM addresses assigned to this VM, indexed by host address.
+	var addrs []models.IPAddress
+	if err := s.db.WithContext(ctx).Where("vm_id = ?", vmID).Find(&addrs).Error; err != nil {
+		return nil, fmt.Errorf("failed to load IPAM addresses: %w", err)
+	}
+	addrByIP := make(map[string]models.IPAddress, len(addrs))
+	poolIDs := make([]string, 0, len(addrs))
+	seenPool := make(map[string]bool)
+	for _, a := range addrs {
+		addrByIP[hostOnlyIP(a.Address)] = a
+		if a.PoolID != "" && !seenPool[a.PoolID] {
+			seenPool[a.PoolID] = true
+			poolIDs = append(poolIDs, a.PoolID)
+		}
+	}
+
+	pools := make(map[string]models.IPPool)
+	if len(poolIDs) > 0 {
+		var ps []models.IPPool
+		if err := s.db.WithContext(ctx).Where("id IN ?", poolIDs).Find(&ps).Error; err != nil {
+			return nil, fmt.Errorf("failed to load IP pools: %w", err)
+		}
+		for _, p := range ps {
+			pools[p.ID] = p
+		}
+	}
+
+	out := make([]NetworkInterfaceDetail, len(nets))
+	for i, n := range nets {
+		d := NetworkInterfaceDetail{Network: n}
+		if a, ok := addrByIP[hostOnlyIP(n.IPAddress)]; ok {
+			d.RDNS = a.RDNS
+			d.PoolID = a.PoolID
+			if p, ok := pools[a.PoolID]; ok {
+				d.Gateway = p.Gateway
+				d.Bridge = p.Bridge
+				d.Netmask = netmaskFromCIDR(p.CIDR)
+			}
+		}
+		out[i] = d
+	}
+	return out, nil
+}
+
+// hostOnlyIP strips any /prefix from an inet string
+// ("203.0.113.10/24" -> "203.0.113.10").
+func hostOnlyIP(ip string) string {
+	if i := strings.IndexByte(ip, '/'); i >= 0 {
+		return ip[:i]
+	}
+	return ip
+}
+
+// prefixFromCIDR returns the CIDR prefix length (e.g. 24) for a pool CIDR, or 0
+// when it can't be parsed.
+func prefixFromCIDR(cidr string) int {
+	if cidr == "" {
+		return 0
+	}
+	_, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return 0
+	}
+	ones, _ := ipnet.Mask.Size()
+	return ones
+}
+
+// netmaskFromCIDR returns the dotted-decimal netmask for an IPv4 CIDR, or the
+// "/prefix" length for IPv6. Empty string when cidr can't be parsed.
+func netmaskFromCIDR(cidr string) string {
+	if cidr == "" {
+		return ""
+	}
+	_, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return ""
+	}
+	if len(ipnet.Mask) == net.IPv4len {
+		return fmt.Sprintf("%d.%d.%d.%d", ipnet.Mask[0], ipnet.Mask[1], ipnet.Mask[2], ipnet.Mask[3])
+	}
+	ones, _ := ipnet.Mask.Size()
+	return fmt.Sprintf("/%d", ones)
 }
 
 // GetPortForwards returns all port forwards for a VM's network

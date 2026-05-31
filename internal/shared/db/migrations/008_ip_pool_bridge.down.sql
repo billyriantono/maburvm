@@ -1,0 +1,1 @@
+ALTER TABLE ip_pools DROP COLUMN IF EXISTS bridge;

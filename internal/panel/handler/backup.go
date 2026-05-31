@@ -531,6 +531,36 @@ func (h *BackupHandler) GetSchedule(c echo.Context) error {
 	})
 }
 
+// ListSchedules handles GET /api/vms/:id/backup-schedules - frontend compatibility.
+func (h *BackupHandler) ListSchedules(c echo.Context) error {
+	vmID := c.Param("id")
+	if vmID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error":   "Bad Request",
+			"message": "VM ID is required",
+		})
+	}
+
+	schedule, err := h.service.GetSchedule(c.Request().Context(), vmID)
+	if err != nil {
+		if errors.Is(err, service.ErrScheduleNotFound) {
+			return c.JSON(http.StatusOK, map[string]interface{}{
+				"message": "Backup schedules retrieved successfully",
+				"data":    []ConfigureScheduleResponse{},
+			})
+		}
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+			"error":   "Internal Server Error",
+			"message": err.Error(),
+		})
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Backup schedules retrieved successfully",
+		"data":    []ConfigureScheduleResponse{mapScheduleResponse(schedule)},
+	})
+}
+
 // ============================================================================
 // Delete Backup Schedule
 // ============================================================================
@@ -657,6 +687,15 @@ func RegisterBackupRoutes(e *echo.Echo, handler *BackupHandler, db *gorm.DB) {
 		schedule.GET("", handler.GetSchedule, middleware.RequirePermission("backup:read"))
 		schedule.PUT("", handler.ConfigureSchedule, middleware.RequirePermission("backup:update"))
 		schedule.DELETE("", handler.DeleteSchedule, middleware.RequirePermission("backup:delete"))
+	}
+
+	// Compatibility routes for the frontend's plural backup-schedules shape.
+	schedules := vms.Group("/:id/backup-schedules")
+	{
+		schedules.GET("", handler.ListSchedules, middleware.RequirePermission("backup:read"))
+		schedules.POST("", handler.ConfigureSchedule, middleware.RequirePermission("backup:update"))
+		schedules.PUT("/:schedule_id", handler.ConfigureSchedule, middleware.RequirePermission("backup:update"))
+		schedules.DELETE("/:schedule_id", handler.DeleteSchedule, middleware.RequirePermission("backup:delete"))
 	}
 
 	// Backup stats route

@@ -31,7 +31,10 @@ export function useUsers(params: UserListParams = {}) {
           role,
         },
       })
-      return response.data.data
+      // Unlike most endpoints, /users returns the paginated payload at the top
+      // level ({ data, total, page, ... }) rather than the standard { data }
+      // envelope, so the response body itself is the PaginatedResponse.
+      return response.data as unknown as PaginatedResponse<User>
     },
   })
 }

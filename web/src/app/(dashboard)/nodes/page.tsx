@@ -28,9 +28,9 @@ import type { NodeStatus } from "@/types"
 // Status indicator component
 function StatusIndicator({ status }: { status: NodeStatus }) {
   const config: Record<string, { bg: string; text: string; label: string }> = {
-    active: { bg: "bg-success", text: "text-success", label: "Active" },
+        active: { bg: "bg-success", text: "text-success-dark", label: "Active" },
     offline: { bg: "bg-danger", text: "text-danger", label: "Offline" },
-    maintenance: { bg: "bg-warning", text: "text-warning", label: "Maintenance" },
+    maintenance: { bg: "bg-warning", text: "text-warning-dark", label: "Maintenance" },
   }
   
   const { bg, text, label } = config[status] || config.offline
@@ -225,7 +225,7 @@ export default function NodesListPage() {
         <div className="bg-white border-4 border-black p-4 shadow-neo">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-black uppercase text-gray-500">Total Nodes</span>
-            <Server className="w-4 h-4 text-gray-400" />
+            <Server className="w-4 h-4 text-gray-600" />
           </div>
           <p className="text-3xl font-black text-black">{stats.total}</p>
         </div>
@@ -235,7 +235,7 @@ export default function NodesListPage() {
             <span className="text-xs font-black uppercase text-gray-500">Active</span>
             <span className="w-3 h-3 bg-success rounded-full animate-pulse" />
           </div>
-          <p className="text-3xl font-black text-success">{stats.active}</p>
+          <p className="text-3xl font-black text-success-dark">{stats.active}</p>
         </div>
         
         <div className="bg-white border-4 border-black p-4 shadow-neo">
@@ -249,9 +249,9 @@ export default function NodesListPage() {
         <div className="bg-white border-4 border-black p-4 shadow-neo">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-black uppercase text-gray-500">Maintenance</span>
-            <AlertTriangle className="w-4 h-4 text-warning" />
+            <AlertTriangle className="w-4 h-4 text-warning-dark" />
           </div>
-          <p className="text-3xl font-black text-warning">{stats.maintenance}</p>
+          <p className="text-3xl font-black text-warning-dark">{stats.maintenance}</p>
         </div>
       </div>
       
@@ -260,7 +260,7 @@ export default function NodesListPage() {
         <div className="flex flex-col lg:flex-row gap-4">
           {/* Search */}
           <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
             <Input
               type="text"
               placeholder="Search by name or IP..."
@@ -296,7 +296,7 @@ export default function NodesListPage() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {filteredNodes.length === 0 ? (
           <div className="col-span-full bg-white border-4 border-black p-12 shadow-neo text-center">
-            <Server className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+            <Server className="w-16 h-16 text-gray-500 mx-auto mb-4" />
             <p className="text-gray-500 font-bold uppercase">No nodes found</p>
             {hasFilters && (
               <Button variant="ghost" onClick={clearFilters} className="mt-4 border-2 border-black">
@@ -334,7 +334,7 @@ export default function NodesListPage() {
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Activity className="w-4 h-4 text-gray-400" />
+                    <Activity className="w-4 h-4 text-gray-600" />
                     <span className="text-xs font-medium text-gray-500">Created: {formatDate(node.created_at)}</span>
                   </div>
                 </div>
@@ -342,7 +342,7 @@ export default function NodesListPage() {
                 {/* Status Alerts */}
                 {node.status === "maintenance" && (
                   <div className="bg-warning/20 border-2 border-warning p-3 mb-4">
-                    <p className="text-xs font-bold uppercase text-warning">Node is in maintenance mode</p>
+                    <p className="text-xs font-bold uppercase text-warning-dark">Node is in maintenance mode</p>
                   </div>
                 )}
                 
@@ -354,7 +354,7 @@ export default function NodesListPage() {
 
                 {node.status === "active" && (
                   <div className="bg-success/10 border-2 border-success p-3 mb-4">
-                    <p className="text-xs font-bold uppercase text-success">Node is active — view details for metrics</p>
+                    <p className="text-xs font-bold uppercase text-success-dark">Node is active — view details for metrics</p>
                   </div>
                 )}
                 

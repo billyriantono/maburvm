@@ -19,8 +19,9 @@ import {
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { cn } from "@/lib/utils"
-import { useNodes, useNodeMetrics } from "@/lib/hooks/use-nodes"
+import { useNodes, useNodeMetrics, useNodeMetricsHistory } from "@/lib/hooks/use-nodes"
 import { useVMs } from "@/lib/hooks/use-vms"
+import { Sparkline } from "@/components/ui/sparkline"
 import type { Node, NodeMetrics as NodeMetricsType } from "@/types"
 
 // Types
@@ -105,13 +106,16 @@ function NodeMetricsCard({ node }: { node: Node }) {
   const displayStatus = getNodeDisplayStatus(node)
   const isOnline = displayStatus !== "offline"
   const { data: metrics } = useNodeMetrics(isOnline ? node.id : "")
-  
+  const { data: history } = useNodeMetricsHistory(isOnline ? node.id : "", 60)
+
   const cpuUsage = metrics?.cpu_percent ?? 0
   const memUsage = metrics?.memory_used_percent ?? 0
   const diskUsage = metrics?.disk_used_percent ?? 0
   const networkIn = metrics?.network_rx_bytes_per_sec ?? 0
   const networkOut = metrics?.network_tx_bytes_per_sec ?? 0
   const vmCount = metrics?.running_vm_count ?? 0
+  const cpuTrend = (history ?? []).map((s) => s.cpu_usage)
+  const memTrend = (history ?? []).map((s) => s.memory_usage)
   
   return (
     <div className="bg-white border-4 border-black shadow-neo">
@@ -128,8 +132,8 @@ function NodeMetricsCard({ node }: { node: Node }) {
       <div className="p-4">
         {!isOnline ? (
           <div className="py-6 text-center">
-            <AlertCircle className="w-8 h-8 text-gray-300 mx-auto mb-2" />
-            <p className="text-sm text-gray-400 font-bold uppercase">Node offline</p>
+            <AlertCircle className="w-8 h-8 text-gray-500 mx-auto mb-2" />
+            <p className="text-sm text-gray-600 font-bold uppercase">Node offline</p>
           </div>
         ) : !metrics ? (
           <div className="space-y-3 mb-4">
@@ -146,6 +150,21 @@ function NodeMetricsCard({ node }: { node: Node }) {
               <ResourceBar value={diskUsage} label="Disk" />
             </div>
             
+            {/* Trend (last 60m) */}
+            <div className="mb-4 pb-4 border-b border-gray-200">
+              <p className="text-[10px] font-black uppercase tracking-wider text-gray-400 mb-2">Trend · last 60m</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="border-2 border-black p-2">
+                  <span className="text-[10px] font-bold uppercase text-gray-500">CPU</span>
+                  <Sparkline data={cpuTrend} colorClass="text-primary" height={32} />
+                </div>
+                <div className="border-2 border-black p-2">
+                  <span className="text-[10px] font-bold uppercase text-gray-500">Memory</span>
+                  <Sparkline data={memTrend} colorClass="text-secondary" height={32} />
+                </div>
+              </div>
+            </div>
+
             {/* Network I/O */}
             <div className="flex items-center gap-6 mb-4 pb-4 border-b border-gray-200">
               <div className="flex items-center gap-2">
@@ -163,12 +182,12 @@ function NodeMetricsCard({ node }: { node: Node }) {
             {/* VM Count & IP */}
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Database className="w-4 h-4 text-gray-400" />
+                <Database className="w-4 h-4 text-gray-600" />
                 <span className="text-sm font-medium text-gray-500">VMs:</span>
                 <span className="text-sm font-black">{vmCount}</span>
               </div>
               <div className="flex items-center gap-2">
-                <Network className="w-4 h-4 text-gray-400" />
+                <Network className="w-4 h-4 text-gray-600" />
                 <span className="text-sm font-mono text-gray-500">{node.ip_address}</span>
               </div>
             </div>
@@ -408,7 +427,7 @@ export default function MonitoringPage() {
         <div className="bg-white border-4 border-black shadow-neo p-4">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-black uppercase text-gray-500">Total Nodes</span>
-            <Server className="w-4 h-4 text-gray-400" />
+            <Server className="w-4 h-4 text-gray-600" />
           </div>
           <p className="text-3xl font-black text-black">{totalNodes}</p>
           <p className="text-xs text-gray-500 font-medium mt-1">{onlineNodes.length} online</p>
@@ -417,7 +436,7 @@ export default function MonitoringPage() {
         <div className="bg-white border-4 border-black shadow-neo p-4">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-black uppercase text-gray-500">Total VMs</span>
-            <Database className="w-4 h-4 text-gray-400" />
+            <Database className="w-4 h-4 text-gray-600" />
           </div>
           <p className="text-3xl font-black text-black">{totalVMs}</p>
         </div>
@@ -448,7 +467,7 @@ export default function MonitoringPage() {
         </div>
       ) : (
         <div className="bg-white border-4 border-black p-12 shadow-neo text-center mb-6">
-          <Server className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+          <Server className="w-12 h-12 text-gray-500 mx-auto mb-4" />
           <p className="text-gray-500 font-bold uppercase">No nodes registered</p>
         </div>
       )}

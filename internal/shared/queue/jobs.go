@@ -39,6 +39,9 @@ const (
 	VMOpUnsuspend         VMOperationType = "unsuspend"
 	VMOpMigrate           VMOperationType = "migrate"
 	VMOpResize            VMOperationType = "resize"
+	VMOpResetPassword     VMOperationType = "reset_password"
+	VMOpAttachISO         VMOperationType = "attach_iso"
+	VMOpDetachISO         VMOperationType = "detach_iso"
 	VMOpConfigureNetwork  VMOperationType = "configure_network"
 	VMOpAddPortForward    VMOperationType = "add_port_forward"
 	VMOpRemovePortForward VMOperationType = "remove_port_forward"
@@ -202,7 +205,8 @@ func ValidateSnapshotOperation(op SnapshotOperation) error {
 func ValidateVMOperation(op VMOperationType) error {
 	switch op {
 	case VMOpCreate, VMOpStart, VMOpStop, VMOpRestart, VMOpDelete,
-		VMOpRebuild, VMOpSuspend, VMOpUnsuspend, VMOpMigrate, VMOpResize,
+		VMOpRebuild, VMOpSuspend, VMOpUnsuspend, VMOpMigrate, VMOpResize, VMOpResetPassword,
+		VMOpAttachISO, VMOpDetachISO,
 		VMOpConfigureNetwork, VMOpAddPortForward, VMOpRemovePortForward, VMOpConfigureFirewall:
 		return nil
 	default:

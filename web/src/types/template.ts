@@ -10,11 +10,12 @@ export interface OSTemplate {
   updated_at: string;
 }
 
-// CreateTemplateRequest for creating OS templates
+// CreateTemplateRequest for creating OS templates.
+// The backend downloads/caches the image on the node from this URL on first use.
 export interface CreateTemplateRequest {
   name: string;
   version: string;
-  image_path: string;
+  file_url: string;
   description?: string;
 }
 

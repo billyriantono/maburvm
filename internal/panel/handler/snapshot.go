@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/labstack/echo/v4"
+	"gorm.io/gorm"
 
 	"github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/panel/service"
@@ -71,13 +72,14 @@ func (h *SnapshotHandler) CreateSnapshot(c echo.Context) error {
 	}
 
 	// Get user ID from context (set by auth middleware)
-	userID, ok := c.Get("user_id").(string)
-	if !ok || userID == "" {
+	userCtx, ok := c.Get("user").(*middleware.UserContext)
+	if !ok || userCtx == nil {
 		return c.JSON(http.StatusUnauthorized, map[string]interface{}{
 			"error":   "Unauthorized",
 			"message": "User ID not found in token",
 		})
 	}
+	userID := userCtx.ID.String()
 
 	// Create snapshot
 	createReq := &service.CreateSnapshotRequest{
@@ -170,13 +172,14 @@ func (h *SnapshotHandler) ListSnapshots(c echo.Context) error {
 	}
 
 	// Get user ID from context (set by auth middleware)
-	userID, ok := c.Get("user_id").(string)
-	if !ok || userID == "" {
+	userCtx, ok := c.Get("user").(*middleware.UserContext)
+	if !ok || userCtx == nil {
 		return c.JSON(http.StatusUnauthorized, map[string]interface{}{
 			"error":   "Unauthorized",
 			"message": "User ID not found in token",
 		})
 	}
+	userID := userCtx.ID.String()
 
 	// Build request
 	listReq := &service.ListSnapshotsRequest{
@@ -265,13 +268,14 @@ func (h *SnapshotHandler) GetSnapshot(c echo.Context) error {
 	}
 
 	// Get user ID from context (set by auth middleware)
-	userID, ok := c.Get("user_id").(string)
-	if !ok || userID == "" {
+	userCtx, ok := c.Get("user").(*middleware.UserContext)
+	if !ok || userCtx == nil {
 		return c.JSON(http.StatusUnauthorized, map[string]interface{}{
 			"error":   "Unauthorized",
 			"message": "User ID not found in token",
 		})
 	}
+	userID := userCtx.ID.String()
 
 	// Get snapshot
 	snapshot, err := h.service.GetSnapshot(c.Request().Context(), snapshotID, userID)
@@ -336,13 +340,14 @@ func (h *SnapshotHandler) RestoreSnapshot(c echo.Context) error {
 	}
 
 	// Get user ID from context (set by auth middleware)
-	userID, ok := c.Get("user_id").(string)
-	if !ok || userID == "" {
+	userCtx, ok := c.Get("user").(*middleware.UserContext)
+	if !ok || userCtx == nil {
 		return c.JSON(http.StatusUnauthorized, map[string]interface{}{
 			"error":   "Unauthorized",
 			"message": "User ID not found in token",
 		})
 	}
+	userID := userCtx.ID.String()
 
 	// Restore snapshot
 	restoreReq := &service.RestoreSnapshotRequest{
@@ -407,13 +412,14 @@ func (h *SnapshotHandler) DeleteSnapshot(c echo.Context) error {
 	}
 
 	// Get user ID from context (set by auth middleware)
-	userID, ok := c.Get("user_id").(string)
-	if !ok || userID == "" {
+	userCtx, ok := c.Get("user").(*middleware.UserContext)
+	if !ok || userCtx == nil {
 		return c.JSON(http.StatusUnauthorized, map[string]interface{}{
 			"error":   "Unauthorized",
 			"message": "User ID not found in token",
 		})
 	}
+	userID := userCtx.ID.String()
 
 	// Delete snapshot
 	deleteReq := &service.DeleteSnapshotRequest{
@@ -452,12 +458,12 @@ func (h *SnapshotHandler) DeleteSnapshot(c echo.Context) error {
 // ============================================================================
 
 // RegisterSnapshotRoutes registers all snapshot routes with the Echo router
-func RegisterSnapshotRoutes(e *echo.Echo, handler *SnapshotHandler, db interface{}) {
+func RegisterSnapshotRoutes(e *echo.Echo, handler *SnapshotHandler, db *gorm.DB) {
 	// Create snapshot routes group
 	snapshots := e.Group("/api/v1/vms/:id/snapshots")
 
 	// Apply authentication middleware
-	snapshots.Use(middleware.RequireAuth(nil))
+	snapshots.Use(middleware.RequireAuth(db))
 
 	// Apply permission middleware for snapshot management
 	snapshots.Use(middleware.RequirePermission("vm:read"))

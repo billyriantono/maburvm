@@ -100,7 +100,7 @@ export default function NewUserPage() {
               <div className="space-y-2">
                 <Label htmlFor="name">Full Name</Label>
                 <div className="relative">
-                  <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                  <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
                   <Input
                     id="name"
                     type="text"
@@ -116,7 +116,7 @@ export default function NewUserPage() {
               <div className="space-y-2">
                 <Label htmlFor="email">Email Address</Label>
                 <div className="relative">
-                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
                   <Input
                     id="email"
                     type="email"
@@ -141,7 +141,7 @@ export default function NewUserPage() {
               <div className="space-y-2">
                 <Label htmlFor="password">Password</Label>
                 <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
                   <Input
                     id="password"
                     type={showPassword ? "text" : "password"}
@@ -156,9 +156,9 @@ export default function NewUserPage() {
                     className="absolute right-3 top-1/2 -translate-y-1/2"
                   >
                     {showPassword ? (
-                      <EyeOff className="w-4 h-4 text-gray-400" />
+                      <EyeOff className="w-4 h-4 text-gray-600" />
                     ) : (
-                      <Eye className="w-4 h-4 text-gray-400" />
+                      <Eye className="w-4 h-4 text-gray-600" />
                     )}
                   </button>
                 </div>
@@ -168,7 +168,7 @@ export default function NewUserPage() {
               <div className="space-y-2">
                 <Label htmlFor="confirmPassword">Confirm Password</Label>
                 <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
                   <Input
                     id="confirmPassword"
                     type={showPassword ? "text" : "password"}

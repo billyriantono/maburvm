@@ -8,6 +8,10 @@ export interface StoragePool {
   used_space: number; // bytes
   available_space: number; // bytes
   path: string;
+  file_format: 'raw' | 'qcow2';
+  alert_threshold: number; // 0-100
+  overcommit: number; // bytes, 0 = disabled
+  is_primary: boolean;
   node_id: string;
   node?: {
     id: string;
@@ -36,6 +40,11 @@ export interface CreateStoragePoolRequest {
   type: string;
   path: string;
   node_id: string;
+  total_space: number;
+  file_format: string;
+  alert_threshold: number;
+  overcommit: number;
+  is_primary: boolean;
 }
 
 // CreateStorageVolumeRequest for creating storage volumes

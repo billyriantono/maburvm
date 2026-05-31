@@ -3,8 +3,8 @@
 import { useState, useEffect } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { 
-  Server, 
+import {
+  Server,
   ArrowLeft,
   Plus,
   Loader2,
@@ -12,13 +12,11 @@ import {
   Check,
   AlertCircle,
   CheckCircle,
-  RefreshCw,
-  Network,
-  HardDrive,
-  Cpu
+  Terminal
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { useCreateNode } from "@/lib/hooks/use-nodes"
 
 // Toast notification
 function Toast({ message, type, onClose }: { message: string, type: "success" | "error", onClose: () => void }) {
@@ -26,7 +24,7 @@ function Toast({ message, type, onClose }: { message: string, type: "success" | 
     const timer = setTimeout(onClose, 3000)
     return () => clearTimeout(timer)
   }, [onClose])
-  
+
   return (
     <div className={`fixed bottom-4 right-4 z-50 px-6 py-4 border-4 border-black shadow-neo ${
       type === "success" ? "bg-success" : "bg-danger text-white"
@@ -36,69 +34,78 @@ function Toast({ message, type, onClose }: { message: string, type: "success" | 
   )
 }
 
-// Generate random token
-function generateToken(): string {
-  const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
-  let token = "tok_"
-  for (let i = 0; i < 14; i++) {
-    token += chars.charAt(Math.floor(Math.random() * chars.length))
-  }
-  return token
-}
+
 
 export default function AddNodePage() {
   const router = useRouter()
-  
+  const createNode = useCreateNode()
+
   // Form state
   const [name, setName] = useState("")
   const [ipAddress, setIpAddress] = useState("")
-  const [token, setToken] = useState(generateToken())
+  const [token, setToken] = useState("")
   const [loading, setLoading] = useState(false)
   const [errors, setErrors] = useState<{ name?: string; ip?: string }>({})
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
   const [copied, setCopied] = useState(false)
+  const [cmdCopied, setCmdCopied] = useState(false)
   const [showToken, setShowToken] = useState(false)
-  
+
+  // The one-line bootstrap installer. The browser's origin is the panel URL the
+  // operator is already using, which the new node must be able to reach.
+  const panelOrigin = typeof window !== "undefined" ? window.location.origin : ""
+  const installCommand = `curl -fsSL ${panelOrigin}/install-agent.sh | sudo TOKEN=${token} bash`
+
   // Validate form
   const validate = () => {
     const newErrors: { name?: string; ip?: string } = {}
-    
+
     if (!name.trim()) {
       newErrors.name = "Node name is required"
     } else if (!/^[a-z0-9-]+$/.test(name)) {
       newErrors.name = "Only lowercase letters, numbers, and hyphens allowed"
     }
-    
+
     if (!ipAddress.trim()) {
       newErrors.ip = "IP address is required"
     } else if (!/^(?:\d{1,3}\.){3}\d{1,3}$/.test(ipAddress)) {
       newErrors.ip = "Invalid IP address format"
     }
-    
+
     setErrors(newErrors)
     return Object.keys(newErrors).length === 0
   }
-  
+
   // Handle form submission
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    
+
     if (!validate()) return
-    
+
     setLoading(true)
-    
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 1500))
-    
-    // In production, this would call the API to create the node
-    setToast({ message: `Node ${name} created successfully`, type: "success" })
-    
-    // Redirect to nodes list after a short delay
-    setTimeout(() => {
-      router.push("/nodes")
-    }, 1000)
+
+    try {
+      const result = await createNode.mutateAsync({
+        name,
+        ip_address: ipAddress,
+      })
+
+      // Show token from backend response
+      if (result && (result as any).token) {
+        setToken((result as any).token)
+        setShowToken(true)
+      }
+
+      setToast({ message: `Node ${name} created — copy the install command below`, type: "success" })
+      // No auto-redirect: the operator needs to copy the one-line installer first.
+    } catch (error: any) {
+      const message = error?.response?.data?.message || error?.message || "Failed to create node"
+      setToast({ message, type: "error" })
+    } finally {
+      setLoading(false)
+    }
   }
-  
+
   // Copy token to clipboard
   const copyToken = () => {
     navigator.clipboard.writeText(token)
@@ -106,13 +113,15 @@ export default function AddNodePage() {
     setToast({ message: "Token copied to clipboard", type: "success" })
     setTimeout(() => setCopied(false), 2000)
   }
-  
-  // Regenerate token
-  const regenerateToken = () => {
-    setToken(generateToken())
-    setToast({ message: "Token regenerated", type: "success" })
+
+  // Copy the full install one-liner.
+  const copyCommand = () => {
+    navigator.clipboard.writeText(installCommand)
+    setCmdCopied(true)
+    setToast({ message: "Install command copied", type: "success" })
+    setTimeout(() => setCmdCopied(false), 2000)
   }
-  
+
   return (
     <div className="max-w-2xl mx-auto">
       {/* Header */}
@@ -138,7 +147,7 @@ export default function AddNodePage() {
           <h2 className="text-lg font-black uppercase tracking-tight text-black mb-6">
             Node Details
           </h2>
-          
+
           <div className="space-y-6">
             {/* Name */}
             <div>
@@ -163,7 +172,7 @@ export default function AddNodePage() {
                 Use lowercase letters, numbers, and hyphens only
               </p>
             </div>
-            
+
             {/* IP Address */}
             <div>
               <label htmlFor="node-ip" className="block text-sm font-black uppercase text-gray-500 mb-2">
@@ -198,7 +207,7 @@ export default function AddNodePage() {
           <p className="text-sm text-gray-500 mb-6">
             This token will be used by the node agent to authenticate with the control panel.
           </p>
-          
+
           <div className="flex items-center gap-4">
             <div className="flex-1 bg-gray-100 border-2 border-black p-4">
               <div className="flex items-center justify-between">
@@ -215,18 +224,14 @@ export default function AddNodePage() {
               </div>
             </div>
           </div>
-          
+
           <div className="flex items-center gap-3 mt-4">
             <Button type="button" variant="ghost" onClick={copyToken} className="border-2 border-black gap-2">
               {copied ? <Check className="w-4 h-4 text-success" /> : <Copy className="w-4 h-4" />}
               {copied ? "Copied!" : "Copy"}
             </Button>
-            <Button type="button" variant="ghost" onClick={regenerateToken} className="border-2 border-black gap-2">
-              <RefreshCw className="w-4 h-4" />
-              Regenerate
-            </Button>
           </div>
-          
+
           <div className="mt-4 p-3 bg-success/20 border-2 border-success">
             <div className="flex items-start gap-2">
               <CheckCircle className="w-5 h-5 text-success shrink-0 mt-0.5" />
@@ -240,89 +245,74 @@ export default function AddNodePage() {
           </div>
         </div>
 
-        {/* Installation Instructions */}
+        {/* One-line installer (shown after the node + token exist) */}
         <div className="bg-white border-4 border-black p-6 shadow-neo mb-6">
-          <h2 className="text-lg font-black uppercase tracking-tight text-black mb-4">
-            Next Steps
+          <h2 className="text-lg font-black uppercase tracking-tight text-black mb-2 flex items-center gap-2">
+            <Terminal className="w-5 h-5" />Install the Agent
           </h2>
-          
-          <div className="space-y-4">
-            <div className="flex items-start gap-3">
-              <div className="w-6 h-6 bg-primary flex items-center justify-center border border-black text-xs font-black shrink-0">
-                1
+          {showToken && token ? (
+            <>
+              <p className="text-sm text-gray-600 mb-4">
+                SSH into the new node as root and run this once. It installs the libvirt runtime
+                (no <code className="text-xs bg-gray-100 px-1 border border-black">libvirt-dev</code> needed),
+                drops the prebuilt agent + a systemd unit wired with this token, and starts it.
+              </p>
+              <div className="bg-black text-green-400 border-2 border-black p-4 font-mono text-xs overflow-x-auto">
+                <code className="whitespace-pre-wrap break-all">{installCommand}</code>
               </div>
-              <div>
-                <p className="font-bold">Download and install the node agent</p>
-                <p className="text-sm text-gray-500">The agent binary is available in the releases section</p>
+              <div className="flex items-center gap-3 mt-3">
+                <Button type="button" variant="ghost" onClick={copyCommand} className="border-2 border-black gap-2">
+                  {cmdCopied ? <Check className="w-4 h-4 text-success" /> : <Copy className="w-4 h-4" />}
+                  {cmdCopied ? "Copied!" : "Copy command"}
+                </Button>
+                <Link href="/nodes">
+                  <Button type="button" className="gap-2"><CheckCircle className="w-4 h-4" />Done — back to Nodes</Button>
+                </Link>
               </div>
-            </div>
-            
-            <div className="flex items-start gap-3">
-              <div className="w-6 h-6 bg-primary flex items-center justify-center border border-black text-xs font-black shrink-0">
-                2
+              <div className="mt-4 p-3 bg-warning/20 border-2 border-warning text-xs text-gray-700 space-y-1">
+                <p>• The node&apos;s public IP (<code className="bg-gray-100 px-1 border border-black">{ipAddress || "…"}</code>) must be reachable by the panel on port <code className="bg-gray-100 px-1 border border-black">50051</code>.</p>
+                <p>• The panel must be serving the prebuilt binary — build it once with <code className="bg-gray-100 px-1 border border-black">make build-agent-linux</code>.</p>
+                <p>• Manual alternative: set <code className="bg-gray-100 px-1 border border-black">AGENT_AUTH_TOKEN</code>, <code className="bg-gray-100 px-1 border border-black">AGENT_BIND_ADDRESS=0.0.0.0</code> and run the agent.</p>
               </div>
-              <div>
-                <p className="font-bold">Configure the agent with the token</p>
-                <p className="text-sm text-gray-500">Set the PANEL_URL and NODE_TOKEN environment variables or config file</p>
-              </div>
-            </div>
-            
-            <div className="flex items-start gap-3">
-              <div className="w-6 h-6 bg-primary flex items-center justify-center border border-black text-xs font-black shrink-0">
-                3
-              </div>
-              <div>
-                <p className="font-bold">Start the agent</p>
-                <p className="text-sm text-gray-500">The node will automatically register with the panel and appear online</p>
-              </div>
-            </div>
-          </div>
-          
-          <div className="mt-6 p-4 bg-gray-100 border-2 border-black">
-            <p className="text-xs font-bold uppercase text-gray-500 mb-2">Example configuration:</p>
-            <pre className="font-mono text-xs text-black overflow-x-auto">
-{`# Environment variables
-PANEL_URL=http://10.0.0.1:8080
-NODE_TOKEN=${token}
-
-# Or use config file
-cat > /etc/maburvm/agent.yaml << EOF
-panel_url: http://10.0.0.1:8080
-node_token: ${token}
-EOF`}
-            </pre>
-          </div>
+            </>
+          ) : (
+            <p className="text-sm text-gray-500">
+              Create the node first — you&apos;ll get a one-line install command to run on it.
+            </p>
+          )}
         </div>
 
         {/* Actions */}
-        <div className="flex items-center justify-end gap-4">
-          <Link href="/nodes">
-            <Button type="button" variant="ghost" className="border-2 border-black">
-              Cancel
+        {!(showToken && token) && (
+          <div className="flex items-center justify-end gap-4">
+            <Link href="/nodes">
+              <Button type="button" variant="ghost" className="border-2 border-black">
+                Cancel
+              </Button>
+            </Link>
+            <Button type="submit" disabled={loading} className="gap-2">
+              {loading ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Creating...
+                </>
+              ) : (
+                <>
+                  <Plus className="w-4 h-4" />
+                  Create Node
+                </>
+              )}
             </Button>
-          </Link>
-          <Button type="submit" disabled={loading} className="gap-2">
-            {loading ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Creating...
-              </>
-            ) : (
-              <>
-                <Plus className="w-4 h-4" />
-                Create Node
-              </>
-            )}
-          </Button>
-        </div>
+          </div>
+        )}
       </form>
 
       {/* Toast */}
       {toast && (
-        <Toast 
-          message={toast.message} 
-          type={toast.type} 
-          onClose={() => setToast(null)} 
+        <Toast
+          message={toast.message}
+          type={toast.type}
+          onClose={() => setToast(null)}
         />
       )}
     </div>
