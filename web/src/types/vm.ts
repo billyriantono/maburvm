@@ -67,6 +67,7 @@ export interface CreateVMRequest {
   vlan_id?: number;        // 802.1Q VLAN tag
   cpu_model?: string;      // guest CPU model; empty → node default (kvm64, migratable)
   user_data?: string;      // first-boot script/recipe (cloud-init), run once per instance
+  managed_network_id?: string; // attach to a private VPC / managed network instead of a pool
 }
 
 // UpdateVMRequest for updating VMs

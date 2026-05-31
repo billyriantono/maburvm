@@ -972,10 +972,14 @@ func (s *NodeAgentService) GetVMStatus(ctx context.Context, req *pb.VMStatusRequ
 		LastStateChange: timestamppb.Now(),
 	}
 
-	// Query guest-agent for IP addresses if VM is running
+	// Resolve IP addresses if VM is running. Prefer libvirt's interface-address
+	// query (guest agent → DHCP lease → ARP) so VMs without a responsive
+	// qemu-guest-agent still report IPs; fall back to the direct guest-agent
+	// query for hostname-derived addresses.
 	if vmStatus == "running" {
-		_, gaIPs := queryGuestAgentInfo(vmInfo.Name)
-		if len(gaIPs) > 0 {
+		if ips, ierr := libvirt.GetVMInterfaceIPs(req.VmId); ierr == nil && len(ips) > 0 {
+			resp.IpAddresses = ips
+		} else if _, gaIPs := queryGuestAgentInfo(vmInfo.Name); len(gaIPs) > 0 {
 			resp.IpAddresses = gaIPs
 		}
 	}

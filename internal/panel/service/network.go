@@ -2,13 +2,20 @@ package service
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
+
 	"github.com/maburvm/panel/internal/panel/repository"
+	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 	"github.com/maburvm/panel/internal/shared/models"
 	"github.com/maburvm/panel/internal/shared/queue"
 	"github.com/riverqueue/river"
@@ -438,6 +445,13 @@ func (s *NetworkService) GetNetworkInterfaceDetails(ctx context.Context, vmID st
 		return nil, err
 	}
 
+	// Fall back to the agent's live view when no interface is recorded in the DB
+	// (e.g. DHCP VMs created without a pool, imports, or pre-existing VMs) so the
+	// UI reflects the addresses the VM actually has rather than showing nothing.
+	if len(nets) == 0 {
+		nets = s.liveVMInterfaces(ctx, vmID)
+	}
+
 	// Load IPAM addresses assigned to this VM, indexed by host address.
 	var addrs []models.IPAddress
 	if err := s.db.WithContext(ctx).Where("vm_id = ?", vmID).Find(&addrs).Error; err != nil {
@@ -480,6 +494,44 @@ func (s *NetworkService) GetNetworkInterfaceDetails(ctx context.Context, vmID st
 		out[i] = d
 	}
 	return out, nil
+}
+
+// liveVMInterfaces queries the agent for the VM's current addresses and returns
+// synthesized interface records. Best-effort: returns nil when the VM isn't
+// running, the node is unreachable, or no usable address is reported.
+func (s *NetworkService) liveVMInterfaces(ctx context.Context, vmID string) []models.Network {
+	vm, err := s.vmRepo.GetByID(ctx, vmID)
+	if err != nil || vm.Status != models.VMStatusRunning {
+		return nil
+	}
+	node, err := s.nodeRepo.GetByID(ctx, vm.NodeID)
+	if err != nil {
+		return nil
+	}
+	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	conn, err := grpc.DialContext(dialCtx, fmt.Sprintf("%s:50051", node.IPAddress),
+		grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})),
+		grpc.WithBlock(),
+	)
+	if err != nil {
+		return nil
+	}
+	defer conn.Close()
+	authCtx := metadata.NewOutgoingContext(ctx, metadata.New(map[string]string{"authorization": "Bearer " + node.Token}))
+	resp, err := pb.NewNodeAgentClient(conn).GetVMStatus(authCtx, &pb.VMStatusRequest{VmId: vmID})
+	if err != nil || resp == nil {
+		return nil
+	}
+	var out []models.Network
+	for _, ip := range resp.IpAddresses {
+		ip = strings.TrimSpace(ip)
+		if ip == "" || strings.HasPrefix(ip, "127.") || ip == "::1" {
+			continue
+		}
+		out = append(out, models.Network{VMID: vmID, IPAddress: ip})
+	}
+	return out
 }
 
 // hostOnlyIP strips any /prefix from an inet string

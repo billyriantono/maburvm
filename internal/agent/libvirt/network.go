@@ -5,10 +5,52 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"strings"
 
 	"libvirt.org/go/libvirt"
 	"libvirt.org/go/libvirtxml"
 )
+
+// GetVMInterfaceIPs returns the VM's current IPv4/IPv6 addresses, trying the
+// guest agent first, then DHCP leases, then the host ARP table — so it works
+// even for VMs without a responsive qemu-guest-agent (ARP sees any VM that has
+// sent traffic). Loopback addresses are excluded.
+func GetVMInterfaceIPs(uuidStr string) ([]string, error) {
+	var ips []string
+	err := WithConnection(func(conn *libvirt.Connect) error {
+		dom, err := conn.LookupDomainByUUIDString(uuidStr)
+		if err != nil {
+			return fmt.Errorf("domain not found: %w", err)
+		}
+		defer dom.Free()
+		seen := map[string]bool{}
+		for _, src := range []libvirt.DomainInterfaceAddressesSource{
+			libvirt.DOMAIN_INTERFACE_ADDRESSES_SRC_AGENT,
+			libvirt.DOMAIN_INTERFACE_ADDRESSES_SRC_LEASE,
+			libvirt.DOMAIN_INTERFACE_ADDRESSES_SRC_ARP,
+		} {
+			ifaces, lerr := dom.ListAllInterfaceAddresses(src)
+			if lerr != nil {
+				continue
+			}
+			for _, iface := range ifaces {
+				for _, a := range iface.Addrs {
+					ip := strings.TrimSpace(a.Addr)
+					if ip == "" || strings.HasPrefix(ip, "127.") || ip == "::1" || seen[ip] {
+						continue
+					}
+					seen[ip] = true
+					ips = append(ips, ip)
+				}
+			}
+			if len(ips) > 0 {
+				break // first source that yields addresses wins
+			}
+		}
+		return nil
+	})
+	return ips, err
+}
 
 // DefineNetwork creates and starts a managed libvirt network used for private
 // VPC segments. mode is "isolated" (no uplink — VMs on it reach only each other
