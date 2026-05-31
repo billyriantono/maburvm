@@ -34,6 +34,7 @@ import { useNodes } from "@/lib/hooks/use-nodes"
 import { useIPPools } from "@/lib/hooks/use-ipam"
 import { useNetworks } from "@/lib/hooks/use-networks"
 import { usePlans } from "@/lib/hooks/use-plans"
+import { useRecipes } from "@/lib/hooks/use-recipes"
 import { useCreateVM } from "@/lib/hooks/use-vms"
 
 // Validation schemas for each step
@@ -109,6 +110,9 @@ export default function NewVMPage() {
   const activeNodes = useMemo(() => nodes.filter(n => n.status === "active"), [nodes])
   const pools = useMemo(() => poolsData || [], [poolsData])
   const plans = useMemo(() => plansData || [], [plansData])
+  const { data: recipesData } = useRecipes()
+  const recipes = useMemo(() => recipesData || [], [recipesData])
+  const [selectedRecipeId, setSelectedRecipeId] = useState("")
 
   const {
     register,
@@ -597,6 +601,32 @@ export default function NewVMPage() {
                   Leave default for cross-node live migration. Choose Host Passthrough for best single-node performance.
                 </p>
               </div>
+
+              {/* Recipe selector (fills the script below from a saved recipe) */}
+              {recipes.length > 0 && (
+                <div className="space-y-2">
+                  <label htmlFor="recipeId" className="text-sm font-bold uppercase tracking-wide">Recipe (optional)</label>
+                  <select
+                    id="recipeId"
+                    value={selectedRecipeId}
+                    onChange={(e) => {
+                      const id = e.target.value
+                      setSelectedRecipeId(id)
+                      const r = recipes.find((x) => x.id === id)
+                      if (r) setValue("userData", r.script)
+                    }}
+                    className="w-full h-12 px-3 border-2 border-black font-medium bg-white"
+                  >
+                    <option value="">None — write a script below</option>
+                    {recipes.map((r) => (
+                      <option key={r.id} value={r.id}>{r.name}</option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-gray-500">
+                    Pick a saved recipe to fill the script below (still editable). Manage them in Settings → Recipes.
+                  </p>
+                </div>
+              )}
 
               {/* Startup script / recipe */}
               <div className="space-y-2">

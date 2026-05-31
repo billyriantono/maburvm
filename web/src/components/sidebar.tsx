@@ -19,7 +19,8 @@ import {
   KeyRound,
   KeySquare,
   Boxes,
-  Globe
+  Globe,
+  ScrollText
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { User } from "@/types"
@@ -44,6 +45,7 @@ const settingsNav = [
   { href: "/settings/profile", label: "Profile", icon: UserIcon },
   { href: "/settings/api-keys", label: "API Keys", icon: KeyRound },
   { href: "/settings/ssh-keys", label: "SSH Keys", icon: KeySquare },
+  { href: "/settings/recipes", label: "Recipes", icon: ScrollText },
   { href: "/settings/system", label: "System", icon: Shield },
 ]
 

@@ -22,15 +22,17 @@ type VMHandler struct {
 	vncService    *service.VNCService
 	vncProxy      *vnc.ProxyServer
 	sshKeyService *service.SSHKeyService
+	recipeService *service.RecipeService
 }
 
 // NewVMHandler creates a new VMHandler instance
-func NewVMHandler(service *service.VMService, vncService *service.VNCService, vncProxy *vnc.ProxyServer, sshKeyService *service.SSHKeyService) *VMHandler {
+func NewVMHandler(service *service.VMService, vncService *service.VNCService, vncProxy *vnc.ProxyServer, sshKeyService *service.SSHKeyService, recipeService *service.RecipeService) *VMHandler {
 	return &VMHandler{
 		service:       service,
 		vncService:    vncService,
 		vncProxy:      vncProxy,
 		sshKeyService: sshKeyService,
+		recipeService: recipeService,
 	}
 }
 
@@ -49,18 +51,19 @@ func NewVMHandlerWithoutVNC(service *service.VMService) *VMHandler {
 
 // CreateVMRequest represents a request to create a new VM
 type CreateVMRequest struct {
-	Hostname     string           `json:"hostname" validate:"required,max=100"`
-	OSTemplateID string           `json:"os_template_id" validate:"required,uuid"`
-	Resources    models.Resources `json:"resources" validate:"required"`
-	NodeID       string           `json:"node_id,omitempty" validate:"omitempty,uuid"`
-	PlanID       string           `json:"plan_id,omitempty" validate:"omitempty,uuid"`
-	IPPoolID     string           `json:"ip_pool_id,omitempty" validate:"omitempty,uuid"`
-	RequestedIP  string           `json:"requested_ip,omitempty" validate:"omitempty,ip"`
-	BandwidthMbps int             `json:"bandwidth_mbps,omitempty" validate:"omitempty,min=0,max=10000"`
-	VLANID        int             `json:"vlan_id,omitempty" validate:"omitempty,min=0,max=4094"`
-	CPUModel      string          `json:"cpu_model,omitempty" validate:"omitempty,max=64"`
-	UserData      string          `json:"user_data,omitempty" validate:"omitempty,max=65536"`
-	ManagedNetworkID string       `json:"managed_network_id,omitempty" validate:"omitempty,uuid"`
+	Hostname         string           `json:"hostname" validate:"required,max=100"`
+	OSTemplateID     string           `json:"os_template_id" validate:"required,uuid"`
+	Resources        models.Resources `json:"resources" validate:"required"`
+	NodeID           string           `json:"node_id,omitempty" validate:"omitempty,uuid"`
+	PlanID           string           `json:"plan_id,omitempty" validate:"omitempty,uuid"`
+	IPPoolID         string           `json:"ip_pool_id,omitempty" validate:"omitempty,uuid"`
+	RequestedIP      string           `json:"requested_ip,omitempty" validate:"omitempty,ip"`
+	BandwidthMbps    int              `json:"bandwidth_mbps,omitempty" validate:"omitempty,min=0,max=10000"`
+	VLANID           int              `json:"vlan_id,omitempty" validate:"omitempty,min=0,max=4094"`
+	CPUModel         string           `json:"cpu_model,omitempty" validate:"omitempty,max=64"`
+	UserData         string           `json:"user_data,omitempty" validate:"omitempty,max=65536"`
+	ManagedNetworkID string           `json:"managed_network_id,omitempty" validate:"omitempty,uuid"`
+	RecipeID         string           `json:"recipe_id,omitempty" validate:"omitempty,uuid"`
 }
 
 // CreateVMResponse represents the response after creating a VM
@@ -101,20 +104,40 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 		})
 	}
 
+	// Resolve a selected recipe into the first-boot user-data (ownership-enforced).
+	// An explicit user_data wins; the recipe fills it only when none was supplied.
+	userData := req.UserData
+	if userData == "" && req.RecipeID != "" && h.recipeService != nil {
+		script, rerr := h.recipeService.ResolveScript(c.Request().Context(), userID, req.RecipeID)
+		if rerr != nil {
+			if errors.Is(rerr, service.ErrRecipeNotFound) {
+				return c.JSON(http.StatusNotFound, map[string]interface{}{
+					"error":   "Not Found",
+					"message": "Recipe not found",
+				})
+			}
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+				"error":   "Internal Server Error",
+				"message": "failed to resolve recipe: " + rerr.Error(),
+			})
+		}
+		userData = script
+	}
+
 	// Create VM
 	createReq := &service.CreateVMRequest{
-		UserID:       userID,
-		Hostname:     req.Hostname,
-		OSTemplateID: req.OSTemplateID,
-		Resources:    req.Resources,
-		NodeID:       req.NodeID,
-		PlanID:       req.PlanID,
-		IPPoolID:     req.IPPoolID,
-		RequestedIP:  req.RequestedIP,
-		BandwidthMbps: req.BandwidthMbps,
-		VLANID:        req.VLANID,
-		CPUModel:      req.CPUModel,
-		UserData:      req.UserData,
+		UserID:           userID,
+		Hostname:         req.Hostname,
+		OSTemplateID:     req.OSTemplateID,
+		Resources:        req.Resources,
+		NodeID:           req.NodeID,
+		PlanID:           req.PlanID,
+		IPPoolID:         req.IPPoolID,
+		RequestedIP:      req.RequestedIP,
+		BandwidthMbps:    req.BandwidthMbps,
+		VLANID:           req.VLANID,
+		CPUModel:         req.CPUModel,
+		UserData:         userData,
 		ManagedNetworkID: req.ManagedNetworkID,
 	}
 
@@ -321,12 +344,12 @@ func (h *VMHandler) ListVMs(c echo.Context) error {
 
 // VMDetailResponse represents detailed VM information
 type VMDetailResponse struct {
-	ID           string                 `json:"id"`
-	Hostname     string                 `json:"hostname"`
-	Status       string                 `json:"status"`
-	NodeID       string                 `json:"node_id"`
-	UserID       string                 `json:"user_id"`
-	OSTemplateID string                 `json:"os_template_id"`
+	ID             string                 `json:"id"`
+	Hostname       string                 `json:"hostname"`
+	Status         string                 `json:"status"`
+	NodeID         string                 `json:"node_id"`
+	UserID         string                 `json:"user_id"`
+	OSTemplateID   string                 `json:"os_template_id"`
 	Resources      models.Resources       `json:"resources"`
 	VNCPort        int                    `json:"vnc_port,omitempty"`
 	ConsoleEnabled bool                   `json:"console_enabled"`

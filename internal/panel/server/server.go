@@ -141,6 +141,9 @@ func (s *Server) SetupRoutes() {
 	// SSH key routes (per-user public keys for VM provisioning)
 	s.setupSSHKeyRoutes()
 
+	// Recipe routes (per-user first-boot scripts, Virtualizor "Recipes")
+	s.setupRecipeRoutes()
+
 	// Public node bootstrap endpoints (install-agent.sh + prebuilt agent binary)
 	s.setupProvisionRoutes()
 
@@ -275,7 +278,7 @@ func (s *Server) setupVMRoutes(g *echo.Group) {
 	vncHandler := vnc.NewHandler(vncProxyServer)
 	s.echo.GET("/ws/vnc", vncHandler.HandleWebSocket)
 
-	vmHandler := handler.NewVMHandler(vmService, vncService, vncProxyServer, service.NewSSHKeyService(s.db))
+	vmHandler := handler.NewVMHandler(vmService, vncService, vncProxyServer, service.NewSSHKeyService(s.db), service.NewRecipeService(s.db))
 
 	handler.RegisterVMRoutes(s.echo, vmHandler, s.db)
 
@@ -400,6 +403,14 @@ func (s *Server) setupSSHKeyRoutes() {
 	sshKeyService := service.NewSSHKeyService(s.db)
 	sshKeyHandler := handler.NewSSHKeyHandler(sshKeyService)
 	handler.RegisterSSHKeyRoutes(s.echo, sshKeyHandler, s.db)
+}
+
+// setupRecipeRoutes configures per-user first-boot recipe routes (Virtualizor
+// "Recipes" — saved scripts applied to a VM on first boot via cloud-init).
+func (s *Server) setupRecipeRoutes() {
+	recipeService := service.NewRecipeService(s.db)
+	recipeHandler := handler.NewRecipeHandler(recipeService)
+	handler.RegisterRecipeRoutes(s.echo, recipeHandler, s.db)
 }
 
 // setupProvisionRoutes serves the node bootstrap installer + prebuilt agent

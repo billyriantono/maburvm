@@ -68,6 +68,7 @@ export interface CreateVMRequest {
   cpu_model?: string;      // guest CPU model; empty → node default (kvm64, migratable)
   user_data?: string;      // first-boot script/recipe (cloud-init), run once per instance
   managed_network_id?: string; // attach to a private VPC / managed network instead of a pool
+  recipe_id?: string;      // first-boot recipe to inject as user_data (ignored if user_data set)
 }
 
 // UpdateVMRequest for updating VMs
