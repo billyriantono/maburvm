@@ -391,6 +391,38 @@ func TestUserService_2FAFlow(t *testing.T) {
 			t.Error("Login() should return token after 2FA verification")
 		}
 	})
+
+	// Test login with a one-time backup code (lost-authenticator recovery).
+	t.Run("login with backup code", func(t *testing.T) {
+		// Re-enable 2FA to get fresh backup codes alongside the secret.
+		_ = service.Disable2FA(userID)
+		setupResp, err := service.Setup2FA(&Setup2FARequest{UserID: userID})
+		if err != nil {
+			t.Fatalf("Setup2FA() failed: %v", err)
+		}
+		totpCode, _ := totp.GenerateCode(setupResp.Secret, time.Now())
+		if err := service.Verify2FASetup(&Verify2FASetupRequest{UserID: userID, TOTPCode: totpCode}); err != nil {
+			t.Fatalf("Verify2FASetup() failed: %v", err)
+		}
+		if len(setupResp.BackupCodes) == 0 {
+			t.Fatal("Setup2FA() returned no backup codes")
+		}
+		code := setupResp.BackupCodes[0]
+
+		// A backup code logs in (this is the path that was previously missing).
+		resp, err := service.Login(&LoginRequest{Email: "2fa@test.com", Password: "StrongP@ssw0rd!", TOTPCode: code, ClientIP: "192.168.1.1"})
+		if err != nil {
+			t.Fatalf("Login() with backup code failed: %v", err)
+		}
+		if resp.Token == "" || resp.Requires2FA {
+			t.Error("Login() with backup code should return a token without requiring 2FA again")
+		}
+
+		// Backup codes are single-use: reusing the same one must fail.
+		if _, err := service.Login(&LoginRequest{Email: "2fa@test.com", Password: "StrongP@ssw0rd!", TOTPCode: code, ClientIP: "192.168.1.1"}); err != ErrInvalidTOTPCode {
+			t.Errorf("reused backup code should be rejected, got %v", err)
+		}
+	})
 }
 
 func TestUserService_IPWhitelist(t *testing.T) {

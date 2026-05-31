@@ -897,6 +897,40 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		}
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "Settings saved"})
 	})
+
+	// POST /settings/system/email/test — send a test email with the given SMTP
+	// settings (the form's current values) to verify they actually work.
+	sys.POST("/email/test", func(c echo.Context) error {
+		var body struct {
+			SMTPHost     string `json:"smtpHost"`
+			SMTPPort     int    `json:"smtpPort"`
+			SMTPUser     string `json:"smtpUser"`
+			SMTPPassword string `json:"smtpPassword"`
+			SMTPFrom     string `json:"smtpFrom"`
+			SMTPFromName string `json:"smtpFromName"`
+			To           string `json:"to"`
+		}
+		if err := c.Bind(&body); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request body"})
+		}
+		to := body.To
+		if to == "" {
+			if u, ok := panelMiddleware.GetUserContext(c); ok {
+				to = u.Email
+			}
+		}
+		if err := service.SendTestEmail(service.SMTPSettings{
+			Host:     body.SMTPHost,
+			Port:     body.SMTPPort,
+			Username: body.SMTPUser,
+			Password: body.SMTPPassword,
+			From:     body.SMTPFrom,
+			FromName: body.SMTPFromName,
+		}, to); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "Test email sent to " + to})
+	})
 }
 
 // setupNotificationRoutes configures notification routes (uses audit_logs as source)

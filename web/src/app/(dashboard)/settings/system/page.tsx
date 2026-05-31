@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { useSystemSettings, useSaveSystemSettings } from "@/lib/hooks/use-settings"
+import { useSystemSettings, useSaveSystemSettings, useTestEmail } from "@/lib/hooks/use-settings"
 import { toast } from "sonner"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
@@ -150,6 +150,7 @@ export default function SystemSettingsPage() {
   const [showHmacSecret, setShowHmacSecret] = useState(false)
   const { data: sysSettings } = useSystemSettings()
   const saveSettings = useSaveSystemSettings()
+  const testEmail = useTestEmail()
 
   // General form
   const generalForm = useForm<GeneralFormData>({
@@ -220,11 +221,23 @@ export default function SystemSettingsPage() {
     saveSection("email", data, "Email settings", `SMTP configured for ${data.smtpHost}`)
 
   const handleTestEmail = async () => {
-    // Persist the email config; actual SMTP send-test is not implemented yet.
-    await saveSection("email", emailForm.getValues(), "Email settings", "SMTP settings saved")
-    toast.info("Test send not available yet", {
-      description: "SMTP settings are saved; a live test-send endpoint is not implemented.",
-    })
+    const v = emailForm.getValues()
+    setIsSaving("email")
+    try {
+      const res = await testEmail.mutateAsync({
+        smtpHost: v.smtpHost,
+        smtpPort: v.smtpPort,
+        smtpUser: v.smtpUser,
+        smtpPassword: v.smtpPassword,
+        smtpFrom: v.smtpFrom,
+        smtpFromName: v.smtpFromName,
+      })
+      toast.success("Test email sent", { description: res.message })
+    } catch (err) {
+      toast.error("Test send failed", { description: (err as Error).message })
+    } finally {
+      setIsSaving(null)
+    }
   }
 
   const handleResetSettings = (type: string) => {

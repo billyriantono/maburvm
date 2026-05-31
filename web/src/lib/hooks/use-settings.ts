@@ -113,3 +113,24 @@ export function useSaveSystemSettings() {
     },
   })
 }
+
+// useTestEmail sends a test email using the supplied SMTP settings. The backend
+// sends to the current admin's email when `to` is omitted.
+export interface EmailTestConfig {
+  smtpHost: string
+  smtpPort: number
+  smtpUser: string
+  smtpPassword: string
+  smtpFrom?: string
+  smtpFromName?: string
+  to?: string
+}
+
+export function useTestEmail() {
+  return useMutation<{ message: string }, Error, EmailTestConfig>({
+    mutationFn: async (cfg) => {
+      const res = await api.post('/api/v1/settings/system/email/test', cfg)
+      return res.data as { message: string }
+    },
+  })
+}

@@ -232,13 +232,9 @@ func (s *UserService) Login(req *LoginRequest) (*LoginResponse, error) {
 			}, nil
 		}
 
-		// Decrypt and verify TOTP code
-		decryptedSecret, err := s.decryptSecret(user.TwoFactorSecret)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decrypt 2FA secret: %w", err)
-		}
-
-		if !totp.Validate(req.TOTPCode, decryptedSecret) {
+		// Accept a TOTP code or a one-time backup code (so a lost authenticator
+		// device doesn't lock the user out).
+		if !s.verifyTwoFactorCode(&user, req.TOTPCode) {
 			return nil, ErrInvalidTOTPCode
 		}
 	}
@@ -449,27 +445,27 @@ func (s *UserService) Verify2FA(req *Verify2FARequest) error {
 		return Err2FANotEnabled
 	}
 
-	// Decrypt secret
-	decryptedSecret, err := s.decryptSecret(user.TwoFactorSecret)
+	if !s.verifyTwoFactorCode(&user, req.Code) {
+		return ErrInvalidTOTPCode
+	}
+	return nil
+}
+
+// verifyTwoFactorCode validates a 2FA code for a user: a 6-digit TOTP code, or
+// failing that an unused 8-char backup code (which is then consumed). Shared by
+// the login flow and the explicit verify endpoint so both accept backup codes.
+func (s *UserService) verifyTwoFactorCode(user *models.User, code string) bool {
+	secret, err := s.decryptSecret(user.TwoFactorSecret)
 	if err != nil {
-		return fmt.Errorf("failed to decrypt 2FA secret: %w", err)
+		return false
 	}
-
-	// Try TOTP code first (6 digits)
-	if len(req.Code) == 6 {
-		if totp.Validate(req.Code, decryptedSecret) {
-			return nil
-		}
+	if len(code) == 6 && totp.Validate(code, secret) {
+		return true
 	}
-
-	// Try backup code (8 characters)
-	if len(req.Code) == 8 {
-		if s.verifyBackupCode(&user, req.Code) {
-			return nil
-		}
+	if len(code) == 8 && s.verifyBackupCode(user, code) {
+		return true
 	}
-
-	return ErrInvalidTOTPCode
+	return false
 }
 
 // generateQRCode creates a QR code from the TOTP URL and returns it as base64 PNG
