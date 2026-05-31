@@ -43,7 +43,6 @@ export function SSHConsole({ vmId, className }: SSHConsoleProps) {
   }, []);
 
   const connect = useCallback(async () => {
-    if (!containerRef.current) return;
     setStatus('connecting');
     setErrorMessage('');
 
@@ -68,6 +67,11 @@ export function SSHConsole({ vmId, className }: SSHConsoleProps) {
       const { Terminal } = await import('@xterm/xterm');
       const { FitAddon } = await import('@xterm/addon-fit');
 
+      const container = containerRef.current;
+      if (!container) {
+        throw new Error('Terminal container is not ready');
+      }
+
       const term = new Terminal({
         cursorBlink: true,
         fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
@@ -76,8 +80,8 @@ export function SSHConsole({ vmId, className }: SSHConsoleProps) {
       });
       const fit = new FitAddon();
       term.loadAddon(fit);
-      containerRef.current.replaceChildren();
-      term.open(containerRef.current);
+      container.replaceChildren();
+      term.open(container);
       fit.fit();
       termRef.current = term;
       fitRef.current = fit;
@@ -186,7 +190,11 @@ export function SSHConsole({ vmId, className }: SSHConsoleProps) {
 
       {/* Body */}
       <div className="relative bg-black" style={{ height: 'calc(100% - 42px)' }}>
-        {status === 'auth' ? (
+        {/* Terminal container is always mounted so its ref is available the moment
+            connect() runs (the auth form is just an overlay on top of it). */}
+        <div ref={containerRef} className="w-full h-full p-1" />
+
+        {status === 'auth' && (
           <div className="absolute inset-0 flex items-center justify-center p-6">
             <form
               onSubmit={(e) => {
@@ -236,26 +244,23 @@ export function SSHConsole({ vmId, className }: SSHConsoleProps) {
               </button>
             </form>
           </div>
-        ) : (
-          <>
-            <div ref={containerRef} className="w-full h-full p-1" />
-            {status !== 'connected' && (
-              <div className="absolute inset-0 flex items-center justify-center text-white text-center pointer-events-none">
-                <div>
-                  <h2 className="text-xl font-bold mb-2">
-                    {status === 'connecting' && 'Connecting...'}
-                    {status === 'disconnected' && 'Disconnected'}
-                    {status === 'error' && 'Connection Error'}
-                  </h2>
-                  <p className="text-sm text-gray-400">
-                    {status === 'connecting' && 'Opening SSH session'}
-                    {status === 'disconnected' && 'Session ended'}
-                    {status === 'error' && errorMessage}
-                  </p>
-                </div>
-              </div>
-            )}
-          </>
+        )}
+
+        {status !== 'auth' && status !== 'connected' && (
+          <div className="absolute inset-0 flex items-center justify-center text-white text-center pointer-events-none">
+            <div>
+              <h2 className="text-xl font-bold mb-2">
+                {status === 'connecting' && 'Connecting...'}
+                {status === 'disconnected' && 'Disconnected'}
+                {status === 'error' && 'Connection Error'}
+              </h2>
+              <p className="text-sm text-gray-400">
+                {status === 'connecting' && 'Opening SSH session'}
+                {status === 'disconnected' && 'Session ended'}
+                {status === 'error' && errorMessage}
+              </p>
+            </div>
+          </div>
         )}
       </div>
     </div>
