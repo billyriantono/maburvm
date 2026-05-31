@@ -95,14 +95,15 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 		})
 	}
 
-	// Get user ID from context (set by auth middleware)
-	userID, ok := c.Get("user_id").(string)
-	if !ok || userID == "" {
+	// Get the user from context (RequireAuth stores it under the "user" key).
+	userCtx, ok := middleware.GetUserContext(c)
+	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]interface{}{
 			"error":   "Unauthorized",
-			"message": "User ID not found in token",
+			"message": "User not found in context",
 		})
 	}
+	userID := userCtx.ID.String()
 
 	// Resolve a selected recipe into the first-boot user-data (ownership-enforced).
 	// An explicit user_data wins; the recipe fills it only when none was supplied.
@@ -864,10 +865,10 @@ func (h *VMHandler) GetVNCConfig(c echo.Context) error {
 		})
 	}
 
-	// Get user ID from context
-	userID, _ := c.Get("user_id").(string)
-	if userID == "" {
-		userID = "system"
+	// Get user ID from context (RequireAuth stores the user under the "user" key).
+	userID := "system"
+	if userCtx, ok := middleware.GetUserContext(c); ok {
+		userID = userCtx.ID.String()
 	}
 
 	// Check if user is admin or VM owner to include password

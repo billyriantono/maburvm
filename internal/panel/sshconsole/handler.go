@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/labstack/echo/v4"
+	panelMiddleware "github.com/maburvm/panel/internal/panel/middleware"
 )
 
 // HostResolver resolves a VM's reachable SSH host server-side. Resolving the
@@ -34,10 +35,13 @@ type TokenRequest struct {
 
 // GenerateToken handles POST /api/v1/vms/:id/ssh/token.
 func (h *Handler) GenerateToken(c echo.Context) error {
-	userID, ok := c.Get("user_id").(string)
-	if !ok || userID == "" {
+	// RequireAuth stores the user under the "user" context key (UserContextKey),
+	// not a plain "user_id" — read it via GetUserContext.
+	user, ok := panelMiddleware.GetUserContext(c)
+	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized"})
 	}
+	userID := user.ID.String()
 	vmID := c.Param("id")
 	if vmID == "" {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "VM ID required"})
