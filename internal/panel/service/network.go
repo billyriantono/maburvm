@@ -273,6 +273,49 @@ func (s *NetworkService) RemovePortForward(ctx context.Context, vmID string, net
 	return nil
 }
 
+// primaryNetworkID returns the VM's primary (first) network interface ID, used
+// as the default target for VM-level port forwarding.
+func (s *NetworkService) primaryNetworkID(ctx context.Context, vmID string) (string, error) {
+	netIface, err := s.networkRepo.GetByVMID(ctx, vmID)
+	if err != nil {
+		return "", ErrNetworkNotFound
+	}
+	return netIface.ID, nil
+}
+
+// AddPortForwardForVM adds a port forward to the VM's primary network interface.
+// It backs the VM-level /vms/:id/port-forwards endpoint, which addresses port
+// forwards by VM rather than by a specific interface (Virtualizor-style).
+func (s *NetworkService) AddPortForwardForVM(ctx context.Context, vmID string, req *AddPortForwardRequest) (*AddPortForwardResponse, error) {
+	networkID, err := s.primaryNetworkID(ctx, vmID)
+	if err != nil {
+		return nil, err
+	}
+	return s.AddPortForward(ctx, vmID, networkID, req)
+}
+
+// GetPortForwardsForVM returns all of a VM's port forwards across its interfaces.
+func (s *NetworkService) GetPortForwardsForVM(ctx context.Context, vmID string) ([]models.PortForward, error) {
+	var forwards []models.PortForward
+	if err := s.db.WithContext(ctx).Where("vm_id = ?", vmID).Order("created_at DESC").Find(&forwards).Error; err != nil {
+		return nil, fmt.Errorf("failed to list port forwards: %w", err)
+	}
+	return forwards, nil
+}
+
+// RemovePortForwardForVM removes a VM's port forward by ID, resolving the owning
+// network interface from the record so callers needn't supply it.
+func (s *NetworkService) RemovePortForwardForVM(ctx context.Context, vmID, forwardID string) error {
+	var forward models.PortForward
+	if err := s.db.WithContext(ctx).Where("id = ? AND vm_id = ?", forwardID, vmID).First(&forward).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return ErrPortForwardNotFound
+		}
+		return fmt.Errorf("failed to get port forward: %w", err)
+	}
+	return s.RemovePortForward(ctx, vmID, forward.NetworkID, forwardID)
+}
+
 // AddFirewallRuleRequest contains data for adding a firewall rule
 type AddFirewallRuleRequest struct {
 	Protocol  string `json:"protocol" validate:"required,oneof=tcp udp icmp all"`

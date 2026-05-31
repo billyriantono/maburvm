@@ -7,6 +7,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/panel/service"
+	"github.com/maburvm/panel/internal/shared/models"
 )
 
 // NetworkHandler handles HTTP requests for network management
@@ -287,6 +288,95 @@ func (h *NetworkHandler) RemovePortForward(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "Port forward rule removed successfully",
 	})
+}
+
+// portForwardToResponse maps a model to the API response shape.
+func portForwardToResponse(pf *models.PortForward) PortForwardResponse {
+	return PortForwardResponse{
+		ID:           pf.ID,
+		VMID:         pf.VMID,
+		NetworkID:    pf.NetworkID,
+		ExternalPort: pf.ExternalPort,
+		InternalPort: pf.InternalPort,
+		Protocol:     pf.Protocol,
+		SourceIP:     pf.SourceIP,
+		CreatedAt:    pf.CreatedAt.Format("2006-01-02T15:04:05Z"),
+	}
+}
+
+// AddVMPortForward handles POST /api/v1/vms/:id/port-forwards — a VM-level NAT
+// rule that targets the VM's primary network interface. The UI addresses port
+// forwards by VM (not by interface), so this complements the interface-scoped route.
+func (h *NetworkHandler) AddVMPortForward(c echo.Context) error {
+	vmID := c.Param("id")
+	if vmID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "VM ID is required"})
+	}
+
+	var req AddPortForwardRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Invalid request body"})
+	}
+	if req.ExternalPort == 0 || req.InternalPort == 0 {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "External port and internal port are required"})
+	}
+
+	resp, err := h.service.AddPortForwardForVM(c.Request().Context(), vmID, &service.AddPortForwardRequest{
+		ExternalPort: req.ExternalPort,
+		InternalPort: req.InternalPort,
+		Protocol:     req.Protocol,
+		SourceIP:     req.SourceIP,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrNetworkNotFound):
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "VM has no network interface to forward to (assign an IP first)"})
+		case err.Error() == "VM not found":
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
+		default:
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Internal Server Error", "message": err.Error()})
+		}
+	}
+
+	return c.JSON(http.StatusCreated, map[string]interface{}{
+		"message": "Port forward created successfully",
+		"data":    portForwardToResponse(resp.PortForward),
+	})
+}
+
+// ListVMPortForwards handles GET /api/v1/vms/:id/port-forwards — all of a VM's NAT rules.
+func (h *NetworkHandler) ListVMPortForwards(c echo.Context) error {
+	vmID := c.Param("id")
+	forwards, err := h.service.GetPortForwardsForVM(c.Request().Context(), vmID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Internal Server Error", "message": err.Error()})
+	}
+	response := make([]PortForwardResponse, len(forwards))
+	for i := range forwards {
+		response[i] = portForwardToResponse(&forwards[i])
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Port forwards retrieved successfully",
+		"data":    response,
+	})
+}
+
+// RemoveVMPortForward handles DELETE /api/v1/vms/:id/port-forwards/:forward_id.
+func (h *NetworkHandler) RemoveVMPortForward(c echo.Context) error {
+	vmID := c.Param("id")
+	forwardID := c.Param("forward_id")
+	if vmID == "" || forwardID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "VM ID and Forward ID are required"})
+	}
+	if err := h.service.RemovePortForwardForVM(c.Request().Context(), vmID, forwardID); err != nil {
+		switch {
+		case errors.Is(err, service.ErrPortForwardNotFound):
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "Port forward not found"})
+		default:
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Internal Server Error", "message": err.Error()})
+		}
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"message": "Port forward removed successfully"})
 }
 
 // AddFirewallRuleRequest represents a request to add a firewall rule
@@ -660,10 +750,16 @@ func RegisterNetworkRoutes(e *echo.Echo, handler *NetworkHandler, db interface{}
 	// Bandwidth routes
 	vms.PUT("/:id/networks/:network_id/bandwidth", handler.SetBandwidthLimit, middleware.RequirePermission("vm:update"))
 
-	// Port forward routes
+	// Port forward routes (interface-scoped)
 	vms.POST("/:id/networks/:network_id/port-forwards", handler.AddPortForward, middleware.RequirePermission("vm:update"))
 	vms.GET("/:id/networks/:network_id/port-forwards", handler.ListPortForwards, middleware.RequirePermission("vm:read"))
 	vms.DELETE("/:id/networks/:network_id/port-forwards/:forward_id", handler.RemovePortForward, middleware.RequirePermission("vm:update"))
+
+	// VM-level port forward routes (target the primary interface). The UI addresses
+	// port forwards by VM, so these back /api/v1/vms/:id/port-forwards directly.
+	vms.GET("/:id/port-forwards", handler.ListVMPortForwards, middleware.RequirePermission("vm:read"))
+	vms.POST("/:id/port-forwards", handler.AddVMPortForward, middleware.RequirePermission("vm:update"))
+	vms.DELETE("/:id/port-forwards/:forward_id", handler.RemoveVMPortForward, middleware.RequirePermission("vm:update"))
 
 	// VLAN routes
 	vms.PUT("/:id/networks/:network_id/vlan", handler.SetVLAN, middleware.RequirePermission("vm:update"))
