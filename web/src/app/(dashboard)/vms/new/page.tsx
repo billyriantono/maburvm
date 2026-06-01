@@ -36,6 +36,7 @@ import { useNetworks } from "@/lib/hooks/use-networks"
 import { usePlans } from "@/lib/hooks/use-plans"
 import { useRecipes } from "@/lib/hooks/use-recipes"
 import { useCreateVM } from "@/lib/hooks/use-vms"
+import { OSIcon } from "@/components/os-icon"
 
 // Validation schemas for each step
 const step1Schema = z.object({
@@ -271,17 +272,6 @@ export default function NewVMPage() {
   }
 
   // Get OS icon based on template name
-  const getTemplateIcon = (name: string): string => {
-    const lower = name.toLowerCase()
-    if (lower.includes("ubuntu")) return "🟠"
-    if (lower.includes("debian")) return "🔴"
-    if (lower.includes("centos") || lower.includes("alma") || lower.includes("rocky")) return "🟢"
-    if (lower.includes("fedora")) return "🔵"
-    if (lower.includes("windows")) return "🪟"
-    if (lower.includes("arch")) return "🔷"
-    return "🐧"
-  }
-
   return (
     <div className="max-w-4xl mx-auto">
       {/* Header */}
@@ -774,7 +764,7 @@ export default function NewVMPage() {
                           </div>
                         )}
                         
-                        <div className="text-4xl mb-2">{getTemplateIcon(template.name)}</div>
+                        <div className="mb-2 flex justify-center"><OSIcon name={template.name} className="w-10 h-10" /></div>
                         <p className="font-black uppercase text-sm leading-tight">{template.name}</p>
                         <p className="text-xs text-gray-500 mt-1">v{template.version}</p>
                         {template.description && (
@@ -1054,7 +1044,7 @@ export default function NewVMPage() {
                   </p>
                   {getSelectedTemplate() && (
                     <div className="flex items-center gap-3">
-                      <span className="text-3xl">{getTemplateIcon(getSelectedTemplate()!.name)}</span>
+                      <OSIcon name={getSelectedTemplate()!.name} className="w-8 h-8" />
                       <div>
                         <p className="font-bold">{getSelectedTemplate()?.name}</p>
                         <p className="text-sm text-gray-500">v{getSelectedTemplate()?.version}</p>

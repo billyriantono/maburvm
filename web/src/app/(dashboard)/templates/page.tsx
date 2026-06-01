@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useTemplates, useDeleteTemplate } from "@/lib/hooks/use-templates"
+import { OSIcon } from "@/components/os-icon"
 
 function formatDate(dateString: string): string {
   return new Date(dateString).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })
@@ -55,17 +56,6 @@ function ConfirmDialog({ open, title, message, loading, onConfirm, onCancel }: {
       </div>
     </div>
   )
-}
-
-function getTemplateIcon(name: string): string {
-  const lower = name.toLowerCase()
-  if (lower.includes("ubuntu")) return "🟠"
-  if (lower.includes("debian")) return "🔴"
-  if (lower.includes("centos") || lower.includes("alma") || lower.includes("rocky")) return "🟢"
-  if (lower.includes("fedora")) return "🔵"
-  if (lower.includes("windows")) return "🪟"
-  if (lower.includes("arch")) return "🔷"
-  return "🐧"
 }
 
 export default function TemplateListPage() {
@@ -210,8 +200,8 @@ export default function TemplateListPage() {
               {/* Template Info */}
               <div className="col-span-4">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-secondary flex items-center justify-center border-2 border-black text-xl">
-                    {getTemplateIcon(template.name)}
+                  <div className="w-10 h-10 bg-white flex items-center justify-center border-2 border-black">
+                    <OSIcon name={template.name} className="w-6 h-6" />
                   </div>
                   <div>
                     <Link href={`/templates/${template.id}`} className="font-black text-black hover:text-primary transition-colors">

@@ -24,21 +24,11 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { useTemplate, useDeleteTemplate, useUpdateTemplate } from "@/lib/hooks/use-templates"
 import { useVMs } from "@/lib/hooks/use-vms"
+import { OSIcon } from "@/components/os-icon"
 import type { VM } from "@/types"
 
 function formatDate(dateString: string): string {
   return new Date(dateString).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
-}
-
-function getTemplateIcon(name: string): string {
-  const lower = name.toLowerCase()
-  if (lower.includes("ubuntu")) return "🟠"
-  if (lower.includes("debian")) return "🔴"
-  if (lower.includes("centos") || lower.includes("alma") || lower.includes("rocky")) return "🟢"
-  if (lower.includes("fedora")) return "🔵"
-  if (lower.includes("windows")) return "🪟"
-  if (lower.includes("arch")) return "🔷"
-  return "🐧"
 }
 
 function Toast({ message, type, onClose }: { message: string; type: "success" | "error"; onClose: () => void }) {
@@ -141,8 +131,8 @@ export default function TemplateDetailPage() {
         </Link>
         <div className="flex-1">
           <div className="flex items-center gap-3">
-            <div className="w-12 h-12 bg-secondary flex items-center justify-center border-2 border-black text-2xl">
-              {getTemplateIcon(template.name)}
+            <div className="w-12 h-12 bg-white flex items-center justify-center border-2 border-black">
+              <OSIcon name={template.name} className="w-7 h-7" />
             </div>
             <div>
               <h1 className="text-3xl font-black uppercase tracking-tight text-black">{template.name}</h1>
