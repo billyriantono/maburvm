@@ -197,6 +197,13 @@ export default function NewVMPage() {
   }
 
   const onSubmit = async (data: FormData) => {
+    // Only create from the final Review step. Guards against a stray submit —
+    // e.g. the Enter key, or focus landing on the freshly-rendered submit button
+    // when step 4 advances to step 5 — which would otherwise create the VM before
+    // the user clicks "Create VM".
+    if (currentStep !== 5) {
+      return
+    }
     setSubmitError(null)
 
     try {
@@ -330,7 +337,21 @@ export default function NewVMPage() {
       </div>
 
       {/* Form */}
-      <form onSubmit={handleSubmit(onSubmit)}>
+      <form
+        onSubmit={handleSubmit(onSubmit)}
+        onKeyDown={(e) => {
+          // Stop Enter in a text field from implicitly submitting the form before
+          // the Review step (use the Next button to advance). Only <input> is
+          // guarded, so dropdowns and the user-data textarea keep their Enter key.
+          if (
+            e.key === "Enter" &&
+            currentStep !== 5 &&
+            (e.target as HTMLElement).tagName === "INPUT"
+          ) {
+            e.preventDefault()
+          }
+        }}
+      >
         <div className="bg-white border-4 border-black p-8 shadow-neo">
           
           {/* Step 1: Basic Info */}
