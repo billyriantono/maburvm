@@ -347,13 +347,14 @@ export default function NewVMPage() {
         </div>
       </div>
 
-      {/* Form */}
+      {/* Form. The VM is created ONLY by clicking "Create VM" (the button calls
+          handleSubmit directly). The form itself never submits-to-create, so no
+          stray Enter keypress or focus-shift on the final step can trigger it. */}
       <form
-        onSubmit={handleSubmit(onSubmit)}
+        onSubmit={(e) => e.preventDefault()}
         onKeyDown={(e) => {
-          // Stop Enter in a text field from implicitly submitting the form before
-          // the Review step (use the Next button to advance). Only <input> is
-          // guarded, so dropdowns and the user-data textarea keep their Enter key.
+          // Belt-and-suspenders: stop Enter in a text field from doing anything
+          // form-level before the Review step. Dropdowns/textarea keep Enter.
           if (
             e.key === "Enter" &&
             currentStep !== 5 &&
@@ -1127,7 +1128,8 @@ export default function NewVMPage() {
               </Button>
             ) : (
               <Button
-                type="submit"
+                type="button"
+                onClick={handleSubmit(onSubmit)}
                 disabled={createVM.isPending}
                 className="gap-2 bg-success hover:bg-success/80"
               >
