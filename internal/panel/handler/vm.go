@@ -170,6 +170,11 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 				"error":   "Bad Request",
 				"message": err.Error(),
 			})
+		case errors.Is(err, service.ErrTemplateNotInstallable):
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{
+				"error":   "Bad Request",
+				"message": err.Error(),
+			})
 		case errors.Is(err, service.ErrPoolNotAvailableOnNode):
 			return c.JSON(http.StatusConflict, map[string]interface{}{
 				"error":   "Conflict",

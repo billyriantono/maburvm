@@ -25,16 +25,16 @@ import (
 	"github.com/maburvm/panel/internal/agent/network"
 	"github.com/maburvm/panel/internal/agent/storage"
 	"github.com/maburvm/panel/internal/agent/vncproxy"
+	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 	"github.com/maburvm/panel/internal/shared/models"
 	sharedstorage "github.com/maburvm/panel/internal/shared/storage"
-	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
-	libvirtLib "libvirt.org/go/libvirt"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	libvirtLib "libvirt.org/go/libvirt"
 )
 
 // VMMetricsCache tracks per-VM metrics history for calculating rates
@@ -271,12 +271,14 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 
 	if err != nil {
 		log.Printf("[NodeAgent] Failed to execute command %v on VM %s: %v", req.Command, req.VmId, err)
+		msg := fmt.Sprintf("Failed to execute command: %v", err)
 		return &pb.VMCommandResponse{
 			Success: false,
 			VmId:    req.VmId,
 			Command: req.Command,
 			State:   state,
-			Message: fmt.Sprintf("Failed to execute command: %v", err),
+			Message: msg,
+			Error:   &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: msg},
 		}, nil
 	}
 
@@ -1136,10 +1138,10 @@ func (s *NodeAgentService) collectVMMetrics(vmID string) *pb.VMMetricsResponse {
 			TotalBytes:     vmStats.MemoryActual,
 		},
 		Disk: &pb.DiskMetrics{
-			ReadBytesPerSec: diskReadRate,
+			ReadBytesPerSec:  diskReadRate,
 			WriteBytesPerSec: diskWriteRate,
-			ReadIops:    0,
-			WriteIops:   0,
+			ReadIops:         0,
+			WriteIops:        0,
 		},
 		Network: &pb.NetworkMetrics{
 			RxBytesPerSec:   netRXRate,
@@ -1694,12 +1696,16 @@ func getVMXMLDetails(uuidStr string) (*vmXMLDetails, error) {
 					} `xml:"target"`
 				} `xml:"disk"`
 				Interfaces []struct {
-					Type   string `xml:"type,attr"`
-					MAC    struct{ Address string `xml:"address,attr"` } `xml:"mac"`
+					Type string `xml:"type,attr"`
+					MAC  struct {
+						Address string `xml:"address,attr"`
+					} `xml:"mac"`
 					Source struct {
 						Bridge string `xml:"bridge,attr"`
 					} `xml:"source"`
-					Model struct{ Type string `xml:"type,attr"` } `xml:"model"`
+					Model struct {
+						Type string `xml:"type,attr"`
+					} `xml:"model"`
 				} `xml:"interface"`
 				Graphics []struct {
 					Type     string `xml:"type,attr"`

@@ -106,6 +106,17 @@ export default function NewVMPage() {
 
   const users = useMemo(() => usersData?.data || [], [usersData?.data])
   const templates = useMemo(() => templatesData || [], [templatesData])
+  // Only templates with a real base image can provision a new VM. Imported
+  // templates carry the "/imported" placeholder (their VMs already have disks),
+  // so creating from them fails on the agent — hide them here.
+  const installableTemplates = useMemo(
+    () =>
+      templates.filter((t) => {
+        const path = (t.image_path || "").trim()
+        return t.is_active && path !== "" && path !== "/imported"
+      }),
+    [templates]
+  )
   const nodes = useMemo(() => nodesData || [], [nodesData])
   const activeNodes = useMemo(() => nodes.filter(n => n.status === "active"), [nodes])
   const pools = useMemo(() => poolsData || [], [poolsData])
@@ -728,15 +739,19 @@ export default function NewVMPage() {
                     <Skeleton key={i} className="h-28 w-full" />
                   ))}
                 </div>
-              ) : templates.length === 0 ? (
+              ) : installableTemplates.length === 0 ? (
                 <div className="p-8 text-center border-2 border-black">
                   <HardDrive className="w-10 h-10 mx-auto text-gray-500 mb-3" />
-                  <p className="text-gray-500 font-bold uppercase text-sm">No templates available</p>
-                  <p className="text-gray-600 text-xs mt-1">Please create OS templates first</p>
+                  <p className="text-gray-500 font-bold uppercase text-sm">No installable OS templates</p>
+                  <p className="text-gray-600 text-xs mt-1">
+                    {templates.length === 0
+                      ? "Create an OS template first on the Templates page."
+                      : "Your templates are import placeholders with no base image. Add a real template (with an image URL) on the Templates page."}
+                  </p>
                 </div>
               ) : (
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                  {templates.filter(t => t.is_active).map((template) => {
+                  {installableTemplates.map((template) => {
                     const isSelected = watchedValues.templateId === template.id
                     
                     return (

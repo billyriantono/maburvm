@@ -39,11 +39,22 @@ var (
 	ErrInvalidResources = errors.New("invalid resource configuration")
 	// ErrHostnameExists is returned when a hostname is already in use
 	ErrHostnameExists = errors.New("hostname already exists")
+	// ErrTemplateNotInstallable is returned when a template has no real base image
+	// to provision from (e.g. the "/imported" placeholder created for imported VMs).
+	ErrTemplateNotInstallable = errors.New("OS template has no installable image (it was created for imported VMs); choose or add a real template")
 	// ErrVMLifecycleFailed is returned when a lifecycle operation fails
 	ErrVMLifecycleFailed = errors.New("VM lifecycle operation failed")
 	// ErrVMCannotBeModified is returned when trying to modify a VM that's not stopped
 	ErrVMCannotBeModified = errors.New("VM cannot be modified while running")
 )
+
+// isInstallableImagePath reports whether a template image path can seed a new VM.
+// The "/imported" sentinel (and an empty path) mark templates that exist only to
+// associate already-imported VMs; they have no provisionable base image.
+func isInstallableImagePath(path string) bool {
+	p := strings.TrimSpace(path)
+	return p != "" && p != "/imported"
+}
 
 // NodeSelectionStrategy determines how nodes are selected for VM placement
 type NodeSelectionStrategy string
@@ -136,16 +147,16 @@ func (s *VMService) GetNodeNames(ctx context.Context) (map[string]string, error)
 
 // CreateVMRequest contains parameters for creating a new VM
 type CreateVMRequest struct {
-	UserID       string           `json:"user_id" validate:"required,uuid"`
-	Hostname     string           `json:"hostname" validate:"required,max=100"`
-	OSTemplateID string           `json:"os_template_id" validate:"required,uuid"`
-	Resources    models.Resources `json:"resources" validate:"required"`
-	NodeID       string           `json:"node_id,omitempty" validate:"omitempty,uuid"` // Optional: specific node
-	PlanID       string           `json:"plan_id,omitempty" validate:"omitempty,uuid"` // Optional: derive resources from a plan
-	IPPoolID     string           `json:"ip_pool_id,omitempty" validate:"omitempty,uuid"`
-	RequestedIP  string           `json:"requested_ip,omitempty" validate:"omitempty,ip"`
-	BandwidthMbps int             `json:"bandwidth_mbps,omitempty" validate:"omitempty,min=0,max=10000"`
-	VLANID        int             `json:"vlan_id,omitempty" validate:"omitempty,min=0,max=4094"`
+	UserID        string           `json:"user_id" validate:"required,uuid"`
+	Hostname      string           `json:"hostname" validate:"required,max=100"`
+	OSTemplateID  string           `json:"os_template_id" validate:"required,uuid"`
+	Resources     models.Resources `json:"resources" validate:"required"`
+	NodeID        string           `json:"node_id,omitempty" validate:"omitempty,uuid"` // Optional: specific node
+	PlanID        string           `json:"plan_id,omitempty" validate:"omitempty,uuid"` // Optional: derive resources from a plan
+	IPPoolID      string           `json:"ip_pool_id,omitempty" validate:"omitempty,uuid"`
+	RequestedIP   string           `json:"requested_ip,omitempty" validate:"omitempty,ip"`
+	BandwidthMbps int              `json:"bandwidth_mbps,omitempty" validate:"omitempty,min=0,max=10000"`
+	VLANID        int              `json:"vlan_id,omitempty" validate:"omitempty,min=0,max=4094"`
 	// CPUModel is the guest CPU model. Empty → the node defaults to a portable,
 	// live-migratable model (kvm64). e.g. "host-passthrough", "host-model", "Haswell".
 	CPUModel string `json:"cpu_model,omitempty" validate:"omitempty,max=64"`
@@ -217,6 +228,12 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 	}
 	if !template.IsActive {
 		return nil, fmt.Errorf("OS template is not active")
+	}
+	// A real install needs a real base image. Imported templates carry the
+	// "/imported" placeholder (their VMs already have disks) and can't seed a new
+	// VM. Clones bypass this — they copy the source VM's disk via CloneSourceRef.
+	if req.CloneSourceRef == "" && !isInstallableImagePath(template.ImagePath) {
+		return nil, ErrTemplateNotInstallable
 	}
 
 	// Select node for VM placement

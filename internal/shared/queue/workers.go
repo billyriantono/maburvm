@@ -579,10 +579,20 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 	}
 
 	if !resp.Success {
+		// The agent reports the reason in either the structured Error or the
+		// top-level Message; prefer whichever is populated so the real cause
+		// surfaces instead of an empty "VM command failed:".
+		detail := resp.Error.GetMessage()
+		if detail == "" {
+			detail = resp.GetMessage()
+		}
+		if detail == "" {
+			detail = "agent reported failure without a message"
+		}
 		w.logger.ErrorContext(ctx, "VM command failed",
 			"vm_id", vm.ID,
 			"error_code", resp.Error.GetCode(),
-			"error_message", resp.Error.GetMessage(),
+			"error_message", detail,
 		)
 
 		// Update VM status to error
@@ -591,7 +601,7 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 		if w.metrics != nil {
 			w.metrics.RecordJobFailed()
 		}
-		return fmt.Errorf("VM command failed: %s", resp.Error.GetMessage())
+		return fmt.Errorf("VM command failed: %s", detail)
 	}
 
 	// Update VM status based on operation
