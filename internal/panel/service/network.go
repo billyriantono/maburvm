@@ -673,6 +673,7 @@ func (s *NetworkService) enqueueNetworkConfigJob(ctx context.Context, vm *models
 		IPAddress:      network.IPAddress,
 		BandwidthLimit: network.BandwidthLimit,
 		VLANID:         network.VLANID,
+		AntiSpoofing:   network.AntiSpoofing,
 	}
 
 	if firewallRules != nil {
@@ -776,6 +777,7 @@ type NetworkConfigParams struct {
 	IPAddress      string                `json:"ip_address"`
 	BandwidthLimit int64                 `json:"bandwidth_limit"`
 	VLANID         *int                  `json:"vlan_id,omitempty"`
+	AntiSpoofing   bool                  `json:"anti_spoofing"`
 	FirewallRules  []models.FirewallRule `json:"firewall_rules,omitempty"`
 }
 

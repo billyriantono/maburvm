@@ -202,6 +202,7 @@ type WorkerContext struct {
 	VMRepo       *repository.VMRepository
 	NodeRepo     *repository.NodeRepository
 	TemplateRepo *repository.TemplateRepository
+	NetworkRepo  *repository.NetworkRepository
 	AgentClient  *AgentClient
 	Metrics      *MetricsCollector
 }
@@ -417,6 +418,11 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 			w.metrics.RecordJobFailed()
 		}
 		return err
+	}
+
+	// Handle network config operations separately (use ApplyNetworkConfig RPC)
+	if job.Args.Operation == VMOpConfigureNetwork {
+		return w.handleConfigureNetwork(ctx, client, node, vm, job)
 	}
 
 	// Map operation type to gRPC command
@@ -646,6 +652,123 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 	)
 
 	return nil
+}
+
+// handleConfigureNetwork dispatches a ConfigureNetwork operation to the agent
+// via the ApplyNetworkConfig gRPC method.
+func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client pb.NodeAgentClient, node *models.Node, vm *models.VM, job *river.Job[VMOperationJob]) error {
+	var params struct {
+		IPAddress      string `json:"ip_address"`
+		BandwidthLimit int64  `json:"bandwidth_limit"`
+		VLANID         *int   `json:"vlan_id,omitempty"`
+		AntiSpoofing   bool   `json:"anti_spoofing"`
+		FirewallRules  []struct {
+			Direction string `json:"direction"`
+			Action    string `json:"action"`
+			Protocol  string `json:"protocol"`
+			SourceIP  string `json:"source_ip"`
+			PortRange string `json:"port_range"`
+			Priority  int    `json:"priority"`
+		} `json:"firewall_rules,omitempty"`
+	}
+
+	if err := json.Unmarshal(job.Args.Params, &params); err != nil {
+		return fmt.Errorf("failed to parse network config params: %w", err)
+	}
+
+	// Build proto firewall rules
+	var fwRules []*pb.FirewallRule
+	for _, r := range params.FirewallRules {
+		fwRules = append(fwRules, &pb.FirewallRule{
+			Direction:   modelDirectionToProto(r.Direction),
+			Action:      modelActionToProto(r.Action),
+			Protocol:    r.Protocol,
+			SourceCidr:  r.SourceIP,
+			DestPort:    r.PortRange,
+			Priority:    int32(r.Priority),
+		})
+	}
+
+	// Build network interface with anti-spoofing flag
+	iface := &pb.NetworkInterface{
+		Name:         "eth0",
+		Type:         pb.NetworkInterfaceType_NETWORK_INTERFACE_TYPE_BRIDGE,
+		IpAddress:    params.IPAddress,
+		AntiSpoofing: params.AntiSpoofing,
+	}
+
+	req := &pb.NetworkConfigRequest{
+		VmId: vm.ID,
+		Config: &pb.VMNetworkConfig{
+			Interfaces:    []*pb.NetworkInterface{iface},
+			FirewallRules: fwRules,
+			BandwidthLimits: &pb.BandwidthLimit{
+				IngressRateMbps: int32(params.BandwidthLimit),
+				EgressRateMbps:  int32(params.BandwidthLimit),
+			},
+		},
+		ReplaceAll: true,
+	}
+
+	resp, err := client.ApplyNetworkConfig(agentAuthContext(ctx, node), req)
+	if err != nil {
+		w.logger.ErrorContext(ctx, "failed to apply network config",
+			"error", err,
+			"vm_id", vm.ID,
+		)
+		if w.metrics != nil {
+			w.metrics.RecordJobFailed()
+		}
+		return fmt.Errorf("failed to apply network config: %w", err)
+	}
+
+	if !resp.Success {
+		errMsg := "agent reported failure"
+		if resp.Error != nil {
+			errMsg = resp.Error.Message
+		}
+		if w.metrics != nil {
+			w.metrics.RecordJobFailed()
+		}
+		return fmt.Errorf("network config failed: %s", errMsg)
+	}
+
+	w.logger.InfoContext(ctx, "network config applied successfully",
+		"vm_id", vm.ID,
+		"anti_spoofing", params.AntiSpoofing,
+	)
+
+	if w.metrics != nil {
+		w.metrics.RecordJobProcessed("configure_network", time.Since(time.Now()))
+	}
+
+	return nil
+}
+
+// modelDirectionToProto converts model direction string to proto enum
+func modelDirectionToProto(d string) pb.FirewallDirection {
+	switch d {
+	case "inbound":
+		return pb.FirewallDirection_FIREWALL_DIRECTION_INBOUND
+	case "outbound":
+		return pb.FirewallDirection_FIREWALL_DIRECTION_OUTBOUND
+	default:
+		return pb.FirewallDirection_FIREWALL_DIRECTION_INBOUND
+	}
+}
+
+// modelActionToProto converts model action string to proto enum
+func modelActionToProto(a string) pb.FirewallAction {
+	switch a {
+	case "allow":
+		return pb.FirewallAction_FIREWALL_ACTION_ALLOW
+	case "deny":
+		return pb.FirewallAction_FIREWALL_ACTION_DENY
+	case "reject":
+		return pb.FirewallAction_FIREWALL_ACTION_REJECT
+	default:
+		return pb.FirewallAction_FIREWALL_ACTION_DENY
+	}
 }
 
 // TemplateSyncWorker handles OS template synchronization

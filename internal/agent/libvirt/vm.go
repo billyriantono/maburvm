@@ -43,6 +43,7 @@ type VMConfig struct {
 	Gateway       string // default gateway for the assigned IP
 	VLANID        int    // 802.1Q VLAN tag; 0 = untagged
 	BandwidthMbps int    // inbound/outbound rate cap in Mbps; 0 = unlimited
+	AntiSpoofing  bool   // enable anti-IP hijacking protection (nwfilter + iptables + ebtables)
 
 	// CloudInitISOPath, when set, is attached as a read-only "cidata" cdrom so
 	// cloud-init configures the guest (static IP, hostname, SSH key) on boot.
@@ -154,14 +155,17 @@ func generateDomainXML(config VMConfig) (string, error) {
 	}
 
 	// Add libvirt nwfilter for anti-spoofing (Layer 1 protection)
+	// Only applied when AntiSpoofing is enabled.
 	// This applies clean-traffic filter that prevents IP/MAC spoofing at the hypervisor level
 	// The filter uses $IP, $IP6, and $MAC variables that libvirt substitutes at runtime
-	iface.FilterRef = &libvirtxml.DomainInterfaceFilterRef{
-		Filter: "clean-traffic",
-		Parameters: []libvirtxml.DomainInterfaceFilterParam{
-			{Name: "IP", Value: config.IPAddress},
-			{Name: "MAC", Value: config.MACAddress},
-		},
+	if config.AntiSpoofing {
+		iface.FilterRef = &libvirtxml.DomainInterfaceFilterRef{
+			Filter: "clean-traffic",
+			Parameters: []libvirtxml.DomainInterfaceFilterParam{
+				{Name: "IP", Value: config.IPAddress},
+				{Name: "MAC", Value: config.MACAddress},
+			},
+		}
 	}
 
 	// Primary disk (the cloned template image).

@@ -471,6 +471,7 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 			vmCfg.IPAddress = iface.IpAddress
 			vmCfg.Netmask = int(iface.Netmask)
 			vmCfg.Gateway = iface.Gateway
+			vmCfg.AntiSpoofing = iface.AntiSpoofing
 		}
 		if cfg.NetworkConfig.BandwidthLimits != nil {
 			vmCfg.BandwidthMbps = int(cfg.NetworkConfig.BandwidthLimits.EgressRateMbps)
@@ -1308,6 +1309,30 @@ func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *pb.Netwo
 	// Apply the full network configuration
 	if err := s.networkMgr.SetupVMNetwork(req.VmId, internalIP, vlanID, bandwidthMbps, fwRules); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to apply network config: %v", err)
+	}
+
+	// Apply anti-spoofing rules if any interface has it enabled
+	for _, iface := range req.Config.Interfaces {
+		if iface.AntiSpoofing {
+			mac := iface.MacAddress
+			if mac == "" {
+				// Generate stable MAC from VM ID (same algorithm as createVM)
+				mac = generateMAC(req.VmId)
+			}
+			// Find the vnet interface for this VM
+			vnetIface, vnetErr := libvirt.GetVMInterfaceName(req.VmId)
+			if vnetErr != nil {
+				log.Printf("[NodeAgent] WARNING: could not determine vnet interface for VM %s: %v (anti-spoof iptables/ebtables skipped)", req.VmId, vnetErr)
+			} else {
+				if err := s.networkMgr.EnableAntiSpoofing(req.VmId, iface.IpAddress, "", mac, vnetIface); err != nil {
+					log.Printf("[NodeAgent] WARNING: failed to apply anti-spoof rules for VM %s: %v", req.VmId, err)
+				} else {
+					log.Printf("[NodeAgent] Anti-spoof rules applied for VM %s (IP: %s, MAC: %s, Interface: %s)",
+						req.VmId, iface.IpAddress, mac, vnetIface)
+				}
+			}
+			break // only apply for primary interface
+		}
 	}
 
 	log.Printf("[NodeAgent] Network config applied to VM %s (IP: %s, bandwidth: %d Mbps, rules: %d)",

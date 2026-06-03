@@ -164,6 +164,7 @@ func (c *Client) initRiver() error {
 		VMRepo:       vmRepo,
 		NodeRepo:     nodeRepo,
 		TemplateRepo: templateRepo,
+		NetworkRepo:  repository.NewNetworkRepository(c.gormDB),
 		AgentClient:  c.agentClient,
 		Metrics:      c.metrics,
 	})
