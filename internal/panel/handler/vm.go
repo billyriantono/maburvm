@@ -224,6 +224,11 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 				"error":   "Conflict",
 				"message": "The selected IP pool has no free addresses left.",
 			})
+		case errors.Is(err, service.ErrNoUsablePool):
+			return c.JSON(http.StatusConflict, map[string]interface{}{
+				"error":   "Conflict",
+				"message": err.Error(),
+			})
 		case errors.Is(err, service.ErrQuotaExceeded):
 			return c.JSON(http.StatusForbidden, map[string]interface{}{
 				"error":   "Quota Exceeded",

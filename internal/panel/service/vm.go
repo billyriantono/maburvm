@@ -41,6 +41,9 @@ var (
 	// ErrTemplateNotInstallable is returned when a template has no real base image
 	// to provision from (e.g. the "/imported" placeholder created for imported VMs).
 	ErrTemplateNotInstallable = errors.New("OS template has no installable image (it was created for imported VMs); choose or add a real template")
+	// ErrNoUsablePool is returned when an auto-assigned VM can't get a reachable
+	// public IP because no node-eligible pool has both a bridge and a gateway.
+	ErrNoUsablePool = errors.New("no usable IP pool (with a bridge and gateway) is available on the selected node; an administrator must configure one before VMs can be ordered")
 	// ErrVMLifecycleFailed is returned when a lifecycle operation fails
 	ErrVMLifecycleFailed = errors.New("VM lifecycle operation failed")
 	// ErrVMNodeInactive is returned when trying to execute an agent-backed VM
@@ -305,11 +308,18 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		if err != nil {
 			return nil, fmt.Errorf("failed to list IP pools for node: %w", err)
 		}
+		// Only auto-assign from pools that can actually produce a REACHABLE VM: a
+		// pool needs a bridge (which host NIC the guest attaches to) and a gateway
+		// (its default route). Allocating from a bridge-less pool would give the VM
+		// an address but leave it on the node's NAT bridge (virbr0) — unreachable
+		// from the internet — which is exactly the silent-failure we're avoiding.
 		for i := range pools {
-			poolCandidates = append(poolCandidates, pools[i].ID)
+			if pools[i].Bridge != "" && pools[i].Gateway != "" {
+				poolCandidates = append(poolCandidates, pools[i].ID)
+			}
 		}
 		if len(poolCandidates) == 0 {
-			return nil, fmt.Errorf("no IP pool is available on the selected node for automatic assignment")
+			return nil, ErrNoUsablePool
 		}
 	}
 
@@ -418,6 +428,18 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 			return nil, fmt.Errorf("managed network %q has no bridge (not provisioned on a node yet)", mn.Name)
 		}
 		params["bridge"] = mn.Bridge
+	}
+
+	// Diagnose a likely misconfiguration: a VM that was assigned a public IP but
+	// has no bridge (its pool didn't set one, and it's not on a managed network)
+	// will land on the node's default NAT bridge and be unreachable. Surface it in
+	// the logs so an operator can fix the pool rather than chase a "VM has an IP
+	// but isn't reachable" ticket.
+	if allocatedIP != nil && req.ManagedNetworkID == "" {
+		if _, ok := params["bridge"]; !ok {
+			s.logger.WarnContext(ctx, "VM assigned a public IP but its pool has no bridge; it will use the node's default (NAT) bridge and may be unreachable",
+				"vm_id", vm.ID, "ip", allocatedIP.Address, "pool_id", allocatedIP.PoolID)
+		}
 	}
 
 	paramsJSON, _ := json.Marshal(params)
