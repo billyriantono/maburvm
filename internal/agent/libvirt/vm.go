@@ -272,6 +272,27 @@ func generateDomainXML(config VMConfig) (string, error) {
 		},
 	}
 
+	// Cloud-init NoCloud reliability: advertise "ds=nocloud" via the SMBIOS system
+	// serial in addition to attaching the cidata seed. On Debian/Ubuntu cloud
+	// images the cidata volume ALONE is not enough — cloud-init's ds-identify runs
+	// in an early boot generator and only enables cloud-init when it sees a
+	// datasource hint; the SMBIOS serial is that hint (this is what VirtFusion and
+	// `virt-install --cloud-init` do). Without it cloud-init never runs, so the
+	// guest never applies its static IP/hostname and falls back to DHCP. Verified
+	// live: seed present + correct, but no SMBIOS hint → cloud-init did not run.
+	if config.CloudInitISOPath != "" {
+		domain.OS.SMBios = &libvirtxml.DomainSMBios{Mode: "sysinfo"}
+		domain.SysInfo = []libvirtxml.DomainSysInfo{{
+			SMBIOS: &libvirtxml.DomainSysInfoSMBIOS{
+				System: &libvirtxml.DomainSysInfoSystem{
+					Entry: []libvirtxml.DomainSysInfoEntry{
+						{Name: "serial", Value: "ds=nocloud"},
+					},
+				},
+			},
+		}}
+	}
+
 	xmlBytes, err := xml.MarshalIndent(domain, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal domain XML: %w", err)
