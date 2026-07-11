@@ -35,7 +35,7 @@ import { useIPPools } from "@/lib/hooks/use-ipam"
 import { useNetworks } from "@/lib/hooks/use-networks"
 import { usePlans } from "@/lib/hooks/use-plans"
 import { useRecipes } from "@/lib/hooks/use-recipes"
-import { useCreateVM } from "@/lib/hooks/use-vms"
+import { useCreateVM, useVM } from "@/lib/hooks/use-vms"
 import { OSIcon } from "@/components/os-icon"
 
 // Validation schemas for each step
@@ -125,9 +125,19 @@ export default function NewVMPage() {
   const { data: recipesData } = useRecipes()
   const recipes = useMemo(() => recipesData || [], [recipesData])
   const [selectedRecipeId, setSelectedRecipeId] = useState("")
-  // After create, if the server generated a root password we show it ONCE here
-  // before navigating (it's never retrievable again).
-  const [newCredential, setNewCredential] = useState<{ id: string; password: string } | null>(null)
+  // After create we switch the page to an inline provisioning view: it shows the
+  // one-time root password (if the server generated one — never retrievable
+  // later) and polls the new VM's status until it's running.
+  const [provisioning, setProvisioning] = useState<{ id: string; password?: string } | null>(null)
+  const [pwCopied, setPwCopied] = useState(false)
+  const provisioningVM = useVM(provisioning?.id ?? "", {
+    enabled: !!provisioning,
+    // Poll every 3s while provisioning; stop once the VM is running/stopped.
+    refetchInterval: (query) => {
+      const s = query.state.data?.status
+      return s === "running" || s === "stopped" || s === "error" ? false : 3000
+    },
+  } as Parameters<typeof useVM>[1])
 
   const {
     register,
@@ -248,13 +258,9 @@ export default function NewVMPage() {
         cpu_model: data.cpuModel || undefined,
         user_data: data.userData || undefined,
       })
-      // If the server generated a root password, show it once before leaving —
-      // it can't be retrieved later. Otherwise go straight to the VM.
-      if (result.root_password) {
-        setNewCredential({ id: result.id, password: result.root_password })
-      } else {
-        router.push(`/vms/${result.id}`)
-      }
+      // Switch to the inline provisioning view (progress + one-time password)
+      // instead of jumping straight to the VM detail page.
+      setProvisioning({ id: result.id, password: result.root_password })
     } catch (error) {
       // Prefer the backend's message (e.g. "IP pool not assigned to this node")
       // over the generic axios "status code 4xx".
@@ -280,45 +286,105 @@ export default function NewVMPage() {
     return pools.find(p => p.id === watchedValues.ipPoolId)
   }
 
+  // Inline provisioning view — shown after Create instead of jumping straight to
+  // the VM detail page. Displays live progress + the one-time root password.
+  if (provisioning) {
+    const status = provisioningVM.data?.status ?? "creating"
+    const isRunning = status === "running"
+    const failed = status === "error"
+    const steps: { key: string; label: string; done: boolean; active: boolean }[] = [
+      { key: "submitted", label: "Request submitted", done: true, active: false },
+      {
+        key: "provisioning",
+        label: "Provisioning disk & installing OS",
+        done: isRunning || status === "stopped",
+        active: !isRunning && !failed && status !== "stopped",
+      },
+      { key: "running", label: "Running", done: isRunning, active: false },
+    ]
+    return (
+      <div className="max-w-2xl mx-auto">
+        <div className="mb-8">
+          <h1 className="text-3xl font-black uppercase tracking-tight text-black mb-2">
+            {failed ? "Provisioning failed" : isRunning ? "Your VM is ready" : "Creating your VM…"}
+          </h1>
+          <p className="text-gray-500 font-medium uppercase tracking-wider text-sm">
+            {provisioningVM.data?.hostname || "new virtual machine"}
+          </p>
+        </div>
+
+        {/* Progress steps */}
+        <div className="border-4 border-black bg-white p-6 shadow-[8px_8px_0_0_#000] mb-6">
+          <ul className="space-y-4">
+            {steps.map((s) => (
+              <li key={s.key} className="flex items-center gap-3">
+                <span
+                  className={`flex h-6 w-6 shrink-0 items-center justify-center border-2 border-black text-xs font-black ${
+                    s.done ? "bg-green-400" : s.active ? "bg-yellow-300" : "bg-gray-100"
+                  }`}
+                >
+                  {s.done ? "✓" : s.active ? "…" : "○"}
+                </span>
+                <span className={`font-bold ${s.done ? "text-black" : s.active ? "text-black" : "text-gray-400"}`}>
+                  {s.label}
+                  {s.active && <span className="ml-2 animate-pulse text-gray-500">in progress</span>}
+                </span>
+              </li>
+            ))}
+          </ul>
+          {failed && (
+            <p className="mt-4 border-2 border-red-500 bg-red-50 p-3 text-sm font-medium text-red-700">
+              Provisioning failed. Check the VM’s events on its detail page.
+            </p>
+          )}
+        </div>
+
+        {/* One-time root password */}
+        {provisioning.password && (
+          <div className="border-4 border-black bg-yellow-50 p-6 shadow-[8px_8px_0_0_#000] mb-6">
+            <h2 className="mb-1 text-lg font-black uppercase tracking-tight text-black">
+              Root password
+            </h2>
+            <p className="mb-3 text-sm font-medium text-gray-600">
+              Shown <strong>once</strong> — save it now. Log in as <code className="font-mono">root</code> with this password.
+            </p>
+            <div className="flex items-center gap-2 border-2 border-black bg-white p-3">
+              <code className="flex-1 break-all font-mono text-sm text-black">{provisioning.password}</code>
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard?.writeText(provisioning.password || "")
+                  setPwCopied(true)
+                }}
+                className="border-2 border-black bg-yellow-300 px-3 py-1 text-xs font-black uppercase hover:bg-yellow-400"
+              >
+                {pwCopied ? "Copied ✓" : "Copy"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="flex gap-3">
+          <button
+            type="button"
+            onClick={() => router.push(`/vms/${provisioning.id}`)}
+            className="flex-1 border-2 border-black bg-black px-4 py-3 text-sm font-black uppercase text-white hover:bg-gray-800"
+          >
+            {isRunning ? "Open VM →" : "Go to VM (still provisioning)"}
+          </button>
+        </div>
+        {!isRunning && !failed && (
+          <p className="mt-3 text-center text-xs font-medium uppercase tracking-wider text-gray-400">
+            This can take a minute or two — the page updates automatically.
+          </p>
+        )}
+      </div>
+    )
+  }
+
   // Get OS icon based on template name
   return (
     <div className="max-w-4xl mx-auto">
-      {/* One-time root password reveal (shown only when the server generated one). */}
-      {newCredential && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-md border-4 border-black bg-white p-6 shadow-[8px_8px_0_0_#000]">
-            <h2 className="mb-2 text-xl font-black uppercase tracking-tight text-black">
-              Save your root password
-            </h2>
-            <p className="mb-4 text-sm font-medium text-gray-600">
-              This is shown <strong>once</strong> and can’t be retrieved later. Copy it now — log in as{" "}
-              <code className="font-mono">root</code> with this password.
-            </p>
-            <div className="mb-4 flex items-center gap-2 border-2 border-black bg-gray-50 p-3">
-              <code className="flex-1 break-all font-mono text-sm text-black">{newCredential.password}</code>
-              <button
-                type="button"
-                onClick={() => navigator.clipboard?.writeText(newCredential.password)}
-                className="border-2 border-black bg-yellow-300 px-3 py-1 text-xs font-black uppercase hover:bg-yellow-400"
-              >
-                Copy
-              </button>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                const id = newCredential.id
-                setNewCredential(null)
-                router.push(`/vms/${id}`)
-              }}
-              className="w-full border-2 border-black bg-black px-4 py-2 text-sm font-black uppercase text-white hover:bg-gray-800"
-            >
-              I saved it — continue
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Header */}
       <div className="mb-8">
         <h1 className="text-3xl font-black uppercase tracking-tight text-black mb-2">
