@@ -300,7 +300,9 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 	// Generate VNC credentials
 	vncConfig := s.generateVNCCredentials()
 
-	// Create VM record and any requested IP/network allocation atomically.
+	// Create VM record and any requested IP/network allocation atomically. VNC
+	// port 0 means auto-assign — store NULL (not 0, which fails the DB range
+	// check); the real port is filled in once the domain starts.
 	vm := &models.VM{
 		UserID:       req.UserID,
 		NodeID:       nodeID,
@@ -308,8 +310,10 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		OSTemplateID: req.OSTemplateID,
 		Resources:    req.Resources,
 		Status:       models.VMStatusCreating,
-		VNCPort:      &vncConfig.Port,
 		VNCPassword:  vncConfig.Password,
+	}
+	if vncConfig.Port > 0 {
+		vm.VNCPort = &vncConfig.Port
 	}
 
 	// Decide which pool(s) to allocate a public IP from. An explicit IPPoolID
@@ -652,13 +656,15 @@ func (s *VMService) selectNodeRoundRobin(nodes []models.Node) string {
 	return nodes[s.lastNodeIndex].ID
 }
 
-// generateVNCCredentials generates VNC port and password
+// generateVNCCredentials generates VNC port and password. Port 0 means
+// "auto-assign": the agent lets libvirt pick a free VNC port at start time. The
+// previous behaviour (a random 5900-5999 port with no collision check) failed to
+// start VMs on nodes that already host other VMs — libvirt's "Failed to reserve
+// port" — which is every real KVM host. The actual port is read back from the
+// agent (GetVMStatus) once the domain is running.
 func (s *VMService) generateVNCCredentials() *VNCConfig {
-	// Generate random port between 5900 and 5999
-	port := 5900 + int(randInt(100))
-
 	return &VNCConfig{
-		Port:     port,
+		Port:     0, // 0 → agent auto-assigns a free port (autoport)
 		Password: generateVNCPassword(),
 	}
 }
@@ -2025,8 +2031,25 @@ func (s *VMService) GetVNCConfig(ctx context.Context, vmID string, includePasswo
 		return nil, fmt.Errorf("failed to get VM: %w", err)
 	}
 
+	// The VNC port is auto-assigned by libvirt at start time (see
+	// generateVNCCredentials), so the stored value may be NULL (not started yet)
+	// or stale. When the VM is running, read the real port from the agent and
+	// persist it — otherwise the console would connect to the wrong port or, for a
+	// freshly-created VM, have no port at all.
+	if vm.Status == models.VMStatusRunning {
+		if st, serr := s.getVMAgentStatus(ctx, vmID, vm.NodeID); serr == nil && st.GetVncPort() > 0 {
+			livePort := int(st.GetVncPort())
+			if vm.VNCPort == nil || *vm.VNCPort != livePort {
+				if uerr := s.vmRepo.UpdateVNCPort(ctx, vmID, livePort); uerr != nil {
+					s.logger.WarnContext(ctx, "failed to persist live VNC port", "vm_id", vmID, "error", uerr)
+				}
+			}
+			vm.VNCPort = &livePort
+		}
+	}
+
 	if vm.VNCPort == nil {
-		return nil, fmt.Errorf("VNC is not configured for this VM")
+		return nil, fmt.Errorf("VNC is not available yet (the VM must be running to assign a port)")
 	}
 
 	// Generate VNC password if empty
@@ -2242,6 +2265,14 @@ func (s *VMService) ReconcileNodeVMStatuses(ctx context.Context, nodeID string) 
 			continue
 		}
 		s.syncVMStatus(ctx, &vms[i], resp.GetState())
+		// Keep the stored VNC port in sync with libvirt's auto-assigned one so the
+		// console connects to the right port (and the UI shows it) without waiting
+		// for someone to open the console.
+		if lp := int(resp.GetVncPort()); lp > 0 && (vms[i].VNCPort == nil || *vms[i].VNCPort != lp) {
+			if uerr := s.vmRepo.UpdateVNCPort(ctx, vms[i].ID, lp); uerr != nil {
+				s.logger.WarnContext(ctx, "status reconcile: persist VNC port failed", "vm_id", vms[i].ID, "error", uerr)
+			}
+		}
 	}
 }
 
