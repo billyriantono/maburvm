@@ -94,7 +94,7 @@ func (s *SnapshotService) CreateSnapshot(ctx context.Context, req *CreateSnapsho
 
 	// Verify user owns the VM (or is admin)
 	if vm.UserID != req.UserID {
-		return nil, fmt.Errorf("unauthorized: VM does not belong to user")
+		return nil, ErrVMNotFound
 	}
 
 	// Check if snapshot name already exists for this VM
@@ -226,7 +226,7 @@ func (s *SnapshotService) ListSnapshots(ctx context.Context, req *ListSnapshotsR
 			return nil, fmt.Errorf("failed to get VM: %w", err)
 		}
 		if vm.UserID != req.UserID {
-			return nil, fmt.Errorf("unauthorized: VM does not belong to user")
+			return nil, ErrVMNotFound
 		}
 
 		snapshots, err = s.snapshotRepo.ListByVMID(ctx, req.VMID, limit, req.Offset)
@@ -282,7 +282,7 @@ func (s *SnapshotService) GetSnapshot(ctx context.Context, snapshotID string, us
 		return nil, fmt.Errorf("failed to get VM: %w", err)
 	}
 	if vm.UserID != userID {
-		return nil, fmt.Errorf("unauthorized: snapshot does not belong to user")
+		return nil, ErrSnapshotNotFound
 	}
 
 	return snapshot, nil
@@ -321,7 +321,7 @@ func (s *SnapshotService) RestoreSnapshot(ctx context.Context, req *RestoreSnaps
 
 	// Verify snapshot belongs to the specified VM
 	if snapshot.VMID != req.VMID {
-		return nil, fmt.Errorf("snapshot does not belong to the specified VM")
+		return nil, ErrSnapshotNotFound
 	}
 
 	// Verify VM exists and user has access
@@ -334,7 +334,7 @@ func (s *SnapshotService) RestoreSnapshot(ctx context.Context, req *RestoreSnaps
 	}
 
 	if vm.UserID != req.UserID {
-		return nil, fmt.Errorf("unauthorized: VM does not belong to user")
+		return nil, ErrVMNotFound
 	}
 
 	// Verify snapshot is completed
@@ -410,7 +410,7 @@ func (s *SnapshotService) DeleteSnapshot(ctx context.Context, req *DeleteSnapsho
 
 	// Verify snapshot belongs to the specified VM
 	if snapshot.VMID != req.VMID {
-		return fmt.Errorf("snapshot does not belong to the specified VM")
+		return ErrSnapshotNotFound
 	}
 
 	// Verify VM exists and user has access
@@ -423,7 +423,7 @@ func (s *SnapshotService) DeleteSnapshot(ctx context.Context, req *DeleteSnapsho
 	}
 
 	if vm.UserID != req.UserID {
-		return fmt.Errorf("unauthorized: VM does not belong to user")
+		return ErrVMNotFound
 	}
 
 	// Enqueue snapshot delete job
