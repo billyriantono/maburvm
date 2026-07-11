@@ -15,6 +15,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -140,7 +141,23 @@ func (s *Server) setupTLS() (*tls.Config, error) {
 		log.Printf("Failed to load existing certs, generating self-signed: %v", err)
 	}
 
-	// Generate self-signed certificate for development
+	// Zero-config persistence: when no explicit cert files are configured, keep a
+	// self-signed cert on disk and REUSE it across restarts. Regenerating a fresh
+	// cert every start changes the agent's fingerprint, which breaks the panel's
+	// TLS pin (trust-on-first-use) on every agent restart/upgrade and forces an
+	// operator to clear the pin. A stable on-disk cert makes the node identity
+	// durable with no configuration required.
+	certPath, keyPath := defaultAgentCertPaths()
+	if cert, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
+		log.Printf("Loaded persisted self-signed agent certificate from %s", certPath)
+		return &tls.Config{
+			Certificates:       []tls.Certificate{cert},
+			InsecureSkipVerify: true,
+			MinVersion:         tls.VersionTLS12,
+		}, nil
+	}
+
+	// Generate a self-signed certificate and persist it for next time.
 	return s.generateSelfSignedCert()
 }
 
@@ -185,6 +202,21 @@ func (s *Server) generateSelfSignedCert() (*tls.Config, error) {
 		return nil, fmt.Errorf("failed to load generated key pair: %w", err)
 	}
 
+	// Persist the cert+key so the next restart reuses the same identity (stable
+	// fingerprint → the panel's TLS pin survives agent restarts/upgrades).
+	// Best-effort: if the data dir isn't writable we still run with the in-memory
+	// cert (the pin just re-pins on next connect, as before).
+	certPath, keyPath := defaultAgentCertPaths()
+	if err := os.MkdirAll(filepath.Dir(certPath), 0o700); err == nil {
+		if werr := os.WriteFile(certPath, certPEM, 0o600); werr != nil {
+			log.Printf("warning: could not persist agent certificate: %v", werr)
+		} else if werr := os.WriteFile(keyPath, keyPEM, 0o600); werr != nil {
+			log.Printf("warning: could not persist agent key: %v", werr)
+		} else {
+			log.Printf("Persisted self-signed agent certificate to %s", certPath)
+		}
+	}
+
 	log.Println("Self-signed certificate generated successfully")
 
 	return &tls.Config{
@@ -192,6 +224,17 @@ func (s *Server) generateSelfSignedCert() (*tls.Config, error) {
 		InsecureSkipVerify: true, // For development only
 		MinVersion:         tls.VersionTLS12,
 	}, nil
+}
+
+// defaultAgentCertPaths returns where the agent persists its self-signed TLS
+// cert+key when no explicit files are configured. Honors MABURVM_DATA_DIR (the
+// same knob the secret store uses) and falls back to /var/lib/maburvm.
+func defaultAgentCertPaths() (certPath, keyPath string) {
+	dir := os.Getenv("MABURVM_DATA_DIR")
+	if dir == "" {
+		dir = "/var/lib/maburvm"
+	}
+	return filepath.Join(dir, "agent-cert.pem"), filepath.Join(dir, "agent-key.pem")
 }
 
 // setupInterceptor creates the gRPC interceptor chain
