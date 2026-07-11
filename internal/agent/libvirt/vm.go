@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -347,6 +348,14 @@ func CreateVM(config VMConfig) (string, error) {
 		domainUUID, err = dom.GetUUIDString()
 		if err != nil {
 			return fmt.Errorf("failed to get domain UUID: %w", err)
+		}
+
+		// Mark the domain to auto-start on host boot, so a node reboot brings all
+		// its VMs back up automatically (libvirt writes a symlink under
+		// /etc/libvirt/qemu/autostart/). Best-effort: a failure here doesn't fail
+		// provisioning.
+		if serr := dom.SetAutostart(true); serr != nil {
+			log.Printf("warning: failed to enable autostart for domain %s: %v", config.Name, serr)
 		}
 
 		return nil

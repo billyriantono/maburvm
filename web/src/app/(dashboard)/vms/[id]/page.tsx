@@ -348,7 +348,14 @@ export default function VMDetailPage() {
   const [cloneNodeId, setCloneNodeId] = useState("")
 
   // Data hooks
-  const { data: vm, isLoading: vmLoading, error: vmError, refetch: refetchVM } = useVM(vmId)
+  const { data: vm, isLoading: vmLoading, error: vmError, refetch: refetchVM } = useVM(vmId, {
+    // Auto-poll while the VM is in a transitional state (e.g. provisioning) so the
+    // page flips to running on its own instead of showing a stale "stopped".
+    refetchInterval: (query) => {
+      const s = (query.state.data as { status?: string } | undefined)?.status
+      return s && ["creating", "deleting"].includes(s) ? 3000 : false
+    },
+  } as Parameters<typeof useVM>[1])
   const { data: metrics } = useVMMetrics(vmId)
   const { data: vmHistory } = useVMMetricsHistory(vmId, 60)
   const cpuTrend = (vmHistory ?? []).map((s) => s.cpu_usage)
@@ -695,7 +702,14 @@ export default function VMDetailPage() {
       <div className="bg-white border-4 border-black shadow-neo mb-6">
         <div className="p-3 bg-black text-white font-black uppercase text-xs tracking-wider">Actions</div>
         <div className="p-4 flex flex-wrap gap-3">
-            {vm.status === "running" ? (
+            {(["creating", "deleting"] as string[]).includes(vm.status) ? (
+              // Transitional: the VM is mid-operation. Don't offer Start/Stop (which
+              // would be ambiguous or conflict) — show the in-progress state instead.
+              <Button variant="secondary" size="sm" disabled>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                {vm.status === "creating" ? "Provisioning…" : "Deleting…"}
+              </Button>
+            ) : vm.status === "running" ? (
               <>
                 <Button variant="secondary" size="sm" onClick={() => handleAction("stop")} disabled={actionLoading !== null}>
                   {actionLoading === "stop" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Square className="w-4 h-4" />}

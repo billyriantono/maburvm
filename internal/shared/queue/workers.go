@@ -635,7 +635,28 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 	var newStatus models.VMStatus
 	switch job.Args.Operation {
 	case VMOpCreate:
-		newStatus = models.VMStatusStopped
+		// The agent defines the domain but does NOT boot it. Auto-start so a
+		// freshly provisioned VM comes up running (as VirtFusion/Virtualizor do)
+		// instead of sitting 'stopped' and needing a manual Start — which also
+		// removes the ambiguous "provisioning but shows stopped + Start enabled"
+		// window. If the boot itself fails, leave it stopped so it can be started
+		// manually, and log why.
+		startResp, startErr := client.ExecuteVMCommand(agentAuthContext(ctx, node), &pb.VMCommandRequest{
+			VmId:           vm.ID,
+			Command:        pb.VMCommandType_VM_COMMAND_TYPE_START,
+			TimeoutSeconds: 120,
+		})
+		if startErr != nil || (startResp != nil && !startResp.Success) {
+			detail := startErr
+			if detail == nil && startResp != nil {
+				detail = fmt.Errorf("%s", startResp.GetMessage())
+			}
+			w.logger.WarnContext(ctx, "VM provisioned but auto-start failed; leaving stopped",
+				"vm_id", vm.ID, "error", detail)
+			newStatus = models.VMStatusStopped
+		} else {
+			newStatus = models.VMStatusRunning
+		}
 	case VMOpStart:
 		newStatus = models.VMStatusRunning
 	case VMOpStop:
