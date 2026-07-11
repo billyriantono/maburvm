@@ -4,7 +4,6 @@ package service
 import (
 	"context"
 	"crypto/rand"
-	"crypto/tls"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -21,11 +20,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"gorm.io/gorm"
 
 	vmimport "github.com/maburvm/panel/internal/agent/import"
+	panelclient "github.com/maburvm/panel/internal/panel/client"
 	"github.com/maburvm/panel/internal/panel/repository"
 	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 	"github.com/maburvm/panel/internal/shared/models"
@@ -774,7 +773,7 @@ func (s *ImportService) ListImportableVMs(ctx context.Context, nodeID string, cu
 	}
 
 	// Connect to agent via gRPC
-	client, err := s.getAgentClient(ctx, node.IPAddress)
+	client, err := s.getAgentClient(ctx, node.ID, node.IPAddress)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to agent: %w", err)
 	}
@@ -863,7 +862,7 @@ func (s *ImportService) ListImportableVMs(ctx context.Context, nodeID string, cu
 }
 
 // getAgentClient creates a gRPC client to the agent
-func (s *ImportService) getAgentClient(ctx context.Context, nodeIP string) (pb.NodeAgentClient, error) {
+func (s *ImportService) getAgentClient(ctx context.Context, nodeID, nodeIP string) (pb.NodeAgentClient, error) {
 	address := fmt.Sprintf("%s:50051", nodeIP)
 
 	s.connMutex.RLock()
@@ -877,7 +876,7 @@ func (s *ImportService) getAgentClient(ctx context.Context, nodeIP string) (pb.N
 	s.connMutex.Lock()
 	defer s.connMutex.Unlock()
 
-	tlsCreds := credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})
+	tlsCreds := panelclient.NodeTLSCredentials(nodeID, nodeIP)
 	connCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -916,7 +915,7 @@ func (s *ImportService) SyncNodeVMs(ctx context.Context, nodeID string) ([]SyncR
 	}
 
 	// Connect to agent
-	client, err := s.getAgentClient(ctx, node.IPAddress)
+	client, err := s.getAgentClient(ctx, node.ID, node.IPAddress)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to agent: %w", err)
 	}

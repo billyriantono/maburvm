@@ -4,7 +4,6 @@ package service
 import (
 	"context"
 	"crypto/rand"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,10 +18,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"gorm.io/gorm"
 
+	panelclient "github.com/maburvm/panel/internal/panel/client"
 	"github.com/maburvm/panel/internal/panel/repository"
 	"github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 
@@ -1465,7 +1464,7 @@ func (s *VMService) getAgentClient(ctx context.Context, nodeID string) (pb.NodeA
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	tlsCreds := credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})
+	tlsCreds := panelclient.NodeTLSCredentials(node.ID, node.IPAddress)
 	conn, err = grpc.DialContext(ctx, address,
 		grpc.WithTransportCredentials(tlsCreds),
 		grpc.WithBlock(),

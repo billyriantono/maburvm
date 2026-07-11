@@ -219,6 +219,7 @@ type AgentClient struct {
 	connections map[string]*PooledConnection // nodeID -> connection
 	mu          sync.RWMutex
 	tlsConfig   *tls.Config
+	pinning     bool // verify the agent's self-signed cert by pinned fingerprint
 }
 
 // NewAgentClient creates a new agent client
@@ -233,6 +234,10 @@ func NewAgentClient(config *ClientConfig) (*AgentClient, error) {
 	}
 
 	if config.InsecureSkipVerify {
+		// No CA configured: encrypt and pin the agent's self-signed certificate
+		// per node (trust on first use, then verify) instead of blindly trusting
+		// any certificate. The per-connection tls.Config is built in dial().
+		client.pinning = true
 		client.tlsConfig = &tls.Config{
 			InsecureSkipVerify: true,
 			MinVersion:         tls.VersionTLS12,
@@ -351,7 +356,14 @@ func (c *AgentClient) dial(ctx context.Context, node NodeInfo) (*PooledConnectio
 	}
 
 	if c.tlsConfig != nil && node.TLSEnabled {
-		creds := credentials.NewTLS(c.tlsConfig)
+		var creds credentials.TransportCredentials
+		if c.pinning {
+			// Per-node certificate pinning (no CA): verify the agent presents the
+			// same self-signed cert we recorded, defeating a MITM on this hop.
+			creds = NodeTLSCredentials(node.ID, hostOnly(node.Address))
+		} else {
+			creds = credentials.NewTLS(c.tlsConfig)
+		}
 		opts = append(opts, grpc.WithTransportCredentials(creds))
 	} else {
 		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))

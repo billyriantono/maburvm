@@ -20,6 +20,7 @@ import (
 	"github.com/riverqueue/river"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/maburvm/panel/internal/panel/client"
 	"github.com/maburvm/panel/internal/panel/handler"
 	panelMiddleware "github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/panel/repository"
@@ -44,6 +45,13 @@ type Server struct {
 // NewServer creates a new HTTP server instance
 func NewServer(db *gorm.DB, cfg *config.Config) *Server {
 	e := echo.New()
+
+	// Pin agent TLS certificates: the panel records each node agent's self-signed
+	// cert fingerprint on first connection and verifies it thereafter, so a
+	// man-in-the-middle on the panel↔node network is rejected. Backed by the nodes
+	// table; wired process-wide so every agent dial (pooled client + one-off
+	// service dials) uses it.
+	client.SetDefaultPinStore(newNodePinStore(repository.NewNodeRepository(db)))
 
 	// Middleware
 	e.Use(middleware.Logger())

@@ -114,6 +114,22 @@ func (r *NodeRepository) UpdateToken(ctx context.Context, id string, token strin
 	return r.db.WithContext(ctx).Model(&models.Node{}).Where("id = ?", id).Update("token", token).Error
 }
 
+// GetCertFingerprint returns the node's pinned TLS cert fingerprint ("" if unset).
+func (r *NodeRepository) GetCertFingerprint(ctx context.Context, id string) (string, error) {
+	var fp string
+	err := r.db.WithContext(ctx).Model(&models.Node{}).Where("id = ?", id).Pluck("cert_fingerprint", &fp).Error
+	return fp, err
+}
+
+// SetCertFingerprint records the node's pinned TLS cert fingerprint (trust on
+// first use). It only sets it when currently empty, so a concurrent first
+// connection can't clobber an already-pinned value.
+func (r *NodeRepository) SetCertFingerprint(ctx context.Context, id, fingerprint string) error {
+	return r.db.WithContext(ctx).Model(&models.Node{}).
+		Where("id = ? AND (cert_fingerprint = '' OR cert_fingerprint IS NULL)", id).
+		Update("cert_fingerprint", fingerprint).Error
+}
+
 // NameExists checks if a node name already exists
 func (r *NodeRepository) NameExists(ctx context.Context, name string) (bool, error) {
 	var count int64

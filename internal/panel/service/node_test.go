@@ -36,6 +36,7 @@ func (s *NodeServiceTestSuite) SetupSuite() {
 		ip_address TEXT NOT NULL,
 		status TEXT DEFAULT 'offline',
 		token TEXT UNIQUE NOT NULL,
+		cert_fingerprint TEXT NOT NULL DEFAULT '',
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		deleted_at DATETIME

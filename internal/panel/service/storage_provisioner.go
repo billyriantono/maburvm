@@ -2,13 +2,12 @@ package service
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 
+	"github.com/maburvm/panel/internal/panel/client"
 	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 	"github.com/maburvm/panel/internal/shared/models"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -34,7 +33,8 @@ func NewAgentVolumeProvisioner(agentPort int) VolumeProvisioner {
 
 func (p *agentVolumeProvisioner) dial(node *models.Node) (pb.NodeAgentClient, *grpc.ClientConn, error) {
 	addr := fmt.Sprintf("%s:%d", node.IPAddress, p.agentPort)
-	creds := credentials.NewTLS(&tls.Config{InsecureSkipVerify: true}) // node uses a self-signed cert
+	// Encrypt + pin the agent's self-signed cert (trust on first use, then verify).
+	creds := client.NodeTLSCredentials(node.ID, node.IPAddress)
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		return nil, nil, fmt.Errorf("dial agent at %s: %w", addr, err)

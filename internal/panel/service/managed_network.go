@@ -2,16 +2,15 @@ package service
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"gorm.io/gorm"
 
+	"github.com/maburvm/panel/internal/panel/client"
 	"github.com/maburvm/panel/internal/panel/repository"
 	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 	"github.com/maburvm/panel/internal/shared/models"
@@ -124,7 +123,7 @@ func (s *ManagedNetworkService) agentClient(ctx context.Context, nodeID string) 
 	dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	conn, err := grpc.DialContext(dialCtx, fmt.Sprintf("%s:50051", node.IPAddress),
-		grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})),
+		grpc.WithTransportCredentials(client.NodeTLSCredentials(node.ID, node.IPAddress)),
 		grpc.WithBlock(),
 	)
 	if err != nil {
