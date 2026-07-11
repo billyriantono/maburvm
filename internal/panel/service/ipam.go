@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 
 	"github.com/maburvm/panel/internal/panel/repository"
 	"github.com/maburvm/panel/internal/shared/models"
@@ -44,6 +45,19 @@ type CreateIPPoolRequest struct {
 	RangeStart  string   `json:"range_start,omitempty"`
 	RangeEnd    string   `json:"range_end,omitempty"`
 	Description string   `json:"description,omitempty"`
+}
+
+// UpdateIPPoolRequest carries editable metadata for an existing pool. Every
+// field is a pointer so an omitted field is left unchanged (PATCH semantics) and
+// a present field (including an empty string) overwrites the stored value.
+// CIDR, family and the address range are intentionally NOT editable here —
+// changing them would desync the pool's already-generated addresses.
+type UpdateIPPoolRequest struct {
+	Name        *string   `json:"name,omitempty"`
+	Gateway     *string   `json:"gateway,omitempty"`
+	Bridge      *string   `json:"bridge,omitempty"`
+	Description *string   `json:"description,omitempty"`
+	NodeIDs     *[]string `json:"node_ids,omitempty"`
 }
 
 type CreateIPAddressRequest struct {
@@ -98,6 +112,68 @@ func (s *IPAMService) CreatePool(ctx context.Context, req *CreateIPPoolRequest) 
 	}
 
 	return pool, nil
+}
+
+// UpdatePool applies metadata edits to an existing pool. The most consequential
+// editable field is Bridge: a VM re-reads its pool's bridge from here on every
+// start, so correcting a wrong/stale bridge lets a stuck VM (e.g. one defined
+// against a now-removed virbr0) boot on its next start.
+func (s *IPAMService) UpdatePool(ctx context.Context, id string, req *UpdateIPPoolRequest) (*models.IPPool, error) {
+	pool, err := s.GetPool(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if req.Name != nil {
+		name := strings.TrimSpace(*req.Name)
+		if name == "" {
+			return nil, fmt.Errorf("name cannot be empty")
+		}
+		pool.Name = name
+	}
+	if req.Gateway != nil {
+		gw := strings.TrimSpace(*req.Gateway)
+		if gw != "" && net.ParseIP(gw) == nil {
+			return nil, fmt.Errorf("invalid gateway address %q", gw)
+		}
+		pool.Gateway = gw
+	}
+	if req.Bridge != nil {
+		br := strings.TrimSpace(*req.Bridge)
+		if err := validateBridgeName(br); err != nil {
+			return nil, err
+		}
+		pool.Bridge = br
+	}
+	if req.Description != nil {
+		pool.Description = *req.Description
+	}
+	if err := s.repo.UpdatePool(ctx, pool); err != nil {
+		return nil, err
+	}
+	// Node reassignment lives in the junction table, so it's applied separately.
+	if req.NodeIDs != nil {
+		if err := s.repo.UpdatePoolNodes(ctx, pool.ID, *req.NodeIDs); err != nil {
+			return nil, err
+		}
+		pool.NodeIDs = *req.NodeIDs
+	}
+	return pool, nil
+}
+
+// validateBridgeName rejects names that can't be a Linux bridge interface (the
+// kernel IFNAMSIZ limit is 15 chars; no whitespace or path separators). An empty
+// name is allowed and means "fall back to the node/agent default bridge".
+func validateBridgeName(name string) error {
+	if name == "" {
+		return nil
+	}
+	if len(name) > 15 {
+		return fmt.Errorf("bridge name %q is too long (max 15 characters)", name)
+	}
+	if strings.ContainsAny(name, " \t/\\") {
+		return fmt.Errorf("bridge name %q contains invalid characters", name)
+	}
+	return nil
 }
 
 func (s *IPAMService) ListPools(ctx context.Context, limit, offset int) ([]models.IPPool, error) {

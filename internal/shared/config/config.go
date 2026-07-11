@@ -20,10 +20,11 @@ type DatabaseConfig struct {
 
 // Server settings
 type ServerConfig struct {
-	Port         int           `env:"SERVER_PORT" envDefault:"8080"`
-	Host         string        `env:"SERVER_HOST" envDefault:"0.0.0.0"`
-	ReadTimeout  time.Duration `env:"SERVER_READ_TIMEOUT" envDefault:"30s"`
-	WriteTimeout time.Duration `env:"SERVER_WRITE_TIMEOUT" envDefault:"30s"`
+	Port           int           `env:"SERVER_PORT" envDefault:"8080"`
+	Host           string        `env:"SERVER_HOST" envDefault:"0.0.0.0"`
+	ReadTimeout    time.Duration `env:"SERVER_READ_TIMEOUT" envDefault:"30s"`
+	WriteTimeout   time.Duration `env:"SERVER_WRITE_TIMEOUT" envDefault:"30s"`
+	AllowedOrigins string        `env:"ALLOWED_ORIGINS" envDefault:"http://localhost:3000"`
 }
 
 // JWT settings
@@ -76,6 +77,13 @@ type LibvirtConfig struct {
 	ConnectTimeout      time.Duration `env:"LIBVIRT_CONNECT_TIMEOUT" envDefault:"10s"`
 }
 
+// AIConfig holds AI service configuration
+type AIConfig struct {
+	APIKey  string `env:"AI_API_KEY"`
+	BaseURL string `env:"AI_BASE_URL"`
+	Model   string `env:"AI_MODEL" envDefault:"gpt-4"`
+}
+
 // Config holds all application configuration
 type Config struct {
 	Database DatabaseConfig
@@ -85,6 +93,7 @@ type Config struct {
 	S3       S3Config
 	VNC      VNCConfig
 	Libvirt  LibvirtConfig
+	AI       AIConfig
 }
 
 // Load reads configuration from environment variables.

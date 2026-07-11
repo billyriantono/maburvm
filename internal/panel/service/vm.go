@@ -44,6 +44,9 @@ var (
 	ErrTemplateNotInstallable = errors.New("OS template has no installable image (it was created for imported VMs); choose or add a real template")
 	// ErrVMLifecycleFailed is returned when a lifecycle operation fails
 	ErrVMLifecycleFailed = errors.New("VM lifecycle operation failed")
+	// ErrVMNodeInactive is returned when trying to execute an agent-backed VM
+	// operation while the owning node is offline or in maintenance.
+	ErrVMNodeInactive = errors.New("VM node is not active")
 	// ErrVMCannotBeModified is returned when trying to modify a VM that's not stopped
 	ErrVMCannotBeModified = errors.New("VM cannot be modified while running")
 )
@@ -128,15 +131,29 @@ func (s *VMService) SetNodeSelectionStrategy(strategy NodeSelectionStrategy) {
 	s.nodeSelectionStrategy = strategy
 }
 
-// GetNodeNames returns a map of node ID to node name
-func (s *VMService) GetNodeNames(ctx context.Context) (map[string]string, error) {
+// NodeSummary contains node fields needed to annotate VM list responses.
+type NodeSummary struct {
+	Name   string
+	Status models.NodeStatus
+}
+
+// GetNodeSummaries returns a map of node ID to lightweight node info.
+func (s *VMService) GetNodeSummaries(ctx context.Context) (map[string]NodeSummary, error) {
 	nodes, err := s.nodeRepo.List(ctx, 0, 0)
 	if err != nil {
 		return nil, err
 	}
-	result := make(map[string]string, len(nodes))
+	result := make(map[string]NodeSummary, len(nodes))
 	for _, n := range nodes {
-		result[n.ID] = n.Name
+		status := n.Status
+		// If the DB still says offline but the agent port is reachable, self-heal
+		// the status before annotating VM list rows. This prevents active nodes from
+		// being shown as inactive just because no node-health page was opened yet.
+		if status == models.NodeStatusOffline && s.isAgentReachable(ctx, n.IPAddress) {
+			status = models.NodeStatusActive
+			_ = s.nodeRepo.UpdateStatus(ctx, n.ID, models.NodeStatusActive)
+		}
+		result[n.ID] = NodeSummary{Name: n.Name, Status: status}
 	}
 	return result, nil
 }
@@ -1102,6 +1119,10 @@ func (s *VMService) ExecuteLifecycleCommand(ctx context.Context, req *LifecycleR
 		return nil, fmt.Errorf("invalid lifecycle command: %s", req.Command)
 	}
 
+	if err := s.ensureVMNodeActive(ctx, vm.NodeID); err != nil {
+		return nil, err
+	}
+
 	// For rebuild, validate template
 	if req.Command == LifecycleRebuild {
 		if req.TemplateID != "" {
@@ -1135,6 +1156,14 @@ func (s *VMService) ExecuteLifecycleCommand(ctx context.Context, req *LifecycleR
 	if req.Command == LifecycleForceStop {
 		params["force"] = true
 	}
+	// On start, carry the pool's current bridge so the agent can self-heal a
+	// stale NIC <source bridge> before booting (e.g. a VM defined against a
+	// since-removed virbr0). Empty => the agent leaves the domain XML untouched.
+	if req.Command == LifecycleStart {
+		if _, _, bridge, _, _ := s.primaryNetworkConfig(ctx, vm.ID); bridge != "" {
+			params["bridge"] = bridge
+		}
+	}
 	paramsJSON, _ := json.Marshal(params)
 
 	job := queue.VMOperationJob{
@@ -1164,6 +1193,40 @@ func (s *VMService) ExecuteLifecycleCommand(ctx context.Context, req *LifecycleR
 	}, nil
 }
 
+func (s *VMService) ensureVMNodeActive(ctx context.Context, nodeID string) error {
+	node, err := s.nodeRepo.GetByID(ctx, nodeID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNodeNotFound
+		}
+		return fmt.Errorf("failed to get VM node: %w", err)
+	}
+	if node.Status == models.NodeStatusActive {
+		return nil
+	}
+	if node.Status == models.NodeStatusMaintenance {
+		return fmt.Errorf("%w: %s", ErrVMNodeInactive, node.Status)
+	}
+	if node.Status == models.NodeStatusOffline && s.isAgentReachable(ctx, node.IPAddress) {
+		_ = s.nodeRepo.UpdateStatus(ctx, node.ID, models.NodeStatusActive)
+		return nil
+	}
+	return fmt.Errorf("%w: %s", ErrVMNodeInactive, node.Status)
+}
+
+func (s *VMService) isAgentReachable(ctx context.Context, ipAddress string) bool {
+	checkCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	dialer := net.Dialer{Timeout: 3 * time.Second}
+	conn, err := dialer.DialContext(checkCtx, "tcp", fmt.Sprintf("%s:%d", ipAddress, DefaultAgentPort))
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
 // executeSyncLifecycle executes a lifecycle command synchronously via gRPC
 func (s *VMService) executeSyncLifecycle(
 	ctx context.Context,
@@ -1182,6 +1245,21 @@ func (s *VMService) executeSyncLifecycle(
 		config, err = s.buildVMConfig(ctx, vm, req.TemplateID)
 		if err != nil {
 			return nil, err
+		}
+	} else if req.Command == LifecycleStart {
+		// Self-heal the NIC bridge: carry the pool's current bridge so the agent
+		// rewrites a stale <source bridge> before booting. Only the bridge is
+		// sent — starting an already-defined domain needs nothing else.
+		if _, _, bridge, _, _ := s.primaryNetworkConfig(ctx, vm.ID); bridge != "" {
+			config = &pb.VMConfig{
+				NetworkConfig: &pb.VMNetworkConfig{
+					Interfaces: []*pb.NetworkInterface{{
+						Name:       "eth0",
+						Type:       pb.NetworkInterfaceType_NETWORK_INTERFACE_TYPE_BRIDGE,
+						BridgeName: bridge,
+					}},
+				},
+			}
 		}
 	}
 
@@ -1859,12 +1937,19 @@ func (s *VMService) syncVNCPassword(ctx context.Context, nodeID, vmID, password 
 	})
 	mdCtx := metadata.NewOutgoingContext(ctx, md)
 
+	// Bound the RPC explicitly — the agent call goes on to run a libvirt/QEMU
+	// monitor command that has no deadline of its own, so without this an
+	// unresponsive node/QEMU can hang the console flow indefinitely instead of
+	// surfacing an error.
+	rpcCtx, cancel := context.WithTimeout(mdCtx, 10*time.Second)
+	defer cancel()
+
 	req := &pb.VNCProxyRequest{
 		VmId:          vmID,
 		ExpirySeconds: 60,
 	}
 
-	if _, err = client.StartVNCProxy(mdCtx, req); err != nil {
+	if _, err = client.StartVNCProxy(rpcCtx, req); err != nil {
 		return fmt.Errorf("failed to apply VNC password on node: %w", err)
 	}
 	s.logger.Info("VNC password synced to agent", "vm_id", vmID)

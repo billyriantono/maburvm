@@ -85,6 +85,30 @@ install:
 	@cd web && npm install
 	@echo "Dependencies installed!"
 
+# Docker build commands
+docker-build-panel:
+	@echo "Building panel Docker image..."
+	@docker build -f Dockerfile.panel -t maburvm-panel .
+
+docker-build-agent:
+	@echo "Building agent Docker image..."
+	@docker build -f Dockerfile.agent -t maburvm-agent .
+
+docker-build-web:
+	@echo "Building web Docker image..."
+	@docker build -f Dockerfile.web -t maburvm-web ./web
+
+docker-build: docker-build-panel docker-build-agent docker-build-web
+	@echo "All Docker images built!"
+
+docker-up:
+	@echo "Starting all services..."
+	@docker compose up -d
+
+docker-down:
+	@echo "Stopping all services..."
+	@docker compose down
+
 # Clean build artifacts
 clean:
 	@rm -rf bin/
@@ -105,5 +129,11 @@ help:
 	@echo "  make proto              - Generate protobuf code"
 	@echo "  make migrate            - Run database migrations"
 	@echo "  make install            - Install Go and Node dependencies"
+	@echo "  make docker-build       - Build all Docker images"
+	@echo "  make docker-build-panel - Build panel Docker image"
+	@echo "  make docker-build-agent - Build agent Docker image"
+	@echo "  make docker-build-web   - Build web Docker image"
+	@echo "  make docker-up          - Start all services with Docker"
+	@echo "  make docker-down        - Stop all services"
 	@echo "  make clean              - Clean build artifacts"
 	@echo "  make help               - Show this help"

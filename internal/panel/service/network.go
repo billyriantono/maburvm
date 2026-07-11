@@ -522,10 +522,19 @@ func (s *NetworkService) GetNetworkInterfaceDetails(ctx context.Context, vmID st
 		}
 	}
 
+	// Virtualizor-style: load all CIDR-matching pools so interfaces whose IP
+	// isn't explicitly assigned (e.g. pre-existing networks or imports) still
+	// get gateway, netmask and bridge from the owning pool.
+	var allPools []models.IPPool
+	if err := s.db.WithContext(ctx).Where("cidr IS NOT NULL AND cidr != '' AND deleted_at IS NULL").Find(&allPools).Error; err != nil {
+		return nil, fmt.Errorf("failed to load all IP pools: %w", err)
+	}
+
 	out := make([]NetworkInterfaceDetail, len(nets))
 	for i, n := range nets {
 		d := NetworkInterfaceDetail{Network: n}
-		if a, ok := addrByIP[hostOnlyIP(n.IPAddress)]; ok {
+		ip := hostOnlyIP(n.IPAddress)
+		if a, ok := addrByIP[ip]; ok {
 			d.RDNS = a.RDNS
 			d.PoolID = a.PoolID
 			if p, ok := pools[a.PoolID]; ok {
@@ -533,7 +542,33 @@ func (s *NetworkService) GetNetworkInterfaceDetails(ctx context.Context, vmID st
 				d.Bridge = p.Bridge
 				d.Netmask = netmaskFromCIDR(p.CIDR)
 			}
+		} else {
+			// Lazy CIDR match: find the first pool whose CIDR contains this IP.
+			parsedIP := net.ParseIP(ip)
+			if parsedIP != nil {
+				for _, p := range allPools {
+					_, ipnet, err := net.ParseCIDR(p.CIDR)
+					if err != nil {
+						continue
+					}
+					if ipnet.Contains(parsedIP) {
+						d.Gateway = p.Gateway
+						d.Bridge = p.Bridge
+						d.Netmask = netmaskFromCIDR(p.CIDR)
+						d.PoolID = p.ID
+						break
+					}
+				}
+			}
 		}
+		// Last-resort Virtualizor-style display fallback: when an imported/pre-existing
+		// interface has no IPAM pool yet, infer common IPv4 /24 details so the VM page
+		// still shows usable network information instead of blank columns. Operators
+		// can later attach the IP to a real IP pool to override these values.
+		if d.Gateway == "" && d.Netmask == "" {
+			d.Gateway, d.Netmask = inferIPv4NetworkDefaults(ip)
+		}
+
 		out[i] = d
 	}
 	return out, nil
@@ -615,6 +650,14 @@ func netmaskFromCIDR(cidr string) string {
 	}
 	ones, _ := ipnet.Mask.Size()
 	return fmt.Sprintf("/%d", ones)
+}
+
+func inferIPv4NetworkDefaults(ip string) (gateway string, netmask string) {
+	parsed := net.ParseIP(ip).To4()
+	if parsed == nil {
+		return "", ""
+	}
+	return fmt.Sprintf("%d.%d.%d.1", parsed[0], parsed[1], parsed[2]), "255.255.255.0"
 }
 
 // GetPortForwards returns all port forwards for a VM's network

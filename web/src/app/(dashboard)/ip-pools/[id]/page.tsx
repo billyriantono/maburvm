@@ -11,6 +11,7 @@ import {
   Globe,
   Loader2,
   Network,
+  Pencil,
   Plus,
   RefreshCw,
   Search,
@@ -30,6 +31,7 @@ import {
   useImportRDNS,
   useReleaseIPAddress,
   useSetRDNS,
+  useUpdateIPPool,
   downloadReverseZone,
 } from "@/lib/hooks/use-ipam"
 import { useNodes } from "@/lib/hooks/use-nodes"
@@ -104,12 +106,15 @@ export default function IPPoolDetailPage() {
   const allocateAddress = useAllocateIPAddress(poolId)
   const releaseAddress = useReleaseIPAddress(poolId)
   const importRDNS = useImportRDNS()
+  const updatePool = useUpdateIPPool(poolId)
 
   const [search, setSearch] = useState("")
   const [page, setPage] = useState(1)
   const [showAdd, setShowAdd] = useState(false)
   const [addrForm, setAddrForm] = useState({ address: "", status: "available" as IPAddressStatus, note: "" })
   const [isGenerating, setIsGenerating] = useState(false)
+  const [showEdit, setShowEdit] = useState(false)
+  const [editForm, setEditForm] = useState({ name: "", bridge: "", gateway: "", description: "" })
 
   // Node label: a specific address node, else the pool's node(s) — never a bare "Any"
   // when the pool is bound to a node.
@@ -203,6 +208,28 @@ export default function IPPoolDetailPage() {
     }
   }
 
+  const openEdit = () => {
+    if (!pool) return
+    setEditForm({ name: pool.name, bridge: pool.bridge ?? "", gateway: pool.gateway ?? "", description: pool.description ?? "" })
+    setShowEdit((v) => !v)
+  }
+
+  const handleUpdatePool = async (e: FormEvent) => {
+    e.preventDefault()
+    try {
+      await updatePool.mutateAsync({
+        name: editForm.name.trim(),
+        bridge: editForm.bridge.trim(),
+        gateway: editForm.gateway.trim(),
+        description: editForm.description,
+      })
+      toast.success("Pool updated — VMs apply the new bridge on their next start")
+      setShowEdit(false)
+    } catch (err) {
+      toast.error(`Failed to update pool: ${(err as Error).message}`)
+    }
+  }
+
   if (poolLoading) {
     return <div className="max-w-7xl mx-auto flex items-center justify-center py-20"><Loader2 className="w-8 h-8 animate-spin" /></div>
   }
@@ -223,13 +250,50 @@ export default function IPPoolDetailPage() {
 
       {/* Identity */}
       <div className="bg-white border-4 border-black shadow-neo p-4 mb-4">
-        <h1 className="text-2xl font-black uppercase tracking-tight flex items-center gap-2">
-          <Network className="w-7 h-7" />{pool.name}
-          <Badge variant={pool.family === "ipv4" ? "secondary" : "warning"}>{pool.family}</Badge>
-        </h1>
-        <p className="text-sm font-bold text-gray-500 uppercase mt-1">
-          {pool.cidr || "No CIDR"} • Gateway {pool.gateway || "-"} • Node {poolNodeLabel} • {addresses?.length ?? 0} addresses
-        </p>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-black uppercase tracking-tight flex items-center gap-2">
+              <Network className="w-7 h-7" />{pool.name}
+              <Badge variant={pool.family === "ipv4" ? "secondary" : "warning"}>{pool.family}</Badge>
+            </h1>
+            <p className="text-sm font-bold text-gray-500 uppercase mt-1">
+              {pool.cidr || "No CIDR"} • Gateway {pool.gateway || "-"} • Bridge {pool.bridge || "node default"} • Node {poolNodeLabel} • {addresses?.length ?? 0} addresses
+            </p>
+          </div>
+          <Button variant="secondary" size="sm" className="gap-1 shrink-0" onClick={openEdit}>
+            <Pencil className="w-4 h-4" />Edit
+          </Button>
+        </div>
+
+        {showEdit && (
+          <form onSubmit={handleUpdatePool} className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4 pt-4 border-t-4 border-black">
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Pool name</span>
+              <Input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} className="border-2 border-black" required />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Bridge — host bridge VMs attach to (e.g. br0)</span>
+              <Input value={editForm.bridge} onChange={(e) => setEditForm({ ...editForm, bridge: e.target.value })} placeholder="br0 (blank = node default)" className="border-2 border-black" />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Gateway</span>
+              <Input value={editForm.gateway} onChange={(e) => setEditForm({ ...editForm, gateway: e.target.value })} className="border-2 border-black" />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Description</span>
+              <Input value={editForm.description} onChange={(e) => setEditForm({ ...editForm, description: e.target.value })} className="border-2 border-black" />
+            </label>
+            <div className="md:col-span-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <p className="text-xs font-medium text-gray-500 normal-case">
+                Changing the bridge updates the pool only — each VM re-applies it on its next <span className="font-bold">Start</span> (a stale bridge like <span className="font-mono">virbr0</span> is rewritten before boot).
+              </p>
+              <div className="flex gap-2 shrink-0">
+                <Button type="button" variant="ghost" onClick={() => setShowEdit(false)}>Cancel</Button>
+                <Button type="submit" disabled={updatePool.isPending}>{updatePool.isPending && <Loader2 className="w-4 h-4 animate-spin mr-2" />}Save</Button>
+              </div>
+            </div>
+          </form>
+        )}
       </div>
 
       {/* Actions — grouped + in their own section for clarity */}

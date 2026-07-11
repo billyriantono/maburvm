@@ -13,6 +13,7 @@ import {
   Info,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { OSIcon } from "@/components/os-icon"
 import { useCreateTemplate } from "@/lib/hooks/use-templates"
 
 // CatalogEntry describes a curated, ready-to-use OS cloud image. Each image
@@ -24,7 +25,6 @@ interface CatalogEntry {
   version: string
   family: string
   arch: string
-  icon: string
   sizeHint: string
   description: string
   url: string
@@ -39,7 +39,6 @@ const OS_CATALOG: CatalogEntry[] = [
     version: "24.04 LTS",
     family: "Ubuntu",
     arch: "amd64",
-    icon: "🟠",
     sizeHint: "~600 MB",
     description: "Noble Numbat — cloud image with cloud-init",
     url: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img",
@@ -50,7 +49,6 @@ const OS_CATALOG: CatalogEntry[] = [
     version: "22.04 LTS",
     family: "Ubuntu",
     arch: "amd64",
-    icon: "🟠",
     sizeHint: "~600 MB",
     description: "Jammy Jellyfish — cloud image with cloud-init",
     url: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img",
@@ -61,7 +59,6 @@ const OS_CATALOG: CatalogEntry[] = [
     version: "12",
     family: "Debian",
     arch: "amd64",
-    icon: "🔴",
     sizeHint: "~350 MB",
     description: "Bookworm — generic cloud image (qcow2)",
     url: "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2",
@@ -72,7 +69,6 @@ const OS_CATALOG: CatalogEntry[] = [
     version: "11",
     family: "Debian",
     arch: "amd64",
-    icon: "🔴",
     sizeHint: "~350 MB",
     description: "Bullseye — generic cloud image (qcow2)",
     url: "https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-genericcloud-amd64.qcow2",
@@ -83,7 +79,6 @@ const OS_CATALOG: CatalogEntry[] = [
     version: "9",
     family: "RHEL",
     arch: "x86_64",
-    icon: "🟢",
     sizeHint: "~600 MB",
     description: "Generic cloud image (qcow2), RHEL-compatible",
     url: "https://download.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud.latest.x86_64.qcow2",
@@ -94,7 +89,6 @@ const OS_CATALOG: CatalogEntry[] = [
     version: "9",
     family: "RHEL",
     arch: "x86_64",
-    icon: "🟢",
     sizeHint: "~600 MB",
     description: "Generic cloud image (qcow2), RHEL-compatible",
     url: "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2",
@@ -105,7 +99,6 @@ const OS_CATALOG: CatalogEntry[] = [
     version: "9",
     family: "RHEL",
     arch: "x86_64",
-    icon: "🟢",
     sizeHint: "~800 MB",
     description: "Upstream of RHEL — generic cloud image (qcow2)",
     url: "https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2",
@@ -116,7 +109,6 @@ const OS_CATALOG: CatalogEntry[] = [
     version: "41",
     family: "Fedora",
     arch: "x86_64",
-    icon: "🔵",
     sizeHint: "~500 MB",
     description: "Base cloud image (qcow2)",
     url: "https://download.fedoraproject.org/pub/fedora/linux/releases/41/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-41-1.4.x86_64.qcow2",
@@ -127,7 +119,6 @@ const OS_CATALOG: CatalogEntry[] = [
     version: "rolling",
     family: "Arch",
     arch: "x86_64",
-    icon: "🔷",
     sizeHint: "~550 MB",
     description: "Latest rolling cloud image (qcow2)",
     url: "https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2",
@@ -138,7 +129,6 @@ const OS_CATALOG: CatalogEntry[] = [
     version: "15.6",
     family: "SUSE",
     arch: "x86_64",
-    icon: "🦎",
     sizeHint: "~500 MB",
     description: "NoCloud image (qcow2)",
     url: "https://download.opensuse.org/repositories/Cloud:/Images:/Leap_15.6/images/openSUSE-Leap-15.6.x86_64-NoCloud.qcow2",
@@ -222,7 +212,9 @@ export default function TemplateCatalogPage() {
           return (
             <div key={entry.id} className="bg-white border-4 border-black shadow-neo p-5 flex flex-col">
               <div className="flex items-start justify-between mb-3">
-                <div className="text-4xl">{entry.icon}</div>
+                <div className="w-12 h-12 bg-white flex items-center justify-center border-2 border-black">
+                  <OSIcon name={entry.name} className="w-7 h-7" />
+                </div>
                 <span className="px-2 py-0.5 bg-gray-100 border border-black text-[10px] font-black uppercase">
                   {entry.arch}
                 </span>

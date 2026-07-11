@@ -169,8 +169,8 @@ export default function DashboardLayout({
                     )}
                   </div>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem className="justify-center font-bold text-xs text-primary cursor-pointer">
-                    View all notifications
+                  <DropdownMenuItem asChild className="justify-center font-bold text-xs text-primary cursor-pointer">
+                    <Link href="/audit-logs">View all notifications</Link>
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>

@@ -218,8 +218,21 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 		// On success the domain is defined but not started.
 		state = pb.VMState_VM_STATE_STOPPED
 	case pb.VMCommandType_VM_COMMAND_TYPE_START:
-		err = libvirt.StartVM(req.VmId)
 		state = pb.VMState_VM_STATE_RUNNING
+		// Self-heal the NIC bridge from the pool (the panel sends the pool's
+		// current bridge in NetworkConfig) before booting, so a VM whose domain
+		// XML still points at a removed bridge (e.g. virbr0) can start once the
+		// pool's bridge is corrected. No-op when unset or already correct.
+		if bridge := primaryBridge(req.Config); bridge != "" {
+			if changed, serr := libvirt.SyncInterfaceBridge(req.VmId, bridge); serr != nil {
+				err = serr
+			} else if changed {
+				log.Printf("[NodeAgent] VM %s: synced NIC bridge to %q before start", req.VmId, bridge)
+			}
+		}
+		if err == nil {
+			err = libvirt.StartVM(req.VmId)
+		}
 	case pb.VMCommandType_VM_COMMAND_TYPE_STOP:
 		err = libvirt.StopVM(req.VmId, false)
 		state = pb.VMState_VM_STATE_STOPPED
@@ -289,6 +302,17 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 		State:   state,
 		Message: fmt.Sprintf("Command %v executed successfully", req.Command),
 	}, nil
+}
+
+// primaryBridge returns the first interface's bridge name from a VM command's
+// network config, or "" when none is set. Safe to call with a nil config.
+func primaryBridge(cfg *pb.VMConfig) string {
+	for _, iface := range cfg.GetNetworkConfig().GetInterfaces() {
+		if b := iface.GetBridgeName(); b != "" {
+			return b
+		}
+	}
+	return ""
 }
 
 // defaultImageDir is where VM disk images are provisioned on the node.
@@ -1612,6 +1636,54 @@ func (s *NodeAgentService) GetNodeInfo(ctx context.Context, req *pb.GetNodeInfoR
 		AvailableCpus:        availableCPUs,
 		AvailableMemoryMb:    availableMemMB,
 		AvailableDiskGb:      availableDiskGB,
+	}, nil
+}
+
+// GetLiveMetrics retrieves real-time system metrics from the node (CPU, memory,
+// disk, network I/O, load average) without the extra static system-info probing
+// that GetNodeInfo does (no uname/df/virsh exec calls) — cheap enough for
+// frequent polling.
+func (s *NodeAgentService) GetLiveMetrics(ctx context.Context, req *pb.GetLiveMetricsRequest) (*pb.GetLiveMetricsResponse, error) {
+	if _, authenticated := GetNodeIDFromContext(ctx); !authenticated {
+		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
+	}
+
+	if s.healthCollector == nil {
+		return &pb.GetLiveMetricsResponse{
+			Success: false,
+			Error:   &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: "health collector not initialized"},
+		}, nil
+	}
+
+	metrics := s.healthCollector.Collect()
+
+	var loadAvg1, loadAvg5, loadAvg15 float64
+	if len(metrics.LoadAvg) >= 3 {
+		loadAvg1 = metrics.LoadAvg[0]
+		loadAvg5 = metrics.LoadAvg[1]
+		loadAvg15 = metrics.LoadAvg[2]
+	}
+
+	return &pb.GetLiveMetricsResponse{
+		Success:              true,
+		CpuPercent:           metrics.CPUPercent,
+		MemoryUsedBytes:      metrics.MemoryUsed,
+		MemoryTotalBytes:     metrics.MemoryTotal,
+		MemoryUsedPercent:    metrics.MemoryUsedPercent,
+		DiskUsedBytes:        metrics.DiskUsed,
+		DiskTotalBytes:       metrics.DiskTotal,
+		DiskUsedPercent:      metrics.DiskUsedPercent,
+		NetworkRxBytesPerSec: metrics.NetworkRXBytesPerSec,
+		NetworkTxBytesPerSec: metrics.NetworkTXBytesPerSec,
+		DiskReadBytesPerSec:  metrics.DiskReadBytesPerSec,
+		DiskWriteBytesPerSec: metrics.DiskWriteBytesPerSec,
+		LoadAvg_1:            loadAvg1,
+		LoadAvg_5:            loadAvg5,
+		LoadAvg_15:           loadAvg15,
+		RunningVmCount:       int32(metrics.RunningVMCount),
+		AvailableCpus:        metrics.AvailableCPUs,
+		AvailableMemoryMb:    metrics.AvailableMemoryMB,
+		AvailableDiskGb:      metrics.AvailableDiskGB,
 	}, nil
 }
 

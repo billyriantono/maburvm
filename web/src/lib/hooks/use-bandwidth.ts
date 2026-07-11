@@ -21,12 +21,25 @@ export interface BandwidthHistoryResponse {
   history: BandwidthUsage[]
 }
 
+function unwrapApiData<T>(payload: unknown, fallback: T): T {
+  if (payload && typeof payload === 'object' && 'data' in payload) {
+    const wrapped = payload as { data?: T }
+    if (wrapped.data !== undefined) return wrapped.data
+  }
+
+  if (payload !== undefined && payload !== null) {
+    return payload as T
+  }
+
+  return fallback
+}
+
 export function useVMBandwidth(vmId: string) {
-  return useQuery<BandwidthUsage>({
+  return useQuery<BandwidthUsage | null>({
     queryKey: ['vm-bandwidth', vmId],
     queryFn: async () => {
       const { data } = await api.get<BandwidthUsage>(`/api/v1/vms/${vmId}/bandwidth`)
-      return data.data
+      return unwrapApiData<BandwidthUsage | null>(data, null)
     },
     enabled: !!vmId,
     refetchInterval: 30000, // Refresh every 30s (matches heartbeat interval)
@@ -38,7 +51,7 @@ export function useVMBandwidthHistory(vmId: string) {
     queryKey: ['vm-bandwidth-history', vmId],
     queryFn: async () => {
       const { data } = await api.get<BandwidthHistoryResponse>(`/api/v1/vms/${vmId}/bandwidth/history`)
-      return data.data
+      return unwrapApiData<BandwidthHistoryResponse>(data, { vm_id: vmId, history: [] })
     },
     enabled: !!vmId,
   })

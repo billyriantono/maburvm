@@ -234,7 +234,7 @@ func generateDomainXML(config VMConfig) (string, error) {
 		OnReboot:   "restart",
 		OnCrash:    "destroy",
 		Devices: &libvirtxml.DomainDeviceList{
-			Emulator: "/usr/bin/qemu-system-x86_64",
+			Emulator:   "/usr/bin/qemu-system-x86_64",
 			Disks:      disks,
 			Interfaces: []libvirtxml.DomainInterface{iface},
 			Graphics: []libvirtxml.DomainGraphic{
@@ -369,6 +369,66 @@ func StartVM(uuidStr string) error {
 
 		return nil
 	})
+}
+
+// SyncInterfaceBridge rewrites the host bridge of the VM's primary (first)
+// bridged interface to `bridge` and persists it via DomainDefineXML. It is
+// idempotent — a no-op (changed=false) when the bridge already matches or when
+// `bridge` is empty — and surgical: only <source bridge> is touched, so the
+// interface's MAC, VLAN tag, bandwidth QoS and nwfilter (anti-spoofing) are
+// preserved. This lets a VM defined against a now-missing bridge (e.g. virbr0)
+// boot once its pool's bridge is corrected, without a full rebuild.
+func SyncInterfaceBridge(uuidStr, bridge string) (bool, error) {
+	if bridge == "" {
+		return false, nil
+	}
+	if _, err := uuid.Parse(uuidStr); err != nil {
+		return false, fmt.Errorf("invalid UUID format: %w", err)
+	}
+	var changed bool
+	err := WithConnection(func(conn *libvirt.Connect) error {
+		dom, err := conn.LookupDomainByUUIDString(uuidStr)
+		if err != nil {
+			return fmt.Errorf("domain not found: %w", err)
+		}
+		defer dom.Free()
+
+		xmlDesc, err := dom.GetXMLDesc(0)
+		if err != nil {
+			return fmt.Errorf("failed to get domain XML: %w", err)
+		}
+		var domain libvirtxml.Domain
+		if err := xml.Unmarshal([]byte(xmlDesc), &domain); err != nil {
+			return fmt.Errorf("failed to parse domain XML: %w", err)
+		}
+		if domain.Devices == nil {
+			return nil
+		}
+		// Locate the first bridged interface and swap only its source bridge.
+		for i := range domain.Devices.Interfaces {
+			src := domain.Devices.Interfaces[i].Source
+			if src == nil || src.Bridge == nil {
+				continue
+			}
+			if src.Bridge.Bridge == bridge {
+				return nil // already correct — nothing to redefine
+			}
+			src.Bridge.Bridge = bridge
+			out, err := xml.Marshal(&domain)
+			if err != nil {
+				return fmt.Errorf("failed to marshal domain XML: %w", err)
+			}
+			newDom, err := conn.DomainDefineXML(string(out))
+			if err != nil {
+				return fmt.Errorf("failed to redefine domain with bridge %q: %w", bridge, err)
+			}
+			newDom.Free()
+			changed = true
+			return nil
+		}
+		return nil
+	})
+	return changed, err
 }
 
 // StopVM stops a VM with optional force flag
@@ -1027,7 +1087,7 @@ func extractInterfaceNames(xmlDesc string) []string {
 	// Match <interface type='...'> elements and get the target device name
 	re := regexp.MustCompile(`<interface[^>]*type=['"](\w+)['"][^>]*>[\s\S]*?<target[^>]*dev=['"]([^'"]+)['"]`)
 	matches := re.FindAllStringSubmatch(xmlDesc, -1)
-	
+
 	var names []string
 	seen := make(map[string]bool)
 	for _, match := range matches {
@@ -1403,7 +1463,7 @@ func ListSnapshots(uuidStr string) ([]VMSnapshot, error) {
 			if err != nil {
 				continue
 			}
-			
+
 			// Parse creationTime from XML: <creationTime>1234567890</creationTime>
 			var createdAt time.Time
 			if matches := regexp.MustCompile(`<creationTime>(\d+)</creationTime>`).FindStringSubmatch(xmlDesc); len(matches) > 1 {
@@ -1411,13 +1471,13 @@ func ListSnapshots(uuidStr string) ([]VMSnapshot, error) {
 					createdAt = time.Unix(ts, 0)
 				}
 			}
-			
+
 			// Parse state from XML: <state>running</state>
 			state := mapDomainStateToVMStatus(0) // default to stopped
 			if matches := regexp.MustCompile(`<state>(\w+)</state>`).FindStringSubmatch(xmlDesc); len(matches) > 1 {
 				state = mapSnapshotStateToVMStatus(matches[1])
 			}
-			
+
 			snapshots = append(snapshots, VMSnapshot{
 				UUID:      name,
 				Name:      name,

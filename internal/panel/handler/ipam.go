@@ -26,6 +26,7 @@ func RegisterIPAMRoutes(e *echo.Echo, h *IPAMHandler, db *gorm.DB) {
 	pools.GET("", h.ListPools, panelMiddleware.RequirePermission("network:read"))
 	pools.POST("", h.CreatePool, panelMiddleware.RequirePermission("admin:access"))
 	pools.GET("/:id", h.GetPool, panelMiddleware.RequirePermission("network:read"))
+	pools.PUT("/:id", h.UpdatePool, panelMiddleware.RequirePermission("admin:access"))
 	pools.DELETE("/:id", h.DeletePool, panelMiddleware.RequirePermission("admin:access"))
 	pools.GET("/:id/addresses", h.ListAddresses, panelMiddleware.RequirePermission("network:read"))
 	pools.POST("/:id/addresses", h.AddAddress, panelMiddleware.RequirePermission("admin:access"))
@@ -106,6 +107,24 @@ func (h *IPAMHandler) GetPool(c echo.Context) error {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "IP pool not found"})
 		}
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": pool})
+}
+
+// UpdatePool edits an existing pool's metadata (name, gateway, bridge,
+// description, node assignment). Editing the bridge is the path out of a stuck
+// VM: the VM picks up the corrected bridge on its next start.
+func (h *IPAMHandler) UpdatePool(c echo.Context) error {
+	var req service.UpdateIPPoolRequest
+	if err := c.Bind(&req); err != nil {
+		return badRequest(c, "Invalid request body")
+	}
+	pool, err := h.service.UpdatePool(c.Request().Context(), c.Param("id"), &req)
+	if err != nil {
+		if errors.Is(err, service.ErrIPPoolNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "IP pool not found"})
+		}
+		return badRequest(c, err.Error())
 	}
 	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": pool})
 }

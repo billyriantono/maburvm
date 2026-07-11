@@ -5,12 +5,19 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 )
 
 func main() {
-	// Login first
-	loginBody := `{"email":"billy@jalabyte.com","password":"Indonesiaber1!!"}`
+	// Login first. Never commit real credentials; provide them via environment.
+	email := os.Getenv("TEST_API_EMAIL")
+	password := os.Getenv("TEST_API_PASSWORD")
+	if email == "" || password == "" {
+		fmt.Println("TEST_API_EMAIL and TEST_API_PASSWORD are required")
+		return
+	}
+	loginBody := fmt.Sprintf(`{"email":%q,"password":%q}`, email, password)
 	resp, err := http.Post("http://localhost:8080/api/v1/auth/login", "application/json", strings.NewReader(loginBody))
 	if err != nil {
 		fmt.Printf("Login error: %v\n", err)

@@ -33,6 +33,19 @@ type LoginResponse struct {
 	TempToken   string      `json:"tempToken,omitempty"`
 }
 
+// ClientIP returns the caller's public-facing IP address as seen by the panel.
+// Used by the frontend to suggest the current IP when configuring IP
+// whitelists. No auth required — it reveals nothing beyond what the request
+// itself already exposes to any server.
+func (h *AuthHandler) ClientIP(c echo.Context) error {
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"success": true,
+		"data": map[string]string{
+			"ip": c.RealIP(),
+		},
+	})
+}
+
 func (h *AuthHandler) Login(c echo.Context) error {
 	var req LoginRequest
 	if err := c.Bind(&req); err != nil {

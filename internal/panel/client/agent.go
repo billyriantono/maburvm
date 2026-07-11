@@ -629,27 +629,18 @@ func (c *AgentClient) StartVNCProxy(ctx context.Context, nodeID string, vmID str
 	}, nil
 }
 
-// NodeMetricsResult holds node metrics retrieved from agent
-type NodeMetricsResult struct {
-	CPUUsage    float64
-	MemoryUsage float64
-	DiskUsage   float64
-	VMCount     int
-	Timestamp   time.Time
-}
-
 // NodeSystemInfo holds detailed system information about a node
 type NodeSystemInfo struct {
-	OSName               string
-	OSVersion            string
-	KernelVersion        string
-	Architecture         string
-	CPUModel             string
-	CPUCores             int32
-	CPUThreads           int32
-	MemoryTotal          int64
-	DiskTotal            int64
-	LibvirtVersion       string
+	OSName         string
+	OSVersion      string
+	KernelVersion  string
+	Architecture   string
+	CPUModel       string
+	CPUCores       int32
+	CPUThreads     int32
+	MemoryTotal    int64
+	DiskTotal      int64
+	LibvirtVersion string
 	// Live metrics
 	CpuPercent           float64
 	MemoryUsedBytes      int64
@@ -667,45 +658,6 @@ type NodeSystemInfo struct {
 	AvailableCpus        int32
 	AvailableMemoryMb    int64
 	AvailableDiskGb      int64
-}
-
-// GetNodeMetrics retrieves metrics from the node agent via GetNodeInfo
-func (c *AgentClient) GetNodeMetrics(ctx context.Context, nodeID string) (*NodeMetricsResult, error) {
-	node, err := c.getNodeInfo(nodeID)
-	if err != nil {
-		return nil, err
-	}
-
-	var result *NodeMetricsResult
-	err = c.executeWithRetry(ctx, node, func(ctx context.Context, client pb.NodeAgentClient) error {
-		// Call GetNodeInfo to verify node is reachable and get system info
-		resp, err := client.GetNodeInfo(ctx, &pb.GetNodeInfoRequest{})
-		if err != nil {
-			return err
-		}
-
-		if !resp.Success {
-			return fmt.Errorf("GetNodeInfo failed: %s", resp.Error.GetMessage())
-		}
-
-		// GetNodeInfo provides static info (totals) but not live usage.
-		// Live metrics (CPU%, memory used, disk used) come from heartbeat stream.
-		// For now, return what we can confirm: node is reachable.
-		result = &NodeMetricsResult{
-			CPUUsage:    0, // Requires heartbeat cache — not available via GetNodeInfo
-			MemoryUsage: 0, // Requires heartbeat cache
-			DiskUsage:   0, // Requires heartbeat cache
-			VMCount:     0, // Will be filled by service layer from DB
-			Timestamp:   time.Now(),
-		}
-		return nil
-	})
-
-	if err != nil {
-		return nil, err
-	}
-
-	return result, nil
 }
 
 // GetNodeInfo retrieves detailed system information from a node
@@ -764,12 +716,85 @@ func (c *AgentClient) GetNodeInfo(ctx context.Context, nodeID string) (*NodeSyst
 	return result, nil
 }
 
+// LiveMetricsResult holds real-time node metrics without the static system
+// info overhead of GetNodeInfo (no exec calls) — suitable for frequent polling.
+type LiveMetricsResult struct {
+	CpuPercent           float64
+	MemoryUsedBytes      int64
+	MemoryTotalBytes     int64
+	MemoryUsedPercent    float64
+	DiskUsedBytes        int64
+	DiskTotalBytes       int64
+	DiskUsedPercent      float64
+	NetworkRxBytesPerSec int64
+	NetworkTxBytesPerSec int64
+	DiskReadBytesPerSec  int64
+	DiskWriteBytesPerSec int64
+	LoadAvg1             float64
+	LoadAvg5             float64
+	LoadAvg15            float64
+	RunningVmCount       int32
+	AvailableCpus        int32
+	AvailableMemoryMb    int64
+	AvailableDiskGb      int64
+}
+
+// GetLiveMetrics retrieves real-time system metrics from a node without the
+// exec/proc-parsing overhead of GetNodeInfo. Use this for frequent polling
+// (e.g. dashboard/monitoring refresh); use GetNodeInfo for static system info.
+func (c *AgentClient) GetLiveMetrics(ctx context.Context, nodeID string) (*LiveMetricsResult, error) {
+	node, err := c.getNodeInfo(nodeID)
+	if err != nil {
+		return nil, err
+	}
+
+	var result *LiveMetricsResult
+	err = c.executeWithRetry(ctx, node, func(ctx context.Context, client pb.NodeAgentClient) error {
+		resp, err := client.GetLiveMetrics(ctx, &pb.GetLiveMetricsRequest{})
+		if err != nil {
+			return err
+		}
+
+		if !resp.Success {
+			return fmt.Errorf("GetLiveMetrics failed: %s", resp.Error.GetMessage())
+		}
+
+		result = &LiveMetricsResult{
+			CpuPercent:           resp.GetCpuPercent(),
+			MemoryUsedBytes:      resp.GetMemoryUsedBytes(),
+			MemoryTotalBytes:     resp.GetMemoryTotalBytes(),
+			MemoryUsedPercent:    resp.GetMemoryUsedPercent(),
+			DiskUsedBytes:        resp.GetDiskUsedBytes(),
+			DiskTotalBytes:       resp.GetDiskTotalBytes(),
+			DiskUsedPercent:      resp.GetDiskUsedPercent(),
+			NetworkRxBytesPerSec: resp.GetNetworkRxBytesPerSec(),
+			NetworkTxBytesPerSec: resp.GetNetworkTxBytesPerSec(),
+			DiskReadBytesPerSec:  resp.GetDiskReadBytesPerSec(),
+			DiskWriteBytesPerSec: resp.GetDiskWriteBytesPerSec(),
+			LoadAvg1:             resp.GetLoadAvg_1(),
+			LoadAvg5:             resp.GetLoadAvg_5(),
+			LoadAvg15:            resp.GetLoadAvg_15(),
+			RunningVmCount:       resp.GetRunningVmCount(),
+			AvailableCpus:        resp.GetAvailableCpus(),
+			AvailableMemoryMb:    resp.GetAvailableMemoryMb(),
+			AvailableDiskGb:      resp.GetAvailableDiskGb(),
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
 // ImportDiskResult contains the result of a disk import operation
 type ImportDiskResult struct {
-	VMID          string
-	ImportedPath  string
-	SizeBytes     int64
-	Success       bool
+	VMID         string
+	ImportedPath string
+	SizeBytes    int64
+	Success      bool
 }
 
 // ImportDisk imports a disk image from source to target path on a node

@@ -549,6 +549,26 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 		}
 	}
 
+	// For START, carry just the pool's current bridge so the agent can self-heal
+	// a stale NIC <source bridge> before booting. We deliberately don't build a
+	// full config — starting an already-defined domain needs no image/resources.
+	if job.Args.Operation == VMOpStart && len(job.Args.Params) > 0 {
+		var p struct {
+			Bridge string `json:"bridge"`
+		}
+		if err := json.Unmarshal(job.Args.Params, &p); err == nil && p.Bridge != "" {
+			vmConfig = &pb.VMConfig{
+				NetworkConfig: &pb.VMNetworkConfig{
+					Interfaces: []*pb.NetworkInterface{{
+						Name:       "eth0",
+						Type:       pb.NetworkInterfaceType_NETWORK_INTERFACE_TYPE_BRIDGE,
+						BridgeName: p.Bridge,
+					}},
+				},
+			}
+		}
+	}
+
 	// Execute VM command via gRPC
 	req := &pb.VMCommandRequest{
 		VmId:           vm.ID,
@@ -680,12 +700,12 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 	var fwRules []*pb.FirewallRule
 	for _, r := range params.FirewallRules {
 		fwRules = append(fwRules, &pb.FirewallRule{
-			Direction:   modelDirectionToProto(r.Direction),
-			Action:      modelActionToProto(r.Action),
-			Protocol:    r.Protocol,
-			SourceCidr:  r.SourceIP,
-			DestPort:    r.PortRange,
-			Priority:    int32(r.Priority),
+			Direction:  modelDirectionToProto(r.Direction),
+			Action:     modelActionToProto(r.Action),
+			Protocol:   r.Protocol,
+			SourceCidr: r.SourceIP,
+			DestPort:   r.PortRange,
+			Priority:   int32(r.Priority),
 		})
 	}
 

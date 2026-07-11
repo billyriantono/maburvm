@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -47,21 +48,21 @@ func NewServer(db *gorm.DB, cfg *config.Config) *Server {
 	// Middleware
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
+	// Parse allowed origins from config (comma-separated)
+	allowedOrigins := []string{"http://localhost:3000"}
+	if cfg.Server.AllowedOrigins != "" {
+		for _, o := range strings.Split(cfg.Server.AllowedOrigins, ",") {
+			trimmed := strings.TrimSpace(o)
+			if trimmed != "" {
+				allowedOrigins = append(allowedOrigins, trimmed)
+			}
+		}
+	}
+
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
-		AllowOrigins: []string{
-			"http://localhost:3000",
-			"http://localhost:3001",
-			"http://100.118.100.27:3000",
-			"http://100.118.100.27:3001",
-		},
-		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions},
-		AllowHeaders: []string{
-			echo.HeaderOrigin,
-			echo.HeaderContentType,
-			echo.HeaderAccept,
-			echo.HeaderAuthorization,
-			echo.HeaderXRequestedWith,
-		},
+		AllowOrigins:     allowedOrigins,
+		AllowMethods:     []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions},
+		AllowHeaders:     []string{echo.HeaderOrigin, echo.HeaderContentType, echo.HeaderAccept, echo.HeaderAuthorization, echo.HeaderXRequestedWith},
 		AllowCredentials: true,
 		MaxAge:           86400,
 	}))
@@ -206,6 +207,7 @@ func (s *Server) setupAuthRoutes(g *echo.Group) {
 	auth.POST("/logout", authHandler.Logout)
 	auth.POST("/refresh", panelMiddleware.RefreshTokenHandler(s.db))
 	auth.GET("/me", authHandler.Me, panelMiddleware.RequireAuth(s.db))
+	auth.GET("/client-ip", authHandler.ClientIP)
 }
 
 // setupNodeRoutes configures node-related routes

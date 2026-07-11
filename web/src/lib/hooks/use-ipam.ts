@@ -6,6 +6,7 @@ import type {
   CreateIPPoolRequest,
   IPAddress,
   IPPool,
+  UpdateIPPoolRequest,
 } from '@/types'
 
 export function useIPPools() {
@@ -35,6 +36,24 @@ export function useCreateIPPool() {
   return useMutation<IPPool, Error, CreateIPPoolRequest>({
     mutationFn: async (data) => {
       const response = await api.post<IPPool>('/api/v1/ip-pools', data)
+      return response.data.data
+    },
+    onSuccess: (pool) => {
+      queryClient.invalidateQueries({ queryKey: ['ipam', 'pools'] })
+      queryClient.setQueryData(['ipam', 'pools', pool.id], pool)
+    },
+  })
+}
+
+// useUpdateIPPool patches a pool's editable metadata (name, gateway, bridge,
+// description, nodes). Editing the bridge is the unblock for a stuck VM — the VM
+// re-reads the pool's bridge on its next start.
+export function useUpdateIPPool(id?: string) {
+  const queryClient = useQueryClient()
+
+  return useMutation<IPPool, Error, UpdateIPPoolRequest>({
+    mutationFn: async (data) => {
+      const response = await api.put<IPPool>(`/api/v1/ip-pools/${id}`, data)
       return response.data.data
     },
     onSuccess: (pool) => {

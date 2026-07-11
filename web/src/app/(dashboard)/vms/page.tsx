@@ -22,7 +22,7 @@ import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useVMs, useDeleteVM, useVMActions, useVMStatusStream } from "@/lib/hooks/use-vms"
 import { useNodes } from "@/lib/hooks/use-nodes"
-import type { VM, VMStatus } from "@/types"
+import type { VM, VMNodeStatus, VMStatus } from "@/types"
 
 // Status badge component
 function StatusBadge({ status }: { status: VMStatus }) {
@@ -39,6 +39,30 @@ function StatusBadge({ status }: { status: VMStatus }) {
       <span className={`w-2 h-2 mr-2 rounded-full ${status === "running" ? "bg-black animate-pulse" : "bg-current"}`} />
       {status}
     </span>
+  )
+}
+
+function NodeBadge({ name, status, fallback }: { name?: string; status?: VMNodeStatus; fallback?: string }) {
+  const label = name || fallback || "Unknown"
+  const state = status || ""
+  const styles: Record<string, string> = {
+    active: "bg-gray-100 text-black",
+    maintenance: "bg-[#FFAA00] text-black",
+    offline: "bg-[#FF4444] text-white",
+    "": "bg-gray-200 text-gray-700",
+  }
+
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <span className={`inline-flex items-center px-2 py-1 text-xs font-bold border border-black ${styles[state] || styles[""]}`}>
+        {label}
+      </span>
+      {state && state !== "active" && (
+        <span className="text-[10px] font-black uppercase text-danger">
+          Node {state}
+        </span>
+      )}
+    </div>
   )
 }
 
@@ -285,6 +309,13 @@ export default function VMListPage() {
   })
   
   const { data: nodes } = useNodes()
+  const nodeStatusByID = useMemo(() => {
+    const map = new Map<string, VMNodeStatus>()
+    for (const node of nodes || []) {
+      map.set(node.id, node.status)
+    }
+    return map
+  }, [nodes])
   
   const deleteVM = useDeleteVM()
   const vmActions = useVMActions()
@@ -408,7 +439,7 @@ export default function VMListPage() {
             className="h-12 px-4 border-2 border-black font-medium bg-white focus:outline-none focus:shadow-neo-sm"
           >
             <option value="">All Nodes</option>
-            {nodes?.map((node: { id: string; name: string }) => (
+            {nodes?.map((node) => (
               <option key={node.id} value={node.id}>{node.name}</option>
             ))}
           </select>
@@ -449,11 +480,15 @@ export default function VMListPage() {
         ) : filteredVMs.length === 0 ? (
           <EmptyState hasFilters={hasFilters} onClearFilters={clearFilters} />
         ) : (
-          filteredVMs.map((vm, index) => (
+          filteredVMs.map((vm, index) => {
+            const effectiveNodeStatus = vm.node_status || nodeStatusByID.get(vm.node_id) || ""
+            const nodeUnavailable = Boolean(effectiveNodeStatus && effectiveNodeStatus !== "active")
+
+            return (
             <div 
               key={vm.id} 
               className={`grid grid-cols-12 gap-4 p-4 items-center border-b-2 border-black last:border-0 ${
-                index % 2 === 0 ? "bg-white" : "bg-gray-50"
+                nodeUnavailable ? "bg-red-50" : index % 2 === 0 ? "bg-white" : "bg-gray-50"
               }`}
             >
               <div className="col-span-3 flex flex-col justify-center">
@@ -463,9 +498,7 @@ export default function VMListPage() {
                 <p className="text-xs text-gray-500 font-medium">ID: {vm.id.slice(0, 8)}</p>
               </div>
               <div className="col-span-2">
-                <span className="inline-flex items-center px-2 py-1 text-xs font-bold border border-black bg-gray-100">
-                  {vm.node_name || vm.node_id?.slice(0, 8)}
-                </span>
+                <NodeBadge name={vm.node_name} status={effectiveNodeStatus} fallback={vm.node_id?.slice(0, 8)} />
               </div>
               <div className="col-span-2">
                 <StatusBadge status={vm.status} />
@@ -492,9 +525,9 @@ export default function VMListPage() {
                   variant="success"
                   size="sm"
                   onClick={() => handleAction(vm, "start")}
-                  disabled={vm.status === "running" || !!actionLoading}
+                  disabled={nodeUnavailable || vm.status === "running" || !!actionLoading}
                   className="h-8 w-8 p-0"
-                  title="Start"
+                  title={nodeUnavailable ? "Node is not active" : "Start"}
                 >
                   {actionLoading === `${vm.id}-start` ? (
                     <Loader2 className="w-4 h-4 animate-spin" />
@@ -508,9 +541,9 @@ export default function VMListPage() {
                   variant="destructive"
                   size="sm"
                   onClick={() => handleAction(vm, "stop")}
-                  disabled={vm.status === "stopped" || !!actionLoading}
+                  disabled={nodeUnavailable || vm.status === "stopped" || !!actionLoading}
                   className="h-8 w-8 p-0"
-                  title="Stop"
+                  title={nodeUnavailable ? "Node is not active" : "Stop"}
                 >
                   {actionLoading === `${vm.id}-stop` ? (
                     <Loader2 className="w-4 h-4 animate-spin" />
@@ -524,9 +557,9 @@ export default function VMListPage() {
                   variant="warning"
                   size="sm"
                   onClick={() => handleAction(vm, "restart")}
-                  disabled={vm.status !== "running" || !!actionLoading}
+                  disabled={nodeUnavailable || vm.status !== "running" || !!actionLoading}
                   className="h-8 w-8 p-0"
-                  title="Restart"
+                  title={nodeUnavailable ? "Node is not active" : "Restart"}
                 >
                   {actionLoading === `${vm.id}-restart` ? (
                     <Loader2 className="w-4 h-4 animate-spin" />
@@ -540,9 +573,9 @@ export default function VMListPage() {
                   variant="secondary"
                   size="sm"
                   onClick={() => handleAction(vm, "console")}
-                  disabled={vm.status !== "running" || !!actionLoading}
+                  disabled={nodeUnavailable || vm.status !== "running" || !!actionLoading}
                   className="h-8 w-8 p-0"
-                  title="Console"
+                  title={nodeUnavailable ? "Node is not active" : "Console"}
                 >
                   <Terminal className="w-4 h-4" />
                 </Button>
@@ -560,7 +593,8 @@ export default function VMListPage() {
                 </Button>
               </div>
             </div>
-          ))
+            )
+          })
         )}
       </div>
       

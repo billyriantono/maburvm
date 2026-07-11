@@ -51,6 +51,65 @@ services:
     volumes:
       - mailpit_data:/data
 
+  panel:
+    build:
+      context: .
+      dockerfile: Dockerfile.panel
+    container_name: maburvm-panel
+    restart: unless-stopped
+    ports:
+      - "${SERVER_PORT:-8080}:8080"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-maburvm}
+      DB_PASSWORD: ${DB_PASSWORD:-changeme}
+      DB_NAME: ${DB_NAME:-maburvm}
+      DB_SSL_MODE: disable
+      SERVER_PORT: 8080
+      SERVER_HOST: 0.0.0.0
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      AES_KEY: ${AES_KEY}
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      S3_BUCKET: ${S3_BUCKET:-maburvm}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: maburvm-agent
+    restart: unless-stopped
+    privileged: true
+    ports:
+      - "${AGENT_GRPC_PORT:-50051}:50051"
+    environment:
+      AGENT_GRPC_PORT: 50051
+      AGENT_PANEL_ADDRESS: ${AGENT_PANEL_ADDRESS:-}
+      AGENT_AUTH_TOKEN: ${AGENT_AUTH_TOKEN:-}
+      LIBVIRT_URI: ${LIBVIRT_URI:-qemu:///system}
+    volumes:
+      - /var/run/libvirt:/var/run/libvirt
+      - /var/lib/libvirt/images:/var/lib/libvirt/images
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: maburvm-web
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8080
+
 volumes:
   postgres_data:
     driver: local

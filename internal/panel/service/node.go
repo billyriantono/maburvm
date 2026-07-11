@@ -396,31 +396,33 @@ func (s *NodeService) GetNodeMetrics(ctx context.Context, id string) (*NodeMetri
 		}
 		s.agentClient.RegisterNode(nodeInfo)
 
-		// Get system info from agent
-		sysInfo, err := s.agentClient.GetNodeInfo(ctx, id)
+		// Get live metrics from agent. GetLiveMetrics avoids the exec/proc-parsing
+		// overhead of GetNodeInfo, which matters here since this path is polled
+		// frequently by the dashboard/monitoring UI.
+		liveInfo, err := s.agentClient.GetLiveMetrics(ctx, id)
 		if err == nil {
-			memTotalMB := sysInfo.MemoryTotal / (1024 * 1024)
-			diskTotalGB := sysInfo.DiskTotal / (1024 * 1024 * 1024)
+			memTotalMB := liveInfo.MemoryTotalBytes / (1024 * 1024)
+			diskTotalGB := liveInfo.DiskTotalBytes / (1024 * 1024 * 1024)
 
 			return &NodeMetrics{
 				NodeID:               id,
 				Timestamp:            time.Now(),
-				CPUUsage:             sysInfo.CpuPercent,
-				MemoryUsage:          sysInfo.MemoryUsedPercent,
-				MemoryUsed:           sysInfo.MemoryUsedBytes,
-				MemoryTotal:          sysInfo.MemoryTotal,
-				DiskUsage:            sysInfo.DiskUsedPercent,
-				DiskUsed:             sysInfo.DiskUsedBytes,
-				DiskTotal:            sysInfo.DiskTotal,
-				NetworkRxBytesPerSec: float64(sysInfo.NetworkRxBytesPerSec),
-				NetworkTxBytesPerSec: float64(sysInfo.NetworkTxBytesPerSec),
-				DiskReadBytesPerSec:  float64(sysInfo.DiskReadBytesPerSec),
-				DiskWriteBytesPerSec: float64(sysInfo.DiskWriteBytesPerSec),
+				CPUUsage:             liveInfo.CpuPercent,
+				MemoryUsage:          liveInfo.MemoryUsedPercent,
+				MemoryUsed:           liveInfo.MemoryUsedBytes,
+				MemoryTotal:          liveInfo.MemoryTotalBytes,
+				DiskUsage:            liveInfo.DiskUsedPercent,
+				DiskUsed:             liveInfo.DiskUsedBytes,
+				DiskTotal:            liveInfo.DiskTotalBytes,
+				NetworkRxBytesPerSec: float64(liveInfo.NetworkRxBytesPerSec),
+				NetworkTxBytesPerSec: float64(liveInfo.NetworkTxBytesPerSec),
+				DiskReadBytesPerSec:  float64(liveInfo.DiskReadBytesPerSec),
+				DiskWriteBytesPerSec: float64(liveInfo.DiskWriteBytesPerSec),
 				VMCount:              int(vmCount),
-				AvailableCPUs:        int(sysInfo.AvailableCpus),
+				AvailableCPUs:        int(liveInfo.AvailableCpus),
 				AvailableMemoryMB:    memTotalMB,
 				AvailableDiskGB:      diskTotalGB,
-				LoadAvg:              []float64{sysInfo.LoadAvg1, sysInfo.LoadAvg5, sysInfo.LoadAvg15},
+				LoadAvg:              []float64{liveInfo.LoadAvg1, liveInfo.LoadAvg5, liveInfo.LoadAvg15},
 				Status:               "online",
 			}, nil
 		}

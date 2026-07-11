@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"os"
 	"time"
 
 	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
@@ -13,13 +14,20 @@ import (
 )
 
 func main() {
+	address := os.Getenv("TEST_GRPC_ADDRESS")
+	token := os.Getenv("TEST_GRPC_TOKEN")
+	if address == "" || token == "" {
+		fmt.Println("TEST_GRPC_ADDRESS and TEST_GRPC_TOKEN are required")
+		return
+	}
+
 	tlsCfg := &tls.Config{InsecureSkipVerify: true}
 	creds := credentials.NewTLS(tlsCfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	conn, err := grpc.DialContext(ctx, "192.0.2.10:50051",
+	conn, err := grpc.DialContext(ctx, address,
 		grpc.WithTransportCredentials(creds),
 		grpc.WithBlock(),
 	)
@@ -33,7 +41,7 @@ func main() {
 	client := pb.NewNodeAgentClient(conn)
 
 	md := metadata.New(map[string]string{
-		"authorization": "Bearer tok_kd3va5z6wik09v",
+		"authorization": "Bearer " + token,
 	})
 	authCtx := metadata.NewOutgoingContext(ctx, md)
 

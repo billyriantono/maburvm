@@ -1,11 +1,12 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Plus, Trash2, Globe, Lightbulb, Check, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
+import { api } from "@/lib/api-client"
 
 interface IPWhitelistEditorProps {
   value: string[]
@@ -16,9 +17,23 @@ interface IPWhitelistEditorProps {
 export function IPWhitelistEditor({ value = [], onChange, showSuggestion = true }: IPWhitelistEditorProps) {
   const [newIP, setNewIP] = useState("")
   const [error, setError] = useState("")
+  const [suggestedIP, setSuggestedIP] = useState<string | null>(null)
 
-  // TODO: Get current IP from request headers via API endpoint
-  const suggestedIP = "192.168.1.100"
+  useEffect(() => {
+    if (!showSuggestion) return
+    let cancelled = false
+    api
+      .get<{ ip: string }>("/api/v1/auth/client-ip")
+      .then((response) => {
+        if (!cancelled) setSuggestedIP(response.data.data.ip)
+      })
+      .catch(() => {
+        // Silently ignore — suggestion is a convenience, not a requirement.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [showSuggestion])
 
   const validateIP = (ip: string): boolean => {
     // Simple validation for IP or CIDR
@@ -55,7 +70,7 @@ export function IPWhitelistEditor({ value = [], onChange, showSuggestion = true 
   }
 
   const handleAddSuggested = () => {
-    if (!value.includes(suggestedIP)) {
+    if (suggestedIP && !value.includes(suggestedIP)) {
       onChange([...value, suggestedIP])
     }
   }
@@ -71,7 +86,7 @@ export function IPWhitelistEditor({ value = [], onChange, showSuggestion = true 
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <Label className="text-xs">IP Whitelist</Label>
-        {showSuggestion && (
+        {showSuggestion && suggestedIP && (
           <Button
             variant="ghost"
             size="sm"

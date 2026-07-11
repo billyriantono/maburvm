@@ -44,6 +44,17 @@ export interface CreateIPPoolRequest {
   description?: string
 }
 
+// UpdateIPPoolRequest patches an existing pool's editable metadata. Omitted
+// fields are left unchanged; the bridge is the field that lets a stuck VM boot
+// (the VM re-reads it on its next start).
+export interface UpdateIPPoolRequest {
+  name?: string
+  gateway?: string
+  bridge?: string
+  description?: string
+  node_ids?: string[]
+}
+
 export interface CreateIPAddressRequest {
   node_id?: string
   address: string

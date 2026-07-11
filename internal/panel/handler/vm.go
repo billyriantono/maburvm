@@ -228,6 +228,7 @@ type VMListItem struct {
 	Status       string      `json:"status"`
 	NodeID       string      `json:"node_id"`
 	NodeName     string      `json:"node_name"`
+	NodeStatus   string      `json:"node_status"`
 	UserID       string      `json:"user_id"`
 	OSTemplateID string      `json:"os_template_id"`
 	Resources    VMResources `json:"resources"`
@@ -300,22 +301,26 @@ func (h *VMHandler) ListVMs(c echo.Context) error {
 		})
 	}
 
-	// Build node name lookup map
-	nodeNames := make(map[string]string)
+	// Build node lookup map so list rows can show whether the owning node is
+	// offline/maintenance. VMs are still inventory records even when their node is
+	// inactive, but the UI must not present them as operable.
+	nodeSummaries := make(map[string]service.NodeSummary)
 	if len(resp.VMs) > 0 {
-		nodes, _ := h.service.GetNodeNames(c.Request().Context())
-		nodeNames = nodes
+		nodes, _ := h.service.GetNodeSummaries(c.Request().Context())
+		nodeSummaries = nodes
 	}
 
 	// Map to response format
 	items := make([]VMListItem, len(resp.VMs))
 	for i, vm := range resp.VMs {
+		node := nodeSummaries[vm.NodeID]
 		items[i] = VMListItem{
 			ID:           vm.ID,
 			Hostname:     vm.Hostname,
 			Status:       string(vm.Status),
 			NodeID:       vm.NodeID,
-			NodeName:     nodeNames[vm.NodeID],
+			NodeName:     node.Name,
+			NodeStatus:   string(node.Status),
 			UserID:       vm.UserID,
 			OSTemplateID: vm.OSTemplateID,
 			Resources: VMResources{
@@ -652,7 +657,7 @@ func (h *VMHandler) handleLifecycleCommand(c echo.Context, command service.Lifec
 				"error":   "Not Found",
 				"message": "VM not found",
 			})
-		case errors.Is(err, service.ErrVMLifecycleFailed):
+		case errors.Is(err, service.ErrVMLifecycleFailed), errors.Is(err, service.ErrVMNodeInactive):
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{
 				"error":   "Bad Request",
 				"message": err.Error(),
@@ -890,8 +895,11 @@ func (h *VMHandler) GetVNCConfig(c echo.Context) error {
 	// For now, include password for simplicity
 	includePassword := true
 
-	// Get VNC config (host + port from DB)
-	vncConfig, err := h.service.GetVNCConfig(c.Request().Context(), id, includePassword)
+	// Get VNC config (host + port from DB). Bounded so a slow/unreachable agent
+	// or QEMU monitor can't leave the browser stuck on "Connecting..." forever.
+	ctx, cancel := context.WithTimeout(c.Request().Context(), 10*time.Second)
+	defer cancel()
+	vncConfig, err := h.service.GetVNCConfig(ctx, id, includePassword)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrVMNotFound):

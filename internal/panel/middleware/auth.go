@@ -288,7 +288,7 @@ func extractAPIToken(c echo.Context) (string, bool) {
 // on success, returns a populated UserContext. This lets automation clients call
 // the API with a long-lived key instead of a session JWT. The lookup is done
 // directly here (not via the service layer) to keep the middleware dependency-free.
-func authenticateAPIKey(db *gorm.DB, token string) (*UserContext, bool) {
+func authenticateAPIKey(db *gorm.DB, token string, clientIP string) (*UserContext, bool) {
 	if db == nil {
 		return nil, false
 	}
@@ -301,6 +301,9 @@ func authenticateAPIKey(db *gorm.DB, token string) (*UserContext, bool) {
 	}
 	var user models.User
 	if err := db.Where("id = ?", key.UserID).First(&user).Error; err != nil || user.DeletedAt.Valid {
+		return nil, false
+	}
+	if len(user.IPWhitelist) > 0 && !isIPWhitelisted(clientIP, user.IPWhitelist) {
 		return nil, false
 	}
 	// Best-effort last-used bookkeeping; never blocks auth.
@@ -321,7 +324,7 @@ func RequireAuth(db *gorm.DB) echo.MiddlewareFunc {
 			// API-key auth (automation clients) takes precedence when a key is
 			// explicitly presented; an invalid key is rejected, not fallen through.
 			if token, ok := extractAPIToken(c); ok {
-				userCtx, ok := authenticateAPIKey(db, token)
+				userCtx, ok := authenticateAPIKey(db, token, c.RealIP())
 				if !ok {
 					return c.JSON(http.StatusUnauthorized, map[string]interface{}{
 						"error":   "Unauthorized",
@@ -395,6 +398,14 @@ func RequireAuth(db *gorm.DB) echo.MiddlewareFunc {
 					return c.JSON(http.StatusUnauthorized, map[string]interface{}{
 						"error":   "Unauthorized",
 						"message": "User account is deactivated",
+					})
+				}
+
+				// Enforce per-user IP whitelist (opt-in: empty list allows any IP).
+				if len(user.IPWhitelist) > 0 && !isIPWhitelisted(c.RealIP(), user.IPWhitelist) {
+					return c.JSON(http.StatusForbidden, map[string]interface{}{
+						"error":   "Forbidden",
+						"message": "Your IP address is not whitelisted for this account",
 					})
 				}
 
