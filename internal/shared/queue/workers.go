@@ -203,6 +203,7 @@ type WorkerContext struct {
 	NodeRepo     *repository.NodeRepository
 	TemplateRepo *repository.TemplateRepository
 	NetworkRepo  *repository.NetworkRepository
+	IPAMRepo     *repository.IPAMRepository
 	AgentClient  *AgentClient
 	Metrics      *MetricsCollector
 }
@@ -642,7 +643,19 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 	case VMOpRestart:
 		newStatus = models.VMStatusRunning
 	case VMOpDelete:
-		// VM is deleted, no status update needed
+		// The agent confirmed the domain is destroyed. Now (and only now) it is
+		// safe to release the VM's IP/network allocation and remove its DB row.
+		// Doing this before agent confirmation risked handing a still-live IP to
+		// the next VM. On cleanup failure we return an error so the job retries
+		// rather than leaving the IP leaked and the row orphaned.
+		if err := w.cleanupDeletedVM(ctx, vm.ID); err != nil {
+			w.logger.ErrorContext(ctx, "failed to clean up deleted VM records",
+				"vm_id", vm.ID, "error", err)
+			if w.metrics != nil {
+				w.metrics.RecordJobFailed()
+			}
+			return fmt.Errorf("failed to clean up deleted VM records: %w", err)
+		}
 		newStatus = ""
 	case VMOpSuspend:
 		newStatus = models.VMStatusSuspended
@@ -672,6 +685,32 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 	)
 
 	return nil
+}
+
+// cleanupDeletedVM releases a destroyed VM's IP/network allocation and removes
+// its database row. It runs in a single transaction so the resources are freed
+// atomically after the agent confirms the hypervisor domain is gone.
+func (w *VMOperationWorker) cleanupDeletedVM(ctx context.Context, vmID string) error {
+	if globalWorkerContext == nil {
+		return fmt.Errorf("worker context not initialized")
+	}
+	db := globalWorkerContext.DB
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if ipam := globalWorkerContext.IPAMRepo; ipam != nil {
+			if err := ipam.WithDB(tx).ReleaseAddressesByVMID(ctx, vmID); err != nil {
+				return fmt.Errorf("release IPs: %w", err)
+			}
+		}
+		if net := globalWorkerContext.NetworkRepo; net != nil {
+			if err := net.WithDB(tx).DeleteByVMID(ctx, vmID); err != nil {
+				return fmt.Errorf("delete network rows: %w", err)
+			}
+		}
+		if err := globalWorkerContext.VMRepo.WithDB(tx).Delete(ctx, vmID); err != nil {
+			return fmt.Errorf("delete VM row: %w", err)
+		}
+		return nil
+	})
 }
 
 // handleConfigureNetwork dispatches a ConfigureNetwork operation to the agent

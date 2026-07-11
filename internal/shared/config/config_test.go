@@ -12,6 +12,7 @@ func TestLoad_WithRequiredEnvVars(t *testing.T) {
 	os.Setenv("DB_PASSWORD", "password")
 	os.Setenv("DB_NAME", "maburvm")
 	os.Setenv("JWT_SECRET_KEY", "test-secret-key")
+	os.Setenv("AES_KEY", "0123456789abcdef0123456789abcdef") // 32 bytes for AES-256
 	os.Setenv("S3_ENDPOINT", "http://localhost:9000")
 	os.Setenv("S3_ACCESS_KEY", "accesskey")
 	os.Setenv("S3_SECRET_KEY", "secretkey")
@@ -23,6 +24,7 @@ func TestLoad_WithRequiredEnvVars(t *testing.T) {
 		os.Unsetenv("DB_PASSWORD")
 		os.Unsetenv("DB_NAME")
 		os.Unsetenv("JWT_SECRET_KEY")
+		os.Unsetenv("AES_KEY")
 		os.Unsetenv("S3_ENDPOINT")
 		os.Unsetenv("S3_ACCESS_KEY")
 		os.Unsetenv("S3_SECRET_KEY")

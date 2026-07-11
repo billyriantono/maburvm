@@ -60,11 +60,14 @@ type UserContext struct {
 	SessionID   string
 }
 
-// GetJWTSecret retrieves the JWT secret from environment
+// GetJWTSecret retrieves the JWT secret from the environment. It fails closed:
+// rather than falling back to a guessable constant (which would let anyone forge
+// admin tokens), it panics if the secret is unset. config.Load() already enforces
+// JWT_SECRET_KEY at boot, so a correctly started process never hits the panic.
 func GetJWTSecret() []byte {
 	secret := os.Getenv("JWT_SECRET_KEY")
 	if secret == "" {
-		secret = "your-jwt-secret-change-in-production"
+		panic("JWT_SECRET_KEY is not set; refusing to sign/verify tokens with a default secret")
 	}
 	return []byte(secret)
 }

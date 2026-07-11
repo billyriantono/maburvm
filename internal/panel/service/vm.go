@@ -165,7 +165,7 @@ func (s *VMService) GetNodeSummaries(ctx context.Context) (map[string]NodeSummar
 // CreateVMRequest contains parameters for creating a new VM
 type CreateVMRequest struct {
 	UserID        string           `json:"user_id" validate:"required,uuid"`
-	Hostname      string           `json:"hostname" validate:"required,max=100"`
+	Hostname      string           `json:"hostname" validate:"required,max=100,hostname_rfc1123"`
 	OSTemplateID  string           `json:"os_template_id" validate:"required,uuid"`
 	Resources     models.Resources `json:"resources" validate:"required"`
 	NodeID        string           `json:"node_id,omitempty" validate:"omitempty,uuid"` // Optional: specific node
@@ -682,6 +682,20 @@ type GetVMResponse struct {
 }
 
 // GetVM retrieves a VM by ID with details and status
+// GetVMOwner returns the user ID that owns the given VM. It is a cheap lookup
+// (no agent round-trip) used for per-resource authorization. Returns ErrVMNotFound
+// if the VM does not exist.
+func (s *VMService) GetVMOwner(ctx context.Context, vmID string) (string, error) {
+	vm, err := s.vmRepo.GetByID(ctx, vmID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", ErrVMNotFound
+		}
+		return "", fmt.Errorf("failed to get VM: %w", err)
+	}
+	return vm.UserID, nil
+}
+
 func (s *VMService) GetVM(ctx context.Context, vmID string, includeAgentStatus bool) (*GetVMResponse, error) {
 	vm, err := s.vmRepo.GetByIDWithRelations(ctx, vmID)
 	if err != nil {
@@ -1021,18 +1035,30 @@ func (s *VMService) DeleteVM(ctx context.Context, vmID string) error {
 		if err != nil {
 			return fmt.Errorf("failed to enqueue VM delete job: %w", err)
 		}
-	} else {
-		s.logger.WarnContext(ctx, "VM deletion queue disabled; cleaning local VM records only", "vm_id", vm.ID)
+
+		// Do NOT release the IP/network or remove the row here: the hypervisor VM
+		// is still running until the agent destroys it (async). Releasing the IP
+		// now would let the next create hand the same live IP to another VM. The
+		// delete worker performs the resource cleanup (IP release + row removal)
+		// only after the agent confirms the domain is gone. We mark the VM as
+		// "deleting" so it stops appearing as an active, operable VM in the UI.
+		if err := s.vmRepo.UpdateStatus(ctx, vm.ID, models.VMStatusDeleting); err != nil {
+			s.logger.WarnContext(ctx, "failed to mark VM as deleting", "vm_id", vm.ID, "error", err)
+		}
+
+		s.logger.InfoContext(ctx, "VM deletion job enqueued",
+			"vm_id", vm.ID,
+			"node_id", vm.NodeID,
+		)
+		return nil
 	}
 
-	if err := s.cleanupVMAllocation(ctx, vm.ID, s.riverClient == nil); err != nil {
+	// Queue disabled: there is no worker to finish the job, so clean up the
+	// local records synchronously (IP release + network rows + VM row).
+	s.logger.WarnContext(ctx, "VM deletion queue disabled; cleaning local VM records only", "vm_id", vm.ID)
+	if err := s.cleanupVMAllocation(ctx, vm.ID, true); err != nil {
 		return fmt.Errorf("failed to release VM IP/network allocation: %w", err)
 	}
-
-	s.logger.InfoContext(ctx, "VM deletion job enqueued",
-		"vm_id", vm.ID,
-		"node_id", vm.NodeID,
-	)
 
 	return nil
 }

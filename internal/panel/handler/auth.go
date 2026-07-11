@@ -95,12 +95,15 @@ func (h *AuthHandler) Login(c echo.Context) error {
 		})
 	}
 
-	// Set refresh token cookie
+	// Set the session cookie with the same hardened flags as the rest of the auth
+	// layer (SetTokenCookies): HttpOnly + Secure + SameSite=Strict so the token
+	// can't be read by JS, sent over plain HTTP, or attached to cross-site requests.
 	cookie := new(http.Cookie)
 	cookie.Name = "refreshToken"
 	cookie.Value = resp.Token
 	cookie.HttpOnly = true
-	cookie.Secure = false // Set to true in production with HTTPS
+	cookie.Secure = true
+	cookie.SameSite = http.SameSiteStrictMode
 	cookie.Path = "/"
 	c.SetCookie(cookie)
 

@@ -31,6 +31,7 @@ function StatusBadge({ status }: { status: VMStatus }) {
     stopped: "bg-[#FF4444] text-white",
     suspended: "bg-[#FFAA00] text-black",
     creating: "bg-[#00CCFF] text-black",
+    deleting: "bg-[#FF8800] text-black",
     error: "bg-[#FF0000] text-white",
   }
   

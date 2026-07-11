@@ -1,5 +1,5 @@
 // VMStatus matches the Go VMStatus type
-export type VMStatus = 'running' | 'stopped' | 'suspended' | 'creating' | 'error';
+export type VMStatus = 'running' | 'stopped' | 'suspended' | 'creating' | 'deleting' | 'error';
 export type VMNodeStatus = 'active' | 'maintenance' | 'offline' | '';
 
 // Resources represents CPU, RAM, and Disk resources for a VM

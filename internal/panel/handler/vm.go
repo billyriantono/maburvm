@@ -45,6 +45,37 @@ func NewVMHandlerWithoutVNC(service *service.VMService) *VMHandler {
 	}
 }
 
+// authorizeVM enforces per-resource tenant isolation for a VM-scoped request.
+// Admins may act on any VM; every other user may act only on VMs they own.
+//
+// It returns true when the caller is authorized. When not, it writes the
+// appropriate response (401 if unauthenticated, 404 otherwise — 404 rather than
+// 403 so a client cannot probe which VM IDs exist) and returns false; the caller
+// should then `return nil`, as the response has already been committed.
+func (h *VMHandler) authorizeVM(c echo.Context, vmID string) bool {
+	userCtx, ok := middleware.GetUserContext(c)
+	if !ok {
+		_ = c.JSON(http.StatusUnauthorized, map[string]interface{}{
+			"error":   "Unauthorized",
+			"message": "authentication required",
+		})
+		return false
+	}
+	// Admins bypass ownership checks.
+	if userCtx.Role == models.RoleAdmin {
+		return true
+	}
+	ownerID, err := h.service.GetVMOwner(c.Request().Context(), vmID)
+	if err != nil || ownerID != userCtx.ID.String() {
+		_ = c.JSON(http.StatusNotFound, map[string]interface{}{
+			"error":   "Not Found",
+			"message": "VM not found",
+		})
+		return false
+	}
+	return true
+}
+
 // ============================================================================
 // Create VM
 // ============================================================================
@@ -288,7 +319,13 @@ func (h *VMHandler) ListVMs(c echo.Context) error {
 	if nodeID != "" {
 		listReq.NodeID = nodeID
 	}
-	if userID != "" {
+	// Tenant isolation: a non-admin caller may only ever see their own VMs, so we
+	// force the owner filter to their ID and ignore any client-supplied user_id
+	// (which would otherwise let them enumerate other tenants' VMs). Admins may
+	// filter by any user_id, or omit it to list all VMs.
+	if userCtx, ok := middleware.GetUserContext(c); ok && userCtx.Role != models.RoleAdmin {
+		listReq.UserID = userCtx.ID.String()
+	} else if userID != "" {
 		listReq.UserID = userID
 	}
 
@@ -390,6 +427,10 @@ func (h *VMHandler) GetVM(c echo.Context) error {
 		})
 	}
 
+	if !h.authorizeVM(c, id) {
+		return nil
+	}
+
 	// Check if we should include agent status
 	includeAgent := c.QueryParam("include_status") == "true"
 
@@ -474,6 +515,10 @@ func (h *VMHandler) UpdateVM(c echo.Context) error {
 		})
 	}
 
+	if !h.authorizeVM(c, id) {
+		return nil
+	}
+
 	var req UpdateVMRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
@@ -556,6 +601,10 @@ func (h *VMHandler) DeleteVM(c echo.Context) error {
 		})
 	}
 
+	if !h.authorizeVM(c, id) {
+		return nil
+	}
+
 	// Delete VM
 	if err := h.service.DeleteVM(c.Request().Context(), id); err != nil {
 		switch {
@@ -635,6 +684,10 @@ func (h *VMHandler) handleLifecycleCommand(c echo.Context, command service.Lifec
 			"error":   "Bad Request",
 			"message": "VM ID is required",
 		})
+	}
+
+	if !h.authorizeVM(c, id) {
+		return nil
 	}
 
 	var req LifecycleRequest
@@ -719,6 +772,10 @@ func (h *VMHandler) RebuildVM(c echo.Context) error {
 		})
 	}
 
+	if !h.authorizeVM(c, id) {
+		return nil
+	}
+
 	var req RebuildVMRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
@@ -794,6 +851,9 @@ func (h *VMHandler) CloneVM(c echo.Context) error {
 			"message": "VM ID is required",
 		})
 	}
+	if !h.authorizeVM(c, id) {
+		return nil
+	}
 	var req struct {
 		Hostname   string `json:"hostname"`
 		DestNodeID string `json:"dest_node_id"`
@@ -824,6 +884,9 @@ func (h *VMHandler) CloneVM(c echo.Context) error {
 
 // ListVMDisks handles GET /api/vms/:id/disks - list extra data disks.
 func (h *VMHandler) ListVMDisks(c echo.Context) error {
+	if !h.authorizeVM(c, c.Param("id")) {
+		return nil
+	}
 	disks, err := h.service.ListDisks(c.Request().Context(), c.Param("id"))
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Internal Server Error", "message": err.Error()})
@@ -833,6 +896,9 @@ func (h *VMHandler) ListVMDisks(c echo.Context) error {
 
 // AttachVMDisk handles POST /api/vms/:id/disks - provision + attach a data disk.
 func (h *VMHandler) AttachVMDisk(c echo.Context) error {
+	if !h.authorizeVM(c, c.Param("id")) {
+		return nil
+	}
 	var req struct {
 		SizeGB int `json:"size_gb"`
 	}
@@ -851,6 +917,9 @@ func (h *VMHandler) AttachVMDisk(c echo.Context) error {
 
 // DetachVMDisk handles DELETE /api/vms/:id/disks/:device?delete_volume=true.
 func (h *VMHandler) DetachVMDisk(c echo.Context) error {
+	if !h.authorizeVM(c, c.Param("id")) {
+		return nil
+	}
 	deleteVolume := c.QueryParam("delete_volume") == "true"
 	err := h.service.DetachDisk(c.Request().Context(), c.Param("id"), c.Param("device"), deleteVolume)
 	if err != nil {
@@ -885,14 +954,18 @@ func (h *VMHandler) GetVNCConfig(c echo.Context) error {
 		})
 	}
 
+	if !h.authorizeVM(c, id) {
+		return nil
+	}
+
 	// Get user ID from context (RequireAuth stores the user under the "user" key).
 	userID := "system"
 	if userCtx, ok := middleware.GetUserContext(c); ok {
 		userID = userCtx.ID.String()
 	}
 
-	// Check if user is admin or VM owner to include password
-	// For now, include password for simplicity
+	// The caller is the VM owner (or an admin), verified above, so it is safe to
+	// include the VNC password in the response.
 	includePassword := true
 
 	// Get VNC config (host + port from DB). Bounded so a slow/unreachable agent
@@ -962,6 +1035,10 @@ func (h *VMHandler) RefreshVNCPassword(c echo.Context) error {
 		})
 	}
 
+	if !h.authorizeVM(c, id) {
+		return nil
+	}
+
 	// Generate new password
 	vnc, err := h.service.RefreshVNCPassword(c.Request().Context(), id)
 	if err != nil {
@@ -1004,6 +1081,10 @@ func (h *VMHandler) setConsole(c echo.Context, enabled bool) error {
 		})
 	}
 
+	if !h.authorizeVM(c, id) {
+		return nil
+	}
+
 	vm, err := h.service.SetConsoleEnabled(c.Request().Context(), id, enabled)
 	if err != nil {
 		if errors.Is(err, service.ErrVMNotFound) {
@@ -1036,6 +1117,9 @@ func (h *VMHandler) ResetPasswordVM(c echo.Context) error {
 	if id == "" {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "VM ID is required"})
 	}
+	if !h.authorizeVM(c, id) {
+		return nil
+	}
 	var req struct {
 		Password string `json:"password"`
 	}
@@ -1055,6 +1139,9 @@ func (h *VMHandler) ResetPasswordVM(c echo.Context) error {
 // AttachISOVM handles POST /api/vms/:id/iso/attach - Attach a bootable ISO
 func (h *VMHandler) AttachISOVM(c echo.Context) error {
 	id := c.Param("id")
+	if !h.authorizeVM(c, id) {
+		return nil
+	}
 	var req struct {
 		ISOURL string `json:"iso_url"`
 	}
@@ -1074,6 +1161,9 @@ func (h *VMHandler) AttachISOVM(c echo.Context) error {
 // DetachISOVM handles POST /api/vms/:id/iso/detach - Detach the install/rescue ISO
 func (h *VMHandler) DetachISOVM(c echo.Context) error {
 	id := c.Param("id")
+	if !h.authorizeVM(c, id) {
+		return nil
+	}
 	jobID, err := h.service.DetachISO(c.Request().Context(), id)
 	if err != nil {
 		if errors.Is(err, service.ErrVMNotFound) {
@@ -1088,6 +1178,9 @@ func (h *VMHandler) DetachISOVM(c echo.Context) error {
 // Body: optional {iso_url}; falls back to the RESCUE_ISO_URL env var.
 func (h *VMHandler) RescueVM(c echo.Context) error {
 	id := c.Param("id")
+	if !h.authorizeVM(c, id) {
+		return nil
+	}
 	var req struct {
 		ISOURL string `json:"iso_url"`
 	}
@@ -1108,6 +1201,9 @@ func (h *VMHandler) RescueVM(c echo.Context) error {
 // UnrescueVM handles POST /api/vms/:id/unrescue - Detach the rescue ISO.
 func (h *VMHandler) UnrescueVM(c echo.Context) error {
 	id := c.Param("id")
+	if !h.authorizeVM(c, id) {
+		return nil
+	}
 	jobID, err := h.service.UnrescueVM(c.Request().Context(), id)
 	if err != nil {
 		if errors.Is(err, service.ErrVMNotFound) {
@@ -1126,6 +1222,9 @@ func (h *VMHandler) UnrescueVM(c echo.Context) error {
 // (the nodes do not share storage).
 func (h *VMHandler) MigrateVM(c echo.Context) error {
 	id := c.Param("id")
+	if !h.authorizeVM(c, id) {
+		return nil
+	}
 	var req struct {
 		DestNodeID  string `json:"dest_node_id"`
 		Live        *bool  `json:"live"`
@@ -1345,6 +1444,10 @@ func (h *VMHandler) GetVMMetrics(c echo.Context) error {
 			"error":   "Bad Request",
 			"message": "VM ID is required",
 		})
+	}
+
+	if !h.authorizeVM(c, id) {
+		return nil
 	}
 
 	// Get VM to find its node

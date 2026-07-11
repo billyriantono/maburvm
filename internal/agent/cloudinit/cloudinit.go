@@ -50,9 +50,42 @@ func (c Config) authorizedKeys() []string {
 	return out
 }
 
+// hasControlChars reports whether s contains a newline, carriage return, or any
+// other control character. Such characters in a hostname or password would let a
+// caller break out of the generated YAML scalar and inject arbitrary cloud-config
+// directives (e.g. extra runcmd/ssh_authorized_keys) that run as root on the guest.
+func hasControlChars(s string) bool {
+	for _, r := range s {
+		if r == '\n' || r == '\r' || r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+// validate rejects Config values that would corrupt or allow injection into the
+// generated cloud-config YAML. It is the last line of defense regardless of any
+// upstream input validation.
+func (c Config) validate() error {
+	if hasControlChars(c.Hostname) {
+		return fmt.Errorf("hostname contains control characters")
+	}
+	if hasControlChars(c.Password) {
+		return fmt.Errorf("root password contains control characters")
+	}
+	if hasControlChars(c.InstanceID) {
+		return fmt.Errorf("instance id contains control characters")
+	}
+	return nil
+}
+
 // GenerateSeedISO writes a NoCloud seed ISO (volume label "cidata") to outPath.
 // It returns an error if no ISO authoring tool is available on the host.
 func GenerateSeedISO(cfg Config, outPath string) error {
+	if err := cfg.validate(); err != nil {
+		return fmt.Errorf("invalid cloud-init config: %w", err)
+	}
+
 	tmpDir, err := os.MkdirTemp("", "cloudinit-*")
 	if err != nil {
 		return fmt.Errorf("failed to create temp dir: %w", err)

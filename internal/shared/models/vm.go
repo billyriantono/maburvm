@@ -15,6 +15,7 @@ const (
 	VMStatusStopped   VMStatus = "stopped"
 	VMStatusSuspended VMStatus = "suspended"
 	VMStatusCreating  VMStatus = "creating"
+	VMStatusDeleting  VMStatus = "deleting"
 	VMStatusError     VMStatus = "error"
 )
 

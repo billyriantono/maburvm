@@ -26,6 +26,35 @@ func NewBackupHandler(service *service.BackupService) *BackupHandler {
 	}
 }
 
+// authorizeVM enforces tenant isolation for VM-scoped backup requests. Every
+// backup endpoint is keyed by a VM id in the path, so ownership of that VM
+// governs access to its backups and schedules. Admins may act on any VM; other
+// users only on VMs they own. Returns true when authorized; otherwise it writes
+// a 401/404 and returns false (caller should `return nil`). 404 (not 403) avoids
+// leaking which VM ids exist.
+func (h *BackupHandler) authorizeVM(c echo.Context, vmID string) bool {
+	userCtx, ok := middleware.GetUserContext(c)
+	if !ok {
+		_ = c.JSON(http.StatusUnauthorized, map[string]interface{}{
+			"error":   "Unauthorized",
+			"message": "authentication required",
+		})
+		return false
+	}
+	if userCtx.Role == models.RoleAdmin {
+		return true
+	}
+	ownerID, err := h.service.GetVMOwner(c.Request().Context(), vmID)
+	if err != nil || ownerID != userCtx.ID.String() {
+		_ = c.JSON(http.StatusNotFound, map[string]interface{}{
+			"error":   "Not Found",
+			"message": "VM not found",
+		})
+		return false
+	}
+	return true
+}
+
 // ============================================================================
 // Create Backup
 // ============================================================================
@@ -51,6 +80,9 @@ type CreateBackupResponse struct {
 // CreateBackup handles POST /api/vms/:id/backups - Create a manual backup
 func (h *BackupHandler) CreateBackup(c echo.Context) error {
 	vmID := c.Param("id")
+	if !h.authorizeVM(c, vmID) {
+		return nil
+	}
 	if vmID == "" {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
 			"error":   "Bad Request",
@@ -132,6 +164,9 @@ type BackupListItem struct {
 // ListBackups handles GET /api/vms/:id/backups - List backups
 func (h *BackupHandler) ListBackups(c echo.Context) error {
 	vmID := c.Param("id")
+	if !h.authorizeVM(c, vmID) {
+		return nil
+	}
 	if vmID == "" {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
 			"error":   "Bad Request",
@@ -212,6 +247,9 @@ func (h *BackupHandler) ListBackups(c echo.Context) error {
 // GetBackup handles GET /api/vms/:id/backups/:backup_id - Get backup details
 func (h *BackupHandler) GetBackup(c echo.Context) error {
 	vmID := c.Param("id")
+	if !h.authorizeVM(c, vmID) {
+		return nil
+	}
 	backupID := c.Param("backup_id")
 
 	if vmID == "" || backupID == "" {
@@ -269,6 +307,9 @@ func (h *BackupHandler) GetBackup(c echo.Context) error {
 // DeleteBackup handles DELETE /api/vms/:id/backups/:backup_id - Delete backup
 func (h *BackupHandler) DeleteBackup(c echo.Context) error {
 	vmID := c.Param("id")
+	if !h.authorizeVM(c, vmID) {
+		return nil
+	}
 	backupID := c.Param("backup_id")
 
 	if vmID == "" || backupID == "" {
@@ -335,6 +376,9 @@ type RestoreBackupResponse struct {
 // RestoreBackup handles POST /api/vms/:id/backups/:backup_id/restore - Restore from backup
 func (h *BackupHandler) RestoreBackup(c echo.Context) error {
 	vmID := c.Param("id")
+	if !h.authorizeVM(c, vmID) {
+		return nil
+	}
 	backupID := c.Param("backup_id")
 
 	if vmID == "" || backupID == "" {
@@ -436,6 +480,9 @@ type ConfigureScheduleResponse struct {
 // ConfigureSchedule handles PUT /api/vms/:id/backup-schedule - Configure schedule
 func (h *BackupHandler) ConfigureSchedule(c echo.Context) error {
 	vmID := c.Param("id")
+	if !h.authorizeVM(c, vmID) {
+		return nil
+	}
 	if vmID == "" {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
 			"error":   "Bad Request",
@@ -502,6 +549,9 @@ func (h *BackupHandler) ConfigureSchedule(c echo.Context) error {
 // GetSchedule handles GET /api/vms/:id/backup-schedule - Get backup schedule
 func (h *BackupHandler) GetSchedule(c echo.Context) error {
 	vmID := c.Param("id")
+	if !h.authorizeVM(c, vmID) {
+		return nil
+	}
 	if vmID == "" {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
 			"error":   "Bad Request",
@@ -534,6 +584,9 @@ func (h *BackupHandler) GetSchedule(c echo.Context) error {
 // ListSchedules handles GET /api/vms/:id/backup-schedules - frontend compatibility.
 func (h *BackupHandler) ListSchedules(c echo.Context) error {
 	vmID := c.Param("id")
+	if !h.authorizeVM(c, vmID) {
+		return nil
+	}
 	if vmID == "" {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
 			"error":   "Bad Request",
@@ -568,6 +621,9 @@ func (h *BackupHandler) ListSchedules(c echo.Context) error {
 // DeleteSchedule handles DELETE /api/vms/:id/backup-schedule - Delete backup schedule
 func (h *BackupHandler) DeleteSchedule(c echo.Context) error {
 	vmID := c.Param("id")
+	if !h.authorizeVM(c, vmID) {
+		return nil
+	}
 	if vmID == "" {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
 			"error":   "Bad Request",
@@ -605,6 +661,9 @@ type BackupStatsResponse struct {
 // GetBackupStats handles GET /api/vms/:id/backup-stats - Get backup statistics
 func (h *BackupHandler) GetBackupStats(c echo.Context) error {
 	vmID := c.Param("id")
+	if !h.authorizeVM(c, vmID) {
+		return nil
+	}
 	if vmID == "" {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
 			"error":   "Bad Request",

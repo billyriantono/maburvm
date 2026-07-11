@@ -202,7 +202,7 @@ func (s *Server) setupAuthRoutes(g *echo.Group) {
 	authHandler := handler.NewAuthHandler(userService)
 
 	auth := g.Group("/auth")
-	auth.POST("/login", authHandler.Login)
+	auth.POST("/login", authHandler.Login, panelMiddleware.LoginRateLimiter())
 	auth.POST("/register", authHandler.Register)
 	auth.POST("/logout", authHandler.Logout)
 	auth.POST("/refresh", panelMiddleware.RefreshTokenHandler(s.db))

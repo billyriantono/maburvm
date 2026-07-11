@@ -131,6 +131,19 @@ type CreateBackupResponse struct {
 	JobID  int64          `json:"job_id"`
 }
 
+// GetVMOwner returns the user ID owning the given VM, for per-resource
+// authorization of VM-scoped backup endpoints. Returns ErrVMNotFound if absent.
+func (s *BackupService) GetVMOwner(ctx context.Context, vmID string) (string, error) {
+	vm, err := s.vmRepo.GetByID(ctx, vmID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", ErrVMNotFound
+		}
+		return "", fmt.Errorf("failed to get VM: %w", err)
+	}
+	return vm.UserID, nil
+}
+
 // CreateBackup creates a manual backup and enqueues a backup job
 func (s *BackupService) CreateBackup(ctx context.Context, req *CreateBackupRequest) (*CreateBackupResponse, error) {
 	// Validate VM exists

@@ -67,6 +67,7 @@ function StatusBadge({ status }: { status: VMStatus }) {
     stopped: { bg: "bg-gray-400", text: "text-white", label: "Stopped" },
     suspended: { bg: "bg-warning", text: "text-black", label: "Suspended" },
     creating: { bg: "bg-secondary", text: "text-black", label: "Creating" },
+    deleting: { bg: "bg-warning", text: "text-black", label: "Deleting" },
     error: { bg: "bg-danger", text: "text-white", label: "Error" },
   }
   const config = statusConfig[status] || statusConfig.stopped
