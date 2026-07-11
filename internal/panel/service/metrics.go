@@ -131,6 +131,15 @@ func (c *MetricsCollector) collectOnce(ctx context.Context) {
 		}
 	}
 
+	// Reconcile DB VM status against reality on every online node, so a VM
+	// started/stopped/crashed out-of-band is reflected in the panel (otherwise
+	// status only changes on an explicit lifecycle command and drifts stale).
+	for nodeID := range online {
+		rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		c.vmService.ReconcileNodeVMStatuses(rctx, nodeID)
+		cancel()
+	}
+
 	c.collectVMs(ctx, online)
 
 	if c.retention > 0 {

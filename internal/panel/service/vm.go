@@ -1416,10 +1416,13 @@ func (s *VMService) executeSyncLifecycle(
 		}, ErrVMLifecycleFailed
 	}
 
-	// Update VM status based on response
-	if resp.Success {
-		s.syncVMStatus(ctx, vm, resp.State)
-	}
+	// Sync the DB status from the agent's reported State, which is authoritative
+	// about the ACTUAL domain state — even when the command itself "failed".
+	// Starting an already-running domain returns Success=false with a "domain is
+	// already running" message but State=RUNNING; without syncing here the panel
+	// row would stay 'stopped' forever, out of sync with reality. syncVMStatus
+	// no-ops on unknown/unspecified states, so this is safe to call always.
+	s.syncVMStatus(ctx, vm, resp.State)
 
 	return &LifecycleResponse{
 		VMID:     vm.ID,
@@ -2174,6 +2177,38 @@ func (s *VMService) SyncVMStatusFromHeartbeat(ctx context.Context, nodeID string
 	}
 
 	return nil
+}
+
+// ReconcileNodeVMStatuses queries the agent for the ACTUAL state of every VM on
+// a node and syncs the DB status to match. This is what keeps the panel honest
+// when a VM is started, stopped, or crashes out-of-band: without it the DB
+// status only ever changes on an explicit lifecycle command, so a VM that is
+// really running shows as 'stopped' (and vice-versa) indefinitely. Called each
+// tick by the metrics collector for every online node.
+//
+// VMs mid-operation (creating/deleting) are skipped so a stale agent read can't
+// clobber an in-flight provision or teardown. A per-VM agent error is logged and
+// skipped, never treated as "stopped", so a transient network blip doesn't flip
+// a healthy VM offline.
+func (s *VMService) ReconcileNodeVMStatuses(ctx context.Context, nodeID string) {
+	vms, err := s.vmRepo.ListByNodeID(ctx, nodeID, 0, 0)
+	if err != nil {
+		s.logger.WarnContext(ctx, "status reconcile: list node VMs failed", "node_id", nodeID, "error", err)
+		return
+	}
+	for i := range vms {
+		if vms[i].Status == models.VMStatusCreating || vms[i].Status == models.VMStatusDeleting {
+			continue
+		}
+		sctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		resp, err := s.getVMAgentStatus(sctx, vms[i].ID, nodeID)
+		cancel()
+		if err != nil {
+			s.logger.WarnContext(ctx, "status reconcile: agent status failed", "vm_id", vms[i].ID, "error", err)
+			continue
+		}
+		s.syncVMStatus(ctx, &vms[i], resp.GetState())
+	}
 }
 
 // GetVMStatusMetrics retrieves current metrics for a VM from the agent
