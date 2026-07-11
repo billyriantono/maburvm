@@ -83,12 +83,25 @@ export function useVM(id: string, options?: UseQueryOptions<VM>) {
   })
 }
 
+// CreateVMResult is the create response: the new VM's identity plus a one-time
+// root_password when the server generated one (no password/SSH key supplied).
+export interface CreateVMResult {
+  id: string
+  hostname: string
+  status: string
+  node_id: string
+  job_id: number
+  vnc_port?: number
+  created_at: string
+  root_password?: string
+}
+
 export function useCreateVM() {
   const queryClient = useQueryClient()
 
-  return useMutation<VM, Error, CreateVMRequest>({
+  return useMutation<CreateVMResult, Error, CreateVMRequest>({
     mutationFn: async (data) => {
-      const response = await api.post<VM>('/api/v1/vms', data)
+      const response = await api.post<CreateVMResult>('/api/v1/vms', data)
       return response.data.data
     },
     onSuccess: () => {

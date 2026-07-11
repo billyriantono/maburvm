@@ -71,6 +71,9 @@ export interface CreateVMRequest {
   user_data?: string;      // first-boot script/recipe (cloud-init), run once per instance
   managed_network_id?: string; // attach to a private VPC / managed network instead of a pool
   recipe_id?: string;      // first-boot recipe to inject as user_data (ignored if user_data set)
+  password?: string;       // root password to inject (min 8 chars); omit to auto-generate
+  regenerate_password?: boolean; // generate a root password and return it once
+  ssh_key_ids?: string[];  // saved SSH keys to inject into the new guest
 }
 
 // UpdateVMRequest for updating VMs

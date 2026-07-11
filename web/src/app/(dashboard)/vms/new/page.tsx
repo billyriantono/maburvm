@@ -125,6 +125,9 @@ export default function NewVMPage() {
   const { data: recipesData } = useRecipes()
   const recipes = useMemo(() => recipesData || [], [recipesData])
   const [selectedRecipeId, setSelectedRecipeId] = useState("")
+  // After create, if the server generated a root password we show it ONCE here
+  // before navigating (it's never retrievable again).
+  const [newCredential, setNewCredential] = useState<{ id: string; password: string } | null>(null)
 
   const {
     register,
@@ -245,7 +248,13 @@ export default function NewVMPage() {
         cpu_model: data.cpuModel || undefined,
         user_data: data.userData || undefined,
       })
-      router.push(`/vms/${result.id}`)
+      // If the server generated a root password, show it once before leaving —
+      // it can't be retrieved later. Otherwise go straight to the VM.
+      if (result.root_password) {
+        setNewCredential({ id: result.id, password: result.root_password })
+      } else {
+        router.push(`/vms/${result.id}`)
+      }
     } catch (error) {
       // Prefer the backend's message (e.g. "IP pool not assigned to this node")
       // over the generic axios "status code 4xx".
@@ -274,6 +283,42 @@ export default function NewVMPage() {
   // Get OS icon based on template name
   return (
     <div className="max-w-4xl mx-auto">
+      {/* One-time root password reveal (shown only when the server generated one). */}
+      {newCredential && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md border-4 border-black bg-white p-6 shadow-[8px_8px_0_0_#000]">
+            <h2 className="mb-2 text-xl font-black uppercase tracking-tight text-black">
+              Save your root password
+            </h2>
+            <p className="mb-4 text-sm font-medium text-gray-600">
+              This is shown <strong>once</strong> and can’t be retrieved later. Copy it now — log in as{" "}
+              <code className="font-mono">root</code> with this password.
+            </p>
+            <div className="mb-4 flex items-center gap-2 border-2 border-black bg-gray-50 p-3">
+              <code className="flex-1 break-all font-mono text-sm text-black">{newCredential.password}</code>
+              <button
+                type="button"
+                onClick={() => navigator.clipboard?.writeText(newCredential.password)}
+                className="border-2 border-black bg-yellow-300 px-3 py-1 text-xs font-black uppercase hover:bg-yellow-400"
+              >
+                Copy
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                const id = newCredential.id
+                setNewCredential(null)
+                router.push(`/vms/${id}`)
+              }}
+              className="w-full border-2 border-black bg-black px-4 py-2 text-sm font-black uppercase text-white hover:bg-gray-800"
+            >
+              I saved it — continue
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="mb-8">
         <h1 className="text-3xl font-black uppercase tracking-tight text-black mb-2">
