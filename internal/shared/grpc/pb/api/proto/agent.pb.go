@@ -6016,6 +6016,120 @@ func (x *ScannedNetwork) GetIpAddress() string {
 	return ""
 }
 
+// ProbeIPsRequest asks the agent to ARP-probe ip_addresses on the given bridge.
+type ProbeIPsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Bridge        string                 `protobuf:"bytes,1,opt,name=bridge,proto3" json:"bridge,omitempty"`                              // host bridge to probe on (e.g. viifbr0)
+	IpAddresses   []string               `protobuf:"bytes,2,rep,name=ip_addresses,json=ipAddresses,proto3" json:"ip_addresses,omitempty"` // IPv4 addresses to probe
+	TimeoutMs     int32                  `protobuf:"varint,3,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`      // per-probe wait; 0 → agent default (1000ms)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProbeIPsRequest) Reset() {
+	*x = ProbeIPsRequest{}
+	mi := &file_api_proto_agent_proto_msgTypes[65]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProbeIPsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProbeIPsRequest) ProtoMessage() {}
+
+func (x *ProbeIPsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_agent_proto_msgTypes[65]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProbeIPsRequest.ProtoReflect.Descriptor instead.
+func (*ProbeIPsRequest) Descriptor() ([]byte, []int) {
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{65}
+}
+
+func (x *ProbeIPsRequest) GetBridge() string {
+	if x != nil {
+		return x.Bridge
+	}
+	return ""
+}
+
+func (x *ProbeIPsRequest) GetIpAddresses() []string {
+	if x != nil {
+		return x.IpAddresses
+	}
+	return nil
+}
+
+func (x *ProbeIPsRequest) GetTimeoutMs() int32 {
+	if x != nil {
+		return x.TimeoutMs
+	}
+	return 0
+}
+
+// ProbeIPsResponse reports which probed IPs are live on the wire.
+type ProbeIPsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	InUse         []string               `protobuf:"bytes,1,rep,name=in_use,json=inUse,proto3" json:"in_use,omitempty"` // IPs that answered ARP (in use by some host)
+	Checked       []string               `protobuf:"bytes,2,rep,name=checked,proto3" json:"checked,omitempty"`          // IPs actually probed (probe attempted)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProbeIPsResponse) Reset() {
+	*x = ProbeIPsResponse{}
+	mi := &file_api_proto_agent_proto_msgTypes[66]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProbeIPsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProbeIPsResponse) ProtoMessage() {}
+
+func (x *ProbeIPsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_agent_proto_msgTypes[66]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProbeIPsResponse.ProtoReflect.Descriptor instead.
+func (*ProbeIPsResponse) Descriptor() ([]byte, []int) {
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{66}
+}
+
+func (x *ProbeIPsResponse) GetInUse() []string {
+	if x != nil {
+		return x.InUse
+	}
+	return nil
+}
+
+func (x *ProbeIPsResponse) GetChecked() []string {
+	if x != nil {
+		return x.Checked
+	}
+	return nil
+}
+
 var File_api_proto_agent_proto protoreflect.FileDescriptor
 
 const file_api_proto_agent_proto_rawDesc = "" +
@@ -6481,7 +6595,15 @@ const file_api_proto_agent_proto_rawDesc = "" +
 	"\x06bridge\x18\x02 \x01(\tR\x06bridge\x12\x14\n" +
 	"\x05model\x18\x03 \x01(\tR\x05model\x12\x1d\n" +
 	"\n" +
-	"ip_address\x18\x04 \x01(\tR\tipAddress*\xaf\x03\n" +
+	"ip_address\x18\x04 \x01(\tR\tipAddress\"k\n" +
+	"\x0fProbeIPsRequest\x12\x16\n" +
+	"\x06bridge\x18\x01 \x01(\tR\x06bridge\x12!\n" +
+	"\fip_addresses\x18\x02 \x03(\tR\vipAddresses\x12\x1d\n" +
+	"\n" +
+	"timeout_ms\x18\x03 \x01(\x05R\ttimeoutMs\"C\n" +
+	"\x10ProbeIPsResponse\x12\x15\n" +
+	"\x06in_use\x18\x01 \x03(\tR\x05inUse\x12\x18\n" +
+	"\achecked\x18\x02 \x03(\tR\achecked*\xaf\x03\n" +
 	"\rVMCommandType\x12\x1f\n" +
 	"\x1bVM_COMMAND_TYPE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16VM_COMMAND_TYPE_CREATE\x10\x01\x12\x19\n" +
@@ -6564,7 +6686,7 @@ const file_api_proto_agent_proto_rawDesc = "" +
 	"\x12ERROR_CODE_TIMEOUT\x10\b\x12\x17\n" +
 	"\x13ERROR_CODE_CONFLICT\x10\t\x12\x1e\n" +
 	"\x1aERROR_CODE_UNAUTHENTICATED\x10\n" +
-	"2\xfb\v\n" +
+	"2\xb8\f\n" +
 	"\tNodeAgent\x12G\n" +
 	"\fRegisterNode\x12\x1a.agent.RegisterNodeRequest\x1a\x1b.agent.RegisterNodeResponse\x12B\n" +
 	"\tHeartbeat\x12\x17.agent.HeartbeatRequest\x1a\x18.agent.HeartbeatResponse(\x010\x01\x12E\n" +
@@ -6590,7 +6712,8 @@ const file_api_proto_agent_proto_rawDesc = "" +
 	"\n" +
 	"DetachDisk\x12\x18.agent.DetachDiskRequest\x1a\x19.agent.DetachDiskResponse\x12J\n" +
 	"\rDefineNetwork\x12\x1b.agent.DefineNetworkRequest\x1a\x1c.agent.DefineNetworkResponse\x12P\n" +
-	"\x0fUndefineNetwork\x12\x1d.agent.UndefineNetworkRequest\x1a\x1e.agent.UndefineNetworkResponseB7Z5github.com/maburvm/maburvm/internal/shared/grpc/pb;pbb\x06proto3"
+	"\x0fUndefineNetwork\x12\x1d.agent.UndefineNetworkRequest\x1a\x1e.agent.UndefineNetworkResponse\x12;\n" +
+	"\bProbeIPs\x12\x16.agent.ProbeIPsRequest\x1a\x17.agent.ProbeIPsResponseB7Z5github.com/maburvm/maburvm/internal/shared/grpc/pb;pbb\x06proto3"
 
 var (
 	file_api_proto_agent_proto_rawDescOnce sync.Once
@@ -6605,7 +6728,7 @@ func file_api_proto_agent_proto_rawDescGZIP() []byte {
 }
 
 var file_api_proto_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 10)
-var file_api_proto_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 68)
+var file_api_proto_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 70)
 var file_api_proto_agent_proto_goTypes = []any{
 	(VMCommandType)(0),                  // 0: agent.VMCommandType
 	(VMState)(0),                        // 1: agent.VMState
@@ -6682,22 +6805,24 @@ var file_api_proto_agent_proto_goTypes = []any{
 	(*ScannedVM)(nil),                   // 72: agent.ScannedVM
 	(*ScannedDisk)(nil),                 // 73: agent.ScannedDisk
 	(*ScannedNetwork)(nil),              // 74: agent.ScannedNetwork
-	nil,                                 // 75: agent.RegisterNodeRequest.LabelsEntry
-	nil,                                 // 76: agent.VMConfig.MetadataEntry
-	nil,                                 // 77: agent.ErrorResponse.DetailsEntry
-	(*durationpb.Duration)(nil),         // 78: google.protobuf.Duration
-	(*timestamppb.Timestamp)(nil),       // 79: google.protobuf.Timestamp
+	(*ProbeIPsRequest)(nil),             // 75: agent.ProbeIPsRequest
+	(*ProbeIPsResponse)(nil),            // 76: agent.ProbeIPsResponse
+	nil,                                 // 77: agent.RegisterNodeRequest.LabelsEntry
+	nil,                                 // 78: agent.VMConfig.MetadataEntry
+	nil,                                 // 79: agent.ErrorResponse.DetailsEntry
+	(*durationpb.Duration)(nil),         // 80: google.protobuf.Duration
+	(*timestamppb.Timestamp)(nil),       // 81: google.protobuf.Timestamp
 }
 var file_api_proto_agent_proto_depIdxs = []int32{
 	16, // 0: agent.RegisterNodeRequest.total_resources:type_name -> agent.VMResources
-	75, // 1: agent.RegisterNodeRequest.labels:type_name -> agent.RegisterNodeRequest.LabelsEntry
-	78, // 2: agent.RegisterNodeResponse.refresh_interval:type_name -> google.protobuf.Duration
-	78, // 3: agent.RegisterNodeResponse.metrics_interval:type_name -> google.protobuf.Duration
-	79, // 4: agent.HeartbeatRequest.timestamp:type_name -> google.protobuf.Timestamp
+	77, // 1: agent.RegisterNodeRequest.labels:type_name -> agent.RegisterNodeRequest.LabelsEntry
+	80, // 2: agent.RegisterNodeResponse.refresh_interval:type_name -> google.protobuf.Duration
+	80, // 3: agent.RegisterNodeResponse.metrics_interval:type_name -> google.protobuf.Duration
+	81, // 4: agent.HeartbeatRequest.timestamp:type_name -> google.protobuf.Timestamp
 	16, // 5: agent.HeartbeatRequest.available_resources:type_name -> agent.VMResources
 	15, // 6: agent.HeartbeatRequest.system_load:type_name -> agent.SystemLoad
 	13, // 7: agent.HeartbeatRequest.vm_bandwidth_usage:type_name -> agent.VMBandwidthReport
-	79, // 8: agent.HeartbeatResponse.timestamp:type_name -> google.protobuf.Timestamp
+	81, // 8: agent.HeartbeatResponse.timestamp:type_name -> google.protobuf.Timestamp
 	0,  // 9: agent.VMCommandRequest.command:type_name -> agent.VMCommandType
 	19, // 10: agent.VMCommandRequest.config:type_name -> agent.VMConfig
 	0,  // 11: agent.VMCommandResponse.command:type_name -> agent.VMCommandType
@@ -6706,12 +6831,12 @@ var file_api_proto_agent_proto_depIdxs = []int32{
 	16, // 14: agent.VMConfig.resources:type_name -> agent.VMResources
 	33, // 15: agent.VMConfig.network_config:type_name -> agent.VMNetworkConfig
 	39, // 16: agent.VMConfig.storage_config:type_name -> agent.StorageConfig
-	76, // 17: agent.VMConfig.metadata:type_name -> agent.VMConfig.MetadataEntry
+	78, // 17: agent.VMConfig.metadata:type_name -> agent.VMConfig.MetadataEntry
 	1,  // 18: agent.VMStatusResponse.state:type_name -> agent.VMState
 	22, // 19: agent.VMStatusResponse.current_resources:type_name -> agent.VMResourceUsage
-	79, // 20: agent.VMStatusResponse.last_state_change:type_name -> google.protobuf.Timestamp
+	81, // 20: agent.VMStatusResponse.last_state_change:type_name -> google.protobuf.Timestamp
 	2,  // 21: agent.VMMetricsRequest.metric_types:type_name -> agent.MetricType
-	79, // 22: agent.VMMetricsResponse.timestamp:type_name -> google.protobuf.Timestamp
+	81, // 22: agent.VMMetricsResponse.timestamp:type_name -> google.protobuf.Timestamp
 	25, // 23: agent.VMMetricsResponse.cpu:type_name -> agent.CPUMetrics
 	26, // 24: agent.VMMetricsResponse.memory:type_name -> agent.MemoryMetrics
 	27, // 25: agent.VMMetricsResponse.disk:type_name -> agent.DiskMetrics
@@ -6722,7 +6847,7 @@ var file_api_proto_agent_proto_depIdxs = []int32{
 	32, // 30: agent.SnapshotResponse.snapshot:type_name -> agent.SnapshotInfo
 	32, // 31: agent.SnapshotResponse.snapshots:type_name -> agent.SnapshotInfo
 	43, // 32: agent.SnapshotResponse.error:type_name -> agent.ErrorResponse
-	79, // 33: agent.SnapshotInfo.created_at:type_name -> google.protobuf.Timestamp
+	81, // 33: agent.SnapshotInfo.created_at:type_name -> google.protobuf.Timestamp
 	1,  // 34: agent.SnapshotInfo.vm_state:type_name -> agent.VMState
 	34, // 35: agent.VMNetworkConfig.interfaces:type_name -> agent.NetworkInterface
 	35, // 36: agent.VMNetworkConfig.firewall_rules:type_name -> agent.FirewallRule
@@ -6737,10 +6862,10 @@ var file_api_proto_agent_proto_depIdxs = []int32{
 	40, // 45: agent.StorageConfig.additional_volumes:type_name -> agent.DiskConfig
 	7,  // 46: agent.DiskConfig.format:type_name -> agent.DiskFormat
 	8,  // 47: agent.DiskConfig.backend:type_name -> agent.StorageBackend
-	79, // 48: agent.VNCProxyResponse.expires_at:type_name -> google.protobuf.Timestamp
+	81, // 48: agent.VNCProxyResponse.expires_at:type_name -> google.protobuf.Timestamp
 	43, // 49: agent.VNCProxyResponse.error:type_name -> agent.ErrorResponse
 	9,  // 50: agent.ErrorResponse.code:type_name -> agent.ErrorCode
-	77, // 51: agent.ErrorResponse.details:type_name -> agent.ErrorResponse.DetailsEntry
+	79, // 51: agent.ErrorResponse.details:type_name -> agent.ErrorResponse.DetailsEntry
 	46, // 52: agent.GetNodeInfoResponse.os_info:type_name -> agent.OSInfo
 	47, // 53: agent.GetNodeInfoResponse.cpu_info:type_name -> agent.CPUInfo
 	43, // 54: agent.GetNodeInfoResponse.error:type_name -> agent.ErrorResponse
@@ -6780,29 +6905,31 @@ var file_api_proto_agent_proto_depIdxs = []int32{
 	58, // 88: agent.NodeAgent.DetachDisk:input_type -> agent.DetachDiskRequest
 	60, // 89: agent.NodeAgent.DefineNetwork:input_type -> agent.DefineNetworkRequest
 	62, // 90: agent.NodeAgent.UndefineNetwork:input_type -> agent.UndefineNetworkRequest
-	11, // 91: agent.NodeAgent.RegisterNode:output_type -> agent.RegisterNodeResponse
-	14, // 92: agent.NodeAgent.Heartbeat:output_type -> agent.HeartbeatResponse
-	18, // 93: agent.NodeAgent.ExecuteVMCommand:output_type -> agent.VMCommandResponse
-	21, // 94: agent.NodeAgent.GetVMStatus:output_type -> agent.VMStatusResponse
-	24, // 95: agent.NodeAgent.StreamVMMetrics:output_type -> agent.VMMetricsResponse
-	31, // 96: agent.NodeAgent.CreateSnapshot:output_type -> agent.SnapshotResponse
-	38, // 97: agent.NodeAgent.ApplyNetworkConfig:output_type -> agent.NetworkConfigResponse
-	42, // 98: agent.NodeAgent.StartVNCProxy:output_type -> agent.VNCProxyResponse
-	45, // 99: agent.NodeAgent.GetNodeInfo:output_type -> agent.GetNodeInfoResponse
-	49, // 100: agent.NodeAgent.ImportDisk:output_type -> agent.DiskImportResponse
-	51, // 101: agent.NodeAgent.BackupDisk:output_type -> agent.BackupDiskResponse
-	69, // 102: agent.NodeAgent.GetLiveMetrics:output_type -> agent.GetLiveMetricsResponse
-	71, // 103: agent.NodeAgent.ScanVMs:output_type -> agent.ScanVMsResponse
-	53, // 104: agent.NodeAgent.CreateStorageVolume:output_type -> agent.CreateStorageVolumeResponse
-	55, // 105: agent.NodeAgent.DeleteStorageVolume:output_type -> agent.DeleteStorageVolumeResponse
-	65, // 106: agent.NodeAgent.MigrateVM:output_type -> agent.MigrateVMResponse
-	67, // 107: agent.NodeAgent.SyncTemplate:output_type -> agent.SyncTemplateResponse
-	57, // 108: agent.NodeAgent.AttachDisk:output_type -> agent.AttachDiskResponse
-	59, // 109: agent.NodeAgent.DetachDisk:output_type -> agent.DetachDiskResponse
-	61, // 110: agent.NodeAgent.DefineNetwork:output_type -> agent.DefineNetworkResponse
-	63, // 111: agent.NodeAgent.UndefineNetwork:output_type -> agent.UndefineNetworkResponse
-	91, // [91:112] is the sub-list for method output_type
-	70, // [70:91] is the sub-list for method input_type
+	75, // 91: agent.NodeAgent.ProbeIPs:input_type -> agent.ProbeIPsRequest
+	11, // 92: agent.NodeAgent.RegisterNode:output_type -> agent.RegisterNodeResponse
+	14, // 93: agent.NodeAgent.Heartbeat:output_type -> agent.HeartbeatResponse
+	18, // 94: agent.NodeAgent.ExecuteVMCommand:output_type -> agent.VMCommandResponse
+	21, // 95: agent.NodeAgent.GetVMStatus:output_type -> agent.VMStatusResponse
+	24, // 96: agent.NodeAgent.StreamVMMetrics:output_type -> agent.VMMetricsResponse
+	31, // 97: agent.NodeAgent.CreateSnapshot:output_type -> agent.SnapshotResponse
+	38, // 98: agent.NodeAgent.ApplyNetworkConfig:output_type -> agent.NetworkConfigResponse
+	42, // 99: agent.NodeAgent.StartVNCProxy:output_type -> agent.VNCProxyResponse
+	45, // 100: agent.NodeAgent.GetNodeInfo:output_type -> agent.GetNodeInfoResponse
+	49, // 101: agent.NodeAgent.ImportDisk:output_type -> agent.DiskImportResponse
+	51, // 102: agent.NodeAgent.BackupDisk:output_type -> agent.BackupDiskResponse
+	69, // 103: agent.NodeAgent.GetLiveMetrics:output_type -> agent.GetLiveMetricsResponse
+	71, // 104: agent.NodeAgent.ScanVMs:output_type -> agent.ScanVMsResponse
+	53, // 105: agent.NodeAgent.CreateStorageVolume:output_type -> agent.CreateStorageVolumeResponse
+	55, // 106: agent.NodeAgent.DeleteStorageVolume:output_type -> agent.DeleteStorageVolumeResponse
+	65, // 107: agent.NodeAgent.MigrateVM:output_type -> agent.MigrateVMResponse
+	67, // 108: agent.NodeAgent.SyncTemplate:output_type -> agent.SyncTemplateResponse
+	57, // 109: agent.NodeAgent.AttachDisk:output_type -> agent.AttachDiskResponse
+	59, // 110: agent.NodeAgent.DetachDisk:output_type -> agent.DetachDiskResponse
+	61, // 111: agent.NodeAgent.DefineNetwork:output_type -> agent.DefineNetworkResponse
+	63, // 112: agent.NodeAgent.UndefineNetwork:output_type -> agent.UndefineNetworkResponse
+	76, // 113: agent.NodeAgent.ProbeIPs:output_type -> agent.ProbeIPsResponse
+	92, // [92:114] is the sub-list for method output_type
+	70, // [70:92] is the sub-list for method input_type
 	70, // [70:70] is the sub-list for extension type_name
 	70, // [70:70] is the sub-list for extension extendee
 	0,  // [0:70] is the sub-list for field type_name
@@ -6819,7 +6946,7 @@ func file_api_proto_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_proto_agent_proto_rawDesc), len(file_api_proto_agent_proto_rawDesc)),
 			NumEnums:      10,
-			NumMessages:   68,
+			NumMessages:   70,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

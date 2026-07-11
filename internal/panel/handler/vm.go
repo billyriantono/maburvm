@@ -267,6 +267,11 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 				"error":   "Unprocessable Entity",
 				"message": err.Error(),
 			})
+		case errors.Is(err, service.ErrIPInUseOnNetwork):
+			return c.JSON(http.StatusConflict, map[string]interface{}{
+				"error":   "Conflict",
+				"message": err.Error(),
+			})
 		case errors.Is(err, service.ErrQuotaExceeded):
 			return c.JSON(http.StatusForbidden, map[string]interface{}{
 				"error":   "Quota Exceeded",

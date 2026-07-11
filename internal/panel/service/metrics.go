@@ -46,6 +46,7 @@ type MetricsCollector struct {
 	retention   time.Duration
 	enforce     bool // stop VMs that exceed their monthly bandwidth quota
 	logger      *slog.Logger
+	tick        int // collectOnce counter, for slower-cadence work (IP reconcile)
 }
 
 // NewMetricsCollector wires a collector. interval is the sampling period;
@@ -138,6 +139,19 @@ func (c *MetricsCollector) collectOnce(ctx context.Context) {
 		rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		c.vmService.ReconcileNodeVMStatuses(rctx, nodeID)
 		cancel()
+	}
+
+	// Less frequently (every ~5 ticks), ARP-reconcile each node's pool IPs so
+	// addresses used by VMs the panel doesn't manage (pre-existing Virtualizor
+	// guests) show as reserved and are never allocated. It's heavier (one ARP per
+	// candidate IP) so it doesn't need to run every tick.
+	c.tick++
+	if c.tick%5 == 1 {
+		for nodeID := range online {
+			rctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+			c.vmService.ReconcileNodePoolIPs(rctx, nodeID)
+			cancel()
+		}
 	}
 
 	c.collectVMs(ctx, online)

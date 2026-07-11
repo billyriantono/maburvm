@@ -94,6 +94,12 @@ service NodeAgent {
   // bridge for private VPC segments). UndefineNetwork removes it.
   rpc DefineNetwork(DefineNetworkRequest) returns (DefineNetworkResponse);
   rpc UndefineNetwork(UndefineNetworkRequest) returns (UndefineNetworkResponse);
+
+  // ProbeIPs ARP-probes a set of IPs on a bridge and returns those that answer
+  // (i.e. are live on the wire). The panel uses this to detect IPs already used
+  // by VMs it doesn't manage (e.g. pre-existing Virtualizor guests), so it never
+  // allocates a live customer IP and its IPAM view reflects reality.
+  rpc ProbeIPs(ProbeIPsRequest) returns (ProbeIPsResponse);
 }
 
 // ============================================================================
@@ -1374,4 +1380,21 @@ message ScannedNetwork {
   string bridge = 2;
   string model = 3;
   string ip_address = 4;
+}
+
+// ============================================================================
+// IP probing (ARP)
+// ============================================================================
+
+// ProbeIPsRequest asks the agent to ARP-probe ip_addresses on the given bridge.
+message ProbeIPsRequest {
+  string bridge = 1;                 // host bridge to probe on (e.g. viifbr0)
+  repeated string ip_addresses = 2;  // IPv4 addresses to probe
+  int32 timeout_ms = 3;              // per-probe wait; 0 → agent default (1000ms)
+}
+
+// ProbeIPsResponse reports which probed IPs are live on the wire.
+message ProbeIPsResponse {
+  repeated string in_use = 1;   // IPs that answered ARP (in use by some host)
+  repeated string checked = 2;  // IPs actually probed (probe attempted)
 }

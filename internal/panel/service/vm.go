@@ -48,6 +48,10 @@ var (
 	// selected IP pool that has no bridge configured — the VM would fall back to
 	// the non-existent virbr0 and fail to start.
 	ErrPoolHasNoBridge = errors.New("the selected IP pool has no bridge configured; set the pool's bridge (e.g. viifbr0) before creating VMs from it")
+	// ErrIPInUseOnNetwork is returned when the requested IP already answers ARP on
+	// the node (it's live — used by a VM the panel doesn't manage), so assigning it
+	// would collide with an existing host.
+	ErrIPInUseOnNetwork = errors.New("the requested IP is already in use on the network (it answers ARP); pick a different address")
 	// ErrVMLifecycleFailed is returned when a lifecycle operation fails
 	ErrVMLifecycleFailed = errors.New("VM lifecycle operation failed")
 	// ErrVMNodeInactive is returned when trying to execute an agent-backed VM
@@ -335,6 +339,19 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 			}
 			if pool == nil || pool.Bridge == "" {
 				return nil, ErrPoolHasNoBridge
+			}
+			// If a specific IP was requested, make sure it isn't already live on the
+			// wire (in use by a VM we don't manage) before handing it out. Best-effort:
+			// a probe error (agent down) doesn't block creation — the IPAM reconciler
+			// is the backstop.
+			if req.RequestedIP != "" {
+				if live, perr := s.probeIPsOnNode(ctx, nodeID, pool.Bridge, []string{req.RequestedIP}); perr == nil {
+					for _, ip := range live {
+						if ip == req.RequestedIP {
+							return nil, ErrIPInUseOnNetwork
+						}
+					}
+				}
 			}
 		}
 		poolCandidates = []string{req.IPPoolID}
@@ -2271,6 +2288,95 @@ func (s *VMService) ReconcileNodeVMStatuses(ctx context.Context, nodeID string) 
 		if lp := int(resp.GetVncPort()); lp > 0 && (vms[i].VNCPort == nil || *vms[i].VNCPort != lp) {
 			if uerr := s.vmRepo.UpdateVNCPort(ctx, vms[i].ID, lp); uerr != nil {
 				s.logger.WarnContext(ctx, "status reconcile: persist VNC port failed", "vm_id", vms[i].ID, "error", uerr)
+			}
+		}
+	}
+}
+
+// externalIPNote marks an IPAddress the panel auto-reserved because an ARP probe
+// found it live on the wire (in use by a VM the panel doesn't manage). The IP
+// reconciler only ever flips IPs bearing this note back to available, so it never
+// disturbs admin-reserved or assigned addresses.
+const externalIPNote = "auto-detected in use on the network"
+
+// probeIPsOnNode asks the node agent to ARP-probe ips on a bridge and returns the
+// subset that are live (in use) on the wire.
+func (s *VMService) probeIPsOnNode(ctx context.Context, nodeID, bridge string, ips []string) ([]string, error) {
+	if bridge == "" || len(ips) == 0 {
+		return nil, nil
+	}
+	client, err := s.getAgentClient(ctx, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	authCtx, err := s.agentAuthContext(ctx, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.ProbeIPs(authCtx, &pb.ProbeIPsRequest{
+		Bridge:      bridge,
+		IpAddresses: ips,
+		TimeoutMs:   1000,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetInUse(), nil
+}
+
+// ReconcileNodePoolIPs ARP-probes each of the node's pool IPs and keeps IPAM in
+// sync with reality: an available IP that answers ARP (used by an unmanaged VM,
+// e.g. a pre-existing Virtualizor guest) is auto-reserved so it's never
+// allocated, and a previously auto-reserved IP that has gone quiet is released
+// back to available. Only 'available' and self-reserved (externalIPNote) rows
+// are ever touched — assigned/disabled/admin-reserved addresses are left alone.
+func (s *VMService) ReconcileNodePoolIPs(ctx context.Context, nodeID string) {
+	pools, err := s.ipamService.ListPoolsForNode(ctx, nodeID)
+	if err != nil {
+		s.logger.WarnContext(ctx, "IP reconcile: list pools failed", "node_id", nodeID, "error", err)
+		return
+	}
+	for i := range pools {
+		pool := pools[i]
+		if pool.Bridge == "" {
+			continue
+		}
+		var addrs []models.IPAddress
+		if err := s.db.WithContext(ctx).
+			Where("pool_id = ? AND (status = ? OR (status = ? AND note = ?))",
+				pool.ID, models.IPAddressStatusAvailable, models.IPAddressStatusReserved, externalIPNote).
+			Find(&addrs).Error; err != nil {
+			s.logger.WarnContext(ctx, "IP reconcile: list addresses failed", "pool_id", pool.ID, "error", err)
+			continue
+		}
+		if len(addrs) == 0 {
+			continue
+		}
+		ips := make([]string, len(addrs))
+		for j := range addrs {
+			ips[j] = addrs[j].Address
+		}
+		live, err := s.probeIPsOnNode(ctx, nodeID, pool.Bridge, ips)
+		if err != nil {
+			s.logger.WarnContext(ctx, "IP reconcile: probe failed", "node_id", nodeID, "bridge", pool.Bridge, "error", err)
+			continue
+		}
+		liveSet := make(map[string]bool, len(live))
+		for _, ip := range live {
+			liveSet[ip] = true
+		}
+		for j := range addrs {
+			a := addrs[j]
+			switch {
+			case liveSet[a.Address] && a.Status == models.IPAddressStatusAvailable:
+				// Guard on status so we never clobber an IP that was just assigned.
+				s.db.WithContext(ctx).Model(&models.IPAddress{}).
+					Where("id = ? AND status = ?", a.ID, models.IPAddressStatusAvailable).
+					Updates(map[string]interface{}{"status": models.IPAddressStatusReserved, "note": externalIPNote})
+			case !liveSet[a.Address] && a.Status == models.IPAddressStatusReserved && a.Note == externalIPNote:
+				s.db.WithContext(ctx).Model(&models.IPAddress{}).
+					Where("id = ? AND status = ? AND note = ?", a.ID, models.IPAddressStatusReserved, externalIPNote).
+					Updates(map[string]interface{}{"status": models.IPAddressStatusAvailable, "note": ""})
 			}
 		}
 	}

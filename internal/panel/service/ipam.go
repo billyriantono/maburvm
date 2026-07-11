@@ -370,6 +370,12 @@ func (s *IPAMService) allocateAddressInTx(ctx context.Context, tx *gorm.DB, req 
 		if address.Status != models.IPAddressStatusAvailable && address.Status != models.IPAddressStatusReserved {
 			return nil, ErrNoAvailableIPAddress
 		}
+		// A reserved IP auto-flagged as live-on-the-network (externalIPNote) is used
+		// by a host we don't manage — never hand it out, even when explicitly
+		// requested. Admin-reserved IPs (different/empty note) stay requestable.
+		if address.Status == models.IPAddressStatusReserved && address.Note == externalIPNote {
+			return nil, ErrNoAvailableIPAddress
+		}
 	} else {
 		address, err = txRepo.FindAvailableAddressForUpdate(ctx, req.PoolID, req.NodeID)
 		if err != nil {

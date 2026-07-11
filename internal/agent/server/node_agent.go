@@ -2007,3 +2007,68 @@ func queryGuestAgentInfo(domainName string) (hostname string, ipAddresses []stri
 
 	return hostname, ipAddresses
 }
+
+// ProbeIPs ARP-probes each requested IP on the given bridge and returns those
+// that answer (are live on the wire). This lets the panel detect IPs already in
+// use by VMs it doesn't manage (e.g. pre-existing Virtualizor guests) so it
+// never double-assigns a live customer IP and its IPAM view matches reality.
+// Probes run concurrently (bounded) so scanning a whole /24-/25 stays fast.
+func (s *NodeAgentService) ProbeIPs(ctx context.Context, req *pb.ProbeIPsRequest) (*pb.ProbeIPsResponse, error) {
+	bridge := strings.TrimSpace(req.GetBridge())
+	if bridge == "" {
+		return nil, status.Error(codes.InvalidArgument, "bridge is required")
+	}
+	timeout := time.Duration(req.GetTimeoutMs()) * time.Millisecond
+	if timeout <= 0 {
+		timeout = time.Second
+	}
+
+	var (
+		mu      sync.Mutex
+		inUse   []string
+		checked []string
+		wg      sync.WaitGroup
+		sem     = make(chan struct{}, 32) // bound concurrency
+	)
+	for _, raw := range req.GetIpAddresses() {
+		ip := strings.TrimSpace(raw)
+		if ip == "" {
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(ip string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			live := arpProbe(bridge, ip, timeout)
+			mu.Lock()
+			checked = append(checked, ip)
+			if live {
+				inUse = append(inUse, ip)
+			}
+			mu.Unlock()
+		}(ip)
+	}
+	wg.Wait()
+
+	log.Printf("[NodeAgent] ProbeIPs: bridge=%s probed=%d in_use=%d", bridge, len(checked), len(inUse))
+	return &pb.ProbeIPsResponse{InUse: inUse, Checked: checked}, nil
+}
+
+// arpProbe sends an ARP request for ip on bridge and reports whether any host
+// answered. Uses arping (iputils or Thomas Habets' variant — both print
+// "reply"). A missing arping binary yields false (fail-open: better to risk a
+// rare collision than to wrongly mark every IP used and block all allocation).
+func arpProbe(bridge, ip string, timeout time.Duration) bool {
+	if _, err := exec.LookPath("arping"); err != nil {
+		return false
+	}
+	secs := int(timeout.Seconds())
+	if secs < 1 {
+		secs = 1
+	}
+	// -c 1: one probe; -w <secs>: overall deadline; -I <bridge>: send on the host
+	// bridge the guests attach to.
+	out, _ := exec.Command("arping", "-I", bridge, "-c", "1", "-w", strconv.Itoa(secs), ip).CombinedOutput()
+	return strings.Contains(strings.ToLower(string(out)), "reply")
+}

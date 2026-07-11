@@ -40,6 +40,7 @@ const (
 	NodeAgent_DetachDisk_FullMethodName          = "/agent.NodeAgent/DetachDisk"
 	NodeAgent_DefineNetwork_FullMethodName       = "/agent.NodeAgent/DefineNetwork"
 	NodeAgent_UndefineNetwork_FullMethodName     = "/agent.NodeAgent/UndefineNetwork"
+	NodeAgent_ProbeIPs_FullMethodName            = "/agent.NodeAgent/ProbeIPs"
 )
 
 // NodeAgentClient is the client API for NodeAgent service.
@@ -111,6 +112,11 @@ type NodeAgentClient interface {
 	// bridge for private VPC segments). UndefineNetwork removes it.
 	DefineNetwork(ctx context.Context, in *DefineNetworkRequest, opts ...grpc.CallOption) (*DefineNetworkResponse, error)
 	UndefineNetwork(ctx context.Context, in *UndefineNetworkRequest, opts ...grpc.CallOption) (*UndefineNetworkResponse, error)
+	// ProbeIPs ARP-probes a set of IPs on a bridge and returns those that answer
+	// (i.e. are live on the wire). The panel uses this to detect IPs already used
+	// by VMs it doesn't manage (e.g. pre-existing Virtualizor guests), so it never
+	// allocates a live customer IP and its IPAM view reflects reality.
+	ProbeIPs(ctx context.Context, in *ProbeIPsRequest, opts ...grpc.CallOption) (*ProbeIPsResponse, error)
 }
 
 type nodeAgentClient struct {
@@ -343,6 +349,16 @@ func (c *nodeAgentClient) UndefineNetwork(ctx context.Context, in *UndefineNetwo
 	return out, nil
 }
 
+func (c *nodeAgentClient) ProbeIPs(ctx context.Context, in *ProbeIPsRequest, opts ...grpc.CallOption) (*ProbeIPsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ProbeIPsResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_ProbeIPs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // NodeAgentServer is the server API for NodeAgent service.
 // All implementations must embed UnimplementedNodeAgentServer
 // for forward compatibility.
@@ -412,6 +428,11 @@ type NodeAgentServer interface {
 	// bridge for private VPC segments). UndefineNetwork removes it.
 	DefineNetwork(context.Context, *DefineNetworkRequest) (*DefineNetworkResponse, error)
 	UndefineNetwork(context.Context, *UndefineNetworkRequest) (*UndefineNetworkResponse, error)
+	// ProbeIPs ARP-probes a set of IPs on a bridge and returns those that answer
+	// (i.e. are live on the wire). The panel uses this to detect IPs already used
+	// by VMs it doesn't manage (e.g. pre-existing Virtualizor guests), so it never
+	// allocates a live customer IP and its IPAM view reflects reality.
+	ProbeIPs(context.Context, *ProbeIPsRequest) (*ProbeIPsResponse, error)
 	mustEmbedUnimplementedNodeAgentServer()
 }
 
@@ -484,6 +505,9 @@ func (UnimplementedNodeAgentServer) DefineNetwork(context.Context, *DefineNetwor
 }
 func (UnimplementedNodeAgentServer) UndefineNetwork(context.Context, *UndefineNetworkRequest) (*UndefineNetworkResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method UndefineNetwork not implemented")
+}
+func (UnimplementedNodeAgentServer) ProbeIPs(context.Context, *ProbeIPsRequest) (*ProbeIPsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ProbeIPs not implemented")
 }
 func (UnimplementedNodeAgentServer) mustEmbedUnimplementedNodeAgentServer() {}
 func (UnimplementedNodeAgentServer) testEmbeddedByValue()                   {}
@@ -866,6 +890,24 @@ func _NodeAgent_UndefineNetwork_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NodeAgent_ProbeIPs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ProbeIPsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).ProbeIPs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_ProbeIPs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).ProbeIPs(ctx, req.(*ProbeIPsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // NodeAgent_ServiceDesc is the grpc.ServiceDesc for NodeAgent service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -948,6 +990,10 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "UndefineNetwork",
 			Handler:    _NodeAgent_UndefineNetwork_Handler,
+		},
+		{
+			MethodName: "ProbeIPs",
+			Handler:    _NodeAgent_ProbeIPs_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
