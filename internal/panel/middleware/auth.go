@@ -88,8 +88,13 @@ func GetPermissionsForRole(role models.UserRole) []string {
 			"admin:access",
 		}
 	case models.RoleClient:
+		// Clients may fully operate their OWN VMs. Every vm:*/backup:*/snapshot:*
+		// handler enforces per-resource ownership (see VMHandler.authorizeVM /
+		// BackupHandler.authorizeVM), so lifecycle and console access here only ever
+		// applies to the caller's own resources — never other tenants'.
 		return []string{
 			"vm:create", "vm:read", "vm:update", "vm:delete",
+			"vm:lifecycle", "vm:console",
 			"backup:create", "backup:read", "backup:update", "backup:delete",
 			"snapshot:create", "snapshot:read", "snapshot:update", "snapshot:delete",
 			"network:read",

@@ -43,6 +43,15 @@ export default function DashboardLayout({
     }
   }, [isError, isLoading, router])
 
+  // The (dashboard) area is the admin console. Non-admin (client) users belong in
+  // the dedicated /client area, so bounce them there. The backend enforces
+  // permissions regardless; this is about showing each role the right UI.
+  useEffect(() => {
+    if (user && user.role !== "admin") {
+      router.replace("/client/dashboard")
+    }
+  }, [user, router])
+
   // Handle logout
   const handleLogout = () => {
     logout.mutate(undefined, {
@@ -52,8 +61,9 @@ export default function DashboardLayout({
     })
   }
 
-  // Show loading state
-  if (isLoading) {
+  // Show loading state (also while a client is being redirected to /client, to
+  // avoid flashing the admin console at them).
+  if (isLoading || (user && user.role !== "admin")) {
     return (
       <div className="min-h-screen bg-[#f5f5f0] flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
