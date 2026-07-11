@@ -330,6 +330,79 @@ func generateMAC(vmID string) string {
 	return fmt.Sprintf("52:54:00:%02x:%02x:%02x", sum[0], sum[1], sum[2])
 }
 
+// injectGuestConfig writes the guest's network + hostname (and optional root
+// password / SSH key) directly into its disk image using libguestfs
+// (virt-customize), so the guest comes up configured on first boot WITHOUT
+// relying on cloud-init running inside it.
+//
+// The static IP is written as a systemd-networkd .network file matched by MAC —
+// systemd-networkd is present and enabled on Debian/Ubuntu cloud images (and
+// most systemd distros), and matching by MAC binds the correct NIC regardless of
+// its kernel name. When no static IP is configured, only hostname/password/SSH
+// are applied and the guest keeps DHCP.
+func injectGuestConfig(diskPath, hostname string, vmCfg libvirt.VMConfig, rootPassword, sshKey string) error {
+	if _, err := exec.LookPath("virt-customize"); err != nil {
+		return fmt.Errorf("virt-customize not found (install libguestfs-tools): %w", err)
+	}
+
+	// --no-network: the customize appliance needs no outbound network.
+	args := []string{"-a", diskPath, "--no-network"}
+	if hostname != "" {
+		args = append(args, "--hostname", hostname)
+	}
+	if rootPassword != "" {
+		args = append(args, "--root-password", "password:"+rootPassword)
+	}
+	if key := strings.TrimSpace(sshKey); key != "" {
+		args = append(args, "--ssh-inject", "root:string:"+key)
+	}
+
+	var tmpNet string
+	if vmCfg.IPAddress != "" && vmCfg.Netmask > 0 {
+		var b strings.Builder
+		b.WriteString("[Match]\n")
+		b.WriteString(fmt.Sprintf("MACAddress=%s\n\n", strings.ToLower(vmCfg.MACAddress)))
+		b.WriteString("[Network]\n")
+		b.WriteString(fmt.Sprintf("Address=%s/%d\n", vmCfg.IPAddress, vmCfg.Netmask))
+		if vmCfg.Gateway != "" {
+			b.WriteString(fmt.Sprintf("Gateway=%s\n", vmCfg.Gateway))
+		}
+		b.WriteString("DNS=1.1.1.1\nDNS=8.8.8.8\n")
+
+		f, err := os.CreateTemp("", "maburvm-*.network")
+		if err != nil {
+			return fmt.Errorf("failed to stage network config: %w", err)
+		}
+		tmpNet = f.Name()
+		if _, err := f.WriteString(b.String()); err != nil {
+			f.Close()
+			os.Remove(tmpNet)
+			return fmt.Errorf("failed to write staged network config: %w", err)
+		}
+		f.Close()
+
+		args = append(args,
+			"--upload", tmpNet+":/etc/systemd/network/10-maburvm.network",
+			// systemd-networkd runs as the unprivileged systemd-network user and
+			// REFUSES to read a .network file it can't open — the uploaded temp file
+			// is mode 0600 (root only), which yields "Permission denied" and the
+			// guest silently falls back to the image's DHCP netplan. Make it 0644.
+			"--chmod", "0644:/etc/systemd/network/10-maburvm.network",
+			// Ensure the renderer is enabled (already so on cloud images; harmless otherwise).
+			"--run-command", "systemctl enable systemd-networkd >/dev/null 2>&1 || true")
+	}
+	if tmpNet != "" {
+		defer os.Remove(tmpNet)
+	}
+
+	out, err := exec.Command("virt-customize", args...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("virt-customize failed: %v (%s)", err, strings.TrimSpace(string(out)))
+	}
+	log.Printf("[NodeAgent] injected guest config into %s (ip=%s bridge-mac=%s)", diskPath, vmCfg.IPAddress, vmCfg.MACAddress)
+	return nil
+}
+
 // resolveTemplateImage returns a local path to the template image. If ref is an
 // HTTP(S) URL (e.g. a catalog cloud-image), the image is downloaded into the
 // node's template cache once and the cached path is returned. Otherwise ref is
@@ -533,6 +606,16 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 		seedPath = ""
 	} else {
 		vmCfg.CloudInitISOPath = seedPath
+	}
+
+	// Inject network + hostname (+ optional password/SSH key) DIRECTLY into the
+	// guest disk via libguestfs, so the guest is configured on first boot without
+	// depending on the guest's cloud-init (which is unreliable across images —
+	// this is how Virtualizor provisions). The cloud-init seed above is kept as a
+	// belt-and-suspenders for images where it does work. Best-effort: on failure
+	// we log and still create the VM (it just may lack static networking).
+	if err := injectGuestConfig(diskPath, hostname, vmCfg, cfg.RootPassword, cfg.SshPublicKey); err != nil {
+		log.Printf("[NodeAgent] guest config injection failed for VM %s (guest may lack static networking): %v", req.VmId, err)
 	}
 
 	if _, err := libvirt.CreateVM(vmCfg); err != nil {
