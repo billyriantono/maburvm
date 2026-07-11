@@ -742,7 +742,7 @@ func (s *Server) setupBillingRoutes() {
 
 	vmService := service.NewVMService(s.db, vmRepo, nodeRepo, templateRepo, s.riverClient, logger)
 
-	billingHandler := handler.NewBillingHandler(vmService, logger)
+	billingHandler := handler.NewBillingHandler(vmService, logger, s.db)
 	handler.RegisterBillingRoutes(s.echo, billingHandler)
 }
 

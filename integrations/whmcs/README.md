@@ -61,10 +61,10 @@ portal rather than being duplicated in WHMCS.
 
 ## Notes / limitations
 
-- **Idempotency on the panel side is currently in-memory** and is cleared on
-  panel restart. Retried WHMCS events are still safe (the operations are
-  effectively idempotent), but for exactly-once semantics across restarts the
-  panel should persist idempotency records (planned).
+- **Idempotency is persisted** on the panel (Postgres `billing_idempotency`
+  table), so a retried webhook returns the original response even across panel
+  restarts. Always send a stable `X-Idempotency-Key` (this module does) to get
+  exactly-once provisioning.
 - The module targets WHMCS 7.7+ (uses `serviceProperties`). `logModuleCall` and
   `serviceProperties` are WHMCS runtime globals — static PHP linters flag them as
   undefined; that is expected.

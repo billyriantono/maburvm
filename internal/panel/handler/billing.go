@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,13 +14,14 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/maburvm/panel/internal/panel/service"
 	"github.com/maburvm/panel/internal/shared/models"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ============================================================================
@@ -140,20 +142,46 @@ type BillingHandler struct {
 	webhookSecret string
 	apiKey        string
 
-	// Idempotency cache
-	idempotencyCache map[string]*IdempotencyRecord
-	idempotencyMutex sync.RWMutex
+	// db backs the persistent idempotency store (survives restarts). When nil
+	// (e.g. in tests) idempotency is simply not deduplicated.
+	db *gorm.DB
 }
 
-// NewBillingHandler creates a new BillingHandler instance
-func NewBillingHandler(vmService *service.VMService, logger *slog.Logger) *BillingHandler {
-	return &BillingHandler{
-		vmService:        vmService,
-		logger:           logger,
-		webhookSecret:    getWebhookSecret(),
-		apiKey:           getAPIKey(),
-		idempotencyCache: make(map[string]*IdempotencyRecord),
+// billingIdempotencyRow is the persisted result of a processed webhook, keyed by
+// the caller-supplied idempotency key, so replays return the original response
+// even across panel restarts.
+type billingIdempotencyRow struct {
+	IdempotencyKey string    `gorm:"column:idempotency_key;primaryKey"`
+	RequestID      string    `gorm:"column:request_id"`
+	Event          string    `gorm:"column:event"`
+	Response       []byte    `gorm:"column:response;type:jsonb"`
+	ProcessedAt    time.Time `gorm:"column:processed_at"`
+	ExpiresAt      time.Time `gorm:"column:expires_at"`
+}
+
+func (billingIdempotencyRow) TableName() string { return "billing_idempotency" }
+
+// NewBillingHandler creates a new BillingHandler instance. db backs the
+// persistent idempotency store; pass nil to disable deduplication.
+func NewBillingHandler(vmService *service.VMService, logger *slog.Logger, db *gorm.DB) *BillingHandler {
+	h := &BillingHandler{
+		vmService:     vmService,
+		logger:        logger,
+		webhookSecret: getWebhookSecret(),
+		apiKey:        getAPIKey(),
+		db:            db,
 	}
+	if db != nil {
+		// Periodically evict expired idempotency rows for the life of the process.
+		go func() {
+			ticker := time.NewTicker(1 * time.Hour)
+			defer ticker.Stop()
+			for range ticker.C {
+				h.cleanupOldIdempotency(context.Background())
+			}
+		}()
+	}
+	return h
 }
 
 // getWebhookSecret retrieves the webhook secret from environment
@@ -281,41 +309,75 @@ func (h *BillingHandler) verifySignature(payload []byte, signature string) bool 
 // ============================================================================
 
 // checkIdempotency checks if a request has already been processed
-func (h *BillingHandler) checkIdempotency(idempotencyKey string) (*IdempotencyRecord, bool) {
-	h.idempotencyMutex.RLock()
-	defer h.idempotencyMutex.RUnlock()
-
-	record, exists := h.idempotencyCache[idempotencyKey]
-	if !exists {
+func (h *BillingHandler) checkIdempotency(ctx context.Context, idempotencyKey string) (*IdempotencyRecord, bool) {
+	if h.db == nil {
 		return nil, false
 	}
 
-	// Check if record is still valid
-	if time.Since(record.ProcessedAt) > IdempotencyCacheTTL {
-		return nil, false
-	}
-
-	return record, true
-}
-
-// storeIdempotency stores the result of a processed request
-func (h *BillingHandler) storeIdempotency(idempotencyKey string, record *IdempotencyRecord) {
-	h.idempotencyMutex.Lock()
-	defer h.idempotencyMutex.Unlock()
-
-	h.idempotencyCache[idempotencyKey] = record
-}
-
-// cleanupOldIdempotency removes expired idempotency records
-func (h *BillingHandler) cleanupOldIdempotency() {
-	h.idempotencyMutex.Lock()
-	defer h.idempotencyMutex.Unlock()
-
-	now := time.Now()
-	for key, record := range h.idempotencyCache {
-		if now.Sub(record.ProcessedAt) > IdempotencyCacheTTL {
-			delete(h.idempotencyCache, key)
+	var row billingIdempotencyRow
+	err := h.db.WithContext(ctx).
+		Where("idempotency_key = ? AND expires_at > ?", idempotencyKey, time.Now().UTC()).
+		First(&row).Error
+	if err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			h.logger.Error("failed to read idempotency record", "error", err, "idempotency_key", idempotencyKey)
 		}
+		return nil, false
+	}
+
+	var response WebhookResponse
+	if err := json.Unmarshal(row.Response, &response); err != nil {
+		h.logger.Error("failed to decode stored idempotency response", "error", err, "idempotency_key", idempotencyKey)
+		return nil, false
+	}
+
+	return &IdempotencyRecord{
+		RequestID:   row.RequestID,
+		Response:    response,
+		ProcessedAt: row.ProcessedAt,
+	}, true
+}
+
+// storeIdempotency persists the result of a processed request. It uses an
+// insert-on-conflict-do-nothing so a concurrent duplicate (two identical
+// webhooks racing) keeps the first result rather than erroring.
+func (h *BillingHandler) storeIdempotency(ctx context.Context, idempotencyKey, event string, record *IdempotencyRecord) {
+	if h.db == nil {
+		return
+	}
+
+	payload, err := json.Marshal(record.Response)
+	if err != nil {
+		h.logger.Error("failed to encode idempotency response", "error", err, "idempotency_key", idempotencyKey)
+		return
+	}
+
+	row := billingIdempotencyRow{
+		IdempotencyKey: idempotencyKey,
+		RequestID:      record.RequestID,
+		Event:          event,
+		Response:       payload,
+		ProcessedAt:    record.ProcessedAt,
+		ExpiresAt:      record.ProcessedAt.Add(IdempotencyCacheTTL),
+	}
+
+	if err := h.db.WithContext(ctx).
+		Clauses(clause.OnConflict{DoNothing: true}).
+		Create(&row).Error; err != nil {
+		h.logger.Error("failed to store idempotency record", "error", err, "idempotency_key", idempotencyKey)
+	}
+}
+
+// cleanupOldIdempotency removes expired idempotency records. Safe to call
+// periodically; a no-op when the store is disabled.
+func (h *BillingHandler) cleanupOldIdempotency(ctx context.Context) {
+	if h.db == nil {
+		return
+	}
+	if err := h.db.WithContext(ctx).
+		Where("expires_at < ?", time.Now().UTC()).
+		Delete(&billingIdempotencyRow{}).Error; err != nil {
+		h.logger.Error("failed to clean up expired idempotency records", "error", err)
 	}
 }
 
@@ -331,7 +393,7 @@ func (h *BillingHandler) HandleWebhook(c echo.Context) error {
 	// Check idempotency key
 	idempotencyKey := c.Request().Header.Get(IdempotencyKeyHeader)
 	if idempotencyKey != "" {
-		if record, exists := h.checkIdempotency(idempotencyKey); exists {
+		if record, exists := h.checkIdempotency(c.Request().Context(), idempotencyKey); exists {
 			h.logger.Info("Returning cached idempotency response",
 				"request_id", requestID,
 				"idempotency_key", idempotencyKey,
@@ -415,7 +477,7 @@ func (h *BillingHandler) HandleWebhook(c echo.Context) error {
 
 	// Store idempotency record if key was provided
 	if idempotencyKey != "" {
-		h.storeIdempotency(idempotencyKey, &IdempotencyRecord{
+		h.storeIdempotency(ctx, idempotencyKey, string(payload.Event), &IdempotencyRecord{
 			RequestID:   requestID,
 			Response:    response,
 			ProcessedAt: now,
