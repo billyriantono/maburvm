@@ -276,7 +276,8 @@ func (s *ImportService) processDiscoveredVM(ctx context.Context, req *ImportVirt
 	if err == nil && existingVM != nil {
 		result.Status = "skipped"
 		result.Message = fmt.Sprintf("VM with UUID %s already exists (hostname: %s)", candidate.UUID, existingVM.Hostname)
-		if newStatus, ok := mapImportedRuntimeStatus(candidate.Status); ok && existingVM.Status != newStatus {
+		if newStatus, ok := mapImportedRuntimeStatus(candidate.Status); ok && existingVM.Status != newStatus &&
+			existingVM.Status != models.VMStatusDeleting && existingVM.Status != models.VMStatusCreating {
 			if updateErr := s.vmRepo.UpdateStatus(ctx, existingVM.ID, newStatus); updateErr != nil {
 				result.Status = "error"
 				result.Message = fmt.Sprintf("failed to sync existing VM status: %v", updateErr)

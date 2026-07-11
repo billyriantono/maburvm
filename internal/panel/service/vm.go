@@ -187,6 +187,11 @@ type CreateVMRequest struct {
 	// image — a "vm://<id>" (same node) or "vm://<srcNodeIP>/<id>" (cross-node)
 	// reference the agent resolves by copying/pulling that VM's disk. Set by CloneVM.
 	CloneSourceRef string `json:"-"`
+	// AutoAssignIP, when true and IPPoolID is empty, makes the service pick the
+	// first node-eligible pool with a free address and allocate a public IP from
+	// it. Set for self-service (client) orders so they never get an unusable
+	// NAT-only VM; if no pool has a free address the create fails with a clear error.
+	AutoAssignIP bool `json:"-"`
 }
 
 // CreateVMResponse contains the created VM and job information
@@ -289,6 +294,26 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		VNCPassword:  vncConfig.Password,
 	}
 
+	// Decide which pool(s) to allocate a public IP from. An explicit IPPoolID
+	// wins; otherwise AutoAssignIP (client self-service) tries every pool eligible
+	// for the node until one yields a free address. With neither, the VM gets no
+	// managed public IP (an admin deliberately choosing a NAT/private setup).
+	var poolCandidates []string
+	if req.IPPoolID != "" {
+		poolCandidates = []string{req.IPPoolID}
+	} else if req.AutoAssignIP {
+		pools, err := s.ipamService.ListPoolsForNode(ctx, nodeID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list IP pools for node: %w", err)
+		}
+		for i := range pools {
+			poolCandidates = append(poolCandidates, pools[i].ID)
+		}
+		if len(poolCandidates) == 0 {
+			return nil, fmt.Errorf("no IP pool is available on the selected node for automatic assignment")
+		}
+	}
+
 	var allocatedIP *models.IPAddress
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := s.vmRepo.WithDB(tx).Create(ctx, vm); err != nil {
@@ -297,16 +322,34 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		if req.RequestedIP != "" && req.IPPoolID == "" {
 			return fmt.Errorf("ip_pool_id is required when requested_ip is set")
 		}
-		if req.IPPoolID != "" {
+		if len(poolCandidates) > 0 {
 			nodeIDPtr := nodeID
-			allocated, err := s.ipamService.AllocateAddressInTx(ctx, tx, &AllocateIPAddressRequest{
-				PoolID:      req.IPPoolID,
-				NodeID:      &nodeIDPtr,
-				VMID:        &vm.ID,
-				RequestedIP: req.RequestedIP,
-			})
-			if err != nil {
+			var allocated *models.IPAddress
+			var lastErr error
+			for _, pid := range poolCandidates {
+				a, err := s.ipamService.AllocateAddressInTx(ctx, tx, &AllocateIPAddressRequest{
+					PoolID:      pid,
+					NodeID:      &nodeIDPtr,
+					VMID:        &vm.ID,
+					RequestedIP: req.RequestedIP,
+				})
+				if err == nil {
+					allocated = a
+					break
+				}
+				lastErr = err
+				// In auto mode an exhausted/ineligible pool just means "try the
+				// next one"; any other error (or an explicit-pool error) is fatal.
+				if req.IPPoolID == "" && (errors.Is(err, ErrNoAvailableIPAddress) || errors.Is(err, ErrPoolNotAvailableOnNode)) {
+					continue
+				}
 				return err
+			}
+			if allocated == nil {
+				if req.IPPoolID == "" {
+					return fmt.Errorf("no IP address available in any pool for the selected node")
+				}
+				return lastErr
 			}
 			allocatedIP = allocated
 			network := &models.Network{VMID: vm.ID, IPAddress: allocated.Address}
@@ -601,7 +644,7 @@ func (s *VMService) cleanupVMAllocation(ctx context.Context, vmID string, delete
 type ListVMsRequest struct {
 	UserID string          `json:"user_id,omitempty" validate:"omitempty,uuid"`
 	NodeID string          `json:"node_id,omitempty" validate:"omitempty,uuid"`
-	Status models.VMStatus `json:"status,omitempty" validate:"omitempty,oneof=running stopped suspended creating error"`
+	Status models.VMStatus `json:"status,omitempty" validate:"omitempty,oneof=running stopped suspended creating deleting error"`
 	Limit  int             `json:"limit,omitempty" validate:"omitempty,min=1,max=100"`
 	Offset int             `json:"offset,omitempty" validate:"omitempty,min=0"`
 }
@@ -728,8 +771,11 @@ func (s *VMService) GetVM(ctx context.Context, vmID string, includeAgentStatus b
 		}
 	}
 
-	// Get agent status if requested and VM is not being created
-	if includeAgentStatus && vm.Status != models.VMStatusCreating {
+	// Get agent status if requested and the VM is in a stable state. Skip while
+	// creating or deleting: the hypervisor domain may still be up during a delete,
+	// and syncing would flip the VM back to "running" and "resurrect" it in the UI
+	// until the delete worker finishes.
+	if includeAgentStatus && vm.Status != models.VMStatusCreating && vm.Status != models.VMStatusDeleting {
 		status, err := s.getVMAgentStatus(ctx, vm.ID, vm.NodeID)
 		if err != nil {
 			s.logger.WarnContext(ctx, "failed to get VM status from agent",
@@ -1113,6 +1159,13 @@ func (s *VMService) ExecuteLifecycleCommand(ctx context.Context, req *LifecycleR
 			return nil, ErrVMNotFound
 		}
 		return nil, fmt.Errorf("failed to get VM: %w", err)
+	}
+
+	// A VM that is being deleted must not accept lifecycle commands: it is on its
+	// way out and its disks/IP are about to be reclaimed, so starting/restarting
+	// it would race the delete worker.
+	if vm.Status == models.VMStatusDeleting {
+		return nil, fmt.Errorf("VM is being deleted")
 	}
 
 	// Map lifecycle command to VM operation

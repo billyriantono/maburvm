@@ -68,13 +68,20 @@ services:
       DB_SSL_MODE: disable
       SERVER_PORT: 8080
       SERVER_HOST: 0.0.0.0
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
-      AES_KEY: ${AES_KEY}
+      # Crypto secrets are OPTIONAL: if unset, the panel generates strong random
+      # keys on first boot and persists them under MABURVM_DATA_DIR (the volume
+      # below), so they survive restarts. Set these only for multi-instance
+      # deployments or to pin them to an external secret manager.
+      MABURVM_DATA_DIR: /data
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
+      AES_KEY: ${AES_KEY:-}
       S3_ENDPOINT: http://minio:9000
       S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
       S3_BUCKET: ${S3_BUCKET:-maburvm}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
+    volumes:
+      - panel_data:/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -114,6 +121,8 @@ volumes:
   postgres_data:
     driver: local
   minio_data:
+    driver: local
+  panel_data:
     driver: local
   mailpit_data:
     driver: local

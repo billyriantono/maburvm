@@ -180,6 +180,13 @@ func (s *IPAMService) ListPools(ctx context.Context, limit, offset int) ([]model
 	return s.repo.ListPools(ctx, limit, offset)
 }
 
+// ListPoolsForNode returns the pools usable on a given node: those bound to it
+// (junction table or legacy node_id) plus global pools. Used to auto-assign a
+// public IP when the caller didn't pick a pool (e.g. client self-service orders).
+func (s *IPAMService) ListPoolsForNode(ctx context.Context, nodeID string) ([]models.IPPool, error) {
+	return s.repo.ListPoolsForNode(ctx, nodeID)
+}
+
 func (s *IPAMService) GetPool(ctx context.Context, id string) (*models.IPPool, error) {
 	pool, err := s.repo.GetPool(ctx, id)
 	if errors.Is(err, gorm.ErrRecordNotFound) {

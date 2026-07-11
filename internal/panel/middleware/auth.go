@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/maburvm/panel/internal/shared/models"
+	"github.com/maburvm/panel/internal/shared/secret"
 	"gorm.io/gorm"
 )
 
@@ -60,16 +60,12 @@ type UserContext struct {
 	SessionID   string
 }
 
-// GetJWTSecret retrieves the JWT secret from the environment. It fails closed:
-// rather than falling back to a guessable constant (which would let anyone forge
-// admin tokens), it panics if the secret is unset. config.Load() already enforces
-// JWT_SECRET_KEY at boot, so a correctly started process never hits the panic.
+// GetJWTSecret returns the JWT signing key. It resolves via secret.JWTSecret:
+// the JWT_SECRET_KEY env var if set, otherwise a per-install random key that is
+// generated once and persisted to the data dir. It never falls back to a
+// guessable constant (which would let anyone forge admin tokens).
 func GetJWTSecret() []byte {
-	secret := os.Getenv("JWT_SECRET_KEY")
-	if secret == "" {
-		panic("JWT_SECRET_KEY is not set; refusing to sign/verify tokens with a default secret")
-	}
-	return []byte(secret)
+	return []byte(secret.JWTSecret())
 }
 
 // GetPermissionsForRole returns permissions based on user role

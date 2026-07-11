@@ -173,6 +173,14 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 		ManagedNetworkID: req.ManagedNetworkID,
 	}
 
+	// Self-service (client) orders don't pick an IP pool — admins do. When a
+	// non-admin creates a VM without specifying a pool or a private managed
+	// network, auto-assign a public IP so the VM is actually reachable instead of
+	// silently landing on NAT.
+	if userCtx.Role != models.RoleAdmin && req.IPPoolID == "" && req.ManagedNetworkID == "" {
+		createReq.AutoAssignIP = true
+	}
+
 	resp, err := h.service.CreateVM(c.Request().Context(), createReq)
 	if err != nil {
 		switch {

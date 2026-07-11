@@ -18,6 +18,21 @@ type sshHostResolver struct {
 	net *service.NetworkService
 }
 
+// vmOwnerResolver looks up a VM's owner so the SSH console can enforce that a
+// caller only reaches VMs they own.
+type vmOwnerResolver struct {
+	vmRepo *repository.VMRepository
+}
+
+// VMOwner returns the user ID owning the VM, or an error if it doesn't exist.
+func (r *vmOwnerResolver) VMOwner(ctx context.Context, vmID string) (string, error) {
+	vm, err := r.vmRepo.GetByID(ctx, vmID)
+	if err != nil {
+		return "", err
+	}
+	return vm.UserID, nil
+}
+
 // ResolveVMHost returns the VM's first usable IP (strips any /prefix).
 func (r *sshHostResolver) ResolveVMHost(ctx context.Context, vmID string) (string, error) {
 	details, err := r.net.GetNetworkInterfaceDetails(ctx, vmID)
@@ -46,11 +61,12 @@ func (s *Server) setupSSHConsoleRoutes(logger *slog.Logger) {
 	networkService := service.NewNetworkService(s.db, networkRepo, firewallRepo, vmRepo, nodeRepo, s.riverClient)
 
 	proxy := sshconsole.NewProxyServer(logger, s.cfg.JWT.SecretKey)
-	h := sshconsole.NewHandler(proxy, &sshHostResolver{net: networkService})
+	h := sshconsole.NewHandler(proxy, &sshHostResolver{net: networkService}, &vmOwnerResolver{vmRepo: vmRepo})
 
 	s.echo.GET("/ws/ssh", h.HandleWebSocket)
 
 	g := s.echo.Group("/api/v1/vms/:id/ssh")
 	g.Use(panelMiddleware.RequireAuth(s.db))
+	g.Use(panelMiddleware.RequirePermission("vm:console"))
 	g.POST("/token", h.GenerateToken)
 }

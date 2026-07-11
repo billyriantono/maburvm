@@ -184,22 +184,18 @@ func NewBillingHandler(vmService *service.VMService, logger *slog.Logger, db *go
 	return h
 }
 
-// getWebhookSecret retrieves the webhook secret from environment
+// getWebhookSecret retrieves the webhook HMAC secret from the environment. It
+// returns "" when unset — the webhook then fails closed (see RequireWebhookAuth)
+// rather than falling back to a public default that would let anyone forge
+// billing events (create/suspend/destroy VMs).
 func getWebhookSecret() string {
-	secret := os.Getenv("BILLING_WEBHOOK_SECRET")
-	if secret == "" {
-		secret = "default-webhook-secret-change-in-production"
-	}
-	return secret
+	return os.Getenv("BILLING_WEBHOOK_SECRET")
 }
 
-// getAPIKey retrieves the API key from environment
+// getAPIKey retrieves the billing API key from the environment. Empty when
+// unset; the webhook fails closed rather than accepting a known default key.
 func getAPIKey() string {
-	key := os.Getenv("BILLING_API_KEY")
-	if key == "" {
-		key = "default-api-key-change-in-production"
-	}
-	return key
+	return os.Getenv("BILLING_API_KEY")
 }
 
 // ============================================================================
@@ -210,6 +206,18 @@ func getAPIKey() string {
 func (h *BillingHandler) RequireWebhookAuth() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
+			// 0. Fail closed if the billing credentials aren't configured. Without
+			// this, an unset BILLING_API_KEY/BILLING_WEBHOOK_SECRET would otherwise
+			// accept a publicly-known default, letting anyone provision/destroy VMs.
+			if h.apiKey == "" || h.webhookSecret == "" {
+				h.logger.Error("billing webhook is disabled: BILLING_API_KEY and BILLING_WEBHOOK_SECRET must both be set")
+				return c.JSON(http.StatusServiceUnavailable, WebhookResponse{
+					Success:   false,
+					Message:   "billing webhook is not configured",
+					Timestamp: time.Now().UTC(),
+				})
+			}
+
 			// 1. Validate API Key
 			apiKey := c.Request().Header.Get(WebhookAPIKeyHeader)
 			if apiKey == "" {

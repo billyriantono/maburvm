@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/panel/service"
 )
 
@@ -57,13 +58,18 @@ type SuccessResponse struct {
 func (h *TemplateHandler) RegisterRoutes(e *echo.Echo, authMiddleware echo.MiddlewareFunc) {
 	api := e.Group("/api/v1/templates", authMiddleware)
 
-	api.POST("", h.CreateTemplate)
+	// Reads are available to any authenticated user (clients need the catalog to
+	// order a VM). Mutations — creating, editing, deleting, triggering multi-GB
+	// image downloads onto nodes, or node syncs — are admin-only.
+	admin := middleware.RequirePermission("admin:access")
+
 	api.GET("", h.ListTemplates)
-	api.POST("/download-url", h.DownloadFromURL)
 	api.GET("/:id", h.GetTemplate)
-	api.PUT("/:id", h.UpdateTemplate)
-	api.DELETE("/:id", h.DeleteTemplate)
-	api.POST("/:id/sync", h.SyncTemplate)
+	api.POST("", h.CreateTemplate, admin)
+	api.POST("/download-url", h.DownloadFromURL, admin)
+	api.PUT("/:id", h.UpdateTemplate, admin)
+	api.DELETE("/:id", h.DeleteTemplate, admin)
+	api.POST("/:id/sync", h.SyncTemplate, admin)
 }
 
 // CreateTemplate handles POST /api/templates

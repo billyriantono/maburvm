@@ -622,6 +622,10 @@ func (s *Server) setupDashboardRoutes(g *echo.Group) {
 
 	dashboard := g.Group("/dashboard")
 	dashboard.Use(panelMiddleware.RequireAuth(s.db))
+	// Admin-only: these stats are fleet-wide (all nodes/VMs) and include recent
+	// audit-log entries across all tenants. Clients use their own /client
+	// dashboard, which is scoped to their VMs.
+	dashboard.Use(panelMiddleware.RequirePermission("admin:access"))
 
 	dashboard.GET("/stats", func(c echo.Context) error {
 		ctx := c.Request().Context()

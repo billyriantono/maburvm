@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/panel/service"
+	"github.com/maburvm/panel/internal/shared/models"
 )
 
 // EventsHandler streams real-time platform events to the browser via SSE.
@@ -45,7 +47,14 @@ func (h *EventsHandler) StreamVMStatus(c echo.Context) error {
 
 	ctx := c.Request().Context()
 
-	last := h.statusSnapshot(ctx)
+	// Scope the stream to the caller's own VMs unless they are an admin, so a
+	// client can't observe the entire fleet's VM IDs and statuses.
+	ownerFilter := ""
+	if userCtx, ok := middleware.GetUserContext(c); ok && userCtx.Role != models.RoleAdmin {
+		ownerFilter = userCtx.ID.String()
+	}
+
+	last := h.statusSnapshot(ctx, ownerFilter)
 	if err := writeSSEData(res, "vm_status", last); err != nil {
 		return nil
 	}
@@ -60,7 +69,7 @@ func (h *EventsHandler) StreamVMStatus(c echo.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-poll.C:
-			current := h.statusSnapshot(ctx)
+			current := h.statusSnapshot(ctx, ownerFilter)
 			if !sameStatusMap(last, current) {
 				if err := writeSSEData(res, "vm_status", current); err != nil {
 					return nil
@@ -76,11 +85,12 @@ func (h *EventsHandler) StreamVMStatus(c echo.Context) error {
 	}
 }
 
-// statusSnapshot returns a map of VM ID -> status for all VMs. On error it
-// returns an empty map so the stream keeps running (transient DB hiccups don't
-// kill the connection).
-func (h *EventsHandler) statusSnapshot(ctx context.Context) map[string]string {
-	resp, err := h.vmService.ListVMs(ctx, &service.ListVMsRequest{Limit: vmStatusSnapshotLimit})
+// statusSnapshot returns a map of VM ID -> status. When ownerID is non-empty the
+// snapshot is scoped to that user's VMs (non-admin callers); admins pass "" to
+// see all VMs. On error it returns an empty map so the stream keeps running
+// (transient DB hiccups don't kill the connection).
+func (h *EventsHandler) statusSnapshot(ctx context.Context, ownerID string) map[string]string {
+	resp, err := h.vmService.ListVMs(ctx, &service.ListVMsRequest{UserID: ownerID, Limit: vmStatusSnapshotLimit})
 	if err != nil {
 		return map[string]string{}
 	}

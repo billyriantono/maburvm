@@ -6,6 +6,7 @@ import (
 
 	"github.com/caarlos0/env/v10"
 	"github.com/joho/godotenv"
+	"github.com/maburvm/panel/internal/shared/secret"
 )
 
 // Database settings
@@ -108,11 +109,22 @@ func Load() (*Config, error) {
 		return nil, errors.New("failed to parse config: " + err.Error())
 	}
 
+	applySecrets(cfg)
+
 	if err := validate(cfg); err != nil {
 		return nil, err
 	}
 
 	return cfg, nil
+}
+
+// applySecrets resolves the JWT and AES keys from the secret store (env override
+// → persisted → auto-generated) so a single-node install needs no secret env
+// vars. Called by both Load and LoadDefault so every entrypoint sees the same
+// resolved, non-empty secrets.
+func applySecrets(cfg *Config) {
+	cfg.JWT.SecretKey = secret.JWTSecret()
+	cfg.JWT.AESKey = secret.AESKey()
 }
 
 func validate(cfg *Config) error {
@@ -128,10 +140,10 @@ func validate(cfg *Config) error {
 	if cfg.Database.Name == "" {
 		return errors.New("DB_NAME is required")
 	}
-	if cfg.JWT.SecretKey == "" {
-		return errors.New("JWT_SECRET_KEY is required")
-	}
-	if cfg.JWT.AESKey == "" || len(cfg.JWT.AESKey) != 32 {
+	// JWT/AES keys are resolved by applySecrets (env → persisted → generated), so
+	// SecretKey is always non-empty here. We still validate the AES key length in
+	// case an operator supplied a bad AES_KEY override.
+	if len(cfg.JWT.AESKey) != 32 {
 		return errors.New("AES_KEY is required and must be exactly 32 bytes")
 	}
 	if cfg.S3.Endpoint == "" {
@@ -157,5 +169,6 @@ func LoadDefault() (*Config, error) {
 	if err := env.Parse(cfg); err != nil {
 		return nil, err
 	}
+	applySecrets(cfg)
 	return cfg, nil
 }

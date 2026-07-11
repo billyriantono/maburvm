@@ -14,6 +14,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/maburvm/panel/internal/panel/repository"
+	"github.com/maburvm/panel/internal/shared/secret"
 )
 
 var (
@@ -101,9 +102,12 @@ func NewVNCService(
 	jwtSecret string,
 	wsHost string,
 ) *VNCService {
-	secret := jwtSecret
-	if secret == "" {
-		secret = "your-jwt-secret-change-in-production"
+	// Console tokens are signed with the same key as session JWTs. Fall back to
+	// the resolved per-install secret (never a hardcoded constant) so a forged
+	// token can't grant console access to a VM the caller doesn't own.
+	key := jwtSecret
+	if key == "" {
+		key = secret.JWTSecret()
 	}
 
 	return &VNCService{
@@ -111,7 +115,7 @@ func NewVNCService(
 		vmRepo:    vmRepo,
 		nodeRepo:  nodeRepo,
 		logger:    logger,
-		jwtSecret: []byte(secret),
+		jwtSecret: []byte(key),
 		wsHost:    wsHost,
 	}
 }

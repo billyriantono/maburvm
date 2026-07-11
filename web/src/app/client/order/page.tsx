@@ -26,7 +26,12 @@ export default function OrderVMPage() {
   const [error, setError] = useState<string>("")
 
   const activePlans: Plan[] = (plans ?? []).filter((p) => p.is_active)
-  const activeTemplates: OSTemplate[] = (templates ?? []).filter((t) => t.is_active)
+  // Only offer installable templates: active AND backed by a real base image.
+  // The "/imported" image path is a placeholder for VMs imported from another
+  // system — it can't seed a fresh install, so hide those from ordering.
+  const activeTemplates: OSTemplate[] = (templates ?? []).filter(
+    (t) => t.is_active && t.image_path !== "/imported"
+  )
   const selectedPlan = activePlans.find((p) => p.id === planId)
 
   const hostnameValid = /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/.test(hostname)
