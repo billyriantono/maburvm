@@ -2020,8 +2020,15 @@ func (s *NodeAgentService) ProbeIPs(ctx context.Context, req *pb.ProbeIPsRequest
 	}
 	timeout := time.Duration(req.GetTimeoutMs()) * time.Millisecond
 	if timeout <= 0 {
-		timeout = time.Second
+		timeout = 700 * time.Millisecond
 	}
+
+	// Probe the requested bridge first, then every OTHER bridge on the node. On a
+	// host that also runs Virtualizor, existing guests live on per-VLAN bridges
+	// (vmbrN / VbrN) that aren't the maburvm pool's bridge, so an ARP only on the
+	// pool bridge would miss them. Trying all bridges catches an in-use IP wherever
+	// its VM is attached.
+	bridges := allProbeBridges(bridge)
 
 	var (
 		mu      sync.Mutex
@@ -2040,7 +2047,13 @@ func (s *NodeAgentService) ProbeIPs(ctx context.Context, req *pb.ProbeIPsRequest
 		go func(ip string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			live := arpProbe(bridge, ip, timeout)
+			live := false
+			for _, br := range bridges {
+				if arpProbe(br, ip, timeout) {
+					live = true
+					break // short-circuit: found on some bridge
+				}
+			}
 			mu.Lock()
 			checked = append(checked, ip)
 			if live {
@@ -2051,8 +2064,34 @@ func (s *NodeAgentService) ProbeIPs(ctx context.Context, req *pb.ProbeIPsRequest
 	}
 	wg.Wait()
 
-	log.Printf("[NodeAgent] ProbeIPs: bridge=%s probed=%d in_use=%d", bridge, len(checked), len(inUse))
+	log.Printf("[NodeAgent] ProbeIPs: bridges=%v probed=%d in_use=%d", bridges, len(checked), len(inUse))
 	return &pb.ProbeIPsResponse{InUse: inUse, Checked: checked}, nil
+}
+
+// allProbeBridges returns the node's bridge interfaces with `first` at the head
+// (deduplicated). A bridge is any /sys/class/net/<x> that has a `bridge`
+// subdirectory. Falls back to just `first` if enumeration fails.
+func allProbeBridges(first string) []string {
+	out := []string{}
+	seen := map[string]bool{}
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name != "" && !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	add(first)
+	entries, err := os.ReadDir("/sys/class/net")
+	if err != nil {
+		return out
+	}
+	for _, e := range entries {
+		if _, serr := os.Stat(filepath.Join("/sys/class/net", e.Name(), "bridge")); serr == nil {
+			add(e.Name())
+		}
+	}
+	return out
 }
 
 // arpProbe sends an ARP request for ip on bridge and reports whether any host
