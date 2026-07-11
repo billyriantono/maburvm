@@ -352,6 +352,15 @@ func injectGuestConfig(diskPath, hostname string, vmCfg libvirt.VMConfig, rootPa
 	}
 	if rootPassword != "" {
 		args = append(args, "--root-password", "password:"+rootPassword)
+		// Debian/Ubuntu cloud images ship PasswordAuthentication no and
+		// PermitRootLogin prohibit-password (in /etc/ssh/sshd_config.d/50-cloud-init.conf),
+		// so an injected root password is useless over SSH — login fails with
+		// "Permission denied (publickey)". sshd uses the FIRST value it sees for a
+		// keyword and reads sshd_config.d/*.conf in alphabetical order, so a drop-in
+		// sorted BEFORE 50-cloud-init.conf (00-...) wins. Enable root password login
+		// only when a password is actually set (SSH-key-only VMs stay key-only).
+		args = append(args,
+			"--write", "/etc/ssh/sshd_config.d/00-maburvm.conf:PermitRootLogin yes\nPasswordAuthentication yes\n")
 	}
 	if key := strings.TrimSpace(sshKey); key != "" {
 		args = append(args, "--ssh-inject", "root:string:"+key)
