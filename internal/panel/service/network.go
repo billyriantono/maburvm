@@ -525,7 +525,12 @@ func (s *NetworkService) GetNetworkInterfaceDetails(ctx context.Context, vmID st
 	// isn't explicitly assigned (e.g. pre-existing networks or imports) still
 	// get gateway, netmask and bridge from the owning pool.
 	var allPools []models.IPPool
-	if err := s.db.WithContext(ctx).Where("cidr IS NOT NULL AND cidr != '' AND deleted_at IS NULL").Find(&allPools).Error; err != nil {
+	// NOTE: `cidr` is a Postgres cidr-typed column. Comparing it to '' (e.g.
+	// `cidr != ''`) makes Postgres cast '' to cidr and fail with "invalid input
+	// syntax for type inet", which 500'd this whole endpoint (SQLite in tests
+	// tolerates it, Postgres in prod does not). An unset cidr is NULL, so
+	// IS NOT NULL alone is the correct and sufficient filter.
+	if err := s.db.WithContext(ctx).Where("cidr IS NOT NULL AND deleted_at IS NULL").Find(&allPools).Error; err != nil {
 		return nil, fmt.Errorf("failed to load all IP pools: %w", err)
 	}
 
