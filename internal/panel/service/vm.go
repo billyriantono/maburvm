@@ -44,6 +44,10 @@ var (
 	// ErrNoUsablePool is returned when an auto-assigned VM can't get a reachable
 	// public IP because no node-eligible pool has both a bridge and a gateway.
 	ErrNoUsablePool = errors.New("no usable IP pool (with a bridge and gateway) is available on the selected node; an administrator must configure one before VMs can be ordered")
+	// ErrPoolHasNoBridge is returned when a VM is created from an explicitly
+	// selected IP pool that has no bridge configured — the VM would fall back to
+	// the non-existent virbr0 and fail to start.
+	ErrPoolHasNoBridge = errors.New("the selected IP pool has no bridge configured; set the pool's bridge (e.g. viifbr0) before creating VMs from it")
 	// ErrVMLifecycleFailed is returned when a lifecycle operation fails
 	ErrVMLifecycleFailed = errors.New("VM lifecycle operation failed")
 	// ErrVMNodeInactive is returned when trying to execute an agent-backed VM
@@ -302,6 +306,21 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 	// managed public IP (an admin deliberately choosing a NAT/private setup).
 	var poolCandidates []string
 	if req.IPPoolID != "" {
+		// Even an explicitly-chosen pool must have a bridge, or the VM gets the
+		// node's default NAT bridge (virbr0) — which doesn't exist on most KVM
+		// hosts, so the domain fails to START ("Cannot get interface MTU on
+		// 'virbr0'"). Reject up front with a clear error instead of provisioning an
+		// unstartable VM. (A managed/private network provides its own bridge, so
+		// that path is exempt.)
+		if req.ManagedNetworkID == "" {
+			pool, perr := s.ipamService.GetPool(ctx, req.IPPoolID)
+			if perr != nil {
+				return nil, fmt.Errorf("failed to load selected IP pool: %w", perr)
+			}
+			if pool == nil || pool.Bridge == "" {
+				return nil, ErrPoolHasNoBridge
+			}
+		}
 		poolCandidates = []string{req.IPPoolID}
 	} else if req.AutoAssignIP {
 		pools, err := s.ipamService.ListPoolsForNode(ctx, nodeID)

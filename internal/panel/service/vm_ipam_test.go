@@ -19,7 +19,7 @@ func TestVMServiceCreateVMAllocatesIPAMAndNetwork(t *testing.T) {
 	ctx := context.Background()
 
 	user, node, tmpl := seedVMIPAMDependencies(t, db)
-	pool := &models.IPPool{Name: "public-v4", NodeID: &node.ID, Family: models.IPFamilyIPv4, CIDR: "203.0.113.0/24"}
+	pool := &models.IPPool{Name: "public-v4", NodeID: &node.ID, Family: models.IPFamilyIPv4, CIDR: "203.0.113.0/24", Bridge: "viifbr0", Gateway: "203.0.113.1"}
 	require.NoError(t, db.Create(pool).Error)
 	addr := &models.IPAddress{PoolID: pool.ID, Address: "203.0.113.10", Family: models.IPFamilyIPv4, Status: models.IPAddressStatusAvailable}
 	require.NoError(t, db.Create(addr).Error)
@@ -53,6 +53,42 @@ func TestVMServiceCreateVMAllocatesIPAMAndNetwork(t *testing.T) {
 	require.Equal(t, models.IPAddressStatusAssigned, updated.Status)
 	require.NotNil(t, updated.VMID)
 	require.Equal(t, resp.VM.ID, *updated.VMID)
+}
+
+// A pool with no bridge produces an unstartable VM (falls back to the
+// non-existent virbr0), so creating from it must be rejected up front.
+func TestVMServiceCreateVMRejectsBridgelessPool(t *testing.T) {
+	db := setupVMIPAMTestDB(t)
+	ctx := context.Background()
+
+	user, node, tmpl := seedVMIPAMDependencies(t, db)
+	pool := &models.IPPool{Name: "no-bridge", NodeID: &node.ID, Family: models.IPFamilyIPv4, CIDR: "203.0.113.0/24", Gateway: "203.0.113.1"}
+	require.NoError(t, db.Create(pool).Error)
+	require.NoError(t, db.Create(&models.IPAddress{PoolID: pool.ID, Address: "203.0.113.10", Family: models.IPFamilyIPv4, Status: models.IPAddressStatusAvailable}).Error)
+
+	svc := NewVMService(
+		db,
+		repository.NewVMRepository(db),
+		repository.NewNodeRepository(db),
+		repository.NewTemplateRepository(db),
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+
+	_, err := svc.CreateVM(ctx, &CreateVMRequest{
+		UserID:       user.ID.String(),
+		Hostname:     "bridgeless.example.test",
+		OSTemplateID: tmpl.ID,
+		Resources:    models.Resources{CPU: 1, RAM: 512, Disk: 10},
+		NodeID:       node.ID,
+		IPPoolID:     pool.ID,
+	})
+	require.ErrorIs(t, err, ErrPoolHasNoBridge)
+
+	// No VM row should have been created for the rejected request.
+	var count int64
+	require.NoError(t, db.Model(&models.VM{}).Where("hostname = ?", "bridgeless.example.test").Count(&count).Error)
+	require.Zero(t, count)
 }
 
 func TestVMServiceCreateVMEnforcesQuota(t *testing.T) {
@@ -156,7 +192,7 @@ func TestVMServiceDeleteVMReleasesIPAMAndDeletesNetwork(t *testing.T) {
 	ctx := context.Background()
 
 	user, node, tmpl := seedVMIPAMDependencies(t, db)
-	pool := &models.IPPool{Name: "public-v4", NodeID: &node.ID, Family: models.IPFamilyIPv4, CIDR: "203.0.113.0/24"}
+	pool := &models.IPPool{Name: "public-v4", NodeID: &node.ID, Family: models.IPFamilyIPv4, CIDR: "203.0.113.0/24", Bridge: "viifbr0", Gateway: "203.0.113.1"}
 	require.NoError(t, db.Create(pool).Error)
 	vm := &models.VM{UserID: user.ID.String(), NodeID: node.ID, Hostname: "ipam-delete.example.test", OSTemplateID: tmpl.ID, Resources: models.Resources{CPU: 1, RAM: 512, Disk: 10}, Status: models.VMStatusStopped}
 	require.NoError(t, db.Create(vm).Error)
