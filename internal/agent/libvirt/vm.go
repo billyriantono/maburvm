@@ -179,14 +179,23 @@ func generateDomainXML(config VMConfig) (string, error) {
 			Target: &libvirtxml.DomainDiskTarget{Dev: "vda", Bus: "virtio"},
 		},
 	}
-	// Attach the cloud-init NoCloud seed as a read-only cdrom when present so the
-	// guest configures its static IP / hostname / SSH key on first boot.
+	// Attach the cloud-init NoCloud seed (a cidata-labelled iso9660) so the guest
+	// configures its static IP / hostname / SSH key on first boot.
+	//
+	// It is attached as a read-only VIRTIO DISK, not a SATA cdrom. cloud-init's
+	// ds-identify runs in a systemd generator very early in boot; the virtio-blk
+	// driver is available at that point (it also backs the root disk vda), but the
+	// SATA optical driver (sr_mod) often is not, so a cdrom seed is missed →
+	// cloud-init.target never gets enabled → the guest never applies its network
+	// config (verified on a Debian 12 genericcloud guest). cloud-init detects the
+	// cidata filesystem on any block device, so a virtio disk works and is found
+	// reliably. Boot order stays hd-first, so this data disk is never booted.
 	if config.CloudInitISOPath != "" {
 		disks = append(disks, libvirtxml.DomainDisk{
-			Device:   "cdrom",
+			Device:   "disk",
 			Driver:   &libvirtxml.DomainDiskDriver{Name: "qemu", Type: "raw"},
 			Source:   &libvirtxml.DomainDiskSource{File: &libvirtxml.DomainDiskSourceFile{File: config.CloudInitISOPath}},
-			Target:   &libvirtxml.DomainDiskTarget{Dev: "sda", Bus: "sata"},
+			Target:   &libvirtxml.DomainDiskTarget{Dev: "vdb", Bus: "virtio"},
 			ReadOnly: &libvirtxml.DomainDiskReadOnly{},
 		})
 	}
