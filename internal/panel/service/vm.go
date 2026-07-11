@@ -198,6 +198,15 @@ type CreateVMRequest struct {
 	// it. Set for self-service (client) orders so they never get an unusable
 	// NAT-only VM; if no pool has a free address the create fails with a clear error.
 	AutoAssignIP bool `json:"-"`
+	// Password, when set, becomes the new guest's root password (injected on
+	// first boot). Empty + RegeneratePassword makes the service generate one.
+	Password string `json:"-"`
+	// RegeneratePassword, when true and Password is empty, generates a random root
+	// password and returns it once in the response.
+	RegeneratePassword bool `json:"-"`
+	// SSHPublicKeys are authorized_keys lines to inject into the new guest
+	// (resolved from the user's saved keys by the handler). Empty means none.
+	SSHPublicKeys []string `json:"-"`
 }
 
 // CreateVMResponse contains the created VM and job information
@@ -205,6 +214,9 @@ type CreateVMResponse struct {
 	VM     *models.VM `json:"vm"`
 	JobID  int64      `json:"job_id"`
 	Status string     `json:"status"`
+	// RootPassword is present only when a password was generated for this VM
+	// (RegeneratePassword with no explicit Password) — shown to the caller once.
+	RootPassword string `json:"root_password,omitempty"`
 }
 
 // CreateVM creates a new VM and enqueues a creation job
@@ -461,11 +473,32 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		}
 	}
 
+	// Root password + SSH keys: without these a freshly-created guest has no
+	// credentials and can't be logged into even when it's reachable. Inject the
+	// caller's password (or a generated one) and any selected SSH keys so the VM
+	// is actually usable on first boot — matching the rebuild flow.
+	rootPassword := req.Password
+	if rootPassword == "" && req.RegeneratePassword {
+		rootPassword = generateRootPassword()
+	}
+	if rootPassword != "" {
+		params["root_password"] = rootPassword
+	}
+	if len(req.SSHPublicKeys) > 0 {
+		params["ssh_public_key"] = strings.Join(req.SSHPublicKeys, "\n")
+	}
+	// Only surface a password we generated ourselves; never echo back one the
+	// caller supplied.
+	generatedPassword := ""
+	if req.Password == "" && req.RegeneratePassword {
+		generatedPassword = rootPassword
+	}
+
 	paramsJSON, _ := json.Marshal(params)
 
 	if s.riverClient == nil {
 		s.logger.WarnContext(ctx, "VM creation queue disabled; VM record created without background job", "vm_id", vm.ID)
-		return &CreateVMResponse{VM: vm, JobID: 0, Status: "pending"}, nil
+		return &CreateVMResponse{VM: vm, JobID: 0, Status: "pending", RootPassword: generatedPassword}, nil
 	}
 
 	// Enqueue VM creation job
@@ -494,9 +527,10 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 	)
 
 	return &CreateVMResponse{
-		VM:     vm,
-		JobID:  result.Job.ID,
-		Status: "pending",
+		VM:           vm,
+		JobID:        result.Job.ID,
+		Status:       "pending",
+		RootPassword: generatedPassword,
 	}, nil
 }
 

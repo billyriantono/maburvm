@@ -95,6 +95,12 @@ type CreateVMRequest struct {
 	UserData         string           `json:"user_data,omitempty" validate:"omitempty,max=65536"`
 	ManagedNetworkID string           `json:"managed_network_id,omitempty" validate:"omitempty,uuid"`
 	RecipeID         string           `json:"recipe_id,omitempty" validate:"omitempty,uuid"`
+	// Password sets the new guest's root password. RegeneratePassword (with an
+	// empty Password) asks the server to generate one and return it once.
+	Password           string `json:"password,omitempty" validate:"omitempty,min=8,max=128"`
+	RegeneratePassword bool   `json:"regenerate_password,omitempty"`
+	// SSHKeyIDs are the user's saved SSH keys to inject into the new guest.
+	SSHKeyIDs []string `json:"ssh_key_ids,omitempty"`
 }
 
 // CreateVMResponse represents the response after creating a VM
@@ -106,6 +112,9 @@ type CreateVMResponse struct {
 	JobID     int64  `json:"job_id"`
 	VNCPort   int    `json:"vnc_port,omitempty"`
 	CreatedAt string `json:"created_at"`
+	// RootPassword is present only when the server generated a password for this
+	// VM (regenerate_password with no explicit password) — shown to the user once.
+	RootPassword string `json:"root_password,omitempty"`
 }
 
 // CreateVM handles POST /api/vms - Create a new VM
@@ -156,21 +165,45 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 		userData = script
 	}
 
+	// Resolve the selected SSH keys to authorized_keys lines (ownership-enforced),
+	// so the new guest is actually loginable on first boot.
+	var sshPublicKeys []string
+	if len(req.SSHKeyIDs) > 0 && h.sshKeyService != nil {
+		keys, kerr := h.sshKeyService.ResolvePublicKeys(c.Request().Context(), userID, req.SSHKeyIDs)
+		if kerr != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+				"error":   "Internal Server Error",
+				"message": "failed to resolve SSH keys: " + kerr.Error(),
+			})
+		}
+		sshPublicKeys = keys
+	}
+
 	// Create VM
 	createReq := &service.CreateVMRequest{
-		UserID:           userID,
-		Hostname:         req.Hostname,
-		OSTemplateID:     req.OSTemplateID,
-		Resources:        req.Resources,
-		NodeID:           req.NodeID,
-		PlanID:           req.PlanID,
-		IPPoolID:         req.IPPoolID,
-		RequestedIP:      req.RequestedIP,
-		BandwidthMbps:    req.BandwidthMbps,
-		VLANID:           req.VLANID,
-		CPUModel:         req.CPUModel,
-		UserData:         userData,
-		ManagedNetworkID: req.ManagedNetworkID,
+		UserID:             userID,
+		Hostname:           req.Hostname,
+		OSTemplateID:       req.OSTemplateID,
+		Resources:          req.Resources,
+		NodeID:             req.NodeID,
+		PlanID:             req.PlanID,
+		IPPoolID:           req.IPPoolID,
+		RequestedIP:        req.RequestedIP,
+		BandwidthMbps:      req.BandwidthMbps,
+		VLANID:             req.VLANID,
+		CPUModel:           req.CPUModel,
+		UserData:           userData,
+		ManagedNetworkID:   req.ManagedNetworkID,
+		Password:           req.Password,
+		RegeneratePassword: req.RegeneratePassword,
+		SSHPublicKeys:      sshPublicKeys,
+	}
+
+	// Production-grade default: a VM with neither a password nor an SSH key can't
+	// be logged into. If the caller supplied neither, generate a root password and
+	// return it once (what VirtFusion/Virtualizor do) so the VM is always usable.
+	if req.Password == "" && len(sshPublicKeys) == 0 {
+		createReq.RegeneratePassword = true
 	}
 
 	// Self-service (client) orders don't pick an IP pool — admins do. When a
@@ -248,12 +281,13 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 	}
 
 	response := CreateVMResponse{
-		ID:        resp.VM.ID,
-		Hostname:  resp.VM.Hostname,
-		Status:    string(resp.VM.Status),
-		NodeID:    resp.VM.NodeID,
-		JobID:     resp.JobID,
-		CreatedAt: resp.VM.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		ID:           resp.VM.ID,
+		Hostname:     resp.VM.Hostname,
+		Status:       string(resp.VM.Status),
+		NodeID:       resp.VM.NodeID,
+		JobID:        resp.JobID,
+		CreatedAt:    resp.VM.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		RootPassword: resp.RootPassword,
 	}
 
 	if resp.VM.VNCPort != nil {
