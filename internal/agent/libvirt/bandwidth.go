@@ -47,7 +47,11 @@ func SetInterfaceBandwidth(uuidStr string, mbps int) error {
 		}
 		defer dom.Free()
 
-		dev, err := primaryInterfaceDev(dom)
+		// Identify the interface by MAC, NOT by target dev (vnetX): the target
+		// dev is assigned at domain start and is absent from the PERSISTENT
+		// config, so passing it with DOMAIN_AFFECT_CONFIG fails with "not a
+		// known interface". The MAC is present in both live and persistent XML.
+		dev, err := primaryInterfaceMAC(dom)
 		if err != nil {
 			return err
 		}
@@ -73,9 +77,12 @@ func SetInterfaceBandwidth(uuidStr string, mbps int) error {
 	})
 }
 
-// primaryInterfaceDev returns the target device name (e.g. "vnet0") of a
-// domain's first network interface, parsed from its live XML.
-func primaryInterfaceDev(dom *libvirt.Domain) (string, error) {
+// primaryInterfaceMAC returns the MAC address of a domain's first network
+// interface, parsed from its live XML. libvirt's SetInterfaceParameters accepts
+// either the target dev (live only) or the MAC; the MAC is the only identifier
+// that also exists in the persistent config, so it must be used when the change
+// targets DOMAIN_AFFECT_CONFIG.
+func primaryInterfaceMAC(dom *libvirt.Domain) (string, error) {
 	xmlDesc, err := dom.GetXMLDesc(0)
 	if err != nil {
 		return "", fmt.Errorf("failed to get domain XML: %w", err)
@@ -85,9 +92,9 @@ func primaryInterfaceDev(dom *libvirt.Domain) (string, error) {
 		return "", fmt.Errorf("failed to parse domain XML: %w", err)
 	}
 	for _, iface := range domain.Devices.Interfaces {
-		if iface.Target != nil && iface.Target.Dev != "" {
-			return iface.Target.Dev, nil
+		if iface.MAC != nil && iface.MAC.Address != "" {
+			return iface.MAC.Address, nil
 		}
 	}
-	return "", fmt.Errorf("no network interface with a target device found")
+	return "", fmt.Errorf("no network interface with a MAC address found")
 }
