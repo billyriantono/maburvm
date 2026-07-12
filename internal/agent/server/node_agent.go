@@ -408,18 +408,20 @@ func injectGuestConfig(diskPath, hostname string, vmCfg libvirt.VMConfig, rootPa
 		// until that entry ages out (minutes). Pinging the gateway makes the guest
 		// emit an ARP request whose sender fields the gateway learns immediately.
 		if vmCfg.Gateway != "" {
+			// NOTE: deliberately NOT ordered After=network-online.target — on these
+			// cloud images that target often never activates (networkd-wait-online
+			// isn't enabled), which would leave the unit stuck and never run. Instead
+			// it starts with multi-user.target and loops long enough for the network
+			// to come up on its own.
 			svc := "[Unit]\n" +
-				"Description=MaburVM: announce IP to gateway (populate upstream ARP)\n" +
-				"After=network-online.target\n" +
-				"Wants=network-online.target\n\n" +
+				"Description=MaburVM: announce IP to gateway/upstream (populate ARP)\n\n" +
 				"[Service]\n" +
 				"Type=oneshot\n" +
-				// Ping the gateway AND an external anchor a few times. The gateway ping
+				// Ping the gateway AND an external anchor repeatedly. The gateway ping
 				// teaches the local L2; the external ping traverses the full upstream
-				// path so every hop that may hold a stale ARP/route for this reused IP
-				// relearns it → the VM is reachable from the internet immediately
-				// instead of after the stale entry ages out (minutes).
-				fmt.Sprintf("ExecStart=/bin/sh -c 'for i in 1 2 3 4 5; do ping -c1 -w2 %s >/dev/null 2>&1; ping -c1 -w2 1.1.1.1 >/dev/null 2>&1; sleep 2; done; exit 0'\n", vmCfg.Gateway) +
+				// path so every hop that may hold a stale ARP/route for a reused IP
+				// relearns it → the VM is reachable from the internet promptly.
+				fmt.Sprintf("ExecStart=/bin/sh -c 'for i in $(seq 1 30); do ping -c1 -w2 %s >/dev/null 2>&1; ping -c1 -w2 1.1.1.1 >/dev/null 2>&1; sleep 2; done; exit 0'\n", vmCfg.Gateway) +
 				"\n[Install]\nWantedBy=multi-user.target\n"
 			args = append(args,
 				"--write", "/etc/systemd/system/maburvm-announce.service:"+svc,
@@ -453,15 +455,17 @@ func injectGuestConfig(diskPath, hostname string, vmCfg libvirt.VMConfig, rootPa
 		f.Close()
 		defer os.Remove(tmpRecipe)
 
+		// NOT ordered After=network-online.target (it may never activate on these
+		// images). Start with multi-user.target and wait for real connectivity in
+		// the wrapper before running the user's script, so apt has network.
 		unit := "[Unit]\n" +
 			"Description=MaburVM first-boot recipe\n" +
-			"After=network-online.target\n" +
-			"Wants=network-online.target\n" +
 			"ConditionPathExists=!/var/lib/maburvm/recipe.done\n\n" +
 			"[Service]\n" +
 			"Type=oneshot\n" +
 			"RemainAfterExit=yes\n" +
-			"ExecStart=/usr/local/sbin/maburvm-recipe.sh\n" +
+			"TimeoutStartSec=1800\n" +
+			"ExecStart=/bin/sh -c 'for i in $(seq 1 60); do ping -c1 -w2 1.1.1.1 >/dev/null 2>&1 && break; sleep 2; done; /usr/local/sbin/maburvm-recipe.sh'\n" +
 			"ExecStartPost=/bin/sh -c 'mkdir -p /var/lib/maburvm && touch /var/lib/maburvm/recipe.done'\n" +
 			"ExecStartPost=/bin/systemctl disable maburvm-recipe.service\n\n" +
 			"[Install]\nWantedBy=multi-user.target\n"
