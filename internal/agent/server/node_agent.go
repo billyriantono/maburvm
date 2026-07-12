@@ -399,7 +399,18 @@ func injectGuestConfig(diskPath, hostname string, vmCfg libvirt.VMConfig, rootPa
 			// guest silently falls back to the image's DHCP netplan. Make it 0644.
 			"--chmod", "0644:/etc/systemd/network/10-maburvm.network",
 			// Ensure the renderer is enabled (already so on cloud images; harmless otherwise).
-			"--run-command", "systemctl enable systemd-networkd >/dev/null 2>&1 || true")
+			"--run-command", "systemctl enable systemd-networkd >/dev/null 2>&1 || true",
+			// CRITICAL: stop cloud-init from ALSO configuring the network. The seed's
+			// network-config matches the same NIC by MAC and does `set-name: eth0` +
+			// its own addresses, so on FIRST boot cloud-init renders a competing
+			// netplan/networkd config and renames the interface — racing our
+			// 10-maburvm.network and leaving the link flapping between states, which
+			// the upstream gateway caches wrong → the VM is unreachable until a reboot
+			// (when cloud-init no longer touches the network). Disabling cloud-init's
+			// network module makes our injected config the sole authority from the
+			// very first boot. (This was the real cause of "new VM not reachable until
+			// rebooted".)
+			"--write", "/etc/cloud/cloud.cfg.d/99-maburvm-network.cfg:network: {config: disabled}\n")
 
 		// Populate the upstream gateway's ARP cache as soon as the guest is online.
 		// A brand-new VM that sends no outbound traffic on first boot never teaches
