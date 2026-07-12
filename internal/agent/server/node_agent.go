@@ -699,13 +699,34 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 		log.Printf("[NodeAgent] guest config injection failed for VM %s (guest may lack static networking): %v", req.VmId, err)
 	}
 
-	if _, err := libvirt.CreateVM(vmCfg); err != nil {
+	domainUUID, err := libvirt.CreateVM(vmCfg)
+	if err != nil {
 		// Clean up provisioned artifacts if domain definition failed.
 		_ = os.Remove(diskPath)
 		if seedPath != "" {
 			_ = os.Remove(seedPath)
 		}
 		return fmt.Errorf("failed to define domain: %w", err)
+	}
+
+	// Boot the VM now, then announce its IP to the network from the HOST via
+	// gratuitous ARP — this is how Virtualizor/VirtFusion make a new VM instantly
+	// reachable. The host advertises guest_IP→guest_MAC on the bridge the moment
+	// the VM comes up, so the upstream gateway learns it immediately (overwriting a
+	// stale entry left by a previously-assigned VM) WITHOUT waiting for the guest to
+	// finish booting and emit traffic on its own. (The in-guest announce service is
+	// kept as a fallback for restarts/migrations.)
+	if err := libvirt.StartVM(domainUUID); err != nil {
+		log.Printf("[NodeAgent] VM %s defined but failed to auto-start: %v", req.VmId, err)
+	} else if vmCfg.IPAddress != "" && vmCfg.MACAddress != "" && vmCfg.Bridge != "" {
+		for i := 0; i < 3; i++ {
+			if gerr := sendGratuitousARP(vmCfg.Bridge, vmCfg.IPAddress, vmCfg.MACAddress); gerr != nil {
+				log.Printf("[NodeAgent] gratuitous ARP for %s on %s failed: %v", vmCfg.IPAddress, vmCfg.Bridge, gerr)
+				break
+			}
+			time.Sleep(150 * time.Millisecond)
+		}
+		log.Printf("[NodeAgent] announced %s (%s) on %s via gratuitous ARP", vmCfg.IPAddress, vmCfg.MACAddress, vmCfg.Bridge)
 	}
 
 	log.Printf("[NodeAgent] Created VM %s (disk=%s bridge=%s ip=%s vlan=%d bw=%dMbps)",
