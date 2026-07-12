@@ -5,6 +5,7 @@ import (
 	"log"
 	"sync"
 
+	"github.com/maburvm/panel/internal/agent/libvirt"
 	"github.com/maburvm/panel/internal/shared/models"
 )
 
@@ -88,13 +89,14 @@ func (m *Manager) SetupVMNetwork(vmID string, internalIP string, vlanID int, ban
 	}
 	log.Printf("[NetworkManager] NAT setup for VM %s (IP: %s)", vmID, internalIP)
 
-	// 2. Apply bandwidth limit if specified
+	// 2. Apply bandwidth limit via libvirt so BOTH download and upload are
+	//    shaped (the manual tc HTB only caps download). 0 = unlimited.
+	if err := m.applyBandwidth(vmID, bandwidthMbps); err != nil {
+		// Cleanup NAT on failure
+		_ = m.nat.RemoveNAT(vmID, internalIP)
+		return fmt.Errorf("failed to apply bandwidth limit: %w", err)
+	}
 	if bandwidthMbps > 0 {
-		if err := m.bandwidth.LimitBandwidth(vmID, bandwidthMbps); err != nil {
-			// Cleanup NAT on failure
-			_ = m.nat.RemoveNAT(vmID, internalIP)
-			return fmt.Errorf("failed to apply bandwidth limit: %w", err)
-		}
 		log.Printf("[NetworkManager] Bandwidth limit %d Mbps applied to VM %s", bandwidthMbps, vmID)
 	}
 
@@ -242,19 +244,29 @@ func (m *Manager) UpdateBandwidthLimit(vmID string, rateMbps int) error {
 		return fmt.Errorf("VM %s not found in network state", vmID)
 	}
 
-	if rateMbps > 0 {
-		if err := m.bandwidth.LimitBandwidth(vmID, rateMbps); err != nil {
-			return fmt.Errorf("failed to apply bandwidth limit: %w", err)
-		}
-	} else {
-		if err := m.bandwidth.RemoveBandwidthLimit(vmID); err != nil {
-			return fmt.Errorf("failed to remove bandwidth limit: %w", err)
-		}
+	if err := m.applyBandwidth(vmID, rateMbps); err != nil {
+		return fmt.Errorf("failed to update bandwidth limit: %w", err)
 	}
 
 	state.Bandwidth = rateMbps
 
 	log.Printf("[NetworkManager] Bandwidth limit updated to %d Mbps for VM %s", rateMbps, vmID)
+	return nil
+}
+
+// applyBandwidth sets a VM's speed limit in BOTH directions via libvirt, which
+// caps download (tap egress HTB) and upload (tap ingress policing/IFB) alike.
+// rateMbps <= 0 clears the limit. If libvirt is unavailable it falls back to the
+// manual tc HTB so download shaping still degrades safely (upload can't be
+// shaped without libvirt/IFB, so that case is logged).
+func (m *Manager) applyBandwidth(vmID string, rateMbps int) error {
+	if err := libvirt.SetInterfaceBandwidth(vmID, rateMbps); err != nil {
+		log.Printf("[NetworkManager] libvirt bandwidth update failed for VM %s (%v); falling back to tc egress-only (upload unchanged)", vmID, err)
+		if rateMbps > 0 {
+			return m.bandwidth.LimitBandwidth(vmID, rateMbps)
+		}
+		return m.bandwidth.RemoveBandwidthLimit(vmID)
+	}
 	return nil
 }
 

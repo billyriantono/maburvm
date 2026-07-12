@@ -22,6 +22,32 @@ func NewNetworkHandler(service *service.NetworkService) *NetworkHandler {
 	}
 }
 
+// authorizeVM enforces tenant isolation for per-VM network mutations: admins
+// pass through, other users may only act on VMs they own. On failure it writes
+// the HTTP response (401/404) and returns false so callers can `return nil`.
+func (h *NetworkHandler) authorizeVM(c echo.Context, vmID string) bool {
+	userCtx, ok := middleware.GetUserContext(c)
+	if !ok {
+		_ = c.JSON(http.StatusUnauthorized, map[string]interface{}{
+			"error":   "Unauthorized",
+			"message": "authentication required",
+		})
+		return false
+	}
+	if userCtx.Role == models.RoleAdmin {
+		return true
+	}
+	ownerID, err := h.service.GetVMOwner(c.Request().Context(), vmID)
+	if err != nil || ownerID != userCtx.ID.String() {
+		_ = c.JSON(http.StatusNotFound, map[string]interface{}{
+			"error":   "Not Found",
+			"message": "VM not found",
+		})
+		return false
+	}
+	return true
+}
+
 // AddNetworkRequest represents a request to add a network interface
 type AddNetworkRequest struct {
 	IPAddress      string `json:"ip_address" validate:"required,ip"`
@@ -128,11 +154,23 @@ func (h *NetworkHandler) SetBandwidthLimit(c echo.Context) error {
 		})
 	}
 
+	if !h.authorizeVM(c, vmID) {
+		return nil
+	}
+
 	var req SetBandwidthRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
 			"error":   "Bad Request",
 			"message": "Invalid request body",
+		})
+	}
+
+	// Bounds: 0 (unlimited) .. 10000 Mbps (10 Gbps), matching VM-creation.
+	if req.BandwidthLimit < 0 || req.BandwidthLimit > 10000 {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error":   "Bad Request",
+			"message": "bandwidth_limit must be between 0 (unlimited) and 10000 Mbps",
 		})
 	}
 

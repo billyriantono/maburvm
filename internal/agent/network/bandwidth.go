@@ -52,8 +52,11 @@ func (bm *BandwidthManager) LimitBandwidth(vmID string, rateMbps int) error {
 		return err
 	}
 
-	// Convert Mbps to kbps for tc (tc uses kbps)
-	rateKbps := rateMbps * 1000
+	// Convert Mbps to kbit for tc. IMPORTANT: tc's "kbps" suffix means
+	// kilo*bytes* per second, not kilobits — using it makes the applied limit 8x
+	// the intended speed. Bandwidth is quoted in bits (a "100 Mbps" plan = 100
+	// megabits/sec), so we emit bit-based units: 1 Mbps = 1000 kbit.
+	rateKbit := rateMbps * 1000
 
 	// Step 1: Delete any existing qdisc on the interface (ignore errors if none exists)
 	_ = bm.deleteQdisc(iface)
@@ -64,8 +67,11 @@ func (bm *BandwidthManager) LimitBandwidth(vmID string, rateMbps int) error {
 		return fmt.Errorf("failed to add HTB qdisc: %w, output: %s", err, string(output))
 	}
 
-	// Step 3: Add HTB class with rate limit
-	cmd = exec.Command(bm.tcPath, "class", "add", "dev", iface, "parent", "1:", "classid", "1:1", "htb", "rate", fmt.Sprintf("%dkbps", rateKbps))
+	// Step 3: Add HTB class with rate limit. "ceil" equal to "rate" caps the
+	// burst so the interface can't briefly exceed the plan (e.g. a 10 Gbps tier
+	// stays at 10 Gbps rather than borrowing unused parent bandwidth).
+	rateArg := fmt.Sprintf("%dkbit", rateKbit)
+	cmd = exec.Command(bm.tcPath, "class", "add", "dev", iface, "parent", "1:", "classid", "1:1", "htb", "rate", rateArg, "ceil", rateArg)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		_ = bm.deleteQdisc(iface)
 		return fmt.Errorf("failed to add HTB class: %w, output: %s", err, string(output))
@@ -115,24 +121,40 @@ func (bm *BandwidthManager) GetBandwidthLimit(vmID string) (int, error) {
 			parts := strings.Fields(line)
 			for i, part := range parts {
 				if part == "rate" && i+1 < len(parts) {
-					rateStr := parts[i+1]
-					rateStr = strings.TrimSuffix(rateStr, "Kbit")
-					rateStr = strings.TrimSuffix(rateStr, "Mbit")
-					rateStr = strings.TrimSuffix(rateStr, "kbps")
-					rateStr = strings.TrimSuffix(rateStr, "mbps")
-
-					if rate, err := strconv.Atoi(rateStr); err == nil {
-						if strings.Contains(parts[i+1], "K") {
-							return rate / 1000, nil
-						}
-						return rate, nil
-					}
+					return parseRateToMbps(parts[i+1]), nil
 				}
 			}
 		}
 	}
 
 	return 0, nil
+}
+
+// parseRateToMbps converts a tc rate token (e.g. "10Gbit", "100Mbit",
+// "500Kbit") to Mbps, rounding to the nearest integer. tc may print
+// bit ("Kbit"/"Mbit"/"Gbit") or byte ("Kbps"/"Mbps") units depending on
+// version; only bit units are emitted by LimitBandwidth. Returns 0 when the
+// token can't be parsed.
+func parseRateToMbps(token string) int {
+	// Split the numeric prefix from the unit suffix.
+	num := strings.TrimRight(token, "abBGiKkMmpst")
+	unit := strings.ToLower(strings.TrimPrefix(token, num))
+	val, err := strconv.ParseFloat(num, 64)
+	if err != nil {
+		return 0
+	}
+	var mbps float64
+	switch {
+	case strings.HasPrefix(unit, "g"): // Gbit / Gbps
+		mbps = val * 1000
+	case strings.HasPrefix(unit, "m"): // Mbit / Mbps
+		mbps = val
+	case strings.HasPrefix(unit, "k"): // Kbit / Kbps
+		mbps = val / 1000
+	default: // bare bit/s
+		mbps = val / 1e6
+	}
+	return int(mbps + 0.5)
 }
 
 // CleanupVM removes all network limits and rules for a VM

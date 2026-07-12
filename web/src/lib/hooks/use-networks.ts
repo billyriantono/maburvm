@@ -57,6 +57,25 @@ export function useVMNetworks(vmId: string) {
   })
 }
 
+// useSetVMBandwidth sets the speed limit (Mbps) of a single VM network interface.
+// 0 = unlimited, max 10000 (10 Gbps). Backed by PUT
+// /api/v1/vms/:id/networks/:network_id/bandwidth, which re-applies the tc limit
+// on the hypervisor. Ownership is enforced server-side, so clients may call it
+// for their own VMs.
+export function useSetVMBandwidth(vmId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<void, Error, { networkId: string; bandwidthMbps: number }>({
+    mutationFn: async ({ networkId, bandwidthMbps }) => {
+      await api.put(`/api/v1/vms/${vmId}/networks/${networkId}/bandwidth`, {
+        bandwidth_limit: bandwidthMbps,
+      })
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['networks', 'vm', vmId] })
+    },
+  })
+}
+
 export function usePortForwards(vmId: string) {
   return useQuery<PortForward[]>({
     queryKey: ['networks', 'port-forwards', vmId],

@@ -3,8 +3,85 @@
 import { useParams, useRouter } from "next/navigation"
 import Link from "next/link"
 import { useState } from "react"
-import { ArrowLeft, Play, Square, RotateCw, Monitor, Cpu, MemoryStick, HardDrive, Terminal, Trash2 } from "lucide-react"
+import { ArrowLeft, Play, Square, RotateCw, Monitor, Cpu, MemoryStick, HardDrive, Terminal, Trash2, Gauge } from "lucide-react"
 import { useVM, useVMAction, useDeleteVM, useVMStatusStream } from "@/lib/hooks/use-vms"
+import { useVMNetworks, useSetVMBandwidth } from "@/lib/hooks/use-networks"
+
+// Preset speed tiers a client can self-upgrade to (Mbps). 0 = unlimited.
+const SPEED_TIERS: { label: string; mbps: number }[] = [
+  { label: "100 Mbps", mbps: 100 },
+  { label: "500 Mbps", mbps: 500 },
+  { label: "1 Gbps", mbps: 1000 },
+  { label: "2.5 Gbps", mbps: 2500 },
+  { label: "5 Gbps", mbps: 5000 },
+  { label: "10 Gbps", mbps: 10000 },
+]
+
+function speedLabel(mbps: number): string {
+  if (mbps <= 0) return "Unlimited"
+  if (mbps % 1000 === 0) return `${mbps / 1000} Gbps`
+  return `${mbps} Mbps`
+}
+
+// NetworkSpeedCard lets a client upgrade/downgrade the speed of their VM's
+// network interfaces. Ownership is enforced server-side by the bandwidth
+// endpoint, so a client can only change their own VM.
+function NetworkSpeedCard({ vmId }: { vmId: string }) {
+  const { data: networks } = useVMNetworks(vmId)
+  const setBandwidth = useSetVMBandwidth(vmId)
+  const [pending, setPending] = useState<string | null>(null)
+
+  if (!networks?.length) return null
+
+  return (
+    <div className="bg-white border-4 border-black shadow-neo">
+      <div className="px-5 py-4 border-b-4 border-black flex items-center gap-2">
+        <Gauge className="w-5 h-5" />
+        <h2 className="text-lg font-black uppercase tracking-tight">Network Speed</h2>
+      </div>
+      <div className="p-5 space-y-5">
+        {networks.map((iface) => (
+          <div key={iface.id} className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="font-mono font-bold">{iface.ip_address}</span>
+              <span className="text-sm font-black uppercase bg-[#CCFF00] border-2 border-black px-2 py-0.5">
+                {speedLabel(iface.bandwidth_limit)}
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {SPEED_TIERS.map((t) => {
+                const active = iface.bandwidth_limit === t.mbps
+                const busy = pending === iface.id && setBandwidth.isPending
+                return (
+                  <button
+                    key={t.mbps}
+                    type="button"
+                    disabled={active || busy}
+                    onClick={() => {
+                      setPending(iface.id)
+                      setBandwidth.mutate(
+                        { networkId: iface.id, bandwidthMbps: t.mbps },
+                        { onSettled: () => setPending(null) },
+                      )
+                    }}
+                    className={`h-9 px-3 border-2 border-black text-xs font-black uppercase disabled:opacity-50 ${
+                      active ? "bg-black text-primary" : "bg-white text-black hover:bg-gray-50"
+                    }`}
+                  >
+                    {busy && pending === iface.id ? "…" : t.label}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        ))}
+        <p className="text-xs text-gray-500 font-medium">
+          Speed changes apply immediately to the running VM. The highest available tier is 10 Gbps.
+        </p>
+      </div>
+    </div>
+  )
+}
 
 function StatusBadge({ status }: { status?: string }) {
   const colors: Record<string, string> = {
@@ -114,6 +191,9 @@ export default function ClientVMDetailPage() {
         <Spec icon={MemoryStick} label="Memory" value={`${vm.resources.ram} MB`} />
         <Spec icon={HardDrive} label="Disk" value={`${vm.resources.disk} GB`} />
       </div>
+
+      {/* Network speed self-service upgrade */}
+      <NetworkSpeedCard vmId={vmId} />
 
       {/* Danger zone */}
       <div className="bg-white border-4 border-black shadow-neo">

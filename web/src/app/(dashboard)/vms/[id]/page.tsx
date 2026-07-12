@@ -20,7 +20,8 @@ import { useNodes } from "@/lib/hooks/use-nodes"
 import { Sparkline } from "@/components/ui/sparkline"
 import { useSnapshots, useCreateSnapshot, useRestoreSnapshot, useDeleteSnapshot } from "@/lib/hooks/use-snapshots"
 import { useBackups, useCreateBackup, useDeleteBackup } from "@/lib/hooks/use-backups"
-import { useFirewallRules, useDeleteFirewallRule, useVMNetworks } from "@/lib/hooks/use-networks"
+import { useFirewallRules, useDeleteFirewallRule, useVMNetworks, useSetVMBandwidth } from "@/lib/hooks/use-networks"
+import type { Network as NetworkIface } from "@/types"
 import { useTemplates } from "@/lib/hooks/use-templates"
 import { useVMBandwidth, useSetBandwidthQuota } from "@/lib/hooks/use-bandwidth"
 import { useVMDisks, useAttachDisk, useDetachDisk } from "@/lib/hooks/use-disks"
@@ -28,6 +29,95 @@ import { VNCConsole } from "@/components/vnc-console"
 import type { VMStatus, Snapshot, Backup, FirewallRule } from "@/types"
 
 // --- Utility Components ---
+
+// Preset speed tiers (Mbps). 0 = unlimited. Shared shape with the client portal.
+const BANDWIDTH_TIERS: { label: string; mbps: number }[] = [
+  { label: "100 Mbps", mbps: 100 },
+  { label: "500 Mbps", mbps: 500 },
+  { label: "1 Gbps", mbps: 1000 },
+  { label: "2.5 Gbps", mbps: 2500 },
+  { label: "5 Gbps", mbps: 5000 },
+  { label: "10 Gbps", mbps: 10000 },
+  { label: "Unlimited", mbps: 0 },
+]
+
+function formatMbps(mbps: number): string {
+  if (mbps <= 0) return "Unlimited"
+  if (mbps % 1000 === 0) return `${mbps / 1000} Gbps`
+  return `${mbps} Mbps`
+}
+
+// BandwidthCell renders a VM interface's speed limit with inline editing.
+// Admins pick a preset tier (up to 10 Gbps) or enter a custom value; saving
+// re-applies the tc limit on the hypervisor via the bandwidth endpoint.
+function BandwidthCell({ vmId, iface }: { vmId: string; iface: NetworkIface }) {
+  const [editing, setEditing] = useState(false)
+  const [value, setValue] = useState<number>(iface.bandwidth_limit)
+  const setBandwidth = useSetVMBandwidth(vmId)
+
+  if (!editing) {
+    return (
+      <div className="flex items-center gap-2">
+        <span className="font-mono">{formatMbps(iface.bandwidth_limit)}</span>
+        <button
+          type="button"
+          onClick={() => { setValue(iface.bandwidth_limit); setEditing(true) }}
+          className="text-[10px] font-black uppercase underline text-gray-500 hover:text-primary"
+        >
+          Edit
+        </button>
+      </div>
+    )
+  }
+
+  const apply = () => {
+    const mbps = Math.max(0, Math.min(10000, Math.floor(value) || 0))
+    setBandwidth.mutate(
+      { networkId: iface.id, bandwidthMbps: mbps },
+      { onSuccess: () => setEditing(false) },
+    )
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      <select
+        value={BANDWIDTH_TIERS.some((t) => t.mbps === value) ? value : "custom"}
+        onChange={(e) => { if (e.target.value !== "custom") setValue(Number(e.target.value)) }}
+        className="h-8 border-2 border-black text-xs font-bold px-1"
+      >
+        {BANDWIDTH_TIERS.map((t) => (
+          <option key={t.mbps} value={t.mbps}>{t.label}</option>
+        ))}
+        <option value="custom">Custom…</option>
+      </select>
+      <input
+        type="number"
+        min={0}
+        max={10000}
+        value={value}
+        onChange={(e) => setValue(Number(e.target.value))}
+        className="h-8 w-20 border-2 border-black text-xs font-mono px-1"
+        aria-label="Bandwidth in Mbps"
+      />
+      <span className="text-[10px] font-bold text-gray-500">Mbps</span>
+      <button
+        type="button"
+        onClick={apply}
+        disabled={setBandwidth.isPending}
+        className="h-8 px-2 bg-[#CCFF00] text-black border-2 border-black text-xs font-black uppercase disabled:opacity-50"
+      >
+        {setBandwidth.isPending ? "…" : "Save"}
+      </button>
+      <button
+        type="button"
+        onClick={() => setEditing(false)}
+        className="h-8 px-2 bg-white text-black border-2 border-black text-xs font-black uppercase"
+      >
+        ✕
+      </button>
+    </div>
+  )
+}
 
 function formatDate(dateString: string) {
   return new Date(dateString).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
@@ -1340,7 +1430,7 @@ export default function VMDetailPage() {
                           <td className="p-3 font-mono">{iface.gateway || "—"}</td>
                           <td className="p-3 font-mono">{iface.netmask || "—"}</td>
                           <td className="p-3 font-mono">{iface.vlan_id ?? "—"}</td>
-                          <td className="p-3 font-mono">{iface.bandwidth_limit > 0 ? `${iface.bandwidth_limit} Mbps` : "Unlimited"}</td>
+                          <td className="p-3"><BandwidthCell vmId={vmId} iface={iface} /></td>
                           <td className="p-3 font-mono text-xs">{iface.rdns || "—"}</td>
                         </tr>
                       ))}
