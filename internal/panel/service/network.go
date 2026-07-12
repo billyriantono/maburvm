@@ -170,6 +170,29 @@ func (s *NetworkService) SetBandwidthLimit(ctx context.Context, vmID string, net
 	return nil
 }
 
+// ApplyLiveBandwidth pushes a live interface speed (Mbps) to a VM's primary
+// network WITHOUT changing the stored BandwidthLimit. Bandwidth quota
+// enforcement uses this to throttle a VM (and later restore it) while keeping
+// the VM's normal provisioned speed on record. 0 = unlimited. Firewall rules
+// and VLAN are preserved (the same full network-config job the admin path uses).
+func (s *NetworkService) ApplyLiveBandwidth(ctx context.Context, vmID string, mbps int64) error {
+	vm, err := s.vmRepo.GetByID(ctx, vmID)
+	if err != nil {
+		return fmt.Errorf("failed to get VM: %w", err)
+	}
+	network, err := s.networkRepo.GetByVMID(ctx, vmID)
+	if err != nil {
+		return ErrNetworkNotFound
+	}
+	rules, err := s.firewallRepo.ListByVMID(ctx, vmID, 0, 0)
+	if err != nil {
+		rules = nil // best-effort: still apply bandwidth even if rules can't be loaded
+	}
+	netCopy := *network
+	netCopy.BandwidthLimit = mbps
+	return s.enqueueNetworkConfigJob(ctx, vm, &netCopy, rules)
+}
+
 // AddPortForwardRequest contains data for adding a port forward rule
 type AddPortForwardRequest struct {
 	ExternalPort int    `json:"external_port" validate:"required,min=1,max=65535"`

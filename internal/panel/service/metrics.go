@@ -1,15 +1,27 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"log/slog"
+	"net/http"
 	"os"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/maburvm/panel/internal/panel/repository"
 	"github.com/maburvm/panel/internal/shared/models"
+	"github.com/riverqueue/river"
 	"gorm.io/gorm"
 )
+
+// defaultThrottleMbps is the speed a throttle-policy VM drops to when a plan
+// leaves throttle_speed_mbps unset (0).
+const defaultThrottleMbps = 10
 
 // MetricsService serves persisted node metric history to the API.
 type MetricsService struct {
@@ -36,42 +48,54 @@ func (s *MetricsService) VMHistory(ctx context.Context, vmID string, window time
 // MetricsCollector periodically samples every node's (and running VM's) live
 // metrics and persists them, pruning samples older than the retention window.
 type MetricsCollector struct {
-	nodeRepo    *repository.NodeRepository
-	vmRepo      *repository.VMRepository
-	nodeService *NodeService
-	vmService   *VMService
-	bwService   *BandwidthService
-	repo        *repository.MetricsRepository
-	interval    time.Duration
-	retention   time.Duration
-	enforce     bool // stop VMs that exceed their monthly bandwidth quota
-	logger      *slog.Logger
-	tick        int // collectOnce counter, for slower-cadence work (IP reconcile)
+	nodeRepo       *repository.NodeRepository
+	vmRepo         *repository.VMRepository
+	networkRepo    *repository.NetworkRepository
+	nodeService    *NodeService
+	vmService      *VMService
+	bwService      *BandwidthService
+	networkService *NetworkService
+	repo           *repository.MetricsRepository
+	interval       time.Duration
+	retention      time.Duration
+	enforce        bool   // apply restrictive over-quota actions (throttle/suspend)
+	overageURL     string // WHMCS outbound webhook for overage billing (empty = record-only)
+	overageSecret  string // HMAC secret for signing the overage webhook (BILLING_WEBHOOK_SECRET)
+	httpClient     *http.Client
+	logger         *slog.Logger
+	tick           int // collectOnce counter, for slower-cadence work (IP reconcile)
 }
 
 // NewMetricsCollector wires a collector. interval is the sampling period;
 // retention is how long samples are kept.
-func NewMetricsCollector(db *gorm.DB, interval, retention time.Duration, logger *slog.Logger) *MetricsCollector {
+func NewMetricsCollector(db *gorm.DB, riverClient *river.Client[pgx.Tx], interval, retention time.Duration, logger *slog.Logger) *MetricsCollector {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	nodeRepo := repository.NewNodeRepository(db)
 	vmRepo := repository.NewVMRepository(db)
+	networkRepo := repository.NewNetworkRepository(db)
+	firewallRepo := repository.NewFirewallRepository(db)
 	return &MetricsCollector{
 		nodeRepo:    nodeRepo,
 		vmRepo:      vmRepo,
+		networkRepo: networkRepo,
 		nodeService: NewNodeService(nodeRepo, db),
-		// riverClient is nil: the collector only reads metrics, never enqueues jobs.
-		vmService: NewVMService(db, vmRepo, nodeRepo, repository.NewTemplateRepository(db), nil, logger),
-		bwService: NewBandwidthService(repository.NewBandwidthUsageRepository(db), logger),
-		repo:      repository.NewMetricsRepository(db),
-		interval:  interval,
-		retention: retention,
-		// Enforcement (auto-stop on overage) is opt-in: customers' VMs shouldn't be
-		// stopped unless the operator deliberately enables it. Accounting + the
-		// `exceeded` flag + the UI work regardless.
-		enforce: os.Getenv("BANDWIDTH_ENFORCE") == "true",
-		logger:  logger,
+		// riverClient lets the collector enqueue throttle/restore network jobs.
+		vmService:      NewVMService(db, vmRepo, nodeRepo, repository.NewTemplateRepository(db), riverClient, logger),
+		bwService:      NewBandwidthService(repository.NewBandwidthUsageRepository(db), logger),
+		networkService: NewNetworkService(db, networkRepo, firewallRepo, vmRepo, nodeRepo, riverClient),
+		repo:           repository.NewMetricsRepository(db),
+		interval:       interval,
+		retention:      retention,
+		// Restrictive over-quota actions (throttle/suspend) are opt-in: customers'
+		// VMs shouldn't be limited unless the operator enables it. Accounting, the
+		// `exceeded` flag, and overage billing work regardless.
+		enforce:       os.Getenv("BANDWIDTH_ENFORCE") == "true",
+		overageURL:    os.Getenv("WHMCS_OVERAGE_WEBHOOK_URL"),
+		overageSecret: os.Getenv("BILLING_WEBHOOK_SECRET"),
+		httpClient:    &http.Client{Timeout: 10 * time.Second},
+		logger:        logger,
 	}
 }
 
@@ -156,6 +180,9 @@ func (c *MetricsCollector) collectOnce(ctx context.Context) {
 
 	c.collectVMs(ctx, online)
 
+	// Restore any throttled VMs whose quota has reset for the new period.
+	c.restoreResetThrottles(ctx)
+
 	if c.retention > 0 {
 		cutoff := time.Now().Add(-c.retention)
 		if removed, err := c.repo.PruneNodeSamplesBefore(ctx, cutoff); err != nil {
@@ -231,14 +258,140 @@ func (c *MetricsCollector) accountBandwidth(ctx context.Context, vmID, nodeID st
 	}
 
 	for _, exVM := range exceeded {
+		c.enforceOverQuota(ctx, nodeID, exVM)
+	}
+}
+
+// enforceOverQuota acts on a VM that just crossed its monthly data quota,
+// following the over-quota policy snapshotted on its network interface:
+//   - overage: emit a billing webhook (VM keeps full speed). Fires regardless of
+//     BANDWIDTH_ENFORCE — it bills, it doesn't restrict.
+//   - throttle: drop the live speed to ThrottleSpeedMbps (opt-in via enforce).
+//   - suspend: stop the VM (opt-in via enforce).
+func (c *MetricsCollector) enforceOverQuota(ctx context.Context, nodeID, vmID string) {
+	net, err := c.networkRepo.GetByVMID(ctx, vmID)
+	if err != nil {
+		c.logger.Error("over-quota: no network for VM", "vm_id", vmID, "error", err)
+		return
+	}
+	policy := net.OverQuotaPolicy
+	if policy == "" {
+		policy = models.OverQuotaThrottle
+	}
+
+	switch policy {
+	case models.OverQuotaOverage:
+		c.sendOverageWebhook(ctx, nodeID, vmID)
+
+	case models.OverQuotaSuspend:
 		if !c.enforce {
-			c.logger.Warn("bandwidth quota exceeded (enforcement disabled)", "vm_id", exVM)
+			c.logger.Warn("over-quota suspend skipped (BANDWIDTH_ENFORCE off)", "vm_id", vmID)
+			return
+		}
+		if err := c.vmService.StopVMForEnforcement(ctx, nodeID, vmID); err != nil {
+			c.logger.Error("over-quota: suspend failed", "vm_id", vmID, "error", err)
+		} else {
+			c.logger.Warn("over-quota: VM suspended (quota exceeded)", "vm_id", vmID)
+		}
+
+	default: // throttle
+		if !c.enforce {
+			c.logger.Warn("over-quota throttle skipped (BANDWIDTH_ENFORCE off)", "vm_id", vmID)
+			return
+		}
+		speed := int64(net.ThrottleSpeedMbps)
+		if speed <= 0 {
+			speed = defaultThrottleMbps
+		}
+		if err := c.networkService.ApplyLiveBandwidth(ctx, vmID, speed); err != nil {
+			c.logger.Error("over-quota: throttle failed", "vm_id", vmID, "error", err)
+			return
+		}
+		if err := c.networkRepo.SetThrottled(ctx, net.ID, true); err != nil {
+			c.logger.Error("over-quota: mark throttled failed", "vm_id", vmID, "error", err)
+		}
+		c.logger.Warn("over-quota: VM throttled (quota exceeded)", "vm_id", vmID, "speed_mbps", speed)
+	}
+}
+
+// restoreResetThrottles un-throttles VMs whose quota has reset (new billing
+// period) or was raised so usage is back under the limit, restoring each VM's
+// normal provisioned speed. Called once per collection tick.
+func (c *MetricsCollector) restoreResetThrottles(ctx context.Context) {
+	nets, err := c.networkRepo.ListThrottled(ctx)
+	if err != nil {
+		c.logger.Error("restore throttles: list failed", "error", err)
+		return
+	}
+	for i := range nets {
+		net := &nets[i]
+		vm, err := c.vmRepo.GetByID(ctx, net.VMID)
+		if err != nil {
 			continue
 		}
-		if err := c.vmService.StopVMForEnforcement(ctx, nodeID, exVM); err != nil {
-			c.logger.Error("bandwidth enforcement: failed to stop VM", "vm_id", exVM, "error", err)
-		} else {
-			c.logger.Warn("bandwidth enforcement: VM stopped (quota exceeded)", "vm_id", exVM)
+		usage, err := c.bwService.GetVMUsage(ctx, net.VMID, vm.NodeID)
+		if err != nil {
+			continue
 		}
+		// Still over quota this period → keep throttled.
+		if usage != nil && usage.QuotaBytes > 0 && usage.TotalBytes >= usage.QuotaBytes {
+			continue
+		}
+		if err := c.networkService.ApplyLiveBandwidth(ctx, net.VMID, net.BandwidthLimit); err != nil {
+			c.logger.Error("restore throttle: apply failed", "vm_id", net.VMID, "error", err)
+			continue
+		}
+		if err := c.networkRepo.SetThrottled(ctx, net.ID, false); err != nil {
+			c.logger.Error("restore throttle: clear flag failed", "vm_id", net.VMID, "error", err)
+			continue
+		}
+		c.logger.Info("over-quota: VM speed restored (quota reset)", "vm_id", net.VMID, "speed_mbps", net.BandwidthLimit)
 	}
+}
+
+// sendOverageWebhook posts a signed bandwidth-overage event to the configured
+// WHMCS endpoint so it can bill the overage. When no URL is set the overage is
+// recorded in the logs only. Signature reuses the billing HMAC secret.
+func (c *MetricsCollector) sendOverageWebhook(ctx context.Context, nodeID, vmID string) {
+	usage, err := c.bwService.GetVMUsage(ctx, vmID, nodeID)
+	if err != nil || usage == nil {
+		c.logger.Error("overage: no usage for VM", "vm_id", vmID, "error", err)
+		return
+	}
+	if c.overageURL == "" {
+		c.logger.Warn("bandwidth overage (no WHMCS_OVERAGE_WEBHOOK_URL — recorded only)",
+			"vm_id", vmID, "used_gb", usage.UsedGB(), "quota_gb", usage.QuotaGB())
+		return
+	}
+	body, _ := json.Marshal(map[string]any{
+		"event":        "bandwidth.overage",
+		"vm_id":        vmID,
+		"node_id":      nodeID,
+		"used_gb":      usage.UsedGB(),
+		"quota_gb":     usage.QuotaGB(),
+		"period_start": usage.PeriodStart,
+		"period_end":   usage.PeriodEnd,
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.overageURL, bytes.NewReader(body))
+	if err != nil {
+		c.logger.Error("overage webhook: build request failed", "vm_id", vmID, "error", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.overageSecret != "" {
+		mac := hmac.New(sha256.New, []byte(c.overageSecret))
+		mac.Write(body)
+		req.Header.Set("X-Webhook-Signature", hex.EncodeToString(mac.Sum(nil)))
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		c.logger.Error("overage webhook: post failed", "vm_id", vmID, "error", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		c.logger.Error("overage webhook: non-2xx response", "vm_id", vmID, "status", resp.StatusCode)
+		return
+	}
+	c.logger.Info("bandwidth overage webhook sent", "vm_id", vmID, "used_gb", usage.UsedGB())
 }

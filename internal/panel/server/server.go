@@ -1009,7 +1009,7 @@ func (s *Server) Start() error {
 	// Start the background node-metrics collector (persists samples for history).
 	collectorCtx, stopCollector := context.WithCancel(context.Background())
 	defer stopCollector()
-	go service.NewMetricsCollector(s.db, 60*time.Second, 7*24*time.Hour, slog.Default()).Run(collectorCtx)
+	go service.NewMetricsCollector(s.db, s.riverClient, 60*time.Second, 7*24*time.Hour, slog.Default()).Run(collectorCtx)
 
 	// Start the backup scheduler: starts the cron and (re)loads active schedules
 	// from the DB so they survive restarts. Without this, scheduled backups never run.

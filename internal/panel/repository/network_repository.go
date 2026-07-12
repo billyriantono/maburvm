@@ -144,6 +144,19 @@ func (r *NetworkRepository) UpdateBandwidthLimit(ctx context.Context, id string,
 	return r.db.WithContext(ctx).Model(&models.Network{}).Where("id = ?", id).Update("bandwidth_limit", limit).Error
 }
 
+// SetThrottled flags a network as (un)throttled by quota enforcement.
+func (r *NetworkRepository) SetThrottled(ctx context.Context, id string, throttled bool) error {
+	return r.db.WithContext(ctx).Model(&models.Network{}).Where("id = ?", id).Update("throttled", throttled).Error
+}
+
+// ListThrottled returns all networks currently throttled by quota enforcement,
+// used to restore their normal speed once the quota resets.
+func (r *NetworkRepository) ListThrottled(ctx context.Context) ([]models.Network, error) {
+	var nets []models.Network
+	err := r.db.WithContext(ctx).Where("throttled = ?", true).Find(&nets).Error
+	return nets, err
+}
+
 // UpdateVLANID updates a network's VLAN ID
 func (r *NetworkRepository) UpdateVLANID(ctx context.Context, id string, vlanID *int) error {
 	return r.db.WithContext(ctx).Model(&models.Network{}).Where("id = ?", id).Update("vlan_id", vlanID).Error
