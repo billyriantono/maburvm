@@ -738,21 +738,19 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 		// guest_IP→guest_MAC without waiting for a reboot.
 		bridge, ip, mac, vmID := vmCfg.Bridge, vmCfg.IPAddress, vmCfg.MACAddress, domainUUID
 		go func() {
-			for i := 0; i < 12; i++ { // announce for ~1 min while the guest boots
-				if gerr := sendGratuitousARP(bridge, ip, mac); gerr != nil {
-					log.Printf("[NodeAgent] gratuitous ARP for %s on %s failed: %v", ip, bridge, gerr)
-					break
-				}
+			// On this platform a brand-new VM built from a libguestfs-modified disk is
+			// NOT reachable from the internet on its FIRST boot — the upstream never
+			// commits its IP↔MAC binding (host + in-guest ARP announcements don't stick,
+			// and re-attaching the vnet doesn't help; only the guest's own SECOND boot
+			// registers cleanly). So we hard power-cycle once, EARLY: wait just long
+			// enough for the first boot to bring the NIC up (~40s), then reboot. Doing it
+			// early (rather than after ~90s) roughly halves provisioning time AND lets the
+			// first-boot recipe run cleanly on the second boot instead of being
+			// interrupted mid-apt.
+			for i := 0; i < 7; i++ { // announce while the first boot comes up
+				_ = sendGratuitousARP(bridge, ip, mac)
 				time.Sleep(5 * time.Second)
 			}
-			// Power-cycle once after the first boot. On this platform a brand-new VM
-			// built from a libguestfs-modified disk is NOT reachable from the internet
-			// on its first boot (the upstream never commits its IP↔MAC binding, even
-			// with host + in-guest ARP announcements) — but a single hard reboot makes
-			// it PERSISTENTLY reachable. So we do that reboot automatically instead of
-			// leaving the operator to click Restart. (~90s lets the guest finish its
-			// first boot + first-boot recipe before the cycle.)
-			time.Sleep(90 * time.Second)
 			if serr := libvirt.StopVM(vmID, true); serr != nil {
 				log.Printf("[NodeAgent] post-provision reboot: stop %s failed: %v", vmID, serr)
 				return
@@ -762,13 +760,13 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 				log.Printf("[NodeAgent] post-provision reboot: start %s failed: %v", vmID, serr)
 				return
 			}
-			for i := 0; i < 6; i++ { // re-announce after the reboot
+			for i := 0; i < 18; i++ { // announce through the (reachable) second boot
 				_ = sendGratuitousARP(bridge, ip, mac)
 				time.Sleep(5 * time.Second)
 			}
 			log.Printf("[NodeAgent] post-provision reboot done for %s (%s)", vmID, ip)
 		}()
-		log.Printf("[NodeAgent] announcing %s (%s) on %s + scheduling post-provision reboot", ip, mac, bridge)
+		log.Printf("[NodeAgent] announcing %s (%s) on %s + scheduling early post-provision reboot", ip, mac, bridge)
 	}
 
 	log.Printf("[NodeAgent] Created VM %s (disk=%s bridge=%s ip=%s vlan=%d bw=%dMbps)",
