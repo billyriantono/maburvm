@@ -5,7 +5,6 @@ package network
 import (
 	"fmt"
 	"os/exec"
-	"strconv"
 	"strings"
 
 	"github.com/maburvm/panel/internal/agent/libvirt"
@@ -100,61 +99,6 @@ func (bm *BandwidthManager) deleteQdisc(iface string) error {
 		return fmt.Errorf("failed to delete qdisc: %w, output: %s", err, string(output))
 	}
 	return nil
-}
-
-// GetBandwidthLimit retrieves the current bandwidth limit for a VM
-func (bm *BandwidthManager) GetBandwidthLimit(vmID string) (int, error) {
-	iface, err := bm.getVNetInterface(vmID)
-	if err != nil {
-		return 0, err
-	}
-
-	cmd := exec.Command(bm.tcPath, "class", "show", "dev", iface)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return 0, fmt.Errorf("failed to get class info: %w", err)
-	}
-
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		if strings.Contains(line, "htb") && strings.Contains(line, "rate") {
-			parts := strings.Fields(line)
-			for i, part := range parts {
-				if part == "rate" && i+1 < len(parts) {
-					return parseRateToMbps(parts[i+1]), nil
-				}
-			}
-		}
-	}
-
-	return 0, nil
-}
-
-// parseRateToMbps converts a tc rate token (e.g. "10Gbit", "100Mbit",
-// "500Kbit") to Mbps, rounding to the nearest integer. tc may print
-// bit ("Kbit"/"Mbit"/"Gbit") or byte ("Kbps"/"Mbps") units depending on
-// version; only bit units are emitted by LimitBandwidth. Returns 0 when the
-// token can't be parsed.
-func parseRateToMbps(token string) int {
-	// Split the numeric prefix from the unit suffix.
-	num := strings.TrimRight(token, "abBGiKkMmpst")
-	unit := strings.ToLower(strings.TrimPrefix(token, num))
-	val, err := strconv.ParseFloat(num, 64)
-	if err != nil {
-		return 0
-	}
-	var mbps float64
-	switch {
-	case strings.HasPrefix(unit, "g"): // Gbit / Gbps
-		mbps = val * 1000
-	case strings.HasPrefix(unit, "m"): // Mbit / Mbps
-		mbps = val
-	case strings.HasPrefix(unit, "k"): // Kbit / Kbps
-		mbps = val / 1000
-	default: // bare bit/s
-		mbps = val / 1e6
-	}
-	return int(mbps + 0.5)
 }
 
 // CleanupVM removes all network limits and rules for a VM

@@ -60,7 +60,6 @@ type MetricsCollector struct {
 	interval       time.Duration
 	retention      time.Duration
 	enforce        bool   // apply restrictive over-quota actions (throttle/suspend)
-	overageURL     string // env fallback for the overage webhook (admin settings win)
 	overageSecret  string // env fallback HMAC secret (BILLING_WEBHOOK_SECRET)
 	httpClient     *http.Client
 	logger         *slog.Logger
@@ -94,7 +93,6 @@ func NewMetricsCollector(db *gorm.DB, riverClient *river.Client[pgx.Tx], interva
 		// VMs shouldn't be limited unless the operator enables it. Accounting, the
 		// `exceeded` flag, and overage billing work regardless.
 		enforce:       os.Getenv("BANDWIDTH_ENFORCE") == "true",
-		overageURL:    os.Getenv("WHMCS_OVERAGE_WEBHOOK_URL"),
 		overageSecret: os.Getenv("BILLING_WEBHOOK_SECRET"),
 		httpClient:    &http.Client{Timeout: 10 * time.Second},
 		logger:        logger,
@@ -351,12 +349,12 @@ func (c *MetricsCollector) restoreResetThrottles(ctx context.Context) {
 	}
 }
 
-// resolveOverageWebhook returns the overage webhook URL + HMAC secret, preferring
-// the admin-managed API settings (system_settings section 'api', editable at
-// runtime via Settings → System → API, no restart needed) and falling back to
-// the env values. The secret also falls back to BILLING_WEBHOOK_SECRET.
+// resolveOverageWebhook returns the overage webhook URL + HMAC secret from the
+// admin-managed API settings (system_settings section 'api', editable at runtime
+// via Settings → System → API, no restart needed). The secret falls back to the
+// BILLING_WEBHOOK_SECRET env when unset in settings.
 func (c *MetricsCollector) resolveOverageWebhook(ctx context.Context) (url, secret string) {
-	url, secret = c.overageURL, c.overageSecret
+	secret = c.overageSecret
 	if c.db == nil {
 		return url, secret
 	}
