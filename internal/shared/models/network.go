@@ -9,16 +9,22 @@ import (
 
 // Network represents a network configuration for a VM
 type Network struct {
-	ID               string         `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	VMID             string         `json:"vm_id" gorm:"type:uuid;not null" validate:"required,uuid"`
-	IPAddress        string         `json:"ip_address" gorm:"type:inet;not null" validate:"required,ip"`
-	BandwidthLimit   int64          `json:"bandwidth_limit" gorm:"type:bigint;default:0" validate:"omitempty,min=0"`
-	BandwidthQuotaGB int64          `json:"bandwidth_quota_gb" gorm:"type:bigint;default:0"` // 0 = unlimited
-	VLANID           *int           `json:"vlan_id" gorm:"type:integer" validate:"omitempty,min=1,max=4094"`
-	AntiSpoofing     bool           `json:"anti_spoofing" gorm:"type:boolean;default:true"`  // Enable anti-IP hijacking protection
-	CreatedAt        time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
-	UpdatedAt        time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
-	DeletedAt        gorm.DeletedAt `json:"-" gorm:"index"`
+	ID               string `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	VMID             string `json:"vm_id" gorm:"type:uuid;not null" validate:"required,uuid"`
+	IPAddress        string `json:"ip_address" gorm:"type:inet;not null" validate:"required,ip"`
+	BandwidthLimit   int64  `json:"bandwidth_limit" gorm:"type:bigint;default:0" validate:"omitempty,min=0"`
+	BandwidthQuotaGB int64  `json:"bandwidth_quota_gb" gorm:"type:bigint;default:0"` // 0 = unlimited
+	// Over-quota enforcement snapshot inherited from the plan at create time, plus
+	// a runtime flag so a throttled VM is restored to BandwidthLimit when its
+	// quota resets. OverQuotaPolicy is one of models.OverQuota* (throttle|overage|suspend).
+	OverQuotaPolicy   string         `json:"over_quota_policy" gorm:"type:varchar(20);default:'throttle'"`
+	ThrottleSpeedMbps int            `json:"throttle_speed_mbps" gorm:"default:0"`
+	Throttled         bool           `json:"throttled" gorm:"default:false"`
+	VLANID            *int           `json:"vlan_id" gorm:"type:integer" validate:"omitempty,min=1,max=4094"`
+	AntiSpoofing      bool           `json:"anti_spoofing" gorm:"type:boolean;default:true"` // Enable anti-IP hijacking protection
+	CreatedAt         time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
+	UpdatedAt         time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
+	DeletedAt         gorm.DeletedAt `json:"-" gorm:"index"`
 }
 
 // TableName specifies the table name for Network

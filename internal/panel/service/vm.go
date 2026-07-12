@@ -183,7 +183,12 @@ type CreateVMRequest struct {
 	IPPoolID      string           `json:"ip_pool_id,omitempty" validate:"omitempty,uuid"`
 	RequestedIP   string           `json:"requested_ip,omitempty" validate:"omitempty,ip"`
 	BandwidthMbps int              `json:"bandwidth_mbps,omitempty" validate:"omitempty,min=0,max=10000"`
-	VLANID        int              `json:"vlan_id,omitempty" validate:"omitempty,min=0,max=4094"`
+	// Monthly data quota (GB) + over-quota policy, normally inherited from the
+	// plan. 0 quota = unlimited. Populated from the plan in CreateVM.
+	DataQuotaGB       int64  `json:"data_quota_gb,omitempty" validate:"omitempty,min=0"`
+	OverQuotaPolicy   string `json:"over_quota_policy,omitempty" validate:"omitempty,oneof=throttle overage suspend"`
+	ThrottleSpeedMbps int    `json:"throttle_speed_mbps,omitempty" validate:"omitempty,min=0"`
+	VLANID            int    `json:"vlan_id,omitempty" validate:"omitempty,min=0,max=4094"`
 	// CPUModel is the guest CPU model. Empty → the node defaults to a portable,
 	// live-migratable model (kvm64). e.g. "host-passthrough", "host-model", "Haswell".
 	CPUModel string `json:"cpu_model,omitempty" validate:"omitempty,max=64"`
@@ -241,6 +246,20 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		if plan.BandwidthMbps > 0 && req.BandwidthMbps == 0 {
 			req.BandwidthMbps = plan.BandwidthMbps
 		}
+		// Inherit the plan's monthly data quota + over-quota policy so the
+		// enforcer can act on this VM. Explicit request values (if any) win.
+		if req.DataQuotaGB == 0 {
+			req.DataQuotaGB = plan.DataQuotaGB
+		}
+		if req.OverQuotaPolicy == "" {
+			req.OverQuotaPolicy = plan.OverQuotaPolicy
+		}
+		if req.ThrottleSpeedMbps == 0 {
+			req.ThrottleSpeedMbps = plan.ThrottleSpeedMbps
+		}
+	}
+	if req.OverQuotaPolicy == "" {
+		req.OverQuotaPolicy = models.OverQuotaThrottle
 	}
 
 	// Validate resources
@@ -417,6 +436,11 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 			if req.BandwidthMbps > 0 {
 				network.BandwidthLimit = int64(req.BandwidthMbps)
 			}
+			// Snapshot the monthly data quota + over-quota policy onto the
+			// interface so the bandwidth enforcer can act without re-reading the plan.
+			network.BandwidthQuotaGB = req.DataQuotaGB
+			network.OverQuotaPolicy = req.OverQuotaPolicy
+			network.ThrottleSpeedMbps = req.ThrottleSpeedMbps
 			if req.VLANID > 0 {
 				vlan := req.VLANID
 				network.VLANID = &vlan

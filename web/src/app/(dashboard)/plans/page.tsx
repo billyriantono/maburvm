@@ -25,6 +25,9 @@ const emptyForm: CreatePlanRequest = {
   ram: 1024,
   disk: 20,
   bandwidth_mbps: 0,
+  data_quota_gb: 0,
+  over_quota_policy: "throttle",
+  throttle_speed_mbps: 0,
   description: "",
   is_active: true,
 }
@@ -53,6 +56,9 @@ export default function PlansPage() {
       ram: plan.ram,
       disk: plan.disk,
       bandwidth_mbps: plan.bandwidth_mbps,
+      data_quota_gb: plan.data_quota_gb,
+      over_quota_policy: plan.over_quota_policy,
+      throttle_speed_mbps: plan.throttle_speed_mbps,
       description: plan.description ?? "",
       is_active: plan.is_active,
     })
@@ -133,6 +139,32 @@ export default function PlansPage() {
               <p className="text-[10px] text-gray-400 mt-1 font-medium">Interface rate cap applied to VMs on this plan (e.g. 100, 1000, 10000). Not the monthly data quota.</p>
             </div>
             <div>
+              <label className="block text-xs font-black uppercase text-gray-500 mb-1">Data Quota (GB / month · 0 = unlimited)</label>
+              <Input type="number" min={0} value={form.data_quota_gb ?? 0} onChange={(e) => setForm({ ...form, data_quota_gb: Number(e.target.value) })} className="border-2 border-black" />
+              <p className="text-[10px] text-gray-400 mt-1 font-medium">Monthly transfer allowance (e.g. 100 = 100 GB). Enforced per calendar month.</p>
+            </div>
+            <div>
+              <label className="block text-xs font-black uppercase text-gray-500 mb-1">When Quota Exceeded</label>
+              <select
+                value={form.over_quota_policy ?? "throttle"}
+                onChange={(e) => setForm({ ...form, over_quota_policy: e.target.value as CreatePlanRequest["over_quota_policy"] })}
+                className="w-full h-10 border-2 border-black px-2 font-bold bg-white"
+                disabled={!form.data_quota_gb}
+              >
+                <option value="throttle">Throttle speed</option>
+                <option value="overage">Overage (charge extra)</option>
+                <option value="suspend">Suspend VM</option>
+              </select>
+              <p className="text-[10px] text-gray-400 mt-1 font-medium">{!form.data_quota_gb ? "Set a data quota to enable a policy." : "Action once the monthly quota is used up."}</p>
+            </div>
+            {form.over_quota_policy === "throttle" && !!form.data_quota_gb && (
+              <div>
+                <label className="block text-xs font-black uppercase text-gray-500 mb-1">Throttled Speed (Mbps)</label>
+                <Input type="number" min={0} max={10000} value={form.throttle_speed_mbps ?? 0} onChange={(e) => setForm({ ...form, throttle_speed_mbps: Number(e.target.value) })} className="border-2 border-black" />
+                <p className="text-[10px] text-gray-400 mt-1 font-medium">Speed after quota is hit (e.g. 10). 0 = a low default.</p>
+              </div>
+            )}
+            <div>
               <label className="block text-xs font-black uppercase text-gray-500 mb-1">Description</label>
               <Input value={form.description ?? ""} onChange={(e) => setForm({ ...form, description: e.target.value })} className="border-2 border-black" />
             </div>
@@ -164,7 +196,7 @@ export default function PlansPage() {
           <div className="col-span-2">vCPU</div>
           <div className="col-span-2">RAM</div>
           <div className="col-span-2">Disk</div>
-          <div className="col-span-1">Bandwidth</div>
+          <div className="col-span-1">Speed / Quota</div>
           <div className="col-span-2 text-right">Actions</div>
         </div>
 
@@ -195,7 +227,10 @@ export default function PlansPage() {
               <div className="col-span-2 flex items-center gap-1 font-bold"><Cpu className="w-4 h-4 text-gray-500" />{plan.cpu}</div>
               <div className="col-span-2 flex items-center gap-1 font-bold"><MemoryStick className="w-4 h-4 text-gray-500" />{plan.ram} MB</div>
               <div className="col-span-2 flex items-center gap-1 font-bold"><HardDrive className="w-4 h-4 text-gray-500" />{plan.disk} GB</div>
-              <div className="col-span-1 flex items-center gap-1 font-bold text-sm"><Zap className="w-3 h-3 text-gray-500" />{plan.bandwidth_mbps ? `${plan.bandwidth_mbps}` : "∞"}</div>
+              <div className="col-span-1 font-bold text-sm leading-tight">
+                <div className="flex items-center gap-1"><Zap className="w-3 h-3 text-gray-500" />{plan.bandwidth_mbps ? `${plan.bandwidth_mbps}` : "∞"}</div>
+                <div className="text-[11px] text-gray-500">{plan.data_quota_gb ? `${plan.data_quota_gb}GB·${plan.over_quota_policy[0].toUpperCase()}` : "∞ data"}</div>
+              </div>
               <div className="col-span-2 flex justify-end gap-2">
                 <Button variant="secondary" size="sm" className="h-8 w-8 p-0" title="Edit plan" onClick={() => openEdit(plan)}>
                   <Pencil className="w-4 h-4" />

@@ -19,7 +19,9 @@ func setupPlanTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, err)
 	require.NoError(t, db.Exec(`CREATE TABLE plans (
 		id TEXT PRIMARY KEY, name TEXT NOT NULL, cpu INTEGER NOT NULL, ram INTEGER NOT NULL,
-		disk INTEGER NOT NULL, bandwidth_mbps INTEGER DEFAULT 0, description TEXT,
+		disk INTEGER NOT NULL, bandwidth_mbps INTEGER DEFAULT 0,
+		data_quota_gb INTEGER DEFAULT 0, over_quota_policy TEXT DEFAULT 'throttle', throttle_speed_mbps INTEGER DEFAULT 0,
+		description TEXT,
 		is_active BOOLEAN DEFAULT 1, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, deleted_at DATETIME
 	)`).Error)

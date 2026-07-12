@@ -29,13 +29,16 @@ func NewPlanService(repo *repository.PlanRepository) *PlanService {
 
 // PlanRequest contains create/update parameters for a plan.
 type PlanRequest struct {
-	Name          string `json:"name"`
-	CPU           int    `json:"cpu"`
-	RAM           int    `json:"ram"`
-	Disk          int    `json:"disk"`
-	BandwidthMbps int    `json:"bandwidth_mbps"`
-	Description   string `json:"description"`
-	IsActive      *bool  `json:"is_active"`
+	Name              string `json:"name"`
+	CPU               int    `json:"cpu"`
+	RAM               int    `json:"ram"`
+	Disk              int    `json:"disk"`
+	BandwidthMbps     int    `json:"bandwidth_mbps"`
+	DataQuotaGB       int64  `json:"data_quota_gb"`
+	OverQuotaPolicy   string `json:"over_quota_policy"`
+	ThrottleSpeedMbps int    `json:"throttle_speed_mbps"`
+	Description       string `json:"description"`
+	IsActive          *bool  `json:"is_active"`
 }
 
 func (r *PlanRequest) validate() error {
@@ -54,7 +57,26 @@ func (r *PlanRequest) validate() error {
 	if r.BandwidthMbps < 0 {
 		return fmt.Errorf("bandwidth_mbps cannot be negative")
 	}
+	if r.DataQuotaGB < 0 {
+		return fmt.Errorf("data_quota_gb cannot be negative")
+	}
+	if r.ThrottleSpeedMbps < 0 {
+		return fmt.Errorf("throttle_speed_mbps cannot be negative")
+	}
+	switch r.OverQuotaPolicy {
+	case "", models.OverQuotaThrottle, models.OverQuotaOverage, models.OverQuotaSuspend:
+	default:
+		return fmt.Errorf("over_quota_policy must be throttle, overage, or suspend")
+	}
 	return nil
+}
+
+// normalizedOverQuotaPolicy returns the request's policy, defaulting to throttle.
+func (r *PlanRequest) normalizedOverQuotaPolicy() string {
+	if r.OverQuotaPolicy == "" {
+		return models.OverQuotaThrottle
+	}
+	return r.OverQuotaPolicy
 }
 
 // CreatePlan creates a new plan.
@@ -74,13 +96,16 @@ func (s *PlanService) CreatePlan(ctx context.Context, req *PlanRequest) (*models
 		active = *req.IsActive
 	}
 	plan := &models.Plan{
-		Name:          req.Name,
-		CPU:           req.CPU,
-		RAM:           req.RAM,
-		Disk:          req.Disk,
-		BandwidthMbps: req.BandwidthMbps,
-		Description:   req.Description,
-		IsActive:      active,
+		Name:              req.Name,
+		CPU:               req.CPU,
+		RAM:               req.RAM,
+		Disk:              req.Disk,
+		BandwidthMbps:     req.BandwidthMbps,
+		DataQuotaGB:       req.DataQuotaGB,
+		OverQuotaPolicy:   req.normalizedOverQuotaPolicy(),
+		ThrottleSpeedMbps: req.ThrottleSpeedMbps,
+		Description:       req.Description,
+		IsActive:          active,
 	}
 	if err := s.repo.Create(ctx, plan); err != nil {
 		return nil, fmt.Errorf("failed to create plan: %w", err)
@@ -119,6 +144,9 @@ func (s *PlanService) UpdatePlan(ctx context.Context, id string, req *PlanReques
 	plan.RAM = req.RAM
 	plan.Disk = req.Disk
 	plan.BandwidthMbps = req.BandwidthMbps
+	plan.DataQuotaGB = req.DataQuotaGB
+	plan.OverQuotaPolicy = req.normalizedOverQuotaPolicy()
+	plan.ThrottleSpeedMbps = req.ThrottleSpeedMbps
 	plan.Description = req.Description
 	if req.IsActive != nil {
 		plan.IsActive = *req.IsActive
