@@ -18,7 +18,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"gorm.io/gorm"
 
 	panelclient "github.com/maburvm/panel/internal/panel/client"
@@ -2302,6 +2304,18 @@ func (s *VMService) ReconcileNodeVMStatuses(ctx context.Context, nodeID string) 
 		resp, err := s.getVMAgentStatus(sctx, vms[i].ID, nodeID)
 		cancel()
 		if err != nil {
+			// The node is reachable but has no such domain — the VM was removed
+			// or failed to provision out-of-band. Reconcile it to stopped (unless
+			// it's already a terminal stopped/error) and don't warn: this is a
+			// steady state, not a transient failure worth logging every tick.
+			if status.Code(err) == codes.NotFound {
+				if vms[i].Status != models.VMStatusStopped && vms[i].Status != models.VMStatusError {
+					if uerr := s.vmRepo.UpdateStatus(ctx, vms[i].ID, models.VMStatusStopped); uerr != nil {
+						s.logger.WarnContext(ctx, "status reconcile: mark stopped failed", "vm_id", vms[i].ID, "error", uerr)
+					}
+				}
+				continue
+			}
 			s.logger.WarnContext(ctx, "status reconcile: agent status failed", "vm_id", vms[i].ID, "error", err)
 			continue
 		}
