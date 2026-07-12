@@ -348,14 +348,17 @@ func injectGuestConfig(diskPath, hostname string, vmCfg libvirt.VMConfig, rootPa
 	// --no-network: the customize appliance needs no outbound network.
 	args := []string{"-a", diskPath, "--no-network"}
 
-	// Wipe any cloud-init state baked into the template image. Cloud images can
-	// ship (or accumulate) /var/lib/cloud state with a generic instance-id like
-	// "nocloud"; cloud-init keys its "once-per-instance" modules (write_files,
-	// scripts-user — i.e. the user's recipe) on that instance-id, so every cloned
-	// VM sees "already ran" and SKIPS them — the recipe never executes. Clearing
-	// the state makes each new VM run cloud-init fresh and honor its own seed.
+	// Wipe cloud-init state baked into the template image. Debian/Ubuntu cloud
+	// images ship a NoCloud seed at /var/lib/cloud/seed/nocloud/ whose meta-data
+	// hardcodes `instance-id: nocloud`; cloud-init reads that seed dir BEFORE our
+	// CIDATA ISO and uses its instance-id, so (a) our per-VM instance-id (the UUID)
+	// is ignored and (b) once-per-instance modules (write_files, scripts-user —
+	// i.e. the user's recipe) are marked "already ran" on the shared "nocloud" id
+	// and SKIPPED on every clone. Removing the whole /var/lib/cloud (config lives
+	// in /etc/cloud, not here) makes cloud-init fall through to our CIDATA seed and
+	// run everything fresh with the correct instance-id.
 	args = append(args, "--run-command",
-		"rm -rf /var/lib/cloud/instances/* /var/lib/cloud/instance /var/lib/cloud/data/* /var/lib/cloud/sem/* 2>/dev/null || true")
+		"rm -rf /var/lib/cloud/* 2>/dev/null || true")
 
 	if hostname != "" {
 		args = append(args, "--hostname", hostname)
