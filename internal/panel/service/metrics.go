@@ -51,6 +51,7 @@ type MetricsCollector struct {
 	nodeRepo       *repository.NodeRepository
 	vmRepo         *repository.VMRepository
 	networkRepo    *repository.NetworkRepository
+	storageRepo    repository.StorageRepository
 	nodeService    *NodeService
 	vmService      *VMService
 	bwService      *BandwidthService
@@ -80,6 +81,7 @@ func NewMetricsCollector(db *gorm.DB, riverClient *river.Client[pgx.Tx], interva
 		nodeRepo:    nodeRepo,
 		vmRepo:      vmRepo,
 		networkRepo: networkRepo,
+		storageRepo: repository.NewStorageRepository(db),
 		nodeService: NewNodeService(nodeRepo, db),
 		// riverClient lets the collector enqueue throttle/restore network jobs.
 		vmService:      NewVMService(db, vmRepo, nodeRepo, repository.NewTemplateRepository(db), riverClient, logger),
@@ -153,6 +155,9 @@ func (c *MetricsCollector) collectOnce(ctx context.Context) {
 		}
 		if m.Status == "online" {
 			online[nodeID] = true
+			// Keep each node's default storage pool present and its capacity
+			// live from the node's real disk, so /storage reflects the node.
+			c.syncDefaultStoragePool(&nodes[i], m)
 		}
 	}
 
@@ -259,6 +264,56 @@ func (c *MetricsCollector) accountBandwidth(ctx context.Context, vmID, nodeID st
 
 	for _, exVM := range exceeded {
 		c.enforceOverQuota(ctx, nodeID, exVM)
+	}
+}
+
+// defaultPoolPath mirrors the agent's defaultImageDir: where VM disks and
+// provisioned volumes live on each node.
+const defaultPoolPath = "/var/lib/libvirt/images"
+
+// syncDefaultStoragePool ensures each online node has a 'local' dir storage pool
+// at the node's image dir and refreshes its capacity/status from the node's live
+// disk metrics, so /storage shows real per-node storage instead of static values.
+func (c *MetricsCollector) syncDefaultStoragePool(node *models.Node, m *NodeMetrics) {
+	if m.DiskTotal <= 0 {
+		return // no usable disk figure this tick
+	}
+	pools, err := c.storageRepo.GetPoolsByNodeID(node.ID)
+	if err != nil {
+		c.logger.Error("storage sync: list pools failed", "node_id", node.ID, "error", err)
+		return
+	}
+	var pool *models.StoragePool
+	for i := range pools {
+		if pools[i].Path == defaultPoolPath {
+			pool = &pools[i]
+			break
+		}
+	}
+	avail := max(m.DiskTotal-m.DiskUsed, 0)
+	if pool == nil {
+		if err := c.storageRepo.CreatePool(&models.StoragePool{
+			Name:           "local",
+			Type:           "dir",
+			Status:         "online",
+			Path:           defaultPoolPath,
+			FileFormat:     "qcow2",
+			IsPrimary:      true,
+			NodeID:         node.ID,
+			TotalSpace:     m.DiskTotal,
+			UsedSpace:      m.DiskUsed,
+			AvailableSpace: avail,
+		}); err != nil {
+			c.logger.Error("storage sync: create default pool failed", "node_id", node.ID, "error", err)
+		}
+		return
+	}
+	pool.TotalSpace = m.DiskTotal
+	pool.UsedSpace = m.DiskUsed
+	pool.AvailableSpace = avail
+	pool.Status = "online"
+	if err := c.storageRepo.UpdatePool(pool); err != nil {
+		c.logger.Error("storage sync: update default pool failed", "node_id", node.ID, "error", err)
 	}
 }
 
