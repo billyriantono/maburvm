@@ -33,6 +33,7 @@ import { useTemplates } from "@/lib/hooks/use-templates"
 import { useNodes } from "@/lib/hooks/use-nodes"
 import { useIPPools } from "@/lib/hooks/use-ipam"
 import { useNetworks } from "@/lib/hooks/use-networks"
+import { useSSHKeys } from "@/lib/hooks/use-ssh-keys"
 import { usePlans } from "@/lib/hooks/use-plans"
 import { useRecipes } from "@/lib/hooks/use-recipes"
 import { useCreateVM, useVM } from "@/lib/hooks/use-vms"
@@ -94,6 +95,11 @@ const steps = [
 export default function NewVMPage() {
   const router = useRouter()
   const [currentStep, setCurrentStep] = useState(1)
+  // SSH keys are opt-out: every saved key is injected unless unchecked. These are
+  // the current admin's keys (the create endpoint resolves keys against the caller).
+  const { data: sshKeys } = useSSHKeys()
+  const [excludedKeys, setExcludedKeys] = useState<Set<string>>(new Set())
+  const selectedKeyIds = (sshKeys ?? []).filter((k) => !excludedKeys.has(k.id)).map((k) => k.id)
   const [submitError, setSubmitError] = useState<string | null>(null)
   
   // API hooks
@@ -257,6 +263,7 @@ export default function NewVMPage() {
         vlan_id: vlanId,
         cpu_model: data.cpuModel || undefined,
         user_data: data.userData || undefined,
+        ssh_key_ids: selectedKeyIds,
       })
       // Switch to the inline provisioning view (progress + one-time password)
       // instead of jumping straight to the VM detail page.
@@ -895,6 +902,37 @@ export default function NewVMPage() {
                   {errors.templateId.message}
                 </p>
               )}
+
+              {/* SSH keys — injected into the new guest's root account */}
+              <div className="border-t-2 border-black pt-5">
+                <h3 className="font-black uppercase text-sm mb-1">SSH Keys</h3>
+                <p className="text-xs text-gray-500 mb-3">Your saved keys are injected for root login. Add keys under Settings → SSH Keys.</p>
+                {!sshKeys?.length ? (
+                  <p className="text-sm text-gray-600 font-medium">No SSH keys saved — the VM will use root-password login only.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {sshKeys.map((k) => (
+                      <label key={k.id} className="flex items-center gap-3 p-3 border-2 border-black cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={!excludedKeys.has(k.id)}
+                          onChange={(e) =>
+                            setExcludedKeys((prev) => {
+                              const next = new Set(prev)
+                              if (e.target.checked) next.delete(k.id)
+                              else next.add(k.id)
+                              return next
+                            })
+                          }
+                          className="w-4 h-4"
+                        />
+                        <span className="font-bold">{k.name}</span>
+                        <span className="text-xs font-mono text-gray-500 truncate">{k.fingerprint}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
