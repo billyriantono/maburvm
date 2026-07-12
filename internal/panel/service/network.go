@@ -134,20 +134,6 @@ type SetBandwidthRequest struct {
 	BandwidthLimit int64 `json:"bandwidth_limit" validate:"min=0,max=10000"`
 }
 
-// GetVMOwner returns the user ID that owns the given VM, used by handlers to
-// enforce tenant isolation on per-VM network mutations (clients may only change
-// their own VMs' bandwidth).
-func (s *NetworkService) GetVMOwner(ctx context.Context, vmID string) (string, error) {
-	vm, err := s.vmRepo.GetByID(ctx, vmID)
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return "", fmt.Errorf("VM not found")
-		}
-		return "", fmt.Errorf("failed to get VM: %w", err)
-	}
-	return vm.UserID, nil
-}
-
 // SetBandwidthLimit sets the bandwidth limit for a network interface
 func (s *NetworkService) SetBandwidthLimit(ctx context.Context, vmID string, networkID string, req *SetBandwidthRequest) error {
 	// Verify VM exists

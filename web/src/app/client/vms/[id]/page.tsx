@@ -5,17 +5,7 @@ import Link from "next/link"
 import { useState } from "react"
 import { ArrowLeft, Play, Square, RotateCw, Monitor, Cpu, MemoryStick, HardDrive, Terminal, Trash2, Gauge } from "lucide-react"
 import { useVM, useVMAction, useDeleteVM, useVMStatusStream } from "@/lib/hooks/use-vms"
-import { useVMNetworks, useSetVMBandwidth } from "@/lib/hooks/use-networks"
-
-// Preset speed tiers a client can self-upgrade to (Mbps). 0 = unlimited.
-const SPEED_TIERS: { label: string; mbps: number }[] = [
-  { label: "100 Mbps", mbps: 100 },
-  { label: "500 Mbps", mbps: 500 },
-  { label: "1 Gbps", mbps: 1000 },
-  { label: "2.5 Gbps", mbps: 2500 },
-  { label: "5 Gbps", mbps: 5000 },
-  { label: "10 Gbps", mbps: 10000 },
-]
+import { useVMNetworks } from "@/lib/hooks/use-networks"
 
 function speedLabel(mbps: number): string {
   if (mbps <= 0) return "Unlimited"
@@ -23,13 +13,12 @@ function speedLabel(mbps: number): string {
   return `${mbps} Mbps`
 }
 
-// NetworkSpeedCard lets a client upgrade/downgrade the speed of their VM's
-// network interfaces. Ownership is enforced server-side by the bandwidth
-// endpoint, so a client can only change their own VM.
+// NetworkSpeedCard shows a client the network speed of their VM's interfaces.
+// It is READ-ONLY: speed is determined by the VM's plan and can only be changed
+// by an administrator (the bandwidth endpoint is admin-only), so clients see
+// their current speed but cannot set it here.
 function NetworkSpeedCard({ vmId }: { vmId: string }) {
   const { data: networks } = useVMNetworks(vmId)
-  const setBandwidth = useSetVMBandwidth(vmId)
-  const [pending, setPending] = useState<string | null>(null)
 
   if (!networks?.length) return null
 
@@ -39,44 +28,17 @@ function NetworkSpeedCard({ vmId }: { vmId: string }) {
         <Gauge className="w-5 h-5" />
         <h2 className="text-lg font-black uppercase tracking-tight">Network Speed</h2>
       </div>
-      <div className="p-5 space-y-5">
+      <div className="p-5 space-y-3">
         {networks.map((iface) => (
-          <div key={iface.id} className="space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="font-mono font-bold">{iface.ip_address}</span>
-              <span className="text-sm font-black uppercase bg-[#CCFF00] border-2 border-black px-2 py-0.5">
-                {speedLabel(iface.bandwidth_limit)}
-              </span>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {SPEED_TIERS.map((t) => {
-                const active = iface.bandwidth_limit === t.mbps
-                const busy = pending === iface.id && setBandwidth.isPending
-                return (
-                  <button
-                    key={t.mbps}
-                    type="button"
-                    disabled={active || busy}
-                    onClick={() => {
-                      setPending(iface.id)
-                      setBandwidth.mutate(
-                        { networkId: iface.id, bandwidthMbps: t.mbps },
-                        { onSettled: () => setPending(null) },
-                      )
-                    }}
-                    className={`h-9 px-3 border-2 border-black text-xs font-black uppercase disabled:opacity-50 ${
-                      active ? "bg-black text-primary" : "bg-white text-black hover:bg-gray-50"
-                    }`}
-                  >
-                    {busy && pending === iface.id ? "…" : t.label}
-                  </button>
-                )
-              })}
-            </div>
+          <div key={iface.id} className="flex items-center justify-between">
+            <span className="font-mono font-bold">{iface.ip_address}</span>
+            <span className="text-sm font-black uppercase bg-[#CCFF00] border-2 border-black px-2 py-0.5">
+              {speedLabel(iface.bandwidth_limit)}
+            </span>
           </div>
         ))}
         <p className="text-xs text-gray-500 font-medium">
-          Speed changes apply immediately to the running VM. The highest available tier is 10 Gbps.
+          Network speed is set by your plan. Contact your administrator to change it.
         </p>
       </div>
     </div>

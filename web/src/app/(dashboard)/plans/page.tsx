@@ -128,8 +128,9 @@ export default function PlansPage() {
               <Input type="number" min={1} value={form.disk} onChange={(e) => setForm({ ...form, disk: Number(e.target.value) })} className="border-2 border-black" required />
             </div>
             <div>
-              <label className="block text-xs font-black uppercase text-gray-500 mb-1">Bandwidth (Mbps, 0 = unlimited)</label>
-              <Input type="number" min={0} value={form.bandwidth_mbps ?? 0} onChange={(e) => setForm({ ...form, bandwidth_mbps: Number(e.target.value) })} className="border-2 border-black" />
+              <label className="block text-xs font-black uppercase text-gray-500 mb-1">Network Speed (Mbps · 0 = unlimited)</label>
+              <Input type="number" min={0} max={10000} value={form.bandwidth_mbps ?? 0} onChange={(e) => setForm({ ...form, bandwidth_mbps: Number(e.target.value) })} className="border-2 border-black" />
+              <p className="text-[10px] text-gray-400 mt-1 font-medium">Interface rate cap applied to VMs on this plan (e.g. 100, 1000, 10000). Not the monthly data quota.</p>
             </div>
             <div>
               <label className="block text-xs font-black uppercase text-gray-500 mb-1">Description</label>

@@ -22,10 +22,11 @@ func NewNetworkHandler(service *service.NetworkService) *NetworkHandler {
 	}
 }
 
-// authorizeVM enforces tenant isolation for per-VM network mutations: admins
-// pass through, other users may only act on VMs they own. On failure it writes
-// the HTTP response (401/404) and returns false so callers can `return nil`.
-func (h *NetworkHandler) authorizeVM(c echo.Context, vmID string) bool {
+// requireAdmin restricts an action to administrators. A VM's bandwidth (speed)
+// is governed by its plan for clients; only admins may override the per-IP limit
+// directly. Non-admins get 403. On failure it writes the HTTP response and
+// returns false so callers can `return nil`.
+func (h *NetworkHandler) requireAdmin(c echo.Context) bool {
 	userCtx, ok := middleware.GetUserContext(c)
 	if !ok {
 		_ = c.JSON(http.StatusUnauthorized, map[string]interface{}{
@@ -34,14 +35,10 @@ func (h *NetworkHandler) authorizeVM(c echo.Context, vmID string) bool {
 		})
 		return false
 	}
-	if userCtx.Role == models.RoleAdmin {
-		return true
-	}
-	ownerID, err := h.service.GetVMOwner(c.Request().Context(), vmID)
-	if err != nil || ownerID != userCtx.ID.String() {
-		_ = c.JSON(http.StatusNotFound, map[string]interface{}{
-			"error":   "Not Found",
-			"message": "VM not found",
+	if userCtx.Role != models.RoleAdmin {
+		_ = c.JSON(http.StatusForbidden, map[string]interface{}{
+			"error":   "Forbidden",
+			"message": "only administrators can change bandwidth; client speed is set by plan",
 		})
 		return false
 	}
@@ -154,7 +151,7 @@ func (h *NetworkHandler) SetBandwidthLimit(c echo.Context) error {
 		})
 	}
 
-	if !h.authorizeVM(c, vmID) {
+	if !h.requireAdmin(c) {
 		return nil
 	}
 
