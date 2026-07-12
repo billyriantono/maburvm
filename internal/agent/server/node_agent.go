@@ -730,14 +730,23 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 	if err := libvirt.StartVM(domainUUID); err != nil {
 		log.Printf("[NodeAgent] VM %s defined but failed to auto-start: %v", req.VmId, err)
 	} else if vmCfg.IPAddress != "" && vmCfg.MACAddress != "" && vmCfg.Bridge != "" {
-		for i := 0; i < 3; i++ {
-			if gerr := sendGratuitousARP(vmCfg.Bridge, vmCfg.IPAddress, vmCfg.MACAddress); gerr != nil {
-				log.Printf("[NodeAgent] gratuitous ARP for %s on %s failed: %v", vmCfg.IPAddress, vmCfg.Bridge, gerr)
-				break
+		// Announce the guest's IP from the host repeatedly for the first ~2 minutes.
+		// A single announce at start isn't enough: the vnet port has only just been
+		// attached to the bridge and the guest hasn't booted, so the upstream can't
+		// yet reach the MAC. Re-announcing across the boot window (once the vnet is
+		// forwarding and the guest is up) reliably gets the gateway to learn
+		// guest_IP→guest_MAC without waiting for a reboot.
+		bridge, ip, mac := vmCfg.Bridge, vmCfg.IPAddress, vmCfg.MACAddress
+		go func() {
+			for i := 0; i < 24; i++ { // ~2 min at 5s intervals
+				if gerr := sendGratuitousARP(bridge, ip, mac); gerr != nil {
+					log.Printf("[NodeAgent] gratuitous ARP for %s on %s failed: %v", ip, bridge, gerr)
+					return
+				}
+				time.Sleep(5 * time.Second)
 			}
-			time.Sleep(150 * time.Millisecond)
-		}
-		log.Printf("[NodeAgent] announced %s (%s) on %s via gratuitous ARP", vmCfg.IPAddress, vmCfg.MACAddress, vmCfg.Bridge)
+		}()
+		log.Printf("[NodeAgent] announcing %s (%s) on %s via gratuitous ARP (2 min)", ip, mac, bridge)
 	}
 
 	log.Printf("[NodeAgent] Created VM %s (disk=%s bridge=%s ip=%s vlan=%d bw=%dMbps)",
