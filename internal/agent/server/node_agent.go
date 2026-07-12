@@ -340,25 +340,13 @@ func generateMAC(vmID string) string {
 // most systemd distros), and matching by MAC binds the correct NIC regardless of
 // its kernel name. When no static IP is configured, only hostname/password/SSH
 // are applied and the guest keeps DHCP.
-func injectGuestConfig(diskPath, hostname string, vmCfg libvirt.VMConfig, rootPassword, sshKey string) error {
+func injectGuestConfig(diskPath, hostname string, vmCfg libvirt.VMConfig, rootPassword, sshKey, userData string) error {
 	if _, err := exec.LookPath("virt-customize"); err != nil {
 		return fmt.Errorf("virt-customize not found (install libguestfs-tools): %w", err)
 	}
 
 	// --no-network: the customize appliance needs no outbound network.
 	args := []string{"-a", diskPath, "--no-network"}
-
-	// Wipe cloud-init state baked into the template image. Debian/Ubuntu cloud
-	// images ship a NoCloud seed at /var/lib/cloud/seed/nocloud/ whose meta-data
-	// hardcodes `instance-id: nocloud`; cloud-init reads that seed dir BEFORE our
-	// CIDATA ISO and uses its instance-id, so (a) our per-VM instance-id (the UUID)
-	// is ignored and (b) once-per-instance modules (write_files, scripts-user —
-	// i.e. the user's recipe) are marked "already ran" on the shared "nocloud" id
-	// and SKIPPED on every clone. Removing the whole /var/lib/cloud (config lives
-	// in /etc/cloud, not here) makes cloud-init fall through to our CIDATA seed and
-	// run everything fresh with the correct instance-id.
-	args = append(args, "--run-command",
-		"rm -rf /var/lib/cloud/* 2>/dev/null || true")
 
 	if hostname != "" {
 		args = append(args, "--hostname", hostname)
@@ -426,7 +414,12 @@ func injectGuestConfig(diskPath, hostname string, vmCfg libvirt.VMConfig, rootPa
 				"Wants=network-online.target\n\n" +
 				"[Service]\n" +
 				"Type=oneshot\n" +
-				fmt.Sprintf("ExecStart=/bin/sh -c 'for i in 1 2 3 4 5; do ping -c1 -w2 %s >/dev/null 2>&1 && exit 0; sleep 2; done; exit 0'\n", vmCfg.Gateway) +
+				// Ping the gateway AND an external anchor a few times. The gateway ping
+				// teaches the local L2; the external ping traverses the full upstream
+				// path so every hop that may hold a stale ARP/route for this reused IP
+				// relearns it → the VM is reachable from the internet immediately
+				// instead of after the stale entry ages out (minutes).
+				fmt.Sprintf("ExecStart=/bin/sh -c 'for i in 1 2 3 4 5; do ping -c1 -w2 %s >/dev/null 2>&1; ping -c1 -w2 1.1.1.1 >/dev/null 2>&1; sleep 2; done; exit 0'\n", vmCfg.Gateway) +
 				"\n[Install]\nWantedBy=multi-user.target\n"
 			args = append(args,
 				"--write", "/etc/systemd/system/maburvm-announce.service:"+svc,
@@ -435,6 +428,48 @@ func injectGuestConfig(diskPath, hostname string, vmCfg libvirt.VMConfig, rootPa
 	}
 	if tmpNet != "" {
 		defer os.Remove(tmpNet)
+	}
+
+	// First-boot recipe: run the user's script exactly once, AFTER the network is
+	// up, via a self-disabling systemd oneshot. We do NOT rely on cloud-init for
+	// this: Debian/Ubuntu cloud images ship a baked NoCloud seed
+	// (/var/lib/cloud/seed/nocloud, instance-id "nocloud") that makes cloud-init
+	// skip once-per-instance modules (write_files/scripts-user) on every clone, so
+	// the recipe delivered via the cloud-init seed silently never runs. Injecting
+	// it as a systemd unit is reliable and image-independent (same approach as the
+	// rest of injectGuestConfig).
+	var tmpRecipe string
+	if s := strings.TrimSpace(userData); strings.HasPrefix(s, "#!") {
+		f, err := os.CreateTemp("", "maburvm-recipe-*.sh")
+		if err != nil {
+			return fmt.Errorf("failed to stage recipe: %w", err)
+		}
+		tmpRecipe = f.Name()
+		if _, err := f.WriteString(userData); err != nil {
+			f.Close()
+			os.Remove(tmpRecipe)
+			return fmt.Errorf("failed to write staged recipe: %w", err)
+		}
+		f.Close()
+		defer os.Remove(tmpRecipe)
+
+		unit := "[Unit]\n" +
+			"Description=MaburVM first-boot recipe\n" +
+			"After=network-online.target\n" +
+			"Wants=network-online.target\n" +
+			"ConditionPathExists=!/var/lib/maburvm/recipe.done\n\n" +
+			"[Service]\n" +
+			"Type=oneshot\n" +
+			"RemainAfterExit=yes\n" +
+			"ExecStart=/usr/local/sbin/maburvm-recipe.sh\n" +
+			"ExecStartPost=/bin/sh -c 'mkdir -p /var/lib/maburvm && touch /var/lib/maburvm/recipe.done'\n" +
+			"ExecStartPost=/bin/systemctl disable maburvm-recipe.service\n\n" +
+			"[Install]\nWantedBy=multi-user.target\n"
+		args = append(args,
+			"--upload", tmpRecipe+":/usr/local/sbin/maburvm-recipe.sh",
+			"--chmod", "0755:/usr/local/sbin/maburvm-recipe.sh",
+			"--write", "/etc/systemd/system/maburvm-recipe.service:"+unit,
+			"--run-command", "systemctl enable maburvm-recipe.service >/dev/null 2>&1 || true")
 	}
 
 	out, err := exec.Command("virt-customize", args...).CombinedOutput()
@@ -656,7 +691,7 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 	// this is how Virtualizor provisions). The cloud-init seed above is kept as a
 	// belt-and-suspenders for images where it does work. Best-effort: on failure
 	// we log and still create the VM (it just may lack static networking).
-	if err := injectGuestConfig(diskPath, hostname, vmCfg, cfg.RootPassword, cfg.SshPublicKey); err != nil {
+	if err := injectGuestConfig(diskPath, hostname, vmCfg, cfg.RootPassword, cfg.SshPublicKey, cfg.UserData); err != nil {
 		log.Printf("[NodeAgent] guest config injection failed for VM %s (guest may lack static networking): %v", req.VmId, err)
 	}
 
