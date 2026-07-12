@@ -1248,8 +1248,6 @@ const (
 	LifecycleForceStop LifecycleCommand = "force_stop"
 	// LifecycleRestart restarts the VM
 	LifecycleRestart LifecycleCommand = "restart"
-	// LifecycleRebuild rebuilds the VM (reinstall OS)
-	LifecycleRebuild LifecycleCommand = "rebuild"
 	// LifecycleSuspend pauses the VM (keeps it in memory)
 	LifecycleSuspend LifecycleCommand = "suspend"
 	// LifecycleUnsuspend resumes a paused VM
@@ -1308,9 +1306,6 @@ func (s *VMService) ExecuteLifecycleCommand(ctx context.Context, req *LifecycleR
 	case LifecycleRestart:
 		operation = queue.VMOpRestart
 		vmCommand = pb.VMCommandType_VM_COMMAND_TYPE_RESTART
-	case LifecycleRebuild:
-		operation = queue.VMOpRebuild
-		vmCommand = pb.VMCommandType_VM_COMMAND_TYPE_CREATE
 	case LifecycleSuspend:
 		operation = queue.VMOpSuspend
 		vmCommand = pb.VMCommandType_VM_COMMAND_TYPE_PAUSE
@@ -1318,31 +1313,13 @@ func (s *VMService) ExecuteLifecycleCommand(ctx context.Context, req *LifecycleR
 		operation = queue.VMOpUnsuspend
 		vmCommand = pb.VMCommandType_VM_COMMAND_TYPE_RESUME
 	default:
+		// Rebuild is intentionally NOT a lifecycle command — it goes through
+		// RebuildVM, which carries the root password + SSH keys the guest needs.
 		return nil, fmt.Errorf("invalid lifecycle command: %s", req.Command)
 	}
 
 	if err := s.ensureVMNodeActive(ctx, vm.NodeID); err != nil {
 		return nil, err
-	}
-
-	// For rebuild, validate template
-	if req.Command == LifecycleRebuild {
-		if req.TemplateID != "" {
-			template, err := s.templateRepo.GetByID(ctx, req.TemplateID)
-			if err != nil {
-				if errors.Is(err, gorm.ErrRecordNotFound) {
-					return nil, ErrTemplateNotFound
-				}
-				return nil, fmt.Errorf("failed to get template: %w", err)
-			}
-			if !template.IsActive {
-				return nil, fmt.Errorf("OS template is not active")
-			}
-		}
-		// VM must be stopped for rebuild
-		if vm.Status == models.VMStatusRunning {
-			return nil, fmt.Errorf("VM must be stopped before rebuilding")
-		}
 	}
 
 	// For synchronous execution, call agent directly
@@ -1441,14 +1418,8 @@ func (s *VMService) executeSyncLifecycle(
 		return nil, fmt.Errorf("failed to connect to agent: %w", err)
 	}
 
-	// Build VM config for rebuild operations
 	var config *pb.VMConfig
-	if req.Command == LifecycleRebuild {
-		config, err = s.buildVMConfig(ctx, vm, req.TemplateID)
-		if err != nil {
-			return nil, err
-		}
-	} else if req.Command == LifecycleStart {
+	if req.Command == LifecycleStart {
 		// Self-heal the NIC bridge: carry the pool's current bridge so the agent
 		// rewrites a stale <source bridge> before booting. Only the bridge is
 		// sent — starting an already-defined domain needs nothing else.
@@ -1514,52 +1485,6 @@ func (s *VMService) executeSyncLifecycle(
 		Message:  resp.Message,
 		NewState: resp.State.String(),
 	}, nil
-}
-
-// buildVMConfig builds a VM configuration for agent communication
-func (s *VMService) buildVMConfig(ctx context.Context, vm *models.VM, templateID string) (*pb.VMConfig, error) {
-	// Use current template or specified template
-	osTemplateID := vm.OSTemplateID
-	if templateID != "" {
-		osTemplateID = templateID
-	}
-
-	template, err := s.templateRepo.GetByID(ctx, osTemplateID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get template: %w", err)
-	}
-
-	config := &pb.VMConfig{
-		Resources: &pb.VMResources{
-			Vcpus:    int32(vm.Resources.CPU),
-			MemoryMb: int64(vm.Resources.RAM),
-			DiskGb:   int64(vm.Resources.Disk),
-		},
-		ImageId:    template.ImagePath,
-		VncEnabled: true,
-	}
-
-	if vm.VNCPort != nil {
-		// VNC password is already set on VM
-		config.VncPassword = vm.VNCPassword
-	}
-
-	if vm.Resources.Swap != nil {
-		config.Resources.SwapMb = int64(*vm.Resources.Swap)
-	}
-
-	if vm.Resources.IOPS != nil {
-		config.Resources.IopsLimit = int32(*vm.Resources.IOPS)
-	}
-
-	// Add metadata
-	config.Metadata = map[string]string{
-		"vm_id":       vm.ID,
-		"hostname":    vm.Hostname,
-		"template_id": template.ID,
-	}
-
-	return config, nil
 }
 
 // ============================================================================
