@@ -347,6 +347,16 @@ func injectGuestConfig(diskPath, hostname string, vmCfg libvirt.VMConfig, rootPa
 
 	// --no-network: the customize appliance needs no outbound network.
 	args := []string{"-a", diskPath, "--no-network"}
+
+	// Wipe any cloud-init state baked into the template image. Cloud images can
+	// ship (or accumulate) /var/lib/cloud state with a generic instance-id like
+	// "nocloud"; cloud-init keys its "once-per-instance" modules (write_files,
+	// scripts-user — i.e. the user's recipe) on that instance-id, so every cloned
+	// VM sees "already ran" and SKIPS them — the recipe never executes. Clearing
+	// the state makes each new VM run cloud-init fresh and honor its own seed.
+	args = append(args, "--run-command",
+		"rm -rf /var/lib/cloud/instances/* /var/lib/cloud/instance /var/lib/cloud/data/* /var/lib/cloud/sem/* 2>/dev/null || true")
+
 	if hostname != "" {
 		args = append(args, "--hostname", hostname)
 	}
@@ -399,6 +409,26 @@ func injectGuestConfig(diskPath, hostname string, vmCfg libvirt.VMConfig, rootPa
 			"--chmod", "0644:/etc/systemd/network/10-maburvm.network",
 			// Ensure the renderer is enabled (already so on cloud images; harmless otherwise).
 			"--run-command", "systemctl enable systemd-networkd >/dev/null 2>&1 || true")
+
+		// Populate the upstream gateway's ARP cache as soon as the guest is online.
+		// A brand-new VM that sends no outbound traffic on first boot never teaches
+		// the gateway its MAC, so if the gateway still has a stale ARP entry for this
+		// IP (from a previously-assigned VM) the VM is unreachable from the internet
+		// until that entry ages out (minutes). Pinging the gateway makes the guest
+		// emit an ARP request whose sender fields the gateway learns immediately.
+		if vmCfg.Gateway != "" {
+			svc := "[Unit]\n" +
+				"Description=MaburVM: announce IP to gateway (populate upstream ARP)\n" +
+				"After=network-online.target\n" +
+				"Wants=network-online.target\n\n" +
+				"[Service]\n" +
+				"Type=oneshot\n" +
+				fmt.Sprintf("ExecStart=/bin/sh -c 'for i in 1 2 3 4 5; do ping -c1 -w2 %s >/dev/null 2>&1 && exit 0; sleep 2; done; exit 0'\n", vmCfg.Gateway) +
+				"\n[Install]\nWantedBy=multi-user.target\n"
+			args = append(args,
+				"--write", "/etc/systemd/system/maburvm-announce.service:"+svc,
+				"--run-command", "systemctl enable maburvm-announce.service >/dev/null 2>&1 || true")
+		}
 	}
 	if tmpNet != "" {
 		defer os.Remove(tmpNet)
