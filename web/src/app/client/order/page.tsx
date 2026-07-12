@@ -3,10 +3,11 @@
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
-import { ArrowLeft, Check, Cpu, MemoryStick, HardDrive, Gauge } from "lucide-react"
+import { ArrowLeft, Check, Cpu, MemoryStick, HardDrive, Gauge, KeyRound } from "lucide-react"
 import { usePlans } from "@/lib/hooks/use-plans"
 import { useTemplates } from "@/lib/hooks/use-templates"
 import { useCreateVM } from "@/lib/hooks/use-vms"
+import { useSSHKeys } from "@/lib/hooks/use-ssh-keys"
 import type { OSTemplate } from "@/types"
 import type { Plan } from "@/types/plan"
 
@@ -18,12 +19,16 @@ export default function OrderVMPage() {
   const router = useRouter()
   const { data: plans, isLoading: plansLoading } = usePlans(true)
   const { data: templates, isLoading: templatesLoading } = useTemplates()
+  const { data: sshKeys } = useSSHKeys()
   const createVM = useCreateVM()
 
   const [planId, setPlanId] = useState<string>("")
   const [templateId, setTemplateId] = useState<string>("")
   const [hostname, setHostname] = useState<string>("")
   const [error, setError] = useState<string>("")
+  // SSH keys are opt-out: every saved key is injected unless the user unchecks it.
+  const [excludedKeys, setExcludedKeys] = useState<Set<string>>(new Set())
+  const selectedKeyIds = (sshKeys ?? []).filter((k) => !excludedKeys.has(k.id)).map((k) => k.id)
 
   const activePlans: Plan[] = (plans ?? []).filter((p) => p.is_active)
   // Only offer installable templates: active AND backed by a real base image.
@@ -56,6 +61,7 @@ export default function OrderVMPage() {
           disk: selectedPlan.disk,
         },
         bandwidth_mbps: selectedPlan.bandwidth_mbps,
+        ssh_key_ids: selectedKeyIds,
       },
       {
         onSuccess: () => router.push("/client/vms"),
@@ -155,6 +161,45 @@ export default function OrderVMPage() {
             <p className="text-sm text-destructive font-bold mt-2">
               Enter a valid hostname (letters, digits, hyphens, dots).
             </p>
+          )}
+        </div>
+      </section>
+
+      {/* Step 4: SSH keys */}
+      <section className="bg-white border-4 border-black shadow-neo">
+        <div className="px-5 py-4 border-b-4 border-black flex items-center gap-2">
+          <KeyRound className="w-5 h-5" />
+          <h2 className="text-lg font-black uppercase tracking-tight">4 · SSH Keys</h2>
+        </div>
+        <div className="p-5">
+          {!sshKeys?.length ? (
+            <p className="text-sm text-gray-600 font-medium">
+              No SSH keys saved. The VM will use root-password login only. Add keys under{" "}
+              <Link href="/client/settings/ssh-keys" className="underline font-bold">Settings → SSH Keys</Link>.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {sshKeys.map((k) => (
+                <label key={k.id} className="flex items-center gap-3 p-3 border-2 border-black cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={!excludedKeys.has(k.id)}
+                    onChange={(e) =>
+                      setExcludedKeys((prev) => {
+                        const next = new Set(prev)
+                        if (e.target.checked) next.delete(k.id)
+                        else next.add(k.id)
+                        return next
+                      })
+                    }
+                    className="w-4 h-4"
+                  />
+                  <span className="font-bold">{k.name}</span>
+                  <span className="text-xs font-mono text-gray-500 truncate">{k.fingerprint}</span>
+                </label>
+              ))}
+              <p className="text-[11px] text-gray-400 font-medium">Checked keys are injected into the new VM&apos;s root account.</p>
+            </div>
           )}
         </div>
       </section>
