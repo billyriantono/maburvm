@@ -736,17 +736,39 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 		// yet reach the MAC. Re-announcing across the boot window (once the vnet is
 		// forwarding and the guest is up) reliably gets the gateway to learn
 		// guest_IP→guest_MAC without waiting for a reboot.
-		bridge, ip, mac := vmCfg.Bridge, vmCfg.IPAddress, vmCfg.MACAddress
+		bridge, ip, mac, vmID := vmCfg.Bridge, vmCfg.IPAddress, vmCfg.MACAddress, domainUUID
 		go func() {
-			for i := 0; i < 24; i++ { // ~2 min at 5s intervals
+			for i := 0; i < 12; i++ { // announce for ~1 min while the guest boots
 				if gerr := sendGratuitousARP(bridge, ip, mac); gerr != nil {
 					log.Printf("[NodeAgent] gratuitous ARP for %s on %s failed: %v", ip, bridge, gerr)
-					return
+					break
 				}
 				time.Sleep(5 * time.Second)
 			}
+			// Power-cycle once after the first boot. On this platform a brand-new VM
+			// built from a libguestfs-modified disk is NOT reachable from the internet
+			// on its first boot (the upstream never commits its IP↔MAC binding, even
+			// with host + in-guest ARP announcements) — but a single hard reboot makes
+			// it PERSISTENTLY reachable. So we do that reboot automatically instead of
+			// leaving the operator to click Restart. (~90s lets the guest finish its
+			// first boot + first-boot recipe before the cycle.)
+			time.Sleep(90 * time.Second)
+			if serr := libvirt.StopVM(vmID, true); serr != nil {
+				log.Printf("[NodeAgent] post-provision reboot: stop %s failed: %v", vmID, serr)
+				return
+			}
+			time.Sleep(2 * time.Second)
+			if serr := libvirt.StartVM(vmID); serr != nil {
+				log.Printf("[NodeAgent] post-provision reboot: start %s failed: %v", vmID, serr)
+				return
+			}
+			for i := 0; i < 6; i++ { // re-announce after the reboot
+				_ = sendGratuitousARP(bridge, ip, mac)
+				time.Sleep(5 * time.Second)
+			}
+			log.Printf("[NodeAgent] post-provision reboot done for %s (%s)", vmID, ip)
 		}()
-		log.Printf("[NodeAgent] announcing %s (%s) on %s via gratuitous ARP (2 min)", ip, mac, bridge)
+		log.Printf("[NodeAgent] announcing %s (%s) on %s + scheduling post-provision reboot", ip, mac, bridge)
 	}
 
 	log.Printf("[NodeAgent] Created VM %s (disk=%s bridge=%s ip=%s vlan=%d bw=%dMbps)",
