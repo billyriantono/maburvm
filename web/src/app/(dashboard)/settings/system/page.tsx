@@ -679,10 +679,11 @@ export default function SystemSettingsPage() {
                       <Input
                         id="webhookUrl"
                         {...apiForm.register("webhookUrl")}
-                        placeholder="https://your-webhook.com/endpoint"
+                        placeholder="https://your-billing.com/webhooks/maburvm"
                         className="pl-10"
                       />
                     </div>
+                    <p className="text-[11px] text-gray-400 mt-1 font-medium">Outbound events (e.g. bandwidth overage) are POSTed here, signed with the HMAC secret below. Applied at runtime — no restart needed.</p>
                     {apiForm.formState.errors.webhookUrl && (
                       <p className="text-danger text-sm font-bold mt-1">
                         {apiForm.formState.errors.webhookUrl.message}

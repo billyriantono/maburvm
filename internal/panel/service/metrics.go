@@ -56,11 +56,12 @@ type MetricsCollector struct {
 	bwService      *BandwidthService
 	networkService *NetworkService
 	repo           *repository.MetricsRepository
+	db             *gorm.DB
 	interval       time.Duration
 	retention      time.Duration
 	enforce        bool   // apply restrictive over-quota actions (throttle/suspend)
-	overageURL     string // WHMCS outbound webhook for overage billing (empty = record-only)
-	overageSecret  string // HMAC secret for signing the overage webhook (BILLING_WEBHOOK_SECRET)
+	overageURL     string // env fallback for the overage webhook (admin settings win)
+	overageSecret  string // env fallback HMAC secret (BILLING_WEBHOOK_SECRET)
 	httpClient     *http.Client
 	logger         *slog.Logger
 	tick           int // collectOnce counter, for slower-cadence work (IP reconcile)
@@ -86,6 +87,7 @@ func NewMetricsCollector(db *gorm.DB, riverClient *river.Client[pgx.Tx], interva
 		bwService:      NewBandwidthService(repository.NewBandwidthUsageRepository(db), logger),
 		networkService: NewNetworkService(db, networkRepo, firewallRepo, vmRepo, nodeRepo, riverClient),
 		repo:           repository.NewMetricsRepository(db),
+		db:             db,
 		interval:       interval,
 		retention:      retention,
 		// Restrictive over-quota actions (throttle/suspend) are opt-in: customers'
@@ -349,6 +351,37 @@ func (c *MetricsCollector) restoreResetThrottles(ctx context.Context) {
 	}
 }
 
+// resolveOverageWebhook returns the overage webhook URL + HMAC secret, preferring
+// the admin-managed API settings (system_settings section 'api', editable at
+// runtime via Settings → System → API, no restart needed) and falling back to
+// the env values. The secret also falls back to BILLING_WEBHOOK_SECRET.
+func (c *MetricsCollector) resolveOverageWebhook(ctx context.Context) (url, secret string) {
+	url, secret = c.overageURL, c.overageSecret
+	if c.db == nil {
+		return url, secret
+	}
+	var raw string
+	if err := c.db.WithContext(ctx).
+		Raw("SELECT data::text FROM system_settings WHERE section = 'api'").
+		Scan(&raw).Error; err != nil || raw == "" {
+		return url, secret
+	}
+	var cfg struct {
+		WebhookURL string `json:"webhookUrl"`
+		HMACSecret string `json:"hmacSecret"`
+	}
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		return url, secret
+	}
+	if cfg.WebhookURL != "" {
+		url = cfg.WebhookURL
+	}
+	if cfg.HMACSecret != "" {
+		secret = cfg.HMACSecret
+	}
+	return url, secret
+}
+
 // sendOverageWebhook posts a signed bandwidth-overage event to the configured
 // WHMCS endpoint so it can bill the overage. When no URL is set the overage is
 // recorded in the logs only. Signature reuses the billing HMAC secret.
@@ -358,8 +391,9 @@ func (c *MetricsCollector) sendOverageWebhook(ctx context.Context, nodeID, vmID 
 		c.logger.Error("overage: no usage for VM", "vm_id", vmID, "error", err)
 		return
 	}
-	if c.overageURL == "" {
-		c.logger.Warn("bandwidth overage (no WHMCS_OVERAGE_WEBHOOK_URL — recorded only)",
+	url, secret := c.resolveOverageWebhook(ctx)
+	if url == "" {
+		c.logger.Warn("bandwidth overage (no webhook URL configured — recorded only)",
 			"vm_id", vmID, "used_gb", usage.UsedGB(), "quota_gb", usage.QuotaGB())
 		return
 	}
@@ -372,14 +406,14 @@ func (c *MetricsCollector) sendOverageWebhook(ctx context.Context, nodeID, vmID 
 		"period_start": usage.PeriodStart,
 		"period_end":   usage.PeriodEnd,
 	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.overageURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		c.logger.Error("overage webhook: build request failed", "vm_id", vmID, "error", err)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if c.overageSecret != "" {
-		mac := hmac.New(sha256.New, []byte(c.overageSecret))
+	if secret != "" {
+		mac := hmac.New(sha256.New, []byte(secret))
 		mac.Write(body)
 		req.Header.Set("X-Webhook-Signature", hex.EncodeToString(mac.Sum(nil)))
 	}
