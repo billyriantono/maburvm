@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -101,6 +102,9 @@ type CreateVMRequest struct {
 	RegeneratePassword bool   `json:"regenerate_password,omitempty"`
 	// SSHKeyIDs are the user's saved SSH keys to inject into the new guest.
 	SSHKeyIDs []string `json:"ssh_key_ids,omitempty"`
+	// SSHPublicKeys are raw authorized_keys lines pasted at create time (in
+	// addition to any saved SSHKeyIDs) — lets an admin add a key without saving it.
+	SSHPublicKeys []string `json:"ssh_public_keys,omitempty"`
 }
 
 // CreateVMResponse represents the response after creating a VM
@@ -177,6 +181,12 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 			})
 		}
 		sshPublicKeys = keys
+	}
+	// Append raw keys pasted at create time (trimmed, non-empty).
+	for _, raw := range req.SSHPublicKeys {
+		if k := strings.TrimSpace(raw); k != "" {
+			sshPublicKeys = append(sshPublicKeys, k)
+		}
 	}
 
 	// Create VM

@@ -89,6 +89,7 @@ export interface CreateVMRequest {
   password?: string;       // root password to inject (min 8 chars); omit to auto-generate
   regenerate_password?: boolean; // generate a root password and return it once
   ssh_key_ids?: string[];  // saved SSH keys to inject into the new guest
+  ssh_public_keys?: string[];  // raw public keys pasted at create time
 }
 
 // UpdateVMRequest for updating VMs

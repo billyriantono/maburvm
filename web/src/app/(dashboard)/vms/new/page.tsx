@@ -100,6 +100,9 @@ export default function NewVMPage() {
   const { data: sshKeys } = useSSHKeys()
   const [excludedKeys, setExcludedKeys] = useState<Set<string>>(new Set())
   const selectedKeyIds = (sshKeys ?? []).filter((k) => !excludedKeys.has(k.id)).map((k) => k.id)
+  // Raw keys pasted at create time (one per line), injected in addition to saved keys.
+  const [pastedKeys, setPastedKeys] = useState("")
+  const pastedKeyList = pastedKeys.split("\n").map((s) => s.trim()).filter(Boolean)
   const [submitError, setSubmitError] = useState<string | null>(null)
   
   // API hooks
@@ -264,6 +267,7 @@ export default function NewVMPage() {
         cpu_model: data.cpuModel || undefined,
         user_data: data.userData || undefined,
         ssh_key_ids: selectedKeyIds,
+        ssh_public_keys: pastedKeyList,
       })
       // Switch to the inline provisioning view (progress + one-time password)
       // instead of jumping straight to the VM detail page.
@@ -906,11 +910,10 @@ export default function NewVMPage() {
               {/* SSH keys — injected into the new guest's root account */}
               <div className="border-t-2 border-black pt-5">
                 <h3 className="font-black uppercase text-sm mb-1">SSH Keys</h3>
-                <p className="text-xs text-gray-500 mb-3">Your saved keys are injected for root login. Add keys under Settings → SSH Keys.</p>
-                {!sshKeys?.length ? (
-                  <p className="text-sm text-gray-600 font-medium">No SSH keys saved — the VM will use root-password login only.</p>
-                ) : (
-                  <div className="space-y-2">
+                <p className="text-xs text-gray-500 mb-3">Injected into the new VM&apos;s root account for key-based login. Select saved keys and/or paste one below.</p>
+
+                {!!sshKeys?.length && (
+                  <div className="space-y-2 mb-4">
                     {sshKeys.map((k) => (
                       <label key={k.id} className="flex items-center gap-3 p-3 border-2 border-black cursor-pointer">
                         <input
@@ -931,6 +934,18 @@ export default function NewVMPage() {
                       </label>
                     ))}
                   </div>
+                )}
+
+                <label className="block text-xs font-black uppercase text-gray-500 mb-1">Paste a public key (optional)</label>
+                <textarea
+                  value={pastedKeys}
+                  onChange={(e) => setPastedKeys(e.target.value)}
+                  placeholder="ssh-ed25519 AAAA… user@host&#10;(one key per line)"
+                  rows={3}
+                  className="w-full px-3 py-2 border-2 border-black bg-white font-mono text-sm placeholder:text-gray-400"
+                />
+                {!sshKeys?.length && !pastedKeyList.length && (
+                  <p className="text-xs text-gray-500 mt-1">No key selected — the VM will use root-password login only.</p>
                 )}
               </div>
             </div>
