@@ -649,6 +649,25 @@ func (h *VMHandler) UpdateVM(c echo.Context) error {
 // ============================================================================
 
 // DeleteVM handles DELETE /api/vms/:id - Delete a VM
+// GetVMOperation returns the latest tracked multi-step operation for a VM (e.g.
+// a delete: destroy on host → release IP/network → remove records) so the UI can
+// show progress and whether it actually succeeded. Returns {data: null} when the
+// VM has no tracked operation.
+func (h *VMHandler) GetVMOperation(c echo.Context) error {
+	id := c.Param("id")
+	if !h.authorizeVM(c, id) {
+		return nil
+	}
+	op, err := h.service.GetLatestVMOperation(c.Request().Context(), id)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+			"error":   "Internal Server Error",
+			"message": err.Error(),
+		})
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"data": op})
+}
+
 func (h *VMHandler) DeleteVM(c echo.Context) error {
 	id := c.Param("id")
 	if id == "" {
@@ -1383,6 +1402,7 @@ func RegisterVMRoutes(e *echo.Echo, handler *VMHandler, db interface{}) {
 
 	// VM metrics - require vm:read
 	vms.GET("/:id/metrics", handler.GetVMMetrics)
+	vms.GET("/:id/operation", handler.GetVMOperation)
 
 	// Console token operations - require vm:console
 	consoleToken := vms.Group("/:id/console")

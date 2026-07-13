@@ -570,6 +570,18 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 		}
 	}
 
+	// Track a delete as a multi-step operation so the UI can show progress and
+	// whether it actually finished (delete = destroy on host → release IP/network
+	// → remove records). Best-effort: never blocks the real work.
+	var deleteOpID string
+	var opDB *gorm.DB
+	if globalWorkerContext != nil {
+		opDB = globalWorkerContext.DB
+	}
+	if job.Args.Operation == VMOpDelete {
+		deleteOpID = startVMOperation(ctx, opDB, vm.ID, "delete", "Destroying VM & disk on host", 3)
+	}
+
 	// Execute VM command via gRPC
 	req := &pb.VMCommandRequest{
 		VmId:           vm.ID,
@@ -581,6 +593,25 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 	// Attach the node's auth token + id; the agent's auth interceptor requires a
 	// Bearer token over TLS, otherwise the call is rejected as Unauthenticated.
 	resp, err := client.ExecuteVMCommand(agentAuthContext(ctx, node), req)
+
+	// Idempotent delete: if the domain is already gone on the node, that IS the
+	// desired end state of a delete — treat it as success and proceed to release
+	// the IP/network and remove the DB row, so orphaned records can be cleaned up
+	// instead of failing forever with "domain not found".
+	if job.Args.Operation == VMOpDelete {
+		reason := ""
+		if err != nil {
+			reason = err.Error()
+		} else if resp != nil && !resp.Success {
+			reason = resp.Error.GetMessage() + " " + resp.GetMessage()
+		}
+		if reason != "" && isDomainNotFound(reason) {
+			w.logger.WarnContext(ctx, "delete: domain already gone, cleaning up records", "vm_id", vm.ID)
+			err = nil
+			resp = &pb.VMCommandResponse{Success: true}
+		}
+	}
+
 	if err != nil {
 		w.logger.ErrorContext(ctx, "failed to execute VM command",
 			"error", err,
@@ -598,6 +629,7 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 
 		// Update VM status to error
 		vmRepo.UpdateStatus(ctx, vm.ID, models.VMStatusError)
+		failVMOperation(ctx, opDB, deleteOpID, err.Error())
 
 		if w.metrics != nil {
 			w.metrics.RecordJobFailed()
@@ -624,6 +656,7 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 
 		// Update VM status to error
 		vmRepo.UpdateStatus(ctx, vm.ID, models.VMStatusError)
+		failVMOperation(ctx, opDB, deleteOpID, detail)
 
 		if w.metrics != nil {
 			w.metrics.RecordJobFailed()
@@ -653,14 +686,17 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 		// Doing this before agent confirmation risked handing a still-live IP to
 		// the next VM. On cleanup failure we return an error so the job retries
 		// rather than leaving the IP leaked and the row orphaned.
+		stepVMOperation(ctx, opDB, deleteOpID, 2, "Releasing IP & network")
 		if err := w.cleanupDeletedVM(ctx, vm.ID); err != nil {
 			w.logger.ErrorContext(ctx, "failed to clean up deleted VM records",
 				"vm_id", vm.ID, "error", err)
+			failVMOperation(ctx, opDB, deleteOpID, err.Error())
 			if w.metrics != nil {
 				w.metrics.RecordJobFailed()
 			}
 			return fmt.Errorf("failed to clean up deleted VM records: %w", err)
 		}
+		completeVMOperation(ctx, opDB, deleteOpID, "VM deleted")
 		newStatus = ""
 	case VMOpSuspend:
 		newStatus = models.VMStatusSuspended

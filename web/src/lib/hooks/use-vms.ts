@@ -10,6 +10,7 @@ import type {
   VM,
   VMMetrics,
   VMMetricSample,
+  VMOperation,
   CreateVMRequest,
   UpdateVMRequest,
   PaginatedResponse,
@@ -21,6 +22,26 @@ interface VMListParams {
   userId?: string
   nodeId?: string
   status?: string;
+}
+
+// useVMOperation polls the VM's latest multi-step operation (e.g. a delete),
+// auto-refreshing while it is still running so the UI shows live progress. Stops
+// polling once the operation completes or fails.
+export function useVMOperation(vmId: string | null, enabled: boolean) {
+  return useQuery<VMOperation | null>({
+    queryKey: ['vm-operation', vmId],
+    queryFn: async () => {
+      const response = await api.get<VMOperation | null>(`/api/v1/vms/${vmId}/operation`)
+      return response.data.data
+    },
+    enabled: !!vmId && enabled,
+    refetchInterval: (query) => {
+      const op = query.state.data as VMOperation | null | undefined
+      // Keep polling while running, or while no op row exists yet (worker may not
+      // have created it in the split second after the delete was enqueued).
+      return !op || op.status === 'running' ? 1500 : false
+    },
+  })
 }
 
 export function useVMs(params: VMListParams = {}) {

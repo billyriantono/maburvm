@@ -2204,6 +2204,21 @@ func (s *VMService) SyncVMStatusFromHeartbeat(ctx context.Context, nodeID string
 	return nil
 }
 
+// GetLatestVMOperation returns the most recent tracked operation (e.g. a delete)
+// for a VM, or (nil, nil) when none exists. The row outlives the VM on delete, so
+// it stays readable through completion.
+func (s *VMService) GetLatestVMOperation(ctx context.Context, vmID string) (*models.VMOperation, error) {
+	var op models.VMOperation
+	err := s.db.WithContext(ctx).Where("vm_id = ?", vmID).Order("started_at DESC").First(&op).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &op, nil
+}
+
 // ReconcileNodeVMStatuses queries the agent for the ACTUAL state of every VM on
 // a node and syncs the DB status to match. This is what keeps the panel honest
 // when a VM is started, stopped, or crashes out-of-band: without it the DB

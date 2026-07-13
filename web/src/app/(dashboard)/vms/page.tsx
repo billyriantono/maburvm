@@ -20,7 +20,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
-import { useVMs, useDeleteVM, useVMActions, useVMStatusStream } from "@/lib/hooks/use-vms"
+import { useVMs, useDeleteVM, useVMActions, useVMStatusStream, useVMOperation } from "@/lib/hooks/use-vms"
 import { useNodes } from "@/lib/hooks/use-nodes"
 import type { VM, VMNodeStatus, VMStatus } from "@/types"
 
@@ -214,6 +214,60 @@ function ConfirmDialog({
   )
 }
 
+// DeleteProgressDialog polls the VM's delete operation and shows each step
+// (destroy on host → release IP/network → remove records) with a progress bar,
+// so the operator sees real progress and whether it actually succeeded.
+function DeleteProgressDialog({ vm, onClose }: { vm: { id: string; hostname: string } | null; onClose: () => void }) {
+  const { data: op } = useVMOperation(vm?.id ?? null, !!vm)
+  if (!vm) return null
+
+  const total = op?.total_steps || 3
+  const step = op?.current_step || 0
+  const done = op?.status === "completed"
+  const failed = op?.status === "failed"
+  const pct = done ? 100 : Math.round((Math.max(step - (op?.status === "running" ? 1 : 0), 0) / total) * 100)
+  const finished = done || failed
+  const label = failed
+    ? "Deletion failed"
+    : done
+      ? "VM deleted"
+      : op?.step_label || "Starting…"
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-label="Delete progress">
+      <div className="absolute inset-0 bg-black/50" />
+      <div className="relative bg-white border-4 border-black p-6 shadow-neo-xl max-w-md w-full mx-4">
+        <h3 className="text-xl font-black uppercase mb-1">Deleting {vm.hostname}</h3>
+        <p className="text-sm font-bold uppercase mb-4 flex items-center gap-2">
+          {!finished && <Loader2 className="w-4 h-4 animate-spin" />}
+          <span className={failed ? "text-danger" : done ? "text-success" : ""}>{label}</span>
+          {!failed && <span className="text-gray-400">· step {Math.min(step, total)}/{total}</span>}
+        </p>
+
+        <div className="w-full h-4 border-2 border-black bg-white mb-4">
+          <div
+            className={`h-full transition-all duration-500 ${failed ? "bg-danger" : done ? "bg-success" : "bg-primary"}`}
+            style={{ width: `${failed ? 100 : pct}%` }}
+          />
+        </div>
+
+        {failed && op?.error && (
+          <p className="text-xs font-mono text-danger border-2 border-danger p-2 mb-4 break-words">{op.error}</p>
+        )}
+        {failed && (
+          <p className="text-sm text-gray-600 font-medium mb-4">The VM was not fully removed. It&apos;s marked as error — you can retry the delete.</p>
+        )}
+
+        <div className="flex justify-end">
+          <Button onClick={onClose} disabled={!finished} className="border-2 border-black">
+            {finished ? "Close" : "Working…"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // Toast notification component
 function Toast({ message, type, onClose }: { message: string, type: "success" | "error", onClose: () => void }) {
   useEffect(() => {
@@ -279,6 +333,8 @@ export default function VMListPage() {
   const [nodeFilter, setNodeFilter] = useState<string>("")
   const [debouncedSearch, setDebouncedSearch] = useState("")
   const [deleteConfirm, setDeleteConfirm] = useState<VM | null>(null)
+  // VM whose deletion is in progress — drives the step-by-step progress dialog.
+  const [deletingVM, setDeletingVM] = useState<{ id: string; hostname: string } | null>(null)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
   
@@ -374,13 +430,14 @@ export default function VMListPage() {
     
     try {
       await deleteVM.mutateAsync(deleteConfirm.id)
-      setToast({ message: `VM ${deleteConfirm.hostname} deleted`, type: "success" })
+      // Deletion is async + multi-step; open the progress dialog to track it
+      // instead of claiming success immediately.
+      setDeletingVM({ id: deleteConfirm.id, hostname: deleteConfirm.hostname })
       setDeleteConfirm(null)
-      refetch()
     } catch (err) {
       setToast({ message: `Failed to delete VM: ${(err as Error).message}`, type: "error" })
     }
-  }, [deleteConfirm, deleteVM, refetch])
+  }, [deleteConfirm, deleteVM])
   
   return (
     <div className="max-w-7xl mx-auto">
@@ -622,7 +679,13 @@ export default function VMListPage() {
         onCancel={() => setDeleteConfirm(null)}
         loading={deleteVM.isPending}
       />
-      
+
+      {/* Delete Progress (step-by-step) */}
+      <DeleteProgressDialog
+        vm={deletingVM}
+        onClose={() => { setDeletingVM(null); refetch() }}
+      />
+
       {/* Toast */}
       {toast && (
         <Toast 

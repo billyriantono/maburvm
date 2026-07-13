@@ -11,6 +11,21 @@ export interface Resources {
   swap?: number; // MB
 }
 
+// VMOperation tracks a multi-step VM operation (e.g. delete) for the progress UI.
+export interface VMOperation {
+  id: string;
+  vm_id: string;
+  operation: string;
+  status: 'running' | 'completed' | 'failed';
+  current_step: number;
+  total_steps: number;
+  step_label: string;
+  error: string;
+  started_at: string;
+  updated_at: string;
+  completed_at?: string;
+}
+
 // VM represents a virtual machine in the system
 export interface VM {
   id: string;
