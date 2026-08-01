@@ -167,6 +167,7 @@ func (c *MetricsCollector) collectOnce(ctx context.Context) {
 	for nodeID := range online {
 		rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		c.vmService.ReconcileNodeVMStatuses(rctx, nodeID)
+		c.vmService.ReapStuckVMs(rctx, nodeID)
 		cancel()
 	}
 

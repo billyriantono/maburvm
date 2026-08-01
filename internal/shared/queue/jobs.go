@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 )
 
 // Job priorities
@@ -51,8 +52,8 @@ const (
 // VMOperationJob represents a VM lifecycle operation job
 // This is inserted into the critical queue
 type VMOperationJob struct {
-	VMID      string          `json:"vm_id"`
-	Operation VMOperationType `json:"operation"`
+	VMID      string          `json:"vm_id" river:"unique"`
+	Operation VMOperationType `json:"operation" river:"unique"`
 	NodeID    string          `json:"node_id"`
 	Params    json.RawMessage `json:"params,omitempty"`
 }
@@ -67,6 +68,22 @@ func (j VMOperationJob) InsertOpts() *river.InsertOpts {
 	return &river.InsertOpts{
 		Queue:    QueueCritical,
 		Priority: PriorityCritical,
+		// Idempotent enqueue: a second insert of the same (vm_id, operation) while
+		// one is still in-flight is skipped instead of duplicating the operation.
+		// Only vm_id+operation are hashed (river:"unique" tags), so a re-submit
+		// with differing params still dedups. Deliberately excludes Completed/
+		// Discarded/Cancelled so a repeat op after the previous one finished
+		// (start→stop→start, or a re-delete) is still allowed.
+		UniqueOpts: river.UniqueOpts{
+			ByArgs: true,
+			ByState: []rivertype.JobState{
+				rivertype.JobStateAvailable,
+				rivertype.JobStatePending,
+				rivertype.JobStateRunning,
+				rivertype.JobStateRetryable,
+				rivertype.JobStateScheduled,
+			},
+		},
 	}
 }
 

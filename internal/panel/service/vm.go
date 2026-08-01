@@ -2330,6 +2330,68 @@ func (s *VMService) ReconcileNodeVMStatuses(ctx context.Context, nodeID string) 
 	}
 }
 
+// stuckVMDeadline is how long a VM may sit in a transient creating/deleting
+// state before the reaper assumes its job was lost (panel crashed between the
+// row commit and the River insert, or the job died) and resolves it. Must exceed
+// the worst-case legitimate create/delete time (create includes a ~2-minute
+// post-provision reboot window + River retry backoff).
+const stuckVMDeadline = 15 * time.Minute
+
+// ReapStuckVMs resolves VMs wedged in a transient state past stuckVMDeadline,
+// closing the durability gap where a VM row is committed but its River job never
+// got enqueued (crash window in CreateVM) or a delete job was lost:
+//   - creating: probe the agent. Domain present -> adopt real status. Domain
+//     absent -> the create never landed; mark error so the row is operable
+//     (retry/delete) instead of a permanent ghost.
+//   - deleting: re-enqueue an idempotent, unique-gated delete so cleanup
+//     eventually completes and the IP/network allocation is released.
+func (s *VMService) ReapStuckVMs(ctx context.Context, nodeID string) {
+	vms, err := s.vmRepo.ListByNodeID(ctx, nodeID, 0, 0)
+	if err != nil {
+		s.logger.WarnContext(ctx, "reaper: list node VMs failed", "node_id", nodeID, "error", err)
+		return
+	}
+	cutoff := time.Now().Add(-stuckVMDeadline)
+	for i := range vms {
+		vm := &vms[i]
+		if vm.UpdatedAt.After(cutoff) {
+			continue
+		}
+		switch vm.Status {
+		case models.VMStatusCreating:
+			sctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			resp, aerr := s.getVMAgentStatus(sctx, vm.ID, nodeID)
+			cancel()
+			if aerr != nil {
+				if status.Code(aerr) == codes.NotFound {
+					s.logger.WarnContext(ctx, "reaper: create never completed, marking error", "vm_id", vm.ID, "stuck_since", vm.UpdatedAt)
+					if uerr := s.vmRepo.UpdateStatus(ctx, vm.ID, models.VMStatusError); uerr != nil {
+						s.logger.WarnContext(ctx, "reaper: mark error failed", "vm_id", vm.ID, "error", uerr)
+					}
+				}
+				// Agent unreachable/other error: leave it; retry next tick.
+				continue
+			}
+			s.syncVMStatus(ctx, vm, resp.GetState())
+		case models.VMStatusDeleting:
+			if s.riverClient == nil {
+				continue
+			}
+			// UniqueOpts skips this if a delete is still in-flight; the worker is
+			// idempotent (domain-not-found == success).
+			if _, ierr := s.riverClient.Insert(ctx, queue.VMOperationJob{
+				VMID:      vm.ID,
+				Operation: queue.VMOpDelete,
+				NodeID:    vm.NodeID,
+			}, nil); ierr != nil {
+				s.logger.WarnContext(ctx, "reaper: re-enqueue delete failed", "vm_id", vm.ID, "error", ierr)
+			} else {
+				s.logger.WarnContext(ctx, "reaper: re-enqueued stuck delete", "vm_id", vm.ID, "stuck_since", vm.UpdatedAt)
+			}
+		}
+	}
+}
+
 // externalIPNote marks an IPAddress the panel auto-reserved because an ARP probe
 // found it live on the wire (in use by a VM the panel doesn't manage). The IP
 // reconciler only ever flips IPs bearing this note back to available, so it never
