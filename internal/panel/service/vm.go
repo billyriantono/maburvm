@@ -1075,9 +1075,10 @@ func (s *VMService) AttachDisk(ctx context.Context, vmID string, sizeGB int) (*m
 // Gate-1 accounting: the disk's usage is released ONLY after the agent confirms
 // the detach. If the agent call fails, the vm_disks row is left intact so the
 // quota accounting stays correct (we never release capacity the disk still holds
-// on the node). On agent success the row is deleted within a local transaction,
-// together with any stray pending reservation for the VM (defensive; attached
-// disks are consumed, not pending).
+// on the node). On agent success the vm_disks row is deleted; that row IS the
+// accounting for an attached (consumed) disk, so pending reservations are left
+// untouched — clearing them here would race a concurrent AttachDisk's in-flight
+// reservation for the same VM.
 func (s *VMService) DetachDisk(ctx context.Context, vmID, device string, deleteVolume bool) error {
 	vm, err := s.vmRepo.GetByID(ctx, vmID)
 	if err != nil {
@@ -1108,13 +1109,14 @@ func (s *VMService) DetachDisk(ctx context.Context, vmID, device string, deleteV
 	if !resp.Success {
 		return fmt.Errorf("detach disk failed: %s", agentErrorMessage(resp.Error))
 	}
-	// Agent succeeded: now release the disk accounting in a local transaction.
-	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if derr := s.quotaService.DeleteDiskReservationsByVMTx(ctx, tx, vmID); derr != nil {
-			return derr
-		}
-		return tx.WithContext(ctx).Delete(&disk).Error
-	}); err != nil {
+	// Agent succeeded: release the disk's accounting by deleting its vm_disks row.
+	// An attached disk is a CONSUMED reservation already turned into this row, so the
+	// row IS the accounting — there is no pending reservation to touch here. We must
+	// NOT bulk-clear pending reservations for the VM: a concurrent AttachDisk may hold
+	// an in-flight pending reservation for the same VM and deleting it would corrupt
+	// that attach's finalize. Deleting a consumed row is a monotonic capacity release,
+	// so it needs no admission lock.
+	if err := s.db.WithContext(ctx).Delete(&disk).Error; err != nil {
 		return fmt.Errorf("disk detached on node but failed to remove record: %w", err)
 	}
 	return nil
