@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -155,16 +156,9 @@ func (s *BackupService) CreateBackup(ctx context.Context, req *CreateBackupReque
 		return nil, fmt.Errorf("failed to get VM: %w", err)
 	}
 
-	// Check if backup is already in progress
-	inProgressBackups, err := s.backupRepo.ListByStatus(ctx, models.BackupStatusInProgress, 1, 0)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check in-progress backups: %w", err)
-	}
-	for _, b := range inProgressBackups {
-		if b.VMID == req.VMID {
-			return nil, ErrBackupInProgress
-		}
-	}
+	// Concurrent-backup guard is enforced atomically by the
+	// ux_backups_active_per_vm partial unique index (see backupRepo.Create below),
+	// which covers both this path and the scheduled path with no TOCTOU window.
 
 	// Determine storage provider
 	storageProvider := req.StorageProvider
@@ -197,6 +191,9 @@ func (s *BackupService) CreateBackup(ctx context.Context, req *CreateBackupReque
 	}
 
 	if err := s.backupRepo.Create(ctx, backup); err != nil {
+		if isBackupInProgressViolation(err) {
+			return nil, ErrBackupInProgress
+		}
 		return nil, fmt.Errorf("failed to create backup record: %w", err)
 	}
 
@@ -697,6 +694,13 @@ func (s *BackupService) executeScheduledBackup(scheduleID string) {
 	}
 
 	if err := s.backupRepo.Create(ctx, backup); err != nil {
+		if isBackupInProgressViolation(err) {
+			s.logger.Info("skipping scheduled backup; one is already active for this VM",
+				"schedule_id", scheduleID,
+				"vm_id", schedule.VMID,
+			)
+			return
+		}
 		s.logger.Error("failed to create backup record",
 			"schedule_id", scheduleID,
 			"vm_id", schedule.VMID,
@@ -917,4 +921,17 @@ func backupFileSuffix(compression string) string {
 	default:
 		return "tar"
 	}
+}
+
+// isBackupInProgressViolation reports whether err is the active-backup uniqueness
+// violation from ux_backups_active_per_vm. String-based (like isQuotaUniqueViolation)
+// so it also matches under the SQLite test driver, whose UNIQUE errors carry the
+// table name rather than a Postgres SQLSTATE.
+func isBackupInProgressViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "ux_backups_active_per_vm") ||
+		(strings.Contains(msg, "UNIQUE") && strings.Contains(msg, "backups"))
 }

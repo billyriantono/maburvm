@@ -1240,6 +1240,25 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 		return fmt.Errorf("snapshot creation failed: %s", resp.Error.GetMessage())
 	}
 
+	// Reap the snapshot this attempt created, on every return path. Without this,
+	// each River retry leaks a host snapshot (fresh name per attempt) and even
+	// successful backups leave it behind. The agent already implements
+	// SNAPSHOT_OPERATION_TYPE_DELETE, so no agent redeploy is needed.
+	// ponytail: per-attempt reap; a panel crash mid-Work still orphans one — add
+	// an agent-side stale-snapshot sweeper only if that shows up in the field.
+	snapshotName := resp.Snapshot.GetSnapshotId()
+	defer func() {
+		reapCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if _, delErr := client.CreateSnapshot(agentAuthContext(reapCtx, node), &pb.SnapshotRequest{
+			VmId:       vm.ID,
+			Operation:  pb.SnapshotOperationType_SNAPSHOT_OPERATION_TYPE_DELETE,
+			SnapshotId: snapshotName,
+		}); delErr != nil {
+			w.logger.WarnContext(ctx, "failed to reap backup snapshot", "vm_id", vm.ID, "snapshot", snapshotName, "error", delErr)
+		}
+	}()
+
 	// Export the actual disk image and upload it to object storage VIA THE AGENT
 	// (the agent has the disk file and storage credentials). This replaces the
 	// old manifest-only archive, which contained no disk data.
