@@ -231,7 +231,7 @@ func setupVMIPAMTestDB(t *testing.T) *gorm.DB {
 	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:vmipam-%s?mode=memory&cache=shared", t.Name())), &gorm.Config{})
 	require.NoError(t, err)
 	for _, stmt := range []string{
-		`CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL, password_hash TEXT NOT NULL, role TEXT, two_factor_secret TEXT, two_factor_backup_codes TEXT, ip_whitelist TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, deleted_at DATETIME)`,
+		`CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL, password_hash TEXT NOT NULL, role TEXT, quota_mode TEXT NOT NULL DEFAULT 'legacy', two_factor_secret TEXT, two_factor_backup_codes TEXT, ip_whitelist TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, deleted_at DATETIME)`,
 		`CREATE TABLE nodes (id TEXT PRIMARY KEY, name TEXT NOT NULL, ip_address TEXT NOT NULL, status TEXT, token TEXT NOT NULL, cert_fingerprint TEXT NOT NULL DEFAULT '', created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE os_templates (id TEXT PRIMARY KEY, name TEXT NOT NULL, version TEXT NOT NULL, image_path TEXT NOT NULL, is_active BOOLEAN, description TEXT, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE vms (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, node_id TEXT NOT NULL, hostname TEXT NOT NULL, os_template_id TEXT NOT NULL, resources TEXT, status TEXT, source_migration TEXT, vnc_port INTEGER, vnc_password TEXT, console_enabled BOOLEAN DEFAULT 1, rescue_mode BOOLEAN DEFAULT 0, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
@@ -239,7 +239,10 @@ func setupVMIPAMTestDB(t *testing.T) *gorm.DB {
 		`CREATE TABLE ip_pools (id TEXT PRIMARY KEY, name TEXT NOT NULL, node_id TEXT, family TEXT NOT NULL, cidr TEXT, gateway TEXT, bridge TEXT, range_start TEXT, range_end TEXT, description TEXT, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE ip_addresses (id TEXT PRIMARY KEY, pool_id TEXT NOT NULL, node_id TEXT, address TEXT NOT NULL, family TEXT NOT NULL, status TEXT NOT NULL, vm_id TEXT, note TEXT, rdns TEXT DEFAULT '', created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE ip_pool_nodes (pool_id TEXT NOT NULL, node_id TEXT NOT NULL, PRIMARY KEY (pool_id, node_id))`,
-		`CREATE TABLE user_quotas (user_id TEXT PRIMARY KEY, max_vms INTEGER DEFAULT 0, max_vcpu INTEGER DEFAULT 0, max_ram_mb INTEGER DEFAULT 0, max_disk_gb INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
+		`CREATE TABLE user_quotas (user_id TEXT PRIMARY KEY, max_vms INTEGER DEFAULT 0, max_vcpu INTEGER DEFAULT 0, max_ram_mb INTEGER DEFAULT 0, max_disk_gb INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, quota_mode TEXT NOT NULL DEFAULT 'legacy', policy_id TEXT, policy_version INTEGER, policy_name TEXT, policy_assigned_at DATETIME, policy_assigned_by TEXT, cap_revision_id TEXT)`,
+		`CREATE TABLE vm_disks (id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, device TEXT NOT NULL, size_gb INTEGER NOT NULL, path TEXT NOT NULL, lifecycle TEXT NOT NULL DEFAULT 'attached', created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, deleted_at DATETIME)`,
+		`CREATE TABLE disk_quota_reservations (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, vm_id TEXT NOT NULL, size_gb INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, consumed_at DATETIME)`,
+		`CREATE UNIQUE INDEX disk_res_one_pending_per_vm ON disk_quota_reservations(vm_id) WHERE status = 'pending'`,
 	} {
 		require.NoError(t, db.Exec(stmt).Error)
 	}

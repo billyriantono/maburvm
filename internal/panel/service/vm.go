@@ -269,7 +269,10 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		return nil, err
 	}
 
-	// Enforce the owner's resource quota before allocating anything.
+	// Quota admission is enforced inside the create transaction below (Lane D:
+	// AdmitVMCreateTx), so it serializes with the VM-row insert and can't
+	// double-spend. A cheap non-authoritative precheck here fails fast before we do
+	// template/node/IP work for an obviously-over-quota request.
 	if err := s.quotaService.CheckCanCreate(ctx, req.UserID, req.Resources); err != nil {
 		return nil, err
 	}
@@ -398,6 +401,12 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 
 	var allocatedIP *models.IPAddress
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Lane D admission: take the per-user lock and re-check quota against
+		// authoritative in-tx usage BEFORE inserting the VM row, so concurrent
+		// same-user creates serialize here and cannot overcommit.
+		if err := s.quotaService.AdmitVMCreateTx(ctx, tx, req.UserID, req.Resources); err != nil {
+			return err
+		}
 		if err := s.vmRepo.WithDB(tx).Create(ctx, vm); err != nil {
 			return fmt.Errorf("failed to create VM record: %w", err)
 		}
@@ -752,6 +761,12 @@ func (s *VMService) cleanupVMAllocation(ctx context.Context, vmID string, delete
 		if err := s.networkRepo.WithDB(tx).DeleteByVMID(ctx, vmID); err != nil {
 			return err
 		}
+		// Release any pending disk-quota reservations for this VM so a removed/soft
+		// VM cannot leave orphaned capacity that would over-count forever. This
+		// runs in the same local transaction as the VM soft deletion (or cleanup).
+		if err := s.quotaService.DeleteDiskReservationsByVMTx(ctx, tx, vmID); err != nil {
+			return err
+		}
 		if !deleteVM {
 			return nil
 		}
@@ -985,6 +1000,16 @@ func (s *VMService) ListDisks(ctx context.Context, vmID string) ([]models.VMDisk
 
 // AttachDisk provisions and hot-plugs a new data disk of sizeGB onto the VM,
 // then records it. The agent picks the next free virtio target.
+//
+// Gate-1 disk admission: capacity is reserved BEFORE the agent AttachDisk RPC so
+// a concurrent extra-disk admission cannot double-spend the user's disk quota.
+// The reservation is counted against quota (alongside boot disks and active
+// vm_disks) until it is consumed. On agent failure the reservation is released
+// (capacity returned). On agent success the reservation is atomically consumed
+// and the vm_disks row is created in the SAME transaction; if that final DB
+// recording fails, the reservation is RETAINED fail-closed (NOT released) so the
+// capacity is never leaked or bypassed. No TTL/automatic expiry exists; a pending
+// reservation intentionally overcounts until explicitly consumed or released.
 func (s *VMService) AttachDisk(ctx context.Context, vmID string, sizeGB int) (*models.VMDisk, error) {
 	if sizeGB <= 0 {
 		return nil, fmt.Errorf("disk size must be a positive number of GB")
@@ -996,31 +1021,62 @@ func (s *VMService) AttachDisk(ctx context.Context, vmID string, sizeGB int) (*m
 		}
 		return nil, fmt.Errorf("failed to get VM: %w", err)
 	}
+
+	// 1) Reserve capacity (per-user admission lock + disk quota evaluation +
+	//    pending reservation insert) BEFORE driving the agent.
+	res, err := s.quotaService.ReserveDiskQuota(ctx, vm.UserID, vm.ID, sizeGB)
+	if err != nil {
+		return nil, err
+	}
+
+	// 2) Drive the agent AttachDisk RPC (outside any DB transaction).
 	client, err := s.getAgentClient(ctx, vm.NodeID)
 	if err != nil {
+		// Agent unreachable: release the reservation, capacity is returned.
+		_ = s.quotaService.ReleaseDiskReservation(ctx, res.ID)
 		return nil, err
 	}
 	authCtx, err := s.agentAuthContext(ctx, vm.NodeID)
 	if err != nil {
+		_ = s.quotaService.ReleaseDiskReservation(ctx, res.ID)
 		return nil, err
 	}
 	resp, err := client.AttachDisk(authCtx, &pb.AttachDiskRequest{VmId: vmID, SizeGb: int64(sizeGB)})
 	if err != nil {
+		_ = s.quotaService.ReleaseDiskReservation(ctx, res.ID)
 		return nil, fmt.Errorf("agent attach disk failed: %w", err)
 	}
 	if !resp.Success {
+		_ = s.quotaService.ReleaseDiskReservation(ctx, res.ID)
 		return nil, fmt.Errorf("attach disk failed: %s", agentErrorMessage(resp.Error))
 	}
 
+	// 3) Agent succeeded: atomically consume the reservation AND record the
+	//    vm_disks row in the same transaction. If this recording fails, we retain
+	//    the reservation fail-closed (do NOT release) so capacity cannot be leaked
+	//    to a later quota-bypassing attach.
 	disk := &models.VMDisk{VMID: vmID, Device: resp.Device, SizeGB: sizeGB, Path: resp.Path}
-	if err := s.db.WithContext(ctx).Create(disk).Error; err != nil {
-		return nil, fmt.Errorf("disk attached on node but failed to record it: %w", err)
+	recErr := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if cerr := s.quotaService.ConsumeDiskReservationTx(ctx, tx, res.ID); cerr != nil {
+			return cerr
+		}
+		return tx.WithContext(ctx).Create(disk).Error
+	})
+	if recErr != nil {
+		return nil, fmt.Errorf("disk attached on node but failed to record it (reservation retained): %w", recErr)
 	}
 	return disk, nil
 }
 
 // DetachDisk detaches a data disk (by virtio device, e.g. "vdb") from the VM and
 // optionally deletes its backing volume.
+//
+// Gate-1 accounting: the disk's usage is released ONLY after the agent confirms
+// the detach. If the agent call fails, the vm_disks row is left intact so the
+// quota accounting stays correct (we never release capacity the disk still holds
+// on the node). On agent success the row is deleted within a local transaction,
+// together with any stray pending reservation for the VM (defensive; attached
+// disks are consumed, not pending).
 func (s *VMService) DetachDisk(ctx context.Context, vmID, device string, deleteVolume bool) error {
 	vm, err := s.vmRepo.GetByID(ctx, vmID)
 	if err != nil {
@@ -1051,7 +1107,13 @@ func (s *VMService) DetachDisk(ctx context.Context, vmID, device string, deleteV
 	if !resp.Success {
 		return fmt.Errorf("detach disk failed: %s", agentErrorMessage(resp.Error))
 	}
-	if err := s.db.WithContext(ctx).Delete(&disk).Error; err != nil {
+	// Agent succeeded: now release the disk accounting in a local transaction.
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if derr := s.quotaService.DeleteDiskReservationsByVMTx(ctx, tx, vmID); derr != nil {
+			return derr
+		}
+		return tx.WithContext(ctx).Delete(&disk).Error
+	}); err != nil {
 		return fmt.Errorf("disk detached on node but failed to remove record: %w", err)
 	}
 	return nil
@@ -1135,7 +1197,7 @@ func (s *VMService) UpdateVM(ctx context.Context, req *UpdateVMRequest) (*models
 		vm.Hostname = req.Hostname
 	}
 
-	// Update resources if provided
+	// Resource change → Lane D admission + persistence in one transaction.
 	if req.Resources != nil {
 		if err := s.validateResources(req.Resources); err != nil {
 			return nil, err
@@ -1145,36 +1207,32 @@ func (s *VMService) UpdateVM(ctx context.Context, req *UpdateVMRequest) (*models
 		if req.Resources.Disk < vm.Resources.Disk {
 			return nil, fmt.Errorf("disk can only be grown (current %dGB, requested %dGB)", vm.Resources.Disk, req.Resources.Disk)
 		}
-		// Enforce quota on resize (VM count unchanged; usage already includes the old size).
-		if err := s.quotaService.CheckCanResize(ctx, vm.UserID, vm.Resources, *req.Resources); err != nil {
+		oldRes := vm.Resources
+		// Admit + persist atomically: the per-user lock + authoritative in-tx quota
+		// check serialize with the resource write, so a resize can't overcommit.
+		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			if err := s.quotaService.AdmitVMResizeTx(ctx, tx, vm.UserID, oldRes, *req.Resources); err != nil {
+				return err
+			}
+			vm.Resources = *req.Resources
+			return s.vmRepo.WithDB(tx).Update(ctx, vm)
+		}); err != nil {
 			return nil, err
 		}
-		vm.Resources = *req.Resources
 
-		// Enqueue resize job
-		params := map[string]interface{}{
-			"resources": *req.Resources,
-		}
-		paramsJSON, _ := json.Marshal(params)
-
-		job := queue.VMOperationJob{
-			VMID:      vm.ID,
-			Operation: queue.VMOpResize,
-			NodeID:    vm.NodeID,
-			Params:    paramsJSON,
-		}
-
-		_, err := s.riverClient.Insert(ctx, job, nil)
-		if err != nil {
+		// Enqueue the resize job only after the new resources are committed.
+		paramsJSON, _ := json.Marshal(map[string]interface{}{"resources": *req.Resources})
+		job := queue.VMOperationJob{VMID: vm.ID, Operation: queue.VMOpResize, NodeID: vm.NodeID, Params: paramsJSON}
+		if _, err := s.riverClient.Insert(ctx, job, nil); err != nil {
 			return nil, fmt.Errorf("failed to enqueue VM resize job: %w", err)
 		}
+		return vm, nil
 	}
 
-	// Save changes
+	// Hostname-only (or no-op) update.
 	if err := s.vmRepo.Update(ctx, vm); err != nil {
 		return nil, fmt.Errorf("failed to update VM: %w", err)
 	}
-
 	return vm, nil
 }
 
