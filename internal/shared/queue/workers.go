@@ -637,7 +637,7 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 		if w.metrics != nil {
 			w.metrics.RecordJobFailed()
 		}
-		return fmt.Errorf("non-retryable error executing VM command: %w", err)
+		return river.JobCancel(fmt.Errorf("non-retryable error executing VM command: %w", err))
 	}
 
 	if !resp.Success {
@@ -1216,7 +1216,7 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 		if w.metrics != nil {
 			w.metrics.RecordJobFailed()
 		}
-		return fmt.Errorf("non-retryable error creating snapshot: %w", err)
+		return river.JobCancel(fmt.Errorf("non-retryable error creating snapshot: %w", err))
 	}
 
 	if !resp.Success {
@@ -1644,7 +1644,7 @@ func (w *ImportWorker) Work(ctx context.Context, job *river.Job[ImportJob]) erro
 				Action:     action,
 			}
 
-			resp, err := client.ImportDisk(ctx, req)
+			resp, err := client.ImportDisk(agentAuthContext(ctx, node), req)
 			if err != nil {
 				w.logger.ErrorContext(ctx, "failed to import disk via agent",
 					"error", err,
@@ -1955,7 +1955,7 @@ func (w *NetworkConfigWorker) Work(ctx context.Context, job *river.Job[NetworkCo
 		ReplaceAll: true,
 	}
 
-	resp, err := client.ApplyNetworkConfig(ctx, req)
+	resp, err := client.ApplyNetworkConfig(agentAuthContext(ctx, node), req)
 	if err != nil {
 		w.logger.ErrorContext(ctx, "failed to apply network config",
 			"error", err,
@@ -1972,7 +1972,7 @@ func (w *NetworkConfigWorker) Work(ctx context.Context, job *river.Job[NetworkCo
 		if w.metrics != nil {
 			w.metrics.RecordJobFailed()
 		}
-		return fmt.Errorf("non-retryable error applying network config: %w", err)
+		return river.JobCancel(fmt.Errorf("non-retryable error applying network config: %w", err))
 	}
 
 	if !resp.Success {
@@ -2139,7 +2139,7 @@ func (w *SnapshotWorker) Work(ctx context.Context, job *river.Job[SnapshotJob]) 
 		if w.metrics != nil {
 			w.metrics.RecordJobFailed()
 		}
-		return fmt.Errorf("non-retryable error executing snapshot command: %w", err)
+		return river.JobCancel(fmt.Errorf("non-retryable error executing snapshot command: %w", err))
 	}
 
 	if !resp.Success {
