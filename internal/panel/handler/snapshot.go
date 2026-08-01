@@ -9,6 +9,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"gorm.io/gorm"
 
+	"github.com/maburvm/panel/internal/panel/authz"
 	"github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/panel/service"
 )
@@ -16,12 +17,16 @@ import (
 // SnapshotHandler handles HTTP requests for snapshot management
 type SnapshotHandler struct {
 	service *service.SnapshotService
+	authz   *authz.Authorizer
 }
 
-// NewSnapshotHandler creates a new SnapshotHandler instance
-func NewSnapshotHandler(service *service.SnapshotService) *SnapshotHandler {
+// NewSnapshotHandler creates a new SnapshotHandler instance. The authorizer
+// enforces owner-or-admin access (reusing the domain authz contract) and
+// anti-enumeration (non-owner/nonexistent → 404, missing identity → 401).
+func NewSnapshotHandler(service *service.SnapshotService, authorizer *authz.Authorizer) *SnapshotHandler {
 	return &SnapshotHandler{
 		service: service,
+		authz:   authorizer,
 	}
 }
 
@@ -71,8 +76,14 @@ func (h *SnapshotHandler) CreateSnapshot(c echo.Context) error {
 		})
 	}
 
+	// Enforce owner-or-admin access to the route VM (401 missing auth, 404
+	// non-owner/nonexistent). Admin support is preserved.
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
+	}
+
 	// Get user ID from context (set by auth middleware)
-	userCtx, ok := c.Get("user").(*middleware.UserContext)
+	userCtx, ok := middleware.GetUserContext(c)
 	if !ok || userCtx == nil {
 		return c.JSON(http.StatusUnauthorized, map[string]interface{}{
 			"error":   "Unauthorized",
@@ -171,8 +182,14 @@ func (h *SnapshotHandler) ListSnapshots(c echo.Context) error {
 		offset, _ = strconv.Atoi(offsetStr)
 	}
 
+	// Enforce owner-or-admin access to the route VM (401 missing auth, 404
+	// non-owner/nonexistent). Admin support is preserved.
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
+	}
+
 	// Get user ID from context (set by auth middleware)
-	userCtx, ok := c.Get("user").(*middleware.UserContext)
+	userCtx, ok := middleware.GetUserContext(c)
 	if !ok || userCtx == nil {
 		return c.JSON(http.StatusUnauthorized, map[string]interface{}{
 			"error":   "Unauthorized",
@@ -267,18 +284,14 @@ func (h *SnapshotHandler) GetSnapshot(c echo.Context) error {
 		})
 	}
 
-	// Get user ID from context (set by auth middleware)
-	userCtx, ok := c.Get("user").(*middleware.UserContext)
-	if !ok || userCtx == nil {
-		return c.JSON(http.StatusUnauthorized, map[string]interface{}{
-			"error":   "Unauthorized",
-			"message": "User ID not found in token",
-		})
+	// Enforce owner-or-admin access to the route VM (401 missing auth, 404
+	// non-owner/nonexistent). Admin support is preserved.
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
 	}
-	userID := userCtx.ID.String()
 
-	// Get snapshot
-	snapshot, err := h.service.GetSnapshot(c.Request().Context(), snapshotID, userID)
+	// Get snapshot (service validates snapshot→route-VM membership → 404 on mismatch)
+	snapshot, err := h.service.GetSnapshot(c.Request().Context(), snapshotID, vmID)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrSnapshotNotFound):
@@ -339,8 +352,14 @@ func (h *SnapshotHandler) RestoreSnapshot(c echo.Context) error {
 		})
 	}
 
+	// Enforce owner-or-admin access to the route VM (401 missing auth, 404
+	// non-owner/nonexistent). Admin support is preserved.
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
+	}
+
 	// Get user ID from context (set by auth middleware)
-	userCtx, ok := c.Get("user").(*middleware.UserContext)
+	userCtx, ok := middleware.GetUserContext(c)
 	if !ok || userCtx == nil {
 		return c.JSON(http.StatusUnauthorized, map[string]interface{}{
 			"error":   "Unauthorized",
@@ -411,8 +430,14 @@ func (h *SnapshotHandler) DeleteSnapshot(c echo.Context) error {
 		})
 	}
 
+	// Enforce owner-or-admin access to the route VM (401 missing auth, 404
+	// non-owner/nonexistent). Admin support is preserved.
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
+	}
+
 	// Get user ID from context (set by auth middleware)
-	userCtx, ok := c.Get("user").(*middleware.UserContext)
+	userCtx, ok := middleware.GetUserContext(c)
 	if !ok || userCtx == nil {
 		return c.JSON(http.StatusUnauthorized, map[string]interface{}{
 			"error":   "Unauthorized",

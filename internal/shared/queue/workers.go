@@ -747,6 +747,13 @@ func (w *VMOperationWorker) cleanupDeletedVM(ctx context.Context, vmID string) e
 				return fmt.Errorf("delete network rows: %w", err)
 			}
 		}
+		// Release pending disk-quota reservations for this VM so a confirmed worker
+		// deletion also clears orphan capacity that would otherwise over-count.
+		if res := repository.NewDiskQuotaReservationRepository(db); res != nil {
+			if err := res.WithDB(tx).DeleteByVMIDTx(ctx, tx, vmID); err != nil {
+				return fmt.Errorf("release disk reservations: %w", err)
+			}
+		}
 		if err := globalWorkerContext.VMRepo.WithDB(tx).Delete(ctx, vmID); err != nil {
 			return fmt.Errorf("delete VM row: %w", err)
 		}
@@ -1370,18 +1377,39 @@ func newBackupStorageClient(provider string) (*sharedstorage.Client, error) {
 		resolvedProvider = sharedstorage.ProviderMinIO
 	}
 
-	endpoint := firstNonEmpty(os.Getenv("STORAGE_ENDPOINT"), os.Getenv("S3_ENDPOINT"))
-	if endpoint != "" && !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
-		endpoint = "https://" + endpoint
+	// Endpoint selection must NOT silently fall through to a lower-priority var
+	// when a higher-priority one is set but whitespace-contaminated. Pass the raw
+	// value (no trim) so shared normalization rejects whitespace-only/padded
+	// endpoints fail-closed instead of reinterpreting them as the SDK default or
+	// as an empty slot that drops to S3_ENDPOINT.
+	endpoint := firstSetRaw(os.Getenv("STORAGE_ENDPOINT"), os.Getenv("S3_ENDPOINT"))
+
+	// Path-style addressing is the historical production default (MinIO). Only
+	// explicitly opt out when the operator sets the flag, to avoid silently
+	// breaking existing MinIO callers that omit it.
+	usePathStyle := true
+	if v, err := boolEnv("STORAGE_USE_PATH_STYLE", "S3_USE_PATH_STYLE"); err != nil {
+		return nil, fmt.Errorf("invalid STORAGE_USE_PATH_STYLE/S3_USE_PATH_STYLE: %w", err)
+	} else if envSet("STORAGE_USE_PATH_STYLE", "S3_USE_PATH_STYLE") {
+		usePathStyle = v
+	}
+
+	forceHTTP := false
+	if v, err := boolEnv("STORAGE_FORCE_HTTP", "S3_FORCE_HTTP"); err != nil {
+		return nil, fmt.Errorf("invalid STORAGE_FORCE_HTTP/S3_FORCE_HTTP: %w", err)
+	} else if envSet("STORAGE_FORCE_HTTP", "S3_FORCE_HTTP") {
+		forceHTTP = v
 	}
 
 	config := &sharedstorage.Config{
-		Endpoint:  endpoint,
-		AccessKey: firstNonEmpty(os.Getenv("STORAGE_ACCESS_KEY"), os.Getenv("S3_ACCESS_KEY")),
-		SecretKey: firstNonEmpty(os.Getenv("STORAGE_SECRET_KEY"), os.Getenv("S3_SECRET_KEY")),
-		Bucket:    firstNonEmpty(os.Getenv("STORAGE_BUCKET"), os.Getenv("S3_BUCKET")),
-		Region:    firstNonEmpty(os.Getenv("STORAGE_REGION"), os.Getenv("S3_REGION"), "us-east-1"),
-		Provider:  resolvedProvider,
+		Endpoint:     endpoint,
+		AccessKey:    firstNonEmpty(os.Getenv("STORAGE_ACCESS_KEY"), os.Getenv("S3_ACCESS_KEY")),
+		SecretKey:    firstNonEmpty(os.Getenv("STORAGE_SECRET_KEY"), os.Getenv("S3_SECRET_KEY")),
+		Bucket:       firstNonEmpty(os.Getenv("STORAGE_BUCKET"), os.Getenv("S3_BUCKET")),
+		Region:       firstNonEmpty(os.Getenv("STORAGE_REGION"), os.Getenv("S3_REGION"), "us-east-1"),
+		Provider:     resolvedProvider,
+		ForceHTTP:    forceHTTP,
+		UsePathStyle: usePathStyle,
 	}
 
 	if config.AccessKey == "" || config.SecretKey == "" || config.Bucket == "" {
@@ -1391,9 +1419,45 @@ func newBackupStorageClient(provider string) (*sharedstorage.Client, error) {
 	return sharedstorage.NewClient(config)
 }
 
+// boolEnv reads a boolean storage flag, consulting the given env var names in
+// order. Precedence is STORAGE_* before S3_* (first hit wins). A malformed
+// explicit value fails closed (error) rather than being coerced.
+func boolEnv(keys ...string) (bool, error) {
+	for _, k := range keys {
+		if v := os.Getenv(k); v != "" {
+			return strconv.ParseBool(strings.TrimSpace(v))
+		}
+	}
+	return false, nil
+}
+
+// envSet reports whether any of the given env vars is set (non-empty). Used to
+// distinguish "flag omitted" from "flag explicitly set to false".
+func envSet(keys ...string) bool {
+	for _, k := range keys {
+		if os.Getenv(k) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// firstSetRaw returns the first non-empty (raw, untrimmed) value. Unlike
+// firstNonEmpty it does NOT strip surrounding whitespace, so a whitespace-only
+// or padded value is treated as "set" and passed through to shared normalization
+// for consistent fail-closed handling of the endpoint.
+func firstSetRaw(values ...string) string {
+	for _, value := range values {
+		if value != "" {
 			return value
 		}
 	}

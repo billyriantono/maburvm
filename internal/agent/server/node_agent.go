@@ -1157,8 +1157,24 @@ func fileSHA256(path string) (string, int64, error) {
 	return hex.EncodeToString(h.Sum(nil)), n, nil
 }
 
+// parseBoolFlag reads a boolean storage flag, consulting STORAGE_* before
+// S3_*. An explicit non-empty value is parsed strictly via strconv.ParseBool
+// and a malformed value fails closed (returns false + error) instead of being
+// silently coerced to a default.
+func parseBoolFlag(keys ...string) (bool, error) {
+	for _, k := range keys {
+		if v := os.Getenv(k); v != "" {
+			return strconv.ParseBool(strings.TrimSpace(v))
+		}
+	}
+	return false, nil
+}
+
 // backupStorageClientFromEnv builds an object-storage client from the agent's
-// environment (S3_*/STORAGE_* vars in agent.env).
+// environment (S3_*/STORAGE_* vars in agent.env). Precedence mirrors the
+// existing endpoint/key lookup: STORAGE_* wins over S3_*. Endpoint scheme
+// normalization and path-style handling are delegated to shared storage, so
+// flags are passed through rather than pre-resolved here.
 func backupStorageClientFromEnv() (*sharedstorage.Client, error) {
 	first := func(keys ...string) string {
 		for _, k := range keys {
@@ -1169,20 +1185,37 @@ func backupStorageClientFromEnv() (*sharedstorage.Client, error) {
 		return ""
 	}
 	endpoint := first("STORAGE_ENDPOINT", "S3_ENDPOINT")
-	if endpoint != "" && !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
-		endpoint = "https://" + endpoint
-	}
 	region := first("STORAGE_REGION", "S3_REGION")
 	if region == "" {
 		region = "us-east-1"
 	}
+
+	// Path-style addressing is the historical production default (MinIO). It is
+	// only disabled if the operator explicitly opts out via the flag to avoid
+	// silently breaking existing MinIO callers that omit the field.
+	usePathStyle := true
+	if v, err := parseBoolFlag("STORAGE_USE_PATH_STYLE", "S3_USE_PATH_STYLE"); err != nil {
+		return nil, fmt.Errorf("invalid STORAGE_USE_PATH_STYLE/S3_USE_PATH_STYLE: %w", err)
+	} else if os.Getenv("STORAGE_USE_PATH_STYLE") != "" || os.Getenv("S3_USE_PATH_STYLE") != "" {
+		usePathStyle = v
+	}
+
+	forceHTTP := false
+	if v, err := parseBoolFlag("STORAGE_FORCE_HTTP", "S3_FORCE_HTTP"); err != nil {
+		return nil, fmt.Errorf("invalid STORAGE_FORCE_HTTP/S3_FORCE_HTTP: %w", err)
+	} else if os.Getenv("STORAGE_FORCE_HTTP") != "" || os.Getenv("S3_FORCE_HTTP") != "" {
+		forceHTTP = v
+	}
+
 	cfg := &sharedstorage.Config{
-		Endpoint:  endpoint,
-		AccessKey: first("STORAGE_ACCESS_KEY", "S3_ACCESS_KEY"),
-		SecretKey: first("STORAGE_SECRET_KEY", "S3_SECRET_KEY"),
-		Bucket:    first("STORAGE_BUCKET", "S3_BUCKET"),
-		Region:    region,
-		Provider:  sharedstorage.ProviderS3,
+		Endpoint:     endpoint,
+		AccessKey:    first("STORAGE_ACCESS_KEY", "S3_ACCESS_KEY"),
+		SecretKey:    first("STORAGE_SECRET_KEY", "S3_SECRET_KEY"),
+		Bucket:       first("STORAGE_BUCKET", "S3_BUCKET"),
+		Region:       region,
+		Provider:     sharedstorage.ProviderS3,
+		ForceHTTP:    forceHTTP,
+		UsePathStyle: usePathStyle,
 	}
 	if cfg.AccessKey == "" || cfg.SecretKey == "" || cfg.Bucket == "" {
 		return nil, fmt.Errorf("missing object storage configuration (set S3_ACCESS_KEY/S3_SECRET_KEY/S3_BUCKET)")

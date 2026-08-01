@@ -272,6 +272,30 @@ enum VMCommandType {
   VM_COMMAND_TYPE_DETACH_ISO = 13; // Detach the install/rescue ISO
 }
 
+// DiskStorageDisposition is the fail-closed, idempotent accountability verdict
+// the agent returns for destructive disk/storage lifecycle operations. It lets
+// the panel retain quota accounting when an operation cannot be proven safe.
+//
+// Backward-compatible addition: never renumber. New callers read these; older
+// callers that omit operation_id get UNKNOWN/PRESENT on ambiguous states.
+enum DiskStorageDisposition {
+  // DISK_STORAGE_DISPOSITION_UNSPECIFIED is the zero value (no verdict emitted).
+  DISK_STORAGE_DISPOSITION_UNSPECIFIED = 0;
+  // DISK_STORAGE_DISPOSITION_UNKNOWN: the agent could NOT prove the disk/storage
+  // is absent or present (timeout, transport loss, ambiguous recovery). The panel
+  // MUST retain quota accounting — this is never a success.
+  DISK_STORAGE_DISPOSITION_UNKNOWN = 1;
+  // DISK_STORAGE_DISPOSITION_PRESENT: the backing volume and/or libvirt attachment
+  // is still present. Must NOT be reported as a destructive/accounting-safe success.
+  DISK_STORAGE_DISPOSITION_PRESENT = 2;
+  // DISK_STORAGE_DISPOSITION_ATTACHED: the libvirt attachment is confirmed present
+  // (used by successful attach, or to reject an unsafe detach that left it attached).
+  DISK_STORAGE_DISPOSITION_ATTACHED = 3;
+  // DISK_STORAGE_DISPOSITION_ABSENT: both libvirt attachment and backing storage
+  // are confirmed gone. Safe to release quota accounting.
+  DISK_STORAGE_DISPOSITION_ABSENT = 4;
+}
+
 // VMCommandRequest sends a lifecycle command to a VM.
 message VMCommandRequest {
   // vm_id is the unique identifier for the VM
@@ -288,6 +312,21 @@ message VMCommandRequest {
 
   // async if true, returns immediately without waiting for completion
   bool async = 5;
+
+  // operation_id is an idempotency key for destructive operations (DESTROY and
+  // any future destructive command). Callers MUST supply a nonempty, bounded,
+  // opaque operation ID so the agent can persist a durable manifest and return
+  // the recorded result on retry after response loss. Omitting it makes the
+  // agent fail closed (UNKNOWN/PRESENT) for destructive commands.
+  string operation_id = 6;
+
+  // delete_volumes requests that the VM's managed backing storage be destroyed
+  // along with the domain. This is the explicit destructive-data-volume flag for
+  // the DESTROY command. When false (or omitted), the agent must NOT claim an
+  // accounting-safe destructive success; any residual storage yields
+  // UNKNOWN/PRESENT. Behavior is wired in a later lane (C2); the field exists now
+  // for backward-compatible rolling rollout.
+  bool delete_volumes = 7;
 }
 
 // VMCommandResponse reports the result of a VM command.
@@ -309,6 +348,13 @@ message VMCommandResponse {
 
   // message contains additional information about the result
   string message = 6;
+
+  // operation_id echoes the idempotency key supplied in the request (if any).
+  string operation_id = 7;
+
+  // storage_disposition reports the fail-closed disk/storage verdict for
+  // destructive commands (esp. DESTROY). UNSPECIFIED for non-disk commands.
+  DiskStorageDisposition storage_disposition = 8;
 }
 
 // VMConfig defines the configuration for creating a new VM.
@@ -1163,6 +1209,11 @@ message AttachDiskRequest {
   string pool_type = 3;
   // pool_path is the backing dir / VG / dataset; empty = node default image dir.
   string pool_path = 4;
+  // operation_id is a required, bounded, opaque idempotency key for attach. The
+  // agent persists a durable manifest keyed by this ID and returns the recorded
+  // result on retry; a retry after response loss must NEVER create a second
+  // volume for the same operation. Empty operation_id is rejected fail-closed.
+  string operation_id = 5;
 }
 
 // AttachDiskResponse reports the attached device and its backing path.
@@ -1171,6 +1222,11 @@ message AttachDiskResponse {
   string device = 2; // e.g. "vdb"
   string path = 3;   // backing volume path
   ErrorResponse error = 4;
+  // operation_id echoes the idempotency key supplied in the request (if any).
+  string operation_id = 5;
+  // storage_disposition reports the attach verdict (ATTACHED on success;
+  // PRESENT/UNKNOWN when a partial/recovered state cannot be proven attached).
+  DiskStorageDisposition storage_disposition = 6;
 }
 
 // DetachDiskRequest removes a data disk from a VM.
@@ -1180,12 +1236,22 @@ message DetachDiskRequest {
   string path = 3;   // backing volume path
   bool delete_volume = 4;
   string pool_type = 5; // for deletion backend; empty = dir
+  // operation_id is a required, bounded, opaque idempotency key for detach. The
+  // agent persists a durable manifest before any destructive action and returns
+  // the recorded result on retry. Empty operation_id is rejected fail-closed.
+  string operation_id = 6;
 }
 
 // DetachDiskResponse reports the result of a disk detach.
 message DetachDiskResponse {
   bool success = 1;
   ErrorResponse error = 2;
+  // operation_id echoes the idempotency key supplied in the request (if any).
+  string operation_id = 3;
+  // storage_disposition reports the detach verdict (ABSENT on full cleanup;
+  // ATTACHED/PRESENT/UNKNOWN when the agent cannot prove absence). delete_volume
+  // must be honored: an unsafe detach yields PRESENT, never accounting-safe success.
+  DiskStorageDisposition storage_disposition = 4;
 }
 
 // DefineNetworkRequest creates a managed libvirt network for a private segment.

@@ -18,16 +18,21 @@ const (
 
 // User represents a user in the system
 type User struct {
-	ID                  uuid.UUID      `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	Email               string         `json:"email" gorm:"type:varchar(255);uniqueIndex;not null" validate:"required,email"`
-	PasswordHash        string         `json:"-" gorm:"type:varchar(255);not null"` // Never exposed in JSON
-	Role                UserRole       `json:"role" gorm:"type:user_role;default:client" validate:"required,oneof=admin client"`
-	TwoFactorSecret     string         `json:"two_factor_secret,omitempty" gorm:"type:varchar(255)" validate:"-"`
-	TwoFactorBackupCodes string        `json:"-" gorm:"type:varchar(1000)"` // Encrypted backup codes
-	IPWhitelist         []string       `json:"ip_whitelist" gorm:"type:jsonb;serializer:json" validate:"omitempty,dive,ip"`
-	CreatedAt           time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
-	UpdatedAt           time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
-	DeletedAt           gorm.DeletedAt `json:"-" gorm:"index"`
+	ID           uuid.UUID `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	Email        string    `json:"email" gorm:"type:varchar(255);uniqueIndex;not null" validate:"required,email"`
+	PasswordHash string    `json:"-" gorm:"type:varchar(255);not null"` // Never exposed in JSON
+	Role         UserRole  `json:"role" gorm:"type:user_role;default:client" validate:"required,oneof=admin client"`
+	// QuotaMode is the user-level legacy/managed marker. It defaults to legacy
+	// for every existing user (migration 037) so a managed user without a
+	// user_quotas row cannot be mistaken for a legacy user who simply has no
+	// quota row. Managed quota assignment/enforcement reads this marker.
+	QuotaMode            QuotaMode      `json:"quota_mode,omitempty" gorm:"column:quota_mode;type:quota_mode;not null;default:'legacy'"`
+	TwoFactorSecret      string         `json:"two_factor_secret,omitempty" gorm:"type:varchar(255)" validate:"-"`
+	TwoFactorBackupCodes string         `json:"-" gorm:"type:varchar(1000)"` // Encrypted backup codes
+	IPWhitelist          []string       `json:"ip_whitelist" gorm:"type:jsonb;serializer:json" validate:"omitempty,dive,ip"`
+	CreatedAt            time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
+	UpdatedAt            time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
+	DeletedAt            gorm.DeletedAt `json:"-" gorm:"index"`
 }
 
 // TableName specifies the table name for User

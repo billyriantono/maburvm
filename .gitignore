@@ -5,6 +5,17 @@ bin/
 *.dll
 *.so
 *.dylib
+# Compiled Go binaries at repo root (build artifacts, never commit)
+/panel
+/create-admin
+/migrate
+/reset-admin-password
+
+# Local junk / test-run artifacts
+token-usage-output.txt
+.pg_harness_run1/
+.ignore
+__pycache__/
 
 # Vendor
 vendor/
@@ -22,6 +33,11 @@ vendor/
 # Environment
 .env
 .env.local
+# Real production env (secrets) must never be committed; keep the example tracked.
+.env.production
+# Allow the tracked template despite the broad .env.* exclusion below.
+!.env.production.example
+!.env.example
 
 # OS
 .DS_Store
@@ -45,3 +61,10 @@ data/
 
 # Deploy helper — contains prod node IPs + root access, must NOT be pushed
 scripts/deploy-agent.sh
+
+# Local deploy secret files (host-side bind mounts for Compose secrets:, e.g.
+# deploy/secrets/postgres_password) — must NEVER be committed.
+deploy/secrets/
+
+# Local deepwork progress
+.slim/deepwork/

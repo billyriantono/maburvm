@@ -6,6 +6,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"gorm.io/gorm"
 
+	"github.com/maburvm/panel/internal/panel/authz"
 	"github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/panel/service"
 )
@@ -13,11 +14,12 @@ import (
 // BandwidthHandler handles HTTP requests for bandwidth usage
 type BandwidthHandler struct {
 	service *service.BandwidthService
+	authz   *authz.Authorizer
 }
 
 // NewBandwidthHandler creates a new BandwidthHandler
-func NewBandwidthHandler(service *service.BandwidthService) *BandwidthHandler {
-	return &BandwidthHandler{service: service}
+func NewBandwidthHandler(service *service.BandwidthService, authorizer *authz.Authorizer) *BandwidthHandler {
+	return &BandwidthHandler{service: service, authz: authorizer}
 }
 
 // BandwidthUsageResponse represents the API response for bandwidth usage
@@ -45,6 +47,11 @@ func (h *BandwidthHandler) GetVMBandwidth(c echo.Context) error {
 			"error":   "Bad Request",
 			"message": "VM ID is required",
 		})
+	}
+
+	// Enforce tenant isolation before read.
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
 	}
 
 	nodeID := c.QueryParam("node_id")
@@ -88,6 +95,11 @@ func (h *BandwidthHandler) GetVMBandwidthHistory(c echo.Context) error {
 			"error":   "Bad Request",
 			"message": "VM ID is required",
 		})
+	}
+
+	// Enforce tenant isolation before read.
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
 	}
 
 	usages, err := h.service.GetVMUsageHistory(c.Request().Context(), vmID)
@@ -136,6 +148,13 @@ func (h *BandwidthHandler) SetVMBandwidthQuota(c echo.Context) error {
 			"message": "VM ID is required",
 		})
 	}
+
+	// Quota management is an admin-only boundary. Reuse current admin semantics;
+	// non-admins get 403, missing auth gets 401.
+	if !h.authz.AuthorizeAdmin(c) {
+		return nil
+	}
+
 	var req struct {
 		QuotaGB int64 `json:"quota_gb"`
 	}

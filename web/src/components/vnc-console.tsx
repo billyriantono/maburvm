@@ -1,6 +1,8 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
+import type { VNCConfig } from '@/types';
+import { buildVNCWsUrl } from '@/types';
 
 interface VNCConsoleProps {
   vmId: string;
@@ -39,9 +41,33 @@ export function VNCConsole({ vmId, className, onConnect, onDisconnect, onError }
       }
 
       const json = await resp.json();
-      const config = json.data || json;
+      const config = (json.data || json) as VNCConfig;
 
-      if (!config.websocket_url) {
+      // The server returns a relative, token-bearing ws_path (same-origin).
+      // Prefer it. For legacy server responses we may receive websocket_url,
+      // but we must never connect to a foreign/absolute host (e.g. panel:8080):
+      // if it isn't strictly same-origin we reject it rather than reintroduce
+      // the leak.
+      let wsUrl: string;
+      if (config.ws_path) {
+        wsUrl = buildVNCWsUrl(config.ws_path);
+      } else if (config.websocket_url) {
+        const candidate = config.websocket_url.trim();
+        // Only accept same-origin ws/wss URLs built from this page's origin.
+        try {
+          const parsed = new URL(candidate);
+          if (
+            (parsed.protocol === 'ws:' || parsed.protocol === 'wss:') &&
+            parsed.host === window.location.host
+          ) {
+            wsUrl = candidate;
+          } else {
+            throw new Error(`Refusing foreign-origin VNC WebSocket URL: ${candidate}`);
+          }
+        } catch {
+          throw new Error(`Refusing unsafe VNC WebSocket URL: ${candidate}`);
+        }
+      } else {
         throw new Error('No WebSocket URL returned');
       }
 
@@ -53,7 +79,7 @@ export function VNCConsole({ vmId, className, onConnect, onDisconnect, onError }
       containerRef.current.innerHTML = '';
 
       // Create RFB connection
-      const rfb = new RFB(containerRef.current, config.websocket_url, {
+      const rfb = new RFB(containerRef.current, wsUrl, {
         credentials: { password: config.password || '' },
         wsProtocols: ['binary'],
       });

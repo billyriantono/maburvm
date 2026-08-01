@@ -101,13 +101,19 @@ func NewVNCService(
 	logger *slog.Logger,
 	jwtSecret string,
 	wsHost string,
-) *VNCService {
-	// Console tokens are signed with the same key as session JWTs. Fall back to
-	// the resolved per-install secret (never a hardcoded constant) so a forged
-	// token can't grant console access to a VM the caller doesn't own.
+) (*VNCService, error) {
+	// Console tokens are signed with the same key as session JWTs. If no key is
+	// supplied we resolve the per-install secret via the store, which is
+	// fail-closed: an unreadable/malformed/invalid secrets file or a failed
+	// durable write is returned as an error rather than silently regenerating a
+	// key (which would mismatch session tokens and break console auth).
 	key := jwtSecret
 	if key == "" {
-		key = secret.JWTSecret()
+		resolved, err := secret.JWTSecret()
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve console JWT secret: %w", err)
+		}
+		key = resolved
 	}
 
 	return &VNCService{
@@ -117,7 +123,7 @@ func NewVNCService(
 		logger:    logger,
 		jwtSecret: []byte(key),
 		wsHost:    wsHost,
-	}
+	}, nil
 }
 
 // GenerateConsoleToken generates a new console token for VNC access
@@ -219,6 +225,31 @@ func (s *VNCService) RevokeConsoleToken(ctx context.Context, jti string) error {
 	}
 
 	s.logger.InfoContext(ctx, "console token revoked", "jti", jti)
+	return nil
+}
+
+// RevokeConsoleTokenForVM revokes a console token scoped to a specific VM. It
+// only matches a token whose JTI AND vm_id both equal the supplied values, so a
+// caller cannot revoke a token belonging to another tenant's VM. A non-matching
+// JTI or a token on a different VM yields ErrConsoleTokenInvalid (the caller
+// learns nothing about the token's existence — anti-enumeration). No token
+// details are returned.
+func (s *VNCService) RevokeConsoleTokenForVM(ctx context.Context, vmID, jti string) error {
+	result := s.db.WithContext(ctx).Model(&ConsoleToken{}).
+		Where("vm_id = ? AND jti = ?", vmID, jti).
+		Updates(map[string]interface{}{"revoked": true})
+
+	if result.Error != nil {
+		return fmt.Errorf("failed to revoke token: %w", result.Error)
+	}
+
+	if result.RowsAffected == 0 {
+		// Either the JTI does not exist, or it belongs to a different VM. Both
+		// map identically to "not found" to avoid leaking cross-tenant state.
+		return ErrConsoleTokenInvalid
+	}
+
+	s.logger.InfoContext(ctx, "console token revoked for VM", "vm_id", vmID, "jti", jti)
 	return nil
 }
 

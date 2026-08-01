@@ -8,7 +8,9 @@ export const dynamic = "force-dynamic"
 // backend stream is unavailable we fall back to authenticated polling.
 export async function GET(request: NextRequest) {
   const encoder = new TextEncoder()
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"
+  // Server-only: use the non-public, build/runtime API_BASE_URL (never the
+  // NEXT_PUBLIC_* client override). Local dev fallback if unset.
+  const apiUrl = process.env.API_BASE_URL || "http://localhost:8080"
   const token = request.cookies.get("accessToken")?.value
   const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {}
 

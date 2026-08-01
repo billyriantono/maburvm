@@ -106,6 +106,77 @@ func (VMCommandType) EnumDescriptor() ([]byte, []int) {
 	return file_api_proto_agent_proto_rawDescGZIP(), []int{0}
 }
 
+// DiskStorageDisposition is the fail-closed, idempotent accountability verdict
+// the agent returns for destructive disk/storage lifecycle operations. It lets
+// the panel retain quota accounting when an operation cannot be proven safe.
+//
+// Backward-compatible addition: never renumber. New callers read these; older
+// callers that omit operation_id get UNKNOWN/PRESENT on ambiguous states.
+type DiskStorageDisposition int32
+
+const (
+	// DISK_STORAGE_DISPOSITION_UNSPECIFIED is the zero value (no verdict emitted).
+	DiskStorageDisposition_DISK_STORAGE_DISPOSITION_UNSPECIFIED DiskStorageDisposition = 0
+	// DISK_STORAGE_DISPOSITION_UNKNOWN: the agent could NOT prove the disk/storage
+	// is absent or present (timeout, transport loss, ambiguous recovery). The panel
+	// MUST retain quota accounting — this is never a success.
+	DiskStorageDisposition_DISK_STORAGE_DISPOSITION_UNKNOWN DiskStorageDisposition = 1
+	// DISK_STORAGE_DISPOSITION_PRESENT: the backing volume and/or libvirt attachment
+	// is still present. Must NOT be reported as a destructive/accounting-safe success.
+	DiskStorageDisposition_DISK_STORAGE_DISPOSITION_PRESENT DiskStorageDisposition = 2
+	// DISK_STORAGE_DISPOSITION_ATTACHED: the libvirt attachment is confirmed present
+	// (used by successful attach, or to reject an unsafe detach that left it attached).
+	DiskStorageDisposition_DISK_STORAGE_DISPOSITION_ATTACHED DiskStorageDisposition = 3
+	// DISK_STORAGE_DISPOSITION_ABSENT: both libvirt attachment and backing storage
+	// are confirmed gone. Safe to release quota accounting.
+	DiskStorageDisposition_DISK_STORAGE_DISPOSITION_ABSENT DiskStorageDisposition = 4
+)
+
+// Enum value maps for DiskStorageDisposition.
+var (
+	DiskStorageDisposition_name = map[int32]string{
+		0: "DISK_STORAGE_DISPOSITION_UNSPECIFIED",
+		1: "DISK_STORAGE_DISPOSITION_UNKNOWN",
+		2: "DISK_STORAGE_DISPOSITION_PRESENT",
+		3: "DISK_STORAGE_DISPOSITION_ATTACHED",
+		4: "DISK_STORAGE_DISPOSITION_ABSENT",
+	}
+	DiskStorageDisposition_value = map[string]int32{
+		"DISK_STORAGE_DISPOSITION_UNSPECIFIED": 0,
+		"DISK_STORAGE_DISPOSITION_UNKNOWN":     1,
+		"DISK_STORAGE_DISPOSITION_PRESENT":     2,
+		"DISK_STORAGE_DISPOSITION_ATTACHED":    3,
+		"DISK_STORAGE_DISPOSITION_ABSENT":      4,
+	}
+)
+
+func (x DiskStorageDisposition) Enum() *DiskStorageDisposition {
+	p := new(DiskStorageDisposition)
+	*p = x
+	return p
+}
+
+func (x DiskStorageDisposition) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (DiskStorageDisposition) Descriptor() protoreflect.EnumDescriptor {
+	return file_api_proto_agent_proto_enumTypes[1].Descriptor()
+}
+
+func (DiskStorageDisposition) Type() protoreflect.EnumType {
+	return &file_api_proto_agent_proto_enumTypes[1]
+}
+
+func (x DiskStorageDisposition) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use DiskStorageDisposition.Descriptor instead.
+func (DiskStorageDisposition) EnumDescriptor() ([]byte, []int) {
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{1}
+}
+
 // VMState represents the current state of a virtual machine.
 type VMState int32
 
@@ -158,11 +229,11 @@ func (x VMState) String() string {
 }
 
 func (VMState) Descriptor() protoreflect.EnumDescriptor {
-	return file_api_proto_agent_proto_enumTypes[1].Descriptor()
+	return file_api_proto_agent_proto_enumTypes[2].Descriptor()
 }
 
 func (VMState) Type() protoreflect.EnumType {
-	return &file_api_proto_agent_proto_enumTypes[1]
+	return &file_api_proto_agent_proto_enumTypes[2]
 }
 
 func (x VMState) Number() protoreflect.EnumNumber {
@@ -171,7 +242,7 @@ func (x VMState) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use VMState.Descriptor instead.
 func (VMState) EnumDescriptor() ([]byte, []int) {
-	return file_api_proto_agent_proto_rawDescGZIP(), []int{1}
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{2}
 }
 
 // MetricType enumerates available metric categories.
@@ -217,11 +288,11 @@ func (x MetricType) String() string {
 }
 
 func (MetricType) Descriptor() protoreflect.EnumDescriptor {
-	return file_api_proto_agent_proto_enumTypes[2].Descriptor()
+	return file_api_proto_agent_proto_enumTypes[3].Descriptor()
 }
 
 func (MetricType) Type() protoreflect.EnumType {
-	return &file_api_proto_agent_proto_enumTypes[2]
+	return &file_api_proto_agent_proto_enumTypes[3]
 }
 
 func (x MetricType) Number() protoreflect.EnumNumber {
@@ -230,7 +301,7 @@ func (x MetricType) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use MetricType.Descriptor instead.
 func (MetricType) EnumDescriptor() ([]byte, []int) {
-	return file_api_proto_agent_proto_rawDescGZIP(), []int{2}
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{3}
 }
 
 // SnapshotOperationType enumerates snapshot operations.
@@ -276,11 +347,11 @@ func (x SnapshotOperationType) String() string {
 }
 
 func (SnapshotOperationType) Descriptor() protoreflect.EnumDescriptor {
-	return file_api_proto_agent_proto_enumTypes[3].Descriptor()
+	return file_api_proto_agent_proto_enumTypes[4].Descriptor()
 }
 
 func (SnapshotOperationType) Type() protoreflect.EnumType {
-	return &file_api_proto_agent_proto_enumTypes[3]
+	return &file_api_proto_agent_proto_enumTypes[4]
 }
 
 func (x SnapshotOperationType) Number() protoreflect.EnumNumber {
@@ -289,7 +360,7 @@ func (x SnapshotOperationType) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use SnapshotOperationType.Descriptor instead.
 func (SnapshotOperationType) EnumDescriptor() ([]byte, []int) {
-	return file_api_proto_agent_proto_rawDescGZIP(), []int{3}
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{4}
 }
 
 // NetworkInterfaceType enumerates network interface types.
@@ -332,11 +403,11 @@ func (x NetworkInterfaceType) String() string {
 }
 
 func (NetworkInterfaceType) Descriptor() protoreflect.EnumDescriptor {
-	return file_api_proto_agent_proto_enumTypes[4].Descriptor()
+	return file_api_proto_agent_proto_enumTypes[5].Descriptor()
 }
 
 func (NetworkInterfaceType) Type() protoreflect.EnumType {
-	return &file_api_proto_agent_proto_enumTypes[4]
+	return &file_api_proto_agent_proto_enumTypes[5]
 }
 
 func (x NetworkInterfaceType) Number() protoreflect.EnumNumber {
@@ -345,7 +416,7 @@ func (x NetworkInterfaceType) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use NetworkInterfaceType.Descriptor instead.
 func (NetworkInterfaceType) EnumDescriptor() ([]byte, []int) {
-	return file_api_proto_agent_proto_rawDescGZIP(), []int{4}
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{5}
 }
 
 // FirewallDirection enumerates traffic directions.
@@ -382,11 +453,11 @@ func (x FirewallDirection) String() string {
 }
 
 func (FirewallDirection) Descriptor() protoreflect.EnumDescriptor {
-	return file_api_proto_agent_proto_enumTypes[5].Descriptor()
+	return file_api_proto_agent_proto_enumTypes[6].Descriptor()
 }
 
 func (FirewallDirection) Type() protoreflect.EnumType {
-	return &file_api_proto_agent_proto_enumTypes[5]
+	return &file_api_proto_agent_proto_enumTypes[6]
 }
 
 func (x FirewallDirection) Number() protoreflect.EnumNumber {
@@ -395,7 +466,7 @@ func (x FirewallDirection) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use FirewallDirection.Descriptor instead.
 func (FirewallDirection) EnumDescriptor() ([]byte, []int) {
-	return file_api_proto_agent_proto_rawDescGZIP(), []int{5}
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{6}
 }
 
 // FirewallAction enumerates firewall actions.
@@ -435,11 +506,11 @@ func (x FirewallAction) String() string {
 }
 
 func (FirewallAction) Descriptor() protoreflect.EnumDescriptor {
-	return file_api_proto_agent_proto_enumTypes[6].Descriptor()
+	return file_api_proto_agent_proto_enumTypes[7].Descriptor()
 }
 
 func (FirewallAction) Type() protoreflect.EnumType {
-	return &file_api_proto_agent_proto_enumTypes[6]
+	return &file_api_proto_agent_proto_enumTypes[7]
 }
 
 func (x FirewallAction) Number() protoreflect.EnumNumber {
@@ -448,7 +519,7 @@ func (x FirewallAction) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use FirewallAction.Descriptor instead.
 func (FirewallAction) EnumDescriptor() ([]byte, []int) {
-	return file_api_proto_agent_proto_rawDescGZIP(), []int{6}
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{7}
 }
 
 // DiskFormat enumerates supported disk formats.
@@ -491,11 +562,11 @@ func (x DiskFormat) String() string {
 }
 
 func (DiskFormat) Descriptor() protoreflect.EnumDescriptor {
-	return file_api_proto_agent_proto_enumTypes[7].Descriptor()
+	return file_api_proto_agent_proto_enumTypes[8].Descriptor()
 }
 
 func (DiskFormat) Type() protoreflect.EnumType {
-	return &file_api_proto_agent_proto_enumTypes[7]
+	return &file_api_proto_agent_proto_enumTypes[8]
 }
 
 func (x DiskFormat) Number() protoreflect.EnumNumber {
@@ -504,7 +575,7 @@ func (x DiskFormat) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use DiskFormat.Descriptor instead.
 func (DiskFormat) EnumDescriptor() ([]byte, []int) {
-	return file_api_proto_agent_proto_rawDescGZIP(), []int{7}
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{8}
 }
 
 // StorageBackend enumerates storage backends.
@@ -550,11 +621,11 @@ func (x StorageBackend) String() string {
 }
 
 func (StorageBackend) Descriptor() protoreflect.EnumDescriptor {
-	return file_api_proto_agent_proto_enumTypes[8].Descriptor()
+	return file_api_proto_agent_proto_enumTypes[9].Descriptor()
 }
 
 func (StorageBackend) Type() protoreflect.EnumType {
-	return &file_api_proto_agent_proto_enumTypes[8]
+	return &file_api_proto_agent_proto_enumTypes[9]
 }
 
 func (x StorageBackend) Number() protoreflect.EnumNumber {
@@ -563,7 +634,7 @@ func (x StorageBackend) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use StorageBackend.Descriptor instead.
 func (StorageBackend) EnumDescriptor() ([]byte, []int) {
-	return file_api_proto_agent_proto_rawDescGZIP(), []int{8}
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{9}
 }
 
 // ErrorCode enumerates possible error conditions.
@@ -624,11 +695,11 @@ func (x ErrorCode) String() string {
 }
 
 func (ErrorCode) Descriptor() protoreflect.EnumDescriptor {
-	return file_api_proto_agent_proto_enumTypes[9].Descriptor()
+	return file_api_proto_agent_proto_enumTypes[10].Descriptor()
 }
 
 func (ErrorCode) Type() protoreflect.EnumType {
-	return &file_api_proto_agent_proto_enumTypes[9]
+	return &file_api_proto_agent_proto_enumTypes[10]
 }
 
 func (x ErrorCode) Number() protoreflect.EnumNumber {
@@ -637,7 +708,7 @@ func (x ErrorCode) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ErrorCode.Descriptor instead.
 func (ErrorCode) EnumDescriptor() ([]byte, []int) {
-	return file_api_proto_agent_proto_rawDescGZIP(), []int{9}
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{10}
 }
 
 // RegisterNodeRequest is sent by the agent to register with the panel.
@@ -1254,7 +1325,20 @@ type VMCommandRequest struct {
 	// timeout_seconds specifies max time to wait for the command (0 = default)
 	TimeoutSeconds int32 `protobuf:"varint,4,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
 	// async if true, returns immediately without waiting for completion
-	Async         bool `protobuf:"varint,5,opt,name=async,proto3" json:"async,omitempty"`
+	Async bool `protobuf:"varint,5,opt,name=async,proto3" json:"async,omitempty"`
+	// operation_id is an idempotency key for destructive operations (DESTROY and
+	// any future destructive command). Callers MUST supply a nonempty, bounded,
+	// opaque operation ID so the agent can persist a durable manifest and return
+	// the recorded result on retry after response loss. Omitting it makes the
+	// agent fail closed (UNKNOWN/PRESENT) for destructive commands.
+	OperationId string `protobuf:"bytes,6,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
+	// delete_volumes requests that the VM's managed backing storage be destroyed
+	// along with the domain. This is the explicit destructive-data-volume flag for
+	// the DESTROY command. When false (or omitted), the agent must NOT claim an
+	// accounting-safe destructive success; any residual storage yields
+	// UNKNOWN/PRESENT. Behavior is wired in a later lane (C2); the field exists now
+	// for backward-compatible rolling rollout.
+	DeleteVolumes bool `protobuf:"varint,7,opt,name=delete_volumes,json=deleteVolumes,proto3" json:"delete_volumes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1324,6 +1408,20 @@ func (x *VMCommandRequest) GetAsync() bool {
 	return false
 }
 
+func (x *VMCommandRequest) GetOperationId() string {
+	if x != nil {
+		return x.OperationId
+	}
+	return ""
+}
+
+func (x *VMCommandRequest) GetDeleteVolumes() bool {
+	if x != nil {
+		return x.DeleteVolumes
+	}
+	return false
+}
+
 // VMCommandResponse reports the result of a VM command.
 type VMCommandResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1338,9 +1436,14 @@ type VMCommandResponse struct {
 	// state is the new VM state after the command
 	State VMState `protobuf:"varint,5,opt,name=state,proto3,enum=agent.VMState" json:"state,omitempty"`
 	// message contains additional information about the result
-	Message       string `protobuf:"bytes,6,opt,name=message,proto3" json:"message,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Message string `protobuf:"bytes,6,opt,name=message,proto3" json:"message,omitempty"`
+	// operation_id echoes the idempotency key supplied in the request (if any).
+	OperationId string `protobuf:"bytes,7,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
+	// storage_disposition reports the fail-closed disk/storage verdict for
+	// destructive commands (esp. DESTROY). UNSPECIFIED for non-disk commands.
+	StorageDisposition DiskStorageDisposition `protobuf:"varint,8,opt,name=storage_disposition,json=storageDisposition,proto3,enum=agent.DiskStorageDisposition" json:"storage_disposition,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *VMCommandResponse) Reset() {
@@ -1413,6 +1516,20 @@ func (x *VMCommandResponse) GetMessage() string {
 		return x.Message
 	}
 	return ""
+}
+
+func (x *VMCommandResponse) GetOperationId() string {
+	if x != nil {
+		return x.OperationId
+	}
+	return ""
+}
+
+func (x *VMCommandResponse) GetStorageDisposition() DiskStorageDisposition {
+	if x != nil {
+		return x.StorageDisposition
+	}
+	return DiskStorageDisposition_DISK_STORAGE_DISPOSITION_UNSPECIFIED
 }
 
 // VMConfig defines the configuration for creating a new VM.
@@ -4600,7 +4717,12 @@ type AttachDiskRequest struct {
 	// pool_type selects the volume backend (dir/lvm/zfs); empty = dir.
 	PoolType string `protobuf:"bytes,3,opt,name=pool_type,json=poolType,proto3" json:"pool_type,omitempty"`
 	// pool_path is the backing dir / VG / dataset; empty = node default image dir.
-	PoolPath      string `protobuf:"bytes,4,opt,name=pool_path,json=poolPath,proto3" json:"pool_path,omitempty"`
+	PoolPath string `protobuf:"bytes,4,opt,name=pool_path,json=poolPath,proto3" json:"pool_path,omitempty"`
+	// operation_id is a required, bounded, opaque idempotency key for attach. The
+	// agent persists a durable manifest keyed by this ID and returns the recorded
+	// result on retry; a retry after response loss must NEVER create a second
+	// volume for the same operation. Empty operation_id is rejected fail-closed.
+	OperationId   string `protobuf:"bytes,5,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4663,15 +4785,27 @@ func (x *AttachDiskRequest) GetPoolPath() string {
 	return ""
 }
 
+func (x *AttachDiskRequest) GetOperationId() string {
+	if x != nil {
+		return x.OperationId
+	}
+	return ""
+}
+
 // AttachDiskResponse reports the attached device and its backing path.
 type AttachDiskResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
-	Device        string                 `protobuf:"bytes,2,opt,name=device,proto3" json:"device,omitempty"` // e.g. "vdb"
-	Path          string                 `protobuf:"bytes,3,opt,name=path,proto3" json:"path,omitempty"`     // backing volume path
-	Error         *ErrorResponse         `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Success bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Device  string                 `protobuf:"bytes,2,opt,name=device,proto3" json:"device,omitempty"` // e.g. "vdb"
+	Path    string                 `protobuf:"bytes,3,opt,name=path,proto3" json:"path,omitempty"`     // backing volume path
+	Error   *ErrorResponse         `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"`
+	// operation_id echoes the idempotency key supplied in the request (if any).
+	OperationId string `protobuf:"bytes,5,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
+	// storage_disposition reports the attach verdict (ATTACHED on success;
+	// PRESENT/UNKNOWN when a partial/recovered state cannot be proven attached).
+	StorageDisposition DiskStorageDisposition `protobuf:"varint,6,opt,name=storage_disposition,json=storageDisposition,proto3,enum=agent.DiskStorageDisposition" json:"storage_disposition,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *AttachDiskResponse) Reset() {
@@ -4732,14 +4866,32 @@ func (x *AttachDiskResponse) GetError() *ErrorResponse {
 	return nil
 }
 
+func (x *AttachDiskResponse) GetOperationId() string {
+	if x != nil {
+		return x.OperationId
+	}
+	return ""
+}
+
+func (x *AttachDiskResponse) GetStorageDisposition() DiskStorageDisposition {
+	if x != nil {
+		return x.StorageDisposition
+	}
+	return DiskStorageDisposition_DISK_STORAGE_DISPOSITION_UNSPECIFIED
+}
+
 // DetachDiskRequest removes a data disk from a VM.
 type DetachDiskRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	VmId          string                 `protobuf:"bytes,1,opt,name=vm_id,json=vmId,proto3" json:"vm_id,omitempty"`
-	Device        string                 `protobuf:"bytes,2,opt,name=device,proto3" json:"device,omitempty"` // e.g. "vdb"
-	Path          string                 `protobuf:"bytes,3,opt,name=path,proto3" json:"path,omitempty"`     // backing volume path
-	DeleteVolume  bool                   `protobuf:"varint,4,opt,name=delete_volume,json=deleteVolume,proto3" json:"delete_volume,omitempty"`
-	PoolType      string                 `protobuf:"bytes,5,opt,name=pool_type,json=poolType,proto3" json:"pool_type,omitempty"` // for deletion backend; empty = dir
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	VmId         string                 `protobuf:"bytes,1,opt,name=vm_id,json=vmId,proto3" json:"vm_id,omitempty"`
+	Device       string                 `protobuf:"bytes,2,opt,name=device,proto3" json:"device,omitempty"` // e.g. "vdb"
+	Path         string                 `protobuf:"bytes,3,opt,name=path,proto3" json:"path,omitempty"`     // backing volume path
+	DeleteVolume bool                   `protobuf:"varint,4,opt,name=delete_volume,json=deleteVolume,proto3" json:"delete_volume,omitempty"`
+	PoolType     string                 `protobuf:"bytes,5,opt,name=pool_type,json=poolType,proto3" json:"pool_type,omitempty"` // for deletion backend; empty = dir
+	// operation_id is a required, bounded, opaque idempotency key for detach. The
+	// agent persists a durable manifest before any destructive action and returns
+	// the recorded result on retry. Empty operation_id is rejected fail-closed.
+	OperationId   string `protobuf:"bytes,6,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4809,13 +4961,26 @@ func (x *DetachDiskRequest) GetPoolType() string {
 	return ""
 }
 
+func (x *DetachDiskRequest) GetOperationId() string {
+	if x != nil {
+		return x.OperationId
+	}
+	return ""
+}
+
 // DetachDiskResponse reports the result of a disk detach.
 type DetachDiskResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
-	Error         *ErrorResponse         `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Success bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Error   *ErrorResponse         `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	// operation_id echoes the idempotency key supplied in the request (if any).
+	OperationId string `protobuf:"bytes,3,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
+	// storage_disposition reports the detach verdict (ABSENT on full cleanup;
+	// ATTACHED/PRESENT/UNKNOWN when the agent cannot prove absence). delete_volume
+	// must be honored: an unsafe detach yields PRESENT, never accounting-safe success.
+	StorageDisposition DiskStorageDisposition `protobuf:"varint,4,opt,name=storage_disposition,json=storageDisposition,proto3,enum=agent.DiskStorageDisposition" json:"storage_disposition,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *DetachDiskResponse) Reset() {
@@ -4860,6 +5025,20 @@ func (x *DetachDiskResponse) GetError() *ErrorResponse {
 		return x.Error
 	}
 	return nil
+}
+
+func (x *DetachDiskResponse) GetOperationId() string {
+	if x != nil {
+		return x.OperationId
+	}
+	return ""
+}
+
+func (x *DetachDiskResponse) GetStorageDisposition() DiskStorageDisposition {
+	if x != nil {
+		return x.StorageDisposition
+	}
+	return DiskStorageDisposition_DISK_STORAGE_DISPOSITION_UNSPECIFIED
 }
 
 // DefineNetworkRequest creates a managed libvirt network for a private segment.
@@ -6187,20 +6366,24 @@ const file_api_proto_agent_proto_rawDesc = "" +
 	"\aswap_mb\x18\x04 \x01(\x03R\x06swapMb\x124\n" +
 	"\x16network_bandwidth_mbps\x18\x05 \x01(\x05R\x14networkBandwidthMbps\x12\x1d\n" +
 	"\n" +
-	"iops_limit\x18\x06 \x01(\x05R\tiopsLimit\"\xbf\x01\n" +
+	"iops_limit\x18\x06 \x01(\x05R\tiopsLimit\"\x89\x02\n" +
 	"\x10VMCommandRequest\x12\x13\n" +
 	"\x05vm_id\x18\x01 \x01(\tR\x04vmId\x12.\n" +
 	"\acommand\x18\x02 \x01(\x0e2\x14.agent.VMCommandTypeR\acommand\x12'\n" +
 	"\x06config\x18\x03 \x01(\v2\x0f.agent.VMConfigR\x06config\x12'\n" +
 	"\x0ftimeout_seconds\x18\x04 \x01(\x05R\x0etimeoutSeconds\x12\x14\n" +
-	"\x05async\x18\x05 \x01(\bR\x05async\"\xde\x01\n" +
+	"\x05async\x18\x05 \x01(\bR\x05async\x12!\n" +
+	"\foperation_id\x18\x06 \x01(\tR\voperationId\x12%\n" +
+	"\x0edelete_volumes\x18\a \x01(\bR\rdeleteVolumes\"\xd1\x02\n" +
 	"\x11VMCommandResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x13\n" +
 	"\x05vm_id\x18\x02 \x01(\tR\x04vmId\x12.\n" +
 	"\acommand\x18\x03 \x01(\x0e2\x14.agent.VMCommandTypeR\acommand\x12*\n" +
 	"\x05error\x18\x04 \x01(\v2\x14.agent.ErrorResponseR\x05error\x12$\n" +
 	"\x05state\x18\x05 \x01(\x0e2\x0e.agent.VMStateR\x05state\x12\x18\n" +
-	"\amessage\x18\x06 \x01(\tR\amessage\"\xf7\x03\n" +
+	"\amessage\x18\x06 \x01(\tR\amessage\x12!\n" +
+	"\foperation_id\x18\a \x01(\tR\voperationId\x12N\n" +
+	"\x13storage_disposition\x18\b \x01(\x0e2\x1d.agent.DiskStorageDispositionR\x12storageDisposition\"\xf7\x03\n" +
 	"\bVMConfig\x120\n" +
 	"\tresources\x18\x01 \x01(\v2\x12.agent.VMResourcesR\tresources\x12\x19\n" +
 	"\bimage_id\x18\x02 \x01(\tR\aimageId\x12=\n" +
@@ -6477,26 +6660,32 @@ const file_api_proto_agent_proto_rawDesc = "" +
 	"\tpool_type\x18\x02 \x01(\tR\bpoolType\"c\n" +
 	"\x1bDeleteStorageVolumeResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12*\n" +
-	"\x05error\x18\x02 \x01(\v2\x14.agent.ErrorResponseR\x05error\"{\n" +
+	"\x05error\x18\x02 \x01(\v2\x14.agent.ErrorResponseR\x05error\"\x9e\x01\n" +
 	"\x11AttachDiskRequest\x12\x13\n" +
 	"\x05vm_id\x18\x01 \x01(\tR\x04vmId\x12\x17\n" +
 	"\asize_gb\x18\x02 \x01(\x03R\x06sizeGb\x12\x1b\n" +
 	"\tpool_type\x18\x03 \x01(\tR\bpoolType\x12\x1b\n" +
-	"\tpool_path\x18\x04 \x01(\tR\bpoolPath\"\x86\x01\n" +
+	"\tpool_path\x18\x04 \x01(\tR\bpoolPath\x12!\n" +
+	"\foperation_id\x18\x05 \x01(\tR\voperationId\"\xf9\x01\n" +
 	"\x12AttachDiskResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x16\n" +
 	"\x06device\x18\x02 \x01(\tR\x06device\x12\x12\n" +
 	"\x04path\x18\x03 \x01(\tR\x04path\x12*\n" +
-	"\x05error\x18\x04 \x01(\v2\x14.agent.ErrorResponseR\x05error\"\x96\x01\n" +
+	"\x05error\x18\x04 \x01(\v2\x14.agent.ErrorResponseR\x05error\x12!\n" +
+	"\foperation_id\x18\x05 \x01(\tR\voperationId\x12N\n" +
+	"\x13storage_disposition\x18\x06 \x01(\x0e2\x1d.agent.DiskStorageDispositionR\x12storageDisposition\"\xb9\x01\n" +
 	"\x11DetachDiskRequest\x12\x13\n" +
 	"\x05vm_id\x18\x01 \x01(\tR\x04vmId\x12\x16\n" +
 	"\x06device\x18\x02 \x01(\tR\x06device\x12\x12\n" +
 	"\x04path\x18\x03 \x01(\tR\x04path\x12#\n" +
 	"\rdelete_volume\x18\x04 \x01(\bR\fdeleteVolume\x12\x1b\n" +
-	"\tpool_type\x18\x05 \x01(\tR\bpoolType\"Z\n" +
+	"\tpool_type\x18\x05 \x01(\tR\bpoolType\x12!\n" +
+	"\foperation_id\x18\x06 \x01(\tR\voperationId\"\xcd\x01\n" +
 	"\x12DetachDiskResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12*\n" +
-	"\x05error\x18\x02 \x01(\v2\x14.agent.ErrorResponseR\x05error\"~\n" +
+	"\x05error\x18\x02 \x01(\v2\x14.agent.ErrorResponseR\x05error\x12!\n" +
+	"\foperation_id\x18\x03 \x01(\tR\voperationId\x12N\n" +
+	"\x13storage_disposition\x18\x04 \x01(\x0e2\x1d.agent.DiskStorageDispositionR\x12storageDisposition\"~\n" +
 	"\x14DefineNetworkRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x16\n" +
@@ -6619,7 +6808,13 @@ const file_api_proto_agent_proto_rawDesc = "" +
 	"\x12\"\n" +
 	"\x1eVM_COMMAND_TYPE_RESET_PASSWORD\x10\v\x12\x1e\n" +
 	"\x1aVM_COMMAND_TYPE_ATTACH_ISO\x10\f\x12\x1e\n" +
-	"\x1aVM_COMMAND_TYPE_DETACH_ISO\x10\r*\xd9\x01\n" +
+	"\x1aVM_COMMAND_TYPE_DETACH_ISO\x10\r*\xda\x01\n" +
+	"\x16DiskStorageDisposition\x12(\n" +
+	"$DISK_STORAGE_DISPOSITION_UNSPECIFIED\x10\x00\x12$\n" +
+	" DISK_STORAGE_DISPOSITION_UNKNOWN\x10\x01\x12$\n" +
+	" DISK_STORAGE_DISPOSITION_PRESENT\x10\x02\x12%\n" +
+	"!DISK_STORAGE_DISPOSITION_ATTACHED\x10\x03\x12#\n" +
+	"\x1fDISK_STORAGE_DISPOSITION_ABSENT\x10\x04*\xd9\x01\n" +
 	"\aVMState\x12\x18\n" +
 	"\x14VM_STATE_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10VM_STATE_PENDING\x10\x01\x12\x14\n" +
@@ -6727,212 +6922,216 @@ func file_api_proto_agent_proto_rawDescGZIP() []byte {
 	return file_api_proto_agent_proto_rawDescData
 }
 
-var file_api_proto_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 10)
+var file_api_proto_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 11)
 var file_api_proto_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 70)
 var file_api_proto_agent_proto_goTypes = []any{
 	(VMCommandType)(0),                  // 0: agent.VMCommandType
-	(VMState)(0),                        // 1: agent.VMState
-	(MetricType)(0),                     // 2: agent.MetricType
-	(SnapshotOperationType)(0),          // 3: agent.SnapshotOperationType
-	(NetworkInterfaceType)(0),           // 4: agent.NetworkInterfaceType
-	(FirewallDirection)(0),              // 5: agent.FirewallDirection
-	(FirewallAction)(0),                 // 6: agent.FirewallAction
-	(DiskFormat)(0),                     // 7: agent.DiskFormat
-	(StorageBackend)(0),                 // 8: agent.StorageBackend
-	(ErrorCode)(0),                      // 9: agent.ErrorCode
-	(*RegisterNodeRequest)(nil),         // 10: agent.RegisterNodeRequest
-	(*RegisterNodeResponse)(nil),        // 11: agent.RegisterNodeResponse
-	(*HeartbeatRequest)(nil),            // 12: agent.HeartbeatRequest
-	(*VMBandwidthReport)(nil),           // 13: agent.VMBandwidthReport
-	(*HeartbeatResponse)(nil),           // 14: agent.HeartbeatResponse
-	(*SystemLoad)(nil),                  // 15: agent.SystemLoad
-	(*VMResources)(nil),                 // 16: agent.VMResources
-	(*VMCommandRequest)(nil),            // 17: agent.VMCommandRequest
-	(*VMCommandResponse)(nil),           // 18: agent.VMCommandResponse
-	(*VMConfig)(nil),                    // 19: agent.VMConfig
-	(*VMStatusRequest)(nil),             // 20: agent.VMStatusRequest
-	(*VMStatusResponse)(nil),            // 21: agent.VMStatusResponse
-	(*VMResourceUsage)(nil),             // 22: agent.VMResourceUsage
-	(*VMMetricsRequest)(nil),            // 23: agent.VMMetricsRequest
-	(*VMMetricsResponse)(nil),           // 24: agent.VMMetricsResponse
-	(*CPUMetrics)(nil),                  // 25: agent.CPUMetrics
-	(*MemoryMetrics)(nil),               // 26: agent.MemoryMetrics
-	(*DiskMetrics)(nil),                 // 27: agent.DiskMetrics
-	(*NetworkMetrics)(nil),              // 28: agent.NetworkMetrics
-	(*ProcessMetrics)(nil),              // 29: agent.ProcessMetrics
-	(*SnapshotRequest)(nil),             // 30: agent.SnapshotRequest
-	(*SnapshotResponse)(nil),            // 31: agent.SnapshotResponse
-	(*SnapshotInfo)(nil),                // 32: agent.SnapshotInfo
-	(*VMNetworkConfig)(nil),             // 33: agent.VMNetworkConfig
-	(*NetworkInterface)(nil),            // 34: agent.NetworkInterface
-	(*FirewallRule)(nil),                // 35: agent.FirewallRule
-	(*BandwidthLimit)(nil),              // 36: agent.BandwidthLimit
-	(*NetworkConfigRequest)(nil),        // 37: agent.NetworkConfigRequest
-	(*NetworkConfigResponse)(nil),       // 38: agent.NetworkConfigResponse
-	(*StorageConfig)(nil),               // 39: agent.StorageConfig
-	(*DiskConfig)(nil),                  // 40: agent.DiskConfig
-	(*VNCProxyRequest)(nil),             // 41: agent.VNCProxyRequest
-	(*VNCProxyResponse)(nil),            // 42: agent.VNCProxyResponse
-	(*ErrorResponse)(nil),               // 43: agent.ErrorResponse
-	(*GetNodeInfoRequest)(nil),          // 44: agent.GetNodeInfoRequest
-	(*GetNodeInfoResponse)(nil),         // 45: agent.GetNodeInfoResponse
-	(*OSInfo)(nil),                      // 46: agent.OSInfo
-	(*CPUInfo)(nil),                     // 47: agent.CPUInfo
-	(*DiskImportRequest)(nil),           // 48: agent.DiskImportRequest
-	(*DiskImportResponse)(nil),          // 49: agent.DiskImportResponse
-	(*BackupDiskRequest)(nil),           // 50: agent.BackupDiskRequest
-	(*BackupDiskResponse)(nil),          // 51: agent.BackupDiskResponse
-	(*CreateStorageVolumeRequest)(nil),  // 52: agent.CreateStorageVolumeRequest
-	(*CreateStorageVolumeResponse)(nil), // 53: agent.CreateStorageVolumeResponse
-	(*DeleteStorageVolumeRequest)(nil),  // 54: agent.DeleteStorageVolumeRequest
-	(*DeleteStorageVolumeResponse)(nil), // 55: agent.DeleteStorageVolumeResponse
-	(*AttachDiskRequest)(nil),           // 56: agent.AttachDiskRequest
-	(*AttachDiskResponse)(nil),          // 57: agent.AttachDiskResponse
-	(*DetachDiskRequest)(nil),           // 58: agent.DetachDiskRequest
-	(*DetachDiskResponse)(nil),          // 59: agent.DetachDiskResponse
-	(*DefineNetworkRequest)(nil),        // 60: agent.DefineNetworkRequest
-	(*DefineNetworkResponse)(nil),       // 61: agent.DefineNetworkResponse
-	(*UndefineNetworkRequest)(nil),      // 62: agent.UndefineNetworkRequest
-	(*UndefineNetworkResponse)(nil),     // 63: agent.UndefineNetworkResponse
-	(*MigrateVMRequest)(nil),            // 64: agent.MigrateVMRequest
-	(*MigrateVMResponse)(nil),           // 65: agent.MigrateVMResponse
-	(*SyncTemplateRequest)(nil),         // 66: agent.SyncTemplateRequest
-	(*SyncTemplateResponse)(nil),        // 67: agent.SyncTemplateResponse
-	(*GetLiveMetricsRequest)(nil),       // 68: agent.GetLiveMetricsRequest
-	(*GetLiveMetricsResponse)(nil),      // 69: agent.GetLiveMetricsResponse
-	(*ScanVMsRequest)(nil),              // 70: agent.ScanVMsRequest
-	(*ScanVMsResponse)(nil),             // 71: agent.ScanVMsResponse
-	(*ScannedVM)(nil),                   // 72: agent.ScannedVM
-	(*ScannedDisk)(nil),                 // 73: agent.ScannedDisk
-	(*ScannedNetwork)(nil),              // 74: agent.ScannedNetwork
-	(*ProbeIPsRequest)(nil),             // 75: agent.ProbeIPsRequest
-	(*ProbeIPsResponse)(nil),            // 76: agent.ProbeIPsResponse
-	nil,                                 // 77: agent.RegisterNodeRequest.LabelsEntry
-	nil,                                 // 78: agent.VMConfig.MetadataEntry
-	nil,                                 // 79: agent.ErrorResponse.DetailsEntry
-	(*durationpb.Duration)(nil),         // 80: google.protobuf.Duration
-	(*timestamppb.Timestamp)(nil),       // 81: google.protobuf.Timestamp
+	(DiskStorageDisposition)(0),         // 1: agent.DiskStorageDisposition
+	(VMState)(0),                        // 2: agent.VMState
+	(MetricType)(0),                     // 3: agent.MetricType
+	(SnapshotOperationType)(0),          // 4: agent.SnapshotOperationType
+	(NetworkInterfaceType)(0),           // 5: agent.NetworkInterfaceType
+	(FirewallDirection)(0),              // 6: agent.FirewallDirection
+	(FirewallAction)(0),                 // 7: agent.FirewallAction
+	(DiskFormat)(0),                     // 8: agent.DiskFormat
+	(StorageBackend)(0),                 // 9: agent.StorageBackend
+	(ErrorCode)(0),                      // 10: agent.ErrorCode
+	(*RegisterNodeRequest)(nil),         // 11: agent.RegisterNodeRequest
+	(*RegisterNodeResponse)(nil),        // 12: agent.RegisterNodeResponse
+	(*HeartbeatRequest)(nil),            // 13: agent.HeartbeatRequest
+	(*VMBandwidthReport)(nil),           // 14: agent.VMBandwidthReport
+	(*HeartbeatResponse)(nil),           // 15: agent.HeartbeatResponse
+	(*SystemLoad)(nil),                  // 16: agent.SystemLoad
+	(*VMResources)(nil),                 // 17: agent.VMResources
+	(*VMCommandRequest)(nil),            // 18: agent.VMCommandRequest
+	(*VMCommandResponse)(nil),           // 19: agent.VMCommandResponse
+	(*VMConfig)(nil),                    // 20: agent.VMConfig
+	(*VMStatusRequest)(nil),             // 21: agent.VMStatusRequest
+	(*VMStatusResponse)(nil),            // 22: agent.VMStatusResponse
+	(*VMResourceUsage)(nil),             // 23: agent.VMResourceUsage
+	(*VMMetricsRequest)(nil),            // 24: agent.VMMetricsRequest
+	(*VMMetricsResponse)(nil),           // 25: agent.VMMetricsResponse
+	(*CPUMetrics)(nil),                  // 26: agent.CPUMetrics
+	(*MemoryMetrics)(nil),               // 27: agent.MemoryMetrics
+	(*DiskMetrics)(nil),                 // 28: agent.DiskMetrics
+	(*NetworkMetrics)(nil),              // 29: agent.NetworkMetrics
+	(*ProcessMetrics)(nil),              // 30: agent.ProcessMetrics
+	(*SnapshotRequest)(nil),             // 31: agent.SnapshotRequest
+	(*SnapshotResponse)(nil),            // 32: agent.SnapshotResponse
+	(*SnapshotInfo)(nil),                // 33: agent.SnapshotInfo
+	(*VMNetworkConfig)(nil),             // 34: agent.VMNetworkConfig
+	(*NetworkInterface)(nil),            // 35: agent.NetworkInterface
+	(*FirewallRule)(nil),                // 36: agent.FirewallRule
+	(*BandwidthLimit)(nil),              // 37: agent.BandwidthLimit
+	(*NetworkConfigRequest)(nil),        // 38: agent.NetworkConfigRequest
+	(*NetworkConfigResponse)(nil),       // 39: agent.NetworkConfigResponse
+	(*StorageConfig)(nil),               // 40: agent.StorageConfig
+	(*DiskConfig)(nil),                  // 41: agent.DiskConfig
+	(*VNCProxyRequest)(nil),             // 42: agent.VNCProxyRequest
+	(*VNCProxyResponse)(nil),            // 43: agent.VNCProxyResponse
+	(*ErrorResponse)(nil),               // 44: agent.ErrorResponse
+	(*GetNodeInfoRequest)(nil),          // 45: agent.GetNodeInfoRequest
+	(*GetNodeInfoResponse)(nil),         // 46: agent.GetNodeInfoResponse
+	(*OSInfo)(nil),                      // 47: agent.OSInfo
+	(*CPUInfo)(nil),                     // 48: agent.CPUInfo
+	(*DiskImportRequest)(nil),           // 49: agent.DiskImportRequest
+	(*DiskImportResponse)(nil),          // 50: agent.DiskImportResponse
+	(*BackupDiskRequest)(nil),           // 51: agent.BackupDiskRequest
+	(*BackupDiskResponse)(nil),          // 52: agent.BackupDiskResponse
+	(*CreateStorageVolumeRequest)(nil),  // 53: agent.CreateStorageVolumeRequest
+	(*CreateStorageVolumeResponse)(nil), // 54: agent.CreateStorageVolumeResponse
+	(*DeleteStorageVolumeRequest)(nil),  // 55: agent.DeleteStorageVolumeRequest
+	(*DeleteStorageVolumeResponse)(nil), // 56: agent.DeleteStorageVolumeResponse
+	(*AttachDiskRequest)(nil),           // 57: agent.AttachDiskRequest
+	(*AttachDiskResponse)(nil),          // 58: agent.AttachDiskResponse
+	(*DetachDiskRequest)(nil),           // 59: agent.DetachDiskRequest
+	(*DetachDiskResponse)(nil),          // 60: agent.DetachDiskResponse
+	(*DefineNetworkRequest)(nil),        // 61: agent.DefineNetworkRequest
+	(*DefineNetworkResponse)(nil),       // 62: agent.DefineNetworkResponse
+	(*UndefineNetworkRequest)(nil),      // 63: agent.UndefineNetworkRequest
+	(*UndefineNetworkResponse)(nil),     // 64: agent.UndefineNetworkResponse
+	(*MigrateVMRequest)(nil),            // 65: agent.MigrateVMRequest
+	(*MigrateVMResponse)(nil),           // 66: agent.MigrateVMResponse
+	(*SyncTemplateRequest)(nil),         // 67: agent.SyncTemplateRequest
+	(*SyncTemplateResponse)(nil),        // 68: agent.SyncTemplateResponse
+	(*GetLiveMetricsRequest)(nil),       // 69: agent.GetLiveMetricsRequest
+	(*GetLiveMetricsResponse)(nil),      // 70: agent.GetLiveMetricsResponse
+	(*ScanVMsRequest)(nil),              // 71: agent.ScanVMsRequest
+	(*ScanVMsResponse)(nil),             // 72: agent.ScanVMsResponse
+	(*ScannedVM)(nil),                   // 73: agent.ScannedVM
+	(*ScannedDisk)(nil),                 // 74: agent.ScannedDisk
+	(*ScannedNetwork)(nil),              // 75: agent.ScannedNetwork
+	(*ProbeIPsRequest)(nil),             // 76: agent.ProbeIPsRequest
+	(*ProbeIPsResponse)(nil),            // 77: agent.ProbeIPsResponse
+	nil,                                 // 78: agent.RegisterNodeRequest.LabelsEntry
+	nil,                                 // 79: agent.VMConfig.MetadataEntry
+	nil,                                 // 80: agent.ErrorResponse.DetailsEntry
+	(*durationpb.Duration)(nil),         // 81: google.protobuf.Duration
+	(*timestamppb.Timestamp)(nil),       // 82: google.protobuf.Timestamp
 }
 var file_api_proto_agent_proto_depIdxs = []int32{
-	16, // 0: agent.RegisterNodeRequest.total_resources:type_name -> agent.VMResources
-	77, // 1: agent.RegisterNodeRequest.labels:type_name -> agent.RegisterNodeRequest.LabelsEntry
-	80, // 2: agent.RegisterNodeResponse.refresh_interval:type_name -> google.protobuf.Duration
-	80, // 3: agent.RegisterNodeResponse.metrics_interval:type_name -> google.protobuf.Duration
-	81, // 4: agent.HeartbeatRequest.timestamp:type_name -> google.protobuf.Timestamp
-	16, // 5: agent.HeartbeatRequest.available_resources:type_name -> agent.VMResources
-	15, // 6: agent.HeartbeatRequest.system_load:type_name -> agent.SystemLoad
-	13, // 7: agent.HeartbeatRequest.vm_bandwidth_usage:type_name -> agent.VMBandwidthReport
-	81, // 8: agent.HeartbeatResponse.timestamp:type_name -> google.protobuf.Timestamp
+	17, // 0: agent.RegisterNodeRequest.total_resources:type_name -> agent.VMResources
+	78, // 1: agent.RegisterNodeRequest.labels:type_name -> agent.RegisterNodeRequest.LabelsEntry
+	81, // 2: agent.RegisterNodeResponse.refresh_interval:type_name -> google.protobuf.Duration
+	81, // 3: agent.RegisterNodeResponse.metrics_interval:type_name -> google.protobuf.Duration
+	82, // 4: agent.HeartbeatRequest.timestamp:type_name -> google.protobuf.Timestamp
+	17, // 5: agent.HeartbeatRequest.available_resources:type_name -> agent.VMResources
+	16, // 6: agent.HeartbeatRequest.system_load:type_name -> agent.SystemLoad
+	14, // 7: agent.HeartbeatRequest.vm_bandwidth_usage:type_name -> agent.VMBandwidthReport
+	82, // 8: agent.HeartbeatResponse.timestamp:type_name -> google.protobuf.Timestamp
 	0,  // 9: agent.VMCommandRequest.command:type_name -> agent.VMCommandType
-	19, // 10: agent.VMCommandRequest.config:type_name -> agent.VMConfig
+	20, // 10: agent.VMCommandRequest.config:type_name -> agent.VMConfig
 	0,  // 11: agent.VMCommandResponse.command:type_name -> agent.VMCommandType
-	43, // 12: agent.VMCommandResponse.error:type_name -> agent.ErrorResponse
-	1,  // 13: agent.VMCommandResponse.state:type_name -> agent.VMState
-	16, // 14: agent.VMConfig.resources:type_name -> agent.VMResources
-	33, // 15: agent.VMConfig.network_config:type_name -> agent.VMNetworkConfig
-	39, // 16: agent.VMConfig.storage_config:type_name -> agent.StorageConfig
-	78, // 17: agent.VMConfig.metadata:type_name -> agent.VMConfig.MetadataEntry
-	1,  // 18: agent.VMStatusResponse.state:type_name -> agent.VMState
-	22, // 19: agent.VMStatusResponse.current_resources:type_name -> agent.VMResourceUsage
-	81, // 20: agent.VMStatusResponse.last_state_change:type_name -> google.protobuf.Timestamp
-	2,  // 21: agent.VMMetricsRequest.metric_types:type_name -> agent.MetricType
-	81, // 22: agent.VMMetricsResponse.timestamp:type_name -> google.protobuf.Timestamp
-	25, // 23: agent.VMMetricsResponse.cpu:type_name -> agent.CPUMetrics
-	26, // 24: agent.VMMetricsResponse.memory:type_name -> agent.MemoryMetrics
-	27, // 25: agent.VMMetricsResponse.disk:type_name -> agent.DiskMetrics
-	28, // 26: agent.VMMetricsResponse.network:type_name -> agent.NetworkMetrics
-	29, // 27: agent.VMMetricsResponse.process:type_name -> agent.ProcessMetrics
-	3,  // 28: agent.SnapshotRequest.operation:type_name -> agent.SnapshotOperationType
-	3,  // 29: agent.SnapshotResponse.operation:type_name -> agent.SnapshotOperationType
-	32, // 30: agent.SnapshotResponse.snapshot:type_name -> agent.SnapshotInfo
-	32, // 31: agent.SnapshotResponse.snapshots:type_name -> agent.SnapshotInfo
-	43, // 32: agent.SnapshotResponse.error:type_name -> agent.ErrorResponse
-	81, // 33: agent.SnapshotInfo.created_at:type_name -> google.protobuf.Timestamp
-	1,  // 34: agent.SnapshotInfo.vm_state:type_name -> agent.VMState
-	34, // 35: agent.VMNetworkConfig.interfaces:type_name -> agent.NetworkInterface
-	35, // 36: agent.VMNetworkConfig.firewall_rules:type_name -> agent.FirewallRule
-	36, // 37: agent.VMNetworkConfig.bandwidth_limits:type_name -> agent.BandwidthLimit
-	4,  // 38: agent.NetworkInterface.type:type_name -> agent.NetworkInterfaceType
-	5,  // 39: agent.FirewallRule.direction:type_name -> agent.FirewallDirection
-	6,  // 40: agent.FirewallRule.action:type_name -> agent.FirewallAction
-	33, // 41: agent.NetworkConfigRequest.config:type_name -> agent.VMNetworkConfig
-	34, // 42: agent.NetworkConfigResponse.applied_interfaces:type_name -> agent.NetworkInterface
-	43, // 43: agent.NetworkConfigResponse.error:type_name -> agent.ErrorResponse
-	40, // 44: agent.StorageConfig.primary_disk:type_name -> agent.DiskConfig
-	40, // 45: agent.StorageConfig.additional_volumes:type_name -> agent.DiskConfig
-	7,  // 46: agent.DiskConfig.format:type_name -> agent.DiskFormat
-	8,  // 47: agent.DiskConfig.backend:type_name -> agent.StorageBackend
-	81, // 48: agent.VNCProxyResponse.expires_at:type_name -> google.protobuf.Timestamp
-	43, // 49: agent.VNCProxyResponse.error:type_name -> agent.ErrorResponse
-	9,  // 50: agent.ErrorResponse.code:type_name -> agent.ErrorCode
-	79, // 51: agent.ErrorResponse.details:type_name -> agent.ErrorResponse.DetailsEntry
-	46, // 52: agent.GetNodeInfoResponse.os_info:type_name -> agent.OSInfo
-	47, // 53: agent.GetNodeInfoResponse.cpu_info:type_name -> agent.CPUInfo
-	43, // 54: agent.GetNodeInfoResponse.error:type_name -> agent.ErrorResponse
-	43, // 55: agent.DiskImportResponse.error:type_name -> agent.ErrorResponse
-	43, // 56: agent.BackupDiskResponse.error:type_name -> agent.ErrorResponse
-	43, // 57: agent.CreateStorageVolumeResponse.error:type_name -> agent.ErrorResponse
-	43, // 58: agent.DeleteStorageVolumeResponse.error:type_name -> agent.ErrorResponse
-	43, // 59: agent.AttachDiskResponse.error:type_name -> agent.ErrorResponse
-	43, // 60: agent.DetachDiskResponse.error:type_name -> agent.ErrorResponse
-	43, // 61: agent.DefineNetworkResponse.error:type_name -> agent.ErrorResponse
-	43, // 62: agent.UndefineNetworkResponse.error:type_name -> agent.ErrorResponse
-	43, // 63: agent.MigrateVMResponse.error:type_name -> agent.ErrorResponse
-	43, // 64: agent.SyncTemplateResponse.error:type_name -> agent.ErrorResponse
-	43, // 65: agent.GetLiveMetricsResponse.error:type_name -> agent.ErrorResponse
-	72, // 66: agent.ScanVMsResponse.vms:type_name -> agent.ScannedVM
-	43, // 67: agent.ScanVMsResponse.error:type_name -> agent.ErrorResponse
-	73, // 68: agent.ScannedVM.disks:type_name -> agent.ScannedDisk
-	74, // 69: agent.ScannedVM.networks:type_name -> agent.ScannedNetwork
-	10, // 70: agent.NodeAgent.RegisterNode:input_type -> agent.RegisterNodeRequest
-	12, // 71: agent.NodeAgent.Heartbeat:input_type -> agent.HeartbeatRequest
-	17, // 72: agent.NodeAgent.ExecuteVMCommand:input_type -> agent.VMCommandRequest
-	20, // 73: agent.NodeAgent.GetVMStatus:input_type -> agent.VMStatusRequest
-	23, // 74: agent.NodeAgent.StreamVMMetrics:input_type -> agent.VMMetricsRequest
-	30, // 75: agent.NodeAgent.CreateSnapshot:input_type -> agent.SnapshotRequest
-	37, // 76: agent.NodeAgent.ApplyNetworkConfig:input_type -> agent.NetworkConfigRequest
-	41, // 77: agent.NodeAgent.StartVNCProxy:input_type -> agent.VNCProxyRequest
-	44, // 78: agent.NodeAgent.GetNodeInfo:input_type -> agent.GetNodeInfoRequest
-	48, // 79: agent.NodeAgent.ImportDisk:input_type -> agent.DiskImportRequest
-	50, // 80: agent.NodeAgent.BackupDisk:input_type -> agent.BackupDiskRequest
-	68, // 81: agent.NodeAgent.GetLiveMetrics:input_type -> agent.GetLiveMetricsRequest
-	70, // 82: agent.NodeAgent.ScanVMs:input_type -> agent.ScanVMsRequest
-	52, // 83: agent.NodeAgent.CreateStorageVolume:input_type -> agent.CreateStorageVolumeRequest
-	54, // 84: agent.NodeAgent.DeleteStorageVolume:input_type -> agent.DeleteStorageVolumeRequest
-	64, // 85: agent.NodeAgent.MigrateVM:input_type -> agent.MigrateVMRequest
-	66, // 86: agent.NodeAgent.SyncTemplate:input_type -> agent.SyncTemplateRequest
-	56, // 87: agent.NodeAgent.AttachDisk:input_type -> agent.AttachDiskRequest
-	58, // 88: agent.NodeAgent.DetachDisk:input_type -> agent.DetachDiskRequest
-	60, // 89: agent.NodeAgent.DefineNetwork:input_type -> agent.DefineNetworkRequest
-	62, // 90: agent.NodeAgent.UndefineNetwork:input_type -> agent.UndefineNetworkRequest
-	75, // 91: agent.NodeAgent.ProbeIPs:input_type -> agent.ProbeIPsRequest
-	11, // 92: agent.NodeAgent.RegisterNode:output_type -> agent.RegisterNodeResponse
-	14, // 93: agent.NodeAgent.Heartbeat:output_type -> agent.HeartbeatResponse
-	18, // 94: agent.NodeAgent.ExecuteVMCommand:output_type -> agent.VMCommandResponse
-	21, // 95: agent.NodeAgent.GetVMStatus:output_type -> agent.VMStatusResponse
-	24, // 96: agent.NodeAgent.StreamVMMetrics:output_type -> agent.VMMetricsResponse
-	31, // 97: agent.NodeAgent.CreateSnapshot:output_type -> agent.SnapshotResponse
-	38, // 98: agent.NodeAgent.ApplyNetworkConfig:output_type -> agent.NetworkConfigResponse
-	42, // 99: agent.NodeAgent.StartVNCProxy:output_type -> agent.VNCProxyResponse
-	45, // 100: agent.NodeAgent.GetNodeInfo:output_type -> agent.GetNodeInfoResponse
-	49, // 101: agent.NodeAgent.ImportDisk:output_type -> agent.DiskImportResponse
-	51, // 102: agent.NodeAgent.BackupDisk:output_type -> agent.BackupDiskResponse
-	69, // 103: agent.NodeAgent.GetLiveMetrics:output_type -> agent.GetLiveMetricsResponse
-	71, // 104: agent.NodeAgent.ScanVMs:output_type -> agent.ScanVMsResponse
-	53, // 105: agent.NodeAgent.CreateStorageVolume:output_type -> agent.CreateStorageVolumeResponse
-	55, // 106: agent.NodeAgent.DeleteStorageVolume:output_type -> agent.DeleteStorageVolumeResponse
-	65, // 107: agent.NodeAgent.MigrateVM:output_type -> agent.MigrateVMResponse
-	67, // 108: agent.NodeAgent.SyncTemplate:output_type -> agent.SyncTemplateResponse
-	57, // 109: agent.NodeAgent.AttachDisk:output_type -> agent.AttachDiskResponse
-	59, // 110: agent.NodeAgent.DetachDisk:output_type -> agent.DetachDiskResponse
-	61, // 111: agent.NodeAgent.DefineNetwork:output_type -> agent.DefineNetworkResponse
-	63, // 112: agent.NodeAgent.UndefineNetwork:output_type -> agent.UndefineNetworkResponse
-	76, // 113: agent.NodeAgent.ProbeIPs:output_type -> agent.ProbeIPsResponse
-	92, // [92:114] is the sub-list for method output_type
-	70, // [70:92] is the sub-list for method input_type
-	70, // [70:70] is the sub-list for extension type_name
-	70, // [70:70] is the sub-list for extension extendee
-	0,  // [0:70] is the sub-list for field type_name
+	44, // 12: agent.VMCommandResponse.error:type_name -> agent.ErrorResponse
+	2,  // 13: agent.VMCommandResponse.state:type_name -> agent.VMState
+	1,  // 14: agent.VMCommandResponse.storage_disposition:type_name -> agent.DiskStorageDisposition
+	17, // 15: agent.VMConfig.resources:type_name -> agent.VMResources
+	34, // 16: agent.VMConfig.network_config:type_name -> agent.VMNetworkConfig
+	40, // 17: agent.VMConfig.storage_config:type_name -> agent.StorageConfig
+	79, // 18: agent.VMConfig.metadata:type_name -> agent.VMConfig.MetadataEntry
+	2,  // 19: agent.VMStatusResponse.state:type_name -> agent.VMState
+	23, // 20: agent.VMStatusResponse.current_resources:type_name -> agent.VMResourceUsage
+	82, // 21: agent.VMStatusResponse.last_state_change:type_name -> google.protobuf.Timestamp
+	3,  // 22: agent.VMMetricsRequest.metric_types:type_name -> agent.MetricType
+	82, // 23: agent.VMMetricsResponse.timestamp:type_name -> google.protobuf.Timestamp
+	26, // 24: agent.VMMetricsResponse.cpu:type_name -> agent.CPUMetrics
+	27, // 25: agent.VMMetricsResponse.memory:type_name -> agent.MemoryMetrics
+	28, // 26: agent.VMMetricsResponse.disk:type_name -> agent.DiskMetrics
+	29, // 27: agent.VMMetricsResponse.network:type_name -> agent.NetworkMetrics
+	30, // 28: agent.VMMetricsResponse.process:type_name -> agent.ProcessMetrics
+	4,  // 29: agent.SnapshotRequest.operation:type_name -> agent.SnapshotOperationType
+	4,  // 30: agent.SnapshotResponse.operation:type_name -> agent.SnapshotOperationType
+	33, // 31: agent.SnapshotResponse.snapshot:type_name -> agent.SnapshotInfo
+	33, // 32: agent.SnapshotResponse.snapshots:type_name -> agent.SnapshotInfo
+	44, // 33: agent.SnapshotResponse.error:type_name -> agent.ErrorResponse
+	82, // 34: agent.SnapshotInfo.created_at:type_name -> google.protobuf.Timestamp
+	2,  // 35: agent.SnapshotInfo.vm_state:type_name -> agent.VMState
+	35, // 36: agent.VMNetworkConfig.interfaces:type_name -> agent.NetworkInterface
+	36, // 37: agent.VMNetworkConfig.firewall_rules:type_name -> agent.FirewallRule
+	37, // 38: agent.VMNetworkConfig.bandwidth_limits:type_name -> agent.BandwidthLimit
+	5,  // 39: agent.NetworkInterface.type:type_name -> agent.NetworkInterfaceType
+	6,  // 40: agent.FirewallRule.direction:type_name -> agent.FirewallDirection
+	7,  // 41: agent.FirewallRule.action:type_name -> agent.FirewallAction
+	34, // 42: agent.NetworkConfigRequest.config:type_name -> agent.VMNetworkConfig
+	35, // 43: agent.NetworkConfigResponse.applied_interfaces:type_name -> agent.NetworkInterface
+	44, // 44: agent.NetworkConfigResponse.error:type_name -> agent.ErrorResponse
+	41, // 45: agent.StorageConfig.primary_disk:type_name -> agent.DiskConfig
+	41, // 46: agent.StorageConfig.additional_volumes:type_name -> agent.DiskConfig
+	8,  // 47: agent.DiskConfig.format:type_name -> agent.DiskFormat
+	9,  // 48: agent.DiskConfig.backend:type_name -> agent.StorageBackend
+	82, // 49: agent.VNCProxyResponse.expires_at:type_name -> google.protobuf.Timestamp
+	44, // 50: agent.VNCProxyResponse.error:type_name -> agent.ErrorResponse
+	10, // 51: agent.ErrorResponse.code:type_name -> agent.ErrorCode
+	80, // 52: agent.ErrorResponse.details:type_name -> agent.ErrorResponse.DetailsEntry
+	47, // 53: agent.GetNodeInfoResponse.os_info:type_name -> agent.OSInfo
+	48, // 54: agent.GetNodeInfoResponse.cpu_info:type_name -> agent.CPUInfo
+	44, // 55: agent.GetNodeInfoResponse.error:type_name -> agent.ErrorResponse
+	44, // 56: agent.DiskImportResponse.error:type_name -> agent.ErrorResponse
+	44, // 57: agent.BackupDiskResponse.error:type_name -> agent.ErrorResponse
+	44, // 58: agent.CreateStorageVolumeResponse.error:type_name -> agent.ErrorResponse
+	44, // 59: agent.DeleteStorageVolumeResponse.error:type_name -> agent.ErrorResponse
+	44, // 60: agent.AttachDiskResponse.error:type_name -> agent.ErrorResponse
+	1,  // 61: agent.AttachDiskResponse.storage_disposition:type_name -> agent.DiskStorageDisposition
+	44, // 62: agent.DetachDiskResponse.error:type_name -> agent.ErrorResponse
+	1,  // 63: agent.DetachDiskResponse.storage_disposition:type_name -> agent.DiskStorageDisposition
+	44, // 64: agent.DefineNetworkResponse.error:type_name -> agent.ErrorResponse
+	44, // 65: agent.UndefineNetworkResponse.error:type_name -> agent.ErrorResponse
+	44, // 66: agent.MigrateVMResponse.error:type_name -> agent.ErrorResponse
+	44, // 67: agent.SyncTemplateResponse.error:type_name -> agent.ErrorResponse
+	44, // 68: agent.GetLiveMetricsResponse.error:type_name -> agent.ErrorResponse
+	73, // 69: agent.ScanVMsResponse.vms:type_name -> agent.ScannedVM
+	44, // 70: agent.ScanVMsResponse.error:type_name -> agent.ErrorResponse
+	74, // 71: agent.ScannedVM.disks:type_name -> agent.ScannedDisk
+	75, // 72: agent.ScannedVM.networks:type_name -> agent.ScannedNetwork
+	11, // 73: agent.NodeAgent.RegisterNode:input_type -> agent.RegisterNodeRequest
+	13, // 74: agent.NodeAgent.Heartbeat:input_type -> agent.HeartbeatRequest
+	18, // 75: agent.NodeAgent.ExecuteVMCommand:input_type -> agent.VMCommandRequest
+	21, // 76: agent.NodeAgent.GetVMStatus:input_type -> agent.VMStatusRequest
+	24, // 77: agent.NodeAgent.StreamVMMetrics:input_type -> agent.VMMetricsRequest
+	31, // 78: agent.NodeAgent.CreateSnapshot:input_type -> agent.SnapshotRequest
+	38, // 79: agent.NodeAgent.ApplyNetworkConfig:input_type -> agent.NetworkConfigRequest
+	42, // 80: agent.NodeAgent.StartVNCProxy:input_type -> agent.VNCProxyRequest
+	45, // 81: agent.NodeAgent.GetNodeInfo:input_type -> agent.GetNodeInfoRequest
+	49, // 82: agent.NodeAgent.ImportDisk:input_type -> agent.DiskImportRequest
+	51, // 83: agent.NodeAgent.BackupDisk:input_type -> agent.BackupDiskRequest
+	69, // 84: agent.NodeAgent.GetLiveMetrics:input_type -> agent.GetLiveMetricsRequest
+	71, // 85: agent.NodeAgent.ScanVMs:input_type -> agent.ScanVMsRequest
+	53, // 86: agent.NodeAgent.CreateStorageVolume:input_type -> agent.CreateStorageVolumeRequest
+	55, // 87: agent.NodeAgent.DeleteStorageVolume:input_type -> agent.DeleteStorageVolumeRequest
+	65, // 88: agent.NodeAgent.MigrateVM:input_type -> agent.MigrateVMRequest
+	67, // 89: agent.NodeAgent.SyncTemplate:input_type -> agent.SyncTemplateRequest
+	57, // 90: agent.NodeAgent.AttachDisk:input_type -> agent.AttachDiskRequest
+	59, // 91: agent.NodeAgent.DetachDisk:input_type -> agent.DetachDiskRequest
+	61, // 92: agent.NodeAgent.DefineNetwork:input_type -> agent.DefineNetworkRequest
+	63, // 93: agent.NodeAgent.UndefineNetwork:input_type -> agent.UndefineNetworkRequest
+	76, // 94: agent.NodeAgent.ProbeIPs:input_type -> agent.ProbeIPsRequest
+	12, // 95: agent.NodeAgent.RegisterNode:output_type -> agent.RegisterNodeResponse
+	15, // 96: agent.NodeAgent.Heartbeat:output_type -> agent.HeartbeatResponse
+	19, // 97: agent.NodeAgent.ExecuteVMCommand:output_type -> agent.VMCommandResponse
+	22, // 98: agent.NodeAgent.GetVMStatus:output_type -> agent.VMStatusResponse
+	25, // 99: agent.NodeAgent.StreamVMMetrics:output_type -> agent.VMMetricsResponse
+	32, // 100: agent.NodeAgent.CreateSnapshot:output_type -> agent.SnapshotResponse
+	39, // 101: agent.NodeAgent.ApplyNetworkConfig:output_type -> agent.NetworkConfigResponse
+	43, // 102: agent.NodeAgent.StartVNCProxy:output_type -> agent.VNCProxyResponse
+	46, // 103: agent.NodeAgent.GetNodeInfo:output_type -> agent.GetNodeInfoResponse
+	50, // 104: agent.NodeAgent.ImportDisk:output_type -> agent.DiskImportResponse
+	52, // 105: agent.NodeAgent.BackupDisk:output_type -> agent.BackupDiskResponse
+	70, // 106: agent.NodeAgent.GetLiveMetrics:output_type -> agent.GetLiveMetricsResponse
+	72, // 107: agent.NodeAgent.ScanVMs:output_type -> agent.ScanVMsResponse
+	54, // 108: agent.NodeAgent.CreateStorageVolume:output_type -> agent.CreateStorageVolumeResponse
+	56, // 109: agent.NodeAgent.DeleteStorageVolume:output_type -> agent.DeleteStorageVolumeResponse
+	66, // 110: agent.NodeAgent.MigrateVM:output_type -> agent.MigrateVMResponse
+	68, // 111: agent.NodeAgent.SyncTemplate:output_type -> agent.SyncTemplateResponse
+	58, // 112: agent.NodeAgent.AttachDisk:output_type -> agent.AttachDiskResponse
+	60, // 113: agent.NodeAgent.DetachDisk:output_type -> agent.DetachDiskResponse
+	62, // 114: agent.NodeAgent.DefineNetwork:output_type -> agent.DefineNetworkResponse
+	64, // 115: agent.NodeAgent.UndefineNetwork:output_type -> agent.UndefineNetworkResponse
+	77, // 116: agent.NodeAgent.ProbeIPs:output_type -> agent.ProbeIPsResponse
+	95, // [95:117] is the sub-list for method output_type
+	73, // [73:95] is the sub-list for method input_type
+	73, // [73:73] is the sub-list for extension type_name
+	73, // [73:73] is the sub-list for extension extendee
+	0,  // [0:73] is the sub-list for field type_name
 }
 
 func init() { file_api_proto_agent_proto_init() }
@@ -6945,7 +7144,7 @@ func file_api_proto_agent_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_proto_agent_proto_rawDesc), len(file_api_proto_agent_proto_rawDesc)),
-			NumEnums:      10,
+			NumEnums:      11,
 			NumMessages:   70,
 			NumExtensions: 0,
 			NumServices:   1,

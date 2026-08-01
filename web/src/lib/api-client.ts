@@ -14,9 +14,11 @@ export interface ApiError {
   details?: Record<string, string[]>;
 }
 
-// Create axios instance with default config
+// Create axios instance with default config.
+// Same-origin: requests to /api are proxied server-side to the panel via
+// next.config.js rewrites(), so the panel hostname never reaches the client.
 const apiClient: AxiosInstance = axios.create({
-  baseURL: process.env.NEXT_PUBLIC_API_URL || '',
+  baseURL: '',
   headers: {
     'Content-Type': 'application/json',
   },

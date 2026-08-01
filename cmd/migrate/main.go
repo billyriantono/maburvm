@@ -5,12 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"log"
-	"net"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -75,23 +72,11 @@ func main() {
 	}
 }
 
+// databaseURL delegates to the shared, URL-encoded config helper so the panel,
+// server migrations/River, and this command all build the DSN identically and
+// escape special characters in credentials safely.
 func databaseURL(cfg config.DatabaseConfig) string {
-	u := &url.URL{
-		Scheme: "postgres",
-		User:   url.UserPassword(cfg.User, cfg.Password),
-		Host:   fmtHostPort(cfg.Host, cfg.Port),
-		Path:   cfg.Name,
-	}
-	q := u.Query()
-	if cfg.SSLMode != "" {
-		q.Set("sslmode", cfg.SSLMode)
-	}
-	u.RawQuery = q.Encode()
-	return u.String()
-}
-
-func fmtHostPort(host string, port int) string {
-	return net.JoinHostPort(host, strconv.Itoa(port))
+	return cfg.DatabaseURL()
 }
 
 func ensureSchemaMigrations(ctx context.Context, db *sql.DB) error {

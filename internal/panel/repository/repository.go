@@ -41,6 +41,20 @@ func NewDBConfig(cfg *config.DatabaseConfig) *DBConfig {
 	}
 }
 
+// DatabaseURL builds the PostgreSQL connection string for this config via the
+// shared, URL-encoded helper in the config package, so it escapes special
+// characters in credentials identically to migrations and the River queue.
+func (c *DBConfig) DatabaseURL() string {
+	return config.DatabaseConfig{
+		Host:     c.Host,
+		Port:     c.Port,
+		User:     c.User,
+		Password: c.Password,
+		Name:     c.Name,
+		SSLMode:  c.SSLMode,
+	}.DatabaseURL()
+}
+
 // Repository provides base repository functionality
 type Repository struct {
 	db *gorm.DB
@@ -58,10 +72,10 @@ func (r *Repository) DB() *gorm.DB {
 
 // InitDB initializes the database connection with connection pool settings
 func InitDB(cfg *DBConfig) (*gorm.DB, error) {
-	dsn := fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.Name, cfg.SSLMode,
-	)
+	// Build the DSN through the shared, URL-encoded config helper so special
+	// characters in the password are escaped correctly (spaces, quotes, '@',
+	// ':', '/', '?', '#', backslashes) and the behavior matches migrations/River.
+	dsn := cfg.DatabaseURL()
 
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),

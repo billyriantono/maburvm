@@ -67,6 +67,24 @@
   <script type="module">
     import RFB from '/novnc/core/rfb.js';
 
+    // Same-origin safe builder: turn a relative ws_path into an absolute
+    // ws:// or wss:// URL using the page's own origin. Rejects absolute URLs
+    // and protocol-relative paths so an internal panel host (e.g. panel:8080)
+    // can never be reintroduced. Mirrors web/src/types/vnc.ts semantics.
+    function buildVNCWsUrl(path) {
+      const trimmed = (path || '').trim();
+      if (trimmed === '') throw new Error('Empty VNC WebSocket path');
+      if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) || trimmed.startsWith('//')) {
+        throw new Error('Refusing foreign-origin VNC WebSocket URL: ' + trimmed);
+      }
+      const abs = new URL(trimmed, window.location.href);
+      if (abs.origin !== window.location.origin) {
+        throw new Error('Refusing cross-origin VNC WebSocket URL: ' + abs.href);
+      }
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      return proto + '//' + window.location.host + abs.pathname + abs.search + abs.hash;
+    }
+
     const vmId = new URLSearchParams(window.location.search).get('vm') || window.location.pathname.split('/')[2];
     document.getElementById('vm-id').textContent = vmId.slice(0, 8);
 
@@ -81,10 +99,10 @@
       const json = await resp.json();
       const config = json.data || json;
 
-      if (!config.websocket_url) throw new Error('No WebSocket URL');
+      if (!config.ws_path) throw new Error('No WebSocket path');
 
       const container = document.getElementById('console');
-      const rfb = new RFB(container, config.websocket_url, {
+      const rfb = new RFB(container, buildVNCWsUrl(config.ws_path), {
         credentials: { password: config.password || '' },
         wsProtocols: ['binary'],
       });
@@ -129,7 +147,6 @@
         info.innerHTML = `
           <p>VNC Host: <span>${config.host}</span></p>
           <p>VNC Port: <span>${config.port}</span></p>
-          ${config.websocket_url ? `<p>WebSocket: <span>${config.websocket_url}</span></p>` : ''}
         `;
       }
     }

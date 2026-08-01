@@ -162,6 +162,33 @@ func TestDefaultSkipEndpoints(t *testing.T) {
 			expected: true,
 		},
 		{
+			name:     "livez",
+			path:     "/livez",
+			expected: true,
+		},
+		{
+			name:     "readyz",
+			path:     "/readyz",
+			expected: true,
+		},
+		{
+			// Regression guard: only exact health paths bypass — no broad prefix.
+			name:     "healthz-subpath not skipped",
+			path:     "/livez/extra",
+			expected: false,
+		},
+		{
+			name:     "readyz-subpath not skipped",
+			path:     "/readyz/extra",
+			expected: false,
+		},
+		{
+			// /healthz is a prefix of /healthzapi-style — ensure no wide bypass.
+			name:     "api-prefixed health not skipped",
+			path:     "/healthzfoobar",
+			expected: false,
+		},
+		{
 			name:     "metrics",
 			path:     "/metrics",
 			expected: true,

@@ -1,0 +1,350 @@
+# =============================================================================
+# MaburVM — Production Compose (EXPLICIT ONLY)
+# =============================================================================
+#
+# This file is NOT loaded automatically. It is invoked ONLY when you pass
+# `-f docker-compose.production.yml --env-file .env.production` explicitly.
+# Docker Compose does NOT auto-discover this file (only `docker-compose.yml`
+# plus an optional `docker-compose.override.yml` are auto-merged), so the
+# development defaults are never mixed into a production start.
+#
+#   docker compose -f docker-compose.production.yml --env-file .env.production up -d
+#
+# IMPORTANT — NOT A CERTIFICATION:
+# This file is a safer, more explicit production entrypoint. It is NOT a
+# guarantee of production-readiness. You are still responsible for:
+#   * reviewing every image tag before deploy (see .env.production.example),
+#   * terminating TLS at a reverse proxy in front of the web service,
+#   * providing real secrets via the *_FILE secret mounts (not inline env),
+#   * backing up PostgreSQL and object storage (see docs/DEPLOYMENT.md),
+#   * deploying the KVM agent separately on each hypervisor host.
+#
+# IMPORTANT — least-privilege topology:
+#   * `web` <-> `panel` communicate only on the private `webpanel` network.
+#   * `panel` <-> `postgres`/`minio`/`minio-init` communicate only on the
+#     private `data` network (no host exposure).
+#   * `panel` gets a NON-internal `agent-egress` network to initiate outbound
+#     gRPC to hypervisor agents. No data service is on `edge`/`agent-egress`.
+#   * `web` is the only published service (loopback; reverse proxy in front).
+#   * The panel NEVER receives MinIO ROOT credentials. MinIO root creds stay
+#     confined to `minio` + `minio-init`; the panel gets a RESTRICTED S3
+#     user (bucket-scoped policy) created by `minio-init`.
+#
+# No `version:` key — the Compose Specification no longer uses it.
+#
+# SECRET MODEL (honest): NOT every secret is file-backed. In THIS self-contained
+# model only the PostgreSQL password and the panel's restricted S3 credentials are
+# file mounts (Compose `secrets:`). MinIO ROOT credentials and PANEL_PUBLIC_URL
+# are direct env because MinIO does not reliably support *_FILE indirection for
+# root creds across versions. These are simple host-side bind/file mounts — they do
+# NOT enforce uid/gid/mode and are NOT a managed secret store. Source files stay
+# on the host; see docs/DEPLOYMENT.md. Managed secret isolation is phase 1.
+
+services:
+  postgres:
+    image: postgres:16.14
+    container_name: maburvm-postgres
+    restart: unless-stopped
+    # PostgreSQL accepts its password only via file in this composition.
+    # POSTGRES_USER / POSTGRES_DB are non-secret and passed directly.
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-maburvm}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_DB: ${POSTGRES_DB:-maburvm}
+    # No host port mapping: data service is reachable only on the data net.
+    networks:
+      - data
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    secrets:
+      - postgres_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-maburvm} -d ${POSTGRES_DB:-maburvm}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    # NOTE: PostgreSQL upstream supports POSTGRES_PASSWORD_FILE natively.
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    container_name: maburvm-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    # MinIO ROOT credentials are supplied as DIRECT env (not file-mounted) and are
+    # CONFINED to minio + minio-init. Only the DB password + panel restricted S3
+    # creds are file-backed. MinIO does NOT reliably support *_FILE indirection
+    # for MINIO_ROOT_USER/PASSWORD across versions, so these MUST be real,
+    # non-placeholder values.
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER in .env.production}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env.production}
+    # No host port mapping. Object storage is reachable only on the data net.
+    # The console (9001) is intentionally not published.
+    networks:
+      - data
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      # MinIO ships `mc`; `mc ready local` is the supported readiness probe.
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  minio-init:
+    # One-shot, idempotent initializer: creates the bucket, an immutable versioned
+    # bucket-scoped policy (maburvm-bucket-rw-v1), and a RESTRICTED S3 user
+    # (maburvm-app-v1) for the panel. Root creds are confined here. Runs the
+    # official `mc` tooling after MinIO is healthy.
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    container_name: maburvm-minio-init
+    restart: "no"
+    # Bypass the image entrypoint (which prepends `minio`) by pinning /bin/sh and
+    # passing the script as the command.
+    entrypoint: ["/bin/sh"]
+    command: ["/minio-init.sh"]
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER in .env.production}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env.production}
+      MINIO_BUCKET: ${S3_BUCKET:-maburvm}
+      # Restricted S3 user identity (non-secret). Its password is a FILE secret.
+      MINIO_S3_USER: ${MINIO_S3_USER:-maburvm-app-v1}
+      MINIO_S3_PASSWORD_FILE: /run/secrets/s3_restricted_password
+    networks:
+      - data
+    # minio-init needs only the restricted S3 password file (root creds come from
+    # env; the DB password file is not required by this service).
+    secrets:
+      - s3_restricted_password
+    depends_on:
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./docker/minio-init.sh:/minio-init.sh:ro
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  panel:
+    build:
+      context: .
+      dockerfile: Dockerfile.panel
+    image: maburvm-panel:local
+    container_name: maburvm-panel
+    restart: unless-stopped
+    # Panel API is NOT published to the host — it stays internal (web proxies it).
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER:-maburvm}
+      DB_NAME: ${POSTGRES_DB:-maburvm}
+      # DB password comes from the same host secret file Postgres uses.
+      DB_PASSWORD_FILE: /run/secrets/postgres_password
+      # Self-contained internal Postgres: stock image has SSL OFF, so the
+      # default is `disable`. A REMOTE/MANAGED DB is NOT a supported switch in
+      # this file — it needs a separately authored Compose model (real server
+      # certs + client config) and its own validation.
+      DB_SSL_MODE: ${DB_SSL_MODE:-disable}
+      SERVER_PORT: 8080
+      SERVER_HOST: 0.0.0.0
+      # Canonical public HTTPS URL of the panel, used by node installer scripts
+      # (e.g. /install-agent.sh) to build their embedded download URL behind the
+      # reverse proxy. Must be the externally reachable URL, not the internal one.
+      # Next (web) now serves /install-agent.sh and /webhooks/*, so no panel host
+      # port is published.
+      PANEL_PUBLIC_URL: ${PANEL_PUBLIC_URL:?set PANEL_PUBLIC_URL in .env.production}
+      # Crypto secrets: persistent single-panel behavior is provided via /data.
+      # The panel generates + persists unique JWT/AES keys under MABURVM_DATA_DIR
+      # on first boot (survives restarts) — this is the supported single-panel
+      # model. App-side _FILE secret mounting works (resolved by the entrypoint
+      # for DB_PASSWORD/S3_*/JWT/AES), but multi-instance pinning or custom
+      # secret mounting requires a separately designed topology, not this file.
+      MABURVM_DATA_DIR: /data
+      # Panel receives ONLY restricted S3 access (bucket-scoped user created by
+      # minio-init). It never sees MinIO root credentials. These S3_* vars feed the
+      # shared backup-transport consumers (the agent constructor in
+      # internal/agent/server/node_agent.go and the River worker in
+      # internal/shared/queue/workers.go, which read STORAGE_*/S3_*). Note:
+      # internal/panel/storage/s3.go reads S3_* for config validation but is NOT a
+      # production backup-transport consumer; panel BackupService wiring remains
+      # Phase 3. The shared transport expects a scheme-less endpoint, S3_FORCE_HTTP
+      # for HTTP, and path-style for MinIO.
+      S3_ENDPOINT: minio:9000
+      S3_FORCE_HTTP: "true"
+      S3_USE_PATH_STYLE: "true"
+      S3_ACCESS_KEY: ${MINIO_S3_USER:-maburvm-app-v1}
+      S3_SECRET_KEY_FILE: /run/secrets/s3_restricted_password
+      S3_BUCKET: ${S3_BUCKET:-maburvm}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?set ALLOWED_ORIGINS in .env.production}
+    # Panel needs: `data` (postgres/minio/minio-init), `webpanel` (web), and a
+    # NON-internal `agent-egress` to initiate outbound gRPC to agents. It does
+    # NOT join `edge`. A Docker network is NOT a full host/firewall policy.
+    networks:
+      - data
+      - webpanel
+      - agent-egress
+    volumes:
+      - panel_data:/data
+    secrets:
+      - postgres_password
+      - s3_restricted_password
+    # Runs as non-root `maburvm` at runtime (entrypoint starts as root, chowns
+    # /data, reads secret files, then su-exec drops to maburvm).
+    depends_on:
+      postgres:
+        condition: service_healthy
+        restart: true
+      minio:
+        condition: service_healthy
+        restart: true
+      minio-init:
+        condition: service_completed_successfully
+        restart: true
+    healthcheck:
+      # Sibling lane exposes /readyz on the panel.
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/readyz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  web:
+    # Built from the repo-root Dockerfile.web (sibling lane owns web/**).
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+      args:
+        # Next.js build-time base URL the UI rewrites to reach the panel API.
+        # ENFORCE=1 fails the build if empty or still localhost (production gate).
+        API_BASE_URL: http://panel:8080
+        ENFORCE_API_BASE_URL: "1"
+    image: maburvm-web:local
+    container_name: maburvm-web
+    restart: unless-stopped
+    # Only the UI is published, and only on loopback by default: an external TLS
+    # reverse proxy must target web (e.g. 127.0.0.1:3000). Do NOT expose the
+    # panel API, PostgreSQL, MinIO, or the agent.
+    ports:
+      - "127.0.0.1:${WEB_PORT:-3000}:3000"
+    environment:
+      API_BASE_URL: http://panel:8080
+    networks:
+      - webpanel
+      - edge
+    depends_on:
+      panel:
+        condition: service_healthy
+        restart: true
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # ---------------------------------------------------------------------------
+  # Agent deployment (READ-ONLY NOTE — not started by this file)
+  # ---------------------------------------------------------------------------
+  # Architecture: the panel INITIATES outbound gRPC to a SEPARATELY deployed
+  # hypervisor agent (from the panel's `agent-egress` network); the agent does
+  # not connect back to the panel. A deployed agent only needs to be REACHABLE
+  # from the panel host on its gRPC port — it needs no inbound route to the
+  # panel. Restrict agent ingress to the panel host at the firewall.
+  #
+  # The agent is PRIVILEGED (it drives libvirt/QEMU on a hypervisor) and must NOT
+  # run as a sidecar on the panel host. The example below is ONE MANUAL way to
+  # run it on a hypervisor for testing — it is NOT a supported/production agent
+  # deployment path, and privilege minimization / trusted deployment automation
+  # are owned by Phase 1. This file deliberately omits the agent service.
+  #
+  #   docker run --privileged --network host \
+  #     -v /var/run/libvirt:/var/run/libvirt \
+  #     -v /var/lib/libvirt/images:/var/lib/libvirt/images \
+  #     -e AGENT_AUTH_TOKEN=<node-token> \
+  #     maburvm-agent:local
+  #
+  # `AGENT_PANEL_ADDRESS` is NOT used by the current agent (omitted to avoid a
+  # misleading flag); only AGENT_AUTH_TOKEN is passed here.
+  #
+  # The public bootstrap endpoints (e.g. GET /install-agent.sh) and the bare
+  # docker-run installer path are intentionally NOT a supported production
+  # solution. They are 503-contained until Phase 1's verified agent deployment
+  # / trust contract.
+  #
+  # Privileged-agent minimization is an EXPLICIT EXCEPTION tracked separately and
+  # requires a dedicated minimization test before any change.
+  # ---------------------------------------------------------------------------
+
+networks:
+  # Published edge: only `web` attaches here, behind a TLS reverse proxy.
+  edge:
+    driver: bridge
+  # Private web<->panel network. No data services, no host exposure.
+  webpanel:
+    driver: bridge
+    internal: true
+  # Private data network: panel <-> postgres/minio/minio-init only.
+  data:
+    driver: bridge
+    internal: true
+  # Non-internal egress network for the panel only: outbound gRPC to agents.
+  # No data service attaches here. A Docker network is NOT a complete
+  # host/firewall policy — enforce agent ingress separately.
+  agent-egress:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  minio_data:
+    driver: local
+  panel_data:
+    driver: local
+
+# Compose secrets: each entry maps a secret NAME to a FILE you create on the
+# host. Compose mounts it read-only at /run/secrets/<name>. This is a simple file
+# mount — it does NOT enforce uid/gid/mode and is NOT a managed secret store.
+#
+# Practical source-file instruction (secure, simple):
+#   * Create deploy/secrets/postgres_password and deploy/secrets/s3_restricted_password
+#     as host files, mode 0400, owned by root (or the user running `docker compose`).
+#     The container's ROOT entrypoint/init reads them before dropping privileges, so
+#     they do NOT need to be world-readable. Do NOT use a 0444 workaround.
+#   * Prefer writing each secret precisely. The official postgres entrypoint reads
+#     the file via command substitution (strips a terminal newline) and our panel
+#     app resolver also trims surrounding whitespace — so a trailing newline is NOT
+#     preserved as part of the secret. Still, write exactly the secret you intend.
+#   * Never commit deploy/secrets/ (a .gitignore rule covers it).
+#
+#   install -m 0400 -o root /path/to/password.txt deploy/secrets/postgres_password
+#   install -m 0400 -o root /path/to/s3pass.txt   deploy/secrets/s3_restricted_password
+secrets:
+  postgres_password:
+    file: ./deploy/secrets/postgres_password
+  s3_restricted_password:
+    file: ./deploy/secrets/s3_restricted_password

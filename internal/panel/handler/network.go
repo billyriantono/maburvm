@@ -5,20 +5,24 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/maburvm/panel/internal/panel/authz"
 	"github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/panel/service"
 	"github.com/maburvm/panel/internal/shared/models"
+	"gorm.io/gorm"
 )
 
 // NetworkHandler handles HTTP requests for network management
 type NetworkHandler struct {
 	service *service.NetworkService
+	authz   *authz.Authorizer
 }
 
 // NewNetworkHandler creates a new NetworkHandler instance
-func NewNetworkHandler(service *service.NetworkService) *NetworkHandler {
+func NewNetworkHandler(service *service.NetworkService, authorizer *authz.Authorizer) *NetworkHandler {
 	return &NetworkHandler{
 		service: service,
+		authz:   authorizer,
 	}
 }
 
@@ -76,6 +80,17 @@ func (h *NetworkHandler) AddNetworkInterface(c echo.Context) error {
 			"error":   "Bad Request",
 			"message": "VM ID is required",
 		})
+	}
+
+	// Enforce tenant isolation before any mutation/read.
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
+	}
+
+	// Gate-1: clients may not create custom/additional NICs (which choose an IP
+	// and may carry VLAN/bandwidth selections). Admins retain this capability.
+	if isClientRole(c) {
+		return clientNetworkSelectionDenied(c)
 	}
 
 	var req AddNetworkRequest
@@ -151,8 +166,20 @@ func (h *NetworkHandler) SetBandwidthLimit(c echo.Context) error {
 		})
 	}
 
-	if !h.requireAdmin(c) {
+	// Enforce tenant isolation and verify the network belongs to this VM before
+	// any role check (owners/admin reach the decision; others map to 404).
+	if !h.authz.AuthorizeVM(c, vmID) {
 		return nil
+	}
+	if resourceVM, err := h.authz.NetworkVMID(c.Request().Context(), networkID); err != nil || resourceVM != vmID {
+		authz.NotFound(c)
+		return nil
+	}
+
+	// Gate-1: bandwidth configuration is admin-only; a client (even an owner) is
+	// denied with the generic non-topology-leaking message.
+	if isClientRole(c) {
+		return clientNetworkSelectionDenied(c)
 	}
 
 	var req SetBandwidthRequest
@@ -230,6 +257,15 @@ func (h *NetworkHandler) AddPortForward(c echo.Context) error {
 		})
 	}
 
+	// Enforce tenant isolation and verify the network belongs to this VM.
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
+	}
+	if resourceVM, err := h.authz.NetworkVMID(c.Request().Context(), networkID); err != nil || resourceVM != vmID {
+		authz.NotFound(c)
+		return nil
+	}
+
 	var req AddPortForwardRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
@@ -300,6 +336,20 @@ func (h *NetworkHandler) RemovePortForward(c echo.Context) error {
 		})
 	}
 
+	// Enforce tenant isolation and verify both the network and the port forward
+	// belong to this VM (mismatch maps to 404, preserving anti-enumeration).
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
+	}
+	if resourceVM, err := h.authz.NetworkVMID(c.Request().Context(), networkID); err != nil || resourceVM != vmID {
+		authz.NotFound(c)
+		return nil
+	}
+	if pfVM, err := h.authz.PortForwardVMID(c.Request().Context(), forwardID); err != nil || pfVM != vmID {
+		authz.NotFound(c)
+		return nil
+	}
+
 	if err := h.service.RemovePortForward(c.Request().Context(), vmID, networkID, forwardID); err != nil {
 		switch {
 		case errors.Is(err, service.ErrPortForwardNotFound):
@@ -348,6 +398,11 @@ func (h *NetworkHandler) AddVMPortForward(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "VM ID is required"})
 	}
 
+	// Enforce tenant isolation before mutation.
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
+	}
+
 	var req AddPortForwardRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Invalid request body"})
@@ -382,6 +437,12 @@ func (h *NetworkHandler) AddVMPortForward(c echo.Context) error {
 // ListVMPortForwards handles GET /api/v1/vms/:id/port-forwards — all of a VM's NAT rules.
 func (h *NetworkHandler) ListVMPortForwards(c echo.Context) error {
 	vmID := c.Param("id")
+
+	// Enforce tenant isolation before read.
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
+	}
+
 	forwards, err := h.service.GetPortForwardsForVM(c.Request().Context(), vmID)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Internal Server Error", "message": err.Error()})
@@ -403,6 +464,16 @@ func (h *NetworkHandler) RemoveVMPortForward(c echo.Context) error {
 	if vmID == "" || forwardID == "" {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "VM ID and Forward ID are required"})
 	}
+
+	// Enforce tenant isolation and verify the port forward belongs to this VM.
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
+	}
+	if pfVM, err := h.authz.PortForwardVMID(c.Request().Context(), forwardID); err != nil || pfVM != vmID {
+		authz.NotFound(c)
+		return nil
+	}
+
 	if err := h.service.RemovePortForwardForVM(c.Request().Context(), vmID, forwardID); err != nil {
 		switch {
 		case errors.Is(err, service.ErrPortForwardNotFound):
@@ -446,6 +517,11 @@ func (h *NetworkHandler) AddFirewallRule(c echo.Context) error {
 			"error":   "Bad Request",
 			"message": "VM ID is required",
 		})
+	}
+
+	// Enforce tenant isolation before mutation.
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
 	}
 
 	var req AddFirewallRuleRequest
@@ -516,6 +592,15 @@ func (h *NetworkHandler) RemoveFirewallRule(c echo.Context) error {
 		})
 	}
 
+	// Enforce tenant isolation and verify the firewall rule belongs to this VM.
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
+	}
+	if ruleVM, err := h.authz.FirewallRuleVMID(c.Request().Context(), ruleID); err != nil || ruleVM != vmID {
+		authz.NotFound(c)
+		return nil
+	}
+
 	if err := h.service.RemoveFirewallRule(c.Request().Context(), vmID, ruleID); err != nil {
 		switch {
 		case errors.Is(err, service.ErrFirewallRuleNotFound):
@@ -556,6 +641,20 @@ func (h *NetworkHandler) SetVLAN(c echo.Context) error {
 			"error":   "Bad Request",
 			"message": "VM ID and Network ID are required",
 		})
+	}
+
+	// Enforce tenant isolation and verify the network belongs to this VM.
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
+	}
+	if resourceVM, err := h.authz.NetworkVMID(c.Request().Context(), networkID); err != nil || resourceVM != vmID {
+		authz.NotFound(c)
+		return nil
+	}
+
+	// Gate-1: VLAN changes are admin-only; a client is denied.
+	if isClientRole(c) {
+		return clientNetworkSelectionDenied(c)
 	}
 
 	var req SetVLANRequest
@@ -601,6 +700,11 @@ func (h *NetworkHandler) ListNetworkInterfaces(c echo.Context) error {
 			"error":   "Bad Request",
 			"message": "VM ID is required",
 		})
+	}
+
+	// Enforce tenant isolation before read.
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
 	}
 
 	networks, err := h.service.GetNetworkInterfaceDetails(c.Request().Context(), vmID)
@@ -653,6 +757,15 @@ func (h *NetworkHandler) ListPortForwards(c echo.Context) error {
 		})
 	}
 
+	// Enforce tenant isolation and verify the network belongs to this VM.
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
+	}
+	if resourceVM, err := h.authz.NetworkVMID(c.Request().Context(), networkID); err != nil || resourceVM != vmID {
+		authz.NotFound(c)
+		return nil
+	}
+
 	portForwards, err := h.service.GetPortForwards(c.Request().Context(), vmID, networkID)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
@@ -689,6 +802,11 @@ func (h *NetworkHandler) ListFirewallRules(c echo.Context) error {
 			"error":   "Bad Request",
 			"message": "VM ID is required",
 		})
+	}
+
+	// Enforce tenant isolation before read.
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
 	}
 
 	rules, err := h.service.GetFirewallRules(c.Request().Context(), vmID)
@@ -733,6 +851,20 @@ func (h *NetworkHandler) SetAntiSpoofing(c echo.Context) error {
 		})
 	}
 
+	// Enforce tenant isolation and verify the network belongs to this VM.
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
+	}
+	if resourceVM, err := h.authz.NetworkVMID(c.Request().Context(), networkID); err != nil || resourceVM != vmID {
+		authz.NotFound(c)
+		return nil
+	}
+
+	// Gate-1: anti-spoofing changes are admin-only; a client is denied.
+	if isClientRole(c) {
+		return clientNetworkSelectionDenied(c)
+	}
+
 	var req struct {
 		Enabled bool `json:"enabled"`
 	}
@@ -771,12 +903,12 @@ func (h *NetworkHandler) SetAntiSpoofing(c echo.Context) error {
 }
 
 // RegisterNetworkRoutes registers all network routes with the Echo router
-func RegisterNetworkRoutes(e *echo.Echo, handler *NetworkHandler, db interface{}) {
+func RegisterNetworkRoutes(e *echo.Echo, handler *NetworkHandler, db *gorm.DB) {
 	// Create VM routes group
 	vms := e.Group("/api/v1/vms")
 
 	// Apply authentication middleware
-	vms.Use(middleware.RequireAuth(nil))
+	vms.Use(middleware.RequireAuth(db))
 
 	// Network interface routes
 	vms.POST("/:id/networks", handler.AddNetworkInterface, middleware.RequirePermission("vm:update"))

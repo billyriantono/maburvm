@@ -5,6 +5,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
+	"github.com/maburvm/panel/internal/panel/authz"
 	"github.com/maburvm/panel/internal/panel/service"
 	"github.com/maburvm/panel/internal/shared/models"
 )
@@ -12,12 +13,14 @@ import (
 // StorageHandler handles storage-related HTTP requests
 type StorageHandler struct {
 	storageService service.StorageService
+	authz          *authz.Authorizer
 }
 
 // NewStorageHandler creates a new storage handler
-func NewStorageHandler(storageService service.StorageService) *StorageHandler {
+func NewStorageHandler(storageService service.StorageService, authorizer *authz.Authorizer) *StorageHandler {
 	return &StorageHandler{
 		storageService: storageService,
+		authz:          authorizer,
 	}
 }
 
@@ -44,6 +47,10 @@ func (h *StorageHandler) RegisterRoutes(e *echo.Echo, authMiddleware echo.Middle
 
 // GetPools returns all storage pools
 func (h *StorageHandler) GetPools(c echo.Context) error {
+	// Host infrastructure storage is admin-only, not merely RequireAuth.
+	if !h.authz.AuthorizeAdmin(c) {
+		return nil
+	}
 	pools, err := h.storageService.GetPools()
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
@@ -56,6 +63,10 @@ func (h *StorageHandler) GetPools(c echo.Context) error {
 
 // GetPoolByID returns a specific storage pool
 func (h *StorageHandler) GetPoolByID(c echo.Context) error {
+	// Host infrastructure storage is admin-only, not merely RequireAuth.
+	if !h.authz.AuthorizeAdmin(c) {
+		return nil
+	}
 	id := c.Param("id")
 
 	pool, err := h.storageService.GetPoolByID(id)
@@ -76,6 +87,10 @@ func (h *StorageHandler) GetPoolByID(c echo.Context) error {
 
 // GetPoolsByNodeID returns storage pools for a specific node
 func (h *StorageHandler) GetPoolsByNodeID(c echo.Context) error {
+	// Host infrastructure storage is admin-only, not merely RequireAuth.
+	if !h.authz.AuthorizeAdmin(c) {
+		return nil
+	}
 	nodeID := c.Param("nodeId")
 
 	pools, err := h.storageService.GetPoolsByNodeID(nodeID)
@@ -90,6 +105,10 @@ func (h *StorageHandler) GetPoolsByNodeID(c echo.Context) error {
 
 // CreatePool creates a new storage pool
 func (h *StorageHandler) CreatePool(c echo.Context) error {
+	// Host infrastructure storage is admin-only, not merely RequireAuth.
+	if !h.authz.AuthorizeAdmin(c) {
+		return nil
+	}
 	var pool models.StoragePool
 	if err := c.Bind(&pool); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{
@@ -112,6 +131,10 @@ func (h *StorageHandler) CreatePool(c echo.Context) error {
 
 // UpdatePool updates an existing storage pool
 func (h *StorageHandler) UpdatePool(c echo.Context) error {
+	// Host infrastructure storage is admin-only, not merely RequireAuth.
+	if !h.authz.AuthorizeAdmin(c) {
+		return nil
+	}
 	id := c.Param("id")
 
 	existingPool, err := h.storageService.GetPoolByID(id)
@@ -147,6 +170,10 @@ func (h *StorageHandler) UpdatePool(c echo.Context) error {
 
 // DeletePool deletes a storage pool
 func (h *StorageHandler) DeletePool(c echo.Context) error {
+	// Host infrastructure storage is admin-only, not merely RequireAuth.
+	if !h.authz.AuthorizeAdmin(c) {
+		return nil
+	}
 	id := c.Param("id")
 
 	if err := h.storageService.DeletePool(id); err != nil {
@@ -162,6 +189,10 @@ func (h *StorageHandler) DeletePool(c echo.Context) error {
 
 // GetVolumes returns all volumes for a pool
 func (h *StorageHandler) GetVolumes(c echo.Context) error {
+	// Host infrastructure storage is admin-only, not merely RequireAuth.
+	if !h.authz.AuthorizeAdmin(c) {
+		return nil
+	}
 	poolID := c.Param("poolId")
 
 	volumes, err := h.storageService.GetVolumes(poolID)
@@ -176,6 +207,10 @@ func (h *StorageHandler) GetVolumes(c echo.Context) error {
 
 // GetVolumeByID returns a specific volume
 func (h *StorageHandler) GetVolumeByID(c echo.Context) error {
+	// Host infrastructure storage is admin-only, not merely RequireAuth.
+	if !h.authz.AuthorizeAdmin(c) {
+		return nil
+	}
 	id := c.Param("id")
 
 	volume, err := h.storageService.GetVolumeByID(id)
@@ -196,6 +231,10 @@ func (h *StorageHandler) GetVolumeByID(c echo.Context) error {
 
 // CreateVolume creates a new storage volume
 func (h *StorageHandler) CreateVolume(c echo.Context) error {
+	// Host infrastructure storage is admin-only, not merely RequireAuth.
+	if !h.authz.AuthorizeAdmin(c) {
+		return nil
+	}
 	poolID := c.Param("poolId")
 
 	var volume models.StorageVolume
@@ -221,6 +260,10 @@ func (h *StorageHandler) CreateVolume(c echo.Context) error {
 
 // DeleteVolume deletes a storage volume
 func (h *StorageHandler) DeleteVolume(c echo.Context) error {
+	// Host infrastructure storage is admin-only, not merely RequireAuth.
+	if !h.authz.AuthorizeAdmin(c) {
+		return nil
+	}
 	// The active route param is :volumeId; fall back to :id for the alt registration.
 	id := c.Param("volumeId")
 	if id == "" {

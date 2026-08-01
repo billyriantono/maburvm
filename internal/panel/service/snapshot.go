@@ -92,10 +92,10 @@ func (s *SnapshotService) CreateSnapshot(ctx context.Context, req *CreateSnapsho
 		return nil, fmt.Errorf("failed to get VM: %w", err)
 	}
 
-	// Verify user owns the VM (or is admin)
-	if vm.UserID != req.UserID {
-		return nil, ErrVMNotFound
-	}
+	// VM existence is already confirmed above (ErrVMNotFound on miss). Ownership
+	// (owner OR admin) is enforced at the handler boundary via authz.AuthorizeVM,
+	// so the service no longer gates on vm.UserID here — that previously denied
+	// legitimate admin support.
 
 	// Check if snapshot name already exists for this VM
 	exists, err := s.snapshotRepo.NameExists(ctx, req.VMID, req.Name)
@@ -217,16 +217,13 @@ func (s *SnapshotService) ListSnapshots(ctx context.Context, req *ListSnapshotsR
 	// Apply filters
 	switch {
 	case req.VMID != "":
-		// Verify user has access to this VM
-		vm, err := s.vmRepo.GetByID(ctx, req.VMID)
-		if err != nil {
+		// Verify the VM exists; ownership (owner OR admin) is enforced at the
+		// handler boundary via authz.AuthorizeVM.
+		if _, err := s.vmRepo.GetByID(ctx, req.VMID); err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return nil, ErrVMNotFound
 			}
 			return nil, fmt.Errorf("failed to get VM: %w", err)
-		}
-		if vm.UserID != req.UserID {
-			return nil, ErrVMNotFound
 		}
 
 		snapshots, err = s.snapshotRepo.ListByVMID(ctx, req.VMID, limit, req.Offset)
@@ -266,8 +263,12 @@ func (s *SnapshotService) ListSnapshots(ctx context.Context, req *ListSnapshotsR
 // Get Snapshot
 // ============================================================================
 
-// GetSnapshot retrieves a snapshot by ID
-func (s *SnapshotService) GetSnapshot(ctx context.Context, snapshotID string, userID string) (*models.Snapshot, error) {
+// GetSnapshot retrieves a snapshot by ID for the given route VM. The caller MUST
+// have already authorized the route VM via authz.AuthorizeVM (owner OR admin).
+// routeVMID guards against a snapshot that belongs to a different VM than the
+// route (confused-deputy): a mismatch maps to ErrSnapshotNotFound so non-owners
+// and VM/snapshot mismatches are indistinguishable (anti-enumeration).
+func (s *SnapshotService) GetSnapshot(ctx context.Context, snapshotID, routeVMID string) (*models.Snapshot, error) {
 	snapshot, err := s.snapshotRepo.GetByID(ctx, snapshotID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -276,12 +277,8 @@ func (s *SnapshotService) GetSnapshot(ctx context.Context, snapshotID string, us
 		return nil, fmt.Errorf("failed to get snapshot: %w", err)
 	}
 
-	// Verify user has access to the VM this snapshot belongs to
-	vm, err := s.vmRepo.GetByID(ctx, snapshot.VMID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get VM: %w", err)
-	}
-	if vm.UserID != userID {
+	// Validate the snapshot actually belongs to the route VM.
+	if snapshot.VMID != routeVMID {
 		return nil, ErrSnapshotNotFound
 	}
 
@@ -319,22 +316,19 @@ func (s *SnapshotService) RestoreSnapshot(ctx context.Context, req *RestoreSnaps
 		return nil, fmt.Errorf("failed to get snapshot: %w", err)
 	}
 
-	// Verify snapshot belongs to the specified VM
+	// Verify snapshot belongs to the specified VM (confused-deputy guard)
 	if snapshot.VMID != req.VMID {
 		return nil, ErrSnapshotNotFound
 	}
 
-	// Verify VM exists and user has access
+	// Verify VM exists (ownership/owner-or-admin is enforced at the handler via
+	// authz.AuthorizeVM).
 	vm, err := s.vmRepo.GetByID(ctx, req.VMID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrVMNotFound
 		}
 		return nil, fmt.Errorf("failed to get VM: %w", err)
-	}
-
-	if vm.UserID != req.UserID {
-		return nil, ErrVMNotFound
 	}
 
 	// Verify snapshot is completed
@@ -408,22 +402,19 @@ func (s *SnapshotService) DeleteSnapshot(ctx context.Context, req *DeleteSnapsho
 		return fmt.Errorf("failed to get snapshot: %w", err)
 	}
 
-	// Verify snapshot belongs to the specified VM
+	// Verify snapshot belongs to the specified VM (confused-deputy guard)
 	if snapshot.VMID != req.VMID {
 		return ErrSnapshotNotFound
 	}
 
-	// Verify VM exists and user has access
+	// Verify VM exists (ownership/owner-or-admin is enforced at the handler via
+	// authz.AuthorizeVM).
 	vm, err := s.vmRepo.GetByID(ctx, req.VMID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrVMNotFound
 		}
 		return fmt.Errorf("failed to get VM: %w", err)
-	}
-
-	if vm.UserID != req.UserID {
-		return ErrVMNotFound
 	}
 
 	// Enqueue snapshot delete job

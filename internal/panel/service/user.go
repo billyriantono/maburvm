@@ -427,8 +427,8 @@ func (s *UserService) Disable2FA(userID uuid.UUID) error {
 
 // Verify2FARequest contains 2FA verification request for login
 type Verify2FARequest struct {
-	UserID   uuid.UUID `json:"user_id" validate:"required"`
-	Code     string    `json:"code" validate:"required"` // TOTP code or backup code
+	UserID uuid.UUID `json:"user_id" validate:"required"`
+	Code   string    `json:"code" validate:"required"` // TOTP code or backup code
 }
 
 // Verify2FA verifies 2FA code (TOTP or backup code) during login
@@ -587,130 +587,21 @@ func (s *UserService) isValidIPOrCIDR(input string) bool {
 	return ip != nil
 }
 
-// PasswordResetToken represents a password reset token
-type PasswordResetToken struct {
-	ID        uuid.UUID `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	UserID    uuid.UUID `json:"user_id" gorm:"type:uuid;not null;index"`
-	Token     string    `json:"-" gorm:"type:varchar(255);not null;uniqueIndex"`
-	ExpiresAt time.Time `json:"expires_at" gorm:"not null;index"`
-	Used      bool      `json:"used" gorm:"default:false"`
-	CreatedAt time.Time `json:"created_at" gorm:"not null;default:NOW()"`
-}
-
-// TableName specifies the table name for PasswordResetToken
-func (PasswordResetToken) TableName() string {
-	return "password_reset_tokens"
-}
-
-// IsExpired checks if the token has expired
-func (t *PasswordResetToken) IsExpired() bool {
-	return time.Now().After(t.ExpiresAt)
-}
-
-type PasswordResetRequest struct {
-	Email string `json:"email" validate:"required,email"`
-}
-
-// RequestPasswordReset initiates a password reset flow
-func (s *UserService) RequestPasswordReset(req *PasswordResetRequest) error {
-	// Find user
-	var user models.User
-	if err := s.db.Where("email = ?", req.Email).First(&user).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			// Don't reveal if email exists - return success anyway
-			return nil
-		}
-		return fmt.Errorf("database error: %w", err)
-	}
-
-	// Generate secure reset token
-	tokenBytes := make([]byte, 32)
-	if _, err := rand.Read(tokenBytes); err != nil {
-		return fmt.Errorf("failed to generate token: %w", err)
-	}
-	token := hex.EncodeToString(tokenBytes)
-
-	// Create password reset token record
-	resetToken := &PasswordResetToken{
-		UserID:    user.ID,
-		Token:     token,
-		ExpiresAt: time.Now().Add(1 * time.Hour),
-		Used:      false,
-	}
-
-	// Invalidate any existing tokens for this user
-	s.db.Model(&PasswordResetToken{}).
-		Where("user_id = ? AND used = ?", user.ID, false).
-		Update("used", true)
-
-	// Store new token
-	if err := s.db.Create(resetToken).Error; err != nil {
-		return fmt.Errorf("failed to store reset token: %w", err)
-	}
-
-	// Send email with reset link
-	resetURL := fmt.Sprintf("https://panel.maburvm.local/reset-password?token=%s", token)
-	emailBody := fmt.Sprintf(`
-		<html>
-		<body>
-			<h2>Password Reset Request</h2>
-			<p>You requested a password reset for your MaburVM account.</p>
-			<p>Click the link below to reset your password:</p>
-			<p><a href="%s">Reset Password</a></p>
-			<p>Or copy this token: <strong>%s</strong></p>
-			<p>This link/token expires at: %s</p>
-			<p>If you didn't request this, please ignore this email.</p>
-		</body>
-		</html>`, resetURL, token, resetToken.ExpiresAt.Format(time.RFC1123))
-
-	if err := sendEmail(user.Email, "MaburVM Password Reset", emailBody); err != nil {
-		// Log error but don't fail the request - user can still use token from logs if needed
-		fmt.Printf("[ERROR] Failed to send password reset email to %s: %v\n", user.Email, err)
-	}
-
-	return nil
-}
-
-// ResetPasswordRequest contains password reset confirmation
-type ResetPasswordRequest struct {
-	Token       string `json:"token" validate:"required"`
-	NewPassword string `json:"new_password" validate:"required"`
-}
-
-// ResetPassword resets a user's password using a reset token
-func (s *UserService) ResetPassword(req *ResetPasswordRequest) error {
-	if err := s.validatePasswordStrength(req.NewPassword); err != nil {
-		return err
-	}
-
-	var resetToken PasswordResetToken
-	if err := s.db.Where("token = ? AND used = ?", req.Token, false).First(&resetToken).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return errors.New("invalid or expired reset token")
-		}
-		return fmt.Errorf("database error: %w", err)
-	}
-
-	if resetToken.IsExpired() {
-		return errors.New("reset token has expired")
-	}
-
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), BcryptCost)
-	if err != nil {
-		return fmt.Errorf("failed to hash password: %w", err)
-	}
-
-	if err := s.db.Model(&models.User{}).Where("id = ?", resetToken.UserID).Update("password_hash", string(hashedPassword)).Error; err != nil {
-		return fmt.Errorf("failed to update password: %w", err)
-	}
-
-	resetToken.Used = true
-	if err := s.db.Save(&resetToken).Error; err != nil {
-		return fmt.Errorf("failed to invalidate token: %w", err)
-	}
-
-	return nil
-}
+// SECURE PASSWORD-RESET CONTAINMENT (Phase 1A)
+//
+// The legacy raw-token reset path (PasswordResetToken with `token`/`used`
+// columns, RequestPasswordReset, ResetPassword) has been removed. It persisted
+// raw reset tokens and built reset URLs, which conflicts with the canonical
+// hash-only password_reset_tokens schema defined by migration 034 (SHA-256 hex,
+// token_hash, consumed_at) and the post-034 integrity constraints (migrations
+// 035). No HTTP route consumed these methods, so they were a future-dangerous
+// trap and their SQLite tests created a divergent legacy table shape.
+//
+// The secure reset flow (hash-only token, mailer delivery, token_hash consume
+// via EnrollmentRepository, all under a single Phase 1B outer transaction)
+// is implemented in Phase 1B. Do NOT reintroduce raw-token reset behavior here.
+// Any call site that previously used UserService.RequestPasswordReset /
+// ResetPassword must be built against the Phase 1B secure API instead.
 
 // generateTempToken generates a temporary token for 2FA verification
 func (s *UserService) generateTempToken(userID uuid.UUID) string {

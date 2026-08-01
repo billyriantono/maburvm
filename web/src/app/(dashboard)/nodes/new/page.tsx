@@ -12,7 +12,8 @@ import {
   Check,
   AlertCircle,
   CheckCircle,
-  Terminal
+  Terminal,
+  AlertTriangle
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -48,13 +49,7 @@ export default function AddNodePage() {
   const [errors, setErrors] = useState<{ name?: string; ip?: string }>({})
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
   const [copied, setCopied] = useState(false)
-  const [cmdCopied, setCmdCopied] = useState(false)
   const [showToken, setShowToken] = useState(false)
-
-  // The one-line bootstrap installer. The browser's origin is the panel URL the
-  // operator is already using, which the new node must be able to reach.
-  const panelOrigin = typeof window !== "undefined" ? window.location.origin : ""
-  const installCommand = `curl -fsSL ${panelOrigin}/install-agent.sh | sudo TOKEN=${token} bash`
 
   // Validate form
   const validate = () => {
@@ -96,8 +91,7 @@ export default function AddNodePage() {
         setShowToken(true)
       }
 
-      setToast({ message: `Node ${name} created — copy the install command below`, type: "success" })
-      // No auto-redirect: the operator needs to copy the one-line installer first.
+      setToast({ message: `Node ${name} created`, type: "success" })
     } catch (error: any) {
       const message = error?.response?.data?.message || error?.message || "Failed to create node"
       setToast({ message, type: "error" })
@@ -112,14 +106,6 @@ export default function AddNodePage() {
     setCopied(true)
     setToast({ message: "Token copied to clipboard", type: "success" })
     setTimeout(() => setCopied(false), 2000)
-  }
-
-  // Copy the full install one-liner.
-  const copyCommand = () => {
-    navigator.clipboard.writeText(installCommand)
-    setCmdCopied(true)
-    setToast({ message: "Install command copied", type: "success" })
-    setTimeout(() => setCmdCopied(false), 2000)
   }
 
   return (
@@ -245,66 +231,57 @@ export default function AddNodePage() {
           </div>
         </div>
 
-        {/* One-line installer (shown after the node + token exist) */}
+        {/* Agent installation */}
         <div className="bg-white border-4 border-black p-6 shadow-neo mb-6">
           <h2 className="text-lg font-black uppercase tracking-tight text-black mb-2 flex items-center gap-2">
             <Terminal className="w-5 h-5" />Install the Agent
           </h2>
-          {showToken && token ? (
-            <>
-              <p className="text-sm text-gray-600 mb-4">
-                SSH into the new node as root and run this once. It installs the libvirt runtime
-                (no <code className="text-xs bg-gray-100 px-1 border border-black">libvirt-dev</code> needed),
-                drops the prebuilt agent + a systemd unit wired with this token, and starts it.
-              </p>
-              <div className="bg-black text-green-400 border-2 border-black p-4 font-mono text-xs overflow-x-auto">
-                <code className="whitespace-pre-wrap break-all">{installCommand}</code>
+          <div className="p-4 bg-warning/10 border-2 border-warning">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-warning shrink-0 mt-0.5" />
+              <div className="space-y-2">
+                <p className="font-bold text-sm text-black">
+                  Automatic agent installation is temporarily unavailable while node deployment security is being completed.
+                </p>
+                <p className="text-xs text-gray-600">
+                  Deploying the agent on a hypervisor host manually is an administrator-only operational procedure. See the deployment documentation (<code className="bg-gray-100 px-1 border border-black">docs/DEPLOYMENT.md</code>, agent deployment) for details.
+                </p>
+                <p className="text-xs text-gray-600">
+                  Register the node here and keep its token — the agent is configured with it when the host is deployed.
+                </p>
               </div>
-              <div className="flex items-center gap-3 mt-3">
-                <Button type="button" variant="ghost" onClick={copyCommand} className="border-2 border-black gap-2">
-                  {cmdCopied ? <Check className="w-4 h-4 text-success" /> : <Copy className="w-4 h-4" />}
-                  {cmdCopied ? "Copied!" : "Copy command"}
-                </Button>
-                <Link href="/nodes">
-                  <Button type="button" className="gap-2"><CheckCircle className="w-4 h-4" />Done — back to Nodes</Button>
-                </Link>
-              </div>
-              <div className="mt-4 p-3 bg-warning/20 border-2 border-warning text-xs text-gray-700 space-y-1">
-                <p>• The node&apos;s public IP (<code className="bg-gray-100 px-1 border border-black">{ipAddress || "…"}</code>) must be reachable by the panel on port <code className="bg-gray-100 px-1 border border-black">50051</code>.</p>
-                <p>• The panel must be serving the prebuilt binary — build it once with <code className="bg-gray-100 px-1 border border-black">make build-agent-linux</code>.</p>
-                <p>• Manual alternative: set <code className="bg-gray-100 px-1 border border-black">AGENT_AUTH_TOKEN</code>, <code className="bg-gray-100 px-1 border border-black">AGENT_BIND_ADDRESS=0.0.0.0</code> and run the agent.</p>
-              </div>
-            </>
-          ) : (
-            <p className="text-sm text-gray-500">
-              Create the node first — you&apos;ll get a one-line install command to run on it.
-            </p>
+            </div>
+          </div>
+          {showToken && token && (
+            <div className="flex items-center gap-3 mt-4">
+              <Link href="/nodes">
+                <Button type="button" className="gap-2"><CheckCircle className="w-4 h-4" />Done — back to Nodes</Button>
+              </Link>
+            </div>
           )}
         </div>
 
         {/* Actions */}
-        {!(showToken && token) && (
-          <div className="flex items-center justify-end gap-4">
-            <Link href="/nodes">
-              <Button type="button" variant="ghost" className="border-2 border-black">
-                Cancel
-              </Button>
-            </Link>
-            <Button type="submit" disabled={loading} className="gap-2">
-              {loading ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Creating...
-                </>
-              ) : (
-                <>
-                  <Plus className="w-4 h-4" />
-                  Create Node
-                </>
-              )}
+        <div className="flex items-center justify-end gap-4">
+          <Link href="/nodes">
+            <Button type="button" variant="ghost" className="border-2 border-black">
+              Cancel
             </Button>
-          </div>
-        )}
+          </Link>
+          <Button type="submit" disabled={loading} className="gap-2">
+            {loading ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Creating...
+              </>
+            ) : (
+              <>
+                <Plus className="w-4 h-4" />
+                Create Node
+              </>
+            )}
+          </Button>
+        </div>
       </form>
 
       {/* Toast */}

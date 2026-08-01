@@ -3,7 +3,6 @@ package handler
 import (
 	"errors"
 	"net/http"
-	"strings"
 
 	"github.com/labstack/echo/v4"
 	"github.com/maburvm/panel/internal/panel/middleware"
@@ -113,43 +112,24 @@ func (h *AuthHandler) Login(c echo.Context) error {
 	})
 }
 
+// Register is the public self-enrollment endpoint. Secure v1 is invite-only:
+// until Phase 1B invitation acceptance + prerequisites are activated, public
+// self-registration fails closed with a stable, non-enumerating response that
+// creates no user and leaks no configuration state. Callers cannot use this to
+// probe whether an email is already registered, nor to enroll a client.
 func (h *AuthHandler) Register(c echo.Context) error {
+	// We still decode the body so malformed requests are reported consistently,
+	// but the result is discarded — no user is ever created via this path while
+	// enrollment is gated, and we never echo validation differences that could
+	// enumerate existing accounts.
 	var req struct {
-		Email    string `json:"email" validate:"required,email"`
-		Password string `json:"password" validate:"required"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
-	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "Invalid request body",
-		})
-	}
+	_ = c.Bind(&req)
 
-	registerReq := &service.RegisterRequest{
-		Email:    req.Email,
-		Password: req.Password,
-	}
-
-	user, err := h.userService.Register(registerReq)
-	if err != nil {
-		errMsg := err.Error()
-		if strings.Contains(errMsg, "already exists") {
-			return c.JSON(http.StatusConflict, map[string]string{
-				"error": "Email already registered",
-			})
-		}
-		if errors.Is(err, service.ErrWeakPassword) {
-			return c.JSON(http.StatusBadRequest, map[string]string{
-				"error": errMsg,
-			})
-		}
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"error": "Failed to register user",
-		})
-	}
-
-	return c.JSON(http.StatusCreated, map[string]interface{}{
-		"message": "User registered successfully",
-		"user":    user,
+	return c.JSON(http.StatusForbidden, map[string]string{
+		"error": "enrollment_unavailable",
 	})
 }
 

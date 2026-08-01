@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/maburvm/panel/internal/panel/authz"
 	panelMiddleware "github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/panel/service"
 	"gorm.io/gorm"
@@ -14,11 +15,12 @@ import (
 // MetricsHandler serves persisted metric history.
 type MetricsHandler struct {
 	service *service.MetricsService
+	authz   *authz.Authorizer
 }
 
 // NewMetricsHandler creates a new MetricsHandler.
-func NewMetricsHandler(s *service.MetricsService) *MetricsHandler {
-	return &MetricsHandler{service: s}
+func NewMetricsHandler(s *service.MetricsService, authorizer *authz.Authorizer) *MetricsHandler {
+	return &MetricsHandler{service: s, authz: authorizer}
 }
 
 // GetNodeMetricsHistory handles GET /api/v1/nodes/:id/metrics/history.
@@ -40,6 +42,11 @@ func (h *MetricsHandler) GetNodeMetricsHistory(c echo.Context) error {
 // Query params: minutes (window, default 60, max 1440), limit (default 500, max 5000).
 func (h *MetricsHandler) GetVMMetricsHistory(c echo.Context) error {
 	id := c.Param("id")
+
+	// Enforce tenant isolation before read of VM metric history.
+	if !h.authz.AuthorizeVM(c, id) {
+		return nil
+	}
 
 	minutes := clampInt(c.QueryParam("minutes"), 60, 1, 1440)
 	limit := clampInt(c.QueryParam("limit"), 500, 1, 5000)

@@ -54,7 +54,8 @@ cp .env.example .env
 # 4. Install dependencies
 make install
 
-# 5. Run database migrations
+# 5. Run database migrations (forward-only: applied migrations are immutable;
+#    see docs/MIGRATION_RECOVERY.md for rollback/recovery policy)
 make migrate
 
 # 6. Create admin user
@@ -68,15 +69,60 @@ The panel API will be available at `http://localhost:8080` and the web interface
 
 ### Production Deployment
 
-```bash
-# Build and start all services
-docker compose --profile production up -d
+Production is a separate, explicit composition and is **not** started by the
+`docker compose up` development flow (and never via `--profile production`, which
+this repo does not define). See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the
+full guide (secrets, TLS, agent deployment, backups, image review).
 
-# Or build individually
-docker build -f Dockerfile.panel -t maburvm-panel .
-docker build -f Dockerfile.agent -t maburvm-agent .
-docker build -f Dockerfile.web -t maburvm-web .
+The short version:
+
+```bash
+# 1. Copy and fill in the production env. The template ships EMPTY guarded values
+#    (no CHANGE_ME* placeholders); Compose refuses to start if any required value
+#    is blank, so replace every empty mandatory value with a real one.
+cp .env.production.example .env.production
+
+# 2. Create the host secret files (mode 0400, owned by root; the container root
+#    entrypoint/init reads them before dropping to the app UID). A trailing
+#    newline is NOT preserved as part of the secret (postgres strips it via
+#    command substitution; the panel trims whitespace) — prefer a precisely
+#    written value. Never commit deploy/secrets/.
+mkdir -p deploy/secrets
+install -m 0400 -o root /path/to/password.txt deploy/secrets/postgres_password
+install -m 0400 -o root /path/to/s3pass.txt   deploy/secrets/s3_restricted_password
+# Also set PANEL_PUBLIC_URL + ALLOWED_ORIGINS + MINIO_ROOT_* in .env.production.
+
+# 3. Build the images you need (panel + web at minimum). web builds from the
+#    repo-root Dockerfile.web and MUST pass a non-localhost API_BASE_URL with
+#    ENFORCE_API_BASE_URL=1 (the build fails if it bakes localhost).
+docker build -f Dockerfile.panel -t maburvm-panel:local .
+docker build -f Dockerfile.web -t maburvm-web:local \
+  --build-arg API_BASE_URL=http://panel:8080 --build-arg ENFORCE_API_BASE_URL=1 .
+
+# 4. Start ONLY the explicit production composition.
+docker compose -f docker-compose.production.yml --env-file .env.production up -d
+
+# 5. (Optional) Validate the file parses before deploying.
+make docker-prod-validate
+# (Optional, recommended) Reproducible gate: fresh host web build with the
+# production API base, then assert the freshly produced manifest has the exact
+# panel:8080 rewrites (no localhost). Builds on the host with npm (not Docker).
+make web-routes-build-check
+# (Alternative, assertion-only) Check an EXISTING web/.next manifest without
+# rebuilding — may be stale, use only when you just built it.
+make web-routes-check
 ```
+
+> **Not a production certification.** `docker-compose.production.yml` is a safer,
+> more explicit entrypoint with least-privilege networks (`webpanel`, `data`,
+> `agent-egress`, `edge`) and a restricted S3 user for the panel (MinIO root creds
+> stay confined to `minio`/`minio-init`). The panel API is NOT published — only the
+> web UI (loopback by default) is exposed, and an external TLS reverse proxy must
+> target web. You remain responsible for TLS termination, real secrets, image-tag
+> review/SBOM/CVE, backups, and deploying the KVM agent separately on each
+> hypervisor host. Source secret files remain host-side bind mounts; managed
+> secret isolation is phase 1. The automated agent installer path is intentionally
+> unavailable until Phase 1.
 
 ## Configuration
 

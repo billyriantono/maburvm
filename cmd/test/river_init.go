@@ -16,15 +16,21 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/maburvm/panel/internal/shared/config"
 	"github.com/maburvm/panel/internal/shared/queue"
 )
 
 func main() {
-	// Get database URL from environment
+	// Get database URL from environment, else build it from panel config via the
+	// shared, URL-encoded helper. This converges test tooling on the same DSN
+	// construction as the server/migrate and avoids a hardcoded password default.
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
-		// Default for local testing
-		databaseURL = "postgres://postgres:postgres@localhost:5432/maburvm?sslmode=disable"
+		cfg, err := config.LoadDefault()
+		if err != nil {
+			log.Fatalf("failed to load config for DATABASE_URL: %v", err)
+		}
+		databaseURL = cfg.Database.DatabaseURL()
 	}
 
 	fmt.Println("=" + string(make([]byte, 60)))

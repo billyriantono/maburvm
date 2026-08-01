@@ -9,25 +9,50 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source code
-COPY . .
+# Targeted source copies required to build the panel and its dependencies.
+# Avoid a broad `COPY . .` so host artifacts/secrets never enter the build
+# context/layers (see .dockerignore). cmd/panel imports internal/ and the
+# generated gRPC code under api/proto.
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+COPY api/ ./api/
+COPY integrations/ ./integrations/
 
-# Build the panel binary
+# Build the panel binary (static, no CGO)
 RUN CGO_ENABLED=0 GOOS=linux go build -o /app/bin/panel ./cmd/panel
 
 # Runtime stage
-FROM alpine:3.20
+FROM alpine:3.24
 
-RUN apk add --no-cache ca-certificates tzdata
+# su-exec lets us drop from root to the unprivileged user after fixing volume
+# ownership at startup (see docker/panel-entrypoint.sh).
+RUN apk add --no-cache ca-certificates tzdata su-exec
+
+# Create an unprivileged user. The named volume mounted at /data is owned by
+# root when first created; the entrypoint chowns it to this UID at boot.
+RUN addgroup -S -g 10001 maburvm \
+    && adduser -S -D -H -u 10001 -G maburvm maburvm
 
 WORKDIR /app
 
 # Copy binary from builder
-COPY --from=builder /app/bin/panel .
+COPY --from=builder /app/bin/panel ./panel
 
-# Copy migrations
+# Copy migrations (panel reads these at runtime)
 COPY internal/shared/db/migrations ./migrations
+
+# Drop-in entrypoint that fixes data-dir ownership then execs as maburvm.
+COPY docker/panel-entrypoint.sh /app/entrypoint.sh
+RUN chmod 0755 /app/entrypoint.sh
+
+# The panel writes crypto secrets / persistence under /data. Pre-create it owned
+# by maburvm so a fresh volume is usable even before the entrypoint re-chowns it.
+RUN mkdir -p /data && chown -R maburvm:maburvm /data
+
+# NOTE: No `USER` directive here on purpose. The entrypoint MUST start as root so
+# it can fix /data ownership and read the host-provided secret files before
+# dropping privileges to maburvm via su-exec (see docker/panel-entrypoint.sh).
 
 EXPOSE 8080
 
-ENTRYPOINT ["./panel"]
+ENTRYPOINT ["/app/entrypoint.sh"]

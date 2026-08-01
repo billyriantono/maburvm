@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -20,6 +19,7 @@ import (
 	"github.com/riverqueue/river"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/maburvm/panel/internal/panel/authz"
 	"github.com/maburvm/panel/internal/panel/client"
 	"github.com/maburvm/panel/internal/panel/handler"
 	panelMiddleware "github.com/maburvm/panel/internal/panel/middleware"
@@ -40,6 +40,14 @@ type Server struct {
 	queueClient   *queue.Client
 	riverClient   *river.Client[pgx.Tx]
 	backupService *service.BackupService
+
+	// readinessCheckTimeout bounds each dependency ping during /readyz.
+	readinessCheckTimeout time.Duration
+
+	// Dependency pings are overridable for testing without a live DB/queue. When
+	// nil, production pings against the real DB and queue pool are used.
+	dbPing    func(ctx context.Context) error
+	queuePing func(ctx context.Context) error
 }
 
 // NewServer creates a new HTTP server instance
@@ -56,19 +64,25 @@ func NewServer(db *gorm.DB, cfg *config.Config) *Server {
 	// Middleware
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
-	// Parse allowed origins from config (comma-separated)
-	allowedOrigins := []string{"http://localhost:3000"}
-	if cfg.Server.AllowedOrigins != "" {
-		for _, o := range strings.Split(cfg.Server.AllowedOrigins, ",") {
-			trimmed := strings.TrimSpace(o)
-			if trimmed != "" {
-				allowedOrigins = append(allowedOrigins, trimmed)
-			}
-		}
-	}
+
+	// CORS with credentials. A configured ALLOWED_ORIGINS REPLACES the localhost
+	// development fallback (it does not append). If unset, only the localhost
+	// dev origin is allowed. Because NewServer cannot return an error without
+	// broad churn, a wildcard ('*') origin — which is unsafe with credentials —
+	// is rejected fail-closed. We use AllowOriginFunc so the decision is
+	// explicit and the library cannot silently substitute '*' when the list is
+	// empty; an origin is allowed only if it is on the resolved allow-list.
+	allowedOrigins := parseAllowedOrigins(cfg.Server.AllowedOrigins)
 
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
-		AllowOrigins:     allowedOrigins,
+		AllowOriginFunc: func(origin string) (bool, error) {
+			for _, o := range allowedOrigins {
+				if o == origin {
+					return true, nil
+				}
+			}
+			return false, nil
+		},
 		AllowMethods:     []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions},
 		AllowHeaders:     []string{echo.HeaderOrigin, echo.HeaderContentType, echo.HeaderAccept, echo.HeaderAuthorization, echo.HeaderXRequestedWith},
 		AllowCredentials: true,
@@ -79,9 +93,10 @@ func NewServer(db *gorm.DB, cfg *config.Config) *Server {
 	e.Use(middleware.RequestID())
 
 	return &Server{
-		echo: e,
-		db:   db,
-		cfg:  cfg,
+		echo:                  e,
+		db:                    db,
+		cfg:                   cfg,
+		readinessCheckTimeout: 5 * time.Second,
 	}
 }
 
@@ -93,30 +108,50 @@ func (s *Server) SetQueueClient(client *queue.Client) {
 	}
 }
 
+// parseAllowedOrigins converts the ALLOWED_ORIGINS config value into a clean
+// list of allowed CORS origins for use with credentials.
+//
+// Rules (fail-closed, Oracle requirement C):
+//   - Empty/unset input → default to the localhost dev origin only. This keeps
+//     local development working out of the box.
+//   - A configured value REPLACES the localhost fallback (it does not append).
+//   - Each entry is trimmed of surrounding spaces and a trailing slash.
+//   - The wildcard '*' (or any entry containing it) is rejected: with
+//     AllowCredentials enabled a wildcard would let any website drive
+//     authenticated requests. Rejecting yields an empty slice, which makes the
+//     CORS middleware deny every cross-origin request — observable and testable
+//     rather than silently accepting everyone.
+func parseAllowedOrigins(input string) []string {
+	if strings.TrimSpace(input) == "" {
+		return []string{"http://localhost:3000"}
+	}
+	out := make([]string, 0)
+	for _, raw := range strings.Split(input, ",") {
+		o := strings.TrimSpace(raw)
+		o = strings.TrimSuffix(o, "/")
+		if o == "" {
+			continue
+		}
+		if o == "*" || strings.Contains(o, "*") {
+			// Wildcard rejected: never allow with credentials.
+			continue
+		}
+		out = append(out, o)
+	}
+	// If every entry was a rejected wildcard, out stays empty → CORS denies all.
+	return out
+}
+
 func databaseURL(cfg config.DatabaseConfig) string {
-	u := &url.URL{
-		Scheme: "postgres",
-		User:   url.UserPassword(cfg.User, cfg.Password),
-		Host:   fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
-		Path:   cfg.Name,
-	}
-	q := u.Query()
-	if cfg.SSLMode != "" {
-		q.Set("sslmode", cfg.SSLMode)
-	}
-	u.RawQuery = q.Encode()
-	return u.String()
+	return cfg.DatabaseURL()
 }
 
 // SetupRoutes configures all API routes
 func (s *Server) SetupRoutes() {
-	// Health check
-	s.echo.GET("/health", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, map[string]interface{}{
-			"status":    "healthy",
-			"timestamp": time.Now().UTC().Format(time.RFC3339),
-		})
-	})
+	// Health / liveness / readiness probes (process-only liveness + dependency
+	// checks for readiness). Kept separate from DB-dependent routes so they can be
+	// tested without a live database.
+	s.setupHealthRoutes()
 
 	// API v1 routes
 	v1 := s.echo.Group("/api/v1")
@@ -192,6 +227,121 @@ func (s *Server) SetupRoutes() {
 
 	// Notifications routes
 	s.setupNotificationRoutes(v1)
+}
+
+// setupHealthRoutes registers liveness and readiness probes. Liveness is
+// process-only (no dependency checks). Readiness pings the DB and queue (when
+// initialized) with a bounded timeout and returns 503 + structured status when a
+// dependency is nil/uninitialized/unreachable. Agents/nodes are never considered
+// by readiness — their health is reported elsewhere.
+func (s *Server) setupHealthRoutes() {
+	// /health and /livez are aliases for the process liveness probe.
+	s.echo.GET("/health", s.livenessHandler)
+	s.echo.GET("/healthz", s.livenessHandler)
+	s.echo.GET("/livez", s.livenessHandler)
+
+	// /readyz performs dependency readiness checks.
+	s.echo.GET("/readyz", s.readinessHandler)
+}
+
+// livenessHandler reports that the process is up. It intentionally performs NO
+// dependency checks (DB/queue/agents), matching Kubernetes liveness semantics.
+func (s *Server) livenessHandler(c echo.Context) error {
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"status":    "healthy",
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+// readinessHandler reports dependency readiness. It checks the DB and the queue
+// pool (when initialized) with a bounded timeout. Agents/nodes are deliberately
+// NOT part of readiness: returning not-ready on their account would cause the
+// panel to flap when a node is merely down.
+func (s *Server) readinessHandler(c echo.Context) error {
+	timeout := s.readinessCheckTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(c.Request().Context(), timeout)
+	defer cancel()
+
+	deps := map[string]interface{}{}
+
+	dbStatus := s.checkDB(ctx)
+	deps["database"] = dbStatus
+
+	queueStatus := s.checkQueue(ctx)
+	deps["queue"] = queueStatus
+
+	// Determine overall readiness.
+	ready := true
+	for _, d := range []map[string]interface{}{dbStatus, queueStatus} {
+		if st, ok := d["status"].(string); ok && st != "ok" {
+			ready = false
+			break
+		}
+	}
+
+	payload := map[string]interface{}{
+		"status":       "ready",
+		"timestamp":    time.Now().UTC().Format(time.RFC3339),
+		"dependencies": deps,
+	}
+	if !ready {
+		payload["status"] = "not_ready"
+		// 503 so orchestrators stop routing until dependencies recover.
+		return c.JSON(http.StatusServiceUnavailable, payload)
+	}
+	return c.JSON(http.StatusOK, payload)
+}
+
+// checkDB pings the configured database within the request context. When no DB
+// is wired (e.g. constructed for tests) it reports the dependency as missing
+// rather than panicking.
+func (s *Server) checkDB(ctx context.Context) map[string]interface{} {
+	ping := s.dbPing
+	if ping == nil {
+		if s.db == nil {
+			return map[string]interface{}{"status": "missing", "error": "database not initialized"}
+		}
+		ping = func(ctx context.Context) error {
+			tx := s.db.WithContext(ctx).Raw("SELECT 1")
+			if err := tx.Error; err != nil {
+				return err
+			}
+			if err := tx.Exec("SELECT 1").Error; err != nil {
+				return err
+			}
+			return nil
+		}
+	}
+	if err := ping(ctx); err != nil {
+		return map[string]interface{}{"status": "error", "error": err.Error()}
+	}
+	return map[string]interface{}{"status": "ok"}
+}
+
+// checkQueue pings the River queue pool (when the client is initialized). When
+// the queue is not wired it is treated as missing (not ready) rather than
+// panicking.
+func (s *Server) checkQueue(ctx context.Context) map[string]interface{} {
+	ping := s.queuePing
+	if ping == nil {
+		if s.queueClient == nil {
+			return map[string]interface{}{"status": "missing", "error": "queue not initialized"}
+		}
+		pool := s.queueClient.Pool()
+		if pool == nil {
+			return map[string]interface{}{"status": "missing", "error": "queue pool not initialized"}
+		}
+		ping = func(ctx context.Context) error {
+			return pool.Ping(ctx)
+		}
+	}
+	if err := ping(ctx); err != nil {
+		return map[string]interface{}{"status": "error", "error": err.Error()}
+	}
+	return map[string]interface{}{"status": "ok"}
 }
 
 // setupAuthRoutes configures authentication-related routes
@@ -276,7 +426,11 @@ func (s *Server) setupVMRoutes(g *echo.Group) {
 		wsHost = fmt.Sprintf("%s:%d", s.cfg.Server.Host, s.cfg.Server.Port)
 	}
 
-	vncService := service.NewVNCService(s.db, vmRepo, nodeRepo, logger, s.cfg.JWT.SecretKey, wsHost)
+	vncService, err := service.NewVNCService(s.db, vmRepo, nodeRepo, logger, s.cfg.JWT.SecretKey, wsHost)
+	if err != nil {
+		logger.Error("failed to initialize VNC service", "error", err)
+		return
+	}
 
 	if err := vncService.Migrate(); err != nil {
 		logger.Error("failed to migrate console tokens table", "error", err)
@@ -292,7 +446,7 @@ func (s *Server) setupVMRoutes(g *echo.Group) {
 	// In-browser SSH console (xterm.js ↔ SSH shell), sibling of the VNC console.
 	s.setupSSHConsoleRoutes(logger)
 
-	vmHandler := handler.NewVMHandler(vmService, vncService, vncProxyServer, service.NewSSHKeyService(s.db), service.NewRecipeService(s.db))
+	vmHandler := handler.NewVMHandler(vmService, vncService, vncProxyServer, service.NewSSHKeyService(s.db), service.NewRecipeService(s.db), authz.NewAuthorizer(s.db))
 
 	handler.RegisterVMRoutes(s.echo, vmHandler, s.db)
 
@@ -305,7 +459,7 @@ func (s *Server) setupVMRoutes(g *echo.Group) {
 	// Bandwidth usage routes (nested under VMs)
 	bwRepo := repository.NewBandwidthUsageRepository(s.db)
 	bwService := service.NewBandwidthService(bwRepo, logger)
-	bwHandler := handler.NewBandwidthHandler(bwService)
+	bwHandler := handler.NewBandwidthHandler(bwService, authz.NewAuthorizer(s.db))
 
 	handler.RegisterBandwidthRoutes(s.echo, bwHandler, s.db)
 }
@@ -319,7 +473,7 @@ func (s *Server) setupStorageRoutes(g *echo.Group) {
 		repository.NewNodeRepository(s.db),
 		service.NewAgentVolumeProvisioner(0),
 	)
-	storageHandler := handler.NewStorageHandler(storageService)
+	storageHandler := handler.NewStorageHandler(storageService, authz.NewAuthorizer(s.db))
 
 	storage := g.Group("/storage")
 	storage.Use(panelMiddleware.RequireAuth(s.db))
@@ -351,7 +505,7 @@ func (s *Server) setupNetworkRoutes() {
 	vmRepo := repository.NewVMRepository(s.db)
 	nodeRepo := repository.NewNodeRepository(s.db)
 	networkService := service.NewNetworkService(s.db, networkRepo, firewallRepo, vmRepo, nodeRepo, s.riverClient)
-	networkHandler := handler.NewNetworkHandler(networkService)
+	networkHandler := handler.NewNetworkHandler(networkService, authz.NewAuthorizer(s.db))
 	handler.RegisterNetworkRoutes(s.echo, networkHandler, s.db)
 
 	// Standalone /api/v1/networks endpoint: administrator-defined virtual networks
@@ -360,13 +514,7 @@ func (s *Server) setupNetworkRoutes() {
 	mnService := service.NewManagedNetworkService(s.db)
 	networks := s.echo.Group("/api/v1/networks")
 	networks.Use(panelMiddleware.RequireAuth(s.db))
-	networks.GET("", func(c echo.Context) error {
-		nets, err := managedNetRepo.List(c.Request().Context())
-		if err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to list networks"})
-		}
-		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": nets})
-	})
+	networks.GET("", s.handleListManagedNetworks(managedNetRepo))
 	networks.POST("", func(c echo.Context) error {
 		var net models.ManagedNetwork
 		if err := c.Bind(&net); err != nil {
@@ -451,7 +599,7 @@ func (s *Server) setupQuotaRoutes() {
 // setupMetricsRoutes configures persisted metric history routes.
 func (s *Server) setupMetricsRoutes() {
 	metricsService := service.NewMetricsService(s.db)
-	metricsHandler := handler.NewMetricsHandler(metricsService)
+	metricsHandler := handler.NewMetricsHandler(metricsService, authz.NewAuthorizer(s.db))
 	handler.RegisterMetricsRoutes(s.echo, metricsHandler, s.db)
 }
 
@@ -470,7 +618,7 @@ func (s *Server) setupSnapshotRoutes() {
 	vmRepo := repository.NewVMRepository(s.db)
 	nodeRepo := repository.NewNodeRepository(s.db)
 	snapshotService := service.NewSnapshotService(s.db, snapshotRepo, vmRepo, nodeRepo, s.riverClient, logger)
-	snapshotHandler := handler.NewSnapshotHandler(snapshotService)
+	snapshotHandler := handler.NewSnapshotHandler(snapshotService, authz.NewAuthorizer(s.db))
 	handler.RegisterSnapshotRoutes(s.echo, snapshotHandler, s.db)
 }
 
@@ -498,7 +646,7 @@ func (s *Server) setupImportRoutes() {
 	networkRepo := repository.NewNetworkRepository(s.db)
 	importService := service.NewImportService(s.db, vmRepo, nodeRepo, templateRepo, networkRepo, s.riverClient, logger)
 	importHandler := handler.NewImportHandler(importService)
-	handler.RegisterImportRoutes(s.echo, importHandler)
+	handler.RegisterImportRoutes(s.echo, importHandler, s.db)
 }
 
 // setupUserRoutes configures user management routes (CRUD beyond auth)
@@ -560,26 +708,60 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 		if err := models.ValidateIPWhitelist(req.IPWhitelist); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 		}
-		if exists, err := userRepo.EmailExists(c.Request().Context(), req.Email); err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to check email"})
-		} else if exists {
-			return c.JSON(http.StatusConflict, map[string]interface{}{"error": "Email already exists"})
+
+		ctx := c.Request().Context()
+
+		// Invitations are client-only. Secure v1 enrollment is invite-only and is
+		// not yet activated, so direct creation of a client via the legacy user
+		// API is rejected rather than silently creating one. This prevents
+		// bypassing the gated enrollment flow.
+		if req.Role == models.RoleClient {
+			return c.JSON(http.StatusForbidden, map[string]interface{}{
+				"error": "invitation_only_unavailable",
+			})
 		}
 
-		hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
-		if err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to hash password"})
+		// Creating an admin is an interim exception restricted to the founding
+		// administrator. Peers (ordinary admins) cannot mint new admins. The
+		// comparison is against the earliest active admin, resolved from the
+		// users table, which is deterministic and avoids trust in frontend state.
+		caller, ok := panelMiddleware.GetUserContext(c)
+		if !ok || caller.Role != models.RoleAdmin {
+			return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "Insufficient permissions"})
 		}
-		user := &models.User{
-			Email:        req.Email,
-			PasswordHash: string(hash),
-			Role:         req.Role,
-			IPWhitelist:  req.IPWhitelist,
+
+		var created models.User
+		rbErr := s.execRoleBoundaryTx(ctx, func(tx *gorm.DB) error {
+			// Recheck inside the locked transaction: the caller must still be the
+			// active founding admin at the moment of mutation.
+			if authErr := recheckFoundingAuthority(tx, ctx, caller.ID, "only_the_founding_administrator_may_create_admins"); authErr != nil {
+				return authErr
+			}
+			repo := repository.NewUserRepository(tx)
+			if exists, err := repo.EmailExists(ctx, req.Email); err != nil {
+				return fmt.Errorf("email check: %w", err)
+			} else if exists {
+				return &roleBoundaryErr{status: http.StatusConflict, code: "email_exists"}
+			}
+			hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+			if err != nil {
+				return fmt.Errorf("hash: %w", err)
+			}
+			created = models.User{
+				Email:        req.Email,
+				PasswordHash: string(hash),
+				Role:         models.RoleAdmin,
+				IPWhitelist:  req.IPWhitelist,
+			}
+			if err := repo.Create(ctx, &created); err != nil {
+				return fmt.Errorf("create: %w", err)
+			}
+			return nil
+		})
+		if rbErr != nil {
+			return writeRoleBoundaryErr(c, rbErr)
 		}
-		if err := userRepo.Create(c.Request().Context(), user); err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to create user"})
-		}
-		return c.JSON(http.StatusCreated, map[string]interface{}{"data": user})
+		return c.JSON(http.StatusCreated, map[string]interface{}{"data": created})
 	}, panelMiddleware.RequirePermission("user:create"))
 
 	users.PUT("/:id", func(c echo.Context) error {
@@ -591,23 +773,122 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 		if err != nil {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "User not found"})
 		}
+		ctx := c.Request().Context()
 		var req struct {
-			Email string `json:"email"`
-			Role  string `json:"role"`
+			Email       string   `json:"email"`
+			Role        string   `json:"role"`
+			IPWhitelist []string `json:"ip_whitelist"`
 		}
 		if err := c.Bind(&req); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request body"})
 		}
-		if req.Email != "" {
-			user.Email = req.Email
+		// Validate any supplied IP whitelist (reject malformed input early). This
+		// only affects a non-security field; it never touches role/quota_mode.
+		if req.IPWhitelist != nil {
+			if err := models.ValidateIPWhitelist(req.IPWhitelist); err != nil {
+				return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+			}
 		}
-		if req.Role != "" {
-			user.Role = models.UserRole(req.Role)
+
+		// Determine whether this request crosses the admin role boundary: it does
+		// when a role is supplied that differs from the caller-fetched current role.
+		isRoleTransition := req.Role != "" && models.UserRole(req.Role) != user.Role
+
+		// Non-role update (e.g. email / ip_whitelist). This is a permitted operation
+		// that does not require founding authority and is NOT serialized by the
+		// advisory lock. CRITICAL: we must not use a full-model Save of the pre-read
+		// User, because that would write back a STALE `role` and clobber a concurrent
+		// serialized role transition. Instead we apply a SELECTIVE UPDATE restricted
+		// to an explicit allow-list of non-role columns (email, ip_whitelist);
+		// "role" (and every security/quota field) is dropped on purpose by
+		// updateUserNonRoleFields.
+		if !isRoleTransition {
+			fields := map[string]interface{}{}
+			if req.Email != "" {
+				fields["email"] = req.Email
+			}
+			if req.IPWhitelist != nil {
+				fields["ip_whitelist"] = req.IPWhitelist
+			}
+			if len(fields) > 0 {
+				if err := updateUserNonRoleFields(s.db, ctx, id, fields); err != nil {
+					return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to update user"})
+				}
+			}
+			// Re-read to return the authoritative, current row (reflecting any
+			// concurrent committed role change rather than the stale pre-read).
+			updated, gerr := userRepo.GetByID(ctx, id)
+			if gerr != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to load user"})
+			}
+			return c.JSON(http.StatusOK, map[string]interface{}{"data": updated})
 		}
-		if err := userRepo.Update(c.Request().Context(), user); err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to update user"})
+
+		// Role transitions are gated. Any request that would change the role —
+		// promotion (to admin) or demotion (away from admin) — is an admin
+		// privilege transition and is restricted to the founding administrator.
+		if req.Role != string(models.RoleAdmin) && req.Role != string(models.RoleClient) {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid role"})
 		}
-		return c.JSON(http.StatusOK, map[string]interface{}{"data": user})
+
+		newRole := models.UserRole(req.Role)
+		caller, ok := panelMiddleware.GetUserContext(c)
+		if !ok || caller.Role != models.RoleAdmin {
+			return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "Insufficient permissions"})
+		}
+
+		// Serialize the entire role transition (recheck + last-admin count +
+		// mutation) in one transaction behind the role-boundary advisory lock so
+		// concurrent demote/delete cannot leave zero active admins.
+		rbErr := s.execRoleBoundaryTx(ctx, func(tx *gorm.DB) error {
+			if authErr := recheckFoundingAuthority(tx, ctx, caller.ID, "only_the_founding_administrator_may_change_admin_roles"); authErr != nil {
+				return authErr
+			}
+			// Re-read the target within the transaction; it may have changed since
+			// the HTTP-layer fetch.
+			repo := repository.NewUserRepository(tx)
+			target, gerr := repo.GetByID(ctx, id)
+			if gerr != nil {
+				return &roleBoundaryErr{status: http.StatusNotFound, code: "user_not_found"}
+			}
+			// Last-admin guard: a demotion that would remove the final active
+			// administrator is forbidden. Count active admins EXCLUDING the target,
+			// so if the target is the only remaining active admin and we are about
+			// to demote it, the count is zero and we reject.
+			if target.Role == models.RoleAdmin && newRole != models.RoleAdmin {
+				remaining, cerr := countActiveAdminsExceptTx(tx, ctx, target.ID)
+				if cerr != nil {
+					return fmt.Errorf("admin count: %w", cerr)
+				}
+				if remaining <= 0 {
+					return &roleBoundaryErr{status: http.StatusForbidden, code: "cannot_demote_last_active_admin"}
+				}
+			}
+			if req.Email != "" {
+				target.Email = req.Email
+			}
+			// A role transition may be combined with an allowed non-role field
+			// (ip_whitelist). The target row is freshly read INSIDE this locked
+			// transaction, so quota_mode/role changes are consistent and any
+			// concurrent transition is serialized by pg_advisory_xact_lock.
+			if req.IPWhitelist != nil {
+				target.IPWhitelist = req.IPWhitelist
+			}
+			target.Role = newRole
+			if err := repo.Update(ctx, target); err != nil {
+				return fmt.Errorf("update: %w", err)
+			}
+			return nil
+		})
+		if rbErr != nil {
+			return writeRoleBoundaryErr(c, rbErr)
+		}
+		// Reflect the mutation back into the outer user object for the response.
+		updated, gerr := userRepo.GetByID(ctx, id)
+		if gerr != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to load user"})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"data": updated})
 	}, panelMiddleware.RequirePermission("user:update"))
 
 	users.DELETE("/:id", func(c echo.Context) error {
@@ -615,8 +896,44 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 		if err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid user ID"})
 		}
-		if err := userRepo.Delete(c.Request().Context(), id); err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to delete user"})
+		ctx := c.Request().Context()
+
+		caller, ok := panelMiddleware.GetUserContext(c)
+		if !ok || caller.Role != models.RoleAdmin {
+			return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "Insufficient permissions"})
+		}
+
+		rbErr := s.execRoleBoundaryTx(ctx, func(tx *gorm.DB) error {
+			// Founding-admin authority enforcement: only the earliest active
+			// founding admin may delete an admin. A peer admin cannot delete the
+			// founder or any other admin and seize authority.
+			if authErr := recheckFoundingAuthority(tx, ctx, caller.ID, "only_the_founding_administrator_may_delete_admins"); authErr != nil {
+				return authErr
+			}
+			repo := repository.NewUserRepository(tx)
+			target, gerr := repo.GetByID(ctx, id)
+			if gerr != nil {
+				return &roleBoundaryErr{status: http.StatusNotFound, code: "user_not_found"}
+			}
+			// Last-admin guard: a delete that would remove the only remaining
+			// active administrator is forbidden so the control plane can never be
+			// left with zero admins.
+			if target.Role == models.RoleAdmin {
+				remaining, cerr := countActiveAdminsExceptTx(tx, ctx, target.ID)
+				if cerr != nil {
+					return fmt.Errorf("admin count: %w", cerr)
+				}
+				if remaining <= 0 {
+					return &roleBoundaryErr{status: http.StatusForbidden, code: "cannot_delete_last_active_admin"}
+				}
+			}
+			if err := repo.Delete(ctx, id); err != nil {
+				return fmt.Errorf("delete: %w", err)
+			}
+			return nil
+		})
+		if rbErr != nil {
+			return writeRoleBoundaryErr(c, rbErr)
 		}
 		return c.NoContent(http.StatusNoContent)
 	}, panelMiddleware.RequirePermission("user:delete"))
@@ -742,6 +1059,18 @@ func (s *Server) setupAuditLogRoutes(g *echo.Group) {
 // parseUUID parses a UUID string
 func parseUUID(s string) (uuid.UUID, error) {
 	return uuid.Parse(s)
+}
+
+// foundingAdminID returns the ID of the earliest-created active administrator —
+// the founding administrator. This is the single, deterministic source of truth
+// for the interim admin exception in this lane: only the founding admin may
+// create, promote, demote, or delete administrators, and the founding admin is
+// resolved by creation order (not by an ad-hoc flag), which is reliably
+// reproducible from the existing users table (created_at ASC) without a dedicated
+// superadmin role. Returns uuid.Nil when no active admin exists. Delegates to the
+// transaction-scoped resolver so behavior matches the locked role boundary.
+func (s *Server) foundingAdminID(ctx context.Context) uuid.UUID {
+	return foundingAdminIDTx(s.db, ctx)
 }
 
 // setupBillingRoutes configures billing webhook routes with HMAC authentication
@@ -1044,8 +1373,8 @@ func (s *Server) Start() error {
 
 // Run initializes and starts the panel server
 func Run() error {
-	// Load configuration
-	cfg, err := config.LoadDefault()
+	// Load configuration (validated so missing required fields fail fast)
+	cfg, err := config.LoadDefaultValidated()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
@@ -1092,4 +1421,26 @@ func Run() error {
 	fmt.Printf("Panel server starting on %s:%d\n", cfg.Server.Host, cfg.Server.Port)
 
 	return server.Start()
+}
+
+// handleListManagedNetworks returns the GET /api/v1/networks handler as a
+// testable method. The standalone managed-network inventory is the admin-defined
+// bridge/NAT/isolated topology. A client holds network:read (which would
+// otherwise admit them), so an explicit admin role is required to prevent
+// topology leakage. The role decision lives here (rather than only in the
+// permission middleware) so it can be unit-tested directly.
+func (s *Server) handleListManagedNetworks(repo *repository.ManagedNetworkRepository) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		if u, ok := panelMiddleware.GetUserContext(c); !ok || u.Role != models.RoleAdmin {
+			return c.JSON(http.StatusForbidden, map[string]interface{}{
+				"error":   "Forbidden",
+				"message": "only administrators may list managed networks",
+			})
+		}
+		nets, err := repo.List(c.Request().Context())
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to list networks"})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": nets})
+	}
 }

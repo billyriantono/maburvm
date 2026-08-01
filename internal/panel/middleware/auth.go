@@ -63,9 +63,15 @@ type UserContext struct {
 // GetJWTSecret returns the JWT signing key. It resolves via secret.JWTSecret:
 // the JWT_SECRET_KEY env var if set, otherwise a per-install random key that is
 // generated once and persisted to the data dir. It never falls back to a
-// guessable constant (which would let anyone forge admin tokens).
-func GetJWTSecret() []byte {
-	return []byte(secret.JWTSecret())
+// guessable constant (which would let anyone forge admin tokens). Resolution is
+// fail-closed: an unreadable/malformed/invalid secrets file or a failed durable
+// write is returned as an error rather than silently regenerating in memory.
+func GetJWTSecret() ([]byte, error) {
+	s, err := secret.JWTSecret()
+	if err != nil {
+		return nil, err
+	}
+	return []byte(s), nil
 }
 
 // GetPermissionsForRole returns permissions based on user role
@@ -102,6 +108,10 @@ func GetPermissionsForRole(role models.UserRole) []string {
 
 // GenerateTokenPair generates a new access and refresh token pair for a user
 func GenerateTokenPair(user *models.User, db *gorm.DB) (*TokenPair, error) {
+	secret, err := GetJWTSecret()
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve JWT secret: %w", err)
+	}
 	now := time.Now()
 	accessExpiry := now.Add(AccessTokenExpiry)
 	refreshExpiry := now.Add(RefreshTokenExpiry)
@@ -127,7 +137,7 @@ func GenerateTokenPair(user *models.User, db *gorm.DB) (*TokenPair, error) {
 
 	// Create and sign access token
 	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
-	accessTokenString, err := accessToken.SignedString(GetJWTSecret())
+	accessTokenString, err := accessToken.SignedString(secret)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign access token: %w", err)
 	}
@@ -148,7 +158,7 @@ func GenerateTokenPair(user *models.User, db *gorm.DB) (*TokenPair, error) {
 
 	// Create and sign refresh token
 	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
-	refreshTokenString, err := refreshToken.SignedString(GetJWTSecret())
+	refreshTokenString, err := refreshToken.SignedString(secret)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign refresh token: %w", err)
 	}
@@ -258,7 +268,11 @@ func ParseAndValidateToken(tokenString string) (*JWTClaims, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
-		return GetJWTSecret(), nil
+		secret, serr := GetJWTSecret()
+		if serr != nil {
+			return nil, fmt.Errorf("failed to resolve JWT secret: %w", serr)
+		}
+		return secret, nil
 	})
 
 	if err != nil {

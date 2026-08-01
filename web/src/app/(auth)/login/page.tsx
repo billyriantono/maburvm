@@ -52,8 +52,9 @@ export default function LoginPage() {
     setIpWarning(null)
 
     try {
-      const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"
-      const response = await fetch(`${API_BASE}/api/v1/auth/login`, {
+      // Same-origin: /api is proxied server-side to the panel via next.config.js
+      // rewrites(), so the panel hostname never reaches the client bundle.
+      const response = await fetch(`/api/v1/auth/login`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -105,8 +106,9 @@ export default function LoginPage() {
     setError(null)
 
     try {
-      const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"
-      const response = await fetch(`${API_BASE}/api/v1/auth/login`, {
+      // Same-origin: /api is proxied server-side to the panel via next.config.js
+      // rewrites(), so the panel hostname never reaches the client bundle.
+      const response = await fetch(`/api/v1/auth/login`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

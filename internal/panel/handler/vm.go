@@ -6,15 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/maburvm/panel/internal/panel/authz"
 	"github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/panel/service"
 	"github.com/maburvm/panel/internal/panel/vnc"
 	"github.com/maburvm/panel/internal/shared/models"
+	"gorm.io/gorm"
 )
 
 // VMHandler handles HTTP requests for VM management
@@ -24,25 +27,28 @@ type VMHandler struct {
 	vncProxy      *vnc.ProxyServer
 	sshKeyService *service.SSHKeyService
 	recipeService *service.RecipeService
+	authz         *authz.Authorizer
 }
 
 // NewVMHandler creates a new VMHandler instance
-func NewVMHandler(service *service.VMService, vncService *service.VNCService, vncProxy *vnc.ProxyServer, sshKeyService *service.SSHKeyService, recipeService *service.RecipeService) *VMHandler {
+func NewVMHandler(service *service.VMService, vncService *service.VNCService, vncProxy *vnc.ProxyServer, sshKeyService *service.SSHKeyService, recipeService *service.RecipeService, authorizer *authz.Authorizer) *VMHandler {
 	return &VMHandler{
 		service:       service,
 		vncService:    vncService,
 		vncProxy:      vncProxy,
 		sshKeyService: sshKeyService,
 		recipeService: recipeService,
+		authz:         authorizer,
 	}
 }
 
 // NewVMHandlerWithoutVNC creates a new VMHandler instance without VNC service (for backward compatibility)
-func NewVMHandlerWithoutVNC(service *service.VMService) *VMHandler {
+func NewVMHandlerWithoutVNC(service *service.VMService, authorizer *authz.Authorizer) *VMHandler {
 	return &VMHandler{
 		service:    service,
 		vncService: nil,
 		vncProxy:   nil,
+		authz:      authorizer,
 	}
 }
 
@@ -75,6 +81,52 @@ func (h *VMHandler) authorizeVM(c echo.Context, vmID string) bool {
 		return false
 	}
 	return true
+}
+
+// clientNetworkSelectionDenied writes a generic, non-topology-leaking 4xx
+// response when a RoleClient attempts a prohibited infrastructure/network
+// selection (node, IP pool, requested IP, managed network, CPU model, nonzero
+// bandwidth/VLAN, custom NIC, VLAN/anti-spoof changes, or a destination node for
+// clone/migration). It deliberately does NOT reveal which field or which node/
+// pool/VLAN exists so a client cannot probe topology.
+func clientNetworkSelectionDenied(c echo.Context) error {
+	return c.JSON(http.StatusForbidden, map[string]interface{}{
+		"error":   "Forbidden",
+		"message": "clients may not select VM network or infrastructure placement; this is assigned automatically",
+	})
+}
+
+// isClientRole reports whether the caller is an authenticated non-admin (client).
+// Unauthenticated callers return false so the dedicated 401 path elsewhere owns
+// that case.
+func isClientRole(c echo.Context) bool {
+	u, ok := middleware.GetUserContext(c)
+	return ok && u.Role != models.RoleAdmin
+}
+
+// applyClientVMPolicy enforces the Gate-1 client networking policy on VM
+// creation. For a RoleClient it rejects any explicit infrastructure/network
+// selection (node, IP pool, requested IP, managed network, CPU model, nonzero
+// bandwidth, nonzero VLAN) and otherwise forces AutoAssignIP so the VM lands on a
+// reachable public address. Admins pass through unchanged. It returns true when
+// it has committed a response (the caller must `return nil`); false to continue.
+func (h *VMHandler) applyClientVMPolicy(c echo.Context, userCtx *middleware.UserContext, req *CreateVMRequest, createReq *service.CreateVMRequest) bool {
+	// Admins retain full control; nothing to enforce.
+	if userCtx.Role == models.RoleAdmin {
+		return false
+	}
+	// Reject an explicit client-supplied infrastructure/network choice. Default
+	// (empty/zero) values are allowed; only a concrete, nonzero choice blocks.
+	if req.NodeID != "" || req.IPPoolID != "" || req.RequestedIP != "" ||
+		req.ManagedNetworkID != "" || req.CPUModel != "" ||
+		req.BandwidthMbps != 0 || req.VLANID != 0 {
+		_ = clientNetworkSelectionDenied(c)
+		return true
+	}
+	// Permitted auto-only request: clients cannot pick a pool or network, so
+	// force automatic public IP assignment.
+	createReq.AutoAssignIP = true
+	return false
 }
 
 // ============================================================================
@@ -216,12 +268,11 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 		createReq.RegeneratePassword = true
 	}
 
-	// Self-service (client) orders don't pick an IP pool — admins do. When a
-	// non-admin creates a VM without specifying a pool or a private managed
-	// network, auto-assign a public IP so the VM is actually reachable instead of
-	// silently landing on NAT.
-	if userCtx.Role != models.RoleAdmin && req.IPPoolID == "" && req.ManagedNetworkID == "" {
-		createReq.AutoAssignIP = true
+	// Gate-1 client networking policy: enforce AutoAssign/IP restriction for
+	// clients and reject any explicit infrastructure/network selection before the
+	// create reaches the service layer. Admins are unaffected.
+	if h.applyClientVMPolicy(c, userCtx, &req, createReq) {
+		return nil
 	}
 
 	resp, err := h.service.CreateVM(c.Request().Context(), createReq)
@@ -946,6 +997,13 @@ func (h *VMHandler) CloneVM(c echo.Context) error {
 	}
 	_ = c.Bind(&req) // both optional (hostname → "<source>-clone", node → source's)
 
+	// Gate-1: clients may not choose a destination node for a clone; the VM is
+	// cloned onto the source's node (or auto-placement). Reject before the
+	// service runs. Admins pass through unchanged.
+	if isClientRole(c) && req.DestNodeID != "" {
+		return clientNetworkSelectionDenied(c)
+	}
+
 	resp, err := h.service.CloneVM(c.Request().Context(), &service.CloneVMRequest{SourceVMID: id, Hostname: req.Hostname, DestNodeID: req.DestNodeID})
 	if err != nil {
 		switch {
@@ -996,6 +1054,11 @@ func (h *VMHandler) AttachVMDisk(c echo.Context) error {
 		if errors.Is(err, service.ErrVMNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
 		}
+		// Disk admission rejection is a client-side quota condition, not a server
+		// fault: map it to 400 without leaking policy/cap detail or a generic 500.
+		if errors.Is(err, service.ErrDiskQuotaExceeded) || errors.Is(err, service.ErrQuotaExceeded) {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Disk quota exceeded"})
+		}
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
 	}
 	return c.JSON(http.StatusCreated, map[string]interface{}{"success": true, "data": disk})
@@ -1021,13 +1084,30 @@ func (h *VMHandler) DetachVMDisk(c echo.Context) error {
 // VNC Operations
 // ============================================================================
 
-// VNCConfigResponse represents VNC connection details
+// VNCConfigResponse represents VNC connection details.
+//
+// The WebSocket endpoint is returned as a relative, token-bearing path
+// (ws_path) that stays same-origin. The browser derives the absolute
+// ws:// or wss:// URL from window.location so the internal panel host
+// (e.g. panel:8080) is never exposed to the client bundle. No absolute
+// panel WebSocket URL is emitted here.
 type VNCConfigResponse struct {
-	VMID         string `json:"vm_id"`
-	Host         string `json:"host"`
-	Port         int    `json:"port"`
-	Password     string `json:"password,omitempty"`
-	WebSocketURL string `json:"websocket_url,omitempty"`
+	VMID     string `json:"vm_id"`
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	Password string `json:"password,omitempty"`
+	WSPath   string `json:"ws_path,omitempty"`
+}
+
+// vncWSPathPrefix is the same-origin relative path the browser turns into an
+// absolute ws:// or wss:// URL. The token query value is always escaped.
+const vncWSPathPrefix = "/ws/vnc"
+
+// buildVNCWSPath returns a relative, token-bearing WebSocket path. It never
+// includes a scheme or host, so the internal panel host cannot leak to the
+// client. The token is URL-escaped to keep the query string well-formed.
+func buildVNCWSPath(token string) string {
+	return vncWSPathPrefix + "?token=" + url.QueryEscape(token)
 }
 
 // GetVNCConfig handles GET /api/vms/:id/vnc - Get VNC configuration
@@ -1075,7 +1155,7 @@ func (h *VMHandler) GetVNCConfig(c echo.Context) error {
 	}
 
 	// Generate VNC proxy token with host and port embedded
-	var wsURL string
+	var wsPath string
 	if h.vncProxy != nil && vncConfig.Host != "" && vncConfig.Port > 0 {
 		token, _, err := h.vncProxy.GenerateVNCToken(
 			id, userID, "", // nodeID not needed for direct connection
@@ -1089,24 +1169,22 @@ func (h *VMHandler) GetVNCConfig(c echo.Context) error {
 			})
 		}
 
-		// Build WebSocket URL pointing to panel's proxy endpoint
-		// Use the request's scheme and host so it works behind reverse proxy
-		scheme := "ws"
-		if c.Request().TLS != nil || c.Request().Header.Get("X-Forwarded-Proto") == "https" {
-			scheme = "wss"
-		}
-		host := c.Request().Host
-		wsURL = fmt.Sprintf("%s://%s/ws/vnc?token=%s", scheme, host, token)
+		// Return a relative, token-bearing path so the browser builds the
+		// absolute ws:// or wss:// URL from its own origin. This keeps the
+		// WebSocket same-origin (routed via the Next /ws rewrite) and prevents
+		// leaking the internal panel host (e.g. panel:8080) to the client.
+		// The token is URL-escaped so it cannot break the query string.
+		wsPath = buildVNCWSPath(token)
 	}
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "VNC configuration retrieved",
 		"data": VNCConfigResponse{
-			VMID:         vncConfig.VMID,
-			Host:         vncConfig.Host,
-			Port:         vncConfig.Port,
-			Password:     vncConfig.Password,
-			WebSocketURL: wsURL,
+			VMID:     vncConfig.VMID,
+			Host:     vncConfig.Host,
+			Port:     vncConfig.Port,
+			Password: vncConfig.Password,
+			WSPath:   wsPath,
 		},
 	})
 }
@@ -1319,6 +1397,13 @@ func (h *VMHandler) MigrateVM(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.DestNodeID == "" {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "dest_node_id is required"})
 	}
+
+	// Gate-1: migration is an admin-only operation. A client cannot choose a
+	// destination node (or initiate a migration at all); reject before the
+	// service runs.
+	if isClientRole(c) {
+		return clientNetworkSelectionDenied(c)
+	}
 	live := true
 	if req.Live != nil {
 		live = *req.Live
@@ -1348,12 +1433,13 @@ func (h *VMHandler) MigrateVM(c echo.Context) error {
 }
 
 // RegisterVMRoutes registers all VM routes with the Echo router
-func RegisterVMRoutes(e *echo.Echo, handler *VMHandler, db interface{}) {
+func RegisterVMRoutes(e *echo.Echo, handler *VMHandler, db *gorm.DB) {
 	// Create VM routes group
 	vms := e.Group("/api/v1/vms")
 
-	// Apply authentication middleware
-	vms.Use(middleware.RequireAuth(nil))
+	// Apply authentication middleware (DB-backed so user existence/state/IP
+	// whitelist are validated, not just JWT signature)
+	vms.Use(middleware.RequireAuth(db))
 
 	// Apply permission middleware for VM management
 	vms.Use(middleware.RequirePermission("vm:read"))
@@ -1425,63 +1511,19 @@ func RegisterVMRoutes(e *echo.Echo, handler *VMHandler, db interface{}) {
 	}
 }
 
+// GenerateConsoleToken handles POST /api/v1/vms/:id/console/token.
+//
+// This is the legacy console-token endpoint. It emitted an absolute WebSocket
+// URL built from the internal bind address and used an incompatible VNC token
+// claim. It is explicitly contained (disabled) until a later phase unifies the
+// proxy path/token contracts with the primary GetVNCConfig endpoint. The route
+// shape is preserved, but every request returns a stable 503 without exposing
+// any internal endpoint, host, or token detail.
 func (h *VMHandler) GenerateConsoleToken(c echo.Context) error {
-	id := c.Param("id")
-	if id == "" {
-		return c.JSON(http.StatusBadRequest, map[string]interface{}{
-			"error":   "Bad Request",
-			"message": "VM ID is required",
-		})
-	}
-
-	if h.vncService == nil {
-		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
-			"error":   "Internal Server Error",
-			"message": "VNC service not configured",
-		})
-	}
-
-	userCtx, ok := c.Get("user").(*middleware.UserContext)
-	if !ok {
-		return c.JSON(http.StatusUnauthorized, map[string]interface{}{
-			"error":   "Unauthorized",
-			"message": "User context not found",
-		})
-	}
-
-	resp, err := h.vncService.GenerateConsoleToken(c.Request().Context(), id, userCtx.ID.String())
-	if err != nil {
-		switch {
-		case errors.Is(err, service.ErrConsoleTokenVMNotFound):
-			return c.JSON(http.StatusNotFound, map[string]interface{}{
-				"error":   "Not Found",
-				"message": "VM not found",
-			})
-		case errors.Is(err, service.ErrConsoleTokenUnauthorized):
-			return c.JSON(http.StatusForbidden, map[string]interface{}{
-				"error":   "Forbidden",
-				"message": "User not authorized to access this VM",
-			})
-		case errors.Is(err, service.ErrConsoleDisabled):
-			return c.JSON(http.StatusForbidden, map[string]interface{}{
-				"error":   "Forbidden",
-				"message": "Console is disabled for this VM",
-			})
-		default:
-			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
-				"error":   "Internal Server Error",
-				"message": err.Error(),
-			})
-		}
-	}
-
-	return c.JSON(http.StatusOK, map[string]interface{}{
-		"message": "Console token generated",
-		"data": map[string]interface{}{
-			"token":      resp.Token,
-			"expires_at": resp.ExpiresAt.Format("2006-01-02T15:04:05Z"),
-			"ws_url":     resp.WSURL,
-		},
+	return c.JSON(http.StatusServiceUnavailable, map[string]interface{}{
+		"error":   "Service Unavailable",
+		"code":    "vnc_console_legacy_unavailable",
+		"message": "The legacy VNC console endpoint is unavailable; use the primary VNC console endpoint.",
 	})
 }
 
@@ -1504,6 +1546,13 @@ func (h *VMHandler) RevokeConsoleToken(c echo.Context) error {
 		})
 	}
 
+	// Authorize the route VM (owner-or-admin). Missing identity → 401; a
+	// non-owner or nonexistent VM → 404 (anti-enumeration). This prevents a
+	// caller from revoking a token on a VM they do not control.
+	if !h.authz.AuthorizeVM(c, id) {
+		return nil
+	}
+
 	if h.vncService == nil {
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
 			"error":   "Internal Server Error",
@@ -1511,10 +1560,14 @@ func (h *VMHandler) RevokeConsoleToken(c echo.Context) error {
 		})
 	}
 
-	if err := h.vncService.RevokeConsoleToken(c.Request().Context(), req.JTI); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
-			"error":   "Internal Server Error",
-			"message": err.Error(),
+	// Revoke is scoped to the route VM ID AND JTI, so a token belonging to
+	// another tenant's VM cannot be revoked via a caller-supplied JTI. No token
+	// details are exposed on success or failure.
+	if err := h.vncService.RevokeConsoleTokenForVM(c.Request().Context(), id, req.JTI); err != nil {
+		// Both "JTI not found" and "JTI belongs to a different VM" map to 404.
+		return c.JSON(http.StatusNotFound, map[string]interface{}{
+			"error":   "Not Found",
+			"message": "Console token not found",
 		})
 	}
 

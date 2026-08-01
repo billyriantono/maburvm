@@ -53,8 +53,8 @@ func DefaultSkipEndpoints(r *http.Request) bool {
 		return true
 	}
 
-	// Skip health check endpoints
-	if path == "/health" || path == "/healthz" {
+	// Skip health check endpoints (exact paths only — no broad prefix bypass)
+	if path == "/health" || path == "/healthz" || path == "/livez" || path == "/readyz" {
 		return true
 	}
 

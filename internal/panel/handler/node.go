@@ -9,6 +9,7 @@ import (
 	"github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/panel/service"
 	"github.com/maburvm/panel/internal/shared/models"
+	"gorm.io/gorm"
 )
 
 // NodeHandler handles HTTP requests for node management
@@ -481,8 +482,8 @@ func (h *NodeHandler) GetNodeMetrics(c echo.Context) error {
 			"memory_used":              metrics.MemoryUsed,
 			"memory_total":             metrics.MemoryTotal,
 			"memory_used_percent":      metrics.MemoryUsage,
-			"disk_used":               metrics.DiskUsed,
-			"disk_total":              metrics.DiskTotal,
+			"disk_used":                metrics.DiskUsed,
+			"disk_total":               metrics.DiskTotal,
 			"disk_used_percent":        metrics.DiskUsage,
 			"network_rx_bytes_per_sec": metrics.NetworkRxBytesPerSec,
 			"network_tx_bytes_per_sec": metrics.NetworkTxBytesPerSec,
@@ -498,12 +499,12 @@ func (h *NodeHandler) GetNodeMetrics(c echo.Context) error {
 }
 
 // RegisterNodeRoutes registers all node routes with the Echo router
-func RegisterNodeRoutes(e *echo.Echo, handler *NodeHandler, db interface{}) {
+func RegisterNodeRoutes(e *echo.Echo, handler *NodeHandler, db *gorm.DB) {
 	// Create node routes group
 	nodes := e.Group("/api/v1/nodes")
 
 	// Apply authentication middleware
-	nodes.Use(middleware.RequireAuth(nil))
+	nodes.Use(middleware.RequireAuth(db))
 
 	// Apply permission middleware for node management
 	nodes.Use(middleware.RequirePermission("node:read"))

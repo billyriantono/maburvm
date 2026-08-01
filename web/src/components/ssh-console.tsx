@@ -21,6 +21,9 @@ function getCookie(name: string): string | undefined {
 }
 
 function buildWsUrl(apiBase: string, path: string, token: string): string {
+  // apiBase is intentionally empty: the WebSocket must stay same-origin and
+  // be routed through the /ws rewrite so the panel host never reaches the
+  // client bundle. We therefore always derive host/proto from window.location.
   const base = apiBase ? new URL(apiBase) : new URL(window.location.href);
   const proto = base.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${proto}//${base.host}${path}?token=${encodeURIComponent(token)}`;
@@ -48,9 +51,11 @@ export function SSHConsole({ vmId, className }: SSHConsoleProps) {
 
     try {
       const auth = getCookie('accessToken');
-      const apiBase = process.env.NEXT_PUBLIC_API_URL || '';
+      // Same-origin: /api and /ws are proxied server-side to the panel via
+      // next.config.js rewrites(); the panel host never reaches the client.
+      const apiBase = '';
 
-      const resp = await fetch(`${apiBase}/api/v1/vms/${vmId}/ssh/token`, {
+      const resp = await fetch(`/api/v1/vms/${vmId}/ssh/token`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth}` },
         body: JSON.stringify({ username, password }),

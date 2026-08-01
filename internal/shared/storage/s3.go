@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -24,14 +25,22 @@ const (
 
 // Client provides S3-compatible storage operations
 type Client struct {
-	provider Provider
-	s3Client *s3.Client
-	bucket   string
-	endpoint string
-	region   string
+	provider     Provider
+	s3Client     *s3.Client
+	bucket       string
+	endpoint     string
+	region       string
+	forceHTTP    bool
+	usePathStyle bool
 }
 
-// Config holds storage client configuration
+// Config holds storage client configuration.
+//
+// Endpoint normalization and path-style addressing are resolved inside
+// NewClient so callers (agent/queue env constructors) pass raw endpoint and
+// explicit flag values. The historical production behavior used path-style
+// addressing for MinIO; constructors in this repo default UsePathStyle=true
+// when the flag is omitted so existing MinIO callers keep working.
 type Config struct {
 	Endpoint  string
 	AccessKey string
@@ -39,7 +48,64 @@ type Config struct {
 	Bucket    string
 	Region    string
 	Provider  Provider
-	UseSSL    bool
+	// UseSSL is retained for backward compatibility but no longer drives
+	// endpoint scheme resolution; ForceHTTP is the explicit control.
+	UseSSL bool
+	// ForceHTTP forces the http:// scheme for a scheme-less endpoint
+	// (e.g. an in-cluster MinIO reachable only over plain HTTP). When the
+	// endpoint already carries an explicit scheme, ForceHTTP is ignored.
+	ForceHTTP bool
+	// UsePathStyle enables path-style addressing (required for MinIO and most
+	// S3-compatible stores). Honored as-is by NewClient.
+	UsePathStyle bool
+}
+
+// normalizeEndpoint resolves a raw endpoint string into a fully-qualified URL.
+//
+// Resolution rules (no network access):
+//   - If the endpoint is empty it returns an empty string (the AWS SDK uses its
+//     default resolution for the provider's public service). This is the only
+//     "accept as default" case.
+//   - A non-empty endpoint carrying leading/trailing whitespace (including a
+//     whitespace-only string) is REJECTED. It is never silently trimmed into a
+//     different endpoint nor reinterpreted as the empty SDK default — that would
+//     let a misconfigured " STORAGE_ENDPOINT=  " fall through to a lower-priority
+//     S3_* var or to provider default resolution. Fail closed.
+//   - If the endpoint already carries http:// or https:// it is returned as-is
+//     (the explicit scheme wins; ForceHTTP is ignored in that case).
+//   - If the endpoint is a clean (no surrounding whitespace) scheme-less value:
+//   - ForceHTTP=true  -> http://<endpoint>
+//   - otherwise       -> https://<endpoint>
+//   - A scheme other than http/https (e.g. ftp://) is rejected as unsupported
+//     rather than producing an ambiguous endpoint.
+func normalizeEndpoint(endpoint string, forceHTTP bool) (string, error) {
+	if endpoint == "" {
+		return "", nil
+	}
+	// Fail-closed: reject any leading/trailing whitespace (whitespace-only
+	// included). We intentionally do NOT TrimSpace-then-check-empty, because that
+	// would turn "   " into the valid SDK-default empty endpoint. The check uses
+	// the raw value so whitespace is surfaced as an error, not as a different
+	// endpoint or as empty.
+	if strings.TrimSpace(endpoint) != endpoint {
+		return "", fmt.Errorf("storage endpoint must not contain leading/trailing whitespace: %q", endpoint)
+	}
+	lower := strings.ToLower(endpoint)
+	switch {
+	case strings.HasPrefix(lower, "https://"):
+		return endpoint, nil
+	case strings.HasPrefix(lower, "http://"):
+		return endpoint, nil
+	case strings.Contains(lower, "://"):
+		// Any other scheme (ftp://, file://, ...) is unsupported.
+		return "", fmt.Errorf("unsupported storage endpoint scheme: %q", endpoint)
+	default:
+		scheme := "https"
+		if forceHTTP {
+			scheme = "http"
+		}
+		return scheme + "://" + endpoint, nil
+	}
 }
 
 // NewClient creates a new storage client
@@ -51,12 +117,19 @@ func NewClient(cfg *Config) (*Client, error) {
 		cfg.Region = "us-east-1"
 	}
 
+	endpoint, err := normalizeEndpoint(cfg.Endpoint, cfg.ForceHTTP)
+	if err != nil {
+		return nil, fmt.Errorf("invalid storage endpoint: %w", err)
+	}
+
+	usePathStyle := cfg.UsePathStyle
+
 	// Create custom resolver for MinIO/S3-compatible endpoints
 	var endpointResolver aws.EndpointResolverWithOptionsFunc
-	if cfg.Endpoint != "" {
+	if endpoint != "" {
 		endpointResolver = func(service, region string, options ...interface{}) (aws.Endpoint, error) {
 			return aws.Endpoint{
-				URL:               cfg.Endpoint,
+				URL:               endpoint,
 				HostnameImmutable: true,
 				Source:            aws.EndpointSourceCustom,
 			}, nil
@@ -77,11 +150,13 @@ func NewClient(cfg *Config) (*Client, error) {
 	client := &Client{
 		provider: cfg.Provider,
 		s3Client: s3.NewFromConfig(awsCfg, func(o *s3.Options) {
-			o.UsePathStyle = true // Required for MinIO
+			o.UsePathStyle = usePathStyle
 		}),
-		bucket:   cfg.Bucket,
-		endpoint: cfg.Endpoint,
-		region:   cfg.Region,
+		bucket:       cfg.Bucket,
+		endpoint:     endpoint,
+		region:       cfg.Region,
+		forceHTTP:    cfg.ForceHTTP,
+		usePathStyle: usePathStyle,
 	}
 
 	return client, nil
@@ -255,6 +330,21 @@ type ObjectInfo struct {
 // GetProvider returns the storage provider type
 func (c *Client) GetProvider() Provider {
 	return c.provider
+}
+
+// Endpoint returns the resolved (scheme-qualified) endpoint URL.
+func (c *Client) Endpoint() string {
+	return c.endpoint
+}
+
+// ForceHTTP reports whether the client was configured to use plain HTTP.
+func (c *Client) ForceHTTP() bool {
+	return c.forceHTTP
+}
+
+// UsePathStyle reports whether the client uses path-style addressing.
+func (c *Client) UsePathStyle() bool {
+	return c.usePathStyle
 }
 
 // GetBucket returns the bucket name

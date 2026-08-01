@@ -1,0 +1,74 @@
+# MaburVM Docker build-context ignore (repo-root contexts).
+#
+# Goal: keep build contexts minimal and keep secrets/host artifacts OUT of the
+# image build (prevents secret transfer into layers and shrinks context size).
+# Targeted to repo-root Dockerfiles: Dockerfile.panel, Dockerfile.web,
+# Dockerfile.agent. Do NOT exclude source/resources those builds need
+# (Go modules/source, web/ source, internal/ migrations, docker/ scripts,
+# api/proto generated code).
+
+# --- VCS / metadata ---
+.git
+.gitignore
+.dockerignore
+.slim/
+.ignore
+.opencode/
+.commandcode/
+.sisyphus/
+.github/
+
+# --- Real env / secrets (templates are fine to keep out of image, but never
+#     ship live credentials or host secret stores) ---
+.env
+.env.*
+!.env.example
+!.env.production.example
+deploy/secrets/
+*.local
+
+# --- Host / data artifacts ---
+data/
+/data/
+*.db
+*.sqlite
+*.sqlite3
+
+# --- Root compiled binaries (built on host, not part of image context) ---
+panel
+agent
+migrate
+create-admin
+reset-admin-password
+bin/
+
+# --- Go build/test output ---
+*.test
+*.out
+coverage.txt
+*.cover
+vendor/
+
+# --- Node / web build output & deps (rebuilt inside Dockerfile.web) ---
+web/node_modules/
+web/.next/
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# --- Docs / unrelated config / tooling (not needed to build images) ---
+docs/
+*.md
+!README.md
+CODEOWNERS
+LICENSE
+scripts/deploy-agent.sh
+
+# --- OS / editor noise ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

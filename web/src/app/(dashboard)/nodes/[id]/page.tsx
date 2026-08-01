@@ -150,7 +150,6 @@ export default function NodeDetailPage() {
   const [copied, setCopied] = useState(false)
   const [copiedToken, setCopiedToken] = useState(false)
   const [showToken, setShowToken] = useState(false)
-  const [copiedCmd, setCopiedCmd] = useState(false)
   const [editDialogOpen, setEditDialogOpen] = useState(false)
   const [editName, setEditName] = useState("")
   const [actionLoading, setActionLoading] = useState<string | null>(null)
@@ -555,41 +554,27 @@ export default function NodeDetailPage() {
             </div>
           </div>
 
-          {/* One-line installer */}
+          {/* Agent installation */}
           <div className="bg-white border-4 border-black p-6 shadow-neo mb-6">
             <h2 className="text-lg font-black uppercase tracking-tight text-black mb-2 flex items-center gap-2">
               <Terminal className="w-5 h-5" />Install / Re-install the Agent
             </h2>
-            <p className="text-xs text-gray-500 mb-4">
-              Run on the node as root. Installs the libvirt runtime (no <code className="bg-gray-100 px-1 border border-black">libvirt-dev</code>),
-              drops the prebuilt agent + a systemd unit wired with this token, and starts it.
-            </p>
-            {showToken && tokenData?.token ? (
-              <>
-                <div className="bg-black text-green-400 border-2 border-black p-4 font-mono text-xs overflow-x-auto">
-                  <code className="whitespace-pre-wrap break-all">
-                    {`curl -fsSL ${typeof window !== "undefined" ? window.location.origin : ""}/install-agent.sh | sudo TOKEN=${tokenData.token} bash`}
-                  </code>
+            <div className="p-4 bg-warning/10 border-2 border-warning">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="w-5 h-5 text-warning shrink-0 mt-0.5" />
+                <div className="space-y-2">
+                  <p className="font-bold text-sm text-black">
+                    Automatic agent installation is temporarily unavailable while node deployment security is being completed.
+                  </p>
+                  <p className="text-xs text-gray-600">
+                    Installing or re-installing the agent on a hypervisor host manually is an administrator-only operational procedure. See the deployment documentation (<code className="bg-gray-100 px-1 border border-black">docs/DEPLOYMENT.md</code>, agent deployment) for details.
+                  </p>
+                  <p className="text-xs text-gray-600">
+                    The agent token above is configured on the host when the agent is deployed or its token is rotated.
+                  </p>
                 </div>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  className="gap-2 mt-3 border-2 border-black"
-                  onClick={async () => {
-                    const cmd = `curl -fsSL ${window.location.origin}/install-agent.sh | sudo TOKEN=${tokenData.token} bash`
-                    await navigator.clipboard.writeText(cmd)
-                    setCopiedCmd(true)
-                    setToast({ message: "Install command copied", type: "success" })
-                    setTimeout(() => setCopiedCmd(false), 2000)
-                  }}
-                >
-                  {copiedCmd ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                  {copiedCmd ? "Copied" : "Copy command"}
-                </Button>
-              </>
-            ) : (
-              <p className="text-sm text-gray-500">Click <span className="font-bold">SHOW</span> on the token above to reveal the install command.</p>
-            )}
+              </div>
+            </div>
           </div>
 
           {/* Virtual Machines on this Node */}

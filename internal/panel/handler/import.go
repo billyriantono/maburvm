@@ -10,6 +10,7 @@ import (
 
 	"github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/panel/service"
+	"gorm.io/gorm"
 )
 
 // ImportHandler handles HTTP requests for VM import operations
@@ -299,12 +300,12 @@ func (h *ImportHandler) PreviewVirtualizor(c echo.Context) error {
 //   - POST /api/nodes/:id/import/virtualizor - Import VMs from Virtualizor
 //   - GET  /api/nodes/:id/import/virtualizor/preview - Preview importable VMs
 //   - POST /api/nodes/:id/import/sync - Sync VM info (hostname + IP) from agent
-func RegisterImportRoutes(e *echo.Echo, handler *ImportHandler) {
+func RegisterImportRoutes(e *echo.Echo, handler *ImportHandler, db *gorm.DB) {
 	// Import routes group
 	importGroup := e.Group("/api/v1/nodes/:id/import")
 
 	// Apply authentication middleware
-	importGroup.Use(middleware.RequireAuth(nil))
+	importGroup.Use(middleware.RequireAuth(db))
 
 	// Apply permission middleware - requires import permission
 	importGroup.Use(middleware.RequirePermission("vm:import"))

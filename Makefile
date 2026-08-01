@@ -95,19 +95,66 @@ docker-build-agent:
 	@docker build -f Dockerfile.agent -t maburvm-agent .
 
 docker-build-web:
-	@echo "Building web Docker image..."
-	@docker build -f Dockerfile.web -t maburvm-web ./web
+	@echo "Building web Docker image (context repo root, Dockerfile.web)..."
+	@docker build -f Dockerfile.web -t maburvm-web:local \
+		--build-arg API_BASE_URL=http://panel:8080 \
+		--build-arg ENFORCE_API_BASE_URL=1 .
 
 docker-build: docker-build-panel docker-build-agent docker-build-web
 	@echo "All Docker images built!"
 
 docker-up:
-	@echo "Starting all services..."
-	@docker compose up -d
+	@echo "Starting development services (explicit docker-compose.yml)..."
+	@docker compose -f docker-compose.yml up -d
 
 docker-down:
-	@echo "Stopping all services..."
-	@docker compose down
+	@echo "Stopping development services (explicit docker-compose.yml)..."
+	@docker compose -f docker-compose.yml down
+
+# Production: explicit file + env file only. No override discovery, no profile.
+docker-prod-up:
+	@echo "Starting production services (docker-compose.production.yml)..."
+	@docker compose -f docker-compose.production.yml --env-file .env.production up -d
+
+docker-prod-down:
+	@echo "Stopping production services (docker-compose.production.yml)..."
+	@docker compose -f docker-compose.production.yml --env-file .env.production down
+
+# Static validation of the production compose file. This does NOT deploy and
+# does NOT require Docker to be running; it only checks that the file parses
+# and the referenced secret files exist. Requires `docker compose` on PATH.
+# Fails closed: the target returns Docker Compose's nonzero status on failure.
+docker-prod-validate:
+	@echo "Validating docker-compose.production.yml..."
+	@docker compose -f docker-compose.production.yml --env-file .env.production config >/dev/null
+	@echo "production compose: config OK"
+
+# Assertion-only check of an EXISTING web/.next route manifest (no Docker, no
+# build): assert a BUILT web/.next/routes-manifest.json contains the four required
+# rewrites (/api, /ws, /install-agent.sh, /webhooks) resolving exactly to
+# http://panel:8080 and no loopback destination. Run after `npm run build` (or
+# `make docker-build-web`) produces the manifest. NOTE: this inspects whatever
+# manifest is present and may therefore assert a STALE prebuilt manifest if the
+# web UI was not rebuilt since; prefer `web-routes-build-check` for the
+# reproducible gate. It is not a substitute for a Docker image build.
+web-routes-check:
+	@echo "Checking production-built web/.next/routes-manifest.json rewrites..."
+	@python3 scripts/check-web-routes.py
+
+# Reproducible gate: a FRESH host-side production build of the web UI on the HOST,
+# immediately followed by the exact rewrite assertion against the NEWLY produced
+# host manifest. This avoids the stale-manifest bypass risk of running
+# `web-routes-check` alone against a previously built web/.next. It is evidence of
+# a correct HOST build + manifest assertion, NOT evidence of a Docker image build.
+# NOTE: this builds on the host with npm (not Docker); it does NOT populate a
+# Docker image. `API_BASE_URL` is pinned to the production internal panel address.
+# If the web config supports a production enforcement variable, set it here so a
+# localhost fallback is rejected.
+web-routes-build-check:
+	@echo "Building web (host) with API_BASE_URL=http://panel:8080 ..."
+	@cd web && API_BASE_URL=http://panel:8080 NEXT_PUBLIC_API_URL=http://panel:8080 npm run build
+	@echo "Asserting freshly built web/.next/routes-manifest.json rewrites..."
+	@python3 scripts/check-web-routes.py --manifest web/.next/routes-manifest.json
 
 # Clean build artifacts
 clean:
@@ -132,8 +179,12 @@ help:
 	@echo "  make docker-build       - Build all Docker images"
 	@echo "  make docker-build-panel - Build panel Docker image"
 	@echo "  make docker-build-agent - Build agent Docker image"
-	@echo "  make docker-build-web   - Build web Docker image"
-	@echo "  make docker-up          - Start all services with Docker"
-	@echo "  make docker-down        - Stop all services"
+	@echo "  make docker-build-web   - Build web Docker image (repo-root ctx)"
+	@echo "  make docker-up          - Start development services (docker-compose.yml) with Docker"
+	@echo "  make docker-down        - Stop development services"
+	@echo "  make docker-prod-up     - Start production services (docker-compose.production.yml)"
+	@echo "  make docker-prod-down   - Stop production services"
+	@echo "  make web-routes-check   - Assert an EXISTING web/.next manifest (no build; may be stale)"
+	@echo "  make web-routes-build-check - Fresh host web build + assert rewrites (reproducible gate)"
 	@echo "  make clean              - Clean build artifacts"
 	@echo "  make help               - Show this help"

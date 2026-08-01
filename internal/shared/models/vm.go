@@ -15,8 +15,14 @@ const (
 	VMStatusStopped   VMStatus = "stopped"
 	VMStatusSuspended VMStatus = "suspended"
 	VMStatusCreating  VMStatus = "creating"
-	VMStatusDeleting  VMStatus = "deleting"
-	VMStatusError     VMStatus = "error"
+	// VMStatusDeleting marks a VM whose destroy is in flight (the agent has
+	// been (or will be) told to destroy the domain; accounting and the VM row
+	// are retained until the agent certifies the domain is gone). The PostgreSQL
+	// vm_status enum additionally carries an 'deleting' value added by migration
+	// 040a; the panel authoritatively uses this Go constant and the matching
+	// DB enum label, so the two never diverge.
+	VMStatusDeleting VMStatus = "deleting"
+	VMStatusError    VMStatus = "error"
 )
 
 // Resources represents the CPU, RAM, and Disk resources for a VM
@@ -36,7 +42,7 @@ type VM struct {
 	Hostname        string         `json:"hostname" gorm:"type:varchar(100);not null" validate:"required,max=100"`
 	OSTemplateID    string         `json:"os_template_id" gorm:"type:uuid;not null" validate:"required,uuid"`
 	Resources       Resources      `json:"resources" gorm:"type:jsonb;serializer:json" validate:"required"`
-	Status          VMStatus       `json:"status" gorm:"type:vm_status;default:stopped" validate:"required,oneof=running stopped suspended creating error"`
+	Status          VMStatus       `json:"status" gorm:"type:vm_status;default:stopped" validate:"required,oneof=running stopped suspended creating deleting error"`
 	SourceMigration string         `json:"source_migration,omitempty" gorm:"type:varchar(50);default:null"`
 	VNCPort         *int           `json:"vnc_port" gorm:"type:integer" validate:"omitempty,min=5900,max=5999"`
 	VNCPassword     string         `json:"-" gorm:"type:varchar(255)"` // Never exposed in JSON

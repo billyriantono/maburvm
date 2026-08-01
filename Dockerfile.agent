@@ -16,7 +16,7 @@ COPY . .
 RUN CGO_ENABLED=1 GOOS=linux go build -o /app/bin/agent ./cmd/agent
 
 # Runtime stage
-FROM alpine:3.20
+FROM alpine:3.24
 
 RUN apk add --no-cache ca-certificates tzdata libvirt
 

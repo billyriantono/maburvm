@@ -2,6 +2,12 @@ package config
 
 import (
 	"errors"
+	"fmt"
+	"net"
+	"net/url"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/caarlos0/env/v10"
@@ -97,11 +103,61 @@ type Config struct {
 	AI       AIConfig
 }
 
+// fileBackedSecrets maps each ordinary env var to its *_FILE companion. These are
+// the sensitive inputs that deployments commonly inject from mounted files
+// (Kubernetes Secrets, Docker secrets, Vault sidecars, …) rather than plain env.
+var fileBackedSecrets = []struct {
+	name string // ordinary env var (e.g. DB_PASSWORD)
+	file string // file env var (e.g. DB_PASSWORD_FILE)
+}{
+	{"DB_PASSWORD", "DB_PASSWORD_FILE"},
+	{"S3_ACCESS_KEY", "S3_ACCESS_KEY_FILE"},
+	{"S3_SECRET_KEY", "S3_SECRET_KEY_FILE"},
+	{"JWT_SECRET_KEY", "JWT_SECRET_KEY_FILE"},
+	{"AES_KEY", "AES_KEY_FILE"},
+}
+
+// resolveFileSecrets reads the *_FILE companions into their ordinary env vars
+// BEFORE env parsing / secret-store resolution, so file-backed secrets work with
+// the existing secret semantics (env → persisted → generated).
+//
+// Precedence: a non-empty ordinary NAME wins; otherwise, if NAME_FILE is set, its
+// contents (with terminal whitespace/newlines trimmed) are used. A missing or
+// empty file is a HARD error — never silently ignored. Errors never contain
+// secret contents.
+func resolveFileSecrets() error {
+	for _, p := range fileBackedSecrets {
+		if os.Getenv(p.name) != "" {
+			continue // ordinary value wins
+		}
+		path := os.Getenv(p.file)
+		if path == "" {
+			continue // neither supplied; leave to normal resolution
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("%s: cannot read %s: %v", p.name, p.file, err)
+		}
+		v := strings.TrimSpace(string(b))
+		if v == "" {
+			return fmt.Errorf("%s: %s is empty", p.name, p.file)
+		}
+		if err := os.Setenv(p.name, v); err != nil {
+			return fmt.Errorf("%s: cannot set env from %s: %v", p.name, p.file, err)
+		}
+	}
+	return nil
+}
+
 // Load reads configuration from environment variables.
 // It first loads .env file if it exists (for development).
 // Then it overrides with environment variables.
 func Load() (*Config, error) {
 	_ = godotenv.Load()
+
+	if err := resolveFileSecrets(); err != nil {
+		return nil, err
+	}
 
 	cfg := &Config{}
 
@@ -109,7 +165,9 @@ func Load() (*Config, error) {
 		return nil, errors.New("failed to parse config: " + err.Error())
 	}
 
-	applySecrets(cfg)
+	if err := applySecrets(cfg); err != nil {
+		return nil, err
+	}
 
 	if err := validate(cfg); err != nil {
 		return nil, err
@@ -121,10 +179,43 @@ func Load() (*Config, error) {
 // applySecrets resolves the JWT and AES keys from the secret store (env override
 // → persisted → auto-generated) so a single-node install needs no secret env
 // vars. Called by both Load and LoadDefault so every entrypoint sees the same
-// resolved, non-empty secrets.
-func applySecrets(cfg *Config) {
-	cfg.JWT.SecretKey = secret.JWTSecret()
-	cfg.JWT.AESKey = secret.AESKey()
+// resolved, non-empty secrets. Resolution is fail-closed: an unreadable/
+// malformed/invalid secrets file or a failed durable write surfaces an error
+// rather than silently regenerating in memory.
+func applySecrets(cfg *Config) error {
+	key, err := secret.JWTSecret()
+	if err != nil {
+		return fmt.Errorf("failed to resolve JWT secret: %w", err)
+	}
+	cfg.JWT.SecretKey = key
+
+	aes, err := secret.AESKey()
+	if err != nil {
+		return fmt.Errorf("failed to resolve AES key: %w", err)
+	}
+	cfg.JWT.AESKey = aes
+	return nil
+}
+
+// DatabaseURL builds a single, URL-encoded PostgreSQL connection string from
+// this config. It uses net/url + net.JoinHostPort so passwords containing
+// spaces, quotes, '@', ':', '/', '?', '#', backslashes, etc. are correctly
+// escaped (unlike raw key/value fmt interpolation). The database name is placed
+// in the path (with a leading slash) which both lib/pq and pgx accept. No
+// password is ever logged.
+func (c DatabaseConfig) DatabaseURL() string {
+	u := &url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(c.User, c.Password),
+		Host:   net.JoinHostPort(c.Host, strconv.Itoa(c.Port)),
+		Path:   "/" + c.Name,
+	}
+	q := u.Query()
+	if c.SSLMode != "" {
+		q.Set("sslmode", c.SSLMode)
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 func validate(cfg *Config) error {
@@ -140,9 +231,10 @@ func validate(cfg *Config) error {
 	if cfg.Database.Name == "" {
 		return errors.New("DB_NAME is required")
 	}
-	// JWT/AES keys are resolved by applySecrets (env → persisted → generated), so
-	// SecretKey is always non-empty here. We still validate the AES key length in
-	// case an operator supplied a bad AES_KEY override.
+	// JWT/AES keys are resolved by applySecrets (env → persisted → generated)
+	// and normalized to exactly 32 raw bytes at the secret resolution boundary,
+	// so SecretKey is always non-empty here. We keep this length check as a
+	// fail-closed guard against an impossible non-32-byte normalized key.
 	if len(cfg.JWT.AESKey) != 32 {
 		return errors.New("AES_KEY is required and must be exactly 32 bytes")
 	}
@@ -162,13 +254,39 @@ func validate(cfg *Config) error {
 	return nil
 }
 
+// LoadDefault parses env (incl. file-backed secrets) and resolves secrets WITHOUT
+// validating required fields. Backwards-compatible entrypoint used by auxiliary
+// commands (seeders, scripts) that only need a best-effort config and tolerate
+// missing production values. Callers that need guarantees should use
+// LoadDefaultValidated.
 func LoadDefault() (*Config, error) {
 	_ = godotenv.Load()
+
+	if err := resolveFileSecrets(); err != nil {
+		return nil, err
+	}
 
 	cfg := &Config{}
 	if err := env.Parse(cfg); err != nil {
 		return nil, err
 	}
-	applySecrets(cfg)
+	if err := applySecrets(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// LoadDefaultValidated behaves like LoadDefault but also validates required
+// fields. Use this for the production server boot path so validation failures are
+// caught early and clearly, without changing the semantics of LoadDefault for
+// existing callers.
+func LoadDefaultValidated() (*Config, error) {
+	cfg, err := LoadDefault()
+	if err != nil {
+		return nil, err
+	}
+	if err := validate(cfg); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
