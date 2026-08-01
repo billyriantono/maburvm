@@ -119,7 +119,7 @@ func (s *NetworkService) AddNetworkInterface(ctx context.Context, vmID string, r
 	}
 
 	// Enqueue network config job to agent
-	if err := s.enqueueNetworkConfigJob(ctx, vm, network, nil); err != nil {
+	if err := s.enqueueNetworkConfigJob(ctx, vm, network); err != nil {
 		// Log error but don't fail the request
 		fmt.Printf("failed to enqueue network config job: %v\n", err)
 	}
@@ -163,7 +163,7 @@ func (s *NetworkService) SetBandwidthLimit(ctx context.Context, vmID string, net
 
 	// Enqueue bandwidth config job to agent
 	network.BandwidthLimit = req.BandwidthLimit
-	if err := s.enqueueNetworkConfigJob(ctx, vm, network, nil); err != nil {
+	if err := s.enqueueNetworkConfigJob(ctx, vm, network); err != nil {
 		fmt.Printf("failed to enqueue bandwidth config job: %v\n", err)
 	}
 
@@ -184,13 +184,11 @@ func (s *NetworkService) ApplyLiveBandwidth(ctx context.Context, vmID string, mb
 	if err != nil {
 		return ErrNetworkNotFound
 	}
-	rules, err := s.firewallRepo.ListByVMID(ctx, vmID, 0, 0)
-	if err != nil {
-		rules = nil // best-effort: still apply bandwidth even if rules can't be loaded
-	}
 	netCopy := *network
 	netCopy.BandwidthLimit = mbps
-	return s.enqueueNetworkConfigJob(ctx, vm, &netCopy, rules)
+	// enqueueNetworkConfigJob loads the full firewall set at the chokepoint, so a
+	// live bandwidth change no longer risks wiping the firewall.
+	return s.enqueueNetworkConfigJob(ctx, vm, &netCopy)
 }
 
 // AddPortForwardRequest contains data for adding a port forward rule
@@ -470,7 +468,7 @@ func (s *NetworkService) SetVLAN(ctx context.Context, vmID string, networkID str
 
 	// Enqueue VLAN config job to agent
 	network.VLANID = &vlanID
-	if err := s.enqueueNetworkConfigJob(ctx, vm, network, nil); err != nil {
+	if err := s.enqueueNetworkConfigJob(ctx, vm, network); err != nil {
 		fmt.Printf("failed to enqueue VLAN config job: %v\n", err)
 	}
 
@@ -717,28 +715,36 @@ func (s *NetworkService) SyncNetworkConfig(ctx context.Context, vmID string) err
 		return fmt.Errorf("failed to get networks: %w", err)
 	}
 
-	// Get all firewall rules
-	rules, err := s.firewallRepo.ListByVMID(ctx, vmID, 0, 0)
-	if err != nil {
-		return fmt.Errorf("failed to get firewall rules: %w", err)
-	}
-
-	// Enqueue full sync job for each network
-	for _, network := range networks {
-		var portForwards []models.PortForward
-		if err := s.db.WithContext(ctx).Where("network_id = ?", network.ID).Find(&portForwards).Error; err != nil {
-			continue
-		}
-		_ = s.enqueueNetworkConfigJob(ctx, vm, &network, rules)
+	// Enqueue a full-config sync job per interface. enqueueNetworkConfigJob loads
+	// the complete firewall set itself, so the whole config is re-applied.
+	for i := range networks {
+		_ = s.enqueueNetworkConfigJob(ctx, vm, &networks[i])
 	}
 
 	return nil
 }
 
-// enqueueNetworkConfigJob enqueues a job to configure network on the agent
-func (s *NetworkService) enqueueNetworkConfigJob(ctx context.Context, vm *models.VM, network *models.Network, firewallRules []models.FirewallRule) error {
+// enqueueNetworkConfigJob enqueues a job to configure network on the agent.
+//
+// The agent applies this with ReplaceAll semantics: it flushes the VM's entire
+// network config (firewall, anti-spoof, VLAN, bandwidth, NAT) and rebuilds it
+// from exactly what this job carries. So this MUST always send the VM's FULL
+// current firewall rule set — an attribute-only change (bandwidth/VLAN/anti-
+// spoof) that omitted the rules would silently wipe the firewall and reopen
+// blocked ports. Rules are loaded here, at the single chokepoint, so no caller
+// can reintroduce that footgun by forgetting to pass them.
+func (s *NetworkService) enqueueNetworkConfigJob(ctx context.Context, vm *models.VM, network *models.Network) error {
 	if s.riverClient == nil {
 		return fmt.Errorf("river client not initialized")
+	}
+
+	// Always send the complete rule set; ReplaceAll drops anything not present.
+	// On load failure do NOT enqueue: a partial config would wipe the firewall.
+	// The DB change is already persisted and SyncNetworkConfig re-applies full
+	// state on the next agent reconnect.
+	rules, err := s.firewallRepo.ListByVMID(ctx, vm.ID, 0, 0)
+	if err != nil {
+		return fmt.Errorf("failed to load firewall rules for network config: %w", err)
 	}
 
 	params := NetworkConfigParams{
@@ -746,10 +752,7 @@ func (s *NetworkService) enqueueNetworkConfigJob(ctx context.Context, vm *models
 		BandwidthLimit: network.BandwidthLimit,
 		VLANID:         network.VLANID,
 		AntiSpoofing:   network.AntiSpoofing,
-	}
-
-	if firewallRules != nil {
-		params.FirewallRules = firewallRules
+		FirewallRules:  rules,
 	}
 
 	paramsJSON, _ := json.Marshal(params)
@@ -761,7 +764,7 @@ func (s *NetworkService) enqueueNetworkConfigJob(ctx context.Context, vm *models
 		Params:    paramsJSON,
 	}
 
-	_, err := s.riverClient.Insert(ctx, job, nil)
+	_, err = s.riverClient.Insert(ctx, job, nil)
 	return err
 }
 
@@ -899,7 +902,7 @@ func (s *NetworkService) SetAntiSpoofing(ctx context.Context, vmID string, netwo
 
 	// Enqueue network config job to agent (anti-spoofing is part of network setup)
 	network.AntiSpoofing = req.Enabled
-	if err := s.enqueueNetworkConfigJob(ctx, vm, network, nil); err != nil {
+	if err := s.enqueueNetworkConfigJob(ctx, vm, network); err != nil {
 		fmt.Printf("failed to enqueue anti-spoofing config job: %v\n", err)
 	}
 
