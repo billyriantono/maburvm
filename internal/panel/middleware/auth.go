@@ -99,7 +99,10 @@ func GetPermissionsForRole(role models.UserRole) []string {
 			"vm:lifecycle", "vm:console",
 			"backup:create", "backup:read", "backup:update", "backup:delete",
 			"snapshot:create", "snapshot:read", "snapshot:update", "snapshot:delete",
-			"network:read",
+			// NOTE: no "network:read". That permission gates GLOBAL, un-tenant-filtered
+			// IPAM (/ipam/pools/*) and DNS reads, which would let any client enumerate
+			// every tenant's IP↔VM↔node↔rDNS mapping. A client's own VM interfaces are
+			// served by vm:read + ownership (GET /vms/:id/networks), not network:read.
 		}
 	default:
 		return []string{"vm:read"}

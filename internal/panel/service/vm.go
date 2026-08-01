@@ -1057,10 +1057,11 @@ func (s *VMService) AttachDisk(ctx context.Context, vmID string, sizeGB int) (*m
 	//    to a later quota-bypassing attach.
 	disk := &models.VMDisk{VMID: vmID, Device: resp.Device, SizeGB: sizeGB, Path: resp.Path}
 	recErr := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if cerr := s.quotaService.ConsumeDiskReservationTx(ctx, tx, res.ID); cerr != nil {
-			return cerr
-		}
-		return tx.WithContext(ctx).Create(disk).Error
+		// Canonical finalize: re-locks the pending reservation under the owner's
+		// admit lock, derives vm_id/size_gb from it, creates the vm_disks row from
+		// the agent's device/path, and consumes the reservation — all atomically.
+		_, ferr := s.quotaService.LockAndFinalizeReservationTx(ctx, tx, res.ID, disk)
+		return ferr
 	})
 	if recErr != nil {
 		return nil, fmt.Errorf("disk attached on node but failed to record it (reservation retained): %w", recErr)

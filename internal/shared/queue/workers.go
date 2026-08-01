@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 	vmimport "github.com/maburvm/panel/internal/agent/import"
+	panelclient "github.com/maburvm/panel/internal/panel/client"
 	"github.com/maburvm/panel/internal/panel/repository"
 	"github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 	"github.com/maburvm/panel/internal/shared/models"
@@ -25,7 +25,6 @@ import (
 	"github.com/riverqueue/river"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"gorm.io/gorm"
@@ -140,9 +139,11 @@ func NewAgentClient() *AgentClient {
 }
 
 // GetClient returns a gRPC client for the specified node
-func (c *AgentClient) GetClient(nodeAddress string) (pb.NodeAgentClient, error) {
+func (c *AgentClient) GetClient(nodeID, nodeAddress string) (pb.NodeAgentClient, error) {
+	// Cache by node ID (the pin identity), not the address, so a node keeps its
+	// pinned connection even if its address representation varies.
 	c.mu.RLock()
-	client, exists := c.clients[nodeAddress]
+	client, exists := c.clients[nodeID]
 	c.mu.RUnlock()
 
 	if exists {
@@ -153,7 +154,7 @@ func (c *AgentClient) GetClient(nodeAddress string) (pb.NodeAgentClient, error) 
 	defer c.mu.Unlock()
 
 	// Double-check after acquiring write lock
-	if client, exists := c.clients[nodeAddress]; exists {
+	if client, exists := c.clients[nodeID]; exists {
 		return client, nil
 	}
 
@@ -161,9 +162,11 @@ func (c *AgentClient) GetClient(nodeAddress string) (pb.NodeAgentClient, error) 
 	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
 	defer cancel()
 
-	// The agent gRPC server requires TLS. Certs are node-managed, so skip
-	// verification here (the panel↔agent channel is on a trusted network).
-	creds := credentials.NewTLS(&tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12})
+	// Pin the agent's self-signed cert (TOFU-then-verify) via the process-wide pin
+	// store — the SAME primitive the panel-client path uses. This carries the
+	// node's bearer token + VM secrets, so a bare InsecureSkipVerify would let an
+	// on-path attacker impersonate a node and steal them.
+	creds := panelclient.NodeTLSCredentials(nodeID, nodeAddress)
 	conn, err := grpc.DialContext(ctx, nodeAddress+":50051",
 		grpc.WithTransportCredentials(creds),
 		grpc.WithBlock(),
@@ -173,8 +176,8 @@ func (c *AgentClient) GetClient(nodeAddress string) (pb.NodeAgentClient, error) 
 	}
 
 	client = pb.NewNodeAgentClient(conn)
-	c.clients[nodeAddress] = client
-	c.connections[nodeAddress] = conn
+	c.clients[nodeID] = client
+	c.connections[nodeID] = conn
 
 	return client, nil
 }
@@ -409,7 +412,7 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 	}
 
 	// Get gRPC client for node
-	client, err := w.agentClient.GetClient(node.IPAddress)
+	client, err := w.agentClient.GetClient(node.ID, node.IPAddress)
 	if err != nil {
 		w.logger.ErrorContext(ctx, "failed to get agent client",
 			"error", err,
@@ -1001,7 +1004,7 @@ func (w *TemplateSyncWorker) syncTemplateToNode(ctx context.Context, template *m
 		w.updateSyncStatus(ctx, template.ID, nodeID, "error", "agent client unavailable")
 		return fmt.Errorf("agent client unavailable")
 	}
-	client, err := globalWorkerContext.AgentClient.GetClient(node.IPAddress)
+	client, err := globalWorkerContext.AgentClient.GetClient(node.ID, node.IPAddress)
 	if err != nil {
 		w.updateSyncStatus(ctx, template.ID, nodeID, "error", err.Error())
 		return fmt.Errorf("failed to connect to node agent: %w", err)
@@ -1164,7 +1167,7 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 	}
 
 	// Get gRPC client for node
-	client, err := globalWorkerContext.AgentClient.GetClient(node.IPAddress)
+	client, err := globalWorkerContext.AgentClient.GetClient(node.ID, node.IPAddress)
 	if err != nil {
 		w.logger.ErrorContext(ctx, "failed to get agent client",
 			"error", err,
@@ -1536,7 +1539,7 @@ func (w *ImportWorker) Work(ctx context.Context, job *river.Job[ImportJob]) erro
 	}
 
 	// Get gRPC client for node
-	client, err := globalWorkerContext.AgentClient.GetClient(node.IPAddress)
+	client, err := globalWorkerContext.AgentClient.GetClient(node.ID, node.IPAddress)
 	if err != nil {
 		w.logger.ErrorContext(ctx, "failed to get agent client",
 			"error", err,
@@ -1816,7 +1819,7 @@ func (w *NetworkConfigWorker) Work(ctx context.Context, job *river.Job[NetworkCo
 	}
 
 	// Get gRPC client for node
-	client, err := globalWorkerContext.AgentClient.GetClient(node.IPAddress)
+	client, err := globalWorkerContext.AgentClient.GetClient(node.ID, node.IPAddress)
 	if err != nil {
 		w.logger.ErrorContext(ctx, "failed to get agent client",
 			"error", err,
@@ -2079,7 +2082,7 @@ func (w *SnapshotWorker) Work(ctx context.Context, job *river.Job[SnapshotJob]) 
 	}
 
 	// Get gRPC client for node
-	client, err := w.agentClient.GetClient(node.IPAddress)
+	client, err := w.agentClient.GetClient(node.ID, node.IPAddress)
 	if err != nil {
 		w.logger.ErrorContext(ctx, "failed to get agent client",
 			"error", err,
