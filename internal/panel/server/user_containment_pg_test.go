@@ -90,7 +90,7 @@ quota_mode TEXT NOT NULL DEFAULT 'legacy',
 		ip_whitelist JSONB DEFAULT '[]'::jsonb,
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-		deleted_at TIMESTAMPTZ
+		token_revoked_at TIMESTAMPTZ, deleted_at TIMESTAMPTZ
 	)`).Error)
 
 	return gdb

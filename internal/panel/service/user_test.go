@@ -34,7 +34,7 @@ quota_mode TEXT NOT NULL DEFAULT 'legacy',
 		ip_whitelist TEXT,
 		created_at DATETIME NOT NULL,
 		updated_at DATETIME NOT NULL,
-		deleted_at DATETIME
+		token_revoked_at DATETIME, deleted_at DATETIME
 	);`
 
 	if err := db.Exec(createTableSQL).Error; err != nil {

@@ -94,18 +94,8 @@ func (h *AuthHandler) Login(c echo.Context) error {
 		})
 	}
 
-	// Set the session cookie with the same hardened flags as the rest of the auth
-	// layer (SetTokenCookies): HttpOnly + Secure + SameSite=Strict so the token
-	// can't be read by JS, sent over plain HTTP, or attached to cross-site requests.
-	cookie := new(http.Cookie)
-	cookie.Name = "refreshToken"
-	cookie.Value = resp.Token
-	cookie.HttpOnly = true
-	cookie.Secure = true
-	cookie.SameSite = http.SameSiteStrictMode
-	cookie.Path = "/"
-	c.SetCookie(cookie)
-
+	// The token is returned in the body; the web client stores it and sends it as a
+	// Bearer header. No server-set auth cookie (the panel is header-authenticated).
 	return c.JSON(http.StatusOK, LoginResponse{
 		User:  resp.User,
 		Token: resp.Token,
@@ -134,15 +124,19 @@ func (h *AuthHandler) Register(c echo.Context) error {
 }
 
 func (h *AuthHandler) Logout(c echo.Context) error {
-	// Clear refresh token cookie
-	cookie := new(http.Cookie)
-	cookie.Name = "refreshToken"
-	cookie.Value = ""
-	cookie.HttpOnly = true
-	cookie.Path = "/"
-	cookie.MaxAge = -1
-	c.SetCookie(cookie)
-
+	// Route is behind RequireAuth, so the user context is always populated.
+	// Revoke every outstanding token for this user server-side.
+	userCtx, ok := c.Get("user").(*middleware.UserContext)
+	if !ok || userCtx == nil {
+		return c.JSON(http.StatusUnauthorized, map[string]string{
+			"error": "Not authenticated",
+		})
+	}
+	if err := h.userService.RevokeUserTokens(userCtx.ID); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "Failed to log out",
+		})
+	}
 	return c.JSON(http.StatusOK, map[string]string{
 		"message": "Logged out successfully",
 	})

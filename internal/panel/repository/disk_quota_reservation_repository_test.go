@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS users (
 	quota_mode TEXT NOT NULL DEFAULT 'legacy',
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-	deleted_at DATETIME
+	token_revoked_at DATETIME, deleted_at DATETIME
 );
 CREATE TABLE IF NOT EXISTS user_quotas (
 	user_id TEXT PRIMARY KEY,

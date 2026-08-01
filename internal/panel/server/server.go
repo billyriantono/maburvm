@@ -362,8 +362,7 @@ func (s *Server) setupAuthRoutes(g *echo.Group) {
 	auth := g.Group("/auth")
 	auth.POST("/login", authHandler.Login, panelMiddleware.LoginRateLimiter())
 	auth.POST("/register", authHandler.Register)
-	auth.POST("/logout", authHandler.Logout)
-	auth.POST("/refresh", panelMiddleware.RefreshTokenHandler(s.db))
+	auth.POST("/logout", authHandler.Logout, panelMiddleware.RequireAuth(s.db))
 	auth.GET("/me", authHandler.Me, panelMiddleware.RequireAuth(s.db))
 	auth.GET("/client-ip", authHandler.ClientIP)
 }

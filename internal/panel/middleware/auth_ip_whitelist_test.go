@@ -34,7 +34,7 @@ quota_mode TEXT NOT NULL DEFAULT 'legacy',
 		ip_whitelist TEXT,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		deleted_at DATETIME
+		token_revoked_at DATETIME, deleted_at DATETIME
 	)`).Error)
 
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS sessions (
@@ -116,13 +116,13 @@ func TestRequireAuth_IPWhitelist(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tokens, err := GenerateTokenPair(tt.user, db)
+			token, err := GenerateAccessToken(tt.user)
 			require.NoError(t, err)
 
 			e := echo.New()
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			req.RemoteAddr = tt.remoteAddr
-			req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
+			req.Header.Set("Authorization", "Bearer "+token)
 			rec := httptest.NewRecorder()
 			c := e.NewContext(req, rec)
 

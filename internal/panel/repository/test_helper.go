@@ -37,6 +37,7 @@ quota_mode TEXT NOT NULL DEFAULT 'legacy',
 			ip_whitelist TEXT,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			token_revoked_at DATETIME,
 			deleted_at DATETIME
 		)`,
 		`CREATE TABLE IF NOT EXISTS nodes (

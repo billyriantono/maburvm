@@ -66,7 +66,7 @@ func (s *EnrollmentTestSuite) SetupTest() {
 quota_mode TEXT NOT NULL DEFAULT 'legacy',
 					created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			deleted_at DATETIME
+			token_revoked_at DATETIME, deleted_at DATETIME
 		)`,
 		// quota_policy_versions is owned by migration 033; declare a stub so the
 		// FK reference in registration_invites resolves. FK enforcement is on.

@@ -36,7 +36,7 @@ func newAuthRouteTestDB(t *testing.T) *gorm.DB {
 			id TEXT PRIMARY KEY, email TEXT, password_hash TEXT, role TEXT DEFAULT 'client',
 quota_mode TEXT NOT NULL DEFAULT 'legacy',
 					two_factor_secret TEXT, two_factor_backup_codes TEXT, ip_whitelist TEXT,
-			created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
+			created_at DATETIME, updated_at DATETIME, token_revoked_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE IF NOT EXISTS sessions (
 			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, token TEXT NOT NULL,
 			expires_at DATETIME NOT NULL, ip_address TEXT, user_agent TEXT,
@@ -96,11 +96,11 @@ func TestRegisterNodeRoutes_RequireAuthNonNil(t *testing.T) {
 	RegisterNodeRoutes(e, nodeHandler, db)
 
 	// Authenticated request must reach ListNodes (200) via DB-backed RequireAuth.
-	tokens, err := middleware.GenerateTokenPair(user, db)
+	token, err := middleware.GenerateAccessToken(user)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/nodes", nil)
-	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code, "authenticated request should reach node handler via DB-backed RequireAuth")
@@ -138,12 +138,12 @@ func TestRegisterNetworkRoutes_RequireAuthNonNil(t *testing.T) {
 	// Authenticated request hits the route; ListNetworkInterfaces enforces tenant
 	// isolation via authz and returns 200/404/403 depending on VM ownership, but it
 	// must NOT be stopped by RequireAuth (i.e. not 401).
-	tokens, err := middleware.GenerateTokenPair(user, db)
+	token, err := middleware.GenerateAccessToken(user)
 	require.NoError(t, err)
 
 	vmID := uuid.New().String()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/vms/"+vmID+"/networks", nil)
-	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
 	require.NotEqual(t, http.StatusUnauthorized, rec.Code, "authenticated request must pass DB-backed RequireAuth")
@@ -185,12 +185,12 @@ func TestRegisterImportRoutes_RequireAuthNonNil(t *testing.T) {
 
 	// Authenticated request reaches the route (PreviewVirtualizor calls into the
 	// agent which is unavailable in tests, but auth must not block it -> not 401).
-	tokens, err := middleware.GenerateTokenPair(user, db)
+	token, err := middleware.GenerateAccessToken(user)
 	require.NoError(t, err)
 
 	nodeID := uuid.New().String()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/nodes/"+nodeID+"/import/virtualizor/preview", nil)
-	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
 	require.NotEqual(t, http.StatusUnauthorized, rec.Code, "authenticated request must pass DB-backed RequireAuth")

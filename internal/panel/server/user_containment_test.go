@@ -60,7 +60,7 @@ quota_mode TEXT NOT NULL DEFAULT 'legacy',
 		ip_whitelist TEXT,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		deleted_at DATETIME
+		token_revoked_at DATETIME, deleted_at DATETIME
 	)`
 	require.NoError(t, db.Exec(ddl).Error)
 	// Seed in deterministic order with explicit timestamps so founding-admin

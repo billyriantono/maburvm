@@ -22,8 +22,8 @@ import (
 
 	"github.com/boombuler/barcode"
 	"github.com/boombuler/barcode/qr"
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/shared/models"
 	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
@@ -239,8 +239,8 @@ func (s *UserService) Login(req *LoginRequest) (*LoginResponse, error) {
 		}
 	}
 
-	// Generate JWT token
-	token, err := s.generateJWT(user.ID, user.Role)
+	// Generate the session access token via the single shared minter.
+	token, err := middleware.GenerateAccessToken(&user)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate token: %w", err)
 	}
@@ -617,29 +617,13 @@ func (s *UserService) generateTempToken(userID uuid.UUID) string {
 	return base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", data, signature)))
 }
 
-// JWTClaims represents the JWT claims
-type JWTClaims struct {
-	UserID string `json:"user_id"`
-	Role   string `json:"role"`
-	jwt.RegisteredClaims
-}
-
-// generateJWT generates a JWT token for authenticated users using golang-jwt/jwt/v5
-func (s *UserService) generateJWT(userID uuid.UUID, role models.UserRole) (string, error) {
-	claims := JWTClaims{
-		UserID: userID.String(),
-		Role:   string(role),
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			NotBefore: jwt.NewNumericDate(time.Now()),
-			Issuer:    s.issuer,
-			Subject:   userID.String(),
-		},
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(s.jwtSecret))
+// RevokeUserTokens invalidates every outstanding access token for the user by
+// advancing the revocation cutoff to now. RequireAuth rejects any token whose iat
+// predates this instant.
+func (s *UserService) RevokeUserTokens(userID uuid.UUID) error {
+	return s.db.Model(&models.User{}).
+		Where("id = ?", userID).
+		Update("token_revoked_at", time.Now()).Error
 }
 
 // generateBackupCodes generates 10 backup codes for 2FA recovery

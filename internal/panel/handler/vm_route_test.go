@@ -36,7 +36,7 @@ func newVMRouteTestDB(t *testing.T) *gorm.DB {
 			id TEXT PRIMARY KEY, email TEXT, password_hash TEXT, role TEXT DEFAULT 'client',
 quota_mode TEXT NOT NULL DEFAULT 'legacy',
 					two_factor_secret TEXT, two_factor_backup_codes TEXT, ip_whitelist TEXT,
-			created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
+			created_at DATETIME, updated_at DATETIME, token_revoked_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE IF NOT EXISTS sessions (
 			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, token TEXT NOT NULL,
 			expires_at DATETIME NOT NULL, ip_address TEXT, user_agent TEXT,
@@ -107,11 +107,11 @@ func TestRegisterVMRoutes_RequireAuthNonNil(t *testing.T) {
 
 	// Authenticated request: middleware must resolve the user from the DB and
 	// reach GetVM (which returns 200 with the VM body for an admin owner).
-	tokens, err := middleware.GenerateTokenPair(user, db)
+	token, err := middleware.GenerateAccessToken(user)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/vms/"+vmID, nil)
-	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code, "authenticated request should reach handler via DB-backed RequireAuth")

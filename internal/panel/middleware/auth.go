@@ -17,15 +17,12 @@ import (
 
 // JWT Claims keys for cookie storage
 const (
-	AccessTokenCookieName  = "access_token"
-	RefreshTokenCookieName = "refresh_token"
+	AccessTokenCookieName = "access_token"
 )
 
-// Default token expiry durations
-const (
-	AccessTokenExpiry  = 15 * time.Minute
-	RefreshTokenExpiry = 7 * 24 * time.Hour // 7 days
-)
+// AccessTokenExpiry is the lifetime of the panel's single stateless access JWT.
+// There is no refresh stack, so this is the full session length.
+const AccessTokenExpiry = 24 * time.Hour
 
 // Context keys
 const (
@@ -41,14 +38,6 @@ type JWTClaims struct {
 	Permissions []string `json:"permissions"`
 	TokenType   string   `json:"token_type"`
 	jwt.RegisteredClaims
-}
-
-// TokenPair represents an access and refresh token pair
-type TokenPair struct {
-	AccessToken   string    `json:"access_token"`
-	RefreshToken  string    `json:"refresh_token"`
-	AccessExpiry  time.Time `json:"access_expiry"`
-	RefreshExpiry time.Time `json:"refresh_expiry"`
 }
 
 // UserContext represents the authenticated user context
@@ -107,137 +96,6 @@ func GetPermissionsForRole(role models.UserRole) []string {
 	default:
 		return []string{"vm:read"}
 	}
-}
-
-// GenerateTokenPair generates a new access and refresh token pair for a user
-func GenerateTokenPair(user *models.User, db *gorm.DB) (*TokenPair, error) {
-	secret, err := GetJWTSecret()
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve JWT secret: %w", err)
-	}
-	now := time.Now()
-	accessExpiry := now.Add(AccessTokenExpiry)
-	refreshExpiry := now.Add(RefreshTokenExpiry)
-
-	// Get permissions for the user's role
-	permissions := GetPermissionsForRole(user.Role)
-
-	// Create access token claims
-	accessClaims := JWTClaims{
-		UserID:      user.ID.String(),
-		Email:       user.Email,
-		Role:        string(user.Role),
-		Permissions: permissions,
-		TokenType:   "access",
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(accessExpiry),
-			IssuedAt:  jwt.NewNumericDate(now),
-			NotBefore: jwt.NewNumericDate(now),
-			Subject:   user.ID.String(),
-			Issuer:    "maburvm-panel",
-		},
-	}
-
-	// Create and sign access token
-	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
-	accessTokenString, err := accessToken.SignedString(secret)
-	if err != nil {
-		return nil, fmt.Errorf("failed to sign access token: %w", err)
-	}
-
-	// Create refresh token claims (minimal claims for refresh tokens)
-	refreshClaims := JWTClaims{
-		UserID:    user.ID.String(),
-		TokenType: "refresh",
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(refreshExpiry),
-			IssuedAt:  jwt.NewNumericDate(now),
-			NotBefore: jwt.NewNumericDate(now),
-			Subject:   user.ID.String(),
-			Issuer:    "maburvm-panel",
-			ID:        uuid.New().String(), // JTI for token revocation
-		},
-	}
-
-	// Create and sign refresh token
-	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
-	refreshTokenString, err := refreshToken.SignedString(secret)
-	if err != nil {
-		return nil, fmt.Errorf("failed to sign refresh token: %w", err)
-	}
-
-	// Store refresh token in database for revocation capability
-	if db != nil {
-		session := &models.Session{
-			UserID:    user.ID.String(),
-			Token:     refreshTokenString,
-			ExpiresAt: refreshExpiry,
-		}
-		if err := db.Create(session).Error; err != nil {
-			return nil, fmt.Errorf("failed to store refresh token: %w", err)
-		}
-	}
-
-	return &TokenPair{
-		AccessToken:   accessTokenString,
-		RefreshToken:  refreshTokenString,
-		AccessExpiry:  accessExpiry,
-		RefreshExpiry: refreshExpiry,
-	}, nil
-}
-
-// SetTokenCookies sets both access and refresh tokens as HTTP-only cookies
-func SetTokenCookies(c echo.Context, tokens *TokenPair) {
-	// Set access token cookie
-	accessCookie := &http.Cookie{
-		Name:     AccessTokenCookieName,
-		Value:    tokens.AccessToken,
-		Expires:  tokens.AccessExpiry,
-		HttpOnly: true,
-		Secure:   true, // Requires HTTPS
-		SameSite: http.SameSiteStrictMode,
-		Path:     "/",
-	}
-	c.SetCookie(accessCookie)
-
-	// Set refresh token cookie
-	refreshCookie := &http.Cookie{
-		Name:     RefreshTokenCookieName,
-		Value:    tokens.RefreshToken,
-		Expires:  tokens.RefreshExpiry,
-		HttpOnly: true,
-		Secure:   true, // Requires HTTPS
-		SameSite: http.SameSiteStrictMode,
-		Path:     "/api/auth/refresh", // Restricted path for refresh token
-	}
-	c.SetCookie(refreshCookie)
-}
-
-// ClearTokenCookies clears both token cookies (logout)
-func ClearTokenCookies(c echo.Context) {
-	// Clear access token cookie
-	accessCookie := &http.Cookie{
-		Name:     AccessTokenCookieName,
-		Value:    "",
-		Expires:  time.Now().Add(-1 * time.Hour),
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteStrictMode,
-		Path:     "/",
-	}
-	c.SetCookie(accessCookie)
-
-	// Clear refresh token cookie
-	refreshCookie := &http.Cookie{
-		Name:     RefreshTokenCookieName,
-		Value:    "",
-		Expires:  time.Now().Add(-1 * time.Hour),
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteStrictMode,
-		Path:     "/api/auth/refresh",
-	}
-	c.SetCookie(refreshCookie)
 }
 
 // extractTokenFromCookie extracts the JWT token from the specified cookie
@@ -422,6 +280,19 @@ func RequireAuth(db *gorm.DB) echo.MiddlewareFunc {
 					})
 				}
 
+				// Enforce logout-based revocation: reject any token minted before the
+				// user's revocation cutoff. NULL cutoff (never logged out) allows all.
+				// JWT `iat` is second-precision, so the token in hand at logout floors
+				// below the sub-second cutoff and is correctly rejected. A re-login
+				// happens in a later wall-clock second, so its iat clears the cutoff.
+				if user.TokenRevokedAt != nil && claims.IssuedAt != nil &&
+					claims.IssuedAt.Time.Before(*user.TokenRevokedAt) {
+					return c.JSON(http.StatusUnauthorized, map[string]interface{}{
+						"error":   "Unauthorized",
+						"message": "Session has been revoked",
+					})
+				}
+
 				// Enforce per-user IP whitelist (opt-in: empty list allows any IP).
 				if len(user.IPWhitelist) > 0 && !isIPWhitelisted(c.RealIP(), user.IPWhitelist) {
 					return c.JSON(http.StatusForbidden, map[string]interface{}{
@@ -576,136 +447,31 @@ func RequirePermission(permission string) echo.MiddlewareFunc {
 	}
 }
 
-// RefreshTokenHandler handles the token refresh endpoint
-// It validates the refresh token, revokes the old one, and issues a new pair
-func RefreshTokenHandler(db *gorm.DB) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		// Extract refresh token from cookie
-		refreshTokenString, err := extractTokenFromCookie(c, RefreshTokenCookieName)
-		if err != nil {
-			return c.JSON(http.StatusUnauthorized, map[string]interface{}{
-				"error":   "Unauthorized",
-				"message": "Refresh token required",
-			})
-		}
-
-		// Parse and validate the refresh token
-		claims, err := ParseAndValidateToken(refreshTokenString)
-		if err != nil {
-			return c.JSON(http.StatusUnauthorized, map[string]interface{}{
-				"error":   "Unauthorized",
-				"message": "Invalid or expired refresh token",
-			})
-		}
-
-		// Validate token type
-		if claims.TokenType != "refresh" {
-			return c.JSON(http.StatusUnauthorized, map[string]interface{}{
-				"error":   "Unauthorized",
-				"message": "Invalid token type",
-			})
-		}
-
-		// Check if refresh token exists in database (not revoked)
-		var session models.Session
-		if err := db.Where("token = ?", refreshTokenString).First(&session).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return c.JSON(http.StatusUnauthorized, map[string]interface{}{
-					"error":   "Unauthorized",
-					"message": "Refresh token has been revoked",
-				})
-			}
-			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
-				"error":   "Internal Server Error",
-				"message": "Failed to validate refresh token",
-			})
-		}
-
-		// Check if session is expired
-		if session.IsExpired() {
-			return c.JSON(http.StatusUnauthorized, map[string]interface{}{
-				"error":   "Unauthorized",
-				"message": "Refresh token has expired",
-			})
-		}
-
-		// Parse user ID
-		userID, err := uuid.Parse(claims.UserID)
-		if err != nil {
-			return c.JSON(http.StatusUnauthorized, map[string]interface{}{
-				"error":   "Unauthorized",
-				"message": "Invalid user ID in token",
-			})
-		}
-
-		// Fetch user from database
-		var user models.User
-		if err := db.Where("id = ?", userID).First(&user).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return c.JSON(http.StatusUnauthorized, map[string]interface{}{
-					"error":   "Unauthorized",
-					"message": "User not found",
-				})
-			}
-			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
-				"error":   "Internal Server Error",
-				"message": "Failed to fetch user",
-			})
-		}
-
-		// Check if user is soft-deleted
-		if user.DeletedAt.Valid {
-			return c.JSON(http.StatusUnauthorized, map[string]interface{}{
-				"error":   "Unauthorized",
-				"message": "User account is deactivated",
-			})
-		}
-
-		// Revoke the old refresh token (delete from database)
-		if err := db.Delete(&session).Error; err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
-				"error":   "Internal Server Error",
-				"message": "Failed to revoke old refresh token",
-			})
-		}
-
-		// Generate new token pair
-		tokens, err := GenerateTokenPair(&user, db)
-		if err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
-				"error":   "Internal Server Error",
-				"message": "Failed to generate new tokens",
-			})
-		}
-
-		// Set new cookies
-		SetTokenCookies(c, tokens)
-
-		return c.JSON(http.StatusOK, map[string]interface{}{
-			"message": "Tokens refreshed successfully",
-			"data": map[string]interface{}{
-				"access_expiry":  tokens.AccessExpiry,
-				"refresh_expiry": tokens.RefreshExpiry,
-			},
-		})
+// GenerateAccessToken mints the panel's one and only session credential: an HS256
+// access JWT signed with the shared JWT secret, carrying the user's id/email/role/
+// permissions, a jti, and an iat that logout revocation (users.token_revoked_at)
+// compares against. There is no refresh/server-session stack — this token,
+// validated by RequireAuth, IS the session.
+func GenerateAccessToken(user *models.User) (string, error) {
+	secret, err := GetJWTSecret()
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve JWT secret: %w", err)
 	}
-}
-
-// LogoutHandler handles user logout by revoking the refresh token and clearing cookies
-func LogoutHandler(db *gorm.DB) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		// Extract refresh token from cookie
-		refreshTokenString, err := extractTokenFromCookie(c, RefreshTokenCookieName)
-		if err == nil && refreshTokenString != "" {
-			// Revoke the refresh token (delete from database)
-			db.Where("token = ?", refreshTokenString).Delete(&models.Session{})
-		}
-
-		// Clear cookies
-		ClearTokenCookies(c)
-
-		return c.JSON(http.StatusOK, map[string]interface{}{
-			"message": "Logged out successfully",
-		})
+	now := time.Now()
+	claims := JWTClaims{
+		UserID:      user.ID.String(),
+		Email:       user.Email,
+		Role:        string(user.Role),
+		Permissions: GetPermissionsForRole(user.Role),
+		TokenType:   "access",
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(now.Add(AccessTokenExpiry)),
+			IssuedAt:  jwt.NewNumericDate(now),
+			NotBefore: jwt.NewNumericDate(now),
+			Subject:   user.ID.String(),
+			Issuer:    "maburvm-panel",
+			ID:        uuid.New().String(),
+		},
 	}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(secret)
 }

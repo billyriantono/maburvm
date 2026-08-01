@@ -26,13 +26,17 @@ type User struct {
 	// for every existing user (migration 037) so a managed user without a
 	// user_quotas row cannot be mistaken for a legacy user who simply has no
 	// quota row. Managed quota assignment/enforcement reads this marker.
-	QuotaMode            QuotaMode      `json:"quota_mode,omitempty" gorm:"column:quota_mode;type:quota_mode;not null;default:'legacy'"`
-	TwoFactorSecret      string         `json:"two_factor_secret,omitempty" gorm:"type:varchar(255)" validate:"-"`
-	TwoFactorBackupCodes string         `json:"-" gorm:"type:varchar(1000)"` // Encrypted backup codes
-	IPWhitelist          []string       `json:"ip_whitelist" gorm:"type:jsonb;serializer:json" validate:"omitempty,dive,ip"`
-	CreatedAt            time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
-	UpdatedAt            time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
-	DeletedAt            gorm.DeletedAt `json:"-" gorm:"index"`
+	QuotaMode            QuotaMode `json:"quota_mode,omitempty" gorm:"column:quota_mode;type:quota_mode;not null;default:'legacy'"`
+	TwoFactorSecret      string    `json:"two_factor_secret,omitempty" gorm:"type:varchar(255)" validate:"-"`
+	TwoFactorBackupCodes string    `json:"-" gorm:"type:varchar(1000)"` // Encrypted backup codes
+	IPWhitelist          []string  `json:"ip_whitelist" gorm:"type:jsonb;serializer:json" validate:"omitempty,dive,ip"`
+	CreatedAt            time.Time `json:"created_at" gorm:"not null;default:NOW()"`
+	UpdatedAt            time.Time `json:"updated_at" gorm:"not null;default:NOW()"`
+	// TokenRevokedAt is the logout revocation cutoff. RequireAuth rejects any
+	// access token whose iat predates this instant, so logout invalidates all of a
+	// user's outstanding stateless JWTs server-side. NULL = nothing revoked.
+	TokenRevokedAt *time.Time     `json:"-" gorm:"column:token_revoked_at"`
+	DeletedAt      gorm.DeletedAt `json:"-" gorm:"index"`
 }
 
 // TableName specifies the table name for User
