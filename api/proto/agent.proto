@@ -63,6 +63,11 @@ service NodeAgent {
   // checksum. This is the real backup payload (not just metadata).
   rpc BackupDisk(BackupDiskRequest) returns (BackupDiskResponse);
 
+  // RestoreDisk downloads a previously-backed-up qcow2 from object storage,
+  // verifies its SHA256, and swaps it into the VM's primary disk. The VM MUST
+  // be shut off; the agent rejects the call otherwise.
+  rpc RestoreDisk(RestoreDiskRequest) returns (RestoreDiskResponse);
+
   // GetLiveMetrics retrieves real-time system metrics from the node including
   // CPU usage, memory usage, disk usage, network I/O, disk I/O, and load average.
   rpc GetLiveMetrics(GetLiveMetricsRequest) returns (GetLiveMetricsResponse);
@@ -723,6 +728,24 @@ message VMNetworkConfig {
 
   // bandwidth_limits for traffic shaping
   BandwidthLimit bandwidth_limits = 3;
+
+  // port_forwards (DNAT) to apply
+  repeated PortForward port_forwards = 4;
+}
+
+// PortForward defines a DNAT port-forwarding rule.
+message PortForward {
+  // external_port on the host
+  int32 external_port = 1;
+
+  // internal_port on the VM
+  int32 internal_port = 2;
+
+  // protocol (tcp or udp); empty = tcp
+  string protocol = 3;
+
+  // source_cidr restricts the source; empty/"0.0.0.0/0" = any
+  string source_cidr = 4;
 }
 
 // NetworkInterface defines a single network interface.
@@ -753,6 +776,9 @@ message NetworkInterface {
 
   // anti_spoofing enables anti-IP hijacking protection (iptables + ebtables + nwfilter)
   bool anti_spoofing = 9;
+
+  // vlan_id is the 802.1Q VLAN tag for this interface (0 = untagged)
+  int32 vlan_id = 10;
 }
 
 // NetworkInterfaceType enumerates network interface types.
@@ -1150,6 +1176,27 @@ message BackupDiskResponse {
 
   // error details if failed
   ErrorResponse error = 5;
+}
+
+// RestoreDiskRequest requests restoring a VM's primary disk from a backup object.
+message RestoreDiskRequest {
+  // vm_id is the VM whose primary disk should be overwritten
+  string vm_id = 1;
+
+  // source_key is the object storage key of the backup qcow2 to restore
+  string source_key = 2;
+
+  // expected_checksum is the SHA256 (hex) recorded when the backup was taken;
+  // the agent aborts if the downloaded object does not match
+  string expected_checksum = 3;
+}
+
+// RestoreDiskResponse reports the result of a disk restore.
+message RestoreDiskResponse {
+  bool success = 1;
+  // bytes_restored is the size of the restored image written to the disk
+  int64 bytes_restored = 2;
+  ErrorResponse error = 3;
 }
 
 // ============================================================================

@@ -2,10 +2,8 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"strings"
 	"sync"
@@ -405,29 +403,16 @@ func (s *BackupService) RestoreBackup(ctx context.Context, req *RestoreBackupReq
 		return nil, fmt.Errorf("VM must be stopped before restoring from backup")
 	}
 
-	if s.storageClient != nil {
-		reader, err := s.storageClient.Download(ctx, backup.StoragePath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to download backup for restore: %w", err)
-		}
-		_, _ = io.Copy(io.Discard, io.LimitReader(reader, 1))
-		_ = reader.Close()
+	if backup.Checksum == "" {
+		return nil, fmt.Errorf("backup has no recorded checksum; cannot safely restore")
 	}
 
-	// Create restore job
-	params := map[string]interface{}{
-		"backup_id":    backup.ID,
-		"storage_path": backup.StoragePath,
-		"compression":  backup.Compression,
-		"provider":     backup.StorageProvider,
-	}
-	paramsJSON, _ := json.Marshal(params)
-
-	job := queue.VMOperationJob{
+	job := queue.RestoreJob{
 		VMID:      vm.ID,
-		Operation: queue.VMOpRebuild,
 		NodeID:    vm.NodeID,
-		Params:    paramsJSON,
+		BackupID:  backup.ID,
+		SourceKey: backup.StoragePath,
+		Checksum:  backup.Checksum,
 	}
 
 	result, err := s.riverClient.Insert(ctx, job, nil)

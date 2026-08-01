@@ -780,6 +780,12 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 			PortRange string `json:"port_range"`
 			Priority  int    `json:"priority"`
 		} `json:"firewall_rules,omitempty"`
+		PortForwards []struct {
+			ExternalPort int    `json:"external_port"`
+			InternalPort int    `json:"internal_port"`
+			Protocol     string `json:"protocol"`
+			SourceIP     string `json:"source_ip"`
+		} `json:"port_forwards,omitempty"`
 	}
 
 	if err := json.Unmarshal(job.Args.Params, &params); err != nil {
@@ -799,12 +805,27 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 		})
 	}
 
-	// Build network interface with anti-spoofing flag
+	// Build network interface with anti-spoofing flag + VLAN tag.
+	var vlanID int32
+	if params.VLANID != nil {
+		vlanID = int32(*params.VLANID)
+	}
 	iface := &pb.NetworkInterface{
 		Name:         "eth0",
 		Type:         pb.NetworkInterfaceType_NETWORK_INTERFACE_TYPE_BRIDGE,
 		IpAddress:    params.IPAddress,
 		AntiSpoofing: params.AntiSpoofing,
+		VlanId:       vlanID,
+	}
+
+	var pfRules []*pb.PortForward
+	for _, pf := range params.PortForwards {
+		pfRules = append(pfRules, &pb.PortForward{
+			ExternalPort: int32(pf.ExternalPort),
+			InternalPort: int32(pf.InternalPort),
+			Protocol:     pf.Protocol,
+			SourceCidr:   pf.SourceIP,
+		})
 	}
 
 	req := &pb.NetworkConfigRequest{
@@ -812,6 +833,7 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 		Config: &pb.VMNetworkConfig{
 			Interfaces:    []*pb.NetworkInterface{iface},
 			FirewallRules: fwRules,
+			PortForwards:  pfRules,
 			BandwidthLimits: &pb.BandwidthLimit{
 				IngressRateMbps: int32(params.BandwidthLimit),
 				EgressRateMbps:  int32(params.BandwidthLimit),
@@ -1063,6 +1085,67 @@ func (w *TemplateSyncWorker) updateSyncStatus(ctx context.Context, templateID, n
 	}
 
 	return w.db.WithContext(ctx).Save(&record).Error
+}
+
+// RestoreWorker restores a VM disk from a backup via the agent RestoreDisk RPC.
+type RestoreWorker struct {
+	river.WorkerDefaults[RestoreJob]
+	logger      *slog.Logger
+	agentClient *AgentClient
+	metrics     *MetricsCollector
+}
+
+func NewRestoreWorker(logger *slog.Logger) *RestoreWorker {
+	w := &RestoreWorker{logger: logger}
+	if globalWorkerContext != nil {
+		w.agentClient = globalWorkerContext.AgentClient
+		w.metrics = globalWorkerContext.Metrics
+	}
+	return w
+}
+
+func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreJob]) error {
+	if globalWorkerContext == nil {
+		return fmt.Errorf("worker context not initialized")
+	}
+	vm, err := globalWorkerContext.VMRepo.GetByID(ctx, job.Args.VMID)
+	if err != nil {
+		return fmt.Errorf("failed to get VM: %w", err)
+	}
+	node, err := globalWorkerContext.NodeRepo.GetByID(ctx, job.Args.NodeID)
+	if err != nil {
+		return fmt.Errorf("failed to get node: %w", err)
+	}
+	if node.Status != models.NodeStatusActive {
+		return fmt.Errorf("node %s is not active (status: %s)", node.ID, node.Status)
+	}
+	client, err := w.agentClient.GetClient(node.ID, node.IPAddress)
+	if err != nil {
+		return err
+	}
+
+	resp, err := client.RestoreDisk(agentAuthContext(ctx, node), &pb.RestoreDiskRequest{
+		VmId:             vm.ID,
+		SourceKey:        job.Args.SourceKey,
+		ExpectedChecksum: job.Args.Checksum,
+	})
+	if err != nil {
+		if IsRetryableError(err) {
+			return fmt.Errorf("retryable error restoring disk: %w", err)
+		}
+		return river.JobCancel(fmt.Errorf("non-retryable error restoring disk: %w", err))
+	}
+	if !resp.Success {
+		msg := "disk restore failed"
+		if resp.Error != nil {
+			msg = resp.Error.GetMessage()
+		}
+		return river.JobCancel(fmt.Errorf("disk restore failed: %s", msg))
+	}
+
+	w.logger.InfoContext(ctx, "restore completed",
+		"vm_id", vm.ID, "backup_id", job.Args.BackupID, "bytes", resp.BytesRestored)
+	return nil
 }
 
 // BackupWorker handles VM backup operations

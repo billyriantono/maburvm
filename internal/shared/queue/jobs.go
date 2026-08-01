@@ -43,10 +43,7 @@ const (
 	VMOpResetPassword     VMOperationType = "reset_password"
 	VMOpAttachISO         VMOperationType = "attach_iso"
 	VMOpDetachISO         VMOperationType = "detach_iso"
-	VMOpConfigureNetwork  VMOperationType = "configure_network"
-	VMOpAddPortForward    VMOperationType = "add_port_forward"
-	VMOpRemovePortForward VMOperationType = "remove_port_forward"
-	VMOpConfigureFirewall VMOperationType = "configure_firewall"
+	VMOpConfigureNetwork VMOperationType = "configure_network"
 )
 
 // VMOperationJob represents a VM lifecycle operation job
@@ -141,6 +138,22 @@ func (j BackupJob) InsertOpts() *river.InsertOpts {
 	}
 }
 
+// RestoreJob restores a VM's primary disk from a completed backup.
+// Runs on the critical queue (data-affecting VM lifecycle op).
+type RestoreJob struct {
+	VMID      string `json:"vm_id"`
+	NodeID    string `json:"node_id"`
+	BackupID  string `json:"backup_id"`
+	SourceKey string `json:"source_key"`
+	Checksum  string `json:"checksum"`
+}
+
+func (j RestoreJob) Kind() string { return "restore" }
+
+func (j RestoreJob) InsertOpts() *river.InsertOpts {
+	return &river.InsertOpts{Queue: QueueCritical, Priority: PriorityCritical}
+}
+
 // ImportSource represents the source of import
 type ImportSource string
 
@@ -224,7 +237,7 @@ func ValidateVMOperation(op VMOperationType) error {
 	case VMOpCreate, VMOpStart, VMOpStop, VMOpRestart, VMOpDelete,
 		VMOpRebuild, VMOpSuspend, VMOpUnsuspend, VMOpMigrate, VMOpResize, VMOpResetPassword,
 		VMOpAttachISO, VMOpDetachISO,
-		VMOpConfigureNetwork, VMOpAddPortForward, VMOpRemovePortForward, VMOpConfigureFirewall:
+		VMOpConfigureNetwork:
 		return nil
 	default:
 		return fmt.Errorf("invalid VM operation type: %s", op)

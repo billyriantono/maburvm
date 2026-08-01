@@ -579,6 +579,15 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 	if req.VmId == "" {
 		return fmt.Errorf("vm_id is required")
 	}
+	// Idempotency guard [B5/V1]: if a domain for this VM already exists, a prior
+	// CREATE already succeeded on this host — the panel is only retrying because
+	// the gRPC response was lost. Re-running would fail on "disk already exists"
+	// / "domain already exists" and wrongly mark the VM errored. The desired end
+	// state (domain defined) is already met, so report success.
+	if _, err := libvirt.GetVMStatus(req.VmId); err == nil {
+		log.Printf("[NodeAgent] CREATE: domain %s already exists; treating as idempotent success", req.VmId)
+		return nil
+	}
 	cfg := req.Config
 	if cfg == nil || cfg.Resources == nil {
 		return fmt.Errorf("config with resources is required for CREATE")
@@ -902,6 +911,96 @@ func backupDiskErr(msg string) *pb.BackupDiskResponse {
 	}
 }
 
+// RestoreDisk downloads a backup qcow2 from object storage, verifies its
+// SHA256 against the checksum recorded at backup time, and atomically swaps it
+// into the VM's primary disk. The VM must be shut off. The previous disk is kept
+// as a .restorebak.<ts> sidecar until the swap succeeds and is only removed on
+// success, so a failed download/verify/rename never destroys the live disk.
+func (s *NodeAgentService) RestoreDisk(ctx context.Context, req *pb.RestoreDiskRequest) (*pb.RestoreDiskResponse, error) {
+	if req.VmId == "" || req.SourceKey == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "vm_id and source_key are required")
+	}
+	if _, authenticated := GetNodeIDFromContext(ctx); !authenticated {
+		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
+	}
+
+	// The VM must be shut off: overwriting a disk under a running qemu corrupts it.
+	vmStatus, err := libvirt.GetVMStatus(req.VmId)
+	if err != nil {
+		return restoreDiskErr(fmt.Sprintf("failed to read VM state: %v", err)), nil
+	}
+	if vmStatus != libvirt.VMStatusStopped {
+		return restoreDiskErr(fmt.Sprintf("VM must be stopped to restore (state: %s)", vmStatus)), nil
+	}
+
+	diskPath, err := libvirt.PrimaryDiskPath(req.VmId)
+	if err != nil {
+		return restoreDiskErr(fmt.Sprintf("primary disk not found: %v", err)), nil
+	}
+
+	client, err := backupStorageClientFromEnv()
+	if err != nil {
+		return restoreDiskErr(err.Error()), nil
+	}
+
+	// Download to a temp file next to the disk (same filesystem => rename is atomic).
+	tmpPath := filepath.Join(defaultImageDir, req.VmId+"-restore.qcow2")
+	_ = os.Remove(tmpPath)
+	if err := func() error {
+		reader, err := client.Download(ctx, req.SourceKey)
+		if err != nil {
+			return fmt.Errorf("download failed: %w", err)
+		}
+		defer reader.Close()
+		out, err := os.Create(tmpPath)
+		if err != nil {
+			return fmt.Errorf("create temp: %w", err)
+		}
+		defer out.Close()
+		if _, err := io.Copy(out, reader); err != nil {
+			return fmt.Errorf("write temp: %w", err)
+		}
+		return out.Sync()
+	}(); err != nil {
+		_ = os.Remove(tmpPath)
+		return restoreDiskErr(err.Error()), nil
+	}
+
+	// Verify integrity before touching the live disk.
+	checksum, size, err := fileSHA256(tmpPath)
+	if err != nil {
+		_ = os.Remove(tmpPath)
+		return restoreDiskErr(fmt.Sprintf("checksum failed: %v", err)), nil
+	}
+	if req.ExpectedChecksum != "" && !strings.EqualFold(req.ExpectedChecksum, checksum) {
+		_ = os.Remove(tmpPath)
+		return restoreDiskErr(fmt.Sprintf("checksum mismatch: got %s, want %s", checksum, req.ExpectedChecksum)), nil
+	}
+
+	// Swap: move current disk aside, move restored image into place, roll back on failure.
+	bakPath := diskPath + ".restorebak." + strconv.FormatInt(time.Now().Unix(), 10)
+	if err := os.Rename(diskPath, bakPath); err != nil && !os.IsNotExist(err) {
+		_ = os.Remove(tmpPath)
+		return restoreDiskErr(fmt.Sprintf("failed to move current disk aside: %v", err)), nil
+	}
+	if err := os.Rename(tmpPath, diskPath); err != nil {
+		_ = os.Rename(bakPath, diskPath) // roll back
+		_ = os.Remove(tmpPath)
+		return restoreDiskErr(fmt.Sprintf("failed to install restored disk: %v", err)), nil
+	}
+	_ = os.Remove(bakPath)
+
+	log.Printf("[NodeAgent] Restored VM %s disk from %s (%d bytes, sha256=%s)", req.VmId, req.SourceKey, size, checksum)
+	return &pb.RestoreDiskResponse{Success: true, BytesRestored: size}, nil
+}
+
+func restoreDiskErr(msg string) *pb.RestoreDiskResponse {
+	return &pb.RestoreDiskResponse{
+		Success: false,
+		Error:   &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: msg},
+	}
+}
+
 // CreateStorageVolume provisions a real volume in a storage pool. The backend
 // (dir/file via qemu-img, lvm via lvcreate, zfs via zfs create) is selected by
 // req.PoolType; see storage.VolumeManager.
@@ -991,7 +1090,12 @@ func (s *NodeAgentService) DetachDisk(ctx context.Context, req *pb.DetachDiskReq
 	}
 	if req.DeleteVolume && req.Path != "" {
 		if err := storage.NewVolumeManager().DeleteVolume(req.PoolType, req.Path); err != nil {
-			log.Printf("[NodeAgent] Warning: detached %s but failed to delete volume %s: %v", req.Device, req.Path, err)
+			// Disk is already detached from the domain but its backing volume could
+			// not be removed: report failure so the leak surfaces instead of being
+			// silently swallowed. ponytail: a retry re-runs libvirt.DetachDisk, which
+			// errors once the device is already gone; make volume cleanup idempotent
+			// (or split detach vs. delete into separate RPCs) if retry-after-leak matters.
+			return detachDiskErr(fmt.Sprintf("detached %s but failed to delete volume %s: %v", req.Device, req.Path, err)), nil
 		}
 	}
 	log.Printf("[NodeAgent] Detached disk %s from VM %s (delete=%v)", req.Device, req.VmId, req.DeleteVolume)
@@ -1566,9 +1670,14 @@ func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *pb.Netwo
 		bandwidthMbps = int(req.Config.BandwidthLimits.IngressRateMbps)
 	}
 
-	// Determine VLAN ID from first interface (if bridge-based)
+	// Determine VLAN ID from the first interface carrying a nonzero tag.
 	var vlanID int
-	// VLAN is typically derived from bridge/network config — use 0 for now unless explicitly set
+	for _, iface := range req.Config.Interfaces {
+		if iface.VlanId > 0 {
+			vlanID = int(iface.VlanId)
+			break
+		}
+	}
 
 	// Convert proto firewall rules to model rules
 	var fwRules []models.FirewallRule
@@ -1591,6 +1700,19 @@ func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *pb.Netwo
 	// Apply the full network configuration
 	if err := s.networkMgr.SetupVMNetwork(req.VmId, internalIP, vlanID, bandwidthMbps, fwRules); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to apply network config: %v", err)
+	}
+
+	// Apply DNAT port forwards. SetupVMNetwork just (re)populated the VM's network
+	// state and IP, so AddPortForward can resolve the internal IP. ReplaceAll above
+	// wiped any prior DNAT, so this is the authoritative desired set.
+	for _, pf := range req.Config.PortForwards {
+		if err := s.networkMgr.AddPortForward(req.VmId, int(pf.ExternalPort), int(pf.InternalPort), pf.Protocol); err != nil {
+			log.Printf("[NodeAgent] WARNING: failed to add port forward %d->%d for VM %s: %v",
+				pf.ExternalPort, pf.InternalPort, req.VmId, err)
+		} else {
+			log.Printf("[NodeAgent] Port forward %d -> :%d (%s) applied for VM %s",
+				pf.ExternalPort, pf.InternalPort, pf.Protocol, req.VmId)
+		}
 	}
 
 	// Apply anti-spoofing rules if any interface has it enabled

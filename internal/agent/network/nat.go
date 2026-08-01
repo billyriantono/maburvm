@@ -35,6 +35,7 @@ type NATManager struct {
 type portForwardEntry struct {
 	internalIP   string
 	internalPort int
+	protocol     string
 }
 
 // NewNATManager creates a new NATManager instance
@@ -195,21 +196,24 @@ func (nm *NATManager) RemoveNAT(vmID string, internalIP string) error {
 // externalPort: port on the host that will be forwarded
 // internalIP: IP address of the VM
 // internalPort: port on the VM to forward to
-func (nm *NATManager) AddPortForward(vmID string, externalPort int, internalIP string, internalPort int) error {
+func (nm *NATManager) AddPortForward(vmID string, externalPort int, internalIP string, internalPort int, protocol string) error {
 	if externalPort < 1 || externalPort > 65535 {
 		return fmt.Errorf("invalid external port: %d", externalPort)
 	}
 	if internalPort < 1 || internalPort > 65535 {
 		return fmt.Errorf("invalid internal port: %d", internalPort)
 	}
+	if protocol != "udp" {
+		protocol = "tcp"
+	}
 
 	nm.mu.Lock()
 	defer nm.mu.Unlock()
 
 	// Build DNAT rule
-	// Format: -t nat -A MABURVM-NAT -p tcp --dport <externalPort> -j DNAT --to-destination <internalIP>:<internalPort>
+	// Format: -t nat -A MABURVM-NAT -p <proto> --dport <externalPort> -j DNAT --to-destination <internalIP>:<internalPort>
 	rule := []string{
-		"-p", "tcp",
+		"-p", protocol,
 		"--dport", strconv.Itoa(externalPort),
 		"-j", "DNAT",
 		"--to-destination", fmt.Sprintf("%s:%d", internalIP, internalPort),
@@ -235,6 +239,7 @@ func (nm *NATManager) AddPortForward(vmID string, externalPort int, internalIP s
 	nm.portForwards[vmID][externalPort] = portForwardEntry{
 		internalIP:   internalIP,
 		internalPort: internalPort,
+		protocol:     protocol,
 	}
 
 	return nil
@@ -253,25 +258,31 @@ func (nm *NATManager) removePortForwardInternal(vmID string, externalPort int) e
 	// Get the stored entry
 	entry, exists := nm.portForwards[vmID][externalPort]
 	if !exists {
-		// Try to delete anyway in case tracking is out of sync
-		rule := []string{
-			"-p", "tcp",
-			"--dport", strconv.Itoa(externalPort),
-			"-j", "DNAT",
-			"-m", "comment",
-			"--comment", fmt.Sprintf("maburvm-vm-%s-port-%d", vmID, externalPort),
-		}
-		if err := nm.ipt.Delete(NATTable, MaburVMChain, rule...); err != nil {
-			if !strings.Contains(err.Error(), "No chain/target/match by that name") {
-				return fmt.Errorf("failed to delete port forward rule: %w", err)
+		// Try to delete anyway in case tracking is out of sync (try both protocols).
+		for _, proto := range []string{"tcp", "udp"} {
+			rule := []string{
+				"-p", proto,
+				"--dport", strconv.Itoa(externalPort),
+				"-j", "DNAT",
+				"-m", "comment",
+				"--comment", fmt.Sprintf("maburvm-vm-%s-port-%d", vmID, externalPort),
+			}
+			if err := nm.ipt.Delete(NATTable, MaburVMChain, rule...); err != nil {
+				if !strings.Contains(err.Error(), "No chain/target/match by that name") {
+					return fmt.Errorf("failed to delete port forward rule: %w", err)
+				}
 			}
 		}
 		return nil
 	}
 
+	proto := entry.protocol
+	if proto == "" {
+		proto = "tcp"
+	}
 	// Build and delete the rule
 	rule := []string{
-		"-p", "tcp",
+		"-p", proto,
 		"--dport", strconv.Itoa(externalPort),
 		"-j", "DNAT",
 		"--to-destination", fmt.Sprintf("%s:%d", entry.internalIP, entry.internalPort),

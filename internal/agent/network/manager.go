@@ -190,8 +190,9 @@ func (m *Manager) CleanupVMNetwork(vmID string) error {
 	return nil
 }
 
-// AddPortForward adds a port forward for a VM
-func (m *Manager) AddPortForward(vmID string, externalPort int, internalPort int) error {
+// AddPortForward adds a port forward for a VM. protocol is "tcp" or "udp"
+// (empty defaults to tcp).
+func (m *Manager) AddPortForward(vmID string, externalPort int, internalPort int, protocol string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -200,17 +201,18 @@ func (m *Manager) AddPortForward(vmID string, externalPort int, internalPort int
 		return fmt.Errorf("VM %s not found in network state", vmID)
 	}
 
-	if err := m.nat.AddPortForward(vmID, externalPort, state.InternalIP, internalPort); err != nil {
+	if err := m.nat.AddPortForward(vmID, externalPort, state.InternalIP, internalPort, protocol); err != nil {
 		return fmt.Errorf("failed to add port forward: %w", err)
 	}
 
 	state.PortForwards[externalPort] = portForwardEntry{
 		internalIP:   state.InternalIP,
 		internalPort: internalPort,
+		protocol:     protocol,
 	}
 
-	log.Printf("[NetworkManager] Port forward %d -> %s:%d added for VM %s",
-		externalPort, state.InternalIP, internalPort, vmID)
+	log.Printf("[NetworkManager] Port forward %d -> %s:%d (%s) added for VM %s",
+		externalPort, state.InternalIP, internalPort, protocol, vmID)
 	return nil
 }
 

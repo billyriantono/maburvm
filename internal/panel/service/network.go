@@ -254,9 +254,9 @@ func (s *NetworkService) AddPortForward(ctx context.Context, vmID string, networ
 		return nil, fmt.Errorf("failed to create port forward: %w", err)
 	}
 
-	// Enqueue NAT config job to agent
-	if err := s.enqueueNATConfigJob(ctx, vm, portForward); err != nil {
-		fmt.Printf("failed to enqueue NAT config job: %v\n", err)
+	// Enqueue full network resync (ReplaceAll) so the new DNAT is applied on the host.
+	if err := s.enqueueNetworkResync(ctx, vm); err != nil {
+		fmt.Printf("failed to enqueue network resync: %v\n", err)
 	}
 
 	return &AddPortForwardResponse{PortForward: portForward}, nil
@@ -287,9 +287,9 @@ func (s *NetworkService) RemovePortForward(ctx context.Context, vmID string, net
 		return fmt.Errorf("failed to delete port forward: %w", err)
 	}
 
-	// Enqueue NAT removal job to agent
-	if err := s.enqueueNATRemovalJob(ctx, vm, &portForward); err != nil {
-		fmt.Printf("failed to enqueue NAT removal job: %v\n", err)
+	// Enqueue full network resync (ReplaceAll) so the removed DNAT is dropped on the host.
+	if err := s.enqueueNetworkResync(ctx, vm); err != nil {
+		fmt.Printf("failed to enqueue network resync: %v\n", err)
 	}
 
 	return nil
@@ -390,9 +390,9 @@ func (s *NetworkService) AddFirewallRule(ctx context.Context, vmID string, req *
 		return nil, fmt.Errorf("failed to create firewall rule: %w", err)
 	}
 
-	// Enqueue firewall config job to agent (sync all rules)
-	if err := s.enqueueFirewallConfigJob(ctx, vm); err != nil {
-		fmt.Printf("failed to enqueue firewall config job: %v\n", err)
+	// Enqueue full network resync (ReplaceAll) so the firewall rule is enforced on the host.
+	if err := s.enqueueNetworkResync(ctx, vm); err != nil {
+		fmt.Printf("failed to enqueue network resync: %v\n", err)
 	}
 
 	return &AddFirewallRuleResponse{FirewallRule: rule}, nil
@@ -425,9 +425,9 @@ func (s *NetworkService) RemoveFirewallRule(ctx context.Context, vmID string, ru
 		return fmt.Errorf("failed to delete firewall rule: %w", err)
 	}
 
-	// Enqueue firewall config job to agent (sync all remaining rules)
-	if err := s.enqueueFirewallConfigJob(ctx, vm); err != nil {
-		fmt.Printf("failed to enqueue firewall config job: %v\n", err)
+	// Enqueue full network resync (ReplaceAll) so the remaining rules are re-applied on the host.
+	if err := s.enqueueNetworkResync(ctx, vm); err != nil {
+		fmt.Printf("failed to enqueue network resync: %v\n", err)
 	}
 
 	return nil
@@ -755,6 +755,21 @@ func (s *NetworkService) enqueueNetworkConfigJob(ctx context.Context, vm *models
 		FirewallRules:  rules,
 	}
 
+	// Ship the VM's port forwards as part of the desired state so a full
+	// ReplaceAll re-apply (which wipes MABURVM-NAT) re-creates them instead of
+	// dropping them.
+	var pfs []models.PortForward
+	if err := s.db.WithContext(ctx).Where("vm_id = ?", vm.ID).Find(&pfs).Error; err == nil {
+		for _, pf := range pfs {
+			params.PortForwards = append(params.PortForwards, PortForwardParam{
+				ExternalPort: pf.ExternalPort,
+				InternalPort: pf.InternalPort,
+				Protocol:     pf.Protocol,
+				SourceIP:     pf.SourceIP,
+			})
+		}
+	}
+
 	paramsJSON, _ := json.Marshal(params)
 
 	job := queue.VMOperationJob{
@@ -768,83 +783,18 @@ func (s *NetworkService) enqueueNetworkConfigJob(ctx context.Context, vm *models
 	return err
 }
 
-// enqueueNATConfigJob enqueues a job to configure NAT on the agent
-func (s *NetworkService) enqueueNATConfigJob(ctx context.Context, vm *models.VM, portForward *models.PortForward) error {
-	if s.riverClient == nil {
-		return fmt.Errorf("river client not initialized")
-	}
-
-	params := NATConfigParams{
-		ExternalPort: portForward.ExternalPort,
-		InternalPort: portForward.InternalPort,
-		Protocol:     portForward.Protocol,
-	}
-
-	paramsJSON, _ := json.Marshal(params)
-
-	job := queue.VMOperationJob{
-		VMID:      vm.ID,
-		NodeID:    vm.NodeID,
-		Operation: queue.VMOpAddPortForward,
-		Params:    paramsJSON,
-	}
-
-	_, err := s.riverClient.Insert(ctx, job, nil)
-	return err
-}
-
-// enqueueNATRemovalJob enqueues a job to remove NAT on the agent
-func (s *NetworkService) enqueueNATRemovalJob(ctx context.Context, vm *models.VM, portForward *models.PortForward) error {
-	if s.riverClient == nil {
-		return fmt.Errorf("river client not initialized")
-	}
-
-	params := NATConfigParams{
-		ExternalPort: portForward.ExternalPort,
-		InternalPort: portForward.InternalPort,
-		Protocol:     portForward.Protocol,
-	}
-
-	paramsJSON, _ := json.Marshal(params)
-
-	job := queue.VMOperationJob{
-		VMID:      vm.ID,
-		NodeID:    vm.NodeID,
-		Operation: queue.VMOpRemovePortForward,
-		Params:    paramsJSON,
-	}
-
-	_, err := s.riverClient.Insert(ctx, job, nil)
-	return err
-}
-
-// enqueueFirewallConfigJob enqueues a job to configure firewall on the agent
-func (s *NetworkService) enqueueFirewallConfigJob(ctx context.Context, vm *models.VM) error {
-	if s.riverClient == nil {
-		return fmt.Errorf("river client not initialized")
-	}
-
-	// Get all firewall rules for this VM
-	rules, err := s.firewallRepo.ListByVMID(ctx, vm.ID, 0, 0)
+// enqueueNetworkResync pushes the VM's FULL desired network state (IP, bandwidth,
+// anti-spoofing, firewall rules, port forwards) to the agent via ApplyNetworkConfig
+// (ReplaceAll). enqueueNetworkConfigJob loads the complete firewall + port-forward
+// set at its chokepoint, so every firewall / port-forward mutation converges host
+// iptables idempotently. No interface yet → nothing enforceable, so the rules
+// persist in the DB and are applied on IP assignment (SyncNetworkConfig).
+func (s *NetworkService) enqueueNetworkResync(ctx context.Context, vm *models.VM) error {
+	network, err := s.networkRepo.GetByVMID(ctx, vm.ID)
 	if err != nil {
-		return fmt.Errorf("failed to get firewall rules: %w", err)
+		return nil
 	}
-
-	params := FirewallConfigParams{
-		Rules: rules,
-	}
-
-	paramsJSON, _ := json.Marshal(params)
-
-	job := queue.VMOperationJob{
-		VMID:      vm.ID,
-		NodeID:    vm.NodeID,
-		Operation: queue.VMOpConfigureFirewall,
-		Params:    paramsJSON,
-	}
-
-	_, err = s.riverClient.Insert(ctx, job, nil)
-	return err
+	return s.enqueueNetworkConfigJob(ctx, vm, network)
 }
 
 // NetworkConfigParams contains network configuration parameters
@@ -854,18 +804,15 @@ type NetworkConfigParams struct {
 	VLANID         *int                  `json:"vlan_id,omitempty"`
 	AntiSpoofing   bool                  `json:"anti_spoofing"`
 	FirewallRules  []models.FirewallRule `json:"firewall_rules,omitempty"`
+	PortForwards   []PortForwardParam    `json:"port_forwards,omitempty"`
 }
 
-// NATConfigParams contains NAT/port forwarding configuration parameters
-type NATConfigParams struct {
+// PortForwardParam is a DNAT rule carried in a network-config job.
+type PortForwardParam struct {
 	ExternalPort int    `json:"external_port"`
 	InternalPort int    `json:"internal_port"`
 	Protocol     string `json:"protocol"`
-}
-
-// FirewallConfigParams contains firewall configuration parameters
-type FirewallConfigParams struct {
-	Rules []models.FirewallRule `json:"rules"`
+	SourceIP     string `json:"source_ip"`
 }
 
 // SetAntiSpoofingRequest contains data for toggling anti-spoofing

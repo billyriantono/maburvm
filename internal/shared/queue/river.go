@@ -177,6 +177,7 @@ func (c *Client) initRiver() error {
 	river.AddWorker(workers, NewVMOperationWorker(c.logger))
 	river.AddWorker(workers, NewTemplateSyncWorker(c.logger, templateRepo, nodeRepo, c.gormDB))
 	river.AddWorker(workers, NewBackupWorker(c.logger))
+	river.AddWorker(workers, NewRestoreWorker(c.logger))
 	river.AddWorker(workers, NewSnapshotWorker(c.logger))
 	river.AddWorker(workers, NewImportWorker(c.logger))
 	river.AddWorker(workers, NewNetworkConfigWorker(c.logger))
