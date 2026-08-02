@@ -27,10 +27,12 @@ function Toast({ message, type, onClose }: { message: string, type: "success" | 
   }, [onClose])
 
   return (
-    <div className={`fixed bottom-4 right-4 z-50 px-6 py-4 border-4 border-black shadow-neo ${
-      type === "success" ? "bg-success" : "bg-danger text-white"
+    <div className={`fixed bottom-4 right-4 z-50 px-4 py-3 rounded-lg border shadow-md ${
+      type === "success"
+        ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900"
+        : "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-900"
     }`}>
-      <p className="font-bold uppercase text-sm">{message}</p>
+      <p className="font-medium text-sm">{message}</p>
     </div>
   )
 }
@@ -113,15 +115,15 @@ export default function AddNodePage() {
       {/* Header */}
       <div className="flex items-center gap-4 mb-6">
         <Link href="/nodes">
-          <Button variant="ghost" size="icon" className="border-2 border-black">
+          <Button variant="outline" size="icon">
             <ArrowLeft className="w-4 h-4" />
           </Button>
         </Link>
         <div>
-          <h1 className="text-3xl font-black uppercase tracking-tight text-black">
+          <h1 className="text-2xl font-semibold text-foreground">
             Add Node
           </h1>
-          <p className="text-gray-500 font-medium uppercase tracking-wider text-sm">
+          <p className="text-muted-foreground text-sm">
             Register a new node with the panel
           </p>
         </div>
@@ -129,16 +131,16 @@ export default function AddNodePage() {
 
       <form onSubmit={handleSubmit}>
         {/* Node Details */}
-        <div className="bg-white border-4 border-black p-6 shadow-neo mb-6">
-          <h2 className="text-lg font-black uppercase tracking-tight text-black mb-6">
+        <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm mb-6">
+          <h2 className="text-lg font-semibold text-foreground mb-6">
             Node Details
           </h2>
 
           <div className="space-y-6">
             {/* Name */}
             <div>
-              <label htmlFor="node-name" className="block text-sm font-black uppercase text-gray-500 mb-2">
-                Node Name <span className="text-danger">*</span>
+              <label htmlFor="node-name" className="block text-sm font-medium text-foreground mb-2">
+                Node Name <span className="text-red-600">*</span>
               </label>
               <Input
                 id="node-name"
@@ -146,23 +148,23 @@ export default function AddNodePage() {
                 placeholder="e.g., node-01"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className={`border-2 border-black ${errors.name ? "border-danger" : ""}`}
+                className={errors.name ? "border-red-500" : ""}
               />
               {errors.name && (
-                <div className="flex items-center gap-1 mt-2 text-danger">
+                <div className="flex items-center gap-1 mt-2 text-red-600">
                   <AlertCircle className="w-4 h-4" />
-                  <span className="text-xs font-bold">{errors.name}</span>
+                  <span className="text-xs font-medium">{errors.name}</span>
                 </div>
               )}
-              <p className="text-xs text-gray-500 mt-1">
+              <p className="text-xs text-muted-foreground mt-1">
                 Use lowercase letters, numbers, and hyphens only
               </p>
             </div>
 
             {/* IP Address */}
             <div>
-              <label htmlFor="node-ip" className="block text-sm font-black uppercase text-gray-500 mb-2">
-                IP Address <span className="text-danger">*</span>
+              <label htmlFor="node-ip" className="block text-sm font-medium text-foreground mb-2">
+                IP Address <span className="text-red-600">*</span>
               </label>
               <Input
                 id="node-ip"
@@ -170,15 +172,15 @@ export default function AddNodePage() {
                 placeholder="e.g., 10.0.1.100"
                 value={ipAddress}
                 onChange={(e) => setIpAddress(e.target.value)}
-                className={`border-2 border-black font-mono ${errors.ip ? "border-danger" : ""}`}
+                className={`font-mono ${errors.ip ? "border-red-500" : ""}`}
               />
               {errors.ip && (
-                <div className="flex items-center gap-1 mt-2 text-danger">
+                <div className="flex items-center gap-1 mt-2 text-red-600">
                   <AlertCircle className="w-4 h-4" />
-                  <span className="text-xs font-bold">{errors.ip}</span>
+                  <span className="text-xs font-medium">{errors.ip}</span>
                 </div>
               )}
-              <p className="text-xs text-gray-500 mt-1">
+              <p className="text-xs text-muted-foreground mt-1">
                 The IP address that this node will use to connect to the panel
               </p>
             </div>
@@ -186,24 +188,24 @@ export default function AddNodePage() {
         </div>
 
         {/* Token Generation */}
-        <div className="bg-white border-4 border-black p-6 shadow-neo mb-6">
-          <h2 className="text-lg font-black uppercase tracking-tight text-black mb-2">
+        <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm mb-6">
+          <h2 className="text-lg font-semibold text-foreground mb-2">
             Node Token
           </h2>
-          <p className="text-sm text-gray-500 mb-6">
+          <p className="text-sm text-muted-foreground mb-6">
             This token will be used by the node agent to authenticate with the control panel.
           </p>
 
           <div className="flex items-center gap-4">
-            <div className="flex-1 bg-gray-100 border-2 border-black p-4">
+            <div className="flex-1 bg-muted border rounded-md p-4">
               <div className="flex items-center justify-between">
-                <code className="font-mono text-lg font-bold">
+                <code className="font-mono text-sm font-medium">
                   {showToken ? token : "••••••••••••••••••••"}
                 </code>
                 <button
                   type="button"
                   onClick={() => setShowToken(!showToken)}
-                  className="text-xs font-bold uppercase text-gray-500 hover:text-black"
+                  className="text-xs font-medium text-muted-foreground hover:text-foreground"
                 >
                   {showToken ? "Hide" : "Show"}
                 </button>
@@ -212,18 +214,18 @@ export default function AddNodePage() {
           </div>
 
           <div className="flex items-center gap-3 mt-4">
-            <Button type="button" variant="ghost" onClick={copyToken} className="border-2 border-black gap-2">
-              {copied ? <Check className="w-4 h-4 text-success" /> : <Copy className="w-4 h-4" />}
+            <Button type="button" variant="outline" onClick={copyToken} className="gap-2">
+              {copied ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
               {copied ? "Copied!" : "Copy"}
             </Button>
           </div>
 
-          <div className="mt-4 p-3 bg-success/20 border-2 border-success">
+          <div className="mt-4 p-3 rounded-md bg-emerald-50 border border-emerald-200 dark:bg-emerald-950 dark:border-emerald-900">
             <div className="flex items-start gap-2">
-              <CheckCircle className="w-5 h-5 text-success shrink-0 mt-0.5" />
+              <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
               <div>
-                <p className="font-bold text-sm text-success">Token generated automatically</p>
-                <p className="text-xs text-gray-600">
+                <p className="font-medium text-sm text-emerald-700 dark:text-emerald-300">Token generated automatically</p>
+                <p className="text-xs text-muted-foreground">
                   You can regenerate the token if needed. Make sure to update it on the node agent after saving.
                 </p>
               </div>
@@ -232,21 +234,21 @@ export default function AddNodePage() {
         </div>
 
         {/* Agent installation */}
-        <div className="bg-white border-4 border-black p-6 shadow-neo mb-6">
-          <h2 className="text-lg font-black uppercase tracking-tight text-black mb-2 flex items-center gap-2">
+        <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm mb-6">
+          <h2 className="text-lg font-semibold text-foreground mb-2 flex items-center gap-2">
             <Terminal className="w-5 h-5" />Install the Agent
           </h2>
-          <div className="p-4 bg-warning/10 border-2 border-warning">
+          <div className="p-4 rounded-md bg-amber-50 border border-amber-200 dark:bg-amber-950 dark:border-amber-900">
             <div className="flex items-start gap-3">
-              <AlertTriangle className="w-5 h-5 text-warning shrink-0 mt-0.5" />
+              <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
               <div className="space-y-2">
-                <p className="font-bold text-sm text-black">
+                <p className="font-medium text-sm text-foreground">
                   Automatic agent installation is temporarily unavailable while node deployment security is being completed.
                 </p>
-                <p className="text-xs text-gray-600">
-                  Deploying the agent on a hypervisor host manually is an administrator-only operational procedure. See the deployment documentation (<code className="bg-gray-100 px-1 border border-black">docs/DEPLOYMENT.md</code>, agent deployment) for details.
+                <p className="text-xs text-muted-foreground">
+                  Deploying the agent on a hypervisor host manually is an administrator-only operational procedure. See the deployment documentation (<code className="bg-muted px-1 rounded border">docs/DEPLOYMENT.md</code>, agent deployment) for details.
                 </p>
-                <p className="text-xs text-gray-600">
+                <p className="text-xs text-muted-foreground">
                   Register the node here and keep its token — the agent is configured with it when the host is deployed.
                 </p>
               </div>
@@ -264,7 +266,7 @@ export default function AddNodePage() {
         {/* Actions */}
         <div className="flex items-center justify-end gap-4">
           <Link href="/nodes">
-            <Button type="button" variant="ghost" className="border-2 border-black">
+            <Button type="button" variant="outline">
               Cancel
             </Button>
           </Link>

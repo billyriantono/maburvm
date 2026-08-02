@@ -139,12 +139,12 @@ type AddState = "idle" | "adding" | "added" | "error"
 
 function Toast({ message, type, onClose }: { message: string; type: "success" | "error"; onClose: () => void }) {
   return (
-    <div className={`fixed bottom-4 right-4 z-50 px-6 py-4 border-4 border-black shadow-neo ${
-      type === "success" ? "bg-success text-black" : "bg-danger text-white"
+    <div className={`fixed bottom-4 right-4 z-50 rounded-md border px-6 py-4 shadow-md ${
+      type === "success" ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900" : "bg-destructive text-destructive-foreground border-destructive"
     }`}>
       <div className="flex items-center gap-3">
-        <p className="font-bold uppercase text-sm">{message}</p>
-        <button onClick={onClose} className="font-black">✕</button>
+        <p className="text-sm font-medium">{message}</p>
+        <button onClick={onClose} className="font-medium">✕</button>
       </div>
     </div>
   )
@@ -184,21 +184,21 @@ export default function TemplateCatalogPage() {
     <div className="max-w-6xl mx-auto">
       {/* Header */}
       <div className="mb-6">
-        <Link href="/templates" className="inline-flex items-center gap-2 text-sm font-bold uppercase text-gray-500 hover:text-black transition-colors mb-3">
+        <Link href="/templates" className="inline-flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors mb-3">
           <ArrowLeft className="w-4 h-4" />
           Back to Templates
         </Link>
-        <h1 className="text-3xl font-black uppercase tracking-tight text-black">OS Template Catalog</h1>
-        <p className="text-gray-500 font-medium uppercase tracking-wider text-sm mt-1">
+        <h1 className="text-2xl font-semibold tracking-tight">OS Template Catalog</h1>
+        <p className="text-muted-foreground text-sm mt-1">
           Curated cloud images — add one to your library, then build VMs from it
         </p>
       </div>
 
       {/* How it works */}
-      <div className="bg-secondary/20 border-2 border-black p-4 mb-6 flex items-start gap-3">
-        <Info className="w-5 h-5 mt-0.5 shrink-0" />
-        <div className="text-sm font-medium">
-          <p className="font-bold uppercase text-xs mb-1">How it works</p>
+      <div className="bg-muted border rounded-lg p-4 mb-6 flex items-start gap-3">
+        <Info className="w-5 h-5 mt-0.5 shrink-0 text-muted-foreground" />
+        <div className="text-sm text-muted-foreground">
+          <p className="font-medium text-foreground text-xs mb-1">How it works</p>
           Adding a template registers its image URL. The first time you build a VM from it,
           the target node downloads and caches the image (one-time, may take a few minutes for large images);
           later builds reuse the cache. All images include cloud-init for automatic IP/SSH configuration.
@@ -210,30 +210,31 @@ export default function TemplateCatalogPage() {
         {OS_CATALOG.map((entry) => {
           const state = states[entry.id] || "idle"
           return (
-            <div key={entry.id} className="bg-white border-4 border-black shadow-neo p-5 flex flex-col">
+            <div key={entry.id} className="bg-card text-card-foreground border rounded-lg shadow-sm p-5 flex flex-col">
               <div className="flex items-start justify-between mb-3">
-                <div className="w-12 h-12 bg-white flex items-center justify-center border-2 border-black">
+                <div className="w-12 h-12 bg-muted rounded-md flex items-center justify-center border">
                   <OSIcon name={entry.name} className="w-7 h-7" />
                 </div>
-                <span className="px-2 py-0.5 bg-gray-100 border border-black text-[10px] font-black uppercase">
+                <span className="px-2 py-0.5 rounded-md bg-muted text-muted-foreground border text-xs font-medium">
                   {entry.arch}
                 </span>
               </div>
-              <h3 className="font-black uppercase text-lg leading-tight">{entry.name}</h3>
+              <h3 className="font-semibold text-lg leading-tight">{entry.name}</h3>
               <div className="flex items-center gap-2 mt-1">
-                <span className="px-2 py-0.5 bg-primary border border-black text-xs font-black uppercase">
+                <span className="px-2 py-0.5 rounded-md bg-muted text-muted-foreground border text-xs font-medium">
                   {entry.version}
                 </span>
-                <span className="text-xs text-gray-500 flex items-center gap-1">
+                <span className="text-xs text-muted-foreground flex items-center gap-1">
                   <HardDrive className="w-3 h-3" /> {entry.sizeHint}
                 </span>
               </div>
-              <p className="text-sm text-gray-600 mt-3 flex-1">{entry.description}</p>
+              <p className="text-sm text-muted-foreground mt-3 flex-1">{entry.description}</p>
 
               <Button
+                variant={state === "added" ? "success" : "default"}
                 onClick={() => handleAdd(entry)}
                 disabled={state === "adding" || state === "added"}
-                className={`mt-4 w-full gap-2 ${state === "added" ? "bg-success hover:bg-success" : ""}`}
+                className="mt-4 w-full gap-2"
               >
                 {state === "adding" && <><Loader2 className="w-4 h-4 animate-spin" /> Adding…</>}
                 {state === "added" && <><Check className="w-4 h-4" /> In Library</>}
@@ -246,12 +247,12 @@ export default function TemplateCatalogPage() {
       </div>
 
       {/* Footer actions */}
-      <div className="mt-8 flex items-center justify-between border-t-2 border-black pt-6">
-        <p className="text-xs text-gray-500">
+      <div className="mt-8 flex items-center justify-between border-t pt-6">
+        <p className="text-xs text-muted-foreground">
           Need a custom image? Use{" "}
-          <Link href="/templates/new" className="font-bold text-black underline">Add from URL</Link>.
+          <Link href="/templates/new" className="font-medium text-foreground underline">Add from URL</Link>.
         </p>
-        <Button variant="secondary" onClick={() => router.push("/templates")} className="gap-2">
+        <Button variant="outline" onClick={() => router.push("/templates")} className="gap-2">
           View Library
         </Button>
       </div>

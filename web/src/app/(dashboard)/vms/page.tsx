@@ -27,17 +27,17 @@ import type { VM, VMNodeStatus, VMStatus } from "@/types"
 // Status badge component
 function StatusBadge({ status }: { status: VMStatus }) {
   const colors: Record<string, string> = {
-    running: "bg-[#CCFF00] text-black",
-    stopped: "bg-[#FF4444] text-white",
-    suspended: "bg-[#FFAA00] text-black",
-    creating: "bg-[#00CCFF] text-black",
-    deleting: "bg-[#FF8800] text-black",
-    error: "bg-[#FF0000] text-white",
+    running: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900",
+    stopped: "bg-muted text-muted-foreground border",
+    suspended: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900",
+    creating: "bg-sky-50 text-sky-700 border-sky-200 dark:bg-sky-950 dark:text-sky-300 dark:border-sky-900",
+    deleting: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900",
+    error: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-900",
   }
-  
+
   return (
-    <span className={`inline-flex items-center px-3 py-1 text-xs font-black uppercase tracking-wider border-2 border-black ${colors[status] || "bg-gray-200 text-black"}`}>
-      <span className={`w-2 h-2 mr-2 rounded-full ${status === "running" ? "bg-black animate-pulse" : "bg-current"}`} />
+    <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium border capitalize ${colors[status] || "bg-muted text-muted-foreground border"}`}>
+      <span className={`w-1.5 h-1.5 mr-1.5 rounded-full ${status === "running" ? "bg-emerald-500 animate-pulse" : "bg-current"}`} />
       {status}
     </span>
   )
@@ -47,19 +47,19 @@ function NodeBadge({ name, status, fallback }: { name?: string; status?: VMNodeS
   const label = name || fallback || "Unknown"
   const state = status || ""
   const styles: Record<string, string> = {
-    active: "bg-gray-100 text-black",
-    maintenance: "bg-[#FFAA00] text-black",
-    offline: "bg-[#FF4444] text-white",
-    "": "bg-gray-200 text-gray-700",
+    active: "bg-muted text-foreground border",
+    maintenance: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900",
+    offline: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-900",
+    "": "bg-muted text-muted-foreground border",
   }
 
   return (
     <div className="flex flex-col items-start gap-1">
-      <span className={`inline-flex items-center px-2 py-1 text-xs font-bold border border-black ${styles[state] || styles[""]}`}>
+      <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium border ${styles[state] || styles[""]}`}>
         {label}
       </span>
       {state && state !== "active" && (
-        <span className="text-[10px] font-black uppercase text-danger">
+        <span className="text-[10px] font-semibold text-destructive">
           Node {state}
         </span>
       )}
@@ -98,14 +98,14 @@ function Pagination({
         size="sm"
         onClick={() => onPageChange(currentPage - 1)}
         disabled={currentPage === 1}
-        className="border-2 border-black"
+        className="border"
       >
         <ChevronLeft className="w-4 h-4" />
       </Button>
       
       {start > 1 && (
         <>
-          <Button variant="ghost" size="sm" onClick={() => onPageChange(1)} className="border-2 border-black">
+          <Button variant="ghost" size="sm" onClick={() => onPageChange(1)} className="border">
             1
           </Button>
           {start > 2 && <span className="px-2">...</span>}
@@ -118,7 +118,7 @@ function Pagination({
           variant={page === currentPage ? "default" : "ghost"}
           size="sm"
           onClick={() => onPageChange(page)}
-          className={`border-2 border-black min-w-[40px] ${page === currentPage ? "bg-black text-white hover:bg-gray-800" : ""}`}
+          className="border min-w-[40px]"
         >
           {page}
         </Button>
@@ -127,7 +127,7 @@ function Pagination({
       {end < totalPages && (
         <>
           {end < totalPages - 1 && <span className="px-2">...</span>}
-          <Button variant="ghost" size="sm" onClick={() => onPageChange(totalPages)} className="border-2 border-black">
+          <Button variant="ghost" size="sm" onClick={() => onPageChange(totalPages)} className="border">
             {totalPages}
           </Button>
         </>
@@ -138,7 +138,7 @@ function Pagination({
         size="sm"
         onClick={() => onPageChange(currentPage + 1)}
         disabled={currentPage === totalPages}
-        className="border-2 border-black"
+        className="border"
       >
         <ChevronRight className="w-4 h-4" />
       </Button>
@@ -149,7 +149,7 @@ function Pagination({
 // Skeleton row for loading state
 function SkeletonRow() {
   return (
-    <div className="grid grid-cols-12 gap-4 p-4 items-center border-b-2 border-black last:border-0">
+    <div className="grid grid-cols-12 gap-4 p-4 items-center border-b last:border-0">
       <div className="col-span-3">
         <Skeleton className="h-5 w-32" />
         <Skeleton className="h-3 w-24 mt-1" />
@@ -198,11 +198,11 @@ function ConfirmDialog({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-label="Confirm dialog">
       <button type="button" className="absolute inset-0 bg-black/50 cursor-default focus:outline-none" onClick={onCancel} aria-label="Close dialog" />
-      <div className="relative bg-white border-4 border-black p-6 shadow-neo-xl max-w-md w-full mx-4">
-        <h3 className="text-xl font-black uppercase mb-4">{title}</h3>
-        <p className="text-gray-600 font-medium mb-6">{message}</p>
+      <div className="relative bg-background border rounded-lg p-6 shadow-lg max-w-md w-full mx-4">
+        <h3 className="text-lg font-semibold mb-2">{title}</h3>
+        <p className="text-muted-foreground text-sm mb-6">{message}</p>
         <div className="flex gap-3 justify-end">
-          <Button variant="ghost" onClick={onCancel} className="border-2 border-black" disabled={loading}>
+          <Button variant="ghost" onClick={onCancel} className="border" disabled={loading}>
             Cancel
           </Button>
           <Button variant="destructive" onClick={onConfirm} disabled={loading}>
@@ -236,30 +236,30 @@ function DeleteProgressDialog({ vm, onClose }: { vm: { id: string; hostname: str
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-label="Delete progress">
       <div className="absolute inset-0 bg-black/50" />
-      <div className="relative bg-white border-4 border-black p-6 shadow-neo-xl max-w-md w-full mx-4">
-        <h3 className="text-xl font-black uppercase mb-1">Deleting {vm.hostname}</h3>
-        <p className="text-sm font-bold uppercase mb-4 flex items-center gap-2">
+      <div className="relative bg-background border rounded-lg p-6 shadow-lg max-w-md w-full mx-4">
+        <h3 className="text-lg font-semibold mb-1">Deleting {vm.hostname}</h3>
+        <p className="text-sm font-medium mb-4 flex items-center gap-2">
           {!finished && <Loader2 className="w-4 h-4 animate-spin" />}
-          <span className={failed ? "text-danger" : done ? "text-success" : ""}>{label}</span>
-          {!failed && <span className="text-gray-400">· step {Math.min(step, total)}/{total}</span>}
+          <span className={failed ? "text-destructive" : done ? "text-emerald-600" : ""}>{label}</span>
+          {!failed && <span className="text-muted-foreground">· step {Math.min(step, total)}/{total}</span>}
         </p>
 
-        <div className="w-full h-4 border-2 border-black bg-white mb-4">
+        <div className="w-full h-2 rounded-full border bg-muted overflow-hidden mb-4">
           <div
-            className={`h-full transition-all duration-500 ${failed ? "bg-danger" : done ? "bg-success" : "bg-primary"}`}
+            className={`h-full transition-all duration-500 ${failed ? "bg-destructive" : done ? "bg-emerald-500" : "bg-primary"}`}
             style={{ width: `${failed ? 100 : pct}%` }}
           />
         </div>
 
         {failed && op?.error && (
-          <p className="text-xs font-mono text-danger border-2 border-danger p-2 mb-4 break-words">{op.error}</p>
+          <p className="text-xs font-mono text-destructive border border-red-200 bg-red-50 rounded-md dark:bg-red-950 dark:border-red-900 p-2 mb-4 break-words">{op.error}</p>
         )}
         {failed && (
-          <p className="text-sm text-gray-600 font-medium mb-4">The VM was not fully removed. It&apos;s marked as error — you can retry the delete.</p>
+          <p className="text-sm text-muted-foreground mb-4">The VM was not fully removed. It&apos;s marked as error — you can retry the delete.</p>
         )}
 
         <div className="flex justify-end">
-          <Button onClick={onClose} disabled={!finished} className="border-2 border-black">
+          <Button onClick={onClose} disabled={!finished} className="border">
             {finished ? "Close" : "Working…"}
           </Button>
         </div>
@@ -276,10 +276,10 @@ function Toast({ message, type, onClose }: { message: string, type: "success" | 
   }, [onClose])
   
   return (
-    <div className={`fixed bottom-4 right-4 z-50 px-6 py-4 border-4 border-black shadow-neo ${
-      type === "success" ? "bg-success" : "bg-danger text-white"
+    <div className={`fixed bottom-4 right-4 z-50 px-4 py-3 border rounded-lg shadow-md bg-background ${
+      type === "success" ? "text-emerald-700 dark:text-emerald-300" : "text-destructive"
     }`}>
-      <p className="font-bold uppercase text-sm">{message}</p>
+      <p className="font-medium text-sm">{message}</p>
     </div>
   )
 }
@@ -288,9 +288,9 @@ function Toast({ message, type, onClose }: { message: string, type: "success" | 
 function ErrorState({ message, onRetry }: { message: string, onRetry: () => void }) {
   return (
     <div className="p-12 text-center">
-      <AlertCircle className="w-12 h-12 mx-auto text-danger mb-4" />
-      <p className="text-gray-700 font-bold uppercase mb-2">Failed to load VMs</p>
-      <p className="text-gray-500 text-sm mb-4">{message}</p>
+      <AlertCircle className="w-12 h-12 mx-auto text-destructive mb-4" />
+      <p className="text-foreground font-semibold mb-2">Failed to load VMs</p>
+      <p className="text-muted-foreground text-sm mb-4">{message}</p>
       <Button onClick={onRetry} className="gap-2">
         <RotateCcw className="w-4 h-4" />
         Retry
@@ -303,13 +303,13 @@ function ErrorState({ message, onRetry }: { message: string, onRetry: () => void
 function EmptyState({ hasFilters, onClearFilters }: { hasFilters: boolean, onClearFilters: () => void }) {
   return (
     <div className="p-12 text-center">
-      <Server className="w-12 h-12 mx-auto text-gray-500 mb-4" />
-      <p className="text-gray-700 font-bold uppercase mb-2">No VMs found</p>
-      <p className="text-gray-500 text-sm mb-4">
+      <Server className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
+      <p className="text-foreground font-semibold mb-2">No VMs found</p>
+      <p className="text-muted-foreground text-sm mb-4">
         {hasFilters ? "Try adjusting your filters to see more results." : "Get started by creating your first VM."}
       </p>
       {hasFilters ? (
-        <Button variant="ghost" onClick={onClearFilters} className="border-2 border-black gap-2">
+        <Button variant="ghost" onClick={onClearFilters} className="border gap-2">
           <X className="w-4 h-4" />
           Clear filters
         </Button>
@@ -444,11 +444,11 @@ export default function VMListPage() {
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-3xl font-black uppercase tracking-tight text-black">
+          <h1 className="text-2xl font-semibold text-foreground">
             Virtual Machines
           </h1>
           <div className="flex items-center gap-2 mt-1">
-            <p className="text-gray-500 font-medium uppercase tracking-wider text-sm">
+            <p className="text-muted-foreground text-sm">
               {isLoading ? "Loading..." : `${totalItems} VMs`}
             </p>
           </div>
@@ -462,25 +462,25 @@ export default function VMListPage() {
       </div>
       
       {/* Filters */}
-      <div className="bg-white border-4 border-black p-4 shadow-neo mb-6">
+      <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm mb-6">
         <div className="flex flex-col lg:flex-row gap-4">
           {/* Search */}
           <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <Input
               type="text"
               placeholder="Search by hostname or ID..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-10 h-12 border-2 border-black"
+              className="pl-10 h-10"
             />
           </div>
-          
+
           {/* Status Filter */}
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
-            className="h-12 px-4 border-2 border-black font-medium bg-white focus:outline-none focus:shadow-neo-sm"
+            className="h-10 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           >
             <option value="">All Status</option>
             <option value="running">Running</option>
@@ -494,7 +494,7 @@ export default function VMListPage() {
           <select
             value={nodeFilter}
             onChange={(e) => setNodeFilter(e.target.value)}
-            className="h-12 px-4 border-2 border-black font-medium bg-white focus:outline-none focus:shadow-neo-sm"
+            className="h-10 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           >
             <option value="">All Nodes</option>
             {nodes?.map((node) => (
@@ -504,7 +504,7 @@ export default function VMListPage() {
           
           {/* Clear filters */}
           {hasFilters && (
-            <Button variant="ghost" onClick={clearFilters} className="border-2 border-black gap-1">
+            <Button variant="ghost" onClick={clearFilters} className="border gap-1">
               <X className="w-4 h-4" />
               Clear
             </Button>
@@ -513,9 +513,9 @@ export default function VMListPage() {
       </div>
       
       {/* Data Table */}
-      <div className="bg-white border-4 border-black shadow-neo overflow-hidden">
+      <div className="bg-card text-card-foreground border rounded-lg shadow-sm overflow-hidden">
         {/* Table Header */}
-        <div className="grid grid-cols-12 gap-4 p-4 bg-black text-white font-black uppercase text-xs tracking-wider">
+        <div className="grid grid-cols-12 gap-4 px-4 py-3 bg-muted text-muted-foreground border-b font-medium text-xs">
           <div className="col-span-3">Hostname</div>
           <div className="col-span-2">Node</div>
           <div className="col-span-2">Status</div>
@@ -545,15 +545,15 @@ export default function VMListPage() {
             return (
             <div 
               key={vm.id} 
-              className={`grid grid-cols-12 gap-4 p-4 items-center border-b-2 border-black last:border-0 ${
-                nodeUnavailable ? "bg-red-50" : index % 2 === 0 ? "bg-white" : "bg-gray-50"
+              className={`grid grid-cols-12 gap-4 p-4 items-center border-b last:border-0 transition-colors ${
+                nodeUnavailable ? "bg-red-50 dark:bg-red-950/30" : "hover:bg-muted/50"
               }`}
             >
               <div className="col-span-3 flex flex-col justify-center">
-                <Link href={`/vms/${vm.id}`} className="font-black text-black hover:underline w-fit border-none">
+                <Link href={`/vms/${vm.id}`} className="font-medium text-foreground hover:underline w-fit">
                   {vm.hostname}
                 </Link>
-                <p className="text-xs text-gray-500 font-medium">ID: {vm.id.slice(0, 8)}</p>
+                <p className="text-xs text-muted-foreground">ID: {vm.id.slice(0, 8)}</p>
               </div>
               <div className="col-span-2">
                 <NodeBadge name={vm.node_name} status={effectiveNodeStatus} fallback={vm.node_id?.slice(0, 8)} />
@@ -564,16 +564,16 @@ export default function VMListPage() {
               <div className="col-span-2">
                 <div className="flex items-center gap-3">
                   <div className="flex items-center gap-1">
-                    <span className="w-6 h-6 bg-primary flex items-center justify-center border border-black text-xs font-black">
+                    <span className="w-6 h-6 bg-muted text-foreground flex items-center justify-center rounded-md border text-xs font-medium">
                       {vm.resources.cpu}
                     </span>
-                    <span className="text-xs text-gray-500">CPU</span>
+                    <span className="text-xs text-muted-foreground">CPU</span>
                   </div>
                   <div className="flex items-center gap-1">
-                    <span className="w-6 h-6 bg-secondary flex items-center justify-center border border-black text-xs font-black">
+                    <span className="w-6 h-6 bg-muted text-foreground flex items-center justify-center rounded-md border text-xs font-medium">
                       {Math.round(vm.resources.ram / 1024)}
                     </span>
-                    <span className="text-xs text-gray-500">GB</span>
+                    <span className="text-xs text-muted-foreground">GB</span>
                   </div>
                 </div>
               </div>
@@ -644,7 +644,7 @@ export default function VMListPage() {
                   size="sm"
                   onClick={() => setDeleteConfirm(vm)}
                   disabled={!!actionLoading}
-                  className="h-8 w-8 p-0 border-2 border-black hover:bg-danger hover:text-white"
+                  className="h-8 w-8 p-0 border hover:bg-destructive hover:text-destructive-foreground"
                   title="Delete"
                 >
                   <Trash2 className="w-4 h-4" />
@@ -659,7 +659,7 @@ export default function VMListPage() {
       {/* Pagination */}
       {!isLoading && !error && totalPages > 1 && (
         <div className="flex items-center justify-between mt-6">
-          <p className="text-sm font-medium text-gray-500">
+          <p className="text-sm text-muted-foreground">
             Showing {(currentPage - 1) * itemsPerPage + 1} to {Math.min(currentPage * itemsPerPage, totalItems)} of {totalItems} VMs
           </p>
           <Pagination

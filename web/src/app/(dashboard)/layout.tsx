@@ -65,10 +65,10 @@ export default function DashboardLayout({
   // avoid flashing the admin console at them).
   if (isLoading || (user && user.role !== "admin")) {
     return (
-      <div className="min-h-screen bg-[#f5f5f0] flex items-center justify-center">
+      <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
           <Loader2 className="w-8 h-8 animate-spin text-primary" />
-          <p className="text-sm font-medium text-gray-500">Loading...</p>
+          <p className="text-sm font-medium text-muted-foreground">Loading...</p>
         </div>
       </div>
     )
@@ -77,7 +77,7 @@ export default function DashboardLayout({
   // Show error state
   if (isError || !user) {
     return (
-      <div className="min-h-screen bg-[#f5f5f0] flex items-center justify-center">
+      <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
           <p className="text-sm font-medium text-destructive">
             {error?.message || "Authentication failed"}
@@ -95,27 +95,27 @@ export default function DashboardLayout({
   const displayRole = user.role === 'admin' ? 'Administrator' : 'Client'
 
   return (
-    <div className="min-h-screen bg-[#f5f5f0]">
+    <div className="min-h-screen bg-background">
       {/* Sidebar */}
       <Sidebar user={user} />
-      
+
       {/* Main Content Area */}
       <div className="lg:pl-64">
         {/* Top Header Bar */}
-        <header className="sticky top-0 z-40 bg-white border-b-4 border-black">
+        <header className="sticky top-0 z-40 bg-card border-b">
           <div className="flex items-center justify-between h-16 px-4 lg:px-8">
             {/* Left: Mobile menu + Breadcrumbs placeholder */}
             <div className="flex items-center gap-4">
               {/* Breadcrumbs - shown on desktop */}
               <nav className="hidden md:flex items-center gap-1">
-                <Link 
-                  href="/dashboard" 
-                  className="p-2 text-gray-500 hover:text-black transition-colors"
+                <Link
+                  href="/dashboard"
+                  className="p-2 text-muted-foreground hover:text-foreground transition-colors"
                 >
                   <Home className="w-4 h-4" />
                 </Link>
-                <ChevronRight className="w-4 h-4 text-gray-600" />
-                <span className="text-sm font-bold uppercase text-black">
+                <ChevronRight className="w-4 h-4 text-muted-foreground" />
+                <span className="text-sm font-medium text-foreground">
                   Dashboard
                 </span>
               </nav>
@@ -126,11 +126,11 @@ export default function DashboardLayout({
               {/* Search - Desktop */}
               <div className="hidden md:flex items-center">
                 <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                   <input
                     type="text"
                     placeholder="Search..."
-                    className="w-48 lg:w-64 h-10 pl-10 pr-4 bg-white border-2 border-black text-sm font-medium placeholder:text-gray-600 focus:outline-none focus:shadow-neo-sm transition-all"
+                    className="w-48 lg:w-64 h-10 pl-10 pr-4 bg-background border border-input rounded-md text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 transition-all"
                   />
                 </div>
               </div>
@@ -139,21 +139,21 @@ export default function DashboardLayout({
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button
-                    variant="ghost"
+                    variant="outline"
                     size="icon"
-                    className="relative w-10 h-10 p-0 border-2 border-black bg-white text-black hover:bg-gray-50"
+                    className="relative"
                   >
-                    <Bell className="w-5 h-5 text-black" />
+                    <Bell className="w-5 h-5" />
                     {/* Notification Badge */}
                     {(stats?.alerts ?? 0) > 0 && (
-                      <span className="absolute -top-1 -right-1 w-5 h-5 bg-accent text-white text-[10px] font-black flex items-center justify-center border-2 border-black z-20">
+                      <span className="absolute -top-1 -right-1 w-5 h-5 bg-destructive text-destructive-foreground text-[10px] font-semibold flex items-center justify-center rounded-full z-20">
                         {stats?.alerts ?? 0}
                       </span>
                     )}
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-80">
-                  <DropdownMenuLabel className="font-black uppercase text-xs">
+                  <DropdownMenuLabel className="text-xs font-semibold text-muted-foreground">
                     Notifications
                   </DropdownMenuLabel>
                   <DropdownMenuSeparator />
@@ -161,25 +161,25 @@ export default function DashboardLayout({
                     {stats?.recent_activity && stats.recent_activity.length > 0 ? (
                       stats.recent_activity.slice(0, 5).map((activity) => (
                         <DropdownMenuItem key={activity.id} className="flex flex-col items-start gap-1 py-3 cursor-pointer">
-                          <p className="font-bold text-sm">
+                          <p className="font-medium text-sm">
                             {activity.action.toLowerCase()} {activity.resource_type.replace(/_/g, ' ').toLowerCase()}
                           </p>
-                          <p className="text-xs text-gray-500">
+                          <p className="text-xs text-muted-foreground">
                             {activity.resource_id ? `Resource ${activity.resource_id.slice(0, 8)}...` : 'System event'}
                           </p>
-                          <p className="text-[10px] text-gray-600">
+                          <p className="text-[10px] text-muted-foreground">
                             {new Date(activity.created_at).toLocaleString()}
                           </p>
                         </DropdownMenuItem>
                       ))
                     ) : (
                       <div className="py-4 text-center">
-                        <p className="text-xs text-gray-500">No notifications</p>
+                        <p className="text-xs text-muted-foreground">No notifications</p>
                       </div>
                     )}
                   </div>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem asChild className="justify-center font-bold text-xs text-primary cursor-pointer">
+                  <DropdownMenuItem asChild className="justify-center font-medium text-xs text-primary cursor-pointer">
                     <Link href="/audit-logs">View all notifications</Link>
                   </DropdownMenuItem>
                 </DropdownMenuContent>
@@ -188,24 +188,24 @@ export default function DashboardLayout({
               {/* User Menu */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button 
-                    variant="ghost"
-                    className="flex items-center gap-2 px-3 h-10 border-2 border-black bg-white hover:bg-gray-50"
+                  <Button
+                    variant="outline"
+                    className="flex items-center gap-2 px-3"
                   >
-                    <div className="w-8 h-8 bg-primary flex items-center justify-center border border-black">
+                    <div className="w-8 h-8 bg-muted flex items-center justify-center rounded-md">
                       <User className="w-4 h-4" />
                     </div>
-                    <span className="hidden md:block text-sm font-bold uppercase">
+                    <span className="hidden md:block text-sm font-medium">
                       {displayName}
                     </span>
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-56">
-                  <DropdownMenuLabel className="font-black uppercase text-xs">
+                  <DropdownMenuLabel className="text-xs font-semibold text-muted-foreground">
                     {displayName}
                   </DropdownMenuLabel>
-                  <p className="px-2 py-1 text-xs text-gray-500">{user.email}</p>
-                  <p className="px-2 pb-2 text-xs font-bold text-primary">{displayRole}</p>
+                  <p className="px-2 py-1 text-xs text-muted-foreground">{user.email}</p>
+                  <p className="px-2 pb-2 text-xs font-medium text-primary">{displayRole}</p>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem className="font-medium cursor-pointer">
                     <User className="w-4 h-4 mr-2" />

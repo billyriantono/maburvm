@@ -85,15 +85,15 @@ export default function NewUserPage() {
       <div className="mb-8">
         <Link
           href="/users"
-          className="flex items-center gap-2 text-sm font-bold uppercase text-gray-500 hover:text-black mb-4"
+          className="flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground mb-4"
         >
           <ArrowLeft className="w-4 h-4" />
           Back to Users
         </Link>
-        <h1 className="text-3xl font-black uppercase tracking-tight text-black">
+        <h1 className="text-3xl font-bold tracking-tight text-foreground">
           Add New User
         </h1>
-        <p className="text-gray-500 font-medium uppercase tracking-wider text-sm mt-1">
+        <p className="text-muted-foreground text-sm mt-1">
           Create a new user account
         </p>
       </div>
@@ -110,7 +110,7 @@ export default function NewUserPage() {
               <div className="space-y-2">
                 <Label htmlFor="name">Full Name</Label>
                 <div className="relative">
-                  <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+                  <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                   <Input
                     id="name"
                     type="text"
@@ -120,13 +120,13 @@ export default function NewUserPage() {
                     className="pl-10"
                   />
                 </div>
-                {errors.name && <p className="text-xs text-danger font-bold">{errors.name}</p>}
+                {errors.name && <p className="text-xs text-destructive font-medium">{errors.name}</p>}
               </div>
 
               <div className="space-y-2">
                 <Label htmlFor="email">Email Address</Label>
                 <div className="relative">
-                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                   <Input
                     id="email"
                     type="email"
@@ -136,7 +136,7 @@ export default function NewUserPage() {
                     className="pl-10"
                   />
                 </div>
-                {errors.email && <p className="text-xs text-danger font-bold">{errors.email}</p>}
+                {errors.email && <p className="text-xs text-destructive font-medium">{errors.email}</p>}
               </div>
             </CardContent>
           </Card>
@@ -151,7 +151,7 @@ export default function NewUserPage() {
               <div className="space-y-2">
                 <Label htmlFor="password">Password</Label>
                 <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                   <Input
                     id="password"
                     type={showPassword ? "text" : "password"}
@@ -166,19 +166,19 @@ export default function NewUserPage() {
                     className="absolute right-3 top-1/2 -translate-y-1/2"
                   >
                     {showPassword ? (
-                      <EyeOff className="w-4 h-4 text-gray-600" />
+                      <EyeOff className="w-4 h-4 text-muted-foreground" />
                     ) : (
-                      <Eye className="w-4 h-4 text-gray-600" />
+                      <Eye className="w-4 h-4 text-muted-foreground" />
                     )}
                   </button>
                 </div>
-                {errors.password && <p className="text-xs text-danger font-bold">{errors.password}</p>}
+                {errors.password && <p className="text-xs text-destructive font-medium">{errors.password}</p>}
               </div>
 
               <div className="space-y-2">
                 <Label htmlFor="confirmPassword">Confirm Password</Label>
                 <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                   <Input
                     id="confirmPassword"
                     type={showPassword ? "text" : "password"}
@@ -189,7 +189,7 @@ export default function NewUserPage() {
                   />
                 </div>
                 {errors.confirmPassword && (
-                  <p className="text-xs text-danger font-bold">{errors.confirmPassword}</p>
+                  <p className="text-xs text-destructive font-medium">{errors.confirmPassword}</p>
                 )}
               </div>
 
@@ -219,7 +219,7 @@ export default function NewUserPage() {
                     </SelectItem>
                   </SelectContent>
                 </Select>
-                <p className="text-xs text-gray-500">
+                <p className="text-xs text-muted-foreground">
                   Admins can manage users, nodes, and all resources. Clients can only manage their own VMs.
                 </p>
               </div>
@@ -263,7 +263,7 @@ export default function NewUserPage() {
 
           {/* Actions */}
           {errors.submit && (
-            <p className="text-sm font-bold text-danger text-right">{errors.submit}</p>
+            <p className="text-sm font-medium text-destructive text-right">{errors.submit}</p>
           )}
           <div className="flex items-center justify-end gap-4">
             <Link href="/users">

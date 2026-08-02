@@ -34,7 +34,7 @@ export function Sparkline({ data, max = 100, height = 40, className = "", colorC
   return (
     <div className={`w-full ${className}`} style={{ height }}>
       {n === 0 ? (
-        <div className="w-full h-full flex items-center justify-center text-[10px] font-bold uppercase text-gray-400">
+        <div className="w-full h-full flex items-center justify-center text-[10px] font-medium text-muted-foreground">
           No data yet
         </div>
       ) : (

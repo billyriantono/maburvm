@@ -47,17 +47,17 @@ function ActionIcon({ action }: { action: string }) {
 // Action badge component
 function ActionBadge({ action }: { action: string }) {
   const a = action.toUpperCase()
-  let color = "bg-muted text-black"
-  
-  if (a.includes("CREATE")) color = "bg-success text-black"
-  else if (a.includes("DELETE")) color = "bg-danger text-white"
-  else if (a.includes("START")) color = "bg-secondary text-black"
-  else if (a.includes("STOP")) color = "bg-warning text-black"
-  else if (a.includes("LOGIN")) color = "bg-primary text-black"
-  else if (a.includes("NETWORK")) color = "bg-accent text-white"
-  
+  let color = "bg-muted text-muted-foreground border-border"
+
+  if (a.includes("CREATE")) color = "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-400 dark:border-emerald-900"
+  else if (a.includes("DELETE")) color = "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-400 dark:border-red-900"
+  else if (a.includes("START")) color = "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950 dark:text-blue-400 dark:border-blue-900"
+  else if (a.includes("STOP")) color = "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-400 dark:border-amber-900"
+  else if (a.includes("LOGIN")) color = "bg-primary/10 text-primary border-primary/20"
+  else if (a.includes("NETWORK")) color = "bg-violet-50 text-violet-700 border-violet-200 dark:bg-violet-950 dark:text-violet-400 dark:border-violet-900"
+
   return (
-    <span className={`inline-flex items-center gap-2 px-3 py-1 text-xs font-black uppercase tracking-wider border-2 border-black ${color}`}>
+    <span className={`inline-flex items-center gap-2 px-2.5 py-0.5 text-xs font-medium rounded-full border ${color}`}>
       <ActionIcon action={action} />
       {action.replace(/_/g, " ")}
     </span>
@@ -66,11 +66,11 @@ function ActionBadge({ action }: { action: string }) {
 
 // JSON Viewer component
 function JsonViewer({ data, title }: { data: Record<string, unknown> | undefined; title: string }) {
-  if (!data || Object.keys(data).length === 0) return <p className="text-gray-600 italic">No data</p>
-  
+  if (!data || Object.keys(data).length === 0) return <p className="text-muted-foreground italic">No data</p>
+
   return (
-    <div className="bg-gray-50 border-2 border-black p-4 font-mono text-xs overflow-x-auto">
-      <p className="font-bold mb-2 uppercase text-gray-500">{title}</p>
+    <div className="bg-muted rounded-md border p-4 font-mono text-xs overflow-x-auto">
+      <p className="font-medium mb-2 text-muted-foreground">{title}</p>
       <pre className="whitespace-pre-wrap break-all">
         {JSON.stringify(data, null, 2)}
       </pre>
@@ -107,51 +107,49 @@ function Pagination({
   return (
     <div className="flex items-center gap-1">
       <Button
-        variant="ghost"
+        variant="outline"
         size="sm"
         onClick={() => onPageChange(currentPage - 1)}
         disabled={currentPage === 1}
-        className="border-2 border-black"
       >
         <ChevronLeft className="w-4 h-4" />
       </Button>
-      
+
       {start > 1 && (
         <>
-          <Button variant="ghost" size="sm" onClick={() => onPageChange(1)} className="border-2 border-black">
+          <Button variant="outline" size="sm" onClick={() => onPageChange(1)}>
             1
           </Button>
-          {start > 2 && <span className="px-2">...</span>}
+          {start > 2 && <span className="px-2 text-muted-foreground">...</span>}
         </>
       )}
-      
+
       {pages.map(page => (
         <Button
           key={page}
-          variant={page === currentPage ? "default" : "ghost"}
+          variant={page === currentPage ? "default" : "outline"}
           size="sm"
           onClick={() => onPageChange(page)}
-          className={`border-2 border-black min-w-[40px] ${page === currentPage ? "bg-black text-white hover:bg-gray-800" : ""}`}
+          className="min-w-[40px]"
         >
           {page}
         </Button>
       ))}
-      
+
       {end < totalPages && (
         <>
-          {end < totalPages - 1 && <span className="px-2">...</span>}
-          <Button variant="ghost" size="sm" onClick={() => onPageChange(totalPages)} className="border-2 border-black">
+          {end < totalPages - 1 && <span className="px-2 text-muted-foreground">...</span>}
+          <Button variant="outline" size="sm" onClick={() => onPageChange(totalPages)}>
             {totalPages}
           </Button>
         </>
       )}
-      
+
       <Button
-        variant="ghost"
+        variant="outline"
         size="sm"
         onClick={() => onPageChange(currentPage + 1)}
         disabled={currentPage === totalPages}
-        className="border-2 border-black"
       >
         <ChevronRight className="w-4 h-4" />
       </Button>
@@ -263,12 +261,12 @@ export default function AuditLogsPage() {
     return (
       <div className="space-y-6">
         <div>
-          <h1 className="text-3xl font-black uppercase tracking-tight">Audit Logs</h1>
+          <h1 className="text-3xl font-bold tracking-tight">Audit Logs</h1>
           <Skeleton className="h-5 w-48 mt-1" />
         </div>
-        <Skeleton className="h-32 border-4 border-black" />
+        <Skeleton className="h-32 rounded-lg" />
         <div className="space-y-2">
-          {[1,2,3,4,5].map(i => <Skeleton key={i} className="h-14 border-2 border-black" />)}
+          {[1,2,3,4,5].map(i => <Skeleton key={i} className="h-14 rounded-md" />)}
         </div>
       </div>
     )
@@ -279,12 +277,12 @@ export default function AuditLogsPage() {
     return (
       <div className="space-y-6">
         <div>
-          <h1 className="text-3xl font-black uppercase tracking-tight">Audit Logs</h1>
+          <h1 className="text-3xl font-bold tracking-tight">Audit Logs</h1>
         </div>
-        <div className="bg-white border-4 border-black p-12 shadow-neo text-center">
-          <AlertCircle className="w-16 h-16 text-danger mx-auto mb-4" />
-          <h2 className="text-xl font-black uppercase mb-2">Failed to load audit logs</h2>
-          <p className="text-gray-500 font-medium mb-6">{(error as Error).message}</p>
+        <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-12 text-center">
+          <AlertCircle className="w-16 h-16 text-destructive mx-auto mb-4" />
+          <h2 className="text-xl font-semibold mb-2">Failed to load audit logs</h2>
+          <p className="text-muted-foreground mb-6">{(error as Error).message}</p>
           <Button onClick={() => refetch()}>Retry</Button>
         </div>
       </div>
@@ -296,24 +294,24 @@ export default function AuditLogsPage() {
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-black uppercase tracking-tight">Audit Logs</h1>
-          <p className="text-gray-500 font-medium mt-1">
+          <h1 className="text-3xl font-bold tracking-tight">Audit Logs</h1>
+          <p className="text-muted-foreground mt-1">
             {totalLogs} total log entries
           </p>
         </div>
       </div>
-      
+
       {/* Filters */}
-      <div className="bg-white border-4 border-black p-6 shadow-neo">
+      <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-6">
         <div className="flex items-center gap-2 mb-4">
-          <Filter className="w-5 h-5" />
-          <h2 className="text-lg font-black uppercase">Filters</h2>
+          <Filter className="w-5 h-5 text-muted-foreground" />
+          <h2 className="text-lg font-semibold">Filters</h2>
           {hasActiveFilters && (
-            <Button 
-              variant="ghost" 
-              size="sm" 
+            <Button
+              variant="ghost"
+              size="sm"
               onClick={clearFilters}
-              className="ml-auto text-xs font-bold uppercase text-gray-500 hover:text-black"
+              className="ml-auto text-xs font-medium text-muted-foreground"
             >
               <X className="w-4 h-4 mr-1" />
               Clear
@@ -324,21 +322,21 @@ export default function AuditLogsPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
           {/* Search */}
           <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <Input
               type="text"
               placeholder="Search resource, user..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-10 border-2 border-black"
+              className="pl-10"
             />
           </div>
-          
+
           {/* Action Filter */}
           <select
             value={selectedAction}
             onChange={(e) => setSelectedAction(e.target.value)}
-            className="h-12 px-4 border-2 border-black font-medium bg-white focus:outline-none focus:shadow-neo-sm"
+            className="h-10 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           >
             <option value="">All Actions</option>
             <option value="CREATE_VM">Create VM</option>
@@ -354,7 +352,7 @@ export default function AuditLogsPage() {
           <select
             value={selectedResourceType}
             onChange={(e) => setSelectedResourceType(e.target.value)}
-            className="h-12 px-4 border-2 border-black font-medium bg-white focus:outline-none focus:shadow-neo-sm"
+            className="h-10 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           >
             <option value="">All Resources</option>
             <option value="VM">VM</option>
@@ -370,59 +368,57 @@ export default function AuditLogsPage() {
             value={dateFrom}
             onChange={(e) => setDateFrom(e.target.value)}
             placeholder="From date"
-            className="border-2 border-black"
           />
-          
+
           {/* Date To */}
           <Input
             type="date"
             value={dateTo}
             onChange={(e) => setDateTo(e.target.value)}
             placeholder="To date"
-            className="border-2 border-black"
           />
         </div>
-        
+
         {/* Results count */}
-        <div className="mt-4 text-sm font-bold text-gray-500 uppercase">
+        <div className="mt-4 text-sm font-medium text-muted-foreground">
           Showing {filteredLogs.length} of {totalLogs} logs
         </div>
       </div>
-      
+
       {/* Table */}
-      <div className="bg-white border-4 border-black shadow-neo overflow-hidden">
+      <div className="rounded-lg border bg-card text-card-foreground shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full">
-            <thead className="bg-gray-50 border-b-4 border-black">
+            <thead className="bg-muted/50 border-b">
               <tr>
-                <th className="text-left px-4 py-3 text-xs font-black uppercase tracking-wider">Timestamp</th>
-                <th className="text-left px-4 py-3 text-xs font-black uppercase tracking-wider">User</th>
-                <th className="text-left px-4 py-3 text-xs font-black uppercase tracking-wider">Action</th>
-                <th className="text-left px-4 py-3 text-xs font-black uppercase tracking-wider">Resource</th>
-                <th className="text-left px-4 py-3 text-xs font-black uppercase tracking-wider">IP Address</th>
-                <th className="text-left px-4 py-3 text-xs font-black uppercase tracking-wider">Actions</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground">Timestamp</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground">User</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground">Action</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground">Resource</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground">IP Address</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground">Actions</th>
               </tr>
             </thead>
             <tbody>
               {filteredLogs.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="px-4 py-12 text-center">
-                    <FileText className="w-12 h-12 text-gray-500 mx-auto mb-4" />
-                    <p className="text-gray-500 font-bold uppercase">No audit logs found</p>
+                    <FileText className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+                    <p className="text-muted-foreground font-medium">No audit logs found</p>
                     {hasActiveFilters && (
-                      <Button variant="ghost" onClick={clearFilters} className="mt-4 border-2 border-black">Clear filters</Button>
+                      <Button variant="outline" onClick={clearFilters} className="mt-4">Clear filters</Button>
                     )}
                   </td>
                 </tr>
               ) : (
                 filteredLogs.map((log) => (
-                  <tr key={log.id} className="border-b-2 border-gray-100 hover:bg-gray-50 transition-colors">
+                  <tr key={log.id} className="border-b hover:bg-muted/50 transition-colors">
                     <td className="px-4 py-3 text-sm font-mono">
                       {formatTimestamp(log.created_at)}
                     </td>
                     <td className="px-4 py-3">
-                      <span className="inline-flex items-center gap-2 text-sm font-bold">
-                        <User className="w-4 h-4 text-gray-600" />
+                      <span className="inline-flex items-center gap-2 text-sm font-medium">
+                        <User className="w-4 h-4 text-muted-foreground" />
                         <span className="font-mono text-xs">{log.user_id ? log.user_id.slice(0, 12) + "..." : "system"}</span>
                       </span>
                     </td>
@@ -432,21 +428,20 @@ export default function AuditLogsPage() {
                     <td className="px-4 py-3 text-sm font-medium">
                       <span className="font-mono">{log.resource_id ? log.resource_id.slice(0, 12) + "..." : "-"}</span>
                       {log.resource_type && (
-                        <span className="text-gray-600 text-xs ml-2">({log.resource_type})</span>
+                        <span className="text-muted-foreground text-xs ml-2">({log.resource_type})</span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-sm font-mono text-gray-500">
+                    <td className="px-4 py-3 text-sm font-mono text-muted-foreground">
                       {log.ip_address || "-"}
                     </td>
                     <td className="px-4 py-3">
-                      <Button 
-                        variant="ghost" 
+                      <Button
+                        variant="outline"
                         size="sm"
                         onClick={() => setSelectedLog(log)}
-                        className="border-2 border-black hover:bg-black hover:text-white"
                       >
                         <Eye className="w-4 h-4" />
-                        <span className="ml-2 uppercase font-bold text-xs">View</span>
+                        <span className="ml-2 font-medium text-xs">View</span>
                       </Button>
                     </td>
                   </tr>
@@ -467,24 +462,22 @@ export default function AuditLogsPage() {
         
         {/* Export Buttons */}
         <div className="flex items-center gap-2">
-          <span className="text-sm font-bold uppercase text-gray-500 mr-2">Export:</span>
-          <Button 
-            variant="ghost"
+          <span className="text-sm font-medium text-muted-foreground mr-2">Export:</span>
+          <Button
+            variant="outline"
             onClick={() => exportToCSV(filteredLogs)}
-            className="border-2 border-black"
             disabled={filteredLogs.length === 0}
           >
             <FileText className="w-4 h-4" />
-            <span className="ml-2 uppercase font-bold text-xs">CSV</span>
+            <span className="ml-2 font-medium text-xs">CSV</span>
           </Button>
-          <Button 
-            variant="ghost"
+          <Button
+            variant="outline"
             onClick={() => exportToJSON(filteredLogs)}
-            className="border-2 border-black"
             disabled={filteredLogs.length === 0}
           >
             <FileJson className="w-4 h-4" />
-            <span className="ml-2 uppercase font-bold text-xs">JSON</span>
+            <span className="ml-2 font-medium text-xs">JSON</span>
           </Button>
         </div>
       </div>
@@ -502,45 +495,45 @@ export default function AuditLogsPage() {
           {selectedLog && (
             <div className="space-y-6 mt-4">
               {/* Summary */}
-              <div className="bg-gray-50 border-2 border-black p-4">
+              <div className="bg-muted rounded-md border p-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <p className="text-xs font-bold uppercase text-gray-500 mb-1">Timestamp</p>
+                    <p className="text-xs font-medium text-muted-foreground mb-1">Timestamp</p>
                     <p className="font-mono text-sm">{formatTimestamp(selectedLog.created_at)}</p>
                   </div>
                   <div>
-                    <p className="text-xs font-bold uppercase text-gray-500 mb-1">Action</p>
+                    <p className="text-xs font-medium text-muted-foreground mb-1">Action</p>
                     <ActionBadge action={selectedLog.action} />
                   </div>
                   <div>
-                    <p className="text-xs font-bold uppercase text-gray-500 mb-1">User ID</p>
+                    <p className="text-xs font-medium text-muted-foreground mb-1">User ID</p>
                     <p className="font-mono text-sm">{selectedLog.user_id || "system"}</p>
                   </div>
                   <div>
-                    <p className="text-xs font-bold uppercase text-gray-500 mb-1">IP Address</p>
+                    <p className="text-xs font-medium text-muted-foreground mb-1">IP Address</p>
                     <p className="font-mono text-sm">{selectedLog.ip_address || "-"}</p>
                   </div>
                   <div>
-                    <p className="text-xs font-bold uppercase text-gray-500 mb-1">Resource ID</p>
-                    <p className="font-mono font-bold text-sm">{selectedLog.resource_id || "-"}</p>
+                    <p className="text-xs font-medium text-muted-foreground mb-1">Resource ID</p>
+                    <p className="font-mono font-semibold text-sm">{selectedLog.resource_id || "-"}</p>
                   </div>
                   <div>
-                    <p className="text-xs font-bold uppercase text-gray-500 mb-1">Resource Type</p>
-                    <p className="font-bold">{selectedLog.resource_type || "-"}</p>
+                    <p className="text-xs font-medium text-muted-foreground mb-1">Resource Type</p>
+                    <p className="font-semibold">{selectedLog.resource_type || "-"}</p>
                   </div>
                   {selectedLog.user_agent && (
                     <div className="col-span-2">
-                      <p className="text-xs font-bold uppercase text-gray-500 mb-1">User Agent</p>
+                      <p className="text-xs font-medium text-muted-foreground mb-1">User Agent</p>
                       <p className="font-mono text-xs break-all">{selectedLog.user_agent}</p>
                     </div>
                   )}
                 </div>
               </div>
-              
+
               {/* Before/After Snapshots */}
               {(selectedLog.before_snapshot || selectedLog.after_snapshot) && (
                 <div className="space-y-4">
-                  <h3 className="font-black uppercase text-sm">Before / After Snapshots</h3>
+                  <h3 className="font-semibold text-sm">Before / After Snapshots</h3>
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <JsonViewer data={selectedLog.before_snapshot} title="Before" />
@@ -555,15 +548,15 @@ export default function AuditLogsPage() {
               {/* Details */}
               {selectedLog.details && Object.keys(selectedLog.details).length > 0 && (
                 <div>
-                  <h3 className="font-black uppercase text-sm mb-2">Details</h3>
+                  <h3 className="font-semibold text-sm mb-2">Details</h3>
                   <JsonViewer data={selectedLog.details} title="Additional Data" />
                 </div>
               )}
-              
+
               {/* Raw JSON */}
               <div>
-                <h3 className="font-black uppercase text-sm mb-2">Raw JSON</h3>
-                <div className="bg-gray-900 text-gray-100 border-2 border-black p-4 font-mono text-xs overflow-x-auto max-h-64 overflow-y-auto">
+                <h3 className="font-semibold text-sm mb-2">Raw JSON</h3>
+                <div className="bg-zinc-900 text-zinc-100 rounded-md border p-4 font-mono text-xs overflow-x-auto max-h-64 overflow-y-auto">
                   <pre>{JSON.stringify(selectedLog, null, 2)}</pre>
                 </div>
               </div>

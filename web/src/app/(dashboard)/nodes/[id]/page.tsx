@@ -43,17 +43,17 @@ import type { NodeStatus, VMStatus } from "@/types"
 // Status indicator component
 function StatusIndicator({ status }: { status: NodeStatus }) {
   const config: Record<string, { bg: string; text: string; label: string }> = {
-    active: { bg: "bg-success", text: "text-success", label: "Active" },
-    offline: { bg: "bg-danger", text: "text-danger", label: "Offline" },
-    maintenance: { bg: "bg-warning", text: "text-warning", label: "Maintenance" },
+    active: { bg: "bg-emerald-500", text: "text-emerald-600", label: "Active" },
+    offline: { bg: "bg-red-500", text: "text-red-600", label: "Offline" },
+    maintenance: { bg: "bg-amber-500", text: "text-amber-600", label: "Maintenance" },
   }
 
   const { bg, text, label } = config[status] || config.offline
 
   return (
     <div className="flex items-center gap-2">
-      <span className={`w-3 h-3 rounded-full ${bg} ${status === "active" ? "animate-pulse" : ""}`} />
-      <span className={`text-sm font-black uppercase ${text}`}>{label}</span>
+      <span className={`w-2.5 h-2.5 rounded-full ${bg} ${status === "active" ? "animate-pulse" : ""}`} />
+      <span className={`text-sm font-medium ${text}`}>{label}</span>
     </div>
   )
 }
@@ -61,17 +61,17 @@ function StatusIndicator({ status }: { status: NodeStatus }) {
 // VM Status badge
 function VMStatusBadge({ status }: { status: VMStatus }) {
   const colors: Record<string, string> = {
-    running: "bg-[#CCFF00] text-black",
-    stopped: "bg-[#FF4444] text-white",
-    suspended: "bg-[#FFAA00] text-black",
-    creating: "bg-[#00AAFF] text-white",
-    deleting: "bg-[#FF8800] text-black",
-    error: "bg-[#FF0000] text-white",
+    running: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900",
+    stopped: "bg-muted text-muted-foreground",
+    suspended: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900",
+    creating: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950 dark:text-blue-300 dark:border-blue-900",
+    deleting: "bg-orange-50 text-orange-700 border-orange-200 dark:bg-orange-950 dark:text-orange-300 dark:border-orange-900",
+    error: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-900",
   }
 
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 text-[10px] font-black uppercase tracking-wider border border-black ${colors[status] || colors.stopped}`}>
-      <span className={`w-1.5 h-1.5 mr-1.5 rounded-full ${status === "running" ? "bg-black animate-pulse" : "bg-current"}`} />
+    <span className={`inline-flex items-center px-2 py-0.5 text-[10px] font-medium rounded-full border ${colors[status] || colors.stopped}`}>
+      <span className={`w-1.5 h-1.5 mr-1.5 rounded-full ${status === "running" ? "bg-emerald-500 animate-pulse" : "bg-current"}`} />
       {status}
     </span>
   )
@@ -80,26 +80,26 @@ function VMStatusBadge({ status }: { status: VMStatus }) {
 // Resource gauge component
 function ResourceGauge({ value, label, detail, icon: Icon, color }: { value: number; label: string; detail?: string; icon: React.ElementType; color: string }) {
   const getColorClass = () => {
-    if (value >= 90) return "bg-danger"
-    if (value >= 70) return "bg-warning"
+    if (value >= 90) return "bg-red-500"
+    if (value >= 70) return "bg-amber-500"
     return color
   }
 
   return (
-    <div className="bg-white border-4 border-black p-4 shadow-neo">
+    <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
-          <div className={`w-8 h-8 ${color} flex items-center justify-center border-2 border-black`}>
+          <div className="w-8 h-8 bg-muted text-muted-foreground flex items-center justify-center rounded-md">
             <Icon className="w-4 h-4" />
           </div>
           <div>
-            <span className="text-xs font-black uppercase text-gray-500">{label}</span>
-            {detail && <span className="text-[10px] text-gray-600 block">{detail}</span>}
+            <span className="text-xs font-medium text-muted-foreground">{label}</span>
+            {detail && <span className="text-[10px] text-muted-foreground block">{detail}</span>}
           </div>
         </div>
-        <span className="text-2xl font-black">{value}%</span>
+        <span className="text-xl font-semibold">{value}%</span>
       </div>
-      <div className="h-3 bg-gray-200 border-2 border-black">
+      <div className="h-2 bg-muted rounded-full overflow-hidden">
         <div
           className={`h-full ${getColorClass()} transition-all duration-500`}
           style={{ width: `${Math.min(value, 100)}%` }}
@@ -133,10 +133,12 @@ function Toast({ message, type, onClose }: { message: string, type: "success" | 
   }, [onClose])
 
   return (
-    <div className={`fixed bottom-4 right-4 z-50 px-6 py-4 border-4 border-black shadow-neo ${
-      type === "success" ? "bg-success" : "bg-danger text-white"
+    <div className={`fixed bottom-4 right-4 z-50 px-4 py-3 rounded-lg border shadow-md ${
+      type === "success"
+        ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900"
+        : "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-900"
     }`}>
-      <p className="font-bold uppercase text-sm">{message}</p>
+      <p className="font-medium text-sm">{message}</p>
     </div>
   )
 }
@@ -221,7 +223,7 @@ export default function NodeDetailPage() {
       <div className="max-w-7xl mx-auto">
         <div className="flex items-center gap-4 mb-6">
           <Link href="/nodes">
-            <Button variant="ghost" size="icon" className="border-2 border-black">
+            <Button variant="outline" size="icon">
               <ArrowLeft className="w-4 h-4" />
             </Button>
           </Link>
@@ -231,10 +233,10 @@ export default function NodeDetailPage() {
           </div>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-          {[1,2,3,4].map(i => <Skeleton key={i} className="h-24 border-4 border-black" />)}
+          {[1,2,3,4].map(i => <Skeleton key={i} className="h-24 rounded-lg" />)}
         </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-          {[1,2,3].map(i => <Skeleton key={i} className="h-32 border-4 border-black" />)}
+          {[1,2,3].map(i => <Skeleton key={i} className="h-32 rounded-lg" />)}
         </div>
       </div>
     )
@@ -244,10 +246,10 @@ export default function NodeDetailPage() {
   if (error || !node) {
     return (
       <div className="max-w-7xl mx-auto">
-        <div className="bg-white border-4 border-black p-12 shadow-neo text-center">
-          <Server className="w-16 h-16 text-gray-500 mx-auto mb-4" />
-          <h2 className="text-xl font-black uppercase mb-2">Node Not Found</h2>
-          <p className="text-gray-500 font-medium mb-6">{(error as Error)?.message || "The requested node does not exist."}</p>
+        <div className="bg-card text-card-foreground border rounded-lg p-12 shadow-sm text-center">
+          <Server className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
+          <h2 className="text-lg font-semibold mb-2">Node Not Found</h2>
+          <p className="text-muted-foreground text-sm mb-6">{(error as Error)?.message || "The requested node does not exist."}</p>
           <Link href="/nodes">
             <Button className="gap-2">
               <ArrowLeft className="w-4 h-4" />
@@ -267,42 +269,42 @@ export default function NodeDetailPage() {
       {/* Header */}
       <div className="flex items-center gap-4 mb-6">
         <Link href="/nodes">
-          <Button variant="ghost" size="icon" className="border-2 border-black">
+          <Button variant="outline" size="icon">
             <ArrowLeft className="w-4 h-4" />
           </Button>
         </Link>
         <div className="flex-1">
           <div className="flex items-center gap-3">
-            <h1 className="text-3xl font-black uppercase tracking-tight text-black">
+            <h1 className="text-2xl font-semibold text-foreground">
               {node.name}
             </h1>
             <StatusIndicator status={node.status} />
           </div>
-          <p className="text-gray-500 font-medium uppercase tracking-wider text-sm">
+          <p className="text-muted-foreground text-sm">
             {node.ip_address} • Created {formatDate(node.created_at)}
           </p>
         </div>
         <div className="flex items-center gap-2">
           <Dialog open={editDialogOpen} onOpenChange={(open) => { setEditDialogOpen(open); if (open) setEditName(node.name) }}>
             <DialogTrigger asChild>
-              <Button variant="ghost" className="border-2 border-black gap-2">
+              <Button variant="outline" className="gap-2">
                 <Edit2 className="w-4 h-4" />
                 Edit
               </Button>
             </DialogTrigger>
-            <DialogContent className="max-w-md border-4 border-black shadow-neo-xl">
+            <DialogContent className="max-w-md">
               <DialogHeader>
-                <DialogTitle className="text-lg font-black uppercase">Edit Node</DialogTitle>
+                <DialogTitle className="text-lg font-semibold">Edit Node</DialogTitle>
                 <DialogDescription>Update node name</DialogDescription>
               </DialogHeader>
               <div className="space-y-4 py-4">
                 <div>
-                  <label htmlFor="edit-name" className="block text-xs font-black uppercase text-gray-500 mb-1">Name</label>
-                  <Input id="edit-name" value={editName} onChange={(e) => setEditName(e.target.value)} className="border-2 border-black" />
+                  <label htmlFor="edit-name" className="block text-xs font-medium text-muted-foreground mb-1">Name</label>
+                  <Input id="edit-name" value={editName} onChange={(e) => setEditName(e.target.value)} />
                 </div>
               </div>
               <DialogFooter>
-                <Button variant="ghost" onClick={() => setEditDialogOpen(false)}>Cancel</Button>
+                <Button variant="outline" onClick={() => setEditDialogOpen(false)}>Cancel</Button>
                 <Button onClick={handleEdit} disabled={updateNode.isPending || !editName.trim()}>
                   {updateNode.isPending && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
                   Save Changes
@@ -322,34 +324,34 @@ export default function NodeDetailPage() {
         <TabsContent value="overview">
           {/* Quick Stats */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-            <div className="bg-white border-4 border-black p-4 shadow-neo">
+            <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-black uppercase text-gray-500">Total VMs</span>
-                <Database className="w-4 h-4 text-gray-600" />
+                <span className="text-xs font-medium text-muted-foreground">Total VMs</span>
+                <Database className="w-4 h-4 text-muted-foreground" />
               </div>
-              <p className="text-3xl font-black text-black">{metrics?.running_vm_count ?? vms.length}</p>
+              <p className="text-2xl font-semibold text-foreground">{metrics?.running_vm_count ?? vms.length}</p>
             </div>
 
-            <div className="bg-white border-4 border-black p-4 shadow-neo">
+            <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-black uppercase text-gray-500">Running</span>
-                <span className="w-3 h-3 bg-success rounded-full animate-pulse" />
+                <span className="text-xs font-medium text-muted-foreground">Running</span>
+                <span className="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-pulse" />
               </div>
-              <p className="text-3xl font-black text-success">{runningVMs}</p>
+              <p className="text-2xl font-semibold text-emerald-600">{runningVMs}</p>
             </div>
 
-            <div className="bg-white border-4 border-black p-4 shadow-neo">
+            <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-black uppercase text-gray-500">Stopped</span>
-                <span className="w-3 h-3 bg-danger rounded-full" />
+                <span className="text-xs font-medium text-muted-foreground">Stopped</span>
+                <span className="w-2.5 h-2.5 bg-red-500 rounded-full" />
               </div>
-              <p className="text-3xl font-black text-danger">{stoppedVMs}</p>
+              <p className="text-2xl font-semibold text-red-600">{stoppedVMs}</p>
             </div>
 
-            <div className="bg-white border-4 border-black p-4 shadow-neo">
+            <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-black uppercase text-gray-500">Status</span>
-                <Clock className="w-4 h-4 text-gray-600" />
+                <span className="text-xs font-medium text-muted-foreground">Status</span>
+                <Clock className="w-4 h-4 text-muted-foreground" />
               </div>
               <StatusIndicator status={node.status} />
             </div>
@@ -364,51 +366,51 @@ export default function NodeDetailPage() {
                   label="CPU Usage"
                   detail={`${metrics.available_cpus} cores available`}
                   icon={Cpu}
-                  color="bg-primary"
+                  color="bg-blue-500"
                 />
                 <ResourceGauge
                   value={Math.round(metrics.memory_used_percent)}
                   label="Memory Usage"
                   detail={`${metrics.available_memory_mb} MB available`}
                   icon={MemoryStick}
-                  color="bg-secondary"
+                  color="bg-violet-500"
                 />
                 <ResourceGauge
                   value={Math.round(metrics.disk_used_percent)}
                   label="Disk Usage"
                   detail={`${metrics.available_disk_gb} GB available`}
                   icon={HardDrive}
-                  color="bg-accent"
+                  color="bg-teal-500"
                 />
               </div>
 
               {/* Network + I/O Stats */}
-              <div className="bg-white border-4 border-black p-6 shadow-neo mb-6">
-                <h2 className="text-lg font-black uppercase tracking-tight text-black mb-4">
+              <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm mb-6">
+                <h2 className="text-lg font-semibold text-foreground mb-4">
                   Network & I/O Throughput
                 </h2>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <div className="p-3 border-2 border-black bg-gray-50">
-                    <span className="text-xs font-bold uppercase text-gray-500 block">Network RX</span>
-                    <span className="text-lg font-black text-success">{formatBytesPerSec(metrics.network_rx_bytes_per_sec)}</span>
+                  <div className="p-3 rounded-md border bg-muted/50">
+                    <span className="text-xs font-medium text-muted-foreground block">Network RX</span>
+                    <span className="text-lg font-semibold text-emerald-600">{formatBytesPerSec(metrics.network_rx_bytes_per_sec)}</span>
                   </div>
-                  <div className="p-3 border-2 border-black bg-gray-50">
-                    <span className="text-xs font-bold uppercase text-gray-500 block">Network TX</span>
-                    <span className="text-lg font-black text-primary">{formatBytesPerSec(metrics.network_tx_bytes_per_sec)}</span>
+                  <div className="p-3 rounded-md border bg-muted/50">
+                    <span className="text-xs font-medium text-muted-foreground block">Network TX</span>
+                    <span className="text-lg font-semibold text-blue-600">{formatBytesPerSec(metrics.network_tx_bytes_per_sec)}</span>
                   </div>
-                  <div className="p-3 border-2 border-black bg-gray-50">
-                    <span className="text-xs font-bold uppercase text-gray-500 block">Disk Read</span>
-                    <span className="text-lg font-black">{formatBytesPerSec(metrics.disk_read_bytes_per_sec)}</span>
+                  <div className="p-3 rounded-md border bg-muted/50">
+                    <span className="text-xs font-medium text-muted-foreground block">Disk Read</span>
+                    <span className="text-lg font-semibold">{formatBytesPerSec(metrics.disk_read_bytes_per_sec)}</span>
                   </div>
-                  <div className="p-3 border-2 border-black bg-gray-50">
-                    <span className="text-xs font-bold uppercase text-gray-500 block">Disk Write</span>
-                    <span className="text-lg font-black">{formatBytesPerSec(metrics.disk_write_bytes_per_sec)}</span>
+                  <div className="p-3 rounded-md border bg-muted/50">
+                    <span className="text-xs font-medium text-muted-foreground block">Disk Write</span>
+                    <span className="text-lg font-semibold">{formatBytesPerSec(metrics.disk_write_bytes_per_sec)}</span>
                   </div>
                 </div>
                 {metrics.load_avg && metrics.load_avg.length >= 3 && (
-                  <div className="mt-4 pt-4 border-t-2 border-black">
-                    <span className="text-xs font-bold uppercase text-gray-500">Load Average: </span>
-                    <span className="font-mono font-bold">
+                  <div className="mt-4 pt-4 border-t">
+                    <span className="text-xs font-medium text-muted-foreground">Load Average: </span>
+                    <span className="font-mono font-semibold">
                       {metrics.load_avg[0].toFixed(2)} / {metrics.load_avg[1].toFixed(2)} / {metrics.load_avg[2].toFixed(2)}
                     </span>
                   </div>
@@ -421,24 +423,24 @@ export default function NodeDetailPage() {
           {node.status !== "active" && (
             <>
               {node.status === "maintenance" && (
-                <div className="bg-warning/20 border-4 border-warning p-6 mb-6">
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-6 mb-6 dark:bg-amber-950 dark:border-amber-900">
                   <div className="flex items-center gap-3">
-                    <AlertTriangle className="w-6 h-6 text-warning" />
+                    <AlertTriangle className="w-6 h-6 text-amber-600" />
                     <div>
-                      <p className="font-black uppercase text-warning">Node in Maintenance Mode</p>
-                      <p className="text-sm font-medium">VM operations are disabled while in maintenance mode.</p>
+                      <p className="font-semibold text-amber-700 dark:text-amber-300">Node in Maintenance Mode</p>
+                      <p className="text-sm text-muted-foreground">VM operations are disabled while in maintenance mode.</p>
                     </div>
                   </div>
                 </div>
               )}
 
               {node.status === "offline" && (
-                <div className="bg-danger/10 border-4 border-danger p-6 mb-6">
+                <div className="bg-red-50 border border-red-200 rounded-lg p-6 mb-6 dark:bg-red-950 dark:border-red-900">
                   <div className="flex items-center gap-3">
-                    <XCircle className="w-6 h-6 text-danger" />
+                    <XCircle className="w-6 h-6 text-red-600" />
                     <div>
-                      <p className="font-black uppercase text-danger">Node Offline</p>
-                      <p className="text-sm font-medium">Cannot connect to this node. Check network connectivity and node status.</p>
+                      <p className="font-semibold text-red-700 dark:text-red-300">Node Offline</p>
+                      <p className="text-sm text-muted-foreground">Cannot connect to this node. Check network connectivity and node status.</p>
                     </div>
                   </div>
                 </div>
@@ -447,40 +449,40 @@ export default function NodeDetailPage() {
           )}
 
           {/* Node Details */}
-          <div className="bg-white border-4 border-black p-6 shadow-neo mb-6">
-            <h2 className="text-lg font-black uppercase tracking-tight text-black mb-4">
+          <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm mb-6">
+            <h2 className="text-lg font-semibold text-foreground mb-4">
               Node Details
             </h2>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-              <div className="p-3 border-2 border-black">
-                <span className="text-xs font-bold uppercase text-gray-500 block">Node ID</span>
+              <div className="p-3 rounded-md border">
+                <span className="text-xs font-medium text-muted-foreground block">Node ID</span>
                 <div className="flex items-center gap-2">
-                  <span className="font-mono text-sm font-bold">{node.id.slice(0, 16)}...</span>
-                  <button onClick={() => copyToClipboard(node.id)} className="p-1 hover:bg-gray-100" aria-label="Copy node ID">
-                    {copied ? <Check className="w-3 h-3 text-success" /> : <Copy className="w-3 h-3" />}
+                  <span className="font-mono text-sm font-medium">{node.id.slice(0, 16)}...</span>
+                  <button onClick={() => copyToClipboard(node.id)} className="p-1 rounded hover:bg-muted" aria-label="Copy node ID">
+                    {copied ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
                   </button>
                 </div>
               </div>
-              <div className="p-3 border-2 border-black">
-                <span className="text-xs font-bold uppercase text-gray-500 block">IP Address</span>
-                <span className="font-mono text-sm font-bold">{node.ip_address}</span>
+              <div className="p-3 rounded-md border">
+                <span className="text-xs font-medium text-muted-foreground block">IP Address</span>
+                <span className="font-mono text-sm font-medium">{node.ip_address}</span>
               </div>
-              <div className="p-3 border-2 border-black">
-                <span className="text-xs font-bold uppercase text-gray-500 block">Created</span>
-                <span className="text-sm font-bold">{formatDate(node.created_at)}</span>
+              <div className="p-3 rounded-md border">
+                <span className="text-xs font-medium text-muted-foreground block">Created</span>
+                <span className="text-sm font-medium">{formatDate(node.created_at)}</span>
               </div>
             </div>
           </div>
 
           {/* Agent Token */}
-          <div className="bg-white border-4 border-black p-6 shadow-neo mb-6">
-            <h2 className="text-lg font-black uppercase tracking-tight text-black mb-2">
+          <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm mb-6">
+            <h2 className="text-lg font-semibold text-foreground mb-2">
               Agent Token
             </h2>
-            <p className="text-xs text-gray-500 mb-4">Use this token to authenticate the node agent with the control panel.</p>
+            <p className="text-xs text-muted-foreground mb-4">Use this token to authenticate the node agent with the control panel.</p>
 
             <div className="flex items-center gap-2 mb-4">
-              <div className="flex-1 p-3 border-2 border-black bg-gray-50 font-mono text-sm overflow-hidden">
+              <div className="flex-1 p-3 rounded-md border bg-muted font-mono text-sm overflow-hidden">
                 {showToken && tokenData?.token ? (
                   <span className="break-all">{tokenData.token}</span>
                 ) : (
@@ -496,9 +498,8 @@ export default function NodeDetailPage() {
                   }
                   setShowToken(!showToken)
                 }}
-                className="border-2 border-black"
               >
-                {showToken ? 'HIDE' : 'SHOW'}
+                {showToken ? 'Hide' : 'Show'}
               </Button>
             </div>
 
@@ -548,28 +549,28 @@ export default function NodeDetailPage() {
               </Button>
             </div>
 
-            <div className="mt-4 p-3 bg-warning/10 border-2 border-warning text-xs">
-              <p className="font-bold text-warning">Important</p>
-              <p className="text-gray-600 mt-1">If you regenerate the token, update the agent configuration on the node server and restart the agent.</p>
+            <div className="mt-4 p-3 rounded-md bg-amber-50 border border-amber-200 text-xs dark:bg-amber-950 dark:border-amber-900">
+              <p className="font-medium text-amber-700 dark:text-amber-300">Important</p>
+              <p className="text-muted-foreground mt-1">If you regenerate the token, update the agent configuration on the node server and restart the agent.</p>
             </div>
           </div>
 
           {/* Agent installation */}
-          <div className="bg-white border-4 border-black p-6 shadow-neo mb-6">
-            <h2 className="text-lg font-black uppercase tracking-tight text-black mb-2 flex items-center gap-2">
+          <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm mb-6">
+            <h2 className="text-lg font-semibold text-foreground mb-2 flex items-center gap-2">
               <Terminal className="w-5 h-5" />Install / Re-install the Agent
             </h2>
-            <div className="p-4 bg-warning/10 border-2 border-warning">
+            <div className="p-4 rounded-md bg-amber-50 border border-amber-200 dark:bg-amber-950 dark:border-amber-900">
               <div className="flex items-start gap-3">
-                <AlertTriangle className="w-5 h-5 text-warning shrink-0 mt-0.5" />
+                <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
                 <div className="space-y-2">
-                  <p className="font-bold text-sm text-black">
+                  <p className="font-medium text-sm text-foreground">
                     Automatic agent installation is temporarily unavailable while node deployment security is being completed.
                   </p>
-                  <p className="text-xs text-gray-600">
-                    Installing or re-installing the agent on a hypervisor host manually is an administrator-only operational procedure. See the deployment documentation (<code className="bg-gray-100 px-1 border border-black">docs/DEPLOYMENT.md</code>, agent deployment) for details.
+                  <p className="text-xs text-muted-foreground">
+                    Installing or re-installing the agent on a hypervisor host manually is an administrator-only operational procedure. See the deployment documentation (<code className="bg-muted px-1 rounded border">docs/DEPLOYMENT.md</code>, agent deployment) for details.
                   </p>
-                  <p className="text-xs text-gray-600">
+                  <p className="text-xs text-muted-foreground">
                     The agent token above is configured on the host when the agent is deployed or its token is rotated.
                   </p>
                 </div>
@@ -578,9 +579,9 @@ export default function NodeDetailPage() {
           </div>
 
           {/* Virtual Machines on this Node */}
-          <div className="bg-white border-4 border-black shadow-neo">
-            <div className="p-4 border-b-4 border-black bg-gray-50">
-              <h2 className="text-lg font-black uppercase tracking-tight text-black">
+          <div className="bg-card text-card-foreground border rounded-lg shadow-sm overflow-hidden">
+            <div className="p-4 border-b bg-muted/50">
+              <h2 className="text-lg font-semibold text-foreground">
                 Virtual Machines ({vms.length})
               </h2>
             </div>
@@ -591,22 +592,22 @@ export default function NodeDetailPage() {
               </div>
             ) : vms.length === 0 ? (
               <div className="p-12 text-center">
-                <Database className="w-12 h-12 text-gray-500 mx-auto mb-4" />
-                <p className="text-gray-500 font-bold uppercase">No VMs on this node</p>
+                <Database className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+                <p className="text-muted-foreground font-medium">No VMs on this node</p>
               </div>
             ) : (
-              <div className="divide-y-2 divide-black">
+              <div className="divide-y">
                 {vms.map((vm) => (
-                  <div key={vm.id} className="p-4 flex items-center justify-between hover:bg-gray-50">
+                  <div key={vm.id} className="p-4 flex items-center justify-between hover:bg-muted/50">
                     <div className="flex items-center gap-4">
-                      <div className="w-10 h-10 bg-primary flex items-center justify-center border-2 border-black">
+                      <div className="w-10 h-10 bg-muted text-muted-foreground flex items-center justify-center rounded-md">
                         <Server className="w-5 h-5" />
                       </div>
                       <div>
-                        <Link href={`/vms/${vm.id}`} className="font-black text-black hover:text-primary transition-colors">
+                        <Link href={`/vms/${vm.id}`} className="font-semibold hover:text-primary transition-colors">
                           {vm.hostname}
                         </Link>
-                        <p className="text-xs text-gray-500 font-medium">
+                        <p className="text-xs text-muted-foreground">
                           {vm.resources.cpu} vCPU • {Math.round(vm.resources.ram / 1024 * 10) / 10} GB RAM • {vm.resources.disk} GB Disk
                         </p>
                       </div>
@@ -616,16 +617,16 @@ export default function NodeDetailPage() {
                       {/* Resources */}
                       <div className="hidden md:flex items-center gap-3">
                         <div className="flex items-center gap-1">
-                          <div className="w-6 h-6 bg-primary flex items-center justify-center border border-black text-[10px] font-black">
+                          <div className="w-6 h-6 bg-muted text-muted-foreground flex items-center justify-center rounded text-[10px] font-semibold">
                             {vm.resources.cpu}
                           </div>
-                          <span className="text-xs text-gray-500">CPU</span>
+                          <span className="text-xs text-muted-foreground">CPU</span>
                         </div>
                         <div className="flex items-center gap-1">
-                          <div className="w-6 h-6 bg-secondary flex items-center justify-center border border-black text-[10px] font-black">
+                          <div className="w-6 h-6 bg-muted text-muted-foreground flex items-center justify-center rounded text-[10px] font-semibold">
                             {Math.round(vm.resources.ram / 1024)}
                           </div>
-                          <span className="text-xs text-gray-500">GB</span>
+                          <span className="text-xs text-muted-foreground">GB</span>
                         </div>
                       </div>
 
@@ -635,7 +636,7 @@ export default function NodeDetailPage() {
                       {/* Actions */}
                       <div className="flex items-center gap-1">
                         <Button
-                          variant="default"
+                          variant="outline"
                           size="sm"
                           onClick={() => handleVMAction(vm.id, "start")}
                           disabled={vm.status === "running" || node.status !== "active" || !!actionLoading}
@@ -650,11 +651,11 @@ export default function NodeDetailPage() {
                         </Button>
 
                         <Button
-                          variant="destructive"
+                          variant="outline"
                           size="sm"
                           onClick={() => handleVMAction(vm.id, "stop")}
                           disabled={vm.status === "stopped" || node.status !== "active" || !!actionLoading}
-                          className="h-8 w-8 p-0"
+                          className="h-8 w-8 p-0 text-red-600 hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950"
                           title="Stop"
                         >
                           {actionLoading === `${vm.id}-stop` ? (
@@ -665,7 +666,7 @@ export default function NodeDetailPage() {
                         </Button>
 
                         <Button
-                          variant="secondary"
+                          variant="outline"
                           size="sm"
                           onClick={() => handleVMAction(vm.id, "restart")}
                           disabled={vm.status !== "running" || node.status !== "active" || !!actionLoading}
@@ -681,7 +682,7 @@ export default function NodeDetailPage() {
 
                         <Link href={`/vms/${vm.id}`}>
                           <Button
-                            variant="secondary"
+                            variant="outline"
                             size="sm"
                             className="h-8 w-8 p-0"
                             title="Details"
@@ -699,13 +700,13 @@ export default function NodeDetailPage() {
         </TabsContent>
 
         <TabsContent value="import">
-          <div className="bg-white border-4 border-black shadow-neo">
-            <div className="p-4 border-b-4 border-black bg-gray-50 flex items-center justify-between">
+          <div className="bg-card text-card-foreground border rounded-lg shadow-sm overflow-hidden">
+            <div className="p-4 border-b bg-muted/50 flex items-center justify-between">
               <div>
-                <h2 className="text-lg font-black uppercase tracking-tight text-black">
+                <h2 className="text-lg font-semibold text-foreground">
                   Import Virtual Machines
                 </h2>
-                <p className="text-xs text-gray-500 font-medium">
+                <p className="text-xs text-muted-foreground">
                   Scan this node for existing VMs to import
                 </p>
               </div>
@@ -735,8 +736,8 @@ export default function NodeDetailPage() {
             </div>
 
             {syncVMs.isSuccess && syncVMs.data && (
-              <div className="p-4 bg-green-50 border-b-4 border-black">
-                <p className="font-bold text-sm text-green-800">
+              <div className="p-4 bg-emerald-50 border-b dark:bg-emerald-950">
+                <p className="font-medium text-sm text-emerald-700 dark:text-emerald-300">
                   Sync completed: {syncVMs.data.data.updated} updated, {syncVMs.data.data.unchanged} unchanged, {syncVMs.data.data.skipped} skipped
                   {syncVMs.data.data.errors > 0 && <span className="text-red-600">, {syncVMs.data.data.errors} errors</span>}
                 </p>
@@ -744,8 +745,8 @@ export default function NodeDetailPage() {
             )}
 
             {syncVMs.isError && (
-              <div className="p-4 bg-red-50 border-b-4 border-black">
-                <p className="font-bold text-sm text-red-800">
+              <div className="p-4 bg-red-50 border-b dark:bg-red-950">
+                <p className="font-medium text-sm text-red-700 dark:text-red-300">
                   Sync failed: {(syncVMs.error as Error).message}
                 </p>
               </div>
@@ -753,46 +754,46 @@ export default function NodeDetailPage() {
 
             {scanError ? (
               <div className="p-8 text-center">
-                <AlertTriangle className="w-10 h-10 mx-auto text-danger mb-3" />
-                <p className="font-bold uppercase text-sm mb-1">Scan Failed</p>
-                <p className="text-gray-500 text-xs">{(scanError as Error).message}</p>
+                <AlertTriangle className="w-10 h-10 mx-auto text-red-500 mb-3" />
+                <p className="font-medium text-sm mb-1">Scan Failed</p>
+                <p className="text-muted-foreground text-xs">{(scanError as Error).message}</p>
               </div>
             ) : scanData?.vms && scanData.vms.length > 0 ? (
-              <div className="divide-y-2 divide-black">
-                <div className="p-3 bg-gray-50 flex items-center justify-between">
-                  <span className="text-xs font-black uppercase text-gray-500">
+              <div className="divide-y">
+                <div className="p-3 bg-muted/50 flex items-center justify-between">
+                  <span className="text-xs font-medium text-muted-foreground">
                     Found {scanData.total_found} VMs
                   </span>
                 </div>
                 {scanData.vms.map((vm) => (
-                  <div key={vm.uuid} className="p-4 flex items-center justify-between hover:bg-gray-50">
+                  <div key={vm.uuid} className="p-4 flex items-center justify-between hover:bg-muted/50">
                     <div className="flex items-center gap-4">
-                      <div className="w-10 h-10 bg-secondary flex items-center justify-center border-2 border-black">
+                      <div className="w-10 h-10 bg-muted text-muted-foreground flex items-center justify-center rounded-md">
                         <Server className="w-5 h-5" />
                       </div>
                       <div>
-                        <span className="font-black text-black block">
+                        <span className="font-semibold block">
                           {vm.hostname || vm.name}
                         </span>
-                        <div className="flex items-center gap-3 text-xs text-gray-500">
+                        <div className="flex items-center gap-3 text-xs text-muted-foreground">
                           <span>{vm.cpu} vCPU</span>
                           <span>{Math.round(vm.memory_mb / 1024 * 10) / 10} GB RAM</span>
-                          <span className={`font-bold uppercase ${vm.status === 'running' ? 'text-success' : 'text-gray-600'}`}>
+                          <span className={`font-medium ${vm.status === 'running' ? 'text-emerald-600' : 'text-muted-foreground'}`}>
                             {vm.status}
                           </span>
                           {vm.hostname && vm.hostname !== vm.name && (
-                            <span className="text-gray-600">({vm.name})</span>
+                            <span className="text-muted-foreground">({vm.name})</span>
                           )}
                         </div>
-                        <span className="text-[10px] text-gray-600 font-mono">{vm.uuid}</span>
+                        <span className="text-[10px] text-muted-foreground font-mono">{vm.uuid}</span>
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
                       {vm.conflicts ? (
-                        <span className="text-xs font-bold text-warning border border-warning px-2 py-1">ALREADY IMPORTED</span>
+                        <span className="text-xs font-medium text-amber-700 border border-amber-200 bg-amber-50 rounded-full px-2 py-1 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900">Already Imported</span>
                       ) : (
                         <>
-                          <span className="text-xs font-bold text-success border border-success px-2 py-1">AVAILABLE</span>
+                          <span className="text-xs font-medium text-emerald-700 border border-emerald-200 bg-emerald-50 rounded-full px-2 py-1 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900">Available</span>
                           <Button
                             size="sm"
                             className="text-xs gap-1"
@@ -811,9 +812,9 @@ export default function NodeDetailPage() {
               </div>
             ) : (
               <div className="p-12 text-center">
-                <FolderOpen className="w-12 h-12 text-gray-500 mx-auto mb-4" />
-                <p className="text-gray-500 font-bold uppercase">VM Import</p>
-                <p className="text-xs text-gray-600 mt-2">Click &quot;Scan for VMs&quot; to discover VMs on this node</p>
+                <FolderOpen className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+                <p className="text-muted-foreground font-medium">VM Import</p>
+                <p className="text-xs text-muted-foreground mt-2">Click &quot;Scan for VMs&quot; to discover VMs on this node</p>
               </div>
             )}
           </div>
@@ -840,10 +841,10 @@ export default function NodeDetailPage() {
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div>
-              <label className="text-sm font-bold block mb-1">Owner</label>
+              <label className="text-sm font-medium block mb-1">Owner</label>
               {usersError && <p className="text-xs text-red-500 mb-1">Error: {(usersError as Error).message}</p>}
               <select
-                className="w-full border-2 border-black p-2 text-sm"
+                className="w-full rounded-md border border-input bg-background p-2 text-sm"
                 value={importUserId}
                 onChange={(e) => setImportUserId(e.target.value)}
               >
@@ -854,10 +855,10 @@ export default function NodeDetailPage() {
               </select>
             </div>
             <div>
-              <label className="text-sm font-bold block mb-1">OS Template</label>
+              <label className="text-sm font-medium block mb-1">OS Template</label>
               {templatesError && <p className="text-xs text-red-500 mb-1">Error: {(templatesError as Error).message}</p>}
               <select
-                className="w-full border-2 border-black p-2 text-sm"
+                className="w-full rounded-md border border-input bg-background p-2 text-sm"
                 value={importTemplateId}
                 onChange={(e) => setImportTemplateId(e.target.value)}
               >

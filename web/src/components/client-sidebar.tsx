@@ -35,18 +35,18 @@ export function ClientSidebar({ user }: ClientSidebarProps) {
   const isSettingsActive = pathname.startsWith("/client/settings") || pathname.startsWith("/settings")
 
   return (
-    <aside className="fixed left-0 top-0 z-50 h-screen w-64 bg-white border-r-4 border-black overflow-hidden">
+    <aside className="fixed left-0 top-0 z-50 h-screen w-64 bg-card border-r overflow-hidden">
       {/* Logo */}
-      <div className="h-16 flex items-center px-6 border-b-4 border-black bg-primary">
+      <div className="h-16 flex items-center px-6 border-b">
         <Link href="/client/dashboard" className="flex items-center gap-2">
-          <div className="w-10 h-10 bg-black flex items-center justify-center">
-            <Monitor className="w-6 h-6 text-primary" />
+          <div className="w-10 h-10 bg-primary flex items-center justify-center rounded-md">
+            <Monitor className="w-6 h-6 text-primary-foreground" />
           </div>
           <div className="flex flex-col">
-            <span className="text-lg font-black uppercase tracking-tighter leading-none">
+            <span className="text-lg font-bold leading-none">
               MaburVM
             </span>
-            <span className="text-[10px] font-bold uppercase tracking-widest text-black">
+            <span className="text-[10px] font-medium text-muted-foreground">
               Client Area
             </span>
           </div>
@@ -64,10 +64,10 @@ export function ClientSidebar({ user }: ClientSidebarProps) {
                 key={item.href}
                 href={item.href}
                 className={cn(
-                  "flex items-center gap-3 px-3 py-2.5 text-sm font-bold uppercase tracking-wide border-2 transition-all",
+                  "flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors",
                   isActive
-                    ? "bg-primary text-black border-black shadow-neo-sm"
-                    : "bg-white text-black border-transparent hover:border-black"
+                    ? "bg-muted text-foreground"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
                 )}
               >
                 <Icon className="w-5 h-5" />
@@ -77,7 +77,7 @@ export function ClientSidebar({ user }: ClientSidebarProps) {
           })}
 
           <div className="pt-4">
-            <p className="px-3 pb-2 text-[10px] font-black uppercase tracking-widest text-gray-500">
+            <p className="px-3 pb-2 text-xs font-semibold text-muted-foreground">
               Settings
             </p>
             <div className="space-y-1">
@@ -89,10 +89,10 @@ export function ClientSidebar({ user }: ClientSidebarProps) {
                     key={item.href}
                     href={item.href}
                     className={cn(
-                      "flex items-center gap-3 px-3 py-2.5 text-sm font-bold uppercase tracking-wide border-2 transition-all",
+                      "flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors",
                       isActive
-                        ? "bg-primary text-black border-black shadow-neo-sm"
-                        : "bg-white text-black border-transparent hover:border-black"
+                        ? "bg-muted text-foreground"
+                        : "text-muted-foreground hover:bg-muted hover:text-foreground"
                     )}
                   >
                     <Icon className="w-5 h-5" />
@@ -105,14 +105,14 @@ export function ClientSidebar({ user }: ClientSidebarProps) {
         </div>
 
         {/* User footer */}
-        <div className="px-3 pt-4 mt-auto border-t-2 border-black">
+        <div className="px-3 pt-4 mt-auto border-t">
           <div className="flex items-center gap-3 px-3 py-3">
-            <div className="w-8 h-8 bg-black text-primary flex items-center justify-center font-black uppercase">
+            <div className="w-8 h-8 bg-muted text-foreground flex items-center justify-center rounded-md font-semibold uppercase">
               {user.email.charAt(0)}
             </div>
             <div className="flex flex-col min-w-0">
-              <span className="text-xs font-bold truncate">{user.email}</span>
-              <span className="text-[10px] font-bold uppercase tracking-widest text-gray-500">
+              <span className="text-xs font-medium truncate">{user.email}</span>
+              <span className="text-[10px] font-medium text-muted-foreground">
                 {isSettingsActive ? "Settings" : "Client"}
               </span>
             </div>

@@ -23,21 +23,21 @@ function NetworkSpeedCard({ vmId }: { vmId: string }) {
   if (!networks?.length) return null
 
   return (
-    <div className="bg-white border-4 border-black shadow-neo">
-      <div className="px-5 py-4 border-b-4 border-black flex items-center gap-2">
-        <Gauge className="w-5 h-5" />
-        <h2 className="text-lg font-black uppercase tracking-tight">Network Speed</h2>
+    <div className="rounded-lg border bg-card text-card-foreground shadow-sm">
+      <div className="px-5 py-4 border-b flex items-center gap-2">
+        <Gauge className="w-5 h-5 text-muted-foreground" />
+        <h2 className="text-lg font-semibold">Network Speed</h2>
       </div>
       <div className="p-5 space-y-3">
         {networks.map((iface) => (
           <div key={iface.id} className="flex items-center justify-between">
-            <span className="font-mono font-bold">{iface.ip_address}</span>
-            <span className="text-sm font-black uppercase bg-[#CCFF00] border-2 border-black px-2 py-0.5">
+            <span className="font-mono text-sm">{iface.ip_address}</span>
+            <span className="text-xs font-medium rounded-md border bg-muted text-muted-foreground px-2 py-0.5">
               {speedLabel(iface.bandwidth_limit)}
             </span>
           </div>
         ))}
-        <p className="text-xs text-gray-500 font-medium">
+        <p className="text-xs text-muted-foreground">
           Network speed is set by your plan. Contact your administrator to change it.
         </p>
       </div>
@@ -47,15 +47,15 @@ function NetworkSpeedCard({ vmId }: { vmId: string }) {
 
 function StatusBadge({ status }: { status?: string }) {
   const colors: Record<string, string> = {
-    running: "bg-[#CCFF00] text-black",
-    stopped: "bg-[#FF4444] text-white",
-    suspended: "bg-[#FFAA00] text-black",
-    creating: "bg-[#00CCFF] text-black",
-    deleting: "bg-[#FF8800] text-black",
-    error: "bg-[#FF0000] text-white",
+    running: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-400 dark:border-emerald-900",
+    stopped: "bg-muted text-muted-foreground border-border",
+    suspended: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-400 dark:border-amber-900",
+    creating: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950 dark:text-blue-400 dark:border-blue-900",
+    deleting: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-400 dark:border-amber-900",
+    error: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-400 dark:border-red-900",
   }
   return (
-    <span className={`inline-flex items-center px-3 py-1 text-xs font-black uppercase tracking-wider border-2 border-black ${colors[status || ""] || "bg-gray-200 text-black"}`}>
+    <span className={`inline-flex items-center px-2 py-0.5 text-xs font-medium capitalize rounded-md border ${colors[status || ""] || "bg-muted text-muted-foreground border-border"}`}>
       {status || "unknown"}
     </span>
   )
@@ -63,12 +63,12 @@ function StatusBadge({ status }: { status?: string }) {
 
 function Spec({ icon: Icon, label, value }: { icon: React.ElementType; label: string; value: string }) {
   return (
-    <div className="bg-white border-2 border-black p-4">
-      <div className="flex items-center gap-2 text-gray-500">
+    <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-4">
+      <div className="flex items-center gap-2 text-muted-foreground">
         <Icon className="w-4 h-4" />
-        <span className="text-[11px] font-black uppercase tracking-widest">{label}</span>
+        <span className="text-xs font-medium">{label}</span>
       </div>
-      <p className="text-xl font-black mt-1">{value}</p>
+      <p className="text-xl font-semibold mt-1">{value}</p>
     </div>
   )
 }
@@ -84,13 +84,13 @@ export default function ClientVMDetailPage() {
   const [confirmDelete, setConfirmDelete] = useState(false)
 
   if (isLoading) {
-    return <div className="p-8 text-center text-gray-500 font-medium">Loading…</div>
+    return <div className="p-8 text-center text-muted-foreground">Loading…</div>
   }
   if (isError || !vm) {
     return (
       <div className="p-10 text-center">
-        <p className="font-bold text-gray-700">VM not found.</p>
-        <Link href="/client/vms" className="inline-block mt-4 underline font-bold">Back to My VMs</Link>
+        <p className="font-medium text-muted-foreground">VM not found.</p>
+        <Link href="/client/vms" className="inline-block mt-4 text-primary hover:underline font-medium">Back to My VMs</Link>
       </div>
     )
   }
@@ -102,11 +102,11 @@ export default function ClientVMDetailPage() {
   return (
     <div className="space-y-6 max-w-4xl">
       <div className="flex items-center gap-3">
-        <Link href="/client/vms" className="p-2 border-2 border-black bg-white hover:bg-gray-50">
+        <Link href="/client/vms" className="p-2 rounded-md border bg-background hover:bg-muted transition-colors">
           <ArrowLeft className="w-5 h-5" />
         </Link>
-        <Monitor className="w-6 h-6" />
-        <h1 className="text-2xl font-black uppercase tracking-tighter truncate">{vm.hostname}</h1>
+        <Monitor className="w-6 h-6 text-muted-foreground" />
+        <h1 className="text-2xl font-semibold tracking-tight truncate">{vm.hostname}</h1>
         <StatusBadge status={vm.status} />
       </div>
 
@@ -116,7 +116,7 @@ export default function ClientVMDetailPage() {
           <button
             onClick={() => action.mutate("start")}
             disabled={action.isPending}
-            className="inline-flex items-center gap-2 h-10 px-4 bg-[#CCFF00] text-black border-2 border-black font-black uppercase text-sm disabled:opacity-50"
+            className="inline-flex items-center gap-2 h-10 px-4 rounded-md bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 transition-colors disabled:opacity-50"
           >
             <Play className="w-4 h-4" /> Start
           </button>
@@ -126,14 +126,14 @@ export default function ClientVMDetailPage() {
             <button
               onClick={() => action.mutate("restart")}
               disabled={action.isPending}
-              className="inline-flex items-center gap-2 h-10 px-4 bg-white text-black border-2 border-black font-black uppercase text-sm disabled:opacity-50"
+              className="inline-flex items-center gap-2 h-10 px-4 rounded-md border border-input bg-background text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50"
             >
               <RotateCw className="w-4 h-4" /> Reboot
             </button>
             <button
               onClick={() => action.mutate("stop")}
               disabled={action.isPending}
-              className="inline-flex items-center gap-2 h-10 px-4 bg-[#FF4444] text-white border-2 border-black font-black uppercase text-sm disabled:opacity-50"
+              className="inline-flex items-center gap-2 h-10 px-4 rounded-md border border-input bg-background text-destructive text-sm font-medium hover:bg-destructive/10 transition-colors disabled:opacity-50"
             >
               <Square className="w-4 h-4" /> Stop
             </button>
@@ -141,7 +141,7 @@ export default function ClientVMDetailPage() {
         )}
         <Link
           href={`/client/vms/${vm.id}/console`}
-          className="inline-flex items-center gap-2 h-10 px-4 bg-black text-primary border-2 border-black font-black uppercase text-sm"
+          className="inline-flex items-center gap-2 h-10 px-4 rounded-md border border-input bg-background text-sm font-medium hover:bg-muted transition-colors"
         >
           <Terminal className="w-4 h-4" /> Console
         </Link>
@@ -158,27 +158,27 @@ export default function ClientVMDetailPage() {
       <NetworkSpeedCard vmId={vmId} />
 
       {/* Danger zone */}
-      <div className="bg-white border-4 border-black shadow-neo">
-        <div className="px-5 py-4 border-b-4 border-black">
-          <h2 className="text-lg font-black uppercase tracking-tight text-destructive">Danger Zone</h2>
+      <div className="rounded-lg border border-destructive/50 bg-card text-card-foreground shadow-sm">
+        <div className="px-5 py-4 border-b border-destructive/50">
+          <h2 className="text-lg font-semibold text-destructive">Danger Zone</h2>
         </div>
         <div className="p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <p className="font-bold">Destroy this VM</p>
-            <p className="text-sm text-gray-600">This permanently deletes the VM and its disks. This cannot be undone.</p>
+            <p className="font-medium">Destroy this VM</p>
+            <p className="text-sm text-muted-foreground">This permanently deletes the VM and its disks. This cannot be undone.</p>
           </div>
           {confirmDelete ? (
             <div className="flex items-center gap-2">
               <button
                 onClick={handleDelete}
                 disabled={del.isPending}
-                className="inline-flex items-center gap-2 h-10 px-4 bg-[#FF0000] text-white border-2 border-black font-black uppercase text-sm disabled:opacity-50"
+                className="inline-flex items-center gap-2 h-10 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 transition-colors disabled:opacity-50"
               >
                 <Trash2 className="w-4 h-4" /> {del.isPending ? "Deleting…" : "Confirm"}
               </button>
               <button
                 onClick={() => setConfirmDelete(false)}
-                className="h-10 px-4 bg-white text-black border-2 border-black font-black uppercase text-sm"
+                className="h-10 px-4 rounded-md border border-input bg-background text-sm font-medium hover:bg-muted transition-colors"
               >
                 Cancel
               </button>
@@ -186,7 +186,7 @@ export default function ClientVMDetailPage() {
           ) : (
             <button
               onClick={() => setConfirmDelete(true)}
-              className="inline-flex items-center gap-2 h-10 px-4 bg-white text-destructive border-2 border-black font-black uppercase text-sm"
+              className="inline-flex items-center gap-2 h-10 px-4 rounded-md border border-input bg-background text-destructive text-sm font-medium hover:bg-destructive/10 transition-colors"
             >
               <Trash2 className="w-4 h-4" /> Delete
             </button>

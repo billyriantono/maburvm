@@ -316,35 +316,35 @@ export default function NewVMPage() {
     return (
       <div className="max-w-2xl mx-auto">
         <div className="mb-8">
-          <h1 className="text-3xl font-black uppercase tracking-tight text-black mb-2">
+          <h1 className="text-2xl font-semibold text-foreground mb-2">
             {failed ? "Provisioning failed" : isRunning ? "Your VM is ready" : "Creating your VM…"}
           </h1>
-          <p className="text-gray-500 font-medium uppercase tracking-wider text-sm">
+          <p className="text-muted-foreground text-sm">
             {provisioningVM.data?.hostname || "new virtual machine"}
           </p>
         </div>
 
         {/* Progress steps */}
-        <div className="border-4 border-black bg-white p-6 shadow-[8px_8px_0_0_#000] mb-6">
+        <div className="border rounded-lg bg-card text-card-foreground p-6 shadow-sm mb-6">
           <ul className="space-y-4">
             {steps.map((s) => (
               <li key={s.key} className="flex items-center gap-3">
                 <span
-                  className={`flex h-6 w-6 shrink-0 items-center justify-center border-2 border-black text-xs font-black ${
-                    s.done ? "bg-green-400" : s.active ? "bg-yellow-300" : "bg-gray-100"
+                  className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-xs font-semibold ${
+                    s.done ? "bg-emerald-500 text-white border-emerald-500" : s.active ? "bg-amber-100 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900" : "bg-muted text-muted-foreground"
                   }`}
                 >
                   {s.done ? "✓" : s.active ? "…" : "○"}
                 </span>
-                <span className={`font-bold ${s.done ? "text-black" : s.active ? "text-black" : "text-gray-400"}`}>
+                <span className={`font-medium ${s.done ? "text-foreground" : s.active ? "text-foreground" : "text-muted-foreground"}`}>
                   {s.label}
-                  {s.active && <span className="ml-2 animate-pulse text-gray-500">in progress</span>}
+                  {s.active && <span className="ml-2 animate-pulse text-muted-foreground">in progress</span>}
                 </span>
               </li>
             ))}
           </ul>
           {failed && (
-            <p className="mt-4 border-2 border-red-500 bg-red-50 p-3 text-sm font-medium text-red-700">
+            <p className="mt-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-700 dark:bg-red-950 dark:text-red-300 dark:border-red-900">
               Provisioning failed. Check the VM’s events on its detail page.
             </p>
           )}
@@ -352,22 +352,22 @@ export default function NewVMPage() {
 
         {/* One-time root password */}
         {provisioning.password && (
-          <div className="border-4 border-black bg-yellow-50 p-6 shadow-[8px_8px_0_0_#000] mb-6">
-            <h2 className="mb-1 text-lg font-black uppercase tracking-tight text-black">
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-6 shadow-sm mb-6 dark:bg-amber-950/40 dark:border-amber-900">
+            <h2 className="mb-1 text-lg font-semibold text-foreground">
               Root password
             </h2>
-            <p className="mb-3 text-sm font-medium text-gray-600">
+            <p className="mb-3 text-sm text-muted-foreground">
               Shown <strong>once</strong> — save it now. Log in as <code className="font-mono">root</code> with this password.
             </p>
-            <div className="flex items-center gap-2 border-2 border-black bg-white p-3">
-              <code className="flex-1 break-all font-mono text-sm text-black">{provisioning.password}</code>
+            <div className="flex items-center gap-2 rounded-md border bg-background p-3">
+              <code className="flex-1 break-all font-mono text-sm text-foreground">{provisioning.password}</code>
               <button
                 type="button"
                 onClick={() => {
                   navigator.clipboard?.writeText(provisioning.password || "")
                   setPwCopied(true)
                 }}
-                className="border-2 border-black bg-yellow-300 px-3 py-1 text-xs font-black uppercase hover:bg-yellow-400"
+                className="rounded-md border px-3 py-1 text-xs font-medium bg-background hover:bg-muted"
               >
                 {pwCopied ? "Copied ✓" : "Copy"}
               </button>
@@ -379,13 +379,13 @@ export default function NewVMPage() {
           <button
             type="button"
             onClick={() => router.push(`/vms/${provisioning.id}`)}
-            className="flex-1 border-2 border-black bg-black px-4 py-3 text-sm font-black uppercase text-white hover:bg-gray-800"
+            className="flex-1 rounded-md bg-primary px-4 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
           >
             {isRunning ? "Open VM →" : "Go to VM (still provisioning)"}
           </button>
         </div>
         {!isRunning && !failed && (
-          <p className="mt-3 text-center text-xs font-medium uppercase tracking-wider text-gray-400">
+          <p className="mt-3 text-center text-xs font-medium text-muted-foreground">
             This can take a minute or two — the page updates automatically.
           </p>
         )}
@@ -398,10 +398,10 @@ export default function NewVMPage() {
     <div className="max-w-4xl mx-auto">
       {/* Header */}
       <div className="mb-8">
-        <h1 className="text-3xl font-black uppercase tracking-tight text-black mb-2">
+        <h1 className="text-2xl font-semibold text-foreground mb-2">
           Create New VM
         </h1>
-        <p className="text-gray-500 font-medium uppercase tracking-wider text-sm">
+        <p className="text-muted-foreground text-sm">
           Provision a new virtual machine in minutes
         </p>
       </div>
@@ -417,37 +417,35 @@ export default function NewVMPage() {
             return (
               <div key={step.id} className="flex items-center flex-1">
                 <div className="flex flex-col items-center">
-                  <div 
+                  <div
                     className={`
-                      w-12 h-12 flex items-center justify-center border-4 border-black 
+                      w-11 h-11 flex items-center justify-center rounded-full border
                       transition-all duration-300
-                      ${isCompleted ? "bg-success shadow-neo" : ""}
-                      ${isActive ? "bg-primary shadow-neo scale-110" : ""}
-                      ${!isActive && !isCompleted ? "bg-white shadow-neo-sm" : ""}
+                      ${isCompleted ? "bg-emerald-500 text-white border-emerald-500" : ""}
+                      ${isActive ? "bg-primary text-primary-foreground border-primary" : ""}
+                      ${!isActive && !isCompleted ? "bg-muted text-muted-foreground" : ""}
                     `}
                   >
                     {isCompleted ? (
-                      <Check className="w-6 h-6" />
+                      <Check className="w-5 h-5" />
                     ) : (
-                      <Icon className={`w-6 h-6 ${isActive ? "" : "text-gray-600"}`} />
+                      <Icon className="w-5 h-5" />
                     )}
                   </div>
-                  <span className={`mt-2 text-xs font-bold uppercase tracking-wider ${
-                    isActive ? "text-black" : "text-gray-600"
+                  <span className={`mt-2 text-xs font-medium ${
+                    isActive ? "text-foreground" : "text-muted-foreground"
                   }`}>
                     {step.title}
                   </span>
-                  <span className="text-[10px] text-gray-500">
+                  <span className="text-[10px] text-muted-foreground">
                     {step.description}
                   </span>
                 </div>
                 
                 {index < steps.length - 1 && (
-                  <div className={`flex-1 h-2 mx-2 border-2 border-black ${
-                    isCompleted ? "bg-success" : "bg-gray-200"
-                  }`}>
-                    <div 
-                      className={`h-full bg-black transition-all duration-300 ${
+                  <div className="flex-1 h-1 mx-2 rounded-full bg-muted overflow-hidden">
+                    <div
+                      className={`h-full bg-primary transition-all duration-300 ${
                         isCompleted ? "w-full" : "w-0"
                       }`}
                     />
@@ -476,25 +474,25 @@ export default function NewVMPage() {
           }
         }}
       >
-        <div className="bg-white border-4 border-black p-8 shadow-neo">
-          
+        <div className="bg-card text-card-foreground border rounded-lg p-8 shadow-sm">
+
           {/* Step 1: Basic Info */}
           {currentStep === 1 && (
             <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
               <div className="flex items-center gap-3 mb-6">
-                <div className="w-10 h-10 bg-primary flex items-center justify-center border-2 border-black">
+                <div className="w-10 h-10 bg-muted text-foreground flex items-center justify-center rounded-md border">
                   <Server className="w-5 h-5" />
                 </div>
                 <div>
-                  <h2 className="text-xl font-black uppercase">Basic Information</h2>
-                  <p className="text-sm text-gray-500">Configure hostname and assignment</p>
+                  <h2 className="text-xl font-semibold">Basic Information</h2>
+                  <p className="text-sm text-muted-foreground">Configure hostname and assignment</p>
                 </div>
               </div>
 
               {/* Hostname */}
               <div className="space-y-2">
-                <label htmlFor="hostname" className="text-sm font-bold uppercase tracking-wide">
-                  Hostname <span className="text-danger">*</span>
+                <label htmlFor="hostname" className="text-sm font-medium">
+                  Hostname <span className="text-destructive">*</span>
                 </label>
                 <Input
                   id="hostname"
@@ -503,20 +501,20 @@ export default function NewVMPage() {
                   className={`h-12 ${errors.hostname ? "border-danger ring-2 ring-danger/30" : ""}`}
                 />
                 {errors.hostname && (
-                  <p className="text-sm font-medium text-danger flex items-center gap-1">
+                  <p className="text-sm font-medium text-destructive flex items-center gap-1">
                     <AlertCircle className="w-4 h-4" />
                     {errors.hostname.message}
                   </p>
                 )}
-                <p className="text-xs text-gray-500">
+                <p className="text-xs text-muted-foreground">
                   Use a valid hostname format (letters, numbers, dots, hyphens)
                 </p>
               </div>
 
               {/* User Assignment (optional) */}
               <div className="space-y-2">
-                <label htmlFor="userId" className="text-sm font-bold uppercase tracking-wide">
-                  Assign to User <span className="text-gray-600">(optional)</span>
+                <label htmlFor="userId" className="text-sm font-medium">
+                  Assign to User <span className="text-muted-foreground">(optional)</span>
                 </label>
                 {usersLoading ? (
                   <Skeleton className="h-12 w-full" />
@@ -535,7 +533,7 @@ export default function NewVMPage() {
                               <div className="flex items-center gap-2">
                                 <User className="w-4 h-4" />
                                 <span>{user.email}</span>
-                                <span className="text-gray-600 text-sm">({user.role})</span>
+                                <span className="text-muted-foreground text-sm">({user.role})</span>
                               </div>
                             </SelectItem>
                           ))}
@@ -548,8 +546,8 @@ export default function NewVMPage() {
 
               {/* Node Selection (optional) */}
               <div className="space-y-2">
-                <label htmlFor="nodeId" className="text-sm font-bold uppercase tracking-wide">
-                  Target Node <span className="text-gray-600">(optional — auto-select if empty)</span>
+                <label htmlFor="nodeId" className="text-sm font-medium">
+                  Target Node <span className="text-muted-foreground">(optional — auto-select if empty)</span>
                 </label>
                 {nodesLoading ? (
                   <Skeleton className="h-12 w-full" />
@@ -568,7 +566,7 @@ export default function NewVMPage() {
                               <div className="flex items-center gap-2">
                                 <Server className="w-4 h-4" />
                                 <span>{node.name}</span>
-                                <span className="text-gray-600 text-sm">({node.ip_address})</span>
+                                <span className="text-muted-foreground text-sm">({node.ip_address})</span>
                               </div>
                             </SelectItem>
                           ))}
@@ -585,20 +583,20 @@ export default function NewVMPage() {
           {currentStep === 2 && (
             <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
               <div className="flex items-center gap-3 mb-6">
-                <div className="w-10 h-10 bg-secondary flex items-center justify-center border-2 border-black">
+                <div className="w-10 h-10 bg-muted text-foreground flex items-center justify-center rounded-md border">
                   <Cpu className="w-5 h-5" />
                 </div>
                 <div>
-                  <h2 className="text-xl font-black uppercase">Resource Allocation</h2>
-                  <p className="text-sm text-gray-500">Select CPU, RAM, and disk size</p>
+                  <h2 className="text-xl font-semibold">Resource Allocation</h2>
+                  <p className="text-sm text-muted-foreground">Select CPU, RAM, and disk size</p>
                 </div>
               </div>
 
               {/* Plan (flavor) selector — auto-fills the sliders below */}
               {plans.length > 0 && (
                 <div className="space-y-2">
-                  <label htmlFor="planId" className="text-sm font-bold uppercase tracking-wide">
-                    Plan <span className="text-gray-500">(optional)</span>
+                  <label htmlFor="planId" className="text-sm font-medium">
+                    Plan <span className="text-muted-foreground">(optional)</span>
                   </label>
                   <Select
                     value={watchedValues.planId || "custom"}
@@ -624,22 +622,22 @@ export default function NewVMPage() {
                       {plans.map((p) => (
                         <SelectItem key={p.id} value={p.id}>
                           <span>{p.name}</span>
-                          <span className="text-gray-600 text-sm ml-2">
+                          <span className="text-muted-foreground text-sm ml-2">
                             ({p.cpu} vCPU · {Math.round(p.ram / 1024)} GB · {p.disk} GB)
                           </span>
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-gray-500">Pick a plan to auto-fill resources, or choose Custom.</p>
+                  <p className="text-xs text-muted-foreground">Pick a plan to auto-fill resources, or choose Custom.</p>
                 </div>
               )}
 
               {/* CPU Cores */}
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <label htmlFor="cpuCores" className="text-sm font-bold uppercase tracking-wide">CPU Cores</label>
-                  <span className="text-2xl font-black">{watchedValues.cpuCores}</span>
+                  <label htmlFor="cpuCores" className="text-sm font-medium">CPU Cores</label>
+                  <span className="text-2xl font-semibold">{watchedValues.cpuCores}</span>
                 </div>
                 <Controller
                   name="cpuCores"
@@ -653,34 +651,36 @@ export default function NewVMPage() {
                         max={64}
                         value={value}
                         onChange={(e) => onChange(Number(e.target.value))}
-                        className="w-full h-4 appearance-none bg-white border-2 border-black cursor-pointer"
+                        className="w-full h-2 appearance-none rounded-full bg-muted cursor-pointer"
                         style={{
-                          background: `linear-gradient(to right, #000000 0%, #000000 ${(value / 64) * 100}%, #e5e5e5 ${(value / 64) * 100}%, #e5e5e5 100%)`
+                          background: `linear-gradient(to right, hsl(var(--primary)) 0%, hsl(var(--primary)) ${(value / 64) * 100}%, hsl(var(--muted)) ${(value / 64) * 100}%, hsl(var(--muted)) 100%)`
                         }}
                       />
                       <style jsx>{`
                         input[type="range"]::-webkit-slider-thumb {
                           -webkit-appearance: none;
-                          width: 24px;
-                          height: 24px;
-                          background: #FFE500;
-                          border: 3px solid black;
+                          width: 18px;
+                          height: 18px;
+                          border-radius: 9999px;
+                          background: hsl(var(--primary));
+                          border: 2px solid hsl(var(--background));
                           cursor: pointer;
-                          box-shadow: 2px 2px 0 0 #000;
+                          box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.1);
                         }
                         input[type="range"]::-moz-range-thumb {
-                          width: 24px;
-                          height: 24px;
-                          background: #FFE500;
-                          border: 3px solid black;
+                          width: 18px;
+                          height: 18px;
+                          border-radius: 9999px;
+                          background: hsl(var(--primary));
+                          border: 2px solid hsl(var(--background));
                           cursor: pointer;
-                          box-shadow: 2px 2px 0 0 #000;
+                          box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.1);
                         }
                       `}</style>
                     </div>
                   )}
                 />
-                <div className="flex justify-between text-xs text-gray-500">
+                <div className="flex justify-between text-xs text-muted-foreground">
                   <span>1</span>
                   <span>64</span>
                 </div>
@@ -689,8 +689,8 @@ export default function NewVMPage() {
               {/* RAM */}
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <label htmlFor="ramGB" className="text-sm font-bold uppercase tracking-wide">RAM (GB)</label>
-                  <span className="text-2xl font-black">{watchedValues.ramGB} GB</span>
+                  <label htmlFor="ramGB" className="text-sm font-medium">RAM (GB)</label>
+                  <span className="text-2xl font-semibold">{watchedValues.ramGB} GB</span>
                 </div>
                 <Controller
                   name="ramGB"
@@ -704,15 +704,15 @@ export default function NewVMPage() {
                         max={512}
                         value={value}
                         onChange={(e) => onChange(Number(e.target.value))}
-                        className="w-full h-4 appearance-none bg-white border-2 border-black cursor-pointer"
+                        className="w-full h-2 appearance-none rounded-full bg-muted cursor-pointer"
                         style={{
-                          background: `linear-gradient(to right, #000000 0%, #000000 ${(value / 512) * 100}%, #e5e5e5 ${(value / 512) * 100}%, #e5e5e5 100%)`
+                          background: `linear-gradient(to right, hsl(var(--primary)) 0%, hsl(var(--primary)) ${(value / 512) * 100}%, hsl(var(--muted)) ${(value / 512) * 100}%, hsl(var(--muted)) 100%)`
                         }}
                       />
                     </div>
                   )}
                 />
-                <div className="flex justify-between text-xs text-gray-500">
+                <div className="flex justify-between text-xs text-muted-foreground">
                   <span>1 GB</span>
                   <span>512 GB</span>
                 </div>
@@ -721,8 +721,8 @@ export default function NewVMPage() {
               {/* Disk */}
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <label htmlFor="diskGB" className="text-sm font-bold uppercase tracking-wide">Disk (GB)</label>
-                  <span className="text-2xl font-black">{watchedValues.diskGB} GB</span>
+                  <label htmlFor="diskGB" className="text-sm font-medium">Disk (GB)</label>
+                  <span className="text-2xl font-semibold">{watchedValues.diskGB} GB</span>
                 </div>
                 <Controller
                   name="diskGB"
@@ -737,15 +737,15 @@ export default function NewVMPage() {
                         step={10}
                         value={value}
                         onChange={(e) => onChange(Number(e.target.value))}
-                        className="w-full h-4 appearance-none bg-white border-2 border-black cursor-pointer"
+                        className="w-full h-2 appearance-none rounded-full bg-muted cursor-pointer"
                         style={{
-                          background: `linear-gradient(to right, #000000 0%, #000000 ${(value / 2000) * 100}%, #e5e5e5 ${(value / 2000) * 100}%, #e5e5e5 100%)`
+                          background: `linear-gradient(to right, hsl(var(--primary)) 0%, hsl(var(--primary)) ${(value / 2000) * 100}%, hsl(var(--muted)) ${(value / 2000) * 100}%, hsl(var(--muted)) 100%)`
                         }}
                       />
                     </div>
                   )}
                 />
-                <div className="flex justify-between text-xs text-gray-500">
+                <div className="flex justify-between text-xs text-muted-foreground">
                   <span>10 GB</span>
                   <span>2 TB</span>
                 </div>
@@ -753,11 +753,11 @@ export default function NewVMPage() {
 
               {/* CPU Model */}
               <div className="space-y-2">
-                <label htmlFor="cpuModel" className="text-sm font-bold uppercase tracking-wide">CPU Model</label>
+                <label htmlFor="cpuModel" className="text-sm font-medium">CPU Model</label>
                 <select
                   id="cpuModel"
                   {...register("cpuModel")}
-                  className="w-full h-12 px-3 border-2 border-black font-medium bg-white"
+                  className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm"
                 >
                   <option value="">Default — kvm64 (portable, live-migratable)</option>
                   <option value="host-passthrough">Host Passthrough (max performance, not migratable)</option>
@@ -766,7 +766,7 @@ export default function NewVMPage() {
                   <option value="Haswell-noTSX">Haswell-noTSX (Intel baseline)</option>
                   <option value="EPYC">EPYC (AMD baseline)</option>
                 </select>
-                <p className="text-xs text-gray-500">
+                <p className="text-xs text-muted-foreground">
                   Leave default for cross-node live migration. Choose Host Passthrough for best single-node performance.
                 </p>
               </div>
@@ -774,7 +774,7 @@ export default function NewVMPage() {
               {/* Recipe selector (fills the script below from a saved recipe) */}
               {recipes.length > 0 && (
                 <div className="space-y-2">
-                  <label htmlFor="recipeId" className="text-sm font-bold uppercase tracking-wide">Recipe (optional)</label>
+                  <label htmlFor="recipeId" className="text-sm font-medium">Recipe (optional)</label>
                   <select
                     id="recipeId"
                     value={selectedRecipeId}
@@ -784,14 +784,14 @@ export default function NewVMPage() {
                       const r = recipes.find((x) => x.id === id)
                       if (r) setValue("userData", r.script)
                     }}
-                    className="w-full h-12 px-3 border-2 border-black font-medium bg-white"
+                    className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm"
                   >
                     <option value="">None — write a script below</option>
                     {recipes.map((r) => (
                       <option key={r.id} value={r.id}>{r.name}</option>
                     ))}
                   </select>
-                  <p className="text-xs text-gray-500">
+                  <p className="text-xs text-muted-foreground">
                     Pick a saved recipe to fill the script below (still editable). Manage them in Settings → Recipes.
                   </p>
                 </div>
@@ -799,34 +799,34 @@ export default function NewVMPage() {
 
               {/* Startup script / recipe */}
               <div className="space-y-2">
-                <label htmlFor="userData" className="text-sm font-bold uppercase tracking-wide">Startup Script (optional)</label>
+                <label htmlFor="userData" className="text-sm font-medium">Startup Script (optional)</label>
                 <textarea
                   id="userData"
                   {...register("userData")}
                   rows={5}
                   placeholder={"#!/bin/bash\napt-get update && apt-get install -y nginx"}
-                  className="w-full border-2 border-black p-3 font-mono text-xs resize-y focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="w-full rounded-md border border-input bg-background p-3 font-mono text-xs resize-y focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                 />
-                <p className="text-xs text-gray-500">
+                <p className="text-xs text-muted-foreground">
                   Runs once on first boot via cloud-init (Virtualizor-style recipe). Requires a cloud-init image. Plain shell script or cloud-config.
                 </p>
               </div>
 
               {/* Resource Summary */}
-              <div className="bg-primary/20 border-2 border-black p-4 mt-6">
-                <p className="text-xs font-bold uppercase mb-2">Selected Resources</p>
+              <div className="bg-muted border rounded-md p-4 mt-6">
+                <p className="text-xs font-medium mb-2">Selected Resources</p>
                 <div className="flex items-center gap-6">
                   <div className="flex items-center gap-2">
                     <Cpu className="w-5 h-5" />
-                    <span className="font-bold">{watchedValues.cpuCores} vCPU</span>
+                    <span className="font-medium">{watchedValues.cpuCores} vCPU</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <HardDrive className="w-5 h-5" />
-                    <span className="font-bold">{watchedValues.ramGB} GB RAM</span>
+                    <span className="font-medium">{watchedValues.ramGB} GB RAM</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <HardDrive className="w-5 h-5" />
-                    <span className="font-bold">{watchedValues.diskGB} GB Disk</span>
+                    <span className="font-medium">{watchedValues.diskGB} GB Disk</span>
                   </div>
                 </div>
               </div>
@@ -837,12 +837,12 @@ export default function NewVMPage() {
           {currentStep === 3 && (
             <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
               <div className="flex items-center gap-3 mb-6">
-                <div className="w-10 h-10 bg-success flex items-center justify-center border-2 border-black">
+                <div className="w-10 h-10 bg-muted text-foreground flex items-center justify-center rounded-md border">
                   <HardDrive className="w-5 h-5" />
                 </div>
                 <div>
-                  <h2 className="text-xl font-black uppercase">Select OS Template</h2>
-                  <p className="text-sm text-gray-500">Choose an operating system for your VM</p>
+                  <h2 className="text-xl font-semibold">Select OS Template</h2>
+                  <p className="text-sm text-muted-foreground">Choose an operating system for your VM</p>
                 </div>
               </div>
 
@@ -853,10 +853,10 @@ export default function NewVMPage() {
                   ))}
                 </div>
               ) : installableTemplates.length === 0 ? (
-                <div className="p-8 text-center border-2 border-black">
-                  <HardDrive className="w-10 h-10 mx-auto text-gray-500 mb-3" />
-                  <p className="text-gray-500 font-bold uppercase text-sm">No installable OS templates</p>
-                  <p className="text-gray-600 text-xs mt-1">
+                <div className="p-8 text-center border">
+                  <HardDrive className="w-10 h-10 mx-auto text-muted-foreground mb-3" />
+                  <p className="text-muted-foreground font-medium text-sm">No installable OS templates</p>
+                  <p className="text-muted-foreground text-xs mt-1">
                     {templates.length === 0
                       ? "Create an OS template first on the Templates page."
                       : "Your templates are import placeholders with no base image. Add a real template (with an image URL) on the Templates page."}
@@ -873,24 +873,24 @@ export default function NewVMPage() {
                         type="button"
                         onClick={() => setValue("templateId", template.id, { shouldValidate: true })}
                         className={`
-                          relative p-4 border-4 text-left transition-all duration-200
-                          ${isSelected 
-                            ? "bg-primary border-black shadow-neo hover:shadow-neo-hover" 
-                            : "bg-white border-black hover:shadow-neo-sm hover:-translate-y-1"
+                          relative p-4 rounded-lg border text-left transition-all duration-200
+                          ${isSelected
+                            ? "border-primary ring-1 ring-primary bg-primary/5"
+                            : "bg-card hover:bg-muted/50 hover:border-foreground/20"
                           }
                         `}
                       >
                         {isSelected && (
-                          <div className="absolute top-2 right-2 w-6 h-6 bg-black text-white flex items-center justify-center">
+                          <div className="absolute top-2 right-2 w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center">
                             <Check className="w-4 h-4" />
                           </div>
                         )}
                         
                         <div className="mb-2 flex justify-center"><OSIcon name={template.name} className="w-10 h-10" /></div>
-                        <p className="font-black uppercase text-sm leading-tight">{template.name}</p>
-                        <p className="text-xs text-gray-500 mt-1">v{template.version}</p>
+                        <p className="font-semibold text-sm leading-tight">{template.name}</p>
+                        <p className="text-xs text-muted-foreground mt-1">v{template.version}</p>
                         {template.description && (
-                          <span className="inline-block mt-2 px-2 py-0.5 bg-gray-200 text-xs font-bold uppercase">
+                          <span className="inline-block mt-2 px-2 py-0.5 rounded-md bg-muted text-muted-foreground text-xs font-medium">
                             {template.description}
                           </span>
                         )}
@@ -901,21 +901,21 @@ export default function NewVMPage() {
               )}
 
               {errors.templateId && (
-                <p className="text-sm font-medium text-danger flex items-center gap-1">
+                <p className="text-sm font-medium text-destructive flex items-center gap-1">
                   <AlertCircle className="w-4 h-4" />
                   {errors.templateId.message}
                 </p>
               )}
 
               {/* SSH keys — injected into the new guest's root account */}
-              <div className="border-t-2 border-black pt-5">
-                <h3 className="font-black uppercase text-sm mb-1">SSH Keys</h3>
-                <p className="text-xs text-gray-500 mb-3">Injected into the new VM&apos;s root account for key-based login. Select saved keys and/or paste one below.</p>
+              <div className="border-t pt-5">
+                <h3 className="font-semibold text-sm mb-1">SSH Keys</h3>
+                <p className="text-xs text-muted-foreground mb-3">Injected into the new VM&apos;s root account for key-based login. Select saved keys and/or paste one below.</p>
 
                 {!!sshKeys?.length && (
                   <div className="space-y-2 mb-4">
                     {sshKeys.map((k) => (
-                      <label key={k.id} className="flex items-center gap-3 p-3 border-2 border-black cursor-pointer">
+                      <label key={k.id} className="flex items-center gap-3 p-3 border cursor-pointer">
                         <input
                           type="checkbox"
                           checked={!excludedKeys.has(k.id)}
@@ -929,23 +929,23 @@ export default function NewVMPage() {
                           }
                           className="w-4 h-4"
                         />
-                        <span className="font-bold">{k.name}</span>
-                        <span className="text-xs font-mono text-gray-500 truncate">{k.fingerprint}</span>
+                        <span className="font-medium">{k.name}</span>
+                        <span className="text-xs font-mono text-muted-foreground truncate">{k.fingerprint}</span>
                       </label>
                     ))}
                   </div>
                 )}
 
-                <label className="block text-xs font-black uppercase text-gray-500 mb-1">Paste a public key (optional)</label>
+                <label className="block text-xs font-semibold text-muted-foreground mb-1">Paste a public key (optional)</label>
                 <textarea
                   value={pastedKeys}
                   onChange={(e) => setPastedKeys(e.target.value)}
                   placeholder="ssh-ed25519 AAAA… user@host&#10;(one key per line)"
                   rows={3}
-                  className="w-full px-3 py-2 border-2 border-black bg-white font-mono text-sm placeholder:text-gray-400"
+                  className="w-full px-3 py-2 rounded-md border border-input bg-background font-mono text-sm placeholder:text-muted-foreground"
                 />
                 {!sshKeys?.length && !pastedKeyList.length && (
-                  <p className="text-xs text-gray-500 mt-1">No key selected — the VM will use root-password login only.</p>
+                  <p className="text-xs text-muted-foreground mt-1">No key selected — the VM will use root-password login only.</p>
                 )}
               </div>
             </div>
@@ -955,17 +955,17 @@ export default function NewVMPage() {
           {currentStep === 4 && (
             <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
               <div className="flex items-center gap-3 mb-6">
-                <div className="w-10 h-10 bg-accent text-white flex items-center justify-center border-2 border-black">
+                <div className="w-10 h-10 bg-muted text-foreground flex items-center justify-center rounded-md border">
                   <Network className="w-5 h-5" />
                 </div>
                 <div>
-                  <h2 className="text-xl font-black uppercase">Network Configuration</h2>
-                  <p className="text-sm text-gray-500">IP allocation, bandwidth, and VLAN</p>
+                  <h2 className="text-xl font-semibold">Network Configuration</h2>
+                  <p className="text-sm text-muted-foreground">IP allocation, bandwidth, and VLAN</p>
                 </div>
               </div>
 
-              <div className="bg-gray-100 border-2 border-black p-4 mb-4">
-                <p className="text-xs font-bold uppercase text-gray-600 flex items-center gap-2">
+              <div className="bg-muted border rounded-md p-4 mb-4">
+                <p className="text-xs font-medium text-muted-foreground flex items-center gap-2">
                   <AlertCircle className="w-4 h-4" />
                   Note: The IP is allocated from the pool at creation; bandwidth and VLAN apply when the VM boots
                 </p>
@@ -974,13 +974,13 @@ export default function NewVMPage() {
               {/* Private network / VPC */}
               {managedNets && managedNets.some((n) => n.type === "isolated" || n.type === "nat") && (
                 <div className="space-y-2 mb-4">
-                  <label htmlFor="managedNetworkId" className="text-sm font-bold uppercase tracking-wide">
-                    Private Network / VPC <span className="text-gray-500">(optional)</span>
+                  <label htmlFor="managedNetworkId" className="text-sm font-medium">
+                    Private Network / VPC <span className="text-muted-foreground">(optional)</span>
                   </label>
                   <select
                     id="managedNetworkId"
                     {...register("managedNetworkId")}
-                    className="w-full h-12 px-3 border-2 border-black font-medium bg-white"
+                    className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm"
                   >
                     <option value="">None — public network</option>
                     {managedNets
@@ -989,7 +989,7 @@ export default function NewVMPage() {
                         <option key={n.id} value={n.id}>{n.name} ({n.type})</option>
                       ))}
                   </select>
-                  <p className="text-xs text-gray-500">
+                  <p className="text-xs text-muted-foreground">
                     Attach the VM&apos;s NIC to a private/isolated network instead of the public bridge.
                   </p>
                 </div>
@@ -997,13 +997,13 @@ export default function NewVMPage() {
 
               {/* IP Pool Selection */}
               <div className="space-y-2">
-                <label htmlFor="ipPoolId" className="text-sm font-bold uppercase tracking-wide">
-                  IP Pool <span className="text-gray-500">(optional — DHCP if empty)</span>
+                <label htmlFor="ipPoolId" className="text-sm font-medium">
+                  IP Pool <span className="text-muted-foreground">(optional — DHCP if empty)</span>
                 </label>
                 {poolsLoading ? (
                   <Skeleton className="h-12 w-full" />
                 ) : availablePools.length === 0 ? (
-                  <div className="p-4 border-2 border-black bg-gray-100 text-sm text-gray-600 font-medium">
+                  <div className="p-4 border rounded-md bg-muted text-sm text-muted-foreground font-medium">
                     {pools.length === 0
                       ? "No IP pools configured — the VM will use DHCP. Create pools under the IP Pools page to assign managed addresses."
                       : "No IP pools are assigned to the selected node — the VM will use DHCP. Assign a pool to this node under the IP Pools page."}
@@ -1024,7 +1024,7 @@ export default function NewVMPage() {
                                 <Network className="w-4 h-4" />
                                 <span>{pool.name}</span>
                                 {pool.cidr && (
-                                  <span className="text-gray-600 text-sm">({pool.cidr})</span>
+                                  <span className="text-muted-foreground text-sm">({pool.cidr})</span>
                                 )}
                               </div>
                             </SelectItem>
@@ -1034,15 +1034,15 @@ export default function NewVMPage() {
                     )}
                   />
                 )}
-                <p className="text-xs text-gray-500">
+                <p className="text-xs text-muted-foreground">
                   Selecting a pool assigns the next available public IP automatically.
                 </p>
               </div>
 
               {/* Specific IP within the pool (optional) */}
               <div className="space-y-2">
-                <label htmlFor="ipAddress" className="text-sm font-bold uppercase tracking-wide">
-                  Specific IP <span className="text-gray-500">(optional)</span>
+                <label htmlFor="ipAddress" className="text-sm font-medium">
+                  Specific IP <span className="text-muted-foreground">(optional)</span>
                 </label>
                 <Input
                   id="ipAddress"
@@ -1052,12 +1052,12 @@ export default function NewVMPage() {
                   className={`h-12 ${errors.ipAddress ? "border-danger ring-2 ring-danger/30" : ""} ${!watchedValues.ipPoolId ? "opacity-50 cursor-not-allowed" : ""}`}
                 />
                 {errors.ipAddress && (
-                  <p className="text-sm font-medium text-danger flex items-center gap-1">
+                  <p className="text-sm font-medium text-destructive flex items-center gap-1">
                     <AlertCircle className="w-4 h-4" />
                     {errors.ipAddress.message}
                   </p>
                 )}
-                <p className="text-xs text-gray-500">
+                <p className="text-xs text-muted-foreground">
                   Leave blank to auto-allocate the next free IP from the selected pool.
                 </p>
               </div>
@@ -1065,8 +1065,8 @@ export default function NewVMPage() {
               {/* Bandwidth */}
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <label htmlFor="bandwidthMbps" className="text-sm font-bold uppercase tracking-wide">Bandwidth Limit</label>
-                  <span className="text-2xl font-black">{watchedValues.bandwidthMbps} Mbps</span>
+                  <label htmlFor="bandwidthMbps" className="text-sm font-medium">Bandwidth Limit</label>
+                  <span className="text-2xl font-semibold">{watchedValues.bandwidthMbps} Mbps</span>
                 </div>
                 <Controller
                   name="bandwidthMbps"
@@ -1080,15 +1080,15 @@ export default function NewVMPage() {
                         max={10000}
                         value={value}
                         onChange={(e) => onChange(Number(e.target.value))}
-                        className="w-full h-4 appearance-none bg-white border-2 border-black cursor-pointer"
+                        className="w-full h-2 appearance-none rounded-full bg-muted cursor-pointer"
                         style={{
-                          background: `linear-gradient(to right, #000000 0%, #000000 ${(value / 10000) * 100}%, #e5e5e5 ${(value / 10000) * 100}%, #e5e5e5 100%)`
+                          background: `linear-gradient(to right, hsl(var(--primary)) 0%, hsl(var(--primary)) ${(value / 10000) * 100}%, hsl(var(--muted)) ${(value / 10000) * 100}%, hsl(var(--muted)) 100%)`
                         }}
                       />
                     </div>
                   )}
                 />
-                <div className="flex justify-between text-xs text-gray-500">
+                <div className="flex justify-between text-xs text-muted-foreground">
                   <span>1 Mbps</span>
                   <span>10 Gbps</span>
                 </div>
@@ -1096,8 +1096,8 @@ export default function NewVMPage() {
 
               {/* VLAN ID (optional text input) */}
               <div className="space-y-2">
-                <label htmlFor="vlanId" className="text-sm font-bold uppercase tracking-wide">
-                  VLAN ID <span className="text-gray-600">(optional)</span>
+                <label htmlFor="vlanId" className="text-sm font-medium">
+                  VLAN ID <span className="text-muted-foreground">(optional)</span>
                 </label>
                 <Input
                   id="vlanId"
@@ -1105,35 +1105,35 @@ export default function NewVMPage() {
                   placeholder="e.g., 10, 20, 100"
                   className="h-12"
                 />
-                <p className="text-xs text-gray-500">
+                <p className="text-xs text-muted-foreground">
                   Enter a VLAN ID to assign this VM to a specific network segment
                 </p>
               </div>
 
               {/* Network Preview */}
-              <div className="bg-gray-100 border-2 border-black p-4">
+              <div className="bg-muted border rounded-md p-4">
                 <div className="flex items-center gap-2 mb-2">
                   <Network className="w-5 h-5" />
-                  <p className="text-xs font-bold uppercase">Network Settings Preview</p>
+                  <p className="text-xs font-medium">Network Settings Preview</p>
                 </div>
                 <div className="grid grid-cols-2 gap-4 text-sm">
                   <div>
-                    <span className="text-gray-500">IP Pool:</span>
-                    <span className="ml-2 font-bold">{getSelectedPool()?.name || "DHCP"}</span>
+                    <span className="text-muted-foreground">IP Pool:</span>
+                    <span className="ml-2 font-medium">{getSelectedPool()?.name || "DHCP"}</span>
                   </div>
                   <div>
-                    <span className="text-gray-500">IP Address:</span>
-                    <span className="ml-2 font-bold">
+                    <span className="text-muted-foreground">IP Address:</span>
+                    <span className="ml-2 font-medium">
                       {getSelectedPool() ? (watchedValues.ipAddress || "Auto (next free)") : "Auto (DHCP)"}
                     </span>
                   </div>
                   <div>
-                    <span className="text-gray-500">Bandwidth:</span>
-                    <span className="ml-2 font-bold">{watchedValues.bandwidthMbps} Mbps</span>
+                    <span className="text-muted-foreground">Bandwidth:</span>
+                    <span className="ml-2 font-medium">{watchedValues.bandwidthMbps} Mbps</span>
                   </div>
                   <div>
-                    <span className="text-gray-500">VLAN:</span>
-                    <span className="ml-2 font-bold">
+                    <span className="text-muted-foreground">VLAN:</span>
+                    <span className="ml-2 font-medium">
                       {watchedValues.vlanId || "None"}
                     </span>
                   </div>
@@ -1146,103 +1146,103 @@ export default function NewVMPage() {
           {currentStep === 5 && (
             <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
               <div className="flex items-center gap-3 mb-6">
-                <div className="w-10 h-10 bg-success flex items-center justify-center border-2 border-black">
+                <div className="w-10 h-10 bg-muted text-foreground flex items-center justify-center rounded-md border">
                   <CheckCircle2 className="w-5 h-5" />
                 </div>
                 <div>
-                  <h2 className="text-xl font-black uppercase">Review & Create</h2>
-                  <p className="text-sm text-gray-500">Confirm your VM configuration before creating</p>
+                  <h2 className="text-xl font-semibold">Review & Create</h2>
+                  <p className="text-sm text-muted-foreground">Confirm your VM configuration before creating</p>
                 </div>
               </div>
 
               {/* Summary Cards */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {/* Basic Info */}
-                <div className="bg-gray-100 border-2 border-black p-4">
-                  <p className="text-xs font-bold uppercase mb-3 flex items-center gap-2">
+                <div className="bg-muted border rounded-md p-4">
+                  <p className="text-xs font-medium mb-3 flex items-center gap-2">
                     <Server className="w-4 h-4" /> Basic Information
                   </p>
                   <div className="space-y-2 text-sm">
                     <div className="flex justify-between">
-                      <span className="text-gray-500">Hostname:</span>
-                      <span className="font-bold">{watchedValues.hostname}</span>
+                      <span className="text-muted-foreground">Hostname:</span>
+                      <span className="font-medium">{watchedValues.hostname}</span>
                     </div>
                     {getSelectedUser() && (
                       <div className="flex justify-between">
-                        <span className="text-gray-500">Assigned To:</span>
-                        <span className="font-bold">{getSelectedUser()?.email}</span>
+                        <span className="text-muted-foreground">Assigned To:</span>
+                        <span className="font-medium">{getSelectedUser()?.email}</span>
                       </div>
                     )}
                     <div className="flex justify-between">
-                      <span className="text-gray-500">Node:</span>
-                      <span className="font-bold">{getSelectedNode()?.name || "Auto-select"}</span>
+                      <span className="text-muted-foreground">Node:</span>
+                      <span className="font-medium">{getSelectedNode()?.name || "Auto-select"}</span>
                     </div>
                   </div>
                 </div>
 
                 {/* Resources */}
-                <div className="bg-gray-100 border-2 border-black p-4">
-                  <p className="text-xs font-bold uppercase mb-3 flex items-center gap-2">
+                <div className="bg-muted border rounded-md p-4">
+                  <p className="text-xs font-medium mb-3 flex items-center gap-2">
                     <Cpu className="w-4 h-4" /> Resources
                   </p>
                   <div className="space-y-2 text-sm">
                     <div className="flex justify-between">
-                      <span className="text-gray-500">CPU:</span>
-                      <span className="font-bold">{watchedValues.cpuCores} vCPU</span>
+                      <span className="text-muted-foreground">CPU:</span>
+                      <span className="font-medium">{watchedValues.cpuCores} vCPU</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-gray-500">RAM:</span>
-                      <span className="font-bold">{watchedValues.ramGB} GB</span>
+                      <span className="text-muted-foreground">RAM:</span>
+                      <span className="font-medium">{watchedValues.ramGB} GB</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-gray-500">Disk:</span>
-                      <span className="font-bold">{watchedValues.diskGB} GB</span>
+                      <span className="text-muted-foreground">Disk:</span>
+                      <span className="font-medium">{watchedValues.diskGB} GB</span>
                     </div>
                   </div>
                 </div>
 
                 {/* OS Template */}
-                <div className="bg-gray-100 border-2 border-black p-4">
-                  <p className="text-xs font-bold uppercase mb-3 flex items-center gap-2">
+                <div className="bg-muted border rounded-md p-4">
+                  <p className="text-xs font-medium mb-3 flex items-center gap-2">
                     <HardDrive className="w-4 h-4" /> OS Template
                   </p>
                   {getSelectedTemplate() && (
                     <div className="flex items-center gap-3">
                       <OSIcon name={getSelectedTemplate()!.name} className="w-8 h-8" />
                       <div>
-                        <p className="font-bold">{getSelectedTemplate()?.name}</p>
-                        <p className="text-sm text-gray-500">v{getSelectedTemplate()?.version}</p>
+                        <p className="font-medium">{getSelectedTemplate()?.name}</p>
+                        <p className="text-sm text-muted-foreground">v{getSelectedTemplate()?.version}</p>
                       </div>
                     </div>
                   )}
                 </div>
 
                 {/* Network */}
-                <div className="bg-gray-100 border-2 border-black p-4">
-                  <p className="text-xs font-bold uppercase mb-3 flex items-center gap-2">
+                <div className="bg-muted border rounded-md p-4">
+                  <p className="text-xs font-medium mb-3 flex items-center gap-2">
                     <Network className="w-4 h-4" /> Network
                   </p>
                   <div className="space-y-2 text-sm">
                     <div className="flex justify-between">
-                      <span className="text-gray-500">IP Pool:</span>
-                      <span className="font-bold">{getSelectedPool()?.name || "DHCP"}</span>
+                      <span className="text-muted-foreground">IP Pool:</span>
+                      <span className="font-medium">{getSelectedPool()?.name || "DHCP"}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-gray-500">IP Address:</span>
-                      <span className="font-bold">
+                      <span className="text-muted-foreground">IP Address:</span>
+                      <span className="font-medium">
                         {getSelectedPool() ? (watchedValues.ipAddress || "Auto (next free)") : "Auto (DHCP)"}
                       </span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-gray-500">Bandwidth:</span>
-                      <span className="font-bold">{watchedValues.bandwidthMbps} Mbps</span>
+                      <span className="text-muted-foreground">Bandwidth:</span>
+                      <span className="font-medium">{watchedValues.bandwidthMbps} Mbps</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-gray-500">VLAN:</span>
-                      <span className="font-bold">{watchedValues.vlanId || "None"}</span>
+                      <span className="text-muted-foreground">VLAN:</span>
+                      <span className="font-medium">{watchedValues.vlanId || "None"}</span>
                     </div>
                   </div>
-                  <p className="text-[10px] text-gray-600 mt-2 italic">
+                  <p className="text-[10px] text-muted-foreground mt-2 italic">
                     Network settings are provisioned together with the VM
                   </p>
                 </div>
@@ -1250,16 +1250,16 @@ export default function NewVMPage() {
 
               {/* Error Message */}
               {submitError && (
-                <div className="bg-danger/20 border-2 border-danger p-4 flex items-center gap-2">
-                  <AlertCircle className="w-5 h-5 text-danger" />
-                  <p className="text-sm font-bold text-danger">{submitError}</p>
+                <div className="rounded-md border border-red-200 bg-red-50 p-4 flex items-center gap-2 dark:bg-red-950 dark:border-red-900">
+                  <AlertCircle className="w-5 h-5 text-destructive" />
+                  <p className="text-sm font-medium text-destructive">{submitError}</p>
                 </div>
               )}
             </div>
           )}
 
           {/* Navigation Buttons */}
-          <div className="flex items-center justify-between mt-8 pt-6 border-t-2 border-black">
+          <div className="flex items-center justify-between mt-8 pt-6 border-t">
             <Button
               type="button"
               variant="ghost"
@@ -1283,9 +1283,10 @@ export default function NewVMPage() {
             ) : (
               <Button
                 type="button"
+                variant="success"
                 onClick={handleSubmit(onSubmit)}
                 disabled={createVM.isPending}
-                className="gap-2 bg-success hover:bg-success/80"
+                className="gap-2"
               >
                 {createVM.isPending ? (
                   <>

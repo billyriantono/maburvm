@@ -9,14 +9,14 @@ function Badge({ className, variant = "default", ...props }: BadgeProps) {
   return (
     <div
       className={cn(
-        "inline-flex items-center px-3 py-1 text-xs font-bold uppercase border-2 border-black shadow-neo-sm",
+        "inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
         {
-          "bg-primary text-black": variant === "default",
-          "bg-secondary text-black": variant === "secondary",
-          "bg-danger text-white": variant === "destructive",
-          "bg-success text-black": variant === "success",
-          "bg-warning text-black": variant === "warning",
-          "bg-white text-black": variant === "outline",
+          "border-transparent bg-primary text-primary-foreground": variant === "default",
+          "border-transparent bg-secondary text-secondary-foreground": variant === "secondary",
+          "border-transparent bg-destructive text-destructive-foreground": variant === "destructive",
+          "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-400": variant === "success",
+          "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-400": variant === "warning",
+          "text-foreground": variant === "outline",
         },
         className
       )}

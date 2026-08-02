@@ -4,25 +4,26 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 font-bold uppercase text-sm tracking-wide border-2 border-black transition-all duration-150 ease-out shadow-neo hover:shadow-neo-hover active:shadow-neo-active hover:translate-x-[-2px] hover:translate-y-[-2px] active:translate-x-[2px] active:translate-y-[2px] disabled:opacity-60 disabled:pointer-events-none disabled:translate-x-0 disabled:translate-y-0 disabled:shadow-neo focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-2",
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
   {
     variants: {
       variant: {
-        default: "bg-primary text-black hover:bg-yellow-300",
-        secondary: "bg-secondary text-black hover:bg-cyan-300",
-        accent: "bg-accent text-white hover:bg-pink-400",
-        destructive: "bg-danger text-white hover:bg-red-500",
-        success: "bg-success text-black hover:bg-lime-300",
-        warning: "bg-warning text-black hover:bg-orange-300",
-        ghost: "bg-transparent hover:bg-gray-200 border-black",
-        outline: "bg-transparent border-2 border-black hover:bg-black hover:text-white",
+        default: "bg-primary text-primary-foreground hover:bg-primary/90",
+        secondary: "bg-secondary text-secondary-foreground hover:bg-secondary/80",
+        accent: "bg-accent text-accent-foreground hover:bg-accent/80",
+        destructive: "bg-destructive text-destructive-foreground hover:bg-destructive/90",
+        success: "bg-emerald-600 text-white hover:bg-emerald-700",
+        warning: "bg-amber-500 text-white hover:bg-amber-600",
+        ghost: "hover:bg-accent hover:text-accent-foreground",
+        outline: "border border-input bg-background hover:bg-accent hover:text-accent-foreground",
+        link: "text-primary underline-offset-4 hover:underline",
       },
       size: {
-        default: "h-12 px-6 py-3",
-        sm: "h-8 px-4 py-2 text-xs",
-        lg: "h-14 px-8 py-4 text-base",
-        xl: "h-16 px-10 py-5 text-lg",
-        icon: "h-12 w-12",
+        default: "h-10 px-4 py-2",
+        sm: "h-9 rounded-md px-3 text-xs",
+        lg: "h-11 rounded-md px-8 text-base",
+        xl: "h-12 rounded-md px-10 text-base",
+        icon: "h-10 w-10",
       },
     },
     defaultVariants: {

@@ -64,15 +64,15 @@ function getNodeDisplayStatus(node: Node): "online" | "offline" | "warning" {
 // Status badge component
 function StatusBadge({ status }: { status: "online" | "offline" | "warning" }) {
   const config = {
-    online: { bg: "bg-success", label: "Online" },
-    offline: { bg: "bg-danger", label: "Offline" },
-    warning: { bg: "bg-warning", label: "Warning" }
+    online: { bg: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-400 dark:border-emerald-900", label: "Online" },
+    offline: { bg: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-400 dark:border-red-900", label: "Offline" },
+    warning: { bg: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-400 dark:border-amber-900", label: "Warning" }
   }
-  
+
   const { bg, label } = config[status]
-  
+
   return (
-    <span className={cn("inline-flex items-center px-2 py-0.5 text-[10px] font-black uppercase tracking-wider border border-black", bg)}>
+    <span className={cn("inline-flex items-center px-2 py-0.5 text-[10px] font-medium rounded-full border", bg)}>
       {label}
     </span>
   )
@@ -81,22 +81,22 @@ function StatusBadge({ status }: { status: "online" | "offline" | "warning" }) {
 // Resource bar component
 function ResourceBar({ value, label }: { value: number; label: string }) {
   const getColorClass = () => {
-    if (value >= 90) return "bg-danger"
-    if (value >= 70) return "bg-warning"
-    if (value === 0) return "bg-gray-300"
-    return "bg-success"
+    if (value >= 90) return "bg-red-500"
+    if (value >= 70) return "bg-amber-500"
+    if (value === 0) return "bg-muted-foreground/30"
+    return "bg-emerald-500"
   }
-  
+
   return (
     <div className="flex items-center gap-2">
-      <span className="text-xs font-medium text-gray-500 w-16">{label}</span>
-      <div className="flex-1 h-3 bg-gray-200 border border-black">
-        <div 
-          className={cn("h-full transition-all duration-500", getColorClass())} 
+      <span className="text-xs font-medium text-muted-foreground w-16">{label}</span>
+      <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
+        <div
+          className={cn("h-full rounded-full transition-all duration-500", getColorClass())}
           style={{ width: `${Math.min(value, 100)}%` }}
         />
       </div>
-      <span className="text-xs font-black w-10 text-right">{Math.round(value)}%</span>
+      <span className="text-xs font-semibold w-10 text-right">{Math.round(value)}%</span>
     </div>
   )
 }
@@ -118,22 +118,22 @@ function NodeMetricsCard({ node }: { node: Node }) {
   const memTrend = (history ?? []).map((s) => s.memory_usage)
   
   return (
-    <div className="bg-white border-4 border-black shadow-neo">
+    <div className="rounded-lg border bg-card text-card-foreground shadow-sm">
       {/* Card Header */}
-      <div className="border-b-4 border-black bg-gray-50 p-4 flex items-center justify-between">
+      <div className="border-b bg-muted/50 p-4 flex items-center justify-between rounded-t-lg">
         <div className="flex items-center gap-3">
-          <Server className="w-5 h-5 text-gray-500" />
-          <span className="text-xl font-black uppercase">{node.name}</span>
+          <Server className="w-5 h-5 text-muted-foreground" />
+          <span className="text-lg font-semibold">{node.name}</span>
         </div>
         <StatusBadge status={displayStatus} />
       </div>
-      
+
       {/* Card Body */}
       <div className="p-4">
         {!isOnline ? (
           <div className="py-6 text-center">
-            <AlertCircle className="w-8 h-8 text-gray-500 mx-auto mb-2" />
-            <p className="text-sm text-gray-600 font-bold uppercase">Node offline</p>
+            <AlertCircle className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
+            <p className="text-sm text-muted-foreground font-medium">Node offline</p>
           </div>
         ) : !metrics ? (
           <div className="space-y-3 mb-4">
@@ -151,44 +151,44 @@ function NodeMetricsCard({ node }: { node: Node }) {
             </div>
             
             {/* Trend (last 60m) */}
-            <div className="mb-4 pb-4 border-b border-gray-200">
-              <p className="text-[10px] font-black uppercase tracking-wider text-gray-400 mb-2">Trend · last 60m</p>
+            <div className="mb-4 pb-4 border-b">
+              <p className="text-[10px] font-medium text-muted-foreground mb-2">Trend · last 60m</p>
               <div className="grid grid-cols-2 gap-3">
-                <div className="border-2 border-black p-2">
-                  <span className="text-[10px] font-bold uppercase text-gray-500">CPU</span>
+                <div className="rounded-md border p-2">
+                  <span className="text-[10px] font-medium text-muted-foreground">CPU</span>
                   <Sparkline data={cpuTrend} colorClass="text-primary" height={32} />
                 </div>
-                <div className="border-2 border-black p-2">
-                  <span className="text-[10px] font-bold uppercase text-gray-500">Memory</span>
-                  <Sparkline data={memTrend} colorClass="text-secondary" height={32} />
+                <div className="rounded-md border p-2">
+                  <span className="text-[10px] font-medium text-muted-foreground">Memory</span>
+                  <Sparkline data={memTrend} colorClass="text-primary" height={32} />
                 </div>
               </div>
             </div>
 
             {/* Network I/O */}
-            <div className="flex items-center gap-6 mb-4 pb-4 border-b border-gray-200">
+            <div className="flex items-center gap-6 mb-4 pb-4 border-b">
               <div className="flex items-center gap-2">
-                <Network className="w-4 h-4 text-success" />
-                <span className="text-xs font-medium text-gray-500">IN</span>
-                <span className="text-sm font-black">{formatBytes(networkIn)}/s</span>
+                <Network className="w-4 h-4 text-emerald-600" />
+                <span className="text-xs font-medium text-muted-foreground">IN</span>
+                <span className="text-sm font-semibold">{formatBytes(networkIn)}/s</span>
               </div>
               <div className="flex items-center gap-2">
                 <Network className="w-4 h-4 text-primary rotate-180" />
-                <span className="text-xs font-medium text-gray-500">OUT</span>
-                <span className="text-sm font-black">{formatBytes(networkOut)}/s</span>
+                <span className="text-xs font-medium text-muted-foreground">OUT</span>
+                <span className="text-sm font-semibold">{formatBytes(networkOut)}/s</span>
               </div>
             </div>
-            
+
             {/* VM Count & IP */}
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Database className="w-4 h-4 text-gray-600" />
-                <span className="text-sm font-medium text-gray-500">VMs:</span>
-                <span className="text-sm font-black">{vmCount}</span>
+                <Database className="w-4 h-4 text-muted-foreground" />
+                <span className="text-sm font-medium text-muted-foreground">VMs:</span>
+                <span className="text-sm font-semibold">{vmCount}</span>
               </div>
               <div className="flex items-center gap-2">
-                <Network className="w-4 h-4 text-gray-600" />
-                <span className="text-sm font-mono text-gray-500">{node.ip_address}</span>
+                <Network className="w-4 h-4 text-muted-foreground" />
+                <span className="text-sm font-mono text-muted-foreground">{node.ip_address}</span>
               </div>
             </div>
           </>
@@ -306,12 +306,12 @@ function Toast({ message, type, onClose }: { message: string; type: "success" | 
   
   return (
     <div className={cn(
-      "fixed bottom-4 right-4 z-50 px-6 py-4 border-4 border-black shadow-neo",
-      type === "success" && "bg-success",
-      type === "error" && "bg-danger text-white",
-      type === "info" && "bg-primary"
+      "fixed bottom-4 right-4 z-50 px-6 py-4 rounded-lg border bg-card text-card-foreground shadow-md",
+      type === "success" && "border-emerald-200 dark:border-emerald-900",
+      type === "error" && "border-red-200 dark:border-red-900",
+      type === "info" && "border-border"
     )}>
-      <p className="font-bold uppercase text-sm">{message}</p>
+      <p className="font-medium text-sm">{message}</p>
     </div>
   )
 }
@@ -360,11 +360,11 @@ export default function MonitoringPage() {
   const getSeverityConfig = (severity: AlertSeverity) => {
     switch (severity) {
       case "critical":
-        return { icon: AlertTriangle, bg: "bg-danger/10", border: "border-danger", text: "text-danger", iconBg: "bg-danger" }
+        return { icon: AlertTriangle, bg: "bg-red-50 dark:bg-red-950", border: "border-red-200 dark:border-red-900", text: "text-red-700 dark:text-red-400", iconBg: "bg-red-50 dark:bg-red-950" }
       case "warning":
-        return { icon: AlertTriangle, bg: "bg-warning/20", border: "border-warning", text: "text-warning", iconBg: "bg-warning" }
+        return { icon: AlertTriangle, bg: "bg-amber-50 dark:bg-amber-950", border: "border-amber-200 dark:border-amber-900", text: "text-amber-700 dark:text-amber-400", iconBg: "bg-amber-50 dark:bg-amber-950" }
       case "info":
-        return { icon: Info, bg: "bg-primary/10", border: "border-primary", text: "text-primary", iconBg: "bg-primary" }
+        return { icon: Info, bg: "bg-muted", border: "border-border", text: "text-muted-foreground", iconBg: "bg-muted" }
     }
   }
   
@@ -373,17 +373,17 @@ export default function MonitoringPage() {
     return (
       <div className="max-w-7xl mx-auto">
         <div className="mb-6">
-          <h1 className="text-3xl font-black uppercase tracking-tight text-black flex items-center gap-3">
+          <h1 className="text-3xl font-bold tracking-tight flex items-center gap-3">
             <Activity className="w-8 h-8" />
             Monitoring
           </h1>
           <Skeleton className="h-5 w-48 mt-1" />
         </div>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-          {[1,2,3,4].map(i => <Skeleton key={i} className="h-24 border-4 border-black" />)}
+          {[1,2,3,4].map(i => <Skeleton key={i} className="h-24 rounded-lg" />)}
         </div>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-          {[1,2].map(i => <Skeleton key={i} className="h-48 border-4 border-black" />)}
+          {[1,2].map(i => <Skeleton key={i} className="h-48 rounded-lg" />)}
         </div>
       </div>
     )
@@ -394,15 +394,15 @@ export default function MonitoringPage() {
     return (
       <div className="max-w-7xl mx-auto">
         <div className="mb-6">
-          <h1 className="text-3xl font-black uppercase tracking-tight text-black flex items-center gap-3">
+          <h1 className="text-3xl font-bold tracking-tight flex items-center gap-3">
             <Activity className="w-8 h-8" />
             Monitoring
           </h1>
         </div>
-        <div className="bg-white border-4 border-black p-12 shadow-neo text-center">
-          <AlertCircle className="w-16 h-16 text-danger mx-auto mb-4" />
-          <h2 className="text-xl font-black uppercase mb-2">Failed to load monitoring data</h2>
-          <p className="text-gray-500 font-medium mb-6">{(error as Error).message}</p>
+        <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-12 text-center">
+          <AlertCircle className="w-16 h-16 text-destructive mx-auto mb-4" />
+          <h2 className="text-xl font-semibold mb-2">Failed to load monitoring data</h2>
+          <p className="text-muted-foreground mb-6">{(error as Error).message}</p>
           <Button onClick={() => refetch()}>Retry</Button>
         </div>
       </div>
@@ -413,48 +413,48 @@ export default function MonitoringPage() {
     <div className="max-w-7xl mx-auto">
       {/* Header */}
       <div className="mb-6">
-        <h1 className="text-3xl font-black uppercase tracking-tight text-black flex items-center gap-3">
+        <h1 className="text-3xl font-bold tracking-tight flex items-center gap-3">
           <Activity className="w-8 h-8" />
           Monitoring
         </h1>
-        <p className="text-gray-500 font-medium uppercase tracking-wider text-sm mt-1">
+        <p className="text-muted-foreground text-sm mt-1">
           Real-time cluster overview and alerts
         </p>
       </div>
-      
+
       {/* Cluster Overview Stats */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-        <div className="bg-white border-4 border-black shadow-neo p-4">
+        <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-4">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-black uppercase text-gray-500">Total Nodes</span>
-            <Server className="w-4 h-4 text-gray-600" />
+            <span className="text-xs font-medium text-muted-foreground">Total Nodes</span>
+            <Server className="w-4 h-4 text-muted-foreground" />
           </div>
-          <p className="text-3xl font-black text-black">{totalNodes}</p>
-          <p className="text-xs text-gray-500 font-medium mt-1">{onlineNodes.length} online</p>
+          <p className="text-3xl font-bold">{totalNodes}</p>
+          <p className="text-xs text-muted-foreground font-medium mt-1">{onlineNodes.length} online</p>
         </div>
-        
-        <div className="bg-white border-4 border-black shadow-neo p-4">
+
+        <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-4">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-black uppercase text-gray-500">Total VMs</span>
-            <Database className="w-4 h-4 text-gray-600" />
+            <span className="text-xs font-medium text-muted-foreground">Total VMs</span>
+            <Database className="w-4 h-4 text-muted-foreground" />
           </div>
-          <p className="text-3xl font-black text-black">{totalVMs}</p>
+          <p className="text-3xl font-bold">{totalVMs}</p>
         </div>
-        
-        <div className="bg-white border-4 border-black shadow-neo p-4">
+
+        <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-4">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-black uppercase text-gray-500">Online</span>
-            <CheckCircle className="w-4 h-4 text-success" />
+            <span className="text-xs font-medium text-muted-foreground">Online</span>
+            <CheckCircle className="w-4 h-4 text-emerald-600" />
           </div>
-          <p className="text-3xl font-black text-success">{onlineNodes.length}</p>
+          <p className="text-3xl font-bold text-emerald-600">{onlineNodes.length}</p>
         </div>
-        
-        <div className="bg-white border-4 border-black shadow-neo p-4">
+
+        <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-4">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-black uppercase text-gray-500">Active Alerts</span>
-            <Zap className="w-4 h-4 text-warning" />
+            <span className="text-xs font-medium text-muted-foreground">Active Alerts</span>
+            <Zap className="w-4 h-4 text-amber-500" />
           </div>
-          <p className="text-3xl font-black text-warning">{alerts.filter(a => !acknowledgedIds.has(a.id)).length}</p>
+          <p className="text-3xl font-bold text-amber-600">{alerts.filter(a => !acknowledgedIds.has(a.id)).length}</p>
         </div>
       </div>
       
@@ -466,45 +466,33 @@ export default function MonitoringPage() {
           ))}
         </div>
       ) : (
-        <div className="bg-white border-4 border-black p-12 shadow-neo text-center mb-6">
-          <Server className="w-12 h-12 text-gray-500 mx-auto mb-4" />
-          <p className="text-gray-500 font-bold uppercase">No nodes registered</p>
+        <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-12 text-center mb-6">
+          <Server className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+          <p className="text-muted-foreground font-medium">No nodes registered</p>
         </div>
       )}
-      
+
       {/* Alerts Section */}
-      <div className="bg-white border-4 border-black shadow-neo">
+      <div className="rounded-lg border bg-card text-card-foreground shadow-sm">
         {/* Alerts Header */}
-        <div className="bg-black text-white font-black uppercase p-4 flex items-center justify-between">
+        <div className="border-b bg-muted/50 font-semibold p-4 flex items-center justify-between rounded-t-lg">
           <div className="flex items-center gap-2">
             <Zap className="w-5 h-5" />
             Alerts ({alerts.length})
           </div>
-          
+
           {/* Filter Buttons */}
           <div className="flex items-center gap-2">
             {(["all", "critical", "warning", "info"] as const).map(filter => {
-              const filterColors: Record<string, string> = {
-                all: "border-white",
-                critical: "border-danger",
-                warning: "border-warning",
-                info: "border-primary",
-              }
-              const activeBg: Record<string, string> = {
-                all: "bg-white text-black",
-                critical: "bg-danger text-white",
-                warning: "bg-warning text-black",
-                info: "bg-primary text-black",
-              }
               return (
                 <button
                   key={filter}
                   onClick={() => setSeverityFilter(filter)}
                   className={cn(
-                    "px-3 py-1 text-xs font-bold uppercase border-2 transition-all",
-                    severityFilter === filter 
-                      ? cn(activeBg[filter], filterColors[filter])
-                      : cn("bg-transparent text-white", `${filterColors[filter]}/30`, `hover:${filterColors[filter]}`)
+                    "px-3 py-1 text-xs font-medium capitalize rounded-md border transition-colors",
+                    severityFilter === filter
+                      ? "bg-primary text-primary-foreground border-primary"
+                      : "bg-background text-muted-foreground hover:bg-muted"
                   )}
                 >
                   {filter}
@@ -515,49 +503,49 @@ export default function MonitoringPage() {
         </div>
         
         {/* Alert Rows */}
-        <div className="divide-y divide-gray-200">
+        <div className="divide-y">
           {filteredAlerts.length === 0 ? (
             <div className="p-8 text-center">
-              <CheckCircle className="w-12 h-12 text-success mx-auto mb-2" />
-              <p className="font-bold text-gray-500 uppercase">No alerts to display</p>
+              <CheckCircle className="w-12 h-12 text-emerald-600 mx-auto mb-2" />
+              <p className="font-medium text-muted-foreground">No alerts to display</p>
             </div>
           ) : (
             filteredAlerts.map((alert) => {
               const config = getSeverityConfig(alert.severity)
               const Icon = config.icon
-              
+
               return (
-                <div 
-                  key={alert.id} 
+                <div
+                  key={alert.id}
                   className={cn(
                     "p-4 flex items-center gap-4",
                     alert.acknowledged && "opacity-50"
                   )}
                 >
                   {/* Severity Icon */}
-                  <div className={cn("w-10 h-10 flex items-center justify-center border-2 border-black", config.iconBg)}>
-                    <Icon className={cn("w-5 h-5", alert.severity === "critical" || alert.severity === "warning" ? "text-black" : config.text)} />
+                  <div className={cn("w-10 h-10 flex items-center justify-center rounded-md border", config.iconBg, config.border)}>
+                    <Icon className={cn("w-5 h-5", config.text)} />
                   </div>
-                  
+
                   {/* Alert Content */}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
-                      <span className={cn("text-[10px] font-black uppercase px-1.5 py-0.5 border border-black", config.iconBg, config.text)}>
+                      <span className={cn("text-[10px] font-medium capitalize rounded-full px-2 py-0.5 border", config.bg, config.text, config.border)}>
                         {alert.severity}
                       </span>
-                      <span className="text-xs font-medium text-gray-500">{alert.timestamp}</span>
+                      <span className="text-xs font-medium text-muted-foreground">{alert.timestamp}</span>
                     </div>
-                    <p className="font-medium text-black truncate">{alert.message}</p>
-                    <p className="text-xs font-medium text-gray-500">Node: {alert.node}</p>
+                    <p className="font-medium truncate">{alert.message}</p>
+                    <p className="text-xs font-medium text-muted-foreground">Node: {alert.node}</p>
                   </div>
-                  
+
                   {/* Acknowledge Button */}
                   {!alert.acknowledged && (
-                    <Button 
-                      variant="ghost" 
+                    <Button
+                      variant="outline"
                       size="sm"
                       onClick={() => handleAcknowledge(alert.id)}
-                      className="border-2 border-black gap-1 shrink-0"
+                      className="gap-1 shrink-0"
                     >
                       <CheckCircle className="w-3 h-3" />
                       ACK

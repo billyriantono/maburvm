@@ -92,8 +92,8 @@ export default function APIKeysSettingsPage() {
       {/* Header */}
       <div className="mb-8 flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-black uppercase tracking-tight text-black">API Keys</h1>
-          <p className="text-gray-500 font-medium uppercase tracking-wider text-sm mt-1">
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">API Keys</h1>
+          <p className="text-muted-foreground text-sm mt-1">
             Long-lived credentials for automation and the public API
           </p>
         </div>
@@ -106,16 +106,16 @@ export default function APIKeysSettingsPage() {
       {/* Usage hint */}
       <Card className="mb-6">
         <CardContent className="p-4 flex items-start gap-3">
-          <Terminal className="w-5 h-5 mt-0.5 shrink-0" />
+          <Terminal className="w-5 h-5 mt-0.5 shrink-0 text-muted-foreground" />
           <div className="text-sm">
-            <p className="font-bold text-black">Authenticate requests with your key</p>
-            <p className="text-gray-600 mt-1">
+            <p className="font-medium text-foreground">Authenticate requests with your key</p>
+            <p className="text-muted-foreground mt-1">
               Pass it as a header:{" "}
-              <code className="text-xs bg-gray-100 px-1.5 py-0.5 border border-black">
+              <code className="text-xs bg-muted px-1.5 py-0.5 rounded-md border">
                 X-API-Key: mvk_…
               </code>{" "}
               or{" "}
-              <code className="text-xs bg-gray-100 px-1.5 py-0.5 border border-black">
+              <code className="text-xs bg-muted px-1.5 py-0.5 rounded-md border">
                 Authorization: Bearer mvk_…
               </code>
             </p>
@@ -125,7 +125,7 @@ export default function APIKeysSettingsPage() {
 
       {/* List */}
       <Card>
-        <CardHeader className="border-b-2 border-black">
+        <CardHeader className="border-b">
           <CardTitle className="flex items-center gap-2">
             <KeyRound className="w-5 h-5" />
             Your API Keys
@@ -135,20 +135,20 @@ export default function APIKeysSettingsPage() {
         <CardContent className="p-0">
           {isLoading ? (
             <div className="p-6 space-y-3">
-              <Skeleton className="h-16 border-2 border-black" />
-              <Skeleton className="h-16 border-2 border-black" />
+              <Skeleton className="h-16" />
+              <Skeleton className="h-16" />
             </div>
           ) : error ? (
             <div className="p-12 text-center">
-              <AlertCircle className="w-12 h-12 text-danger mx-auto mb-3" />
-              <p className="font-bold uppercase">Failed to load API keys</p>
-              <p className="text-sm text-gray-500 mt-1">{(error as Error).message}</p>
+              <AlertCircle className="w-12 h-12 text-destructive mx-auto mb-3" />
+              <p className="font-medium">Failed to load API keys</p>
+              <p className="text-sm text-muted-foreground mt-1">{(error as Error).message}</p>
             </div>
           ) : !keys || keys.length === 0 ? (
             <div className="p-12 text-center">
-              <KeyRound className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-              <p className="font-bold uppercase">No API keys yet</p>
-              <p className="text-sm text-gray-500 mt-1 mb-4">
+              <KeyRound className="w-12 h-12 text-muted-foreground/40 mx-auto mb-3" />
+              <p className="font-medium">No API keys yet</p>
+              <p className="text-sm text-muted-foreground mt-1 mb-4">
                 Create a key to access the MaburVM API from scripts and CI.
               </p>
               <Button onClick={() => setShowCreate(true)}>
@@ -157,14 +157,14 @@ export default function APIKeysSettingsPage() {
               </Button>
             </div>
           ) : (
-            <ul className="divide-y-2 divide-black">
+            <ul className="divide-y">
               {keys.map((key) => {
                 const expired = isExpired(key)
                 return (
                   <li key={key.id} className="p-4 flex items-center justify-between gap-4">
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-bold text-black truncate">{key.name}</span>
+                        <span className="font-medium text-foreground truncate">{key.name}</span>
                         {expired ? (
                           <Badge variant="destructive" className="text-[10px]">Expired</Badge>
                         ) : key.is_active ? (
@@ -173,8 +173,8 @@ export default function APIKeysSettingsPage() {
                           <Badge variant="secondary" className="text-[10px]">Revoked</Badge>
                         )}
                       </div>
-                      <code className="text-xs font-mono text-gray-600">{key.prefix}••••••••</code>
-                      <p className="text-xs text-gray-500 mt-1">
+                      <code className="text-xs font-mono text-muted-foreground">{key.prefix}••••••••</code>
+                      <p className="text-xs text-muted-foreground mt-1">
                         Created {formatDate(key.created_at)} · Last used {formatDate(key.last_used_at)}
                         {key.expires_at ? ` · Expires ${formatDate(key.expires_at)}` : ""}
                       </p>
@@ -207,7 +207,7 @@ export default function APIKeysSettingsPage() {
           </DialogHeader>
           <div className="space-y-4">
             <div>
-              <label htmlFor="key-name" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
+              <label htmlFor="key-name" className="block text-sm font-medium text-muted-foreground mb-2">
                 Name
               </label>
               <Input
@@ -219,7 +219,7 @@ export default function APIKeysSettingsPage() {
               />
             </div>
             <div>
-              <label htmlFor="key-expiry" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
+              <label htmlFor="key-expiry" className="block text-sm font-medium text-muted-foreground mb-2">
                 Expires (optional)
               </label>
               <Input
@@ -262,12 +262,12 @@ export default function APIKeysSettingsPage() {
             <DialogDescription>This is the only time the full key is shown.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            <code className="block text-sm font-mono bg-gray-100 px-3 py-2 border-2 border-black break-all">
+            <code className="block text-sm font-mono bg-muted px-3 py-2 rounded-md border break-all">
               {newToken}
             </code>
-            <div className="flex items-center gap-2 p-3 bg-danger text-white border-2 border-black">
+            <div className="flex items-center gap-2 p-3 rounded-md border border-destructive/30 bg-destructive/10 text-destructive">
               <AlertTriangle className="w-4 h-4 shrink-0" />
-              <p className="text-xs font-bold">
+              <p className="text-xs font-medium">
                 Copy it now &mdash; you won&apos;t be able to see it again.
               </p>
             </div>
@@ -287,11 +287,11 @@ export default function APIKeysSettingsPage() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <AlertTriangle className="w-5 h-5 text-danger" />
+              <AlertTriangle className="w-5 h-5 text-destructive" />
               Revoke API key?
             </DialogTitle>
             <DialogDescription>
-              Any automation using <span className="font-bold">{revokeTarget?.name}</span> will immediately stop working. This cannot be undone.
+              Any automation using <span className="font-semibold">{revokeTarget?.name}</span> will immediately stop working. This cannot be undone.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

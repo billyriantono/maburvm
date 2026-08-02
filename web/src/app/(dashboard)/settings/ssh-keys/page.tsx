@@ -79,8 +79,8 @@ export default function SSHKeysSettingsPage() {
       {/* Header */}
       <div className="mb-8 flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-black uppercase tracking-tight text-black">SSH Keys</h1>
-          <p className="text-gray-500 font-medium uppercase tracking-wider text-sm mt-1">
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">SSH Keys</h1>
+          <p className="text-muted-foreground text-sm mt-1">
             Public keys you can inject when creating or rebuilding a VM
           </p>
         </div>
@@ -92,7 +92,7 @@ export default function SSHKeysSettingsPage() {
 
       {/* List */}
       <Card>
-        <CardHeader className="border-b-2 border-black">
+        <CardHeader className="border-b">
           <CardTitle className="flex items-center gap-2">
             <KeySquare className="w-5 h-5" />
             Your SSH Keys
@@ -102,20 +102,20 @@ export default function SSHKeysSettingsPage() {
         <CardContent className="p-0">
           {isLoading ? (
             <div className="p-6 space-y-3">
-              <Skeleton className="h-16 border-2 border-black" />
-              <Skeleton className="h-16 border-2 border-black" />
+              <Skeleton className="h-16" />
+              <Skeleton className="h-16" />
             </div>
           ) : error ? (
             <div className="p-12 text-center">
-              <AlertCircle className="w-12 h-12 text-danger mx-auto mb-3" />
-              <p className="font-bold uppercase">Failed to load SSH keys</p>
-              <p className="text-sm text-gray-500 mt-1">{(error as Error).message}</p>
+              <AlertCircle className="w-12 h-12 text-destructive mx-auto mb-3" />
+              <p className="font-medium">Failed to load SSH keys</p>
+              <p className="text-sm text-muted-foreground mt-1">{(error as Error).message}</p>
             </div>
           ) : !keys || keys.length === 0 ? (
             <div className="p-12 text-center">
-              <KeySquare className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-              <p className="font-bold uppercase">No SSH keys yet</p>
-              <p className="text-sm text-gray-500 mt-1 mb-4">
+              <KeySquare className="w-12 h-12 text-muted-foreground/40 mx-auto mb-3" />
+              <p className="font-medium">No SSH keys yet</p>
+              <p className="text-sm text-muted-foreground mt-1 mb-4">
                 Add a public key to use passwordless login on new VMs.
               </p>
               <Button onClick={() => setShowCreate(true)}>
@@ -124,16 +124,16 @@ export default function SSHKeysSettingsPage() {
               </Button>
             </div>
           ) : (
-            <ul className="divide-y-2 divide-black">
+            <ul className="divide-y">
               {keys.map((key) => (
                 <li key={key.id} className="p-4 flex items-center justify-between gap-4">
                   <div className="min-w-0">
-                    <span className="font-bold text-black truncate block">{key.name}</span>
-                    <code className="text-xs font-mono text-gray-600 break-all">{key.fingerprint}</code>
-                    <p className="text-xs text-gray-500 mt-1">Added {formatDate(key.created_at)}</p>
+                    <span className="font-medium text-foreground truncate block">{key.name}</span>
+                    <code className="text-xs font-mono text-muted-foreground break-all">{key.fingerprint}</code>
+                    <p className="text-xs text-muted-foreground mt-1">Added {formatDate(key.created_at)}</p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
-                    <Button variant="ghost" size="sm" className="border-2 border-black" onClick={() => handleCopy(key.public_key)}>
+                    <Button variant="outline" size="sm" onClick={() => handleCopy(key.public_key)}>
                       <Copy className="w-4 h-4" />
                     </Button>
                     <Button variant="destructive" size="sm" onClick={() => setDeleteTarget(key)}>
@@ -160,7 +160,7 @@ export default function SSHKeysSettingsPage() {
           </DialogHeader>
           <div className="space-y-4">
             <div>
-              <label htmlFor="ssh-name" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
+              <label htmlFor="ssh-name" className="block text-sm font-medium text-muted-foreground mb-2">
                 Name (optional)
               </label>
               <Input
@@ -170,10 +170,10 @@ export default function SSHKeysSettingsPage() {
                 onChange={(e) => setName(e.target.value)}
                 maxLength={100}
               />
-              <p className="text-xs text-gray-500 mt-1">Defaults to the key comment or fingerprint if left blank.</p>
+              <p className="text-xs text-muted-foreground mt-1">Defaults to the key comment or fingerprint if left blank.</p>
             </div>
             <div>
-              <label htmlFor="ssh-key" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
+              <label htmlFor="ssh-key" className="block text-sm font-medium text-muted-foreground mb-2">
                 Public Key
               </label>
               <textarea
@@ -182,7 +182,7 @@ export default function SSHKeysSettingsPage() {
                 value={publicKey}
                 onChange={(e) => setPublicKey(e.target.value)}
                 rows={4}
-                className="w-full border-2 border-black p-3 font-mono text-xs resize-y focus:outline-none focus:ring-2 focus:ring-primary"
+                className="w-full rounded-md border border-input bg-background p-3 font-mono text-xs resize-y focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               />
             </div>
           </div>

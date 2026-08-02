@@ -167,27 +167,27 @@ export function SSHConsole({ vmId, className }: SSHConsoleProps) {
   return (
     <div className={className}>
       {/* Status bar */}
-      <div className="flex items-center justify-between px-4 py-2 bg-white border-b-2 border-black">
+      <div className="flex items-center justify-between px-4 py-2 bg-card text-card-foreground border-b">
         <div className="flex items-center gap-3">
-          <span className="text-sm font-bold">SSH CONSOLE</span>
-          <span className="text-xs text-gray-500">{vmId.slice(0, 8)}</span>
+          <span className="text-sm font-semibold">SSH Console</span>
+          <span className="text-xs text-muted-foreground">{vmId.slice(0, 8)}</span>
         </div>
         <div className="flex items-center gap-2">
           <StatusBadge status={status} />
           {(status === 'disconnected' || status === 'error') && (
             <button
               onClick={() => setStatus('auth')}
-              className="px-3 py-1 text-xs font-bold border-2 border-black bg-white hover:bg-gray-100 cursor-pointer"
+              className="px-3 py-1 text-xs font-medium border rounded-md bg-background hover:bg-muted cursor-pointer"
             >
-              RECONNECT
+              Reconnect
             </button>
           )}
           {status === 'connected' && (
             <button
               onClick={disconnect}
-              className="px-3 py-1 text-xs font-bold border-2 border-black bg-white hover:bg-gray-100 cursor-pointer"
+              className="px-3 py-1 text-xs font-medium border rounded-md bg-background hover:bg-muted cursor-pointer"
             >
-              DISCONNECT
+              Disconnect
             </button>
           )}
         </div>
@@ -206,28 +206,28 @@ export function SSHConsole({ vmId, className }: SSHConsoleProps) {
                 e.preventDefault();
                 connect();
               }}
-              className="w-full max-w-sm bg-white border-2 border-black p-6 space-y-4"
+              className="w-full max-w-sm bg-card text-card-foreground border rounded-lg shadow-sm p-6 space-y-4"
             >
               <div>
-                <h2 className="text-lg font-black uppercase tracking-tight">Connect via SSH</h2>
-                <p className="text-xs text-gray-500 mt-1">
+                <h2 className="text-lg font-semibold">Connect via SSH</h2>
+                <p className="text-xs text-muted-foreground mt-1">
                   Credentials are used once to open the session and are not stored.
                 </p>
               </div>
               <div>
-                <label htmlFor="ssh-user" className="block text-xs font-bold uppercase tracking-wider text-gray-500 mb-1">
+                <label htmlFor="ssh-user" className="block text-xs font-medium text-muted-foreground mb-1">
                   Username
                 </label>
                 <input
                   id="ssh-user"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  className="w-full border-2 border-black p-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="w-full rounded-md border border-input bg-background p-2 font-mono text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                   autoComplete="username"
                 />
               </div>
               <div>
-                <label htmlFor="ssh-pass" className="block text-xs font-bold uppercase tracking-wider text-gray-500 mb-1">
+                <label htmlFor="ssh-pass" className="block text-xs font-medium text-muted-foreground mb-1">
                   Password
                 </label>
                 <input
@@ -235,7 +235,7 @@ export function SSHConsole({ vmId, className }: SSHConsoleProps) {
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full border-2 border-black p-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="w-full rounded-md border border-input bg-background p-2 font-mono text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                   autoComplete="current-password"
                   autoFocus
                 />
@@ -243,7 +243,7 @@ export function SSHConsole({ vmId, className }: SSHConsoleProps) {
               <button
                 type="submit"
                 disabled={!password}
-                className="w-full px-4 py-2 text-sm font-bold uppercase border-2 border-black bg-primary hover:brightness-95 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                className="w-full px-4 py-2 text-sm font-medium rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
               >
                 Connect
               </button>
@@ -254,7 +254,7 @@ export function SSHConsole({ vmId, className }: SSHConsoleProps) {
         {status !== 'auth' && status !== 'connected' && (
           <div className="absolute inset-0 flex items-center justify-center text-white text-center pointer-events-none">
             <div>
-              <h2 className="text-xl font-bold mb-2">
+              <h2 className="text-xl font-semibold mb-2">
                 {status === 'connecting' && 'Connecting...'}
                 {status === 'disconnected' && 'Disconnected'}
                 {status === 'error' && 'Connection Error'}
@@ -274,15 +274,15 @@ export function SSHConsole({ vmId, className }: SSHConsoleProps) {
 
 function StatusBadge({ status }: { status: string }) {
   const styles: Record<string, string> = {
-    auth: 'border-blue-600 bg-blue-50 text-blue-800',
-    connecting: 'border-yellow-600 bg-yellow-50 text-yellow-800',
-    connected: 'border-green-600 bg-green-50 text-green-800',
-    disconnected: 'border-gray-500 bg-gray-100 text-gray-700',
-    error: 'border-red-600 bg-red-50 text-red-800',
+    auth: 'border-sky-200 bg-sky-50 text-sky-700 dark:bg-sky-950 dark:text-sky-300 dark:border-sky-900',
+    connecting: 'border-amber-200 bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900',
+    connected: 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900',
+    disconnected: 'border bg-muted text-muted-foreground',
+    error: 'border-red-200 bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-300 dark:border-red-900',
   };
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 text-[11px] font-bold border ${styles[status]}`}>
-      {status.toUpperCase()}
+    <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-medium border capitalize ${styles[status]}`}>
+      {status}
     </span>
   );
 }

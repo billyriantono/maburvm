@@ -45,56 +45,56 @@ export default function ClientProfilePage() {
 
   return (
     <div className="space-y-6 max-w-2xl">
-      <h1 className="text-3xl font-black uppercase tracking-tighter">Profile</h1>
+      <h1 className="text-2xl font-semibold tracking-tight">Profile</h1>
 
       {/* Account */}
-      <section className="bg-white border-4 border-black shadow-neo">
-        <div className="px-5 py-4 border-b-4 border-black">
-          <h2 className="text-lg font-black uppercase tracking-tight">Account</h2>
+      <section className="rounded-lg border bg-card text-card-foreground shadow-sm">
+        <div className="px-5 py-4 border-b">
+          <h2 className="text-lg font-semibold">Account</h2>
         </div>
         <div className="p-5 space-y-2">
           <div className="flex justify-between">
-            <span className="font-bold text-gray-600">Email</span>
-            <span className="font-black">{user?.email ?? "—"}</span>
+            <span className="text-muted-foreground">Email</span>
+            <span className="font-medium">{user?.email ?? "—"}</span>
           </div>
           <div className="flex justify-between">
-            <span className="font-bold text-gray-600">Role</span>
-            <span className="font-black uppercase">{user?.role ?? "—"}</span>
+            <span className="text-muted-foreground">Role</span>
+            <span className="font-medium capitalize">{user?.role ?? "—"}</span>
           </div>
         </div>
       </section>
 
       {/* Quota */}
       {quota && (
-        <section className="bg-white border-4 border-black shadow-neo">
-          <div className="px-5 py-4 border-b-4 border-black">
-            <h2 className="text-lg font-black uppercase tracking-tight">Usage &amp; Limits</h2>
+        <section className="rounded-lg border bg-card text-card-foreground shadow-sm">
+          <div className="px-5 py-4 border-b">
+            <h2 className="text-lg font-semibold">Usage &amp; Limits</h2>
           </div>
           <div className="p-5 grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
-            <div className="border-2 border-black p-3">
-              <p className="text-[11px] font-black uppercase text-gray-500">VMs</p>
-              <p className="font-black">{quotaLabel(quota.usage.vms, quota.quota.max_vms, "")}</p>
+            <div className="rounded-md border p-3">
+              <p className="text-xs font-medium text-muted-foreground">VMs</p>
+              <p className="font-semibold mt-1">{quotaLabel(quota.usage.vms, quota.quota.max_vms, "")}</p>
             </div>
-            <div className="border-2 border-black p-3">
-              <p className="text-[11px] font-black uppercase text-gray-500">vCPU</p>
-              <p className="font-black">{quotaLabel(quota.usage.vcpu, quota.quota.max_vcpu, "")}</p>
+            <div className="rounded-md border p-3">
+              <p className="text-xs font-medium text-muted-foreground">vCPU</p>
+              <p className="font-semibold mt-1">{quotaLabel(quota.usage.vcpu, quota.quota.max_vcpu, "")}</p>
             </div>
-            <div className="border-2 border-black p-3">
-              <p className="text-[11px] font-black uppercase text-gray-500">RAM</p>
-              <p className="font-black">{quotaLabel(quota.usage.ram_mb, quota.quota.max_ram_mb, "MB")}</p>
+            <div className="rounded-md border p-3">
+              <p className="text-xs font-medium text-muted-foreground">RAM</p>
+              <p className="font-semibold mt-1">{quotaLabel(quota.usage.ram_mb, quota.quota.max_ram_mb, "MB")}</p>
             </div>
-            <div className="border-2 border-black p-3">
-              <p className="text-[11px] font-black uppercase text-gray-500">Disk</p>
-              <p className="font-black">{quotaLabel(quota.usage.disk_gb, quota.quota.max_disk_gb, "GB")}</p>
+            <div className="rounded-md border p-3">
+              <p className="text-xs font-medium text-muted-foreground">Disk</p>
+              <p className="font-semibold mt-1">{quotaLabel(quota.usage.disk_gb, quota.quota.max_disk_gb, "GB")}</p>
             </div>
           </div>
         </section>
       )}
 
       {/* Change password */}
-      <section className="bg-white border-4 border-black shadow-neo">
-        <div className="px-5 py-4 border-b-4 border-black">
-          <h2 className="text-lg font-black uppercase tracking-tight">Change Password</h2>
+      <section className="rounded-lg border bg-card text-card-foreground shadow-sm">
+        <div className="px-5 py-4 border-b">
+          <h2 className="text-lg font-semibold">Change Password</h2>
         </div>
         <div className="p-5 space-y-3">
           <input
@@ -102,29 +102,29 @@ export default function ClientProfilePage() {
             value={current}
             onChange={(e) => setCurrent(e.target.value)}
             placeholder="Current password"
-            className="w-full h-11 px-3 border-2 border-black bg-white font-bold focus:outline-none focus:shadow-neo-sm"
+            className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           />
           <input
             type="password"
             value={next}
             onChange={(e) => setNext(e.target.value)}
             placeholder="New password"
-            className="w-full h-11 px-3 border-2 border-black bg-white font-bold focus:outline-none focus:shadow-neo-sm"
+            className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           />
           <input
             type="password"
             value={confirm}
             onChange={(e) => setConfirm(e.target.value)}
             placeholder="Confirm new password"
-            className="w-full h-11 px-3 border-2 border-black bg-white font-bold focus:outline-none focus:shadow-neo-sm"
+            className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           />
           {msg && (
-            <p className={`text-sm font-bold ${msg.ok ? "text-green-700" : "text-destructive"}`}>{msg.text}</p>
+            <p className={`text-sm font-medium ${msg.ok ? "text-emerald-600 dark:text-emerald-400" : "text-destructive"}`}>{msg.text}</p>
           )}
           <button
             onClick={submit}
             disabled={changePassword.isPending || !current || !next}
-            className="h-11 px-5 bg-primary text-black border-2 border-black font-black uppercase text-sm shadow-neo hover:shadow-neo-sm transition-all disabled:opacity-50"
+            className="h-10 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium shadow-sm hover:bg-primary/90 transition-colors disabled:opacity-50"
           >
             {changePassword.isPending ? "Saving…" : "Change Password"}
           </button>

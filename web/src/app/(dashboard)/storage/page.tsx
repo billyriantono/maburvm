@@ -87,15 +87,15 @@ function VolumesDialog({ pool, onClose }: { pool: StoragePool | null; onClose: (
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-label="Manage volumes">
       <button type="button" className="absolute inset-0 bg-black/50 cursor-default focus:outline-none" onClick={onClose} aria-label="Close dialog" />
-      <div className="relative bg-white border-4 border-black p-6 shadow-neo-xl max-w-2xl w-full mx-4 max-h-[85vh] overflow-y-auto">
-        <h3 className="text-xl font-black uppercase mb-1 flex items-center gap-2"><HardDrive className="w-5 h-5" />Volumes — {pool.name}</h3>
-        <p className="text-gray-500 font-medium text-sm mb-5">{pool.path}</p>
+      <div className="relative bg-background border rounded-lg p-6 shadow-lg max-w-2xl w-full mx-4 max-h-[85vh] overflow-y-auto">
+        <h3 className="text-lg font-semibold mb-1 flex items-center gap-2"><HardDrive className="w-5 h-5" />Volumes — {pool.name}</h3>
+        <p className="text-muted-foreground text-sm mb-5">{pool.path}</p>
 
         {/* Create form */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-5">
-          <Input placeholder="Volume name" value={name} onChange={(e) => setName(e.target.value)} className="border-2 border-black md:col-span-2" />
-          <Input type="number" min={1} value={sizeGB} onChange={(e) => setSizeGB(Number(e.target.value))} className="border-2 border-black" title="Size (GB)" />
-          <select value={format} onChange={(e) => setFormat(e.target.value)} className="h-12 px-3 border-2 border-black font-medium bg-white">
+          <Input placeholder="Volume name" value={name} onChange={(e) => setName(e.target.value)} className="md:col-span-2" />
+          <Input type="number" min={1} value={sizeGB} onChange={(e) => setSizeGB(Number(e.target.value))} title="Size (GB)" />
+          <select value={format} onChange={(e) => setFormat(e.target.value)} className="h-10 px-3 rounded-md border border-input bg-background text-sm">
             <option value="qcow2">qcow2</option>
             <option value="raw">raw</option>
           </select>
@@ -106,8 +106,8 @@ function VolumesDialog({ pool, onClose }: { pool: StoragePool | null; onClose: (
         </Button>
 
         {/* Volume list */}
-        <div className="border-2 border-black">
-          <div className="grid grid-cols-12 gap-2 p-3 bg-black text-white font-black uppercase text-[10px] tracking-wider">
+        <div className="border rounded-md overflow-hidden">
+          <div className="grid grid-cols-12 gap-2 p-3 bg-muted text-muted-foreground font-medium text-[11px]">
             <div className="col-span-4">Name</div>
             <div className="col-span-2">Size</div>
             <div className="col-span-2">Format</div>
@@ -117,16 +117,16 @@ function VolumesDialog({ pool, onClose }: { pool: StoragePool | null; onClose: (
           {isLoading ? (
             <div className="p-6 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto" /></div>
           ) : !volumes || volumes.length === 0 ? (
-            <div className="p-6 text-center text-gray-500 font-bold uppercase text-sm">No volumes yet</div>
+            <div className="p-6 text-center text-muted-foreground font-medium text-sm">No volumes yet</div>
           ) : (
             volumes.map((v, i) => (
-              <div key={v.id} className={`grid grid-cols-12 gap-2 p-3 items-center border-t-2 border-black ${i % 2 ? "bg-gray-50" : "bg-white"}`}>
-                <div className="col-span-4 font-bold truncate">{v.name}</div>
+              <div key={v.id} className="grid grid-cols-12 gap-2 p-3 items-center border-t">
+                <div className="col-span-4 font-medium truncate">{v.name}</div>
                 <div className="col-span-2 font-mono text-xs">{formatBytes(v.size)}</div>
-                <div className="col-span-2"><span className="text-[10px] font-black uppercase border border-black px-1.5 py-0.5">{v.format}</span></div>
+                <div className="col-span-2"><span className="text-[10px] font-medium border rounded-sm px-1.5 py-0.5 text-muted-foreground">{v.format}</span></div>
                 <div className="col-span-3 font-mono text-[10px] truncate" title={v.path}>{v.path || "—"}</div>
                 <div className="col-span-1 flex justify-end">
-                  <Button variant="ghost" size="sm" className="h-7 w-7 p-0 border-2 border-black hover:bg-danger hover:text-white" title="Delete volume" onClick={() => handleDelete(v.id, v.name)}>
+                  <Button variant="outline" size="sm" className="h-7 w-7 p-0 text-red-600 hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950" title="Delete volume" onClick={() => handleDelete(v.id, v.name)}>
                     <Trash2 className="w-3 h-3" />
                   </Button>
                 </div>
@@ -136,7 +136,7 @@ function VolumesDialog({ pool, onClose }: { pool: StoragePool | null; onClose: (
         </div>
 
         <div className="flex justify-end mt-6">
-          <Button variant="ghost" onClick={onClose} className="border-2 border-black">Close</Button>
+          <Button variant="outline" onClick={onClose}>Close</Button>
         </div>
       </div>
     </div>
@@ -144,37 +144,39 @@ function VolumesDialog({ pool, onClose }: { pool: StoragePool | null; onClose: (
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const config = {
-    online: { bg: "bg-success", text: "text-black", label: "Online" },
-    offline: { bg: "bg-danger", text: "text-white", label: "Offline" },
-    degraded: { bg: "bg-warning", text: "text-black", label: "Degraded" },
+  const config: Record<string, string> = {
+    online: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900",
+    offline: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-900",
+    degraded: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900",
   }
+  const labels: Record<string, string> = { online: "Online", offline: "Offline", degraded: "Degraded" }
 
-  const { bg, text, label } = config[status as keyof typeof config] || config.online
+  const cls = config[status] || config.online
+  const label = labels[status] || labels.online
 
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 text-[10px] font-black uppercase tracking-wider border border-black ${bg} ${text}`}>
+    <span className={`inline-flex items-center px-2 py-0.5 text-[10px] font-medium border rounded-full ${cls}`}>
       {label}
     </span>
   )
 }
 
 function TypeBadge({ type }: { type: string }) {
-  const config: Record<string, { bg: string; text: string; label: string }> = {
-    lvm: { bg: "bg-primary", text: "text-black", label: "LVM" },
-    lvmthin: { bg: "bg-primary", text: "text-black", label: "Thin LVM" },
-    zfs: { bg: "bg-secondary", text: "text-black", label: "ZFS" },
-    zfsthin: { bg: "bg-secondary", text: "text-black", label: "ZFS Thin" },
-    zfscompressed: { bg: "bg-secondary", text: "text-black", label: "ZFS Comp" },
-    dir: { bg: "bg-muted", text: "text-gray-700", label: "DIR" },
-    nfs: { bg: "bg-accent", text: "text-white", label: "NFS" },
-    ceph: { bg: "bg-primary", text: "text-black", label: "Ceph" },
+  const labels: Record<string, string> = {
+    lvm: "LVM",
+    lvmthin: "Thin LVM",
+    zfs: "ZFS",
+    zfsthin: "ZFS Thin",
+    zfscompressed: "ZFS Comp",
+    dir: "DIR",
+    nfs: "NFS",
+    ceph: "Ceph",
   }
 
-  const { bg, text, label } = config[type] || { bg: "bg-muted", text: "text-gray-700", label: type.toUpperCase() }
+  const label = labels[type] || type.toUpperCase()
 
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 text-[10px] font-black uppercase tracking-wider border border-black ${bg} ${text}`}>
+    <span className="inline-flex items-center px-2 py-0.5 text-[10px] font-medium border rounded-full bg-muted text-muted-foreground">
       {label}
     </span>
   )
@@ -184,25 +186,25 @@ function StorageBar({ used, total }: { used: number; total: number }) {
   const percentage = total > 0 ? Math.round((used / total) * 100) : 0
 
   const getColorClass = () => {
-    if (percentage >= 90) return "bg-danger"
-    if (percentage >= 75) return "bg-warning"
-    if (percentage >= 50) return "bg-secondary"
-    return "bg-success"
+    if (percentage >= 90) return "bg-red-500"
+    if (percentage >= 75) return "bg-amber-500"
+    if (percentage >= 50) return "bg-blue-500"
+    return "bg-emerald-500"
   }
 
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between text-xs font-medium">
-        <span className="text-gray-500 uppercase">Usage</span>
-        <span className="font-black">{percentage}%</span>
+        <span className="text-muted-foreground">Usage</span>
+        <span className="font-semibold">{percentage}%</span>
       </div>
-      <div className="h-3 bg-gray-200 border border-black">
+      <div className="h-2 bg-muted rounded-full overflow-hidden">
         <div
           className={`h-full ${getColorClass()} transition-all duration-300`}
           style={{ width: `${percentage}%` }}
         />
       </div>
-      <div className="flex items-center justify-between text-[10px] text-gray-500">
+      <div className="flex items-center justify-between text-[10px] text-muted-foreground">
         <span>{formatBytes(used)} used</span>
         <span>{formatBytes(total)} total</span>
       </div>
@@ -230,11 +232,11 @@ function ConfirmDialog({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-label="Confirm dialog">
       <button type="button" className="absolute inset-0 bg-black/50 cursor-default focus:outline-none" onClick={onCancel} aria-label="Close dialog" />
-      <div className="relative bg-white border-4 border-black p-6 shadow-neo-xl max-w-md w-full mx-4">
-        <h3 className="text-xl font-black uppercase mb-4">{title}</h3>
-        <p className="text-gray-600 font-medium mb-6">{message}</p>
+      <div className="relative bg-background border rounded-lg p-6 shadow-lg max-w-md w-full mx-4">
+        <h3 className="text-lg font-semibold mb-2">{title}</h3>
+        <p className="text-muted-foreground text-sm mb-6">{message}</p>
         <div className="flex gap-3 justify-end">
-          <Button variant="ghost" onClick={onCancel} className="border-2 border-black">
+          <Button variant="outline" onClick={onCancel}>
             Cancel
           </Button>
           <Button variant="destructive" onClick={onConfirm}>
@@ -319,15 +321,15 @@ export default function StorageListPage() {
       <div className="max-w-7xl mx-auto">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
           <div>
-            <h1 className="text-3xl font-black uppercase tracking-tight text-black flex items-center gap-3">
-              <Database className="w-8 h-8" />
+            <h1 className="text-2xl font-semibold text-foreground flex items-center gap-3">
+              <Database className="w-7 h-7" />
               Storage
             </h1>
           </div>
         </div>
         <div className="flex items-center justify-center py-20">
           <Loader2 className="w-8 h-8 animate-spin" />
-          <span className="ml-3 font-bold uppercase">Loading storage pools...</span>
+          <span className="ml-3 font-medium text-muted-foreground">Loading storage pools...</span>
         </div>
       </div>
     )
@@ -338,18 +340,18 @@ export default function StorageListPage() {
       <div className="max-w-7xl mx-auto">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
           <div>
-            <h1 className="text-3xl font-black uppercase tracking-tight text-black flex items-center gap-3">
-              <Database className="w-8 h-8" />
+            <h1 className="text-2xl font-semibold text-foreground flex items-center gap-3">
+              <Database className="w-7 h-7" />
               Storage
             </h1>
           </div>
         </div>
-        <div className="bg-danger/10 border-4 border-danger p-6">
+        <div className="bg-red-50 border border-red-200 rounded-lg p-6 dark:bg-red-950 dark:border-red-900">
           <div className="flex items-center gap-3">
-            <AlertCircle className="w-6 h-6 text-danger" />
+            <AlertCircle className="w-6 h-6 text-red-600" />
             <div>
-              <p className="font-black uppercase">Error loading storage pools</p>
-              <p className="text-sm font-medium">{error.message}</p>
+              <p className="font-semibold text-red-700 dark:text-red-300">Error loading storage pools</p>
+              <p className="text-sm text-muted-foreground">{error.message}</p>
             </div>
           </div>
         </div>
@@ -361,11 +363,11 @@ export default function StorageListPage() {
     <div className="max-w-7xl mx-auto">
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-3xl font-black uppercase tracking-tight text-black flex items-center gap-3">
-            <Database className="w-8 h-8" />
+          <h1 className="text-2xl font-semibold text-foreground flex items-center gap-3">
+            <Database className="w-7 h-7" />
             Storage
           </h1>
-          <p className="text-gray-500 font-medium uppercase tracking-wider text-sm">
+          <p className="text-muted-foreground text-sm">
             {stats.totalPools} pools
           </p>
         </div>
@@ -376,56 +378,56 @@ export default function StorageListPage() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-        <div className="bg-white border-4 border-black p-4 shadow-neo">
+        <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-black uppercase text-gray-500">Total Pools</span>
-            <HardDrive className="w-4 h-4 text-gray-600" />
+            <span className="text-xs font-medium text-muted-foreground">Total Pools</span>
+            <HardDrive className="w-4 h-4 text-muted-foreground" />
           </div>
-          <p className="text-3xl font-black text-black">{stats.totalPools}</p>
+          <p className="text-2xl font-semibold text-foreground">{stats.totalPools}</p>
         </div>
 
-        <div className="bg-white border-4 border-black p-4 shadow-neo">
+        <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-black uppercase text-gray-500">Total Capacity</span>
-            <Database className="w-4 h-4 text-gray-600" />
+            <span className="text-xs font-medium text-muted-foreground">Total Capacity</span>
+            <Database className="w-4 h-4 text-muted-foreground" />
           </div>
-          <p className="text-3xl font-black text-black">{formatBytes(stats.totalCapacity)}</p>
+          <p className="text-2xl font-semibold text-foreground">{formatBytes(stats.totalCapacity)}</p>
         </div>
 
-        <div className="bg-white border-4 border-black p-4 shadow-neo">
+        <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-black uppercase text-gray-500">Used Storage</span>
-            <Server className="w-4 h-4 text-gray-600" />
+            <span className="text-xs font-medium text-muted-foreground">Used Storage</span>
+            <Server className="w-4 h-4 text-muted-foreground" />
           </div>
-          <p className="text-3xl font-black text-warning">{formatBytes(stats.usedStorage)}</p>
+          <p className="text-2xl font-semibold text-amber-600">{formatBytes(stats.usedStorage)}</p>
         </div>
 
-        <div className="bg-white border-4 border-black p-4 shadow-neo">
+        <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-black uppercase text-gray-500">Available Storage</span>
-            <Folder className="w-4 h-4 text-gray-600" />
+            <span className="text-xs font-medium text-muted-foreground">Available Storage</span>
+            <Folder className="w-4 h-4 text-muted-foreground" />
           </div>
-          <p className="text-3xl font-black text-success">{formatBytes(stats.availableStorage)}</p>
+          <p className="text-2xl font-semibold text-emerald-600">{formatBytes(stats.availableStorage)}</p>
         </div>
       </div>
 
-      <div className="bg-white border-4 border-black p-4 shadow-neo mb-6">
+      <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm mb-6">
         <div className="flex flex-col lg:flex-row gap-4">
           <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <Input
               type="text"
               placeholder="Search by name, path, or node..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-10 border-2 border-black"
+              className="pl-10"
             />
           </div>
 
           <select
             value={typeFilter}
             onChange={(e) => setTypeFilter(e.target.value)}
-            className="h-12 px-4 border-2 border-black font-medium bg-white focus:outline-none focus:shadow-neo-sm"
+            className="h-10 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           >
             <option value="">All Types</option>
             <option value="dir">Directory (File)</option>
@@ -439,7 +441,7 @@ export default function StorageListPage() {
           </select>
 
           {hasFilters && (
-            <Button variant="ghost" onClick={clearFilters} className="border-2 border-black gap-1">
+            <Button variant="outline" onClick={clearFilters} className="gap-1">
               <X className="w-4 h-4" />
               Clear
             </Button>
@@ -449,23 +451,23 @@ export default function StorageListPage() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {filteredPools.length === 0 ? (
-          <div className="col-span-full bg-white border-4 border-black p-12 shadow-neo text-center">
-            <Database className="w-16 h-16 text-gray-500 mx-auto mb-4" />
-            <p className="text-gray-500 font-bold uppercase">No storage pools found</p>
+          <div className="col-span-full bg-card text-card-foreground border rounded-lg p-12 shadow-sm text-center">
+            <Database className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
+            <p className="text-muted-foreground font-medium">No storage pools found</p>
             {hasFilters && (
-              <Button variant="ghost" onClick={clearFilters} className="mt-4 border-2 border-black">
+              <Button variant="outline" onClick={clearFilters} className="mt-4">
                 Clear filters
               </Button>
             )}
           </div>
         ) : (
           filteredPools.map((pool) => (
-            <div key={pool.id} className="bg-white border-4 border-black shadow-neo">
-              <div className="p-4 border-b-4 border-black bg-gray-50">
+            <div key={pool.id} className="bg-card text-card-foreground border rounded-lg shadow-sm overflow-hidden">
+              <div className="p-4 border-b bg-muted/50">
                 <div className="flex items-start justify-between">
                   <div>
-                    <h3 className="text-xl font-black uppercase">{pool.name}</h3>
-                    <p className="text-sm font-mono font-medium text-gray-500">{pool.path}</p>
+                    <h3 className="text-lg font-semibold">{pool.name}</h3>
+                    <p className="text-sm font-mono text-muted-foreground">{pool.path}</p>
                   </div>
                   <div className="flex items-center gap-2">
                     <StatusBadge status={pool.status === 'online' ? 'online' : pool.status === 'offline' ? 'offline' : 'degraded'} />
@@ -477,12 +479,12 @@ export default function StorageListPage() {
               <div className="p-4">
                 <div className="flex items-center gap-4 mb-4">
                   <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 bg-primary flex items-center justify-center border-2 border-black">
+                    <div className="w-8 h-8 bg-muted text-muted-foreground flex items-center justify-center rounded-md">
                       <Server className="w-4 h-4" />
                     </div>
                     <div>
-                      <p className="text-lg font-black">{pool.node_id || 'N/A'}</p>
-                      <p className="text-[10px] font-bold text-gray-500 uppercase">Node</p>
+                      <p className="text-sm font-semibold">{pool.node_id || 'N/A'}</p>
+                      <p className="text-[10px] font-medium text-muted-foreground">Node</p>
                     </div>
                   </div>
                 </div>
@@ -491,18 +493,17 @@ export default function StorageListPage() {
                   <StorageBar used={pool.used_space ?? 0} total={pool.total_space ?? 0} />
                 </div>
 
-                <div className="bg-gray-100 border-2 border-black p-2 mb-4">
+                <div className="bg-muted rounded-md p-2 mb-4">
                   <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-bold text-gray-500 uppercase">Created</span>
+                    <span className="text-[10px] font-medium text-muted-foreground">Created</span>
                     <span className="font-mono text-xs">{formatDate(pool.created_at)}</span>
                   </div>
                 </div>
 
                 <div className="flex items-center gap-2">
                   <Button
-                    variant="ghost"
+                    variant="outline"
                     size="sm"
-                    className="h-9 border-2 border-black"
                     title="Manage volumes"
                     onClick={() => setVolumesPool(pool)}
                   >
@@ -511,9 +512,8 @@ export default function StorageListPage() {
                   </Button>
 
                   <Button
-                    variant="ghost"
+                    variant="outline"
                     size="sm"
-                    className="h-9 border-2 border-black"
                     title="Resize"
                     onClick={() => { setResizeTarget(pool); setResizeBytes(pool.total_space ?? 0) }}
                   >
@@ -522,10 +522,10 @@ export default function StorageListPage() {
                   </Button>
 
                   <Button
-                    variant="ghost"
+                    variant="outline"
                     size="sm"
                     onClick={() => setDeleteConfirm(pool)}
-                    className="h-9 border-2 border-black hover:bg-danger hover:text-white"
+                    className="text-red-600 hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950"
                     title="Delete"
                   >
                     <Trash2 className="w-4 h-4" />
@@ -549,20 +549,20 @@ export default function StorageListPage() {
       {showAddPool && (
         <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
           <button type="button" className="absolute inset-0 bg-black/50 cursor-default focus:outline-none" onClick={() => setShowAddPool(false)} aria-label="Close" />
-          <div className="relative bg-white border-4 border-black p-6 shadow-neo-xl max-w-md w-full mx-4">
-            <h3 className="text-xl font-black uppercase mb-4">Add Storage Pool</h3>
+          <div className="relative bg-background border rounded-lg p-6 shadow-lg max-w-md w-full mx-4">
+            <h3 className="text-lg font-semibold mb-4">Add Storage Pool</h3>
             <div className="space-y-4">
               <div>
-                <label className="text-xs font-black uppercase text-gray-500">Name</label>
-                <Input value={newPool.name} onChange={(e) => setNewPool({...newPool, name: e.target.value})} placeholder="e.g., local-lvm" className="border-2 border-black" />
+                <label className="text-xs font-medium text-muted-foreground">Name</label>
+                <Input value={newPool.name} onChange={(e) => setNewPool({...newPool, name: e.target.value})} placeholder="e.g., local-lvm" />
               </div>
               <div>
-                <label className="text-xs font-black uppercase text-gray-500">Path</label>
-                <Input value={newPool.path} onChange={(e) => setNewPool({...newPool, path: e.target.value})} placeholder="e.g., /var/lib/vz" className="border-2 border-black" />
+                <label className="text-xs font-medium text-muted-foreground">Path</label>
+                <Input value={newPool.path} onChange={(e) => setNewPool({...newPool, path: e.target.value})} placeholder="e.g., /var/lib/vz" />
               </div>
               <div>
-                <label className="text-xs font-black uppercase text-gray-500">Type</label>
-                <select value={newPool.type} onChange={(e) => setNewPool({...newPool, type: e.target.value})} className="w-full h-10 px-3 border-2 border-black font-medium bg-white">
+                <label className="text-xs font-medium text-muted-foreground">Type</label>
+                <select value={newPool.type} onChange={(e) => setNewPool({...newPool, type: e.target.value})} className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm">
                   <option value="dir">Directory (File)</option>
                   <option value="lvm">LVM</option>
                   <option value="lvmthin">Thin LVM</option>
@@ -574,8 +574,8 @@ export default function StorageListPage() {
                 </select>
               </div>
               <div>
-                <label className="text-xs font-black uppercase text-gray-500">Node</label>
-                <select value={newPool.node_id} onChange={(e) => setNewPool({...newPool, node_id: e.target.value})} className="w-full h-10 px-3 border-2 border-black font-medium bg-white">
+                <label className="text-xs font-medium text-muted-foreground">Node</label>
+                <select value={newPool.node_id} onChange={(e) => setNewPool({...newPool, node_id: e.target.value})} className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm">
                   <option value="">Select a node</option>
                   {nodes?.map((node) => (
                     <option key={node.id} value={node.id}>{node.name}</option>
@@ -583,31 +583,31 @@ export default function StorageListPage() {
                 </select>
               </div>
               <div>
-                <label className="text-xs font-black uppercase text-gray-500">Size (GB)</label>
-                <Input type="number" value={Math.round(newPool.total_space / 1073741824)} onChange={(e) => setNewPool({...newPool, total_space: parseInt(e.target.value) * 1073741824})} className="border-2 border-black" />
+                <label className="text-xs font-medium text-muted-foreground">Size (GB)</label>
+                <Input type="number" value={Math.round(newPool.total_space / 1073741824)} onChange={(e) => setNewPool({...newPool, total_space: parseInt(e.target.value) * 1073741824})} />
               </div>
               <div>
-                <label className="text-xs font-black uppercase text-gray-500">File Format</label>
-                <select value={newPool.file_format} onChange={(e) => setNewPool({...newPool, file_format: e.target.value})} className="w-full h-10 px-3 border-2 border-black font-medium bg-white">
+                <label className="text-xs font-medium text-muted-foreground">File Format</label>
+                <select value={newPool.file_format} onChange={(e) => setNewPool({...newPool, file_format: e.target.value})} className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm">
                   <option value="raw">RAW</option>
                   <option value="qcow2">QCOW2</option>
                 </select>
               </div>
               <div>
-                <label className="text-xs font-black uppercase text-gray-500">Alert Threshold (%)</label>
-                <Input type="number" min={0} max={100} value={newPool.alert_threshold} onChange={(e) => setNewPool({...newPool, alert_threshold: parseInt(e.target.value) || 0})} className="border-2 border-black" />
+                <label className="text-xs font-medium text-muted-foreground">Alert Threshold (%)</label>
+                <Input type="number" min={0} max={100} value={newPool.alert_threshold} onChange={(e) => setNewPool({...newPool, alert_threshold: parseInt(e.target.value) || 0})} />
               </div>
               <div>
-                <label className="text-xs font-black uppercase text-gray-500">Overcommit (GB, 0 = disabled)</label>
-                <Input type="number" min={0} value={Math.round(newPool.overcommit / 1073741824)} onChange={(e) => setNewPool({...newPool, overcommit: parseInt(e.target.value) * 1073741824})} className="border-2 border-black" />
+                <label className="text-xs font-medium text-muted-foreground">Overcommit (GB, 0 = disabled)</label>
+                <Input type="number" min={0} value={Math.round(newPool.overcommit / 1073741824)} onChange={(e) => setNewPool({...newPool, overcommit: parseInt(e.target.value) * 1073741824})} />
               </div>
               <div className="flex items-center gap-3">
-                <input type="checkbox" id="is_primary" checked={newPool.is_primary} onChange={(e) => setNewPool({...newPool, is_primary: e.target.checked})} className="w-5 h-5 border-2 border-black" />
-                <label htmlFor="is_primary" className="text-xs font-black uppercase text-gray-500">Primary Storage</label>
+                <input type="checkbox" id="is_primary" checked={newPool.is_primary} onChange={(e) => setNewPool({...newPool, is_primary: e.target.checked})} className="w-4 h-4 rounded border-input" />
+                <label htmlFor="is_primary" className="text-xs font-medium text-muted-foreground">Primary Storage</label>
               </div>
             </div>
             <div className="flex gap-3 justify-end mt-6">
-              <Button variant="ghost" onClick={() => setShowAddPool(false)} className="border-2 border-black">Cancel</Button>
+              <Button variant="outline" onClick={() => setShowAddPool(false)}>Cancel</Button>
               <Button onClick={handleAddPool} disabled={!newPool.name || !newPool.path || !newPool.node_id || isLoadingNodes || createPool.isPending}>
                 {createPool.isPending ? "Creating..." : "Create Pool"}
               </Button>
@@ -620,20 +620,20 @@ export default function StorageListPage() {
       {resizeTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
           <button type="button" className="absolute inset-0 bg-black/50 cursor-default focus:outline-none" onClick={() => setResizeTarget(null)} aria-label="Close" />
-          <div className="relative bg-white border-4 border-black p-6 shadow-neo-xl max-w-md w-full mx-4">
-            <h3 className="text-xl font-black uppercase mb-4">Resize Pool: {resizeTarget.name}</h3>
+          <div className="relative bg-background border rounded-lg p-6 shadow-lg max-w-md w-full mx-4">
+            <h3 className="text-lg font-semibold mb-4">Resize Pool: {resizeTarget.name}</h3>
             <div className="space-y-4">
               <div>
-                <label className="text-xs font-black uppercase text-gray-500">Current Size</label>
-                <p className="font-bold">{formatBytes(resizeTarget.total_space ?? 0)}</p>
+                <label className="text-xs font-medium text-muted-foreground">Current Size</label>
+                <p className="font-semibold">{formatBytes(resizeTarget.total_space ?? 0)}</p>
               </div>
               <div>
-                <label className="text-xs font-black uppercase text-gray-500">New Size (GB)</label>
-                <Input type="number" value={Math.round(resizeBytes / 1073741824)} onChange={(e) => setResizeBytes(parseInt(e.target.value) * 1073741824)} className="border-2 border-black" />
+                <label className="text-xs font-medium text-muted-foreground">New Size (GB)</label>
+                <Input type="number" value={Math.round(resizeBytes / 1073741824)} onChange={(e) => setResizeBytes(parseInt(e.target.value) * 1073741824)} />
               </div>
             </div>
             <div className="flex gap-3 justify-end mt-6">
-              <Button variant="ghost" onClick={() => setResizeTarget(null)} className="border-2 border-black">Cancel</Button>
+              <Button variant="outline" onClick={() => setResizeTarget(null)}>Cancel</Button>
               <Button onClick={handleResize} disabled={resizePool.isPending}>
                 {resizePool.isPending ? "Resizing..." : "Resize"}
               </Button>

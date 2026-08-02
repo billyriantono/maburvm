@@ -4,221 +4,160 @@
 
 @layer base {
   :root {
-    /* Neo-Brutalist Override - Sharp corners */
-    --radius: 0rem;
-    
-    /* Neo-Brutalist color palette */
-    --primary: 54 100% 50%;      /* #FFE500 - Yellow */
-    --secondary: 185 100% 47%;   /* #00F0FF - Cyan */
-    --accent: 330 100% 50%;      /* #FF00A0 - Magenta */
-    --success: 72 100% 50%;      /* #CCFF00 - Lime */
-    --danger: 0 100% 60%;        /* #FF4444 - Red */
-    --warning: 36 100% 50%;      /* #FFAA00 - Orange */
-    
-    /* Background and foreground */
-    --background: 0 0% 96%;      /* #F5F5F5 - Light gray */
-    --foreground: 0 0% 0%;       /* #000000 - Black */
-    
-    /* Card and popover */
+    --radius: 0.5rem;
+
+    --background: 0 0% 100%;
+    --foreground: 240 10% 3.9%;
+
     --card: 0 0% 100%;
-    --card-foreground: 0 0% 0%;
-    
-    /* Shadcn variables - Neo-Brutalist */
-    --border: 0 0% 0%;           /* Pure black border */
-    --input: 0 0% 0%;
-    --ring: 0 0% 0%;
-    
-        --muted: 0 0% 90%;
-    --muted-foreground: 0 0% 32%;
-    
+    --card-foreground: 240 10% 3.9%;
+
     --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 0%;
-    
-    --primary-foreground: 0 0% 0%;
-    --secondary-foreground: 0 0% 0%;
-    --accent-foreground: 0 0% 100%;
-    --destructive: 0 100% 60%;
-    --destructive-foreground: 0 0% 100%;
-    
-    --success-foreground: 0 0% 0%;
-    --warning-foreground: 0 0% 0%;
+    --popover-foreground: 240 10% 3.9%;
+
+    --primary: 240 5.9% 10%;
+    --primary-foreground: 0 0% 98%;
+
+    --secondary: 240 4.8% 95.9%;
+    --secondary-foreground: 240 5.9% 10%;
+
+    --muted: 240 4.8% 95.9%;
+    --muted-foreground: 240 3.8% 46.1%;
+
+    --accent: 240 4.8% 95.9%;
+    --accent-foreground: 240 5.9% 10%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 240 5.9% 90%;
+    --input: 240 5.9% 90%;
+    --ring: 240 5.9% 10%;
+
+    /* Extra semantic tokens (professional, muted) */
+    --success: 142 71% 45%;
+    --success-foreground: 0 0% 98%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 240 6% 10%;
+    --danger: 0 84.2% 60.2%;
+    --danger-foreground: 0 0% 98%;
+  }
+
+  .dark {
+    --background: 240 10% 3.9%;
+    --foreground: 0 0% 98%;
+
+    --card: 240 10% 3.9%;
+    --card-foreground: 0 0% 98%;
+
+    --popover: 240 10% 3.9%;
+    --popover-foreground: 0 0% 98%;
+
+    --primary: 0 0% 98%;
+    --primary-foreground: 240 5.9% 10%;
+
+    --secondary: 240 3.7% 15.9%;
+    --secondary-foreground: 0 0% 98%;
+
+    --muted: 240 3.7% 15.9%;
+    --muted-foreground: 240 5% 64.9%;
+
+    --accent: 240 3.7% 15.9%;
+    --accent-foreground: 0 0% 98%;
+
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 240 3.7% 15.9%;
+    --input: 240 3.7% 15.9%;
+    --ring: 240 4.9% 83.9%;
+
+    --success: 142 71% 45%;
+    --success-foreground: 0 0% 98%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 240 6% 10%;
+    --danger: 0 62.8% 30.6%;
+    --danger-foreground: 0 0% 98%;
   }
 }
 
 @layer base {
+  * {
+    @apply border-border;
+  }
   body {
     @apply bg-background text-foreground;
-    font-family: 'Courier New', Courier, monospace;
-  }
-
-  /* Neo-Brutalist headings */
-  h1, h2, h3, h4, h5, h6 {
-    @apply font-bold uppercase tracking-tight;
-    letter-spacing: -0.05em;
-  }
-
-  /* Bold borders on all interactive elements */
-  button, input, textarea, select {
-    @apply border-2 border-black;
-  }
-
-  /* Focus states */
-  a:focus-visible, button:focus-visible, input:focus-visible, 
-  textarea:focus-visible, select:focus-visible {
-    @apply outline-none ring-2 ring-black ring-offset-2;
-    box-shadow: 4px 4px 0px 0px #000000;
   }
 }
 
+/* Legacy neo-* utility classes kept for backwards compatibility, neutralized
+   to clean shadcn surfaces so pages still using them render professionally. */
 @layer components {
-  /* Neo-Brutalist Button Base */
   .neo-btn {
-    @apply inline-flex items-center justify-center gap-2 px-6 py-3 
-           font-bold uppercase text-sm tracking-wide
-           border-2 border-black bg-white text-black
-           transition-all duration-150 ease-out
-           shadow-neo hover:shadow-neo-hover active:shadow-neo-active
-           hover:translate-x-[-2px] hover:translate-y-[-2px]
-           active:translate-x-[2px] active:translate-y-[2px]
-                      disabled:opacity-60 disabled:pointer-events-none disabled:translate-x-0 disabled:translate-y-0 disabled:shadow-neo;
+    @apply inline-flex items-center justify-center gap-2 rounded-md border bg-background px-4 py-2
+           text-sm font-medium transition-colors hover:bg-muted
+           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2
+           disabled:opacity-50 disabled:pointer-events-none;
   }
-
-  /* Primary button - Yellow */
   .neo-btn-primary {
-    @apply neo-btn bg-primary;
+    @apply neo-btn bg-primary text-primary-foreground hover:bg-primary/90;
   }
-
-  /* Secondary button - Cyan */
   .neo-btn-secondary {
-    @apply neo-btn bg-secondary;
+    @apply neo-btn bg-secondary text-secondary-foreground hover:bg-secondary/80;
   }
-
-  /* Accent button - Magenta */
   .neo-btn-accent {
-    @apply neo-btn bg-accent text-white;
+    @apply neo-btn bg-primary text-primary-foreground hover:bg-primary/90;
   }
-
-  /* Danger button - Red */
   .neo-btn-danger {
-    @apply neo-btn bg-danger text-white;
+    @apply neo-btn bg-destructive text-destructive-foreground hover:bg-destructive/90;
   }
-
-  /* Success button - Lime */
   .neo-btn-success {
-    @apply neo-btn bg-success;
+    @apply neo-btn border-transparent bg-emerald-600 text-white hover:bg-emerald-700;
   }
-
-  /* Warning button - Orange */
   .neo-btn-warning {
-    @apply neo-btn bg-warning;
+    @apply neo-btn border-transparent bg-amber-500 text-white hover:bg-amber-600;
   }
-
-  /* Ghost button */
   .neo-btn-ghost {
-    @apply neo-btn bg-transparent hover:bg-gray-100;
+    @apply neo-btn border-transparent bg-transparent hover:bg-muted;
   }
 
-  /* Neo-Brutalist Card */
   .neo-card {
-    @apply bg-white border-2 border-black p-6 shadow-neo;
+    @apply rounded-lg border bg-card p-6 text-card-foreground shadow-sm;
   }
-
-  /* Neo-Brutalist Card with colored background */
-  .neo-card-primary {
-    @apply neo-card bg-primary;
-  }
-
-  .neo-card-secondary {
-    @apply neo-card bg-secondary;
-  }
-
+  .neo-card-primary,
+  .neo-card-secondary,
   .neo-card-accent {
-    @apply neo-card bg-accent text-white;
+    @apply neo-card;
   }
 
-  /* Neo-Brutalist Input */
   .neo-input {
-    @apply w-full px-4 py-3 bg-white border-2 border-black
-           focus:outline-none focus:shadow-neo-hover focus:translate-x-[-2px] focus:translate-y-[-2px]
-                      placeholder:text-gray-600;
+    @apply w-full rounded-md border bg-background px-3 py-2 text-sm
+           placeholder:text-muted-foreground
+           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2;
   }
 
-  /* Neo-Brutalist Badge */
   .neo-badge {
-    @apply inline-flex items-center px-3 py-1 
-           border-2 border-black text-xs font-bold uppercase
-           shadow-neo-sm;
+    @apply inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-medium;
   }
-
   .neo-badge-primary {
-    @apply neo-badge bg-primary;
+    @apply neo-badge border-transparent bg-primary text-primary-foreground;
   }
-
   .neo-badge-secondary {
-    @apply neo-badge bg-secondary;
+    @apply neo-badge border-transparent bg-secondary text-secondary-foreground;
   }
-
   .neo-badge-accent {
-    @apply neo-badge bg-accent text-white;
+    @apply neo-badge border-transparent bg-muted text-muted-foreground;
   }
 
-  /* Neo-Brutalist Section */
   .neo-section {
-    @apply bg-background border-2 border-black p-8 shadow-neo;
+    @apply rounded-lg border bg-card p-8 shadow-sm;
   }
 
-  /* Neo-Brutalist Divider */
   .neo-divider {
-    @apply h-1 bg-black;
+    @apply h-px w-full bg-border;
   }
 
-  /* Inset shadow effect */
   .neo-inset {
-    @apply shadow-neo-inset;
-  }
-}
-
-@layer utilities {
-  /* Animation utilities */
-  .animate-neo-bounce {
-    animation: neo-bounce 0.3s ease-in-out;
-  }
-
-  .animate-neo-pulse {
-    animation: neo-pulse 2s ease-in-out infinite;
-  }
-
-  @keyframes neo-bounce {
-    0%, 100% {
-      transform: translateY(0);
-      box-shadow: 4px 4px 0px 0px #000000;
-    }
-    50% {
-      transform: translateY(-4px);
-      box-shadow: 6px 6px 0px 0px #000000;
-    }
-  }
-
-  @keyframes neo-pulse {
-    0%, 100% {
-      box-shadow: 4px 4px 0px 0px #000000;
-    }
-    50% {
-      box-shadow: 8px 8px 0px 0px #000000;
-    }
-  }
-
-  /* No rounded corners utility */
-  .rounded-none {
-    border-radius: 0 !important;
-  }
-
-  /* Bold border utilities */
-  .border-bold {
-    border-width: 3px;
-  }
-
-  .border-boldest {
-    border-width: 4px;
+    @apply bg-muted;
   }
 }

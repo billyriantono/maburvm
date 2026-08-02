@@ -35,11 +35,11 @@ function ConfirmDialog({ open, title, message, loading, onConfirm, onCancel }: {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-label="Confirm dialog">
       <button type="button" className="absolute inset-0 bg-black/50 cursor-default focus:outline-none" onClick={onCancel} aria-label="Close dialog" />
-      <div className="relative bg-white border-4 border-black p-6 shadow-neo-xl max-w-md w-full mx-4">
-        <h3 className="text-xl font-black uppercase mb-4">{title}</h3>
-        <p className="text-gray-600 font-medium mb-6">{message}</p>
+      <div className="relative rounded-lg border bg-background p-6 shadow-lg max-w-md w-full mx-4">
+        <h3 className="text-lg font-semibold mb-4">{title}</h3>
+        <p className="text-muted-foreground mb-6">{message}</p>
         <div className="flex gap-3 justify-end">
-          <Button variant="ghost" onClick={onCancel} className="border-2 border-black" disabled={loading}>Cancel</Button>
+          <Button variant="outline" onClick={onCancel} disabled={loading}>Cancel</Button>
           <Button variant="destructive" onClick={onConfirm} disabled={loading}>
             {loading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
             Confirm Delete
@@ -87,12 +87,12 @@ export default function NetworksPage() {
   if (isLoading) {
     return (
       <div className="max-w-7xl mx-auto">
-        <h1 className="text-3xl font-black uppercase tracking-tight text-black flex items-center gap-2 mb-6">
-          <Zap className="w-8 h-8" />Networks
+        <h1 className="text-2xl font-semibold text-foreground flex items-center gap-2 mb-6">
+          <Zap className="w-6 h-6" />Networks
         </h1>
         <div className="flex items-center justify-center py-20">
           <Loader2 className="w-8 h-8 animate-spin" />
-          <span className="ml-3 font-bold uppercase">Loading networks...</span>
+          <span className="ml-3 text-muted-foreground">Loading networks...</span>
         </div>
       </div>
     )
@@ -101,15 +101,15 @@ export default function NetworksPage() {
   if (error) {
     return (
       <div className="max-w-7xl mx-auto">
-        <h1 className="text-3xl font-black uppercase tracking-tight text-black flex items-center gap-2 mb-6">
-          <Zap className="w-8 h-8" />Networks
+        <h1 className="text-2xl font-semibold text-foreground flex items-center gap-2 mb-6">
+          <Zap className="w-6 h-6" />Networks
         </h1>
-        <div className="bg-danger/10 border-4 border-danger p-6">
+        <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-6">
           <div className="flex items-center gap-3">
-            <AlertCircle className="w-6 h-6 text-danger" />
+            <AlertCircle className="w-6 h-6 text-destructive" />
             <div>
-              <p className="font-black uppercase">Error loading networks</p>
-              <p className="text-sm font-medium">{error.message}</p>
+              <p className="font-semibold">Error loading networks</p>
+              <p className="text-sm text-muted-foreground">{error.message}</p>
             </div>
           </div>
         </div>
@@ -121,11 +121,11 @@ export default function NetworksPage() {
     <div className="max-w-7xl mx-auto">
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-3xl font-black uppercase tracking-tight text-black flex items-center gap-2">
-            <Zap className="w-8 h-8" />
+          <h1 className="text-2xl font-semibold text-foreground flex items-center gap-2">
+            <Zap className="w-6 h-6" />
             Networks
           </h1>
-          <p className="text-gray-500 font-medium uppercase tracking-wider text-sm mt-1">
+          <p className="text-muted-foreground text-sm mt-1">
             {totalNetworks} managed network{totalNetworks === 1 ? "" : "s"} (bridge / NAT / isolated)
           </p>
         </div>
@@ -136,59 +136,59 @@ export default function NetworksPage() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-        <div className="border-4 border-black shadow-neo p-4 bg-white">
+        <div className="rounded-lg border shadow-sm p-4 bg-card">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-xs font-bold uppercase text-gray-500 tracking-wider">Total</p>
-              <p className="text-3xl font-black text-black mt-1">{totalNetworks}</p>
+              <p className="text-xs font-medium text-muted-foreground">Total</p>
+              <p className="text-2xl font-semibold text-foreground mt-1">{totalNetworks}</p>
             </div>
-            <NetworkIcon className="w-8 h-8 text-gray-600" />
+            <NetworkIcon className="w-8 h-8 text-muted-foreground" />
           </div>
         </div>
-        <div className="border-4 border-black shadow-neo p-4 bg-white">
+        <div className="rounded-lg border shadow-sm p-4 bg-card">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-xs font-bold uppercase text-gray-500 tracking-wider">Bridge</p>
-              <p className="text-3xl font-black text-black mt-1">{bridgeNetworks}</p>
+              <p className="text-xs font-medium text-muted-foreground">Bridge</p>
+              <p className="text-2xl font-semibold text-foreground mt-1">{bridgeNetworks}</p>
             </div>
-            <Wifi className="w-8 h-8 text-primary" />
+            <Wifi className="w-8 h-8 text-muted-foreground" />
           </div>
         </div>
-        <div className="border-4 border-black shadow-neo p-4 bg-white">
+        <div className="rounded-lg border shadow-sm p-4 bg-card">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-xs font-bold uppercase text-gray-500 tracking-wider">NAT</p>
-              <p className="text-3xl font-black text-secondary mt-1">{natNetworks}</p>
+              <p className="text-xs font-medium text-muted-foreground">NAT</p>
+              <p className="text-2xl font-semibold text-foreground mt-1">{natNetworks}</p>
             </div>
-            <Wifi className="w-8 h-8 text-secondary" />
+            <Wifi className="w-8 h-8 text-muted-foreground" />
           </div>
         </div>
-        <div className="border-4 border-black shadow-neo p-4 bg-white">
+        <div className="rounded-lg border shadow-sm p-4 bg-card">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-xs font-bold uppercase text-gray-500 tracking-wider">With VLAN</p>
-              <p className="text-3xl font-black text-success mt-1">{networksWithVlan}</p>
+              <p className="text-xs font-medium text-muted-foreground">With VLAN</p>
+              <p className="text-2xl font-semibold text-foreground mt-1">{networksWithVlan}</p>
             </div>
-            <CheckCircle2 className="w-8 h-8 text-success" />
+            <CheckCircle2 className="w-8 h-8 text-emerald-600" />
           </div>
         </div>
       </div>
 
-      <div className="bg-white border-4 border-black p-4 shadow-neo mb-6">
+      <div className="rounded-lg border bg-card p-4 shadow-sm mb-6">
         <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <Input
             type="text"
             placeholder="Search by name, type, bridge, or subnet..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-10 border-2 border-black"
+            className="pl-10"
           />
         </div>
       </div>
 
-      <div className="bg-white border-4 border-black shadow-neo overflow-hidden">
-        <div className="grid grid-cols-12 gap-4 p-4 bg-black text-white font-black uppercase text-xs tracking-wider">
+      <div className="rounded-lg border bg-card shadow-sm overflow-hidden">
+        <div className="grid grid-cols-12 gap-4 p-4 bg-muted text-muted-foreground font-medium text-xs">
           <div className="col-span-3">Name</div>
           <div className="col-span-1">Type</div>
           <div className="col-span-2">Bridge</div>
@@ -200,31 +200,31 @@ export default function NetworksPage() {
 
         {filteredNetworks.length === 0 ? (
           <div className="p-12 text-center">
-            <NetworkIcon className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-            <p className="text-gray-500 font-bold uppercase">No networks found</p>
+            <NetworkIcon className="w-16 h-16 text-muted-foreground/40 mx-auto mb-4" />
+            <p className="text-muted-foreground font-medium">No networks found</p>
           </div>
         ) : (
-          filteredNetworks.map((network, index) => (
-            <div key={network.id} className={`grid grid-cols-12 gap-4 p-4 items-center border-b-2 border-black last:border-0 ${index % 2 === 0 ? "bg-white" : "bg-gray-50"}`}>
+          filteredNetworks.map((network) => (
+            <div key={network.id} className="grid grid-cols-12 gap-4 p-4 items-center border-b last:border-0 hover:bg-muted/50">
               <div className="col-span-3 min-w-0">
-                <span className="font-black text-black truncate block">{network.name}</span>
-                <span className="text-[10px] font-mono text-gray-500">{formatDate(network.created_at)}</span>
+                <span className="font-medium text-foreground truncate block">{network.name}</span>
+                <span className="text-[10px] font-mono text-muted-foreground">{formatDate(network.created_at)}</span>
               </div>
               <div className="col-span-1">
-                <span className="inline-flex items-center px-2 py-0.5 text-[10px] font-black uppercase tracking-wider border border-black bg-muted">
+                <span className="inline-flex items-center px-2 py-0.5 text-[10px] font-medium border rounded-md bg-muted text-muted-foreground">
                   {network.type}
                 </span>
               </div>
-              <div className="col-span-2 font-mono text-sm font-bold truncate">{network.bridge || "—"}</div>
+              <div className="col-span-2 font-mono text-sm truncate">{network.bridge || "—"}</div>
               <div className="col-span-2 font-mono text-xs truncate">{network.subnet || "—"}</div>
               <div className="col-span-2 font-mono text-xs truncate">{network.gateway || "—"}</div>
               <div className="col-span-1">
                 {network.vlan_id ? (
-                  <span className="inline-flex items-center px-2 py-0.5 text-[10px] font-black uppercase border border-black bg-accent text-white">
+                  <span className="inline-flex items-center px-2 py-0.5 text-[10px] font-medium border rounded-md bg-muted text-muted-foreground">
                     {network.vlan_id}
                   </span>
                 ) : (
-                  <span className="text-gray-500 text-sm">—</span>
+                  <span className="text-muted-foreground text-sm">—</span>
                 )}
               </div>
               <div className="col-span-1 flex justify-end">
@@ -232,7 +232,7 @@ export default function NetworksPage() {
                   variant="ghost"
                   size="sm"
                   onClick={() => setDeleteConfirm(network)}
-                  className="h-8 w-8 p-0 border-2 border-black hover:bg-danger hover:text-white"
+                  className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
                   title="Delete network"
                 >
                   <Trash2 className="w-4 h-4" />

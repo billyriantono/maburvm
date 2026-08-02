@@ -78,7 +78,7 @@ function RDNSCell({ address, poolId }: { address: IPAddress; poolId: string }) {
         onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur() }}
         placeholder="set PTR hostname…"
         title="Reverse DNS (PTR) hostname — type a hostname and press Enter"
-        className="w-full bg-white border-2 border-black text-xs font-mono px-2 py-1.5 focus:outline-none focus:shadow-neo-sm placeholder:text-gray-400 placeholder:normal-case"
+        className="w-full rounded-md border border-input bg-background text-xs font-mono px-2 py-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 placeholder:text-muted-foreground"
       />
       {setRDNS.isPending && <Loader2 className="w-3 h-3 animate-spin shrink-0" />}
     </div>
@@ -236,27 +236,27 @@ export default function IPPoolDetailPage() {
   if (poolError || !pool) {
     return (
       <div className="max-w-7xl mx-auto">
-        <Button variant="ghost" onClick={() => router.push("/ip-pools")} className="border-2 border-black gap-1 mb-4"><ArrowLeft className="w-4 h-4" />Back</Button>
-        <div className="bg-danger/10 border-4 border-danger p-6"><p className="font-black uppercase">Pool not found</p></div>
+        <Button variant="outline" onClick={() => router.push("/ip-pools")} className="gap-1 mb-4"><ArrowLeft className="w-4 h-4" />Back</Button>
+        <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-6"><p className="font-semibold">Pool not found</p></div>
       </div>
     )
   }
 
   return (
     <div className="max-w-7xl mx-auto">
-      <Button variant="ghost" onClick={() => router.push("/ip-pools")} className="border-2 border-black gap-1 mb-4">
+      <Button variant="outline" onClick={() => router.push("/ip-pools")} className="gap-1 mb-4">
         <ArrowLeft className="w-4 h-4" />Back to Pools
       </Button>
 
       {/* Identity */}
-      <div className="bg-white border-4 border-black shadow-neo p-4 mb-4">
+      <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-4 mb-4">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-black uppercase tracking-tight flex items-center gap-2">
-              <Network className="w-7 h-7" />{pool.name}
+            <h1 className="text-xl font-semibold flex items-center gap-2">
+              <Network className="w-6 h-6" />{pool.name}
               <Badge variant={pool.family === "ipv4" ? "secondary" : "warning"}>{pool.family}</Badge>
             </h1>
-            <p className="text-sm font-bold text-gray-500 uppercase mt-1">
+            <p className="text-sm text-muted-foreground mt-1">
               {pool.cidr || "No CIDR"} • Gateway {pool.gateway || "-"} • Bridge {pool.bridge || "node default"} • Node {poolNodeLabel} • {addresses?.length ?? 0} addresses
             </p>
           </div>
@@ -266,26 +266,26 @@ export default function IPPoolDetailPage() {
         </div>
 
         {showEdit && (
-          <form onSubmit={handleUpdatePool} className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4 pt-4 border-t-4 border-black">
+          <form onSubmit={handleUpdatePool} className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4 pt-4 border-t">
             <label className="flex flex-col gap-1">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Pool name</span>
-              <Input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} className="border-2 border-black" required />
+              <span className="text-xs font-medium text-muted-foreground">Pool name</span>
+              <Input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} required />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Bridge — host bridge VMs attach to (e.g. br0)</span>
-              <Input value={editForm.bridge} onChange={(e) => setEditForm({ ...editForm, bridge: e.target.value })} placeholder="br0 (blank = node default)" className="border-2 border-black" />
+              <span className="text-xs font-medium text-muted-foreground">Bridge — host bridge VMs attach to (e.g. br0)</span>
+              <Input value={editForm.bridge} onChange={(e) => setEditForm({ ...editForm, bridge: e.target.value })} placeholder="br0 (blank = node default)" />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Gateway</span>
-              <Input value={editForm.gateway} onChange={(e) => setEditForm({ ...editForm, gateway: e.target.value })} className="border-2 border-black" />
+              <span className="text-xs font-medium text-muted-foreground">Gateway</span>
+              <Input value={editForm.gateway} onChange={(e) => setEditForm({ ...editForm, gateway: e.target.value })} />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Description</span>
-              <Input value={editForm.description} onChange={(e) => setEditForm({ ...editForm, description: e.target.value })} className="border-2 border-black" />
+              <span className="text-xs font-medium text-muted-foreground">Description</span>
+              <Input value={editForm.description} onChange={(e) => setEditForm({ ...editForm, description: e.target.value })} />
             </label>
             <div className="md:col-span-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <p className="text-xs font-medium text-gray-500 normal-case">
-                Changing the bridge updates the pool only — each VM re-applies it on its next <span className="font-bold">Start</span> (a stale bridge like <span className="font-mono">virbr0</span> is rewritten before boot).
+              <p className="text-xs text-muted-foreground">
+                Changing the bridge updates the pool only — each VM re-applies it on its next <span className="font-semibold">Start</span> (a stale bridge like <span className="font-mono">virbr0</span> is rewritten before boot).
               </p>
               <div className="flex gap-2 shrink-0">
                 <Button type="button" variant="ghost" onClick={() => setShowEdit(false)}>Cancel</Button>
@@ -297,11 +297,11 @@ export default function IPPoolDetailPage() {
       </div>
 
       {/* Actions — grouped + in their own section for clarity */}
-      <div className="bg-white border-4 border-black shadow-neo mb-4">
-        <div className="p-3 bg-black text-white font-black uppercase text-xs tracking-wider">Actions</div>
+      <div className="rounded-lg border bg-card shadow-sm mb-4 overflow-hidden">
+        <div className="p-3 bg-muted text-muted-foreground font-medium text-xs">Actions</div>
         <div className="p-4 flex flex-col md:flex-row md:items-start gap-4">
           <div>
-            <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2">Addresses</p>
+            <p className="text-xs font-medium text-muted-foreground mb-2">Addresses</p>
             <div className="flex flex-wrap gap-2">
               <Button variant="secondary" size="sm" className="gap-1" onClick={() => refetch()}><RefreshCw className="w-4 h-4" />Refresh</Button>
               <Button variant="warning" size="sm" className="gap-1" onClick={handleGenerate} disabled={isGenerating}>
@@ -313,8 +313,8 @@ export default function IPPoolDetailPage() {
               <Button size="sm" className="gap-1" onClick={() => setShowAdd((v) => !v)}><Plus className="w-4 h-4" />Add Address</Button>
             </div>
           </div>
-          <div className="md:border-l-2 md:border-black md:pl-4">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2">Reverse DNS</p>
+          <div className="md:border-l md:pl-4">
+            <p className="text-xs font-medium text-muted-foreground mb-2">Reverse DNS</p>
             <div className="flex flex-wrap gap-2">
               <Button variant="secondary" size="sm" className="gap-1" title="Import existing PTRs from the nameserver into MaburVM (read-only)" onClick={handleImportRDNS} disabled={importRDNS.isPending}>
                 {importRDNS.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <DownloadCloud className="w-4 h-4" />}Import PTRs
@@ -327,31 +327,31 @@ export default function IPPoolDetailPage() {
         </div>
 
         {showAdd && (
-          <form onSubmit={handleAddAddress} className="grid grid-cols-1 md:grid-cols-4 gap-3 p-4 border-t-4 border-black">
-            <Input placeholder="IP address" value={addrForm.address} onChange={(e) => setAddrForm({ ...addrForm, address: e.target.value })} className="border-2 border-black" required />
-            <select value={addrForm.status} onChange={(e) => setAddrForm({ ...addrForm, status: e.target.value as IPAddressStatus })} className="h-12 px-3 border-2 border-black font-medium bg-white">
+          <form onSubmit={handleAddAddress} className="grid grid-cols-1 md:grid-cols-4 gap-3 p-4 border-t">
+            <Input placeholder="IP address" value={addrForm.address} onChange={(e) => setAddrForm({ ...addrForm, address: e.target.value })} required />
+            <select value={addrForm.status} onChange={(e) => setAddrForm({ ...addrForm, status: e.target.value as IPAddressStatus })} className="h-10 px-3 rounded-md border border-input bg-background text-sm">
               <option value="available">Available</option>
               <option value="reserved">Reserved</option>
               <option value="assigned">Assigned</option>
               <option value="disabled">Disabled</option>
             </select>
-            <Input placeholder="Note" value={addrForm.note} onChange={(e) => setAddrForm({ ...addrForm, note: e.target.value })} className="border-2 border-black" />
+            <Input placeholder="Note" value={addrForm.note} onChange={(e) => setAddrForm({ ...addrForm, note: e.target.value })} />
             <Button type="submit" disabled={addAddress.isPending}>{addAddress.isPending && <Loader2 className="w-4 h-4 animate-spin mr-2" />}Add</Button>
           </form>
         )}
       </div>
 
       {/* Search */}
-      <div className="bg-white border-4 border-black p-3 shadow-neo mb-4">
+      <div className="rounded-lg border bg-card p-3 shadow-sm mb-4">
         <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
-          <Input placeholder="Search address, rDNS, status, or VM…" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1) }} className="pl-10 border-2 border-black" />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <Input placeholder="Search address, rDNS, status, or VM…" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1) }} className="pl-10" />
         </div>
       </div>
 
       {/* Address table */}
-      <div className="bg-white border-4 border-black shadow-neo overflow-hidden">
-        <div className="grid grid-cols-12 gap-3 p-4 bg-black text-white font-black uppercase text-xs tracking-wider">
+      <div className="rounded-lg border bg-card shadow-sm overflow-hidden">
+        <div className="grid grid-cols-12 gap-3 p-4 bg-muted text-muted-foreground font-medium text-xs">
           <div className="col-span-3">Address</div>
           <div className="col-span-2">Status</div>
           <div className="col-span-4">rDNS (PTR)</div>
@@ -361,36 +361,36 @@ export default function IPPoolDetailPage() {
         </div>
 
         {isLoading ? (
-          <div className="flex items-center justify-center py-16"><Loader2 className="w-8 h-8 animate-spin" /><span className="ml-3 font-bold uppercase">Loading addresses...</span></div>
+          <div className="flex items-center justify-center py-16"><Loader2 className="w-8 h-8 animate-spin" /><span className="ml-3 text-muted-foreground">Loading addresses...</span></div>
         ) : pageItems.length === 0 ? (
-          <div className="p-12 text-center"><CircleSlash className="w-16 h-16 text-gray-300 mx-auto mb-4" /><p className="text-gray-500 font-bold uppercase">No addresses</p></div>
+          <div className="p-12 text-center"><CircleSlash className="w-16 h-16 text-muted-foreground/40 mx-auto mb-4" /><p className="text-muted-foreground font-medium">No addresses</p></div>
         ) : (
-          pageItems.map((address, index) => (
-            <div key={address.id} className={`grid grid-cols-12 gap-3 p-4 items-center border-b-2 border-black last:border-0 ${index % 2 === 0 ? "bg-white" : "bg-gray-50"}`}>
-              <div className="col-span-3 font-mono text-sm font-black whitespace-nowrap" title={address.address}>{address.address}</div>
+          pageItems.map((address) => (
+            <div key={address.id} className="grid grid-cols-12 gap-3 p-4 items-center border-b last:border-0 hover:bg-muted/50">
+              <div className="col-span-3 font-mono text-sm font-semibold whitespace-nowrap" title={address.address}>{address.address}</div>
               <div className="col-span-2"><Badge variant={statusVariant(address.status)}>{address.status}</Badge></div>
               <div className="col-span-4"><RDNSCell address={address} poolId={poolId} /></div>
-              <div className="col-span-1 text-sm font-bold truncate" title={nodeLabelFor(address)}>
+              <div className="col-span-1 text-sm truncate" title={nodeLabelFor(address)}>
                 {nodeIdFor(address) ? (
-                  <Link href={`/nodes/${nodeIdFor(address)}`} className="text-black hover:text-primary underline decoration-2 underline-offset-2">{nodeLabelFor(address)}</Link>
+                  <Link href={`/nodes/${nodeIdFor(address)}`} className="text-foreground hover:text-primary underline underline-offset-2">{nodeLabelFor(address)}</Link>
                 ) : (
                   nodeLabelFor(address)
                 )}
               </div>
               <div className="col-span-1 text-xs truncate" title={address.vm_id ? (vmNameById.get(address.vm_id) || address.vm_id) : "-"}>
                 {address.vm_id ? (
-                  <Link href={`/vms/${address.vm_id}`} className="font-bold text-black hover:text-primary underline decoration-2 underline-offset-2">
+                  <Link href={`/vms/${address.vm_id}`} className="text-foreground hover:text-primary underline underline-offset-2">
                     {vmNameById.get(address.vm_id) || `${address.vm_id.slice(0, 8)}…`}
                   </Link>
                 ) : (
-                  <span className="font-mono text-gray-500">-</span>
+                  <span className="font-mono text-muted-foreground">-</span>
                 )}
               </div>
               <div className="col-span-1 flex justify-end">
                 {address.status === "assigned" ? (
                   <Button variant="warning" size="sm" onClick={() => handleRelease(address)} disabled={releaseAddress.isPending} className="h-8 w-8 p-0" title="Release address"><Unlock className="w-4 h-4" /></Button>
                 ) : (
-                  <span className="text-gray-500">-</span>
+                  <span className="text-muted-foreground">-</span>
                 )}
               </div>
             </div>
@@ -399,13 +399,13 @@ export default function IPPoolDetailPage() {
 
         {/* Pagination */}
         {filtered.length > PAGE_SIZE && (
-          <div className="flex items-center justify-between p-4 border-t-4 border-black bg-gray-50">
-            <span className="text-xs font-bold uppercase text-gray-600">
+          <div className="flex items-center justify-between p-4 border-t bg-muted/50">
+            <span className="text-xs text-muted-foreground">
               {(currentPage - 1) * PAGE_SIZE + 1}–{Math.min(currentPage * PAGE_SIZE, filtered.length)} of {filtered.length}
             </span>
             <div className="flex items-center gap-2">
               <Button variant="secondary" size="sm" disabled={currentPage <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>Prev</Button>
-              <span className="text-sm font-black">Page {currentPage} / {totalPages}</span>
+              <span className="text-sm font-medium">Page {currentPage} / {totalPages}</span>
               <Button variant="secondary" size="sm" disabled={currentPage >= totalPages} onClick={() => setPage((p) => Math.min(totalPages, p + 1))}>Next</Button>
             </div>
           </div>

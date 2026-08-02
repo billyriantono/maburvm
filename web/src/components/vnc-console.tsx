@@ -171,19 +171,19 @@ export function VNCConsole({ vmId, className, onConnect, onDisconnect, onError }
   return (
     <div className={className}>
       {/* Status bar */}
-      <div className="flex items-center justify-between px-4 py-2 bg-white border-b-2 border-black">
+      <div className="flex items-center justify-between px-4 py-2 bg-card text-card-foreground border-b">
         <div className="flex items-center gap-3">
-          <span className="text-sm font-bold">VM CONSOLE</span>
-          <span className="text-xs text-gray-500">{vmId.slice(0, 8)}</span>
+          <span className="text-sm font-semibold">VM Console</span>
+          <span className="text-xs text-muted-foreground">{vmId.slice(0, 8)}</span>
         </div>
         <div className="flex items-center gap-2">
           <StatusBadge status={status} />
           {(status === 'disconnected' || status === 'error') && (
             <button
               onClick={connect}
-              className="px-3 py-1 text-xs font-bold border-2 border-black bg-white hover:bg-gray-100 cursor-pointer"
+              className="px-3 py-1 text-xs font-medium border rounded-md bg-background hover:bg-muted cursor-pointer"
             >
-              RETRY
+              Retry
             </button>
           )}
         </div>
@@ -197,7 +197,7 @@ export function VNCConsole({ vmId, className, onConnect, onDisconnect, onError }
         {status !== 'connected' && (
           <div className="absolute inset-0 flex items-center justify-center text-white text-center">
             <div>
-              <h2 className="text-xl font-bold mb-2">
+              <h2 className="text-xl font-semibold mb-2">
                 {status === 'connecting' && 'Connecting...'}
                 {status === 'disconnected' && 'Disconnected'}
                 {status === 'error' && 'Connection Error'}
@@ -217,15 +217,15 @@ export function VNCConsole({ vmId, className, onConnect, onDisconnect, onError }
 
 function StatusBadge({ status }: { status: string }) {
   const styles: Record<string, string> = {
-    connecting: 'border-yellow-600 bg-yellow-50 text-yellow-800',
-    connected: 'border-green-600 bg-green-50 text-green-800',
-    disconnected: 'border-gray-500 bg-gray-100 text-gray-700',
-    error: 'border-red-600 bg-red-50 text-red-800',
+    connecting: 'border-amber-200 bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900',
+    connected: 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900',
+    disconnected: 'border bg-muted text-muted-foreground',
+    error: 'border-red-200 bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-300 dark:border-red-900',
   };
 
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 text-[11px] font-bold border ${styles[status]}`}>
-      {status.toUpperCase()}
+    <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-medium border capitalize ${styles[status]}`}>
+      {status}
     </span>
   );
 }

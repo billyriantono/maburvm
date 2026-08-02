@@ -108,10 +108,10 @@ export function IPWhitelistEditor({ value = [], onChange, showSuggestion = true 
               {value.map((ip) => (
                 <div
                   key={ip}
-                  className="flex items-center justify-between p-2 bg-gray-50 border-2 border-black"
+                  className="flex items-center justify-between p-2 bg-muted border rounded-md"
                 >
                   <div className="flex items-center gap-2">
-                    <Globe className="w-4 h-4 text-gray-500" />
+                    <Globe className="w-4 h-4 text-muted-foreground" />
                     <span className="font-mono text-sm">{ip}</span>
                   </div>
                   <Button
@@ -121,7 +121,7 @@ export function IPWhitelistEditor({ value = [], onChange, showSuggestion = true 
                     onClick={() => handleRemoveIP(ip)}
                     type="button"
                   >
-                    <Trash2 className="w-3 h-3 text-danger" />
+                    <Trash2 className="w-3 h-3 text-destructive" />
                   </Button>
                 </div>
               ))}
@@ -144,7 +144,7 @@ export function IPWhitelistEditor({ value = [], onChange, showSuggestion = true 
             className="font-mono"
           />
           {error && (
-            <p className="text-xs text-danger mt-1 font-bold">{error}</p>
+            <p className="text-xs text-destructive mt-1 font-medium">{error}</p>
           )}
         </div>
         <Button onClick={handleAddIP} type="button" size="sm">
@@ -153,7 +153,7 @@ export function IPWhitelistEditor({ value = [], onChange, showSuggestion = true 
       </div>
 
       {/* Help text */}
-      <p className="text-xs text-gray-500">
+      <p className="text-xs text-muted-foreground">
         Leave empty to allow access from any IP. Use CIDR notation (e.g., 192.168.1.0/24) for ranges.
       </p>
     </div>

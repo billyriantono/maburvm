@@ -63,7 +63,7 @@ function BandwidthCell({ vmId, iface }: { vmId: string; iface: NetworkIface }) {
         <button
           type="button"
           onClick={() => { setValue(iface.bandwidth_limit); setEditing(true) }}
-          className="text-[10px] font-black uppercase underline text-gray-500 hover:text-primary"
+          className="text-[10px] font-semibold underline text-muted-foreground hover:text-primary"
         >
           Edit
         </button>
@@ -84,7 +84,7 @@ function BandwidthCell({ vmId, iface }: { vmId: string; iface: NetworkIface }) {
       <select
         value={BANDWIDTH_TIERS.some((t) => t.mbps === value) ? value : "custom"}
         onChange={(e) => { if (e.target.value !== "custom") setValue(Number(e.target.value)) }}
-        className="h-8 border-2 border-black text-xs font-bold px-1"
+        className="h-8 rounded-md border border-input bg-background text-xs font-medium px-1"
       >
         {BANDWIDTH_TIERS.map((t) => (
           <option key={t.mbps} value={t.mbps}>{t.label}</option>
@@ -97,22 +97,22 @@ function BandwidthCell({ vmId, iface }: { vmId: string; iface: NetworkIface }) {
         max={10000}
         value={value}
         onChange={(e) => setValue(Number(e.target.value))}
-        className="h-8 w-20 border-2 border-black text-xs font-mono px-1"
+        className="h-8 w-20 rounded-md border border-input bg-background text-xs font-mono px-1"
         aria-label="Bandwidth in Mbps"
       />
-      <span className="text-[10px] font-bold text-gray-500">Mbps</span>
+      <span className="text-[10px] font-medium text-muted-foreground">Mbps</span>
       <button
         type="button"
         onClick={apply}
         disabled={setBandwidth.isPending}
-        className="h-8 px-2 bg-[#CCFF00] text-black border-2 border-black text-xs font-black uppercase disabled:opacity-50"
+        className="h-8 px-2 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-50"
       >
         {setBandwidth.isPending ? "…" : "Save"}
       </button>
       <button
         type="button"
         onClick={() => setEditing(false)}
-        className="h-8 px-2 bg-white text-black border-2 border-black text-xs font-black uppercase"
+        className="h-8 px-2 rounded-md border bg-background text-xs font-medium hover:bg-muted"
       >
         ✕
       </button>
@@ -138,14 +138,14 @@ function formatBytesPerSec(bytes: number): string {
 
 function ProgressBar({ value, max, label, unit, color = "primary" }: { value: number; max: number; label: string; unit?: string; color?: "primary" | "secondary" | "accent" | "success" | "danger" }) {
   const percentage = max > 0 ? Math.round((value / max) * 100) : 0
-  const colorClasses = { primary: "bg-primary", secondary: "bg-secondary", accent: "bg-accent", success: "bg-success", danger: "bg-danger" }
+  const colorClasses = { primary: "bg-primary", secondary: "bg-primary", accent: "bg-primary", success: "bg-emerald-500", danger: "bg-destructive" }
   return (
     <div className="mb-4">
       <div className="flex justify-between items-center mb-1">
-        <span className="text-xs font-bold uppercase text-gray-600">{label}</span>
-        <span className="text-xs font-black">{unit ? `${value} / ${max} ${unit}` : `${percentage}%`}</span>
+        <span className="text-xs font-medium text-muted-foreground">{label}</span>
+        <span className="text-xs font-semibold">{unit ? `${value} / ${max} ${unit}` : `${percentage}%`}</span>
       </div>
-      <div className="h-4 bg-gray-200 border-2 border-black relative">
+      <div className="h-2 rounded-full bg-muted overflow-hidden relative">
         <div className={`h-full ${colorClasses[color]} transition-all duration-300`} style={{ width: `${Math.min(percentage, 100)}%` }} />
       </div>
     </div>
@@ -153,18 +153,18 @@ function ProgressBar({ value, max, label, unit, color = "primary" }: { value: nu
 }
 
 function StatusBadge({ status }: { status: VMStatus }) {
-  const statusConfig: Record<string, { bg: string; text: string; label: string }> = {
-    running: { bg: "bg-success", text: "text-black", label: "Running" },
-    stopped: { bg: "bg-gray-400", text: "text-white", label: "Stopped" },
-    suspended: { bg: "bg-warning", text: "text-black", label: "Suspended" },
-    creating: { bg: "bg-secondary", text: "text-black", label: "Creating" },
-    deleting: { bg: "bg-warning", text: "text-black", label: "Deleting" },
-    error: { bg: "bg-danger", text: "text-white", label: "Error" },
+  const statusConfig: Record<string, { cls: string; dot: string; label: string }> = {
+    running: { cls: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900", dot: "bg-emerald-500 animate-pulse", label: "Running" },
+    stopped: { cls: "bg-muted text-muted-foreground border", dot: "bg-muted-foreground", label: "Stopped" },
+    suspended: { cls: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900", dot: "bg-amber-500", label: "Suspended" },
+    creating: { cls: "bg-sky-50 text-sky-700 border-sky-200 dark:bg-sky-950 dark:text-sky-300 dark:border-sky-900", dot: "bg-sky-500", label: "Creating" },
+    deleting: { cls: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900", dot: "bg-amber-500", label: "Deleting" },
+    error: { cls: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-900", dot: "bg-red-500", label: "Error" },
   }
   const config = statusConfig[status] || statusConfig.stopped
   return (
-    <span className={`inline-flex items-center px-3 py-1 border-2 border-black text-xs font-bold uppercase shadow-neo-sm ${config.bg} ${config.text}`}>
-      <span className={`w-2 h-2 mr-2 border border-black ${status === 'running' ? 'bg-black animate-pulse' : 'bg-black/30'}`} />
+    <span className={`inline-flex items-center rounded-md px-2 py-0.5 border text-xs font-medium ${config.cls}`}>
+      <span className={`w-1.5 h-1.5 mr-1.5 rounded-full ${config.dot}`} />
       {config.label}
     </span>
   )
@@ -177,10 +177,10 @@ function Toast({ message, type, onClose }: { message: string; type: "success" | 
   }, [onClose])
 
   return (
-    <div className={`fixed bottom-4 right-4 z-50 px-6 py-4 border-4 border-black shadow-neo ${
-      type === "success" ? "bg-success" : "bg-danger text-white"
+    <div className={`fixed bottom-4 right-4 z-50 px-4 py-3 border rounded-lg shadow-md bg-background ${
+      type === "success" ? "text-emerald-700 dark:text-emerald-300" : "text-destructive"
     }`}>
-      <p className="font-bold uppercase text-sm">{message}</p>
+      <p className="font-medium text-sm">{message}</p>
     </div>
   )
 }
@@ -199,9 +199,9 @@ function SectionSkeleton() {
 function SectionError({ message, onRetry }: { message: string; onRetry: () => void }) {
   return (
     <div className="p-8 text-center">
-      <AlertCircle className="w-10 h-10 mx-auto text-danger mb-3" />
-      <p className="font-bold uppercase text-sm mb-1">Failed to load</p>
-      <p className="text-gray-500 text-xs mb-3">{message}</p>
+      <AlertCircle className="w-10 h-10 mx-auto text-destructive mb-3" />
+      <p className="font-medium text-sm mb-1">Failed to load</p>
+      <p className="text-muted-foreground text-xs mb-3">{message}</p>
       <Button size="sm" onClick={onRetry} className="gap-2">
         <RotateCcw className="w-3 h-3" />
         Retry
@@ -213,8 +213,8 @@ function SectionError({ message, onRetry }: { message: string; onRetry: () => vo
 function SectionEmpty({ icon: Icon, message }: { icon: React.ElementType; message: string }) {
   return (
     <div className="p-8 text-center">
-      <Icon className="w-10 h-10 mx-auto text-gray-500 mb-3" />
-      <p className="text-gray-500 text-sm font-medium">{message}</p>
+      <Icon className="w-10 h-10 mx-auto text-muted-foreground mb-3" />
+      <p className="text-muted-foreground text-sm font-medium">{message}</p>
     </div>
   )
 }
@@ -250,19 +250,19 @@ function DisksCard({ vmId }: { vmId: string }) {
   }
 
   return (
-    <div className="bg-white border-4 border-black p-6 shadow-neo">
+    <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-lg font-black uppercase tracking-tight text-black flex items-center gap-2">
+        <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
           <HardDrive className="w-5 h-5" />Data Disks
         </h2>
         <Button size="sm" onClick={() => setAdding((v) => !v)}><Plus className="w-4 h-4" />Add Disk</Button>
       </div>
 
       {adding && (
-        <div className="flex flex-wrap items-end gap-2 mb-4 p-3 border-2 border-black bg-gray-50">
+        <div className="flex flex-wrap items-end gap-2 mb-4 p-3 border rounded-md bg-muted">
           <div>
-            <label htmlFor="disk-size" className="text-xs font-bold uppercase text-gray-600 block mb-1">Size (GB)</label>
-            <Input id="disk-size" type="number" min={1} value={sizeGB} onChange={(e) => setSizeGB(e.target.value)} className="border-2 border-black w-32 font-mono" />
+            <label htmlFor="disk-size" className="text-xs font-medium text-muted-foreground block mb-1">Size (GB)</label>
+            <Input id="disk-size" type="number" min={1} value={sizeGB} onChange={(e) => setSizeGB(e.target.value)} className="border w-32 font-mono" />
           </div>
           <Button size="sm" onClick={handleAttach} disabled={attach.isPending}>
             {attach.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}Attach
@@ -270,19 +270,19 @@ function DisksCard({ vmId }: { vmId: string }) {
           <Button size="sm" variant="ghost" onClick={() => { setAdding(false); setErr("") }}>Cancel</Button>
         </div>
       )}
-      {err && <p className="text-xs text-danger font-bold mb-3">{err}</p>}
+      {err && <p className="text-xs text-destructive font-medium mb-3">{err}</p>}
 
       {isLoading ? (
         <SectionSkeleton />
       ) : !disks?.length ? (
-        <div className="border-2 border-dashed border-gray-300 p-6 text-center text-sm font-bold uppercase text-gray-400">
+        <div className="border border-dashed border-gray-300 p-6 text-center text-sm font-medium text-muted-foreground">
           No extra data disks. The boot disk isn&apos;t listed here.
         </div>
       ) : (
-        <div className="border-2 border-black overflow-x-auto">
+        <div className="border overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="bg-black text-white font-black uppercase text-xs tracking-wider">
+              <tr className="bg-muted text-muted-foreground border-b font-medium text-xs">
                 <th className="text-left p-3">Device</th>
                 <th className="text-left p-3">Size</th>
                 <th className="text-left p-3">Path</th>
@@ -291,8 +291,8 @@ function DisksCard({ vmId }: { vmId: string }) {
             </thead>
             <tbody>
               {disks.map((d, i) => (
-                <tr key={d.id} className={`border-t-2 border-black ${i % 2 ? "bg-gray-50" : "bg-white"}`}>
-                  <td className="p-3 font-mono font-bold">{d.device}</td>
+                <tr key={d.id} className={`border-t ${i % 2 ? "bg-muted/50" : "bg-card"}`}>
+                  <td className="p-3 font-mono font-medium">{d.device}</td>
                   <td className="p-3 font-mono">{d.size_gb} GB</td>
                   <td className="p-3 font-mono text-xs truncate max-w-[280px]" title={d.path}>{d.path}</td>
                   <td className="p-3 text-right">
@@ -306,7 +306,7 @@ function DisksCard({ vmId }: { vmId: string }) {
           </table>
         </div>
       )}
-      <p className="text-xs text-gray-500 mt-3">Disks hot-plug on running VMs; format &amp; mount inside the guest after attaching.</p>
+      <p className="text-xs text-muted-foreground mt-3">Disks hot-plug on running VMs; format &amp; mount inside the guest after attaching.</p>
     </div>
   )
 }
@@ -336,57 +336,57 @@ function BandwidthUsageCard({ vmId }: { vmId: string }) {
   const isDanger = bandwidth.exceeded
 
   return (
-    <div className={`bg-white border-4 p-6 shadow-neo ${isDanger ? 'border-danger' : 'border-black'}`}>
-      <h2 className="text-lg font-black uppercase tracking-tight text-black mb-6 flex items-center gap-2">
+    <div className={`bg-card text-card-foreground border rounded-lg p-6 shadow-sm ${isDanger ? 'border-red-300 dark:border-red-900' : ''}`}>
+      <h2 className="text-lg font-semibold text-foreground mb-6 flex items-center gap-2">
         <Activity className="w-5 h-5" />Bandwidth Usage
-        {isDanger && <span className="text-xs bg-danger text-white px-2 py-0.5 border-2 border-black">EXCEEDED</span>}
+        {isDanger && <span className="text-xs rounded-md bg-red-50 text-red-700 border border-red-200 px-2 py-0.5 dark:bg-red-950 dark:text-red-300 dark:border-red-900">Exceeded</span>}
       </h2>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-        <div className="p-4 border-2 border-black">
-          <span className="text-xs font-bold uppercase text-gray-500 block">Download</span>
-          <span className="text-sm font-mono font-bold">{formatBytes(bandwidth.rx_bytes)}</span>
+        <div className="p-4 border rounded-md">
+          <span className="text-xs font-medium text-muted-foreground block">Download</span>
+          <span className="text-sm font-mono font-medium">{formatBytes(bandwidth.rx_bytes)}</span>
         </div>
-        <div className="p-4 border-2 border-black">
-          <span className="text-xs font-bold uppercase text-gray-500 block">Upload</span>
-          <span className="text-sm font-mono font-bold">{formatBytes(bandwidth.tx_bytes)}</span>
+        <div className="p-4 border rounded-md">
+          <span className="text-xs font-medium text-muted-foreground block">Upload</span>
+          <span className="text-sm font-mono font-medium">{formatBytes(bandwidth.tx_bytes)}</span>
         </div>
-        <div className="p-4 border-2 border-black">
-          <span className="text-xs font-bold uppercase text-gray-500 block">Total Used</span>
-          <span className="text-sm font-mono font-bold">{bandwidth.used_gb.toFixed(2)} GB</span>
+        <div className="p-4 border rounded-md">
+          <span className="text-xs font-medium text-muted-foreground block">Total Used</span>
+          <span className="text-sm font-mono font-medium">{bandwidth.used_gb.toFixed(2)} GB</span>
         </div>
-        <div className="p-4 border-2 border-black">
-          <span className="text-xs font-bold uppercase text-gray-500 block">Quota</span>
-          <span className="text-sm font-mono font-bold">{bandwidth.quota_gb > 0 ? `${bandwidth.quota_gb} GB` : 'Unlimited'}</span>
+        <div className="p-4 border rounded-md">
+          <span className="text-xs font-medium text-muted-foreground block">Quota</span>
+          <span className="text-sm font-mono font-medium">{bandwidth.quota_gb > 0 ? `${bandwidth.quota_gb} GB` : 'Unlimited'}</span>
         </div>
       </div>
 
       {bandwidth.quota_gb > 0 && (
         <div>
           <div className="flex justify-between items-center mb-1">
-            <span className="text-xs font-bold uppercase text-gray-600">Usage</span>
-            <span className="text-xs font-black">{bandwidth.used_gb.toFixed(2)} / {bandwidth.quota_gb} GB ({bandwidth.usage_percent.toFixed(1)}%)</span>
+            <span className="text-xs font-medium text-muted-foreground">Usage</span>
+            <span className="text-xs font-semibold">{bandwidth.used_gb.toFixed(2)} / {bandwidth.quota_gb} GB ({bandwidth.usage_percent.toFixed(1)}%)</span>
           </div>
-          <div className="h-4 bg-gray-200 border-2 border-black relative">
+          <div className="h-2 rounded-full bg-muted overflow-hidden relative">
             <div
-              className={`h-full transition-all duration-300 ${isDanger ? 'bg-danger' : isWarning ? 'bg-warning' : 'bg-success'}`}
+              className={`h-full transition-all duration-300 ${isDanger ? 'bg-destructive' : isWarning ? 'bg-amber-500' : 'bg-emerald-500'}`}
               style={{ width: `${usagePercent}%` }}
             />
           </div>
           <div className="flex justify-between mt-1">
-            <span className="text-xs text-gray-600">{bandwidth.period_start}</span>
-            <span className="text-xs text-gray-600">{bandwidth.period_end}</span>
+            <span className="text-xs text-muted-foreground">{bandwidth.period_start}</span>
+            <span className="text-xs text-muted-foreground">{bandwidth.period_end}</span>
           </div>
         </div>
       )}
 
       {/* Monthly quota control */}
-      <div className="mt-6 pt-4 border-t-2 border-gray-200">
+      <div className="mt-6 pt-4 border-t border-gray-200">
         {editingQuota ? (
           <div className="flex flex-wrap items-end gap-2">
             <div>
-              <label htmlFor="bw-quota" className="text-xs font-bold uppercase text-gray-500 block mb-1">Monthly quota (GB, 0 = unlimited)</label>
-              <Input id="bw-quota" type="number" min={0} value={quotaInput} onChange={(e) => setQuotaInput(e.target.value)} className="border-2 border-black w-40 font-mono" />
+              <label htmlFor="bw-quota" className="text-xs font-medium text-muted-foreground block mb-1">Monthly quota (GB, 0 = unlimited)</label>
+              <Input id="bw-quota" type="number" min={0} value={quotaInput} onChange={(e) => setQuotaInput(e.target.value)} className="border w-40 font-mono" />
             </div>
             <Button size="sm" onClick={handleSaveQuota} disabled={setQuota.isPending}>
               {setQuota.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}Save
@@ -394,7 +394,7 @@ function BandwidthUsageCard({ vmId }: { vmId: string }) {
             <Button size="sm" variant="ghost" onClick={() => setEditingQuota(false)}>Cancel</Button>
           </div>
         ) : (
-          <Button size="sm" variant="secondary" className="border-2 border-black" onClick={() => { setQuotaInput(String(bandwidth.quota_gb || 0)); setEditingQuota(true) }}>
+          <Button size="sm" variant="secondary" className="border" onClick={() => { setQuotaInput(String(bandwidth.quota_gb || 0)); setEditingQuota(true) }}>
             <Activity className="w-4 h-4" />Set monthly quota
           </Button>
         )}
@@ -740,11 +740,11 @@ export default function VMDetailPage() {
     return (
       <div className="max-w-7xl mx-auto">
         <nav className="flex items-center gap-2 mb-6">
-          <Link href="/vms" className="flex items-center gap-2 text-sm font-bold uppercase text-gray-500 hover:text-black transition-colors w-fit">
+          <Link href="/vms" className="flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors w-fit">
             <ArrowLeft className="w-4 h-4" />Back to VMs
           </Link>
         </nav>
-        <div className="bg-white border-4 border-black p-6 shadow-neo mb-6">
+        <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm mb-6">
           <div className="flex items-center gap-4">
             <Skeleton className="w-16 h-16" />
             <div>
@@ -763,7 +763,7 @@ export default function VMDetailPage() {
     return (
       <div className="max-w-7xl mx-auto">
         <nav className="flex items-center gap-2 mb-6">
-          <Link href="/vms" className="flex items-center gap-2 text-sm font-bold uppercase text-gray-500 hover:text-black transition-colors w-fit">
+          <Link href="/vms" className="flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors w-fit">
             <ArrowLeft className="w-4 h-4" />Back to VMs
           </Link>
         </nav>
@@ -778,36 +778,36 @@ export default function VMDetailPage() {
     <div className="max-w-7xl mx-auto">
       {/* Breadcrumb */}
       <nav className="flex items-center gap-2 mb-6">
-        <Link href="/vms" className="flex items-center gap-2 text-sm font-bold uppercase text-gray-500 hover:text-black transition-colors w-fit">
+        <Link href="/vms" className="flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors w-fit">
           <ArrowLeft className="w-4 h-4" />Back to VMs
         </Link>
       </nav>
 
       {/* Header (identity) */}
-      <div className="bg-white border-4 border-black p-6 shadow-neo mb-4">
+      <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm mb-4">
         <div className="flex items-center gap-4">
-            <div className="w-16 h-16 bg-primary flex items-center justify-center border-4 border-black shadow-neo">
+            <div className="w-16 h-16 bg-muted text-foreground flex items-center justify-center rounded-lg border">
               <Monitor className="w-8 h-8" />
             </div>
             <div>
-              <h1 className="text-2xl lg:text-3xl font-black uppercase tracking-tight text-black">{vm.hostname}</h1>
+              <h1 className="text-2xl lg:text-3xl font-semibold text-foreground">{vm.hostname}</h1>
               <div className="flex items-center gap-3 mt-2">
                 <StatusBadge status={vm.status} />
                 {vm.rescue_mode && (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-black uppercase border-2 border-black bg-warning">
+                  <span className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-medium border border-amber-200 bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900">
                     <LifeBuoy className="w-3 h-3" />
                     Rescue
                   </span>
                 )}
-                <span className="text-xs font-medium text-gray-500">ID: {vm.id.slice(0, 12)}</span>
+                <span className="text-xs font-medium text-muted-foreground">ID: {vm.id.slice(0, 12)}</span>
               </div>
             </div>
         </div>
       </div>
 
       {/* Actions */}
-      <div className="bg-white border-4 border-black shadow-neo mb-6">
-        <div className="p-3 bg-black text-white font-black uppercase text-xs tracking-wider">Actions</div>
+      <div className="bg-card text-card-foreground border rounded-lg shadow-sm mb-6">
+        <div className="p-3 bg-muted text-muted-foreground border-b font-medium text-xs">Actions</div>
         <div className="p-4 flex flex-wrap gap-3">
             {(["creating", "deleting"] as string[]).includes(vm.status) ? (
               // Transitional: the VM is mid-operation. Don't offer Start/Stop (which
@@ -839,22 +839,22 @@ export default function VMDetailPage() {
               <DialogTrigger asChild>
                 <Button variant="secondary" size="sm"><RefreshCw className="w-4 h-4" />Rebuild</Button>
               </DialogTrigger>
-              <DialogContent className="max-w-md border-4 border-black shadow-neo-xl">
+              <DialogContent className="max-w-md border shadow-lg">
                 <DialogHeader>
-                  <DialogTitle className="text-lg font-black uppercase">Rebuild VM</DialogTitle>
-                  <DialogDescription className="text-sm text-gray-600">
+                  <DialogTitle className="text-lg font-semibold">Rebuild VM</DialogTitle>
+                  <DialogDescription className="text-sm text-muted-foreground">
                     This will destroy the current VM and create a new one from a template. All data will be lost.
                   </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-4 py-4 max-h-[60vh] overflow-y-auto">
                   <div>
-                    <span className="text-xs font-bold uppercase text-gray-600 mb-2 block">Select Template</span>
+                    <span className="text-xs font-medium text-muted-foreground mb-2 block">Select Template</span>
                     <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto">
                       {templates?.map((t) => (
                         <button key={t.id} type="button" onClick={() => setSelectedTemplate(t.id)}
-                          className={`p-3 border-2 border-black text-left transition-all ${selectedTemplate === t.id ? "bg-primary shadow-neo" : "bg-white hover:bg-gray-50"}`}>
-                          <span className="text-xs font-bold uppercase block">{t.name}</span>
-                          <span className="text-[10px] text-gray-500">v{t.version}</span>
+                          className={`p-3 border text-left transition-all ${selectedTemplate === t.id ? "border-primary ring-1 ring-primary bg-primary/5" : "bg-card hover:bg-muted/50"}`}>
+                          <span className="text-xs font-medium block">{t.name}</span>
+                          <span className="text-[10px] text-muted-foreground">v{t.version}</span>
                         </button>
                       ))}
                     </div>
@@ -862,7 +862,7 @@ export default function VMDetailPage() {
 
                   {/* Root password */}
                   <div>
-                    <span className="text-xs font-bold uppercase text-gray-600 mb-2 block">Root Password</span>
+                    <span className="text-xs font-medium text-muted-foreground mb-2 block">Root Password</span>
                     <label className="flex items-center gap-2 mb-2 cursor-pointer">
                       <input type="checkbox" checked={rebuildRegenPassword} onChange={(e) => { setRebuildRegenPassword(e.target.checked); if (e.target.checked) setRebuildPassword("") }} className="w-4 h-4" />
                       <span className="text-xs font-medium">Auto-generate a new password</span>
@@ -873,44 +873,44 @@ export default function VMDetailPage() {
                       onChange={(e) => setRebuildPassword(e.target.value)}
                       disabled={rebuildRegenPassword}
                       placeholder={rebuildRegenPassword ? "Will be generated & shown once" : "Leave blank to keep template default"}
-                      className="border-2 border-black font-mono text-sm disabled:opacity-50"
+                      className="border font-mono text-sm disabled:opacity-50"
                     />
                   </div>
 
                   {/* SSH keys */}
                   <div>
-                    <span className="text-xs font-bold uppercase text-gray-600 mb-2 block">SSH Keys</span>
+                    <span className="text-xs font-medium text-muted-foreground mb-2 block">SSH Keys</span>
                     {!sshKeys?.length ? (
-                      <p className="text-xs text-gray-500">
+                      <p className="text-xs text-muted-foreground">
                         No saved keys. Add some under{" "}
-                        <Link href="/settings/ssh-keys" className="underline font-bold">Settings → SSH Keys</Link>.
+                        <Link href="/settings/ssh-keys" className="underline font-medium">Settings → SSH Keys</Link>.
                       </p>
                     ) : (
-                      <div className="border-2 border-black max-h-32 overflow-y-auto divide-y divide-gray-200">
+                      <div className="border max-h-32 overflow-y-auto divide-y divide-gray-200">
                         {sshKeys.map((k) => (
-                          <label key={k.id} className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-gray-50">
+                          <label key={k.id} className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-muted/50">
                             <input
                               type="checkbox"
                               checked={rebuildKeyIds.includes(k.id)}
                               onChange={(e) => setRebuildKeyIds((prev) => e.target.checked ? [...prev, k.id] : prev.filter((id) => id !== k.id))}
                               className="w-4 h-4"
                             />
-                            <span className="text-xs font-bold truncate" title={k.fingerprint}>{k.name}</span>
+                            <span className="text-xs font-medium truncate" title={k.fingerprint}>{k.name}</span>
                           </label>
                         ))}
                       </div>
                     )}
                   </div>
 
-                  <div className="bg-danger/10 border-2 border-danger p-4">
-                    <p className="text-xs font-bold text-danger uppercase mb-2">Warning: Data Loss</p>
-                    <p className="text-xs text-gray-700">All data on this VM will be permanently deleted.</p>
+                  <div className="rounded-md border border-red-200 bg-red-50 p-4 dark:bg-red-950 dark:border-red-900">
+                    <p className="text-xs font-medium text-destructive mb-2">Warning: Data Loss</p>
+                    <p className="text-xs text-foreground">All data on this VM will be permanently deleted.</p>
                   </div>
                   <div>
-                    <span className="text-xs font-bold uppercase text-gray-600 mb-2 block">
-                      Type <span className="font-black">{vm.hostname}</span> to confirm
+                    <span className="text-xs font-medium text-muted-foreground mb-2 block">
+                      Type <span className="font-semibold">{vm.hostname}</span> to confirm
                     </span>
-                    <Input value={confirmVMName} onChange={(e) => setConfirmVMName(e.target.value)} placeholder="Enter VM hostname" className="border-2 border-black" />
+                    <Input value={confirmVMName} onChange={(e) => setConfirmVMName(e.target.value)} placeholder="Enter VM hostname" className="border" />
                   </div>
                 </div>
                 <DialogFooter>
@@ -927,32 +927,32 @@ export default function VMDetailPage() {
               <DialogTrigger asChild>
                 <Button variant="secondary" size="sm"><Disc className="w-4 h-4" />Mount ISO</Button>
               </DialogTrigger>
-              <DialogContent className="max-w-md border-4 border-black shadow-neo-xl">
+              <DialogContent className="max-w-md border shadow-lg">
                 <DialogHeader>
-                  <DialogTitle className="text-lg font-black uppercase">Mount ISO</DialogTitle>
-                  <DialogDescription className="text-sm text-gray-600">
+                  <DialogTitle className="text-lg font-semibold">Mount ISO</DialogTitle>
+                  <DialogDescription className="text-sm text-muted-foreground">
                     Attach a bootable ISO for OS install or rescue. The VM boots from it on next start; detach to return to disk boot.
                   </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-4 py-4">
                   {isoTemplates && isoTemplates.length > 0 && (
                     <div>
-                      <span className="text-xs font-bold uppercase text-gray-600 mb-2 block">Select an ISO</span>
+                      <span className="text-xs font-medium text-muted-foreground mb-2 block">Select an ISO</span>
                       <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto">
                         {isoTemplates.map((iso) => (
                           <button key={iso.id} type="button"
                             onClick={() => { setSelectedISOUrl(iso.image_path); setManualISOUrl("") }}
-                            className={`p-3 border-2 border-black text-left transition-all ${selectedISOUrl === iso.image_path && !manualISOUrl ? "bg-primary shadow-neo" : "bg-white hover:bg-gray-50"}`}>
-                            <span className="text-xs font-bold uppercase block truncate">{iso.name}</span>
-                            <span className="text-[10px] text-gray-500 truncate block">{iso.image_path}</span>
+                            className={`p-3 border text-left transition-all ${selectedISOUrl === iso.image_path && !manualISOUrl ? "border-primary ring-1 ring-primary bg-primary/5" : "bg-card hover:bg-muted/50"}`}>
+                            <span className="text-xs font-medium block truncate">{iso.name}</span>
+                            <span className="text-[10px] text-muted-foreground truncate block">{iso.image_path}</span>
                           </button>
                         ))}
                       </div>
                     </div>
                   )}
                   <div>
-                    <span className="text-xs font-bold uppercase text-gray-600 mb-2 block">Or enter an ISO URL</span>
-                    <Input value={manualISOUrl} onChange={(e) => setManualISOUrl(e.target.value)} placeholder="https://example.com/installer.iso" className="border-2 border-black" />
+                    <span className="text-xs font-medium text-muted-foreground mb-2 block">Or enter an ISO URL</span>
+                    <Input value={manualISOUrl} onChange={(e) => setManualISOUrl(e.target.value)} placeholder="https://example.com/installer.iso" className="border" />
                   </div>
                 </div>
                 <DialogFooter>
@@ -989,20 +989,20 @@ export default function VMDetailPage() {
               <DialogTrigger asChild>
                 <Button variant="secondary" size="sm"><ArrowRightLeft className="w-4 h-4" />Migrate</Button>
               </DialogTrigger>
-              <DialogContent className="max-w-md border-4 border-black shadow-neo-xl">
+              <DialogContent className="max-w-md border shadow-lg">
                 <DialogHeader>
-                  <DialogTitle className="text-lg font-black uppercase">Live Migrate VM</DialogTitle>
-                  <DialogDescription className="text-sm text-gray-600">
+                  <DialogTitle className="text-lg font-semibold">Live Migrate VM</DialogTitle>
+                  <DialogDescription className="text-sm text-muted-foreground">
                     Move this VM to another node with no downtime (block migration copies the disk).
                   </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-4 py-4">
                   <div>
-                    <span className="text-xs font-bold uppercase text-gray-600 mb-2 block">Destination Node</span>
+                    <span className="text-xs font-medium text-muted-foreground mb-2 block">Destination Node</span>
                     <select
                       value={migrateNodeId}
                       onChange={(e) => setMigrateNodeId(e.target.value)}
-                      className="w-full h-12 px-3 border-2 border-black font-medium bg-white"
+                      className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm"
                     >
                       <option value="">Select a node…</option>
                       {allNodes?.filter((n) => n.id !== vm.node_id).map((n) => (
@@ -1010,9 +1010,9 @@ export default function VMDetailPage() {
                       ))}
                     </select>
                   </div>
-                  <div className="flex items-center gap-2 p-3 bg-gray-100 border-2 border-black">
+                  <div className="flex items-center gap-2 p-3 bg-muted border">
                     <Server className="w-4 h-4 shrink-0" />
-                    <p className="text-xs font-bold">Requires node-to-node libvirt connectivity (SSH). The VM stays running during transfer.</p>
+                    <p className="text-xs font-medium">Requires node-to-node libvirt connectivity (SSH). The VM stays running during transfer.</p>
                   </div>
                 </div>
                 <DialogFooter>
@@ -1029,20 +1029,20 @@ export default function VMDetailPage() {
               <DialogTrigger asChild>
                 <Button variant="secondary" size="sm"><User className="w-4 h-4" />Reassign</Button>
               </DialogTrigger>
-              <DialogContent className="max-w-md border-4 border-black shadow-neo-xl">
+              <DialogContent className="max-w-md border shadow-lg">
                 <DialogHeader>
-                  <DialogTitle className="text-lg font-black uppercase">Reassign Owner</DialogTitle>
-                  <DialogDescription className="text-sm text-gray-600">
+                  <DialogTitle className="text-lg font-semibold">Reassign Owner</DialogTitle>
+                  <DialogDescription className="text-sm text-muted-foreground">
                     Transfer this VM to another user account.
                   </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-4 py-4">
                   <div>
-                    <span className="text-xs font-bold uppercase text-gray-600 mb-2 block">New Owner</span>
+                    <span className="text-xs font-medium text-muted-foreground mb-2 block">New Owner</span>
                     <select
                       value={reassignUserId}
                       onChange={(e) => setReassignUserId(e.target.value)}
-                      className="w-full h-12 px-3 border-2 border-black font-medium bg-white"
+                      className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm"
                     >
                       <option value="">Select a user…</option>
                       {usersData?.data?.filter((u) => u.id !== vm.user_id).map((u) => (
@@ -1084,23 +1084,23 @@ export default function VMDetailPage() {
               <DialogTrigger asChild>
                 <Button variant="secondary" size="sm"><Copy className="w-4 h-4" />Clone</Button>
               </DialogTrigger>
-              <DialogContent className="max-w-md border-4 border-black shadow-neo-xl">
+              <DialogContent className="max-w-md border shadow-lg">
                 <DialogHeader>
-                  <DialogTitle className="text-lg font-black uppercase">Clone VM</DialogTitle>
-                  <DialogDescription className="text-sm text-gray-600">
+                  <DialogTitle className="text-lg font-semibold">Clone VM</DialogTitle>
+                  <DialogDescription className="text-sm text-muted-foreground">
                     Creates a new VM on the same node as an independent copy of this VM&apos;s disk, with a fresh IP, MAC and VNC. The VM must be stopped.
                   </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-3 py-2">
-                  <label htmlFor="clone-hostname" className="text-xs font-bold uppercase text-gray-600 block">New hostname (optional)</label>
-                  <Input id="clone-hostname" value={cloneHostname} onChange={(e) => setCloneHostname(e.target.value)} placeholder={`${vm.hostname}-clone`} className="border-2 border-black" />
+                  <label htmlFor="clone-hostname" className="text-xs font-medium text-muted-foreground block">New hostname (optional)</label>
+                  <Input id="clone-hostname" value={cloneHostname} onChange={(e) => setCloneHostname(e.target.value)} placeholder={`${vm.hostname}-clone`} className="border" />
 
-                  <label htmlFor="clone-node" className="text-xs font-bold uppercase text-gray-600 block">Destination node</label>
+                  <label htmlFor="clone-node" className="text-xs font-medium text-muted-foreground block">Destination node</label>
                   <select
                     id="clone-node"
                     value={cloneNodeId || vm.node_id}
                     onChange={(e) => setCloneNodeId(e.target.value)}
-                    className="w-full h-11 px-3 border-2 border-black font-medium bg-white"
+                    className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm"
                   >
                     {allNodes?.map((n) => (
                       <option key={n.id} value={n.id}>
@@ -1109,10 +1109,10 @@ export default function VMDetailPage() {
                     ))}
                   </select>
                   {cloneNodeId && cloneNodeId !== vm.node_id && (
-                    <p className="text-xs text-gray-600">Cross-node clone pulls the disk over SSH from the source node — may take a while for large disks.</p>
+                    <p className="text-xs text-muted-foreground">Cross-node clone pulls the disk over SSH from the source node — may take a while for large disks.</p>
                   )}
                   {vm.status === "running" && (
-                    <p className="text-xs text-danger font-bold">VM is running — stop it first to get a consistent copy.</p>
+                    <p className="text-xs text-destructive font-medium">VM is running — stop it first to get a consistent copy.</p>
                   )}
                 </div>
                 <DialogFooter>
@@ -1130,18 +1130,18 @@ export default function VMDetailPage() {
               <DialogTrigger asChild>
                 <Button variant="secondary" size="sm"><KeyRound className="w-4 h-4" />Reset Password</Button>
               </DialogTrigger>
-              <DialogContent className="max-w-md border-4 border-black shadow-neo-xl">
+              <DialogContent className="max-w-md border shadow-lg">
                 <DialogHeader>
-                  <DialogTitle className="text-lg font-black uppercase">Reset Root Password</DialogTitle>
-                  <DialogDescription className="text-sm text-gray-600">
+                  <DialogTitle className="text-lg font-semibold">Reset Root Password</DialogTitle>
+                  <DialogDescription className="text-sm text-muted-foreground">
                     Sets a new root password on the running guest via the QEMU guest agent. The VM must be running and have qemu-guest-agent installed.
                   </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-3 py-2">
-                  <label htmlFor="reset-pw" className="text-xs font-bold uppercase text-gray-600 block">New Password</label>
-                  <Input id="reset-pw" type="text" value={resetPwValue} onChange={(e) => setResetPwValue(e.target.value)} placeholder="Enter new root password" className="border-2 border-black font-mono" />
+                  <label htmlFor="reset-pw" className="text-xs font-medium text-muted-foreground block">New Password</label>
+                  <Input id="reset-pw" type="text" value={resetPwValue} onChange={(e) => setResetPwValue(e.target.value)} placeholder="Enter new root password" className="border font-mono" />
                   {vm.status !== "running" && (
-                    <p className="text-xs text-danger font-bold">VM is not running — start it first.</p>
+                    <p className="text-xs text-destructive font-medium">VM is not running — start it first.</p>
                   )}
                 </div>
                 <DialogFooter>
@@ -1159,14 +1159,14 @@ export default function VMDetailPage() {
               <DialogTrigger asChild>
                 <Button variant="destructive" size="sm"><Trash2 className="w-4 h-4" />Delete</Button>
               </DialogTrigger>
-              <DialogContent className="max-w-md border-4 border-black shadow-neo-xl">
+              <DialogContent className="max-w-md border shadow-lg">
                 <DialogHeader>
-                  <DialogTitle className="text-lg font-black uppercase">Delete VM</DialogTitle>
-                  <DialogDescription className="text-sm text-gray-600">Are you sure you want to delete this VM?</DialogDescription>
+                  <DialogTitle className="text-lg font-semibold">Delete VM</DialogTitle>
+                  <DialogDescription className="text-sm text-muted-foreground">Are you sure you want to delete this VM?</DialogDescription>
                 </DialogHeader>
-                <div className="bg-danger/10 border-2 border-danger p-4">
-                  <p className="text-xs font-bold text-danger uppercase mb-2">Permanent Data Loss</p>
-                  <p className="text-xs text-gray-700">The VM &quot;{vm.hostname}&quot; will be permanently deleted.</p>
+                <div className="rounded-md border border-red-200 bg-red-50 p-4 dark:bg-red-950 dark:border-red-900">
+                  <p className="text-xs font-medium text-destructive mb-2">Permanent Data Loss</p>
+                  <p className="text-xs text-foreground">The VM &quot;{vm.hostname}&quot; will be permanently deleted.</p>
                 </div>
                 <DialogFooter>
                   <Button variant="ghost" onClick={() => setDeleteDialogOpen(false)}>Cancel</Button>
@@ -1196,8 +1196,8 @@ export default function VMDetailPage() {
         <TabsContent value="overview" className="space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* Resource Usage */}
-            <div className="lg:col-span-2 bg-white border-4 border-black p-6 shadow-neo">
-              <h2 className="text-lg font-black uppercase tracking-tight text-black mb-6 flex items-center gap-2">
+            <div className="lg:col-span-2 bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
+              <h2 className="text-lg font-semibold text-foreground mb-6 flex items-center gap-2">
                 <Activity className="w-5 h-5" />Resource Usage
               </h2>
               {metrics ? (
@@ -1222,34 +1222,34 @@ export default function VMDetailPage() {
                     unit="GB"
                     color="accent"
                   />
-                  <div className="grid grid-cols-2 gap-4 mt-4 pt-4 border-t-2 border-black">
-                    <div className="p-3 border-2 border-black bg-gray-50">
-                      <span className="text-xs font-bold uppercase text-gray-500 block">Disk Read</span>
-                      <span className="text-sm font-black">{formatBytesPerSec(metrics.disk_read_bytes_per_sec)}</span>
+                  <div className="grid grid-cols-2 gap-4 mt-4 pt-4 border-t">
+                    <div className="p-3 border rounded-md bg-muted">
+                      <span className="text-xs font-medium text-muted-foreground block">Disk Read</span>
+                      <span className="text-sm font-semibold">{formatBytesPerSec(metrics.disk_read_bytes_per_sec)}</span>
                     </div>
-                    <div className="p-3 border-2 border-black bg-gray-50">
-                      <span className="text-xs font-bold uppercase text-gray-500 block">Disk Write</span>
-                      <span className="text-sm font-black">{formatBytesPerSec(metrics.disk_write_bytes_per_sec)}</span>
+                    <div className="p-3 border rounded-md bg-muted">
+                      <span className="text-xs font-medium text-muted-foreground block">Disk Write</span>
+                      <span className="text-sm font-semibold">{formatBytesPerSec(metrics.disk_write_bytes_per_sec)}</span>
                     </div>
-                    <div className="p-3 border-2 border-black bg-gray-50">
-                      <span className="text-xs font-bold uppercase text-gray-500 block">Network RX</span>
-                      <span className="text-sm font-black">{formatBytesPerSec(metrics.network_rx_bytes_per_sec)}</span>
+                    <div className="p-3 border rounded-md bg-muted">
+                      <span className="text-xs font-medium text-muted-foreground block">Network RX</span>
+                      <span className="text-sm font-semibold">{formatBytesPerSec(metrics.network_rx_bytes_per_sec)}</span>
                     </div>
-                    <div className="p-3 border-2 border-black bg-gray-50">
-                      <span className="text-xs font-bold uppercase text-gray-500 block">Network TX</span>
-                      <span className="text-sm font-black">{formatBytesPerSec(metrics.network_tx_bytes_per_sec)}</span>
+                    <div className="p-3 border rounded-md bg-muted">
+                      <span className="text-xs font-medium text-muted-foreground block">Network TX</span>
+                      <span className="text-sm font-semibold">{formatBytesPerSec(metrics.network_tx_bytes_per_sec)}</span>
                     </div>
                   </div>
                   {/* Trend (last 60m) */}
-                  <div className="mt-4 pt-4 border-t-2 border-black">
-                    <p className="text-[10px] font-black uppercase tracking-wider text-gray-400 mb-2">Trend · last 60m</p>
+                  <div className="mt-4 pt-4 border-t">
+                    <p className="text-[10px] font-semibold text-muted-foreground mb-2">Trend · last 60m</p>
                     <div className="grid grid-cols-2 gap-3">
-                      <div className="border-2 border-black p-2">
-                        <span className="text-[10px] font-bold uppercase text-gray-500">CPU %</span>
+                      <div className="border p-2">
+                        <span className="text-[10px] font-medium text-muted-foreground">CPU %</span>
                         <Sparkline data={cpuTrend} colorClass="text-primary" height={36} />
                       </div>
-                      <div className="border-2 border-black p-2">
-                        <span className="text-[10px] font-bold uppercase text-gray-500">Memory %</span>
+                      <div className="border p-2">
+                        <span className="text-[10px] font-medium text-muted-foreground">Memory %</span>
                         <Sparkline data={memTrend} colorClass="text-secondary" height={36} />
                       </div>
                     </div>
@@ -1260,64 +1260,64 @@ export default function VMDetailPage() {
                   <ProgressBar value={0} max={100} label="CPU" color="primary" />
                   <ProgressBar value={0} max={vm.resources.ram} label="Memory" unit="MB" color="secondary" />
                   <ProgressBar value={vm.resources.disk} max={vm.resources.disk} label="Disk (Allocated)" unit="GB" color="accent" />
-                  <p className="text-xs text-gray-600 italic">Live metrics available when VM is running</p>
+                  <p className="text-xs text-muted-foreground italic">Live metrics available when VM is running</p>
                 </div>
               )}
             </div>
 
             {/* VM Details Sidebar */}
-            <div className="bg-white border-4 border-black p-6 shadow-neo">
-              <h2 className="text-lg font-black uppercase tracking-tight text-black mb-6 flex items-center gap-2">
+            <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
+              <h2 className="text-lg font-semibold text-foreground mb-6 flex items-center gap-2">
                 <Server className="w-5 h-5" />VM Details
               </h2>
               <div className="space-y-4">
-                <div className="flex items-center justify-between pb-3 border-b-2 border-black">
-                  <span className="text-xs font-bold uppercase text-gray-500">Node</span>
-                  <span className="text-sm font-black">{vm.node_id}</span>
+                <div className="flex items-center justify-between pb-3 border-b">
+                  <span className="text-xs font-medium text-muted-foreground">Node</span>
+                  <span className="text-sm font-semibold">{vm.node_id}</span>
                 </div>
                 {vmNetworks && vmNetworks.length > 0 && (
-                  <div className="flex items-center justify-between pb-3 border-b-2 border-black">
-                    <span className="text-xs font-bold uppercase text-gray-500">IP Address</span>
+                  <div className="flex items-center justify-between pb-3 border-b">
+                    <span className="text-xs font-medium text-muted-foreground">IP Address</span>
                     <div className="flex flex-col items-end gap-1">
                       {vmNetworks.map((net) => (
-                        <span key={net.id} className="text-sm font-black font-mono">{net.ip_address}</span>
+                        <span key={net.id} className="text-sm font-semibold font-mono">{net.ip_address}</span>
                       ))}
                     </div>
                   </div>
                 )}
-                <div className="flex items-center justify-between pb-3 border-b-2 border-black">
-                  <span className="text-xs font-bold uppercase text-gray-500">OS Template</span>
-                  <span className="text-sm font-black">{vm.os_template_id}</span>
+                <div className="flex items-center justify-between pb-3 border-b">
+                  <span className="text-xs font-medium text-muted-foreground">OS Template</span>
+                  <span className="text-sm font-semibold">{vm.os_template_id}</span>
                 </div>
-                <div className="flex items-center justify-between pb-3 border-b-2 border-black">
-                  <span className="text-xs font-bold uppercase text-gray-500">CPU</span>
-                  <span className="text-sm font-black">{vm.resources.cpu} vCPU</span>
+                <div className="flex items-center justify-between pb-3 border-b">
+                  <span className="text-xs font-medium text-muted-foreground">CPU</span>
+                  <span className="text-sm font-semibold">{vm.resources.cpu} vCPU</span>
                 </div>
-                <div className="flex items-center justify-between pb-3 border-b-2 border-black">
-                  <span className="text-xs font-bold uppercase text-gray-500">RAM</span>
-                  <span className="text-sm font-black">{ramGB} GB</span>
+                <div className="flex items-center justify-between pb-3 border-b">
+                  <span className="text-xs font-medium text-muted-foreground">RAM</span>
+                  <span className="text-sm font-semibold">{ramGB} GB</span>
                 </div>
-                <div className="flex items-center justify-between pb-3 border-b-2 border-black">
-                  <span className="text-xs font-bold uppercase text-gray-500">Disk</span>
-                  <span className="text-sm font-black">{vm.resources.disk} GB</span>
+                <div className="flex items-center justify-between pb-3 border-b">
+                  <span className="text-xs font-medium text-muted-foreground">Disk</span>
+                  <span className="text-sm font-semibold">{vm.resources.disk} GB</span>
                 </div>
                 {vm.vnc_port && (
-                  <div className="flex items-center justify-between pb-3 border-b-2 border-black">
-                    <span className="text-xs font-bold uppercase text-gray-500">VNC Port</span>
+                  <div className="flex items-center justify-between pb-3 border-b">
+                    <span className="text-xs font-medium text-muted-foreground">VNC Port</span>
                     <div className="flex items-center gap-1">
-                      <span className="text-sm font-black font-mono">{vm.vnc_port}</span>
+                      <span className="text-sm font-semibold font-mono">{vm.vnc_port}</span>
                       <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => copyToClipboard(vm.vnc_port!.toString())}>
                         {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
                       </Button>
                     </div>
                   </div>
                 )}
-                <div className="flex items-center justify-between pb-3 border-b-2 border-black">
-                  <span className="text-xs font-bold uppercase text-gray-500">Created</span>
+                <div className="flex items-center justify-between pb-3 border-b">
+                  <span className="text-xs font-medium text-muted-foreground">Created</span>
                   <span className="text-sm font-medium">{formatDate(vm.created_at)}</span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold uppercase text-gray-500">Updated</span>
+                  <span className="text-xs font-medium text-muted-foreground">Updated</span>
                   <span className="text-sm font-medium">{formatDate(vm.updated_at)}</span>
                 </div>
               </div>
@@ -1326,14 +1326,14 @@ export default function VMDetailPage() {
 
           {/* VNC Access */}
           {vm.vnc_port && vm.status === "running" && (
-            <div className="bg-white border-4 border-black p-6 shadow-neo">
-              <h2 className="text-lg font-black uppercase tracking-tight text-black mb-6 flex items-center gap-2">
+            <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
+              <h2 className="text-lg font-semibold text-foreground mb-6 flex items-center gap-2">
                 <Monitor className="w-5 h-5" />VNC Access
               </h2>
               <div className="flex items-center justify-between">
                 <div>
-                  <span className="text-xs font-bold uppercase text-gray-500 block mb-1">VNC Port</span>
-                  <span className="text-xl font-black font-mono">{vm.vnc_port}</span>
+                  <span className="text-xs font-medium text-muted-foreground block mb-1">VNC Port</span>
+                  <span className="text-xl font-semibold font-mono">{vm.vnc_port}</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <Link href={`/vms/${vm.id}/ssh`} target="_blank">
@@ -1356,9 +1356,9 @@ export default function VMDetailPage() {
 
         {/* Console Tab */}
         <TabsContent value="console">
-          <div className="bg-white border-4 border-black shadow-neo">
-            <div className="flex items-center justify-between p-4 border-b-2 border-black">
-              <h2 className="text-lg font-black uppercase tracking-tight text-black flex items-center gap-2">
+          <div className="bg-card text-card-foreground border rounded-lg shadow-sm">
+            <div className="flex items-center justify-between p-4 border-b">
+              <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
                 <Terminal className="w-5 h-5" />Console
               </h2>
               <div className="flex items-center gap-2">
@@ -1385,11 +1385,11 @@ export default function VMDetailPage() {
               </div>
             </div>
             {vm.console_enabled === false ? (
-              <div className="bg-gray-100 p-12 flex items-center justify-center h-[500px]">
+              <div className="bg-muted p-12 flex items-center justify-center h-[500px]">
                 <div className="text-center">
-                  <MonitorOff className="w-12 h-12 mx-auto text-gray-400 mb-4" />
-                  <p className="text-gray-600 font-bold uppercase mb-2">Console disabled</p>
-                  <p className="text-gray-500 text-sm">Re-enable the console from the Actions section to connect.</p>
+                  <MonitorOff className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
+                  <p className="text-muted-foreground font-medium mb-2">Console disabled</p>
+                  <p className="text-muted-foreground text-sm">Re-enable the console from the Actions section to connect.</p>
                 </div>
               </div>
             ) : vm.status === "running" ? (
@@ -1400,10 +1400,10 @@ export default function VMDetailPage() {
                   onDisconnect={() => setConsoleActive(false)}
                 />
               ) : (
-                <div className="bg-black p-12 flex items-center justify-center h-[500px]">
+                <div className="bg-muted p-12 flex items-center justify-center h-[500px]">
                   <div className="text-center">
-                    <Terminal className="w-12 h-12 mx-auto text-green-400 mb-4" />
-                    <p className="text-green-400 font-mono text-sm mb-4">Console available</p>
+                    <Terminal className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
+                    <p className="text-muted-foreground font-mono text-sm mb-4">Console available</p>
                     <Button variant="default" onClick={() => setConsoleActive(true)} className="gap-2">
                       <Terminal className="w-4 h-4" />
                       Connect to Console
@@ -1412,11 +1412,11 @@ export default function VMDetailPage() {
                 </div>
               )
             ) : (
-              <div className="bg-gray-100 p-12 flex items-center justify-center h-[500px]">
+              <div className="bg-muted p-12 flex items-center justify-center h-[500px]">
                 <div className="text-center">
-                  <Terminal className="w-12 h-12 mx-auto text-gray-500 mb-4" />
-                  <p className="text-gray-500 font-bold uppercase text-sm">VM is not running</p>
-                  <p className="text-gray-600 text-xs mt-1">Start the VM to access the console</p>
+                  <Terminal className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
+                  <p className="text-muted-foreground font-medium text-sm">VM is not running</p>
+                  <p className="text-muted-foreground text-xs mt-1">Start the VM to access the console</p>
                 </div>
               </div>
             )}
@@ -1426,44 +1426,44 @@ export default function VMDetailPage() {
         {/* Network Tab */}
         <TabsContent value="network">
           <div className="space-y-6">
-            <div className="bg-white border-4 border-black p-6 shadow-neo">
-              <h2 className="text-lg font-black uppercase tracking-tight text-black mb-6 flex items-center gap-2">
+            <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
+              <h2 className="text-lg font-semibold text-foreground mb-6 flex items-center gap-2">
                 <Network className="w-5 h-5" />Network Configuration
               </h2>
 
               {/* Placement & console */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-                <div className="p-4 border-2 border-black">
-                  <span className="text-xs font-bold uppercase text-gray-500 block">Node</span>
-                  <Link href={`/nodes/${vm.node_id}`} className="text-sm font-bold underline hover:text-primary break-all">
+                <div className="p-4 border">
+                  <span className="text-xs font-medium text-muted-foreground block">Node</span>
+                  <Link href={`/nodes/${vm.node_id}`} className="text-sm font-medium underline hover:text-primary break-all">
                     {allNodes?.find((n) => n.id === vm.node_id)?.name || vm.node_id}
                   </Link>
                 </div>
-                <div className="p-4 border-2 border-black">
-                  <span className="text-xs font-bold uppercase text-gray-500 block">VNC Port</span>
-                  <span className="text-sm font-mono font-bold">{vm.vnc_port || "N/A"}</span>
+                <div className="p-4 border">
+                  <span className="text-xs font-medium text-muted-foreground block">VNC Port</span>
+                  <span className="text-sm font-mono font-medium">{vm.vnc_port || "N/A"}</span>
                 </div>
-                <div className="p-4 border-2 border-black">
-                  <span className="text-xs font-bold uppercase text-gray-500 block">Status</span>
-                  <span className="text-sm font-bold uppercase">{vm.status}</span>
+                <div className="p-4 border">
+                  <span className="text-xs font-medium text-muted-foreground block">Status</span>
+                  <span className="text-sm font-medium">{vm.status}</span>
                 </div>
-                <div className="p-4 border-2 border-black">
-                  <span className="text-xs font-bold uppercase text-gray-500 block">Resources</span>
-                  <span className="text-sm font-bold">{vm.resources.cpu}C / {ramGB}GB</span>
+                <div className="p-4 border">
+                  <span className="text-xs font-medium text-muted-foreground block">Resources</span>
+                  <span className="text-sm font-medium">{vm.resources.cpu}C / {ramGB}GB</span>
                 </div>
               </div>
 
               {/* Interfaces (Virtualizor-style per-IP detail) */}
-              <h3 className="text-sm font-black uppercase tracking-wider text-gray-600 mb-3">Network Interfaces</h3>
+              <h3 className="text-sm font-semibold text-muted-foreground mb-3">Network Interfaces</h3>
               {!vmNetworks?.length ? (
-                <div className="border-2 border-dashed border-gray-300 p-6 text-center text-sm font-bold uppercase text-gray-400">
+                <div className="border border-dashed border-gray-300 p-6 text-center text-sm font-medium text-muted-foreground">
                   No network interfaces attached
                 </div>
               ) : (
-                <div className="border-2 border-black overflow-x-auto">
+                <div className="border overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
-                      <tr className="bg-black text-white font-black uppercase text-xs tracking-wider">
+                      <tr className="bg-muted text-muted-foreground border-b font-medium text-xs">
                         <th className="text-left p-3">IP Address</th>
                         <th className="text-left p-3">Gateway</th>
                         <th className="text-left p-3">Netmask</th>
@@ -1474,8 +1474,8 @@ export default function VMDetailPage() {
                     </thead>
                     <tbody>
                       {vmNetworks.map((iface, idx) => (
-                        <tr key={iface.id} className={`border-t-2 border-black ${idx % 2 ? "bg-gray-50" : "bg-white"}`}>
-                          <td className="p-3 font-mono font-bold">
+                        <tr key={iface.id} className={`border-t ${idx % 2 ? "bg-muted/50" : "bg-card"}`}>
+                          <td className="p-3 font-mono font-medium">
                             {iface.pool_id ? (
                               <Link href={`/ip-pools/${iface.pool_id}`} className="underline hover:text-primary">{iface.ip_address}</Link>
                             ) : iface.ip_address}
@@ -1503,22 +1503,22 @@ export default function VMDetailPage() {
 
         {/* Snapshots Tab */}
         <TabsContent value="snapshots">
-          <div className="bg-white border-4 border-black p-6 shadow-neo">
+          <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
             <div className="flex items-center justify-between mb-6">
-              <h2 className="text-lg font-black uppercase tracking-tight text-black flex items-center gap-2">
+              <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
                 <Database className="w-5 h-5" />Snapshots
               </h2>
               <Dialog open={createSnapshotOpen} onOpenChange={setCreateSnapshotOpen}>
                 <DialogTrigger asChild>
                   <Button variant="default" size="sm"><Plus className="w-4 h-4 mr-2" />Create Snapshot</Button>
                 </DialogTrigger>
-                <DialogContent className="max-w-sm border-4 border-black shadow-neo-xl">
+                <DialogContent className="max-w-sm border shadow-lg">
                   <DialogHeader>
-                    <DialogTitle className="text-lg font-black uppercase">Create Snapshot</DialogTitle>
+                    <DialogTitle className="text-lg font-semibold">Create Snapshot</DialogTitle>
                   </DialogHeader>
                   <div className="space-y-3 py-2">
-                    <label htmlFor="snapshot-name" className="text-xs font-bold uppercase text-gray-600 block">Snapshot Name</label>
-                    <Input id="snapshot-name" value={snapshotName} onChange={(e) => setSnapshotName(e.target.value)} placeholder="e.g., before-update" className="border-2 border-black" />
+                    <label htmlFor="snapshot-name" className="text-xs font-medium text-muted-foreground block">Snapshot Name</label>
+                    <Input id="snapshot-name" value={snapshotName} onChange={(e) => setSnapshotName(e.target.value)} placeholder="e.g., before-update" className="border" />
                   </div>
                   <DialogFooter>
                     <Button variant="ghost" onClick={() => setCreateSnapshotOpen(false)}>Cancel</Button>
@@ -1540,17 +1540,17 @@ export default function VMDetailPage() {
             ) : (
               <div className="space-y-3">
                 {snapshots.map((snap: Snapshot) => (
-                  <div key={snap.id} className="flex items-center justify-between p-4 border-2 border-black hover:bg-gray-50">
+                  <div key={snap.id} className="flex items-center justify-between p-4 border hover:bg-muted/50">
                     <div className="flex items-center gap-4">
                       <Database className="w-5 h-5" />
                       <div>
-                        <span className="font-black">{snap.name}</span>
-                        <span className="text-xs text-gray-500 ml-2">{formatDate(snap.created_at)}</span>
+                        <span className="font-semibold">{snap.name}</span>
+                        <span className="text-xs text-muted-foreground ml-2">{formatDate(snap.created_at)}</span>
                       </div>
                     </div>
                     <div className="flex items-center gap-3">
-                      <span className={`text-xs font-bold uppercase px-2 py-1 border border-black ${
-                        snap.status === "completed" ? "bg-success" : snap.status === "failed" ? "bg-danger text-white" : "bg-gray-200"
+                      <span className={`text-xs font-medium px-2 py-1 border ${
+                        snap.status === "completed" ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900" : snap.status === "failed" ? "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-900" : "bg-muted text-muted-foreground"
                       }`}>
                         {snap.status}
                       </span>
@@ -1570,9 +1570,9 @@ export default function VMDetailPage() {
 
         {/* Backups Tab */}
         <TabsContent value="backups">
-          <div className="bg-white border-4 border-black p-6 shadow-neo">
+          <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
             <div className="flex items-center justify-between mb-6">
-              <h2 className="text-lg font-black uppercase tracking-tight text-black flex items-center gap-2">
+              <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
                 <HardDrive className="w-5 h-5" />Backups
               </h2>
               <Button variant="default" size="sm" onClick={handleCreateBackup} disabled={createBackup.isPending}>
@@ -1590,18 +1590,18 @@ export default function VMDetailPage() {
             ) : (
               <div className="space-y-3">
                 {backups.map((backup: Backup) => (
-                  <div key={backup.id} className="flex items-center justify-between p-4 border-2 border-black hover:bg-gray-50">
+                  <div key={backup.id} className="flex items-center justify-between p-4 border hover:bg-muted/50">
                     <div className="flex items-center gap-4">
                       <HardDrive className="w-5 h-5" />
                       <div>
-                        <span className="font-black">{backup.backup_type} backup</span>
-                        <span className="text-xs text-gray-500 ml-2">{formatDate(backup.created_at)}</span>
+                        <span className="font-semibold">{backup.backup_type} backup</span>
+                        <span className="text-xs text-muted-foreground ml-2">{formatDate(backup.created_at)}</span>
                       </div>
                     </div>
                     <div className="flex items-center gap-3">
-                      <span className="text-xs font-bold">{formatBytes(backup.size)}</span>
-                      <span className={`text-xs font-bold uppercase px-2 py-1 border border-black ${
-                        backup.status === "completed" ? "bg-success" : backup.status === "failed" ? "bg-danger text-white" : backup.status === "in_progress" ? "bg-secondary" : "bg-gray-200"
+                      <span className="text-xs font-medium">{formatBytes(backup.size)}</span>
+                      <span className={`text-xs font-medium px-2 py-1 border ${
+                        backup.status === "completed" ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900" : backup.status === "failed" ? "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-900" : backup.status === "in_progress" ? "bg-sky-50 text-sky-700 border-sky-200 dark:bg-sky-950 dark:text-sky-300 dark:border-sky-900" : "bg-muted text-muted-foreground"
                       }`}>
                         {backup.status}
                       </span>
@@ -1618,9 +1618,9 @@ export default function VMDetailPage() {
 
         {/* Firewall Tab */}
         <TabsContent value="firewall">
-          <div className="bg-white border-4 border-black p-6 shadow-neo">
+          <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
             <div className="flex items-center justify-between mb-6">
-              <h2 className="text-lg font-black uppercase tracking-tight text-black flex items-center gap-2">
+              <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
                 <Shield className="w-5 h-5" />Firewall Rules
               </h2>
             </div>
@@ -1635,26 +1635,26 @@ export default function VMDetailPage() {
               <div className="overflow-x-auto">
                 <table className="w-full">
                   <thead>
-                    <tr className="border-b-4 border-black">
-                      <th className="text-left py-3 px-4 text-xs font-black uppercase">Protocol</th>
-                      <th className="text-left py-3 px-4 text-xs font-black uppercase">Port</th>
-                      <th className="text-left py-3 px-4 text-xs font-black uppercase">Direction</th>
-                      <th className="text-left py-3 px-4 text-xs font-black uppercase">Source</th>
-                      <th className="text-left py-3 px-4 text-xs font-black uppercase">Action</th>
-                      <th className="text-left py-3 px-4 text-xs font-black uppercase">Priority</th>
-                      <th className="text-left py-3 px-4 text-xs font-black uppercase">Actions</th>
+                    <tr className="border-b">
+                      <th className="text-left py-3 px-4 text-xs font-semibold">Protocol</th>
+                      <th className="text-left py-3 px-4 text-xs font-semibold">Port</th>
+                      <th className="text-left py-3 px-4 text-xs font-semibold">Direction</th>
+                      <th className="text-left py-3 px-4 text-xs font-semibold">Source</th>
+                      <th className="text-left py-3 px-4 text-xs font-semibold">Action</th>
+                      <th className="text-left py-3 px-4 text-xs font-semibold">Priority</th>
+                      <th className="text-left py-3 px-4 text-xs font-semibold">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {firewallRules.map((rule: FirewallRule) => (
-                      <tr key={rule.id} className="border-b-2 border-black">
-                        <td className="py-3 px-4 font-mono text-sm uppercase">{rule.protocol}</td>
+                      <tr key={rule.id} className="border-b">
+                        <td className="py-3 px-4 font-mono text-sm">{rule.protocol}</td>
                         <td className="py-3 px-4 font-mono text-sm">{rule.port_range || "*"}</td>
-                        <td className="py-3 px-4 text-xs font-bold uppercase">{rule.direction}</td>
+                        <td className="py-3 px-4 text-xs font-medium">{rule.direction}</td>
                         <td className="py-3 px-4 font-mono text-sm">{rule.source_ip || "Any"}</td>
                         <td className="py-3 px-4">
-                          <span className={`text-xs font-bold uppercase px-2 py-1 border border-black ${
-                            rule.action === "allow" ? "bg-success" : "bg-danger text-white"
+                          <span className={`text-xs font-medium px-2 py-1 border ${
+                            rule.action === "allow" ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900" : "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-900"
                           }`}>
                             {rule.action}
                           </span>
@@ -1676,15 +1676,15 @@ export default function VMDetailPage() {
 
         {/* Logs Tab */}
         <TabsContent value="logs">
-          <div className="bg-white border-4 border-black p-6 shadow-neo">
-            <h2 className="text-lg font-black uppercase tracking-tight text-black mb-6 flex items-center gap-2">
+          <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
+            <h2 className="text-lg font-semibold text-foreground mb-6 flex items-center gap-2">
               <FileText className="w-5 h-5" />Activity Logs
             </h2>
-            <div className="bg-gray-100 border-4 border-black p-8 h-64 flex items-center justify-center">
+            <div className="bg-muted border p-8 h-64 flex items-center justify-center">
               <div className="text-center">
-                <FileText className="w-12 h-12 mx-auto text-gray-500 mb-4" />
-                <p className="text-gray-500 font-bold uppercase text-sm">No activity logs yet for this VM</p>
-                <p className="text-gray-600 text-xs mt-1">VM activity logging is under development</p>
+                <FileText className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
+                <p className="text-muted-foreground font-medium text-sm">No activity logs yet for this VM</p>
+                <p className="text-muted-foreground text-xs mt-1">VM activity logging is under development</p>
               </div>
             </div>
           </div>

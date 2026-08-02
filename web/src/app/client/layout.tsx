@@ -43,10 +43,10 @@ export default function ClientLayout({
 
   if (isLoading || (user && user.role === "admin")) {
     return (
-      <div className="min-h-screen bg-[#f5f5f0] flex items-center justify-center">
+      <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
           <Loader2 className="w-8 h-8 animate-spin text-primary" />
-          <p className="text-sm font-medium text-gray-500">Loading...</p>
+          <p className="text-sm font-medium text-muted-foreground">Loading...</p>
         </div>
       </div>
     )
@@ -54,7 +54,7 @@ export default function ClientLayout({
 
   if (isError || !user) {
     return (
-      <div className="min-h-screen bg-[#f5f5f0] flex items-center justify-center">
+      <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
           <p className="text-sm font-medium text-destructive">
             {error?.message || "Authentication failed"}
@@ -66,36 +66,36 @@ export default function ClientLayout({
   }
 
   return (
-    <div className="min-h-screen bg-[#f5f5f0]">
+    <div className="min-h-screen bg-background">
       <ClientSidebar user={user} />
 
       <div className="lg:pl-64">
-        <header className="sticky top-0 z-40 bg-white border-b-4 border-black">
+        <header className="sticky top-0 z-40 bg-card border-b">
           <div className="flex items-center justify-between h-16 px-4 lg:px-8">
-            <span className="text-sm font-black uppercase tracking-wider text-black">
+            <span className="text-sm font-semibold text-foreground">
               Client Area
             </span>
 
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
-                  variant="ghost"
-                  className="h-10 gap-2 border-2 border-black bg-white text-black hover:bg-gray-50 font-bold"
+                  variant="outline"
+                  className="gap-2 font-medium"
                 >
-                  <div className="w-6 h-6 bg-black text-primary flex items-center justify-center font-black uppercase text-xs">
+                  <div className="w-6 h-6 bg-muted text-foreground flex items-center justify-center rounded-md font-semibold uppercase text-xs">
                     {user.email.charAt(0)}
                   </div>
                   <span className="hidden sm:inline text-sm">{user.email}</span>
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
-                <DropdownMenuLabel className="font-black uppercase text-xs">
+                <DropdownMenuLabel className="text-xs font-semibold text-muted-foreground">
                   {user.email}
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   onClick={handleLogout}
-                  className="cursor-pointer font-bold text-destructive"
+                  className="cursor-pointer font-medium text-destructive"
                 >
                   <LogOut className="w-4 h-4 mr-2" />
                   Log out

@@ -90,17 +90,17 @@ function QuotaMeter({
   return (
     <div>
       <div className="flex items-center justify-between mb-1">
-        <span className="flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-gray-500">
+        <span className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
           <Icon className="w-4 h-4" />
           {label}
         </span>
-        <span className="text-sm font-mono font-bold text-black">
+        <span className="text-sm font-mono font-medium text-foreground">
           {used.toLocaleString()}{unit} / {unlimited ? "∞" : `${limit.toLocaleString()}${unit}`}
         </span>
       </div>
-      <div className="h-3 w-full border-2 border-black bg-white">
+      <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
         <div
-          className={over ? "h-full bg-danger" : "h-full bg-success"}
+          className={over ? "h-full bg-destructive" : "h-full bg-emerald-600"}
           style={{ width: `${pct}%` }}
         />
       </div>
@@ -271,13 +271,13 @@ export default function ProfileSettingsPage() {
     return (
       <div className="max-w-4xl mx-auto">
         <div className="mb-8">
-          <h1 className="text-3xl font-black uppercase tracking-tight text-black">Profile Settings</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">Profile Settings</h1>
           <Skeleton className="h-5 w-64 mt-1" />
         </div>
         <div className="space-y-6">
-          <Skeleton className="h-48 border-4 border-black" />
-          <Skeleton className="h-32 border-4 border-black" />
-          <Skeleton className="h-24 border-4 border-black" />
+          <Skeleton className="h-48" />
+          <Skeleton className="h-32" />
+          <Skeleton className="h-24" />
         </div>
       </div>
     )
@@ -287,10 +287,10 @@ export default function ProfileSettingsPage() {
   if (userError || !user) {
     return (
       <div className="max-w-4xl mx-auto">
-        <div className="bg-white border-4 border-black p-12 shadow-neo text-center">
-          <AlertCircle className="w-16 h-16 text-danger mx-auto mb-4" />
-          <h2 className="text-xl font-black uppercase mb-2">Failed to load profile</h2>
-          <p className="text-gray-500 font-medium mb-6">{(userError as Error)?.message || "Could not load user profile."}</p>
+        <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-12 text-center">
+          <AlertCircle className="w-16 h-16 text-destructive mx-auto mb-4" />
+          <h2 className="text-xl font-semibold mb-2">Failed to load profile</h2>
+          <p className="text-muted-foreground mb-6">{(userError as Error)?.message || "Could not load user profile."}</p>
         </div>
       </div>
     )
@@ -300,10 +300,10 @@ export default function ProfileSettingsPage() {
     <div className="max-w-4xl mx-auto">
       {/* Header */}
       <div className="mb-8">
-        <h1 className="text-3xl font-black uppercase tracking-tight text-black">
+        <h1 className="text-2xl font-semibold tracking-tight text-foreground">
           Profile Settings
         </h1>
-        <p className="text-gray-500 font-medium uppercase tracking-wider text-sm mt-1">
+        <p className="text-muted-foreground text-sm mt-1">
           Manage your account settings and security
         </p>
       </div>
@@ -311,7 +311,7 @@ export default function ProfileSettingsPage() {
       <div className="space-y-6">
         {/* Profile Information Card */}
         <Card>
-          <CardHeader className="border-b-2 border-black">
+          <CardHeader className="border-b">
             <CardTitle className="flex items-center gap-2">
               <UserIcon className="w-5 h-5" />
               Profile Information
@@ -322,14 +322,14 @@ export default function ProfileSettingsPage() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {/* Email */}
               <div>
-                <label htmlFor="email" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
+                <label htmlFor="email" className="block text-sm font-medium text-muted-foreground mb-2">
                   Email Address
                 </label>
                 <div className="relative">
                   <Input
                     id="email"
                     defaultValue={user.email}
-                    className="bg-gray-50 pr-10"
+                    className="bg-muted pr-10"
                     disabled
                   />
                   <div className="absolute right-3 top-1/2 -translate-y-1/2">
@@ -343,20 +343,20 @@ export default function ProfileSettingsPage() {
 
               {/* Role */}
               <div>
-                <label htmlFor="role" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
+                <label htmlFor="role" className="block text-sm font-medium text-muted-foreground mb-2">
                   Role
                 </label>
                 <Input
                   id="role"
                   defaultValue={user.role === "admin" ? "Administrator" : "Client"}
-                  className="bg-gray-50"
+                  className="bg-muted"
                   disabled
                 />
               </div>
 
               {/* Account Status */}
               <div>
-                <span className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
+                <span className="block text-sm font-medium text-muted-foreground mb-2">
                   Account Status
                 </span>
                 <div className="flex items-center gap-2">
@@ -373,7 +373,7 @@ export default function ProfileSettingsPage() {
         {/* Resource Quota Card */}
         {quota && (
           <Card>
-            <CardHeader className="border-b-2 border-black">
+            <CardHeader className="border-b">
               <CardTitle className="flex items-center gap-2">
                 <Gauge className="w-5 h-5" />
                 Resource Quota
@@ -391,7 +391,7 @@ export default function ProfileSettingsPage() {
 
         {/* Change Password Card */}
         <Card>
-          <CardHeader className="border-b-2 border-black">
+          <CardHeader className="border-b">
             <CardTitle className="flex items-center gap-2">
               <Lock className="w-5 h-5" />
               Change Password
@@ -402,10 +402,10 @@ export default function ProfileSettingsPage() {
             {!showPasswordForm ? (
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="font-medium text-black">
+                  <p className="font-medium text-foreground">
                     Keep your account secure with a strong password
                   </p>
-                  <p className="text-sm text-gray-500 mt-1">
+                  <p className="text-sm text-muted-foreground mt-1">
                     Last changed: Never (demo account)
                   </p>
                 </div>
@@ -418,7 +418,7 @@ export default function ProfileSettingsPage() {
               <form onSubmit={passwordForm.handleSubmit(handlePasswordChange)} className="space-y-4">
                 {/* Current Password */}
                 <div>
-                  <label htmlFor="oldPassword" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
+                  <label htmlFor="oldPassword" className="block text-sm font-medium text-muted-foreground mb-2">
                     Current Password
                   </label>
                   <div className="relative">
@@ -432,7 +432,7 @@ export default function ProfileSettingsPage() {
                     <button
                       type="button"
                       onClick={() => setShowCurrentPassword(!showCurrentPassword)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-600 hover:text-black"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                     >
                       {showCurrentPassword ? (
                         <EyeOff className="w-4 h-4" />
@@ -442,7 +442,7 @@ export default function ProfileSettingsPage() {
                     </button>
                   </div>
                   {passwordForm.formState.errors.oldPassword && (
-                    <p className="text-danger text-sm font-bold mt-1">
+                    <p className="text-destructive text-sm mt-1">
                       {passwordForm.formState.errors.oldPassword.message}
                     </p>
                   )}
@@ -450,7 +450,7 @@ export default function ProfileSettingsPage() {
 
                 {/* New Password */}
                 <div>
-                  <label htmlFor="newPassword" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
+                  <label htmlFor="newPassword" className="block text-sm font-medium text-muted-foreground mb-2">
                     New Password
                   </label>
                   <div className="relative">
@@ -464,7 +464,7 @@ export default function ProfileSettingsPage() {
                     <button
                       type="button"
                       onClick={() => setShowNewPassword(!showNewPassword)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-600 hover:text-black"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                     >
                       {showNewPassword ? (
                         <EyeOff className="w-4 h-4" />
@@ -474,27 +474,27 @@ export default function ProfileSettingsPage() {
                     </button>
                   </div>
                   {passwordForm.formState.errors.newPassword && (
-                    <p className="text-danger text-sm font-bold mt-1">
+                    <p className="text-destructive text-sm mt-1">
                       {passwordForm.formState.errors.newPassword.message}
                     </p>
                   )}
                   {/* Password requirements */}
-                  <div className="mt-2 p-3 bg-gray-50 border-2 border-black">
-                    <p className="text-xs font-bold uppercase mb-2">Password requirements:</p>
+                  <div className="mt-2 p-3 rounded-md border bg-muted">
+                    <p className="text-xs font-medium mb-2">Password requirements:</p>
                     <ul className="text-xs space-y-1">
-                      <li className={passwordForm.watch("newPassword")?.length >= 8 ? "text-success" : "text-gray-600"}>
+                      <li className={passwordForm.watch("newPassword")?.length >= 8 ? "text-emerald-600" : "text-muted-foreground"}>
                         {passwordForm.watch("newPassword")?.length >= 8 ? "✓" : "○"} At least 8 characters
                       </li>
-                      <li className={/[A-Z]/.test(passwordForm.watch("newPassword") || "") ? "text-success" : "text-gray-600"}>
+                      <li className={/[A-Z]/.test(passwordForm.watch("newPassword") || "") ? "text-emerald-600" : "text-muted-foreground"}>
                         {/[A-Z]/.test(passwordForm.watch("newPassword") || "") ? "✓" : "○"} One uppercase letter
                       </li>
-                      <li className={/[a-z]/.test(passwordForm.watch("newPassword") || "") ? "text-success" : "text-gray-600"}>
+                      <li className={/[a-z]/.test(passwordForm.watch("newPassword") || "") ? "text-emerald-600" : "text-muted-foreground"}>
                         {/[a-z]/.test(passwordForm.watch("newPassword") || "") ? "✓" : "○"} One lowercase letter
                       </li>
-                      <li className={/[0-9]/.test(passwordForm.watch("newPassword") || "") ? "text-success" : "text-gray-600"}>
+                      <li className={/[0-9]/.test(passwordForm.watch("newPassword") || "") ? "text-emerald-600" : "text-muted-foreground"}>
                         {/[0-9]/.test(passwordForm.watch("newPassword") || "") ? "✓" : "○"} One number
                       </li>
-                      <li className={/[^A-Za-z0-9]/.test(passwordForm.watch("newPassword") || "") ? "text-success" : "text-gray-600"}>
+                      <li className={/[^A-Za-z0-9]/.test(passwordForm.watch("newPassword") || "") ? "text-emerald-600" : "text-muted-foreground"}>
                         {/[^A-Za-z0-9]/.test(passwordForm.watch("newPassword") || "") ? "✓" : "○"} One special character
                       </li>
                     </ul>
@@ -503,7 +503,7 @@ export default function ProfileSettingsPage() {
 
                 {/* Confirm Password */}
                 <div>
-                  <label htmlFor="confirmPassword" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
+                  <label htmlFor="confirmPassword" className="block text-sm font-medium text-muted-foreground mb-2">
                     Confirm New Password
                   </label>
                   <div className="relative">
@@ -517,7 +517,7 @@ export default function ProfileSettingsPage() {
                     <button
                       type="button"
                       onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-600 hover:text-black"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                     >
                       {showConfirmPassword ? (
                         <EyeOff className="w-4 h-4" />
@@ -527,7 +527,7 @@ export default function ProfileSettingsPage() {
                     </button>
                   </div>
                   {passwordForm.formState.errors.confirmPassword && (
-                    <p className="text-danger text-sm font-bold mt-1">
+                    <p className="text-destructive text-sm mt-1">
                       {passwordForm.formState.errors.confirmPassword.message}
                     </p>
                   )}
@@ -566,7 +566,7 @@ export default function ProfileSettingsPage() {
 
         {/* Two-Factor Authentication Card */}
         <Card>
-          <CardHeader className="border-b-2 border-black">
+          <CardHeader className="border-b">
             <CardTitle className="flex items-center gap-2">
               <Shield className="w-5 h-5" />
               Two-Factor Authentication
@@ -577,21 +577,21 @@ export default function ProfileSettingsPage() {
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-4">
                 <div
-                  className={`w-12 h-12 flex items-center justify-center border-2 border-black ${
-                    twoFactorEnabled ? "bg-success" : "bg-gray-200"
+                  className={`w-12 h-12 flex items-center justify-center rounded-md border ${
+                    twoFactorEnabled ? "bg-emerald-50 text-emerald-600 border-emerald-200 dark:bg-emerald-950 dark:border-emerald-900" : "bg-muted"
                   }`}
                 >
                   {twoFactorEnabled ? (
                     <ShieldCheck className="w-6 h-6" />
                   ) : (
-                    <ShieldOff className="w-6 h-6 text-gray-500" />
+                    <ShieldOff className="w-6 h-6 text-muted-foreground" />
                   )}
                 </div>
                 <div>
-                  <p className="font-bold text-black">
+                  <p className="font-medium text-foreground">
                     {twoFactorEnabled ? "2FA is enabled" : "2FA is disabled"}
                   </p>
-                  <p className="text-sm text-gray-500">
+                  <p className="text-sm text-muted-foreground">
                     {twoFactorEnabled
                       ? "Your account is protected with an authenticator app"
                       : "Protect your account with an authenticator app"}
@@ -641,7 +641,7 @@ export default function ProfileSettingsPage() {
 
           {setupStep === "qr" && (
             <div className="flex flex-col items-center space-y-4">
-              <div className="p-4 bg-white border-2 border-black">
+              <div className="p-4 bg-white rounded-md border">
                 {qrCodeImage ? (
                   // eslint-disable-next-line @next/next/no-img-element, jsx-a11y/alt-text
                   <img src={qrCodeImage} alt="QR Code" className="w-48 h-48" />
@@ -653,7 +653,7 @@ export default function ProfileSettingsPage() {
               </div>
               <div className="text-center">
                 <p className="text-sm font-medium">Manual entry code:</p>
-                <code className="text-xs bg-gray-100 px-2 py-1 border border-black break-all">{setupSecret || "…"}</code>
+                <code className="text-xs bg-muted px-2 py-1 rounded-md border break-all">{setupSecret || "…"}</code>
               </div>
               <Button onClick={() => setSetupStep("verify")} className="w-full">
                 Next: Verify Code
@@ -672,14 +672,14 @@ export default function ProfileSettingsPage() {
                   {...totpForm.register("code")}
                 />
                 {totpForm.formState.errors.code && (
-                  <p className="text-danger text-sm font-bold mt-1">
+                  <p className="text-destructive text-sm mt-1">
                     {totpForm.formState.errors.code.message}
                   </p>
                 )}
               </div>
-              <div className="flex items-center gap-2 p-3 bg-gray-100 border-2 border-black">
-                <Shield className="w-4 h-4" />
-                <p className="text-xs font-bold">
+              <div className="flex items-center gap-2 p-3 rounded-md border bg-muted">
+                <Shield className="w-4 h-4 text-muted-foreground" />
+                <p className="text-xs font-medium">
                   Enter the current 6-digit code from your authenticator app
                 </p>
               </div>
@@ -701,21 +701,21 @@ export default function ProfileSettingsPage() {
 
           {setupStep === "backup" && (
             <div className="space-y-4">
-              <div className="p-4 bg-gray-50 border-2 border-black">
+              <div className="p-4 rounded-md border bg-muted">
                 <div className="grid grid-cols-2 gap-2">
                   {backupCodes.map((code) => (
                     <code
                       key={code}
-                      className="text-xs font-mono bg-white px-2 py-1 border border-black text-center"
+                      className="text-xs font-mono bg-background px-2 py-1 rounded-md border text-center"
                     >
                       {code}
                     </code>
                   ))}
                 </div>
               </div>
-              <div className="flex items-center gap-2 p-3 bg-danger text-white border-2 border-black">
+              <div className="flex items-center gap-2 p-3 rounded-md border border-destructive/30 bg-destructive/10 text-destructive">
                 <AlertTriangle className="w-4 h-4" />
-                <p className="text-xs font-bold">
+                <p className="text-xs font-medium">
                   Save these codes! You won&apos;t see them again.
                 </p>
               </div>
@@ -745,20 +745,20 @@ export default function ProfileSettingsPage() {
               Use these codes to access your account if you lose your authenticator
             </DialogDescription>
           </DialogHeader>
-          <div className="p-4 bg-gray-50 border-2 border-black">
+          <div className="p-4 rounded-md border bg-muted">
             <div className="grid grid-cols-2 gap-2">
               {backupCodes.length > 0 ? (
                 backupCodes.map((code) => (
                   <code
                     key={code}
-                    className="text-xs font-mono bg-white px-2 py-1 border border-black text-center"
+                    className="text-xs font-mono bg-background px-2 py-1 rounded-md border text-center"
                   >
                     {code}
                   </code>
                 ))
               ) : (
                 <div className="col-span-2 text-center py-4">
-                  <p className="text-sm text-gray-500">No backup codes available</p>
+                  <p className="text-sm text-muted-foreground">No backup codes available</p>
                   <Button
                     variant="secondary"
                     size="sm"
@@ -790,15 +790,15 @@ export default function ProfileSettingsPage() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <AlertTriangle className="w-5 h-5 text-danger" />
+              <AlertTriangle className="w-5 h-5 text-destructive" />
               Disable Two-Factor Authentication?
             </DialogTitle>
             <DialogDescription>
               This will make your account less secure. You will only need your password to log in.
             </DialogDescription>
           </DialogHeader>
-          <div className="p-4 bg-warning border-2 border-black">
-            <p className="text-sm font-bold">
+          <div className="p-4 rounded-md border border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+            <p className="text-sm font-medium">
               Are you sure you want to disable 2FA?
             </p>
           </div>

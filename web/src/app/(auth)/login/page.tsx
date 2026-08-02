@@ -144,17 +144,17 @@ export default function LoginPage() {
 
   return (
     <div className="w-full">
-      <h2 className="text-2xl font-black uppercase tracking-tight mb-6 text-black">
+      <h2 className="text-2xl font-semibold tracking-tight mb-6 text-foreground">
         Sign In
       </h2>
 
       {/* IP Whitelist Warning */}
       {ipWarning && (
-        <div className="mb-6 p-4 bg-amber-50 border-2 border-amber-500 rounded-lg">
+        <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-lg dark:bg-amber-950 dark:border-amber-900">
           <div className="flex items-start gap-3">
             <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
             <div>
-              <p className="font-bold text-amber-800 text-sm uppercase tracking-wide">
+              <p className="font-semibold text-amber-800 text-sm dark:text-amber-300">
                 Access Denied
               </p>
               <p className="text-amber-700 text-sm mt-1">
@@ -175,10 +175,10 @@ export default function LoginPage() {
 
       {/* General Error */}
       {error && !ipWarning && (
-        <div className="mb-6 p-4 bg-red-50 border-2 border-red-500 rounded-lg">
+        <div className="mb-6 p-4 bg-destructive/10 border border-destructive/20 rounded-lg">
           <div className="flex items-start gap-3">
-            <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
-            <p className="font-bold text-red-700 text-sm">{error.message}</p>
+            <AlertTriangle className="w-5 h-5 text-destructive shrink-0 mt-0.5" />
+            <p className="font-medium text-destructive text-sm">{error.message}</p>
           </div>
         </div>
       )}
@@ -191,7 +191,7 @@ export default function LoginPage() {
         <div>
           <label
             htmlFor="email"
-            className="block text-xs font-black uppercase tracking-wider text-gray-700 mb-2"
+            className="block text-sm font-medium text-foreground mb-2"
           >
             Email Address
           </label>
@@ -199,12 +199,11 @@ export default function LoginPage() {
             id="email"
             type="email"
             placeholder="you@company.com"
-            className="text-lg font-medium border-2 border-black placeholder:text-gray-600 focus:border-black focus:ring-0"
             {...register("email")}
             disabled={isLoading}
           />
           {errors.email && (
-            <p className="mt-2 text-sm font-bold text-red-600">
+            <p className="mt-2 text-sm font-medium text-destructive">
               {errors.email.message}
             </p>
           )}
@@ -214,7 +213,7 @@ export default function LoginPage() {
         <div>
           <label
             htmlFor="password"
-            className="block text-xs font-black uppercase tracking-wider text-gray-700 mb-2"
+            className="block text-sm font-medium text-foreground mb-2"
           >
             Password
           </label>
@@ -223,14 +222,14 @@ export default function LoginPage() {
               id="password"
               type={showPassword ? "text" : "password"}
               placeholder="Enter your password"
-              className="text-lg font-medium border-2 border-black placeholder:text-gray-600 focus:border-black focus:ring-0 pr-12"
+              className="pr-12"
               {...register("password")}
               disabled={isLoading}
             />
             <button
               type="button"
               onClick={() => setShowPassword(!showPassword)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-black transition-colors"
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
               tabIndex={-1}
             >
               {showPassword ? (
@@ -241,7 +240,7 @@ export default function LoginPage() {
             </button>
           </div>
           {errors.password && (
-            <p className="mt-2 text-sm font-bold text-red-600">
+            <p className="mt-2 text-sm font-medium text-destructive">
               {errors.password.message}
             </p>
           )}
@@ -251,10 +250,10 @@ export default function LoginPage() {
         {requires2FA && (
           <div className="animate-in fade-in slide-in-from-top-2 duration-300">
             <div className="flex items-center gap-2 mb-2">
-              <ShieldCheck className="w-4 h-4 text-black" />
+              <ShieldCheck className="w-4 h-4 text-muted-foreground" />
               <label
                 htmlFor="totpCode"
-                className="block text-xs font-black uppercase tracking-wider text-gray-700"
+                className="block text-sm font-medium text-foreground"
               >
                 Two-Factor Code
               </label>
@@ -266,15 +265,15 @@ export default function LoginPage() {
               pattern="[0-9]*"
               maxLength={6}
               placeholder="123456"
-              className="text-lg font-medium border-2 border-black placeholder:text-gray-600 focus:border-black focus:ring-0 tracking-widest text-center"
+              className="tracking-widest text-center"
               {...register("totpCode")}
               disabled={isLoading}
             />
-            <p className="mt-2 text-xs text-gray-500">
+            <p className="mt-2 text-xs text-muted-foreground">
               Enter the 6-digit code from your authenticator app
             </p>
             {errors.totpCode && (
-              <p className="mt-2 text-sm font-bold text-red-600">
+              <p className="mt-2 text-sm font-medium text-destructive">
                 {errors.totpCode.message}
               </p>
             )}
@@ -284,7 +283,8 @@ export default function LoginPage() {
         {/* Submit Button */}
         <Button
           type="submit"
-          className="w-full h-12 text-base font-black uppercase tracking-wider border-2 border-black bg-black text-white hover:bg-gray-900 active:translate-x-0.5 active:translate-y-0.5 active:shadow-none transition-all"
+          size="xl"
+          className="w-full text-base font-medium"
           disabled={isLoading}
         >
           {isLoading ? (
@@ -302,9 +302,9 @@ export default function LoginPage() {
 
       {/* Footer Links */}
       <div className="mt-6 text-center">
-        <p className="text-xs text-gray-500">
+        <p className="text-xs text-muted-foreground">
           Having trouble signing in?{" "}
-          <a href="/forgot-password" className="font-bold text-black hover:underline">
+          <a href="/forgot-password" className="font-medium text-primary hover:underline">
             Reset password
           </a>
         </p>

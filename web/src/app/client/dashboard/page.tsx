@@ -7,14 +7,14 @@ import type { VM } from "@/types"
 
 function StatCard({ label, value, icon: Icon }: { label: string; value: number | string; icon: React.ElementType }) {
   return (
-    <div className="bg-white border-4 border-black p-5 shadow-neo">
+    <div className="rounded-lg border bg-card text-card-foreground p-5 shadow-sm">
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-[11px] font-black uppercase tracking-widest text-gray-500">{label}</p>
-          <p className="text-3xl font-black mt-1">{value}</p>
+          <p className="text-xs font-medium text-muted-foreground">{label}</p>
+          <p className="text-3xl font-semibold mt-1">{value}</p>
         </div>
-        <div className="w-12 h-12 bg-primary border-2 border-black flex items-center justify-center">
-          <Icon className="w-6 h-6 text-black" />
+        <div className="w-11 h-11 rounded-md bg-muted flex items-center justify-center">
+          <Icon className="w-5 h-5 text-muted-foreground" />
         </div>
       </div>
     </div>
@@ -34,14 +34,14 @@ export default function ClientDashboardPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-black uppercase tracking-tighter">Dashboard</h1>
-          <p className="text-sm font-medium text-gray-600 mt-1">Overview of your virtual machines</p>
+          <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
+          <p className="text-sm text-muted-foreground mt-1">Overview of your virtual machines</p>
         </div>
         <Link
           href="/client/order"
-          className="inline-flex items-center gap-2 h-11 px-5 bg-primary text-black border-2 border-black font-black uppercase text-sm shadow-neo hover:shadow-neo-sm transition-all"
+          className="inline-flex items-center gap-2 h-10 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium shadow-sm hover:bg-primary/90 transition-colors"
         >
-          <PlusCircle className="w-5 h-5" /> Order VM
+          <PlusCircle className="w-4 h-4" /> Order VM
         </Link>
       </div>
 
@@ -52,37 +52,37 @@ export default function ClientDashboardPage() {
         <StatCard label="Problems" value={isLoading ? "—" : problems} icon={AlertTriangle} />
       </div>
 
-      <div className="bg-white border-4 border-black shadow-neo">
-        <div className="flex items-center justify-between px-5 py-4 border-b-4 border-black">
-          <h2 className="text-lg font-black uppercase tracking-tight">My Virtual Machines</h2>
-          <Link href="/client/vms" className="text-sm font-bold uppercase underline">
+      <div className="rounded-lg border bg-card text-card-foreground shadow-sm">
+        <div className="flex items-center justify-between px-5 py-4 border-b">
+          <h2 className="text-lg font-semibold">My Virtual Machines</h2>
+          <Link href="/client/vms" className="text-sm font-medium text-primary hover:underline">
             View all
           </Link>
         </div>
         {isLoading ? (
-          <div className="p-8 text-center text-gray-500 font-medium">Loading…</div>
+          <div className="p-8 text-center text-muted-foreground">Loading…</div>
         ) : vms.length === 0 ? (
           <div className="p-10 text-center">
-            <p className="font-bold text-gray-700">You don&apos;t have any VMs yet.</p>
-            <Link href="/client/order" className="inline-flex items-center gap-2 mt-4 h-10 px-4 bg-primary text-black border-2 border-black font-black uppercase text-sm">
+            <p className="font-medium text-muted-foreground">You don&apos;t have any VMs yet.</p>
+            <Link href="/client/order" className="inline-flex items-center gap-2 mt-4 h-10 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium shadow-sm hover:bg-primary/90 transition-colors">
               <PlusCircle className="w-4 h-4" /> Order your first VM
             </Link>
           </div>
         ) : (
-          <ul className="divide-y-2 divide-black">
+          <ul className="divide-y">
             {vms.slice(0, 5).map((vm) => (
               <li key={vm.id}>
-                <Link href={`/client/vms/${vm.id}`} className="flex items-center justify-between px-5 py-4 hover:bg-gray-50 transition-colors">
+                <Link href={`/client/vms/${vm.id}`} className="flex items-center justify-between px-5 py-4 hover:bg-muted/50 transition-colors">
                   <div className="flex items-center gap-3 min-w-0">
-                    <Monitor className="w-5 h-5 shrink-0" />
+                    <Monitor className="w-5 h-5 shrink-0 text-muted-foreground" />
                     <div className="min-w-0">
-                      <p className="font-bold truncate">{vm.hostname}</p>
-                      <p className="text-xs text-gray-500">
+                      <p className="font-medium truncate">{vm.hostname}</p>
+                      <p className="text-xs text-muted-foreground">
                         {vm.resources.cpu} vCPU · {vm.resources.ram} MB RAM · {vm.resources.disk} GB
                       </p>
                     </div>
                   </div>
-                  <span className="text-xs font-black uppercase tracking-wider px-3 py-1 border-2 border-black">
+                  <span className="text-xs font-medium px-2 py-0.5 rounded-md border bg-muted text-muted-foreground">
                     {vm.status}
                   </span>
                 </Link>

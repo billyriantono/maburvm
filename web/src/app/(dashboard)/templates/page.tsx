@@ -30,10 +30,10 @@ function Toast({ message, type, onClose }: { message: string; type: "success" | 
   }, [onClose])
 
   return (
-    <div className={`fixed bottom-4 right-4 z-50 px-6 py-4 border-4 border-black shadow-neo ${
-      type === "success" ? "bg-success text-black" : "bg-danger text-white"
+    <div className={`fixed bottom-4 right-4 z-50 rounded-md border px-6 py-4 shadow-md ${
+      type === "success" ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900" : "bg-destructive text-destructive-foreground border-destructive"
     }`}>
-      <p className="font-bold uppercase text-sm">{message}</p>
+      <p className="text-sm font-medium">{message}</p>
     </div>
   )
 }
@@ -43,11 +43,11 @@ function ConfirmDialog({ open, title, message, loading, onConfirm, onCancel }: {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-label="Confirm dialog">
       <button type="button" className="absolute inset-0 bg-black/50 cursor-default focus:outline-none" onClick={onCancel} aria-label="Close dialog" />
-      <div className="relative bg-white border-4 border-black p-6 shadow-neo-xl max-w-md w-full mx-4">
-        <h3 className="text-xl font-black uppercase mb-4">{title}</h3>
-        <p className="text-gray-600 font-medium mb-6">{message}</p>
+      <div className="relative bg-background border rounded-lg p-6 shadow-lg max-w-md w-full mx-4">
+        <h3 className="text-lg font-semibold mb-4">{title}</h3>
+        <p className="text-muted-foreground text-sm mb-6">{message}</p>
         <div className="flex gap-3 justify-end">
-          <Button variant="ghost" onClick={onCancel} className="border-2 border-black" disabled={loading}>Cancel</Button>
+          <Button variant="outline" onClick={onCancel} disabled={loading}>Cancel</Button>
           <Button variant="destructive" onClick={onConfirm} disabled={loading}>
             {loading && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
             Confirm Delete
@@ -112,13 +112,13 @@ export default function TemplateListPage() {
       <div className="max-w-7xl mx-auto">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-3xl font-black uppercase tracking-tight text-black">OS Templates</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">OS Templates</h1>
             <Skeleton className="h-5 w-32 mt-1" />
           </div>
         </div>
-        <Skeleton className="h-16 border-4 border-black mb-6" />
+        <Skeleton className="h-16 rounded-lg mb-6" />
         <div className="space-y-4">
-          {[1,2,3,4].map(i => <Skeleton key={i} className="h-20 border-4 border-black" />)}
+          {[1,2,3,4].map(i => <Skeleton key={i} className="h-20 rounded-lg" />)}
         </div>
       </div>
     )
@@ -128,10 +128,10 @@ export default function TemplateListPage() {
   if (error) {
     return (
       <div className="max-w-7xl mx-auto">
-        <div className="bg-white border-4 border-black p-12 shadow-neo text-center">
-          <AlertCircle className="w-16 h-16 text-danger mx-auto mb-4" />
-          <h2 className="text-xl font-black uppercase mb-2">Failed to load templates</h2>
-          <p className="text-gray-500 font-medium mb-6">{(error as Error).message}</p>
+        <div className="bg-card text-card-foreground border rounded-lg p-12 shadow-sm text-center">
+          <AlertCircle className="w-16 h-16 text-destructive mx-auto mb-4" />
+          <h2 className="text-lg font-semibold mb-2">Failed to load templates</h2>
+          <p className="text-muted-foreground text-sm mb-6">{(error as Error).message}</p>
           <Button onClick={() => refetch()}>Retry</Button>
         </div>
       </div>
@@ -143,14 +143,14 @@ export default function TemplateListPage() {
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-3xl font-black uppercase tracking-tight text-black">OS Templates</h1>
-          <p className="text-gray-500 font-medium uppercase tracking-wider text-sm mt-1">
+          <h1 className="text-2xl font-semibold tracking-tight">OS Templates</h1>
+          <p className="text-muted-foreground text-sm mt-1">
             {filteredTemplates.length} templates
           </p>
         </div>
         <div className="flex items-center gap-3">
           <Link href="/templates/catalog">
-            <Button variant="secondary" className="gap-2"><FileArchive className="w-4 h-4" />Browse Catalog</Button>
+            <Button variant="outline" className="gap-2"><FileArchive className="w-4 h-4" />Browse Catalog</Button>
           </Link>
           <Link href="/templates/new">
             <Button className="gap-2"><Plus className="w-4 h-4" />Add Template</Button>
@@ -159,26 +159,26 @@ export default function TemplateListPage() {
       </div>
 
       {/* Filters */}
-      <div className="bg-white border-4 border-black p-4 shadow-neo mb-6">
+      <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm mb-6">
         <div className="flex flex-col md:flex-row gap-4">
           <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
-            <Input type="text" placeholder="Search templates..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="pl-10 h-12 border-2 border-black" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Input type="text" placeholder="Search templates..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="pl-10" />
           </div>
-          <select value={activeFilter} onChange={(e) => setActiveFilter(e.target.value)} className="h-12 px-4 border-2 border-black font-medium bg-white focus:outline-none focus:shadow-neo-sm">
+          <select value={activeFilter} onChange={(e) => setActiveFilter(e.target.value)} className="h-10 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
             <option value="">All</option>
             <option value="active">Active</option>
             <option value="inactive">Inactive</option>
           </select>
           {hasFilters && (
-            <Button variant="ghost" onClick={clearFilters} className="border-2 border-black gap-1"><X className="w-4 h-4" />Clear</Button>
+            <Button variant="outline" onClick={clearFilters} className="gap-1"><X className="w-4 h-4" />Clear</Button>
           )}
         </div>
       </div>
 
       {/* Data Table */}
-      <div className="bg-white border-4 border-black shadow-neo overflow-hidden">
-        <div className="grid grid-cols-12 gap-4 p-4 bg-black text-white font-black uppercase text-xs tracking-wider">
+      <div className="bg-card text-card-foreground border rounded-lg shadow-sm overflow-hidden">
+        <div className="grid grid-cols-12 gap-4 p-4 bg-muted text-muted-foreground font-medium text-xs">
           <div className="col-span-4">Template</div>
           <div className="col-span-2">Version</div>
           <div className="col-span-2">Status</div>
@@ -188,27 +188,27 @@ export default function TemplateListPage() {
 
         {filteredTemplates.length === 0 ? (
           <div className="p-12 text-center">
-            <FileArchive className="w-12 h-12 text-gray-500 mx-auto mb-4" />
-            <p className="text-gray-500 font-bold uppercase">No templates found</p>
+            <FileArchive className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+            <p className="text-muted-foreground font-medium">No templates found</p>
             {hasFilters && (
-              <Button variant="ghost" onClick={clearFilters} className="mt-4 border-2 border-black">Clear filters</Button>
+              <Button variant="outline" onClick={clearFilters} className="mt-4">Clear filters</Button>
             )}
           </div>
         ) : (
-          filteredTemplates.map((template, index) => (
-            <div key={template.id} className={`grid grid-cols-12 gap-4 p-4 items-center border-b-2 border-black last:border-0 ${index % 2 === 0 ? "bg-white" : "bg-gray-50"}`}>
+          filteredTemplates.map((template) => (
+            <div key={template.id} className="grid grid-cols-12 gap-4 p-4 items-center border-b last:border-0 hover:bg-muted/50 transition-colors">
               {/* Template Info */}
               <div className="col-span-4">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-white flex items-center justify-center border-2 border-black">
+                  <div className="w-10 h-10 bg-muted rounded-md flex items-center justify-center border">
                     <OSIcon name={template.name} className="w-6 h-6" />
                   </div>
                   <div>
-                    <Link href={`/templates/${template.id}`} className="font-black text-black hover:text-primary transition-colors">
+                    <Link href={`/templates/${template.id}`} className="font-medium hover:text-primary transition-colors">
                       {template.name}
                     </Link>
                     {template.description && (
-                      <p className="text-xs text-gray-500 font-medium truncate max-w-[200px]">{template.description}</p>
+                      <p className="text-xs text-muted-foreground truncate max-w-[200px]">{template.description}</p>
                     )}
                   </div>
                 </div>
@@ -216,17 +216,17 @@ export default function TemplateListPage() {
 
               {/* Version */}
               <div className="col-span-2">
-                <span className="inline-flex items-center px-2 py-1 text-xs font-bold border border-black bg-gray-100">v{template.version}</span>
+                <span className="inline-flex items-center px-2 py-1 text-xs font-medium rounded-md border bg-muted text-muted-foreground">v{template.version}</span>
               </div>
 
               {/* Status */}
               <div className="col-span-2">
                 {template.is_active ? (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-black uppercase border border-black bg-success">
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-md border bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900">
                     <CheckCircle2 className="w-3 h-3" />Active
                   </span>
                 ) : (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-black uppercase border border-black bg-gray-300">
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-md border bg-muted text-muted-foreground">
                     <XCircle className="w-3 h-3" />Inactive
                   </span>
                 )}
@@ -234,15 +234,15 @@ export default function TemplateListPage() {
 
               {/* Created */}
               <div className="col-span-2">
-                <span className="text-sm font-medium">{formatDate(template.created_at)}</span>
+                <span className="text-sm text-muted-foreground">{formatDate(template.created_at)}</span>
               </div>
 
               {/* Actions */}
               <div className="col-span-2 flex items-center justify-end gap-2">
                 <Link href={`/templates/${template.id}`}>
-                  <Button variant="secondary" size="sm" className="h-8">Details</Button>
+                  <Button variant="outline" size="sm" className="h-8">Details</Button>
                 </Link>
-                <Button variant="ghost" size="sm" onClick={() => setDeleteConfirm({ id: template.id, name: template.name })} disabled={deleteTemplate.isPending} className="h-8 w-8 p-0 border-2 border-black hover:bg-danger hover:text-white" title="Delete">
+                <Button variant="ghost" size="sm" onClick={() => setDeleteConfirm({ id: template.id, name: template.name })} disabled={deleteTemplate.isPending} className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive" title="Delete">
                   <Trash2 className="w-4 h-4" />
                 </Button>
               </div>

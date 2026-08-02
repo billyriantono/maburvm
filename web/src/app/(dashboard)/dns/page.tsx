@@ -102,22 +102,22 @@ export default function DNSPage() {
     <div className="max-w-7xl mx-auto">
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-3xl font-black uppercase tracking-tight text-black flex items-center gap-2">
-            <Globe className="w-8 h-8" />
+          <h1 className="text-2xl font-semibold text-foreground flex items-center gap-2">
+            <Globe className="w-6 h-6" />
             DNS
           </h1>
           <div className="flex items-center gap-2 mt-1">
-            <p className="text-gray-500 font-medium uppercase tracking-wider text-sm">
+            <p className="text-muted-foreground text-sm">
               Authoritative forward zones &amp; records
             </p>
             {provider && (
               provider.configured ? (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-black uppercase border-2 border-black bg-success">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded-md border border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-400">
                   <CheckCircle2 className="w-3 h-3" />
                   Live: {provider.name}
                 </span>
               ) : (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-black uppercase border-2 border-black bg-gray-200 text-gray-600" title="Set PDNS_API_URL and PDNS_API_KEY in the panel environment to enable live push">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded-md border bg-muted text-muted-foreground" title="Set PDNS_API_URL and PDNS_API_KEY in the panel environment to enable live push">
                   Export only
                 </span>
               )
@@ -131,13 +131,13 @@ export default function DNSPage() {
       </div>
 
       {showCreateZone && (
-        <form onSubmit={handleCreateZone} className="bg-white border-4 border-black p-5 shadow-neo mb-6">
-          <h2 className="text-xl font-black uppercase mb-4">Create Zone</h2>
+        <form onSubmit={handleCreateZone} className="rounded-lg border bg-card text-card-foreground p-5 shadow-sm mb-6">
+          <h2 className="text-lg font-semibold mb-4">Create Zone</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <Input placeholder="example.com" value={zoneForm.name} onChange={(e) => setZoneForm({ ...zoneForm, name: e.target.value })} className="border-2 border-black" required />
-            <Input placeholder="Primary NS (ns1.example.com)" value={zoneForm.primary_ns} onChange={(e) => setZoneForm({ ...zoneForm, primary_ns: e.target.value })} className="border-2 border-black" />
-            <Input placeholder="Admin email (hostmaster@example.com)" value={zoneForm.admin_email} onChange={(e) => setZoneForm({ ...zoneForm, admin_email: e.target.value })} className="border-2 border-black" />
-            <Input type="number" min={60} placeholder="TTL (3600)" value={zoneForm.ttl} onChange={(e) => setZoneForm({ ...zoneForm, ttl: Number(e.target.value) })} className="border-2 border-black" />
+            <Input placeholder="example.com" value={zoneForm.name} onChange={(e) => setZoneForm({ ...zoneForm, name: e.target.value })} required />
+            <Input placeholder="Primary NS (ns1.example.com)" value={zoneForm.primary_ns} onChange={(e) => setZoneForm({ ...zoneForm, primary_ns: e.target.value })} />
+            <Input placeholder="Admin email (hostmaster@example.com)" value={zoneForm.admin_email} onChange={(e) => setZoneForm({ ...zoneForm, admin_email: e.target.value })} />
+            <Input type="number" min={60} placeholder="TTL (3600)" value={zoneForm.ttl} onChange={(e) => setZoneForm({ ...zoneForm, ttl: Number(e.target.value) })} />
           </div>
           <div className="flex justify-end gap-3 mt-4">
             <Button type="button" variant="ghost" onClick={() => setShowCreateZone(false)}>Cancel</Button>
@@ -150,23 +150,23 @@ export default function DNSPage() {
       )}
 
       {error && (
-        <div className="bg-danger/10 border-4 border-danger p-6 shadow-neo mb-6">
-          <p className="font-black uppercase">Failed to load zones</p>
-          <p className="text-sm font-medium">{(error as Error).message}</p>
+        <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-6 shadow-sm mb-6">
+          <p className="font-semibold">Failed to load zones</p>
+          <p className="text-sm text-muted-foreground">{(error as Error).message}</p>
         </div>
       )}
 
       <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
         {/* Zones list */}
         <div className="xl:col-span-2">
-          <div className="bg-white border-4 border-black shadow-neo overflow-hidden">
-            <div className="p-4 bg-black text-white font-black uppercase text-xs tracking-wider">Zones</div>
+          <div className="rounded-lg border bg-card shadow-sm overflow-hidden">
+            <div className="p-4 bg-muted text-muted-foreground font-medium text-xs">Zones</div>
             {isLoading ? (
               <div className="p-12 text-center"><Loader2 className="w-8 h-8 animate-spin mx-auto" /></div>
             ) : !zones || zones.length === 0 ? (
               <div className="p-12 text-center">
-                <Globe className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-                <p className="text-gray-500 font-bold uppercase">No zones yet</p>
+                <Globe className="w-16 h-16 text-muted-foreground/40 mx-auto mb-4" />
+                <p className="text-muted-foreground font-medium">No zones yet</p>
               </div>
             ) : (
               zones.map((zone) => (
@@ -176,14 +176,14 @@ export default function DNSPage() {
                   tabIndex={0}
                   onClick={() => setSelectedZoneId(zone.id)}
                   onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setSelectedZoneId(zone.id) }}
-                  className={`w-full text-left p-4 border-b-2 border-black last:border-0 cursor-pointer ${zone.id === selectedZoneId ? "bg-primary" : "bg-white hover:bg-gray-50"}`}
+                  className={`w-full text-left p-4 border-b last:border-0 cursor-pointer ${zone.id === selectedZoneId ? "bg-muted" : "hover:bg-muted/50"}`}
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <span className="font-black uppercase text-black truncate block">{zone.name}</span>
-                      <span className="text-xs font-bold uppercase text-gray-500">TTL {zone.ttl}s</span>
+                      <span className="font-medium text-foreground truncate block">{zone.name}</span>
+                      <span className="text-xs text-muted-foreground">TTL {zone.ttl}s</span>
                     </div>
-                    <Button type="button" variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); handleDeleteZone(zone) }} className="h-8 w-8 p-0 border-2 border-black hover:bg-danger hover:text-white">
+                    <Button type="button" variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); handleDeleteZone(zone) }} className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive">
                       <Trash2 className="w-4 h-4" />
                     </Button>
                   </div>
@@ -196,17 +196,17 @@ export default function DNSPage() {
         {/* Records panel */}
         <div className="xl:col-span-3">
           {!selectedZone ? (
-            <div className="bg-white border-4 border-black p-12 shadow-neo text-center">
-              <Server className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-              <h2 className="text-xl font-black uppercase mb-2">Select a Zone</h2>
-              <p className="text-gray-500 font-medium">Choose a zone to manage its records and export a zone file.</p>
+            <div className="rounded-lg border bg-card p-12 shadow-sm text-center">
+              <Server className="w-16 h-16 text-muted-foreground/40 mx-auto mb-4" />
+              <h2 className="text-lg font-semibold mb-2">Select a Zone</h2>
+              <p className="text-muted-foreground">Choose a zone to manage its records and export a zone file.</p>
             </div>
           ) : (
-            <div className="bg-white border-4 border-black shadow-neo overflow-hidden">
-              <div className="p-4 border-b-4 border-black bg-gray-50 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+            <div className="rounded-lg border bg-card shadow-sm overflow-hidden">
+              <div className="p-4 border-b bg-muted/50 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
                 <div>
-                  <h2 className="text-xl font-black uppercase">{selectedZone.name}</h2>
-                  <p className="text-xs font-bold text-gray-500 uppercase">{records?.length ?? 0} records</p>
+                  <h2 className="text-lg font-semibold">{selectedZone.name}</h2>
+                  <p className="text-xs text-muted-foreground">{records?.length ?? 0} records</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <Button
@@ -233,16 +233,16 @@ export default function DNSPage() {
               </div>
 
               {/* Add record form */}
-              <form onSubmit={handleCreateRecord} className="p-4 border-b-4 border-black grid grid-cols-1 md:grid-cols-12 gap-3">
-                <Input placeholder="@ or name" value={recordForm.name} onChange={(e) => setRecordForm({ ...recordForm, name: e.target.value })} className="border-2 border-black md:col-span-2" />
-                <select value={recordForm.type} onChange={(e) => setRecordForm({ ...recordForm, type: e.target.value as DNSRecordType })} className="h-12 px-2 border-2 border-black font-medium bg-white md:col-span-2">
+              <form onSubmit={handleCreateRecord} className="p-4 border-b grid grid-cols-1 md:grid-cols-12 gap-3">
+                <Input placeholder="@ or name" value={recordForm.name} onChange={(e) => setRecordForm({ ...recordForm, name: e.target.value })} className="md:col-span-2" />
+                <select value={recordForm.type} onChange={(e) => setRecordForm({ ...recordForm, type: e.target.value as DNSRecordType })} className="h-10 px-2 rounded-md border border-input bg-background text-sm md:col-span-2">
                   {RECORD_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
                 </select>
-                <Input placeholder="content / value" value={recordForm.content} onChange={(e) => setRecordForm({ ...recordForm, content: e.target.value })} className={`border-2 border-black ${needsPriority ? "md:col-span-3" : "md:col-span-5"}`} required />
+                <Input placeholder="content / value" value={recordForm.content} onChange={(e) => setRecordForm({ ...recordForm, content: e.target.value })} className={needsPriority ? "md:col-span-3" : "md:col-span-5"} required />
                 {needsPriority && (
-                  <Input type="number" min={0} placeholder="prio" value={recordForm.priority} onChange={(e) => setRecordForm({ ...recordForm, priority: Number(e.target.value) })} className="border-2 border-black md:col-span-2" title="Priority" />
+                  <Input type="number" min={0} placeholder="prio" value={recordForm.priority} onChange={(e) => setRecordForm({ ...recordForm, priority: Number(e.target.value) })} className="md:col-span-2" title="Priority" />
                 )}
-                <Input type="number" min={60} placeholder="TTL" value={recordForm.ttl} onChange={(e) => setRecordForm({ ...recordForm, ttl: Number(e.target.value) })} className="border-2 border-black md:col-span-1" title="TTL" />
+                <Input type="number" min={60} placeholder="TTL" value={recordForm.ttl} onChange={(e) => setRecordForm({ ...recordForm, ttl: Number(e.target.value) })} className="md:col-span-1" title="TTL" />
                 <Button type="submit" disabled={createRecord.isPending} className="md:col-span-2">
                   {createRecord.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
                   Add
@@ -250,7 +250,7 @@ export default function DNSPage() {
               </form>
 
               {/* Records table */}
-              <div className="grid grid-cols-12 gap-2 p-3 bg-black text-white font-black uppercase text-[10px] tracking-wider">
+              <div className="grid grid-cols-12 gap-2 p-3 bg-muted text-muted-foreground font-medium text-[10px]">
                 <div className="col-span-3">Name</div>
                 <div className="col-span-2">Type</div>
                 <div className="col-span-4">Content</div>
@@ -262,19 +262,19 @@ export default function DNSPage() {
                 <div className="p-8 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto" /></div>
               ) : !records || records.length === 0 ? (
                 <div className="p-10 text-center">
-                  <CircleSlash className="w-12 h-12 text-gray-300 mx-auto mb-2" />
-                  <p className="text-gray-500 font-bold uppercase text-sm">No records yet</p>
+                  <CircleSlash className="w-12 h-12 text-muted-foreground/40 mx-auto mb-2" />
+                  <p className="text-muted-foreground font-medium text-sm">No records yet</p>
                 </div>
               ) : (
-                records.map((r, i) => (
-                  <div key={r.id} className={`grid grid-cols-12 gap-2 p-3 items-center border-b-2 border-black last:border-0 ${i % 2 ? "bg-gray-50" : "bg-white"}`}>
-                    <div className="col-span-3 font-mono text-xs font-bold truncate">{r.name}</div>
+                records.map((r) => (
+                  <div key={r.id} className="grid grid-cols-12 gap-2 p-3 items-center border-b last:border-0 hover:bg-muted/50">
+                    <div className="col-span-3 font-mono text-xs truncate">{r.name}</div>
                     <div className="col-span-2"><Badge variant="secondary" className="text-[10px]">{r.type}</Badge></div>
                     <div className="col-span-4 font-mono text-xs truncate" title={r.content}>{r.content}</div>
                     <div className="col-span-1 font-mono text-xs">{r.ttl}</div>
                     <div className="col-span-1 font-mono text-xs">{r.type === "MX" || r.type === "SRV" ? r.priority : "—"}</div>
                     <div className="col-span-1 flex justify-end">
-                      <Button variant="ghost" size="sm" className="h-7 w-7 p-0 border-2 border-black hover:bg-danger hover:text-white" onClick={() => handleDeleteRecord(r.id)} title="Delete record">
+                      <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive" onClick={() => handleDeleteRecord(r.id)} title="Delete record">
                         <Trash2 className="w-3 h-3" />
                       </Button>
                     </div>

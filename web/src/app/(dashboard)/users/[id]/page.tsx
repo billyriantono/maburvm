@@ -38,24 +38,24 @@ function Toast({ message, type, onClose }: { message: string; type: "success" | 
     return () => clearTimeout(timer)
   }, [onClose])
   return (
-    <div className={`fixed bottom-4 right-4 z-50 px-6 py-4 border-4 border-black shadow-neo ${type === "success" ? "bg-success text-black" : "bg-danger text-white"}`}>
-      <p className="font-bold uppercase text-sm">{message}</p>
+    <div className={`fixed bottom-4 right-4 z-50 px-5 py-3 rounded-lg border shadow-md ${type === "success" ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900" : "bg-destructive text-destructive-foreground border-destructive"}`}>
+      <p className="font-medium text-sm">{message}</p>
     </div>
   )
 }
 
 function VMStatusBadge({ status }: { status: VMStatus }) {
   const colors: Record<string, string> = {
-    running: "bg-[#CCFF00] text-black",
-    stopped: "bg-[#FF4444] text-white",
-    suspended: "bg-[#FFAA00] text-black",
-    creating: "bg-[#00AAFF] text-white",
-    deleting: "bg-[#FF8800] text-black",
-    error: "bg-[#FF0000] text-white",
+    running: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900",
+    stopped: "bg-muted text-muted-foreground border-border",
+    suspended: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900",
+    creating: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950 dark:text-blue-300 dark:border-blue-900",
+    deleting: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900",
+    error: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-900",
   }
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 text-[10px] font-black uppercase tracking-wider border border-black ${colors[status] || colors.stopped}`}>
-      <span className={`w-1.5 h-1.5 mr-1.5 rounded-full ${status === "running" ? "bg-black animate-pulse" : "bg-current"}`} />
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium border ${colors[status] || colors.stopped}`}>
+      <span className={`w-1.5 h-1.5 mr-1.5 rounded-full ${status === "running" ? "bg-current animate-pulse" : "bg-current"}`} />
       {status}
     </span>
   )
@@ -112,12 +112,12 @@ export default function UserDetailPage() {
     return (
       <div className="max-w-5xl mx-auto">
         <div className="flex items-center gap-4 mb-6">
-          <Link href="/users"><Button variant="ghost" size="sm" className="border-2 border-black"><ArrowLeft className="w-4 h-4" /></Button></Link>
+          <Link href="/users"><Button variant="outline" size="sm"><ArrowLeft className="w-4 h-4" /></Button></Link>
           <Skeleton className="h-12 w-64" />
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <Skeleton className="h-64 border-4 border-black" />
-          <Skeleton className="h-64 border-4 border-black" />
+          <Skeleton className="h-64 rounded-lg" />
+          <Skeleton className="h-64 rounded-lg" />
         </div>
       </div>
     )
@@ -127,10 +127,10 @@ export default function UserDetailPage() {
   if (error || !user) {
     return (
       <div className="max-w-5xl mx-auto">
-        <div className="bg-white border-4 border-black p-12 shadow-neo text-center">
-          <AlertCircle className="w-16 h-16 text-danger mx-auto mb-4" />
-          <h2 className="text-xl font-black uppercase mb-2">User Not Found</h2>
-          <p className="text-gray-500 font-medium mb-6">{(error as Error)?.message || "The requested user does not exist."}</p>
+        <div className="rounded-lg border bg-card text-card-foreground p-12 shadow-sm text-center">
+          <AlertCircle className="w-16 h-16 text-destructive mx-auto mb-4" />
+          <h2 className="text-xl font-semibold mb-2">User Not Found</h2>
+          <p className="text-muted-foreground mb-6">{(error as Error)?.message || "The requested user does not exist."}</p>
           <Link href="/users"><Button className="gap-2"><ArrowLeft className="w-4 h-4" />Back to Users</Button></Link>
         </div>
       </div>
@@ -142,16 +142,16 @@ export default function UserDetailPage() {
       {/* Header */}
       <div className="flex items-center gap-4 mb-6">
         <Link href="/users">
-          <Button variant="ghost" size="sm" className="border-2 border-black"><ArrowLeft className="w-4 h-4" /></Button>
+          <Button variant="outline" size="sm"><ArrowLeft className="w-4 h-4" /></Button>
         </Link>
         <div className="flex-1">
           <div className="flex items-center gap-3">
-            <div className="w-12 h-12 bg-primary flex items-center justify-center border-2 border-black text-2xl font-black">
+            <div className="w-12 h-12 rounded-md bg-muted flex items-center justify-center border text-2xl font-semibold text-muted-foreground">
               {user.email.charAt(0).toUpperCase()}
             </div>
             <div>
-              <h1 className="text-3xl font-black uppercase tracking-tight text-black">{user.email}</h1>
-              <p className="text-gray-500 font-medium uppercase tracking-wider text-sm">
+              <h1 className="text-3xl font-bold tracking-tight text-foreground">{user.email}</h1>
+              <p className="text-muted-foreground text-sm">
                 {user.role} • Created {formatDate(user.created_at)}
               </p>
             </div>
@@ -163,24 +163,24 @@ export default function UserDetailPage() {
             if (open) { setEditEmail(user.email); setEditRole(user.role) }
           }}>
             <DialogTrigger asChild>
-              <Button variant="ghost" className="border-2 border-black gap-2"><Edit2 className="w-4 h-4" />Edit</Button>
+              <Button variant="outline" className="gap-2"><Edit2 className="w-4 h-4" />Edit</Button>
             </DialogTrigger>
-            <DialogContent className="max-w-md border-4 border-black shadow-neo-xl">
+            <DialogContent className="max-w-md">
               <DialogHeader>
-                <DialogTitle className="text-lg font-black uppercase">Edit User</DialogTitle>
+                <DialogTitle className="text-lg font-semibold">Edit User</DialogTitle>
               </DialogHeader>
               <div className="space-y-4 py-4">
                 <div>
-                  <label htmlFor="edit-email" className="block text-xs font-black uppercase text-gray-500 mb-1">Email</label>
-                  <Input id="edit-email" type="email" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} className="border-2 border-black" />
+                  <label htmlFor="edit-email" className="block text-xs font-medium text-muted-foreground mb-1">Email</label>
+                  <Input id="edit-email" type="email" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} />
                 </div>
                 <div>
-                  <label htmlFor="edit-role" className="block text-xs font-black uppercase text-gray-500 mb-1">Role</label>
+                  <label htmlFor="edit-role" className="block text-xs font-medium text-muted-foreground mb-1">Role</label>
                   <select
                     id="edit-role"
                     value={editRole}
                     onChange={(e) => setEditRole(e.target.value)}
-                    className="w-full h-12 px-4 border-2 border-black font-medium bg-white focus:outline-none"
+                    className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                   >
                     <option value="admin">Admin</option>
                     <option value="client">Client</option>
@@ -202,52 +202,50 @@ export default function UserDetailPage() {
       {/* User Info */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
         {/* Details Card */}
-        <div className="bg-white border-4 border-black p-6 shadow-neo">
-          <h2 className="text-lg font-black uppercase mb-4 flex items-center gap-2"><Users className="w-5 h-5" />User Details</h2>
-          <div className="space-y-4">
-            <div className="flex items-center justify-between py-2 border-b-2 border-black">
-              <span className="text-sm font-bold uppercase text-gray-500 flex items-center gap-2"><Mail className="w-4 h-4" />Email</span>
-              <span className="font-black">{user.email}</span>
+        <div className="rounded-lg border bg-card text-card-foreground p-6 shadow-sm">
+          <h2 className="text-lg font-semibold mb-4 flex items-center gap-2"><Users className="w-5 h-5" />User Details</h2>
+          <div className="space-y-1">
+            <div className="flex items-center justify-between py-2 border-b">
+              <span className="text-sm text-muted-foreground flex items-center gap-2"><Mail className="w-4 h-4" />Email</span>
+              <span className="font-medium">{user.email}</span>
             </div>
-            <div className="flex items-center justify-between py-2 border-b-2 border-black">
-              <span className="text-sm font-bold uppercase text-gray-500 flex items-center gap-2"><Shield className="w-4 h-4" />Role</span>
-              <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs font-black uppercase border border-black ${
-                user.role === "admin" ? "bg-secondary" : "bg-gray-100"
-              }`}>{user.role}</span>
+            <div className="flex items-center justify-between py-2 border-b">
+              <span className="text-sm text-muted-foreground flex items-center gap-2"><Shield className="w-4 h-4" />Role</span>
+              <Badge variant={user.role === "admin" ? "default" : "secondary"} className="font-medium">{user.role}</Badge>
             </div>
-            <div className="flex items-center justify-between py-2 border-b-2 border-black">
-              <span className="text-sm font-bold uppercase text-gray-500">2FA</span>
+            <div className="flex items-center justify-between py-2 border-b">
+              <span className="text-sm text-muted-foreground">2FA</span>
               {user.two_factor_secret ? (
-                <div className="flex items-center gap-1 text-success">
+                <div className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
                   <CheckCircle className="w-4 h-4" />
-                  <span className="text-xs font-bold uppercase">Enabled</span>
+                  <span className="text-xs font-medium">Enabled</span>
                 </div>
               ) : (
-                <div className="flex items-center gap-1 text-gray-600">
+                <div className="flex items-center gap-1 text-muted-foreground">
                   <XCircle className="w-4 h-4" />
-                  <span className="text-xs font-bold uppercase">Disabled</span>
+                  <span className="text-xs font-medium">Disabled</span>
                 </div>
               )}
             </div>
-            <div className="flex items-center justify-between py-2 border-b-2 border-black">
-              <span className="text-sm font-bold uppercase text-gray-500 flex items-center gap-2"><Calendar className="w-4 h-4" />Created</span>
-              <span className="font-bold">{formatDate(user.created_at)}</span>
+            <div className="flex items-center justify-between py-2 border-b">
+              <span className="text-sm text-muted-foreground flex items-center gap-2"><Calendar className="w-4 h-4" />Created</span>
+              <span className="font-medium">{formatDate(user.created_at)}</span>
             </div>
             <div className="flex items-center justify-between py-2">
-              <span className="text-sm font-bold uppercase text-gray-500">Updated</span>
-              <span className="font-bold">{formatDate(user.updated_at)}</span>
+              <span className="text-sm text-muted-foreground">Updated</span>
+              <span className="font-medium">{formatDate(user.updated_at)}</span>
             </div>
           </div>
 
           {/* IP Whitelist */}
           {user.ip_whitelist && user.ip_whitelist.length > 0 && (
-            <div className="mt-6 pt-4 border-t-2 border-black">
-              <h3 className="text-xs font-black uppercase text-gray-500 mb-3 flex items-center gap-2"><Globe className="w-4 h-4" />IP Whitelist</h3>
+            <div className="mt-6 pt-4 border-t">
+              <h3 className="text-xs font-medium text-muted-foreground mb-3 flex items-center gap-2"><Globe className="w-4 h-4" />IP Whitelist</h3>
               <div className="space-y-2">
                 {user.ip_whitelist.map((ip) => (
-                  <div key={ip} className="flex items-center gap-2 p-2 bg-gray-50 border-2 border-black">
-                    <Globe className="w-3 h-3 text-gray-500" />
-                    <span className="font-mono text-xs font-bold">{ip}</span>
+                  <div key={ip} className="flex items-center gap-2 p-2 rounded-md bg-muted border">
+                    <Globe className="w-3 h-3 text-muted-foreground" />
+                    <span className="font-mono text-xs">{ip}</span>
                   </div>
                 ))}
               </div>
@@ -256,27 +254,27 @@ export default function UserDetailPage() {
         </div>
 
         {/* VMs Card */}
-        <div className="bg-white border-4 border-black p-6 shadow-neo">
-          <h2 className="text-lg font-black uppercase mb-4 flex items-center gap-2"><Monitor className="w-5 h-5" />User&apos;s VMs ({userVMs.length})</h2>
+        <div className="rounded-lg border bg-card text-card-foreground p-6 shadow-sm">
+          <h2 className="text-lg font-semibold mb-4 flex items-center gap-2"><Monitor className="w-5 h-5" />User&apos;s VMs ({userVMs.length})</h2>
           {vmsLoading ? (
             <div className="space-y-3">
               {[1,2,3].map(i => <Skeleton key={i} className="h-14 w-full" />)}
             </div>
           ) : userVMs.length === 0 ? (
             <div className="p-8 text-center">
-              <Monitor className="w-10 h-10 text-gray-500 mx-auto mb-3" />
-              <p className="text-gray-500 text-sm font-medium">No VMs owned by this user</p>
+              <Monitor className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
+              <p className="text-muted-foreground text-sm">No VMs owned by this user</p>
             </div>
           ) : (
             <div className="space-y-3 max-h-96 overflow-y-auto">
               {userVMs.map((vm: VM) => (
-                <Link key={vm.id} href={`/vms/${vm.id}`} className="flex items-center gap-3 p-3 bg-gray-50 border-2 border-black hover:bg-primary/20 transition-colors">
-                  <div className="w-8 h-8 bg-primary flex items-center justify-center border-2 border-black">
+                <Link key={vm.id} href={`/vms/${vm.id}`} className="flex items-center gap-3 p-3 rounded-md border bg-card hover:bg-muted/50 transition-colors">
+                  <div className="w-8 h-8 rounded-md bg-muted flex items-center justify-center border text-muted-foreground">
                     <Server className="w-4 h-4" />
                   </div>
                   <div className="flex-1">
-                    <p className="font-black text-sm">{vm.hostname}</p>
-                    <p className="text-xs text-gray-500">{vm.resources.cpu} vCPU • {Math.round(vm.resources.ram / 1024)} GB RAM • {vm.resources.disk} GB Disk</p>
+                    <p className="font-medium text-sm">{vm.hostname}</p>
+                    <p className="text-xs text-muted-foreground">{vm.resources.cpu} vCPU • {Math.round(vm.resources.ram / 1024)} GB RAM • {vm.resources.disk} GB Disk</p>
                   </div>
                   <VMStatusBadge status={vm.status} />
                 </Link>
@@ -290,17 +288,17 @@ export default function UserDetailPage() {
       {deleteConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-label="Delete confirmation">
           <button type="button" className="absolute inset-0 bg-black/50 cursor-default focus:outline-none" onClick={() => setDeleteConfirm(false)} aria-label="Close dialog" />
-          <div className="relative bg-white border-4 border-black p-6 shadow-neo-xl max-w-md w-full mx-4">
-            <h3 className="text-xl font-black uppercase mb-4 flex items-center gap-2"><AlertCircle className="w-6 h-6 text-warning" />Delete User</h3>
+          <div className="relative bg-background border rounded-lg p-6 shadow-lg max-w-md w-full mx-4">
+            <h3 className="text-lg font-semibold mb-4 flex items-center gap-2"><AlertCircle className="w-6 h-6 text-amber-500" />Delete User</h3>
             {userVMs.length > 0 ? (
-              <p className="text-gray-600 font-medium mb-6">
-                <span className="text-danger font-bold">WARNING:</span> This user owns {userVMs.length} VM(s). Deleting this user may affect those VMs. Are you sure?
+              <p className="text-muted-foreground text-sm mb-6">
+                <span className="text-destructive font-semibold">WARNING:</span> This user owns {userVMs.length} VM(s). Deleting this user may affect those VMs. Are you sure?
               </p>
             ) : (
-              <p className="text-gray-600 font-medium mb-6">Are you sure you want to delete &quot;{user.email}&quot;? This action cannot be undone.</p>
+              <p className="text-muted-foreground text-sm mb-6">Are you sure you want to delete &quot;{user.email}&quot;? This action cannot be undone.</p>
             )}
             <div className="flex gap-3 justify-end">
-              <Button variant="ghost" onClick={() => setDeleteConfirm(false)} className="border-2 border-black" disabled={deleteUser.isPending}>Cancel</Button>
+              <Button variant="outline" onClick={() => setDeleteConfirm(false)} disabled={deleteUser.isPending}>Cancel</Button>
               <Button variant="destructive" onClick={handleDelete} disabled={deleteUser.isPending}>
                 {deleteUser.isPending && <Loader2 className="w-4 h-4 animate-spin mr-2" />}Delete User
               </Button>

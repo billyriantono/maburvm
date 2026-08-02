@@ -266,10 +266,10 @@ export default function SystemSettingsPage() {
       <div className="mb-8">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-black uppercase tracking-tight text-black">
+            <h1 className="text-2xl font-semibold tracking-tight text-foreground">
               System Settings
             </h1>
-            <p className="text-gray-500 font-medium uppercase tracking-wider text-sm mt-1">
+            <p className="text-muted-foreground text-sm mt-1">
               Configure your virtualization panel
             </p>
           </div>
@@ -283,23 +283,23 @@ export default function SystemSettingsPage() {
       {/* Settings Tabs */}
       <Tabs defaultValue="general" className="space-y-6">
         <TabsList className="grid w-full grid-cols-2 md:grid-cols-5 gap-2 bg-transparent p-0 border-none">
-          <TabsTrigger value="general" className="font-bold uppercase text-xs">
+          <TabsTrigger value="general" className="text-xs">
             <Globe className="w-4 h-4 mr-2" />
             General
           </TabsTrigger>
-          <TabsTrigger value="security" className="font-bold uppercase text-xs">
+          <TabsTrigger value="security" className="text-xs">
             <Shield className="w-4 h-4 mr-2" />
             Security
           </TabsTrigger>
-          <TabsTrigger value="backup" className="font-bold uppercase text-xs">
+          <TabsTrigger value="backup" className="text-xs">
             <Database className="w-4 h-4 mr-2" />
             Backup
           </TabsTrigger>
-          <TabsTrigger value="api" className="font-bold uppercase text-xs">
+          <TabsTrigger value="api" className="text-xs">
             <Key className="w-4 h-4 mr-2" />
             API
           </TabsTrigger>
-          <TabsTrigger value="email" className="font-bold uppercase text-xs">
+          <TabsTrigger value="email" className="text-xs">
             <Mail className="w-4 h-4 mr-2" />
             Email
           </TabsTrigger>
@@ -308,7 +308,7 @@ export default function SystemSettingsPage() {
         {/* General Settings */}
         <TabsContent value="general">
           <Card>
-            <CardHeader className="border-b-2 border-black">
+            <CardHeader className="border-b">
               <CardTitle className="flex items-center gap-2">
                 <Globe className="w-5 h-5" />
                 General Settings
@@ -320,7 +320,7 @@ export default function SystemSettingsPage() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   {/* Panel Name */}
                   <div>
-                    <label htmlFor="panelName" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
+                    <label htmlFor="panelName" className="block text-sm font-medium text-muted-foreground mb-2">
                       Panel Name
                     </label>
                     <Input
@@ -329,7 +329,7 @@ export default function SystemSettingsPage() {
                       placeholder="MaburVM"
                     />
                     {generalForm.formState.errors.panelName && (
-                      <p className="text-danger text-sm font-bold mt-1">
+                      <p className="text-destructive text-sm mt-1">
                         {generalForm.formState.errors.panelName.message}
                       </p>
                     )}
@@ -337,13 +337,13 @@ export default function SystemSettingsPage() {
 
                   {/* Timezone */}
                   <div>
-                    <label htmlFor="timezone" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
+                    <label htmlFor="timezone" className="block text-sm font-medium text-muted-foreground mb-2">
                       Timezone
                     </label>
                     <select
                       id="timezone"
                       {...generalForm.register("timezone")}
-                      className="w-full px-4 py-3 bg-white border-2 border-black focus:outline-none focus:shadow-neo-hover focus:translate-x-[-2px] focus:translate-y-[-2px]"
+                      className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                     >
                       {timezones.map((tz) => (
                         <option key={tz.value} value={tz.value}>
@@ -352,7 +352,7 @@ export default function SystemSettingsPage() {
                       ))}
                     </select>
                     {generalForm.formState.errors.timezone && (
-                      <p className="text-danger text-sm font-bold mt-1">
+                      <p className="text-destructive text-sm mt-1">
                         {generalForm.formState.errors.timezone.message}
                       </p>
                     )}
@@ -360,17 +360,17 @@ export default function SystemSettingsPage() {
                 </div>
 
                 {/* Info Box */}
-                <div className="flex items-start gap-3 p-4 bg-secondary/20 border-2 border-black">
-                  <Info className="w-5 h-5 text-secondary flex-shrink-0 mt-0.5" />
+                <div className="flex items-start gap-3 p-4 rounded-md border bg-muted">
+                  <Info className="w-5 h-5 text-muted-foreground flex-shrink-0 mt-0.5" />
                   <div>
-                    <p className="text-sm font-bold">Panel Information</p>
-                    <p className="text-xs text-gray-600 mt-1">
+                    <p className="text-sm font-medium">Panel Information</p>
+                    <p className="text-xs text-muted-foreground mt-1">
                       Version: 1.0.0 | License: Enterprise | Nodes: 3
                     </p>
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between pt-4 border-t-2 border-black">
+                <div className="flex items-center justify-between pt-4 border-t">
                   <Button
                     type="button"
                     variant="ghost"
@@ -401,7 +401,7 @@ export default function SystemSettingsPage() {
         {/* Security Settings */}
         <TabsContent value="security">
           <Card>
-            <CardHeader className="border-b-2 border-black">
+            <CardHeader className="border-b">
               <CardTitle className="flex items-center gap-2">
                 <Shield className="w-5 h-5" />
                 Security Settings
@@ -413,11 +413,11 @@ export default function SystemSettingsPage() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   {/* Session Timeout */}
                   <div>
-                    <label htmlFor="sessionTimeout" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
+                    <label htmlFor="sessionTimeout" className="block text-sm font-medium text-muted-foreground mb-2">
                       Session Timeout (minutes)
                     </label>
                     <div className="relative">
-                      <Timer className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+                      <Timer className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                       <Input
                         id="sessionTimeout"
                         type="number"
@@ -428,7 +428,7 @@ export default function SystemSettingsPage() {
                       />
                     </div>
                     {securityForm.formState.errors.sessionTimeout && (
-                      <p className="text-danger text-sm font-bold mt-1">
+                      <p className="text-destructive text-sm mt-1">
                         {securityForm.formState.errors.sessionTimeout.message}
                       </p>
                     )}
@@ -436,7 +436,7 @@ export default function SystemSettingsPage() {
 
                   {/* Min Password Length */}
                   <div>
-                    <label htmlFor="minPasswordLength" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
+                    <label htmlFor="minPasswordLength" className="block text-sm font-medium text-muted-foreground mb-2">
                       Minimum Password Length
                     </label>
                     <Input
@@ -447,7 +447,7 @@ export default function SystemSettingsPage() {
                       max={128}
                     />
                     {securityForm.formState.errors.minPasswordLength && (
-                      <p className="text-danger text-sm font-bold mt-1">
+                      <p className="text-destructive text-sm mt-1">
                         {securityForm.formState.errors.minPasswordLength.message}
                       </p>
                     )}
@@ -455,7 +455,7 @@ export default function SystemSettingsPage() {
 
                   {/* Max Login Attempts */}
                   <div>
-                    <label htmlFor="maxLoginAttempts" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
+                    <label htmlFor="maxLoginAttempts" className="block text-sm font-medium text-muted-foreground mb-2">
                       Max Login Attempts
                     </label>
                     <Input
@@ -469,7 +469,7 @@ export default function SystemSettingsPage() {
 
                   {/* Lockout Duration */}
                   <div>
-                    <label htmlFor="lockoutDuration" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
+                    <label htmlFor="lockoutDuration" className="block text-sm font-medium text-muted-foreground mb-2">
                       Lockout Duration (minutes)
                     </label>
                     <Input
@@ -483,8 +483,8 @@ export default function SystemSettingsPage() {
                 </div>
 
                 {/* Password Policy Checkboxes */}
-                <div className="p-4 bg-gray-50 border-2 border-black">
-                  <p className="text-sm font-bold uppercase mb-4">Password Requirements</p>
+                <div className="p-4 rounded-md border bg-muted">
+                  <p className="text-sm font-medium mb-4">Password Requirements</p>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <label className="flex items-center gap-3 cursor-pointer">
                       <input
@@ -513,7 +513,7 @@ export default function SystemSettingsPage() {
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between pt-4 border-t-2 border-black">
+                <div className="flex items-center justify-between pt-4 border-t">
                   <Button
                     type="button"
                     variant="ghost"
@@ -544,7 +544,7 @@ export default function SystemSettingsPage() {
         {/* Backup Settings */}
         <TabsContent value="backup">
           <Card>
-            <CardHeader className="border-b-2 border-black">
+            <CardHeader className="border-b">
               <CardTitle className="flex items-center gap-2">
                 <Database className="w-5 h-5" />
                 Backup Settings
@@ -556,11 +556,11 @@ export default function SystemSettingsPage() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   {/* Default Retention */}
                   <div>
-                    <label htmlFor="defaultRetention" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
+                    <label htmlFor="defaultRetention" className="block text-sm font-medium text-muted-foreground mb-2">
                       Default Retention (days)
                     </label>
                     <div className="relative">
-                      <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+                      <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                       <Input
                         id="defaultRetention"
                         type="number"
@@ -574,15 +574,15 @@ export default function SystemSettingsPage() {
 
                   {/* Schedule */}
                   <div>
-                    <label htmlFor="schedule" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
+                    <label htmlFor="schedule" className="block text-sm font-medium text-muted-foreground mb-2">
                       Backup Schedule
                     </label>
                     <div className="relative">
-                      <Clock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+                      <Clock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                       <select
                         id="schedule"
                         {...backupForm.register("schedule")}
-                        className="w-full pl-10 px-4 py-3 bg-white border-2 border-black focus:outline-none focus:shadow-neo-hover focus:translate-x-[-2px] focus:translate-y-[-2px]"
+                        className="w-full h-10 pl-10 pr-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                       >
                         {schedulePresets.map((preset) => (
                           <option key={preset.value} value={preset.value}>
@@ -595,7 +595,7 @@ export default function SystemSettingsPage() {
                 </div>
 
                 {/* Auto Cleanup */}
-                <div className="p-4 bg-gray-50 border-2 border-black">
+                <div className="p-4 rounded-md border bg-muted">
                   <label className="flex items-center gap-3 cursor-pointer">
                     <input
                       type="checkbox"
@@ -603,15 +603,15 @@ export default function SystemSettingsPage() {
                       className="w-5 h-5 accent-primary"
                     />
                     <div>
-                      <span className="font-bold">Auto Cleanup</span>
-                      <p className="text-xs text-gray-500">
+                      <span className="font-medium">Auto Cleanup</span>
+                      <p className="text-xs text-muted-foreground">
                         Automatically delete backups older than retention period
                       </p>
                     </div>
                   </label>
                 </div>
 
-                <div className="flex items-center justify-between pt-4 border-t-2 border-black">
+                <div className="flex items-center justify-between pt-4 border-t">
                   <Button
                     type="button"
                     variant="ghost"
@@ -642,7 +642,7 @@ export default function SystemSettingsPage() {
         {/* API Settings */}
         <TabsContent value="api">
           <Card>
-            <CardHeader className="border-b-2 border-black">
+            <CardHeader className="border-b">
               <CardTitle className="flex items-center gap-2">
                 <Key className="w-5 h-5" />
                 API Settings
@@ -652,7 +652,7 @@ export default function SystemSettingsPage() {
             <CardContent className="p-6">
               <form onSubmit={apiForm.handleSubmit(handleSaveApi)} className="space-y-6">
                 {/* Enable API */}
-                <div className="p-4 bg-gray-50 border-2 border-black">
+                <div className="p-4 rounded-md border bg-muted">
                   <label className="flex items-center gap-3 cursor-pointer">
                     <input
                       type="checkbox"
@@ -660,8 +660,8 @@ export default function SystemSettingsPage() {
                       className="w-5 h-5 accent-primary"
                     />
                     <div>
-                      <span className="font-bold">Enable API Access</span>
-                      <p className="text-xs text-gray-500">
+                      <span className="font-medium">Enable API Access</span>
+                      <p className="text-xs text-muted-foreground">
                         Allow external applications to access the API
                       </p>
                     </div>
@@ -671,11 +671,11 @@ export default function SystemSettingsPage() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   {/* Webhook URL */}
                   <div>
-                    <label htmlFor="webhookUrl" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
+                    <label htmlFor="webhookUrl" className="block text-sm font-medium text-muted-foreground mb-2">
                       Webhook URL
                     </label>
                     <div className="relative">
-                      <Link className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+                      <Link className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                       <Input
                         id="webhookUrl"
                         {...apiForm.register("webhookUrl")}
@@ -683,9 +683,9 @@ export default function SystemSettingsPage() {
                         className="pl-10"
                       />
                     </div>
-                    <p className="text-[11px] text-gray-400 mt-1 font-medium">Outbound events (e.g. bandwidth overage) are POSTed here, signed with the HMAC secret below. Applied at runtime — no restart needed.</p>
+                    <p className="text-[11px] text-muted-foreground mt-1 font-medium">Outbound events (e.g. bandwidth overage) are POSTed here, signed with the HMAC secret below. Applied at runtime — no restart needed.</p>
                     {apiForm.formState.errors.webhookUrl && (
-                      <p className="text-danger text-sm font-bold mt-1">
+                      <p className="text-destructive text-sm mt-1">
                         {apiForm.formState.errors.webhookUrl.message}
                       </p>
                     )}
@@ -693,7 +693,7 @@ export default function SystemSettingsPage() {
 
                   {/* Rate Limit */}
                   <div>
-                    <label htmlFor="rateLimit" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
+                    <label htmlFor="rateLimit" className="block text-sm font-medium text-muted-foreground mb-2">
                       Rate Limit (requests/min)
                     </label>
                     <Input
@@ -708,7 +708,7 @@ export default function SystemSettingsPage() {
 
                 {/* HMAC Secret */}
                 <div>
-                  <label htmlFor="hmacSecret" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
+                  <label htmlFor="hmacSecret" className="block text-sm font-medium text-muted-foreground mb-2">
                     HMAC Secret
                   </label>
                   <div className="relative">
@@ -721,7 +721,7 @@ export default function SystemSettingsPage() {
                     <button
                       type="button"
                       onClick={() => setShowHmacSecret(!showHmacSecret)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-600 hover:text-black"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                     >
                       {showHmacSecret ? (
                         <EyeOff className="w-4 h-4" />
@@ -730,12 +730,12 @@ export default function SystemSettingsPage() {
                       )}
                     </button>
                   </div>
-                  <p className="text-xs text-gray-500 mt-1">
+                  <p className="text-xs text-muted-foreground mt-1">
                     Used to sign API requests. Keep this secret!
                   </p>
                 </div>
 
-                <div className="flex items-center justify-between pt-4 border-t-2 border-black">
+                <div className="flex items-center justify-between pt-4 border-t">
                   <Button
                     type="button"
                     variant="ghost"
@@ -766,7 +766,7 @@ export default function SystemSettingsPage() {
         {/* Email Settings */}
         <TabsContent value="email">
           <Card>
-            <CardHeader className="border-b-2 border-black">
+            <CardHeader className="border-b">
               <CardTitle className="flex items-center gap-2">
                 <Mail className="w-5 h-5" />
                 Email Settings
@@ -778,11 +778,11 @@ export default function SystemSettingsPage() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   {/* SMTP Host */}
                   <div>
-                    <label htmlFor="smtpHost" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
+                    <label htmlFor="smtpHost" className="block text-sm font-medium text-muted-foreground mb-2">
                       SMTP Host
                     </label>
                     <div className="relative">
-                      <Server className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+                      <Server className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                       <Input
                         id="smtpHost"
                         {...emailForm.register("smtpHost")}
@@ -791,7 +791,7 @@ export default function SystemSettingsPage() {
                       />
                     </div>
                     {emailForm.formState.errors.smtpHost && (
-                      <p className="text-danger text-sm font-bold mt-1">
+                      <p className="text-destructive text-sm mt-1">
                         {emailForm.formState.errors.smtpHost.message}
                       </p>
                     )}
@@ -799,7 +799,7 @@ export default function SystemSettingsPage() {
 
                   {/* SMTP Port */}
                   <div>
-                    <label htmlFor="smtpPort" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
+                    <label htmlFor="smtpPort" className="block text-sm font-medium text-muted-foreground mb-2">
                       SMTP Port
                     </label>
                     <Input
@@ -813,7 +813,7 @@ export default function SystemSettingsPage() {
 
                   {/* SMTP User */}
                   <div>
-                    <label htmlFor="smtpUser" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
+                    <label htmlFor="smtpUser" className="block text-sm font-medium text-muted-foreground mb-2">
                       SMTP Username
                     </label>
                     <Input
@@ -825,11 +825,11 @@ export default function SystemSettingsPage() {
 
                   {/* SMTP Password */}
                   <div>
-                    <label htmlFor="smtpPassword" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
+                    <label htmlFor="smtpPassword" className="block text-sm font-medium text-muted-foreground mb-2">
                       SMTP Password
                     </label>
                     <div className="relative">
-                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                       <Input
                         id="smtpPassword"
                         type="password"
@@ -841,7 +841,7 @@ export default function SystemSettingsPage() {
 
                   {/* From Email */}
                   <div>
-                    <label htmlFor="smtpFrom" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
+                    <label htmlFor="smtpFrom" className="block text-sm font-medium text-muted-foreground mb-2">
                       From Email
                     </label>
                     <Input
@@ -854,7 +854,7 @@ export default function SystemSettingsPage() {
 
                   {/* From Name */}
                   <div>
-                    <label htmlFor="smtpFromName" className="block text-sm font-bold uppercase tracking-wider text-gray-500 mb-2">
+                    <label htmlFor="smtpFromName" className="block text-sm font-medium text-muted-foreground mb-2">
                       From Name
                     </label>
                     <Input
@@ -866,7 +866,7 @@ export default function SystemSettingsPage() {
                 </div>
 
                 {/* Enable TLS */}
-                <div className="p-4 bg-gray-50 border-2 border-black">
+                <div className="p-4 rounded-md border bg-muted">
                   <label className="flex items-center gap-3 cursor-pointer">
                     <input
                       type="checkbox"
@@ -874,15 +874,15 @@ export default function SystemSettingsPage() {
                       className="w-5 h-5 accent-primary"
                     />
                     <div>
-                      <span className="font-bold">Enable TLS</span>
-                      <p className="text-xs text-gray-500">
+                      <span className="font-medium">Enable TLS</span>
+                      <p className="text-xs text-muted-foreground">
                         Use TLS encryption for SMTP connections
                       </p>
                     </div>
                   </label>
                 </div>
 
-                <div className="flex items-center justify-between pt-4 border-t-2 border-black">
+                <div className="flex items-center justify-between pt-4 border-t">
                   <div className="flex items-center gap-2">
                     <Button
                       type="button"

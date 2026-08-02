@@ -2,9 +2,9 @@
 
 import { useState, useMemo, useEffect, useCallback } from "react"
 import Link from "next/link"
-import { 
-  Server, 
-  Plus, 
+import {
+  Server,
+  Plus,
   Search,
   X,
   Trash2,
@@ -28,31 +28,31 @@ import type { NodeStatus } from "@/types"
 // Status indicator component
 function StatusIndicator({ status }: { status: NodeStatus }) {
   const config: Record<string, { bg: string; text: string; label: string }> = {
-        active: { bg: "bg-success", text: "text-success-dark", label: "Active" },
-    offline: { bg: "bg-danger", text: "text-danger", label: "Offline" },
-    maintenance: { bg: "bg-warning", text: "text-warning-dark", label: "Maintenance" },
+    active: { bg: "bg-emerald-500", text: "text-emerald-600", label: "Active" },
+    offline: { bg: "bg-red-500", text: "text-red-600", label: "Offline" },
+    maintenance: { bg: "bg-amber-500", text: "text-amber-600", label: "Maintenance" },
   }
-  
+
   const { bg, text, label } = config[status] || config.offline
-  
+
   return (
     <div className="flex items-center gap-2">
-      <span className={`w-3 h-3 rounded-full ${bg} ${status === "active" ? "animate-pulse" : ""}`} />
-      <span className={`text-xs font-black uppercase ${text}`}>{label}</span>
+      <span className={`w-2.5 h-2.5 rounded-full ${bg} ${status === "active" ? "animate-pulse" : ""}`} />
+      <span className={`text-xs font-medium ${text}`}>{label}</span>
     </div>
   )
 }
 
 // Confirm dialog component
-function ConfirmDialog({ 
-  open, 
-  title, 
-  message, 
+function ConfirmDialog({
+  open,
+  title,
+  message,
   confirmLabel = "Confirm",
   loading = false,
-  onConfirm, 
-  onCancel 
-}: { 
+  onConfirm,
+  onCancel
+}: {
   open: boolean
   title: string
   message: string
@@ -62,15 +62,15 @@ function ConfirmDialog({
   onCancel: () => void
 }) {
   if (!open) return null
-  
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-label="Confirm dialog">
       <button type="button" className="absolute inset-0 bg-black/50 cursor-default focus:outline-none" onClick={onCancel} aria-label="Close dialog" />
-      <div className="relative bg-white border-4 border-black p-6 shadow-neo-xl max-w-md w-full mx-4">
-        <h3 className="text-xl font-black uppercase mb-4">{title}</h3>
-        <p className="text-gray-600 font-medium mb-6">{message}</p>
+      <div className="relative bg-background border rounded-lg p-6 shadow-lg max-w-md w-full mx-4">
+        <h3 className="text-lg font-semibold mb-2">{title}</h3>
+        <p className="text-muted-foreground text-sm mb-6">{message}</p>
         <div className="flex gap-3 justify-end">
-          <Button variant="ghost" onClick={onCancel} className="border-2 border-black" disabled={loading}>
+          <Button variant="outline" onClick={onCancel} disabled={loading}>
             Cancel
           </Button>
           <Button variant="destructive" onClick={onConfirm} disabled={loading}>
@@ -89,12 +89,14 @@ function Toast({ message, type, onClose }: { message: string, type: "success" | 
     const timer = setTimeout(onClose, 3000)
     return () => clearTimeout(timer)
   }, [onClose])
-  
+
   return (
-    <div className={`fixed bottom-4 right-4 z-50 px-6 py-4 border-4 border-black shadow-neo ${
-      type === "success" ? "bg-success" : "bg-danger text-white"
+    <div className={`fixed bottom-4 right-4 z-50 px-4 py-3 rounded-lg border shadow-md ${
+      type === "success"
+        ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900"
+        : "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-900"
     }`}>
-      <p className="font-bold uppercase text-sm">{message}</p>
+      <p className="font-medium text-sm">{message}</p>
     </div>
   )
 }
@@ -118,26 +120,26 @@ export default function NodesListPage() {
   const filteredNodes = useMemo(() => {
     if (!nodes) return []
     let result = [...nodes]
-    
+
     if (searchQuery) {
       const query = searchQuery.toLowerCase()
-      result = result.filter(node => 
-        node.name.toLowerCase().includes(query) || 
+      result = result.filter(node =>
+        node.name.toLowerCase().includes(query) ||
         node.ip_address.toLowerCase().includes(query)
       )
     }
-    
+
     if (statusFilter) {
       result = result.filter(node => node.status === statusFilter)
     }
-    
+
     return result
   }, [nodes, searchQuery, statusFilter])
 
   // Action handlers
   const handleDelete = useCallback(async () => {
     if (!deleteConfirm) return
-    
+
     try {
       await deleteNode.mutateAsync(deleteConfirm.id)
       setToast({ message: `Node ${deleteConfirm.name} deleted`, type: "success" })
@@ -152,7 +154,7 @@ export default function NodesListPage() {
     setSearchQuery("")
     setStatusFilter("")
   }
-  
+
   const hasFilters = searchQuery || statusFilter
 
   // Calculate stats
@@ -169,15 +171,15 @@ export default function NodesListPage() {
       <div className="max-w-7xl mx-auto">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
           <div>
-            <h1 className="text-3xl font-black uppercase tracking-tight text-black">Nodes</h1>
+            <h1 className="text-2xl font-semibold text-foreground">Nodes</h1>
             <Skeleton className="h-5 w-48 mt-1" />
           </div>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-          {[1,2,3,4].map(i => <Skeleton key={i} className="h-24 border-4 border-black" />)}
+          {[1,2,3,4].map(i => <Skeleton key={i} className="h-24 rounded-lg" />)}
         </div>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {[1,2,3,4].map(i => <Skeleton key={i} className="h-48 border-4 border-black" />)}
+          {[1,2,3,4].map(i => <Skeleton key={i} className="h-48 rounded-lg" />)}
         </div>
       </div>
     )
@@ -187,10 +189,10 @@ export default function NodesListPage() {
   if (error) {
     return (
       <div className="max-w-7xl mx-auto">
-        <div className="bg-white border-4 border-black p-12 shadow-neo text-center">
-          <AlertTriangle className="w-16 h-16 text-danger mx-auto mb-4" />
-          <h2 className="text-xl font-black uppercase mb-2">Failed to load nodes</h2>
-          <p className="text-gray-500 font-medium mb-6">{(error as Error).message}</p>
+        <div className="bg-card text-card-foreground border rounded-lg p-12 shadow-sm text-center">
+          <AlertTriangle className="w-16 h-16 text-red-500 mx-auto mb-4" />
+          <h2 className="text-lg font-semibold mb-2">Failed to load nodes</h2>
+          <p className="text-muted-foreground text-sm mb-6">{(error as Error).message}</p>
           <Button onClick={() => refetch()} className="gap-2">
             <Activity className="w-4 h-4" />
             Retry
@@ -205,10 +207,10 @@ export default function NodesListPage() {
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-3xl font-black uppercase tracking-tight text-black">
+          <h1 className="text-2xl font-semibold text-foreground">
             Nodes
           </h1>
-          <p className="text-gray-500 font-medium uppercase tracking-wider text-sm">
+          <p className="text-muted-foreground text-sm">
             {stats.total} nodes • {stats.active} active
           </p>
         </div>
@@ -222,157 +224,157 @@ export default function NodesListPage() {
 
       {/* Quick Stats */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-        <div className="bg-white border-4 border-black p-4 shadow-neo">
+        <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-black uppercase text-gray-500">Total Nodes</span>
-            <Server className="w-4 h-4 text-gray-600" />
+            <span className="text-xs font-medium text-muted-foreground">Total Nodes</span>
+            <Server className="w-4 h-4 text-muted-foreground" />
           </div>
-          <p className="text-3xl font-black text-black">{stats.total}</p>
+          <p className="text-2xl font-semibold text-foreground">{stats.total}</p>
         </div>
-        
-        <div className="bg-white border-4 border-black p-4 shadow-neo">
+
+        <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-black uppercase text-gray-500">Active</span>
-            <span className="w-3 h-3 bg-success rounded-full animate-pulse" />
+            <span className="text-xs font-medium text-muted-foreground">Active</span>
+            <span className="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-pulse" />
           </div>
-          <p className="text-3xl font-black text-success-dark">{stats.active}</p>
+          <p className="text-2xl font-semibold text-emerald-600">{stats.active}</p>
         </div>
-        
-        <div className="bg-white border-4 border-black p-4 shadow-neo">
+
+        <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-black uppercase text-gray-500">Offline</span>
-            <span className="w-3 h-3 bg-danger rounded-full" />
+            <span className="text-xs font-medium text-muted-foreground">Offline</span>
+            <span className="w-2.5 h-2.5 bg-red-500 rounded-full" />
           </div>
-          <p className="text-3xl font-black text-danger">{stats.offline}</p>
+          <p className="text-2xl font-semibold text-red-600">{stats.offline}</p>
         </div>
-        
-        <div className="bg-white border-4 border-black p-4 shadow-neo">
+
+        <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-black uppercase text-gray-500">Maintenance</span>
-            <AlertTriangle className="w-4 h-4 text-warning-dark" />
+            <span className="text-xs font-medium text-muted-foreground">Maintenance</span>
+            <AlertTriangle className="w-4 h-4 text-amber-600" />
           </div>
-          <p className="text-3xl font-black text-warning-dark">{stats.maintenance}</p>
+          <p className="text-2xl font-semibold text-amber-600">{stats.maintenance}</p>
         </div>
       </div>
-      
+
       {/* Filters */}
-      <div className="bg-white border-4 border-black p-4 shadow-neo mb-6">
+      <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm mb-6">
         <div className="flex flex-col lg:flex-row gap-4">
           {/* Search */}
           <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <Input
               type="text"
               placeholder="Search by name or IP..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-10 border-2 border-black"
+              className="pl-10"
             />
           </div>
-          
+
           {/* Status Filter */}
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
-            className="h-12 px-4 border-2 border-black font-medium bg-white focus:outline-none focus:shadow-neo-sm"
+            className="h-10 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           >
             <option value="">All Status</option>
             <option value="active">Active</option>
             <option value="offline">Offline</option>
             <option value="maintenance">Maintenance</option>
           </select>
-          
+
           {/* Clear filters */}
           {hasFilters && (
-            <Button variant="ghost" onClick={clearFilters} className="border-2 border-black gap-1">
+            <Button variant="outline" onClick={clearFilters} className="gap-1">
               <X className="w-4 h-4" />
               Clear
             </Button>
           )}
         </div>
       </div>
-      
+
       {/* Nodes Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {filteredNodes.length === 0 ? (
-          <div className="col-span-full bg-white border-4 border-black p-12 shadow-neo text-center">
-            <Server className="w-16 h-16 text-gray-500 mx-auto mb-4" />
-            <p className="text-gray-500 font-bold uppercase">No nodes found</p>
+          <div className="col-span-full bg-card text-card-foreground border rounded-lg p-12 shadow-sm text-center">
+            <Server className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
+            <p className="text-muted-foreground font-medium">No nodes found</p>
             {hasFilters && (
-              <Button variant="ghost" onClick={clearFilters} className="mt-4 border-2 border-black">
+              <Button variant="outline" onClick={clearFilters} className="mt-4">
                 Clear filters
               </Button>
             )}
           </div>
         ) : (
           filteredNodes.map((node) => (
-            <div key={node.id} className="bg-white border-4 border-black shadow-neo">
+            <div key={node.id} className="bg-card text-card-foreground border rounded-lg shadow-sm overflow-hidden">
               {/* Node Header */}
-              <div className="p-4 border-b-4 border-black bg-gray-50">
+              <div className="p-4 border-b bg-muted/50">
                 <div className="flex items-start justify-between">
                   <div>
-                    <Link href={`/nodes/${node.id}`} className="text-xl font-black uppercase hover:text-primary transition-colors">
+                    <Link href={`/nodes/${node.id}`} className="text-lg font-semibold hover:text-primary transition-colors">
                       {node.name}
                     </Link>
-                    <p className="text-sm font-mono font-medium text-gray-500">{node.ip_address}</p>
+                    <p className="text-sm font-mono text-muted-foreground">{node.ip_address}</p>
                   </div>
                   <StatusIndicator status={node.status} />
                 </div>
               </div>
-              
+
               {/* Node Body */}
               <div className="p-4">
                 {/* Info */}
                 <div className="flex items-center gap-4 mb-4">
                   <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 bg-primary flex items-center justify-center border-2 border-black">
+                    <div className="w-8 h-8 bg-muted text-muted-foreground flex items-center justify-center rounded-md">
                       <Server className="w-4 h-4" />
                     </div>
                     <div>
-                      <p className="text-xs font-bold text-gray-500 uppercase">ID</p>
+                      <p className="text-xs font-medium text-muted-foreground">ID</p>
                       <p className="text-xs font-mono">{node.id.slice(0, 12)}</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Activity className="w-4 h-4 text-gray-600" />
-                    <span className="text-xs font-medium text-gray-500">Created: {formatDate(node.created_at)}</span>
+                    <Activity className="w-4 h-4 text-muted-foreground" />
+                    <span className="text-xs text-muted-foreground">Created: {formatDate(node.created_at)}</span>
                   </div>
                 </div>
-                
+
                 {/* Status Alerts */}
                 {node.status === "maintenance" && (
-                  <div className="bg-warning/20 border-2 border-warning p-3 mb-4">
-                    <p className="text-xs font-bold uppercase text-warning-dark">Node is in maintenance mode</p>
+                  <div className="bg-amber-50 text-amber-700 border border-amber-200 rounded-md p-3 mb-4 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900">
+                    <p className="text-xs font-medium">Node is in maintenance mode</p>
                   </div>
                 )}
-                
+
                 {node.status === "offline" && (
-                  <div className="bg-danger/10 border-2 border-danger p-3 mb-4">
-                    <p className="text-xs font-bold uppercase text-danger">Node is offline</p>
+                  <div className="bg-red-50 text-red-700 border border-red-200 rounded-md p-3 mb-4 dark:bg-red-950 dark:text-red-300 dark:border-red-900">
+                    <p className="text-xs font-medium">Node is offline</p>
                   </div>
                 )}
 
                 {node.status === "active" && (
-                  <div className="bg-success/10 border-2 border-success p-3 mb-4">
-                    <p className="text-xs font-bold uppercase text-success-dark">Node is active — view details for metrics</p>
+                  <div className="bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md p-3 mb-4 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900">
+                    <p className="text-xs font-medium">Node is active — view details for metrics</p>
                   </div>
                 )}
-                
+
                 {/* Actions */}
                 <div className="flex items-center gap-2">
                   <Link href={`/nodes/${node.id}`}>
-                    <Button variant="ghost" size="sm" className="h-9 border-2 border-black">
+                    <Button variant="outline" size="sm">
                       <Activity className="w-4 h-4" />
                       <span className="ml-1">Details</span>
                     </Button>
                   </Link>
-                  
+
                   <Button
-                    variant="ghost"
+                    variant="outline"
                     size="sm"
                     onClick={() => setDeleteConfirm({ id: node.id, name: node.name })}
                     disabled={deleteNode.isPending}
-                    className="h-9 border-2 border-black hover:bg-danger hover:text-white"
+                    className="text-red-600 hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950"
                     title="Delete"
                   >
                     <Trash2 className="w-4 h-4" />
@@ -383,7 +385,7 @@ export default function NodesListPage() {
           ))
         )}
       </div>
-      
+
       {/* Delete Confirmation Dialog */}
       <ConfirmDialog
         open={!!deleteConfirm}
@@ -394,13 +396,13 @@ export default function NodesListPage() {
         onConfirm={handleDelete}
         onCancel={() => setDeleteConfirm(null)}
       />
-      
+
       {/* Toast */}
       {toast && (
-        <Toast 
-          message={toast.message} 
-          type={toast.type} 
-          onClose={() => setToast(null)} 
+        <Toast
+          message={toast.message}
+          type={toast.type}
+          onClose={() => setToast(null)}
         />
       )}
     </div>

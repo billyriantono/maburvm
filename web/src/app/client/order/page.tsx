@@ -73,22 +73,22 @@ export default function OrderVMPage() {
   return (
     <div className="space-y-6 max-w-3xl">
       <div className="flex items-center gap-3">
-        <Link href="/client/vms" className="p-2 border-2 border-black bg-white hover:bg-gray-50">
+        <Link href="/client/vms" className="p-2 rounded-md border bg-background hover:bg-muted transition-colors">
           <ArrowLeft className="w-5 h-5" />
         </Link>
-        <h1 className="text-3xl font-black uppercase tracking-tighter">Order a VM</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">Order a VM</h1>
       </div>
 
       {/* Step 1: plan */}
-      <section className="bg-white border-4 border-black shadow-neo">
-        <div className="px-5 py-4 border-b-4 border-black">
-          <h2 className="text-lg font-black uppercase tracking-tight">1 · Choose a plan</h2>
+      <section className="rounded-lg border bg-card text-card-foreground shadow-sm">
+        <div className="px-5 py-4 border-b">
+          <h2 className="text-lg font-semibold">1 · Choose a plan</h2>
         </div>
         <div className="p-5">
           {plansLoading ? (
-            <p className="text-gray-500 font-medium">Loading plans…</p>
+            <p className="text-muted-foreground">Loading plans…</p>
           ) : activePlans.length === 0 ? (
-            <p className="text-gray-600 font-medium">No plans are available. Please contact support.</p>
+            <p className="text-muted-foreground">No plans are available. Please contact support.</p>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {activePlans.map((p) => {
@@ -97,13 +97,13 @@ export default function OrderVMPage() {
                   <button
                     key={p.id}
                     onClick={() => setPlanId(p.id)}
-                    className={`text-left p-4 border-2 transition-all ${active ? "border-black bg-primary shadow-neo-sm" : "border-black bg-white hover:shadow-neo-sm"}`}
+                    className={`text-left p-4 rounded-md border transition-colors ${active ? "border-primary bg-primary/5 ring-1 ring-primary" : "bg-background hover:bg-muted/50"}`}
                   >
                     <div className="flex items-center justify-between">
-                      <span className="font-black uppercase">{p.name}</span>
-                      {active && <Check className="w-5 h-5" />}
+                      <span className="font-semibold">{p.name}</span>
+                      {active && <Check className="w-5 h-5 text-primary" />}
                     </div>
-                    <div className="mt-2 grid grid-cols-2 gap-1 text-xs font-bold text-gray-700">
+                    <div className="mt-2 grid grid-cols-2 gap-1 text-xs text-muted-foreground">
                       <span className="flex items-center gap-1"><Cpu className="w-3 h-3" />{p.cpu} vCPU</span>
                       <span className="flex items-center gap-1"><MemoryStick className="w-3 h-3" />{p.ram} MB</span>
                       <span className="flex items-center gap-1"><HardDrive className="w-3 h-3" />{p.disk} GB</span>
@@ -118,20 +118,20 @@ export default function OrderVMPage() {
       </section>
 
       {/* Step 2: OS */}
-      <section className="bg-white border-4 border-black shadow-neo">
-        <div className="px-5 py-4 border-b-4 border-black">
-          <h2 className="text-lg font-black uppercase tracking-tight">2 · Choose an operating system</h2>
+      <section className="rounded-lg border bg-card text-card-foreground shadow-sm">
+        <div className="px-5 py-4 border-b">
+          <h2 className="text-lg font-semibold">2 · Choose an operating system</h2>
         </div>
         <div className="p-5">
           {templatesLoading ? (
-            <p className="text-gray-500 font-medium">Loading templates…</p>
+            <p className="text-muted-foreground">Loading templates…</p>
           ) : activeTemplates.length === 0 ? (
-            <p className="text-gray-600 font-medium">No OS templates are available. Please contact support.</p>
+            <p className="text-muted-foreground">No OS templates are available. Please contact support.</p>
           ) : (
             <select
               value={templateId}
               onChange={(e) => setTemplateId(e.target.value)}
-              className="w-full h-11 px-3 border-2 border-black bg-white font-bold focus:outline-none focus:shadow-neo-sm"
+              className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
             >
               <option value="">Select an OS…</option>
               {activeTemplates.map((t) => (
@@ -145,9 +145,9 @@ export default function OrderVMPage() {
       </section>
 
       {/* Step 3: hostname */}
-      <section className="bg-white border-4 border-black shadow-neo">
-        <div className="px-5 py-4 border-b-4 border-black">
-          <h2 className="text-lg font-black uppercase tracking-tight">3 · Hostname</h2>
+      <section className="rounded-lg border bg-card text-card-foreground shadow-sm">
+        <div className="px-5 py-4 border-b">
+          <h2 className="text-lg font-semibold">3 · Hostname</h2>
         </div>
         <div className="p-5">
           <input
@@ -155,10 +155,10 @@ export default function OrderVMPage() {
             value={hostname}
             onChange={(e) => setHostname(e.target.value)}
             placeholder="my-server.example.com"
-            className="w-full h-11 px-3 border-2 border-black bg-white font-bold placeholder:text-gray-400 focus:outline-none focus:shadow-neo-sm"
+            className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           />
           {hostname !== "" && !hostnameValid && (
-            <p className="text-sm text-destructive font-bold mt-2">
+            <p className="text-sm text-destructive mt-2">
               Enter a valid hostname (letters, digits, hyphens, dots).
             </p>
           )}
@@ -166,21 +166,21 @@ export default function OrderVMPage() {
       </section>
 
       {/* Step 4: SSH keys */}
-      <section className="bg-white border-4 border-black shadow-neo">
-        <div className="px-5 py-4 border-b-4 border-black flex items-center gap-2">
-          <KeyRound className="w-5 h-5" />
-          <h2 className="text-lg font-black uppercase tracking-tight">4 · SSH Keys</h2>
+      <section className="rounded-lg border bg-card text-card-foreground shadow-sm">
+        <div className="px-5 py-4 border-b flex items-center gap-2">
+          <KeyRound className="w-5 h-5 text-muted-foreground" />
+          <h2 className="text-lg font-semibold">4 · SSH Keys</h2>
         </div>
         <div className="p-5">
           {!sshKeys?.length ? (
-            <p className="text-sm text-gray-600 font-medium">
+            <p className="text-sm text-muted-foreground">
               No SSH keys saved. The VM will use root-password login only. Add keys under{" "}
-              <Link href="/client/settings/ssh-keys" className="underline font-bold">Settings → SSH Keys</Link>.
+              <Link href="/client/settings/ssh-keys" className="text-primary hover:underline font-medium">Settings → SSH Keys</Link>.
             </p>
           ) : (
             <div className="space-y-2">
               {sshKeys.map((k) => (
-                <label key={k.id} className="flex items-center gap-3 p-3 border-2 border-black cursor-pointer">
+                <label key={k.id} className="flex items-center gap-3 p-3 rounded-md border cursor-pointer hover:bg-muted/50 transition-colors">
                   <input
                     type="checkbox"
                     checked={!excludedKeys.has(k.id)}
@@ -194,18 +194,18 @@ export default function OrderVMPage() {
                     }
                     className="w-4 h-4"
                   />
-                  <span className="font-bold">{k.name}</span>
-                  <span className="text-xs font-mono text-gray-500 truncate">{k.fingerprint}</span>
+                  <span className="font-medium">{k.name}</span>
+                  <span className="text-xs font-mono text-muted-foreground truncate">{k.fingerprint}</span>
                 </label>
               ))}
-              <p className="text-[11px] text-gray-400 font-medium">Checked keys are injected into the new VM&apos;s root account.</p>
+              <p className="text-xs text-muted-foreground">Checked keys are injected into the new VM&apos;s root account.</p>
             </div>
           )}
         </div>
       </section>
 
       {error && (
-        <div className="border-4 border-black bg-[#FF4444] text-white px-5 py-4 font-bold">
+        <div className="rounded-md border border-destructive/50 bg-destructive/10 text-destructive px-5 py-4 text-sm font-medium">
           {error}
         </div>
       )}
@@ -213,7 +213,7 @@ export default function OrderVMPage() {
       <button
         onClick={handleSubmit}
         disabled={!canSubmit}
-        className="w-full h-12 bg-primary text-black border-4 border-black font-black uppercase tracking-wide shadow-neo hover:shadow-neo-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+        className="w-full h-11 rounded-md bg-primary text-primary-foreground font-medium shadow-sm hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
       >
         {createVM.isPending ? "Creating…" : "Create VM"}
       </button>
