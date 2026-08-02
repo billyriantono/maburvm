@@ -222,8 +222,9 @@ func (s *UserService) Login(req *LoginRequest) (*LoginResponse, error) {
 		}
 	}
 
-	// Check if 2FA is enabled
-	if user.TwoFactorSecret != "" {
+	// Check if 2FA is enabled (verified), not merely set up. An abandoned setup
+	// leaves a secret but TwoFactorEnabled=false and must not gate login.
+	if user.TwoFactorEnabled {
 		// If no TOTP code provided, return requires 2FA
 		if req.TOTPCode == "" {
 			return &LoginResponse{
@@ -314,8 +315,9 @@ func (s *UserService) Setup2FA(req *Setup2FARequest) (*Setup2FAResponse, error) 
 		return nil, fmt.Errorf("database error: %w", err)
 	}
 
-	// Check if 2FA is already enabled
-	if user.TwoFactorSecret != "" {
+	// Only a fully-enabled 2FA blocks re-setup. A dangling secret from an
+	// abandoned setup is overwritten by the fresh one below.
+	if user.TwoFactorEnabled {
 		return nil, Err2FAAlreadyEnabled
 	}
 
@@ -402,7 +404,10 @@ func (s *UserService) Verify2FASetup(req *Verify2FASetupRequest) error {
 		return ErrInvalidTOTPCode
 	}
 
-	// 2FA is now fully enabled
+	// 2FA is now fully enabled — flip the flag Login gates on.
+	if err := s.db.Model(&user).Update("two_factor_enabled", true).Error; err != nil {
+		return fmt.Errorf("failed to enable 2FA: %w", err)
+	}
 	return nil
 }
 
@@ -422,6 +427,7 @@ func (s *UserService) Disable2FA(userID uuid.UUID) error {
 
 	user.TwoFactorSecret = ""
 	user.TwoFactorBackupCodes = ""
+	user.TwoFactorEnabled = false
 	return s.db.Save(&user).Error
 }
 

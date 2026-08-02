@@ -79,15 +79,32 @@ func (fm *FirewallManager) ensureChain() error {
 		if err := fm.ipt.NewChain(FilterTable, MaburVMFirewallChain); err != nil {
 			return fmt.Errorf("failed to create chain %s: %w", MaburVMFirewallChain, err)
 		}
+	}
 
-		// Jump to our chain from INPUT for inbound rules
-		exists, err := fm.ipt.Exists(FilterTable, InputChain, "-j", MaburVMFirewallChain)
+	// Stateful accept at the TOP of the chain: return traffic for
+	// outbound-initiated connections must pass before any per-VM default-drop,
+	// otherwise enabling FORWARD filtering would break every established
+	// connection. Idempotent; inserted at position 1.
+	ctAccept := []string{"-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"}
+	if ok, err := fm.ipt.Exists(FilterTable, MaburVMFirewallChain, ctAccept...); err != nil {
+		return fmt.Errorf("failed to check conntrack accept: %w", err)
+	} else if !ok {
+		if err := fm.ipt.Insert(FilterTable, MaburVMFirewallChain, 1, ctAccept...); err != nil {
+			return fmt.Errorf("failed to add conntrack accept: %w", err)
+		}
+	}
+
+	// Reach the chain from BOTH INPUT (host-destined) and FORWARD (bridged/NATed
+	// guest traffic). VM traffic traverses FORWARD, so without this jump the
+	// per-VM rules never match. Idempotent; only inserted when absent.
+	for _, chain := range []string{InputChain, ForwardChain} {
+		exists, err := fm.ipt.Exists(FilterTable, chain, "-j", MaburVMFirewallChain)
 		if err != nil {
-			return fmt.Errorf("failed to check INPUT jump: %w", err)
+			return fmt.Errorf("failed to check %s jump: %w", chain, err)
 		}
 		if !exists {
-			if err := fm.ipt.Insert(FilterTable, InputChain, 1, "-j", MaburVMFirewallChain); err != nil {
-				return fmt.Errorf("failed to add INPUT jump: %w", err)
+			if err := fm.ipt.Insert(FilterTable, chain, 1, "-j", MaburVMFirewallChain); err != nil {
+				return fmt.Errorf("failed to add %s jump: %w", chain, err)
 			}
 		}
 	}

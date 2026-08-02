@@ -36,6 +36,7 @@ type portForwardEntry struct {
 	internalIP   string
 	internalPort int
 	protocol     string
+	sourceCIDR   string
 }
 
 // NewNATManager creates a new NATManager instance
@@ -196,7 +197,7 @@ func (nm *NATManager) RemoveNAT(vmID string, internalIP string) error {
 // externalPort: port on the host that will be forwarded
 // internalIP: IP address of the VM
 // internalPort: port on the VM to forward to
-func (nm *NATManager) AddPortForward(vmID string, externalPort int, internalIP string, internalPort int, protocol string) error {
+func (nm *NATManager) AddPortForward(vmID string, externalPort int, internalIP string, internalPort int, protocol, sourceCIDR string) error {
 	if externalPort < 1 || externalPort > 65535 {
 		return fmt.Errorf("invalid external port: %d", externalPort)
 	}
@@ -210,16 +211,9 @@ func (nm *NATManager) AddPortForward(vmID string, externalPort int, internalIP s
 	nm.mu.Lock()
 	defer nm.mu.Unlock()
 
-	// Build DNAT rule
-	// Format: -t nat -A MABURVM-NAT -p <proto> --dport <externalPort> -j DNAT --to-destination <internalIP>:<internalPort>
-	rule := []string{
-		"-p", protocol,
-		"--dport", strconv.Itoa(externalPort),
-		"-j", "DNAT",
-		"--to-destination", fmt.Sprintf("%s:%d", internalIP, internalPort),
-		"-m", "comment",
-		"--comment", fmt.Sprintf("maburvm-vm-%s-port-%d", vmID, externalPort),
-	}
+	// Build DNAT rule. When a source CIDR is set (and not "any"), restrict with
+	// -s so a "restrict to X" forward is actually enforced, not open to everyone.
+	rule := portForwardRule(vmID, externalPort, internalIP, internalPort, protocol, sourceCIDR)
 
 	exists, err := nm.ipt.Exists(NATTable, MaburVMChain, rule...)
 	if err != nil {
@@ -240,9 +234,29 @@ func (nm *NATManager) AddPortForward(vmID string, externalPort int, internalIP s
 		internalIP:   internalIP,
 		internalPort: internalPort,
 		protocol:     protocol,
+		sourceCIDR:   sourceCIDR,
 	}
 
 	return nil
+}
+
+// portForwardRule builds the DNAT rulespec, restricting the source with -s when
+// a specific CIDR is given (empty or "0.0.0.0/0" means any). The comment is
+// stable per (vm, external port) so add/delete match.
+func portForwardRule(vmID string, externalPort int, internalIP string, internalPort int, protocol, sourceCIDR string) []string {
+	rule := []string{}
+	if sourceCIDR != "" && sourceCIDR != "0.0.0.0/0" {
+		rule = append(rule, "-s", sourceCIDR)
+	}
+	rule = append(rule,
+		"-p", protocol,
+		"--dport", strconv.Itoa(externalPort),
+		"-j", "DNAT",
+		"--to-destination", fmt.Sprintf("%s:%d", internalIP, internalPort),
+		"-m", "comment",
+		"--comment", fmt.Sprintf("maburvm-vm-%s-port-%d", vmID, externalPort),
+	)
+	return rule
 }
 
 // RemovePortForward removes a port forwarding rule
@@ -280,15 +294,8 @@ func (nm *NATManager) removePortForwardInternal(vmID string, externalPort int) e
 	if proto == "" {
 		proto = "tcp"
 	}
-	// Build and delete the rule
-	rule := []string{
-		"-p", proto,
-		"--dport", strconv.Itoa(externalPort),
-		"-j", "DNAT",
-		"--to-destination", fmt.Sprintf("%s:%d", entry.internalIP, entry.internalPort),
-		"-m", "comment",
-		"--comment", fmt.Sprintf("maburvm-vm-%s-port-%d", vmID, externalPort),
-	}
+	// Build and delete the rule (must match the add rule exactly, incl. -s).
+	rule := portForwardRule(vmID, externalPort, entry.internalIP, entry.internalPort, proto, entry.sourceCIDR)
 
 	if err := nm.ipt.Delete(NATTable, MaburVMChain, rule...); err != nil {
 		if !strings.Contains(err.Error(), "No chain/target/match by that name") {

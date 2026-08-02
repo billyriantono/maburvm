@@ -29,6 +29,10 @@ type User struct {
 	// quota row. Managed quota assignment/enforcement reads this marker.
 	QuotaMode            QuotaMode `json:"quota_mode,omitempty" gorm:"column:quota_mode;type:quota_mode;not null;default:'legacy'"`
 	TwoFactorSecret      string    `json:"two_factor_secret,omitempty" gorm:"type:varchar(255)" validate:"-"`
+	// TwoFactorEnabled becomes true only after Verify2FASetup confirms a TOTP
+	// code. Login gates on THIS flag, not on TwoFactorSecret presence, so an
+	// abandoned setup (secret written, never verified) can't lock the user out.
+	TwoFactorEnabled bool `json:"two_factor_enabled" gorm:"column:two_factor_enabled;not null;default:false"`
 	TwoFactorBackupCodes string    `json:"-" gorm:"type:varchar(1000)"` // Encrypted backup codes
 	IPWhitelist          []string  `json:"ip_whitelist" gorm:"type:jsonb;serializer:json" validate:"omitempty,dive,ip"`
 	CreatedAt            time.Time `json:"created_at" gorm:"not null;default:NOW()"`

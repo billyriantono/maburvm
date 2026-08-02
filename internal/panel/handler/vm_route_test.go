@@ -35,7 +35,7 @@ func newVMRouteTestDB(t *testing.T) *gorm.DB {
 		`CREATE TABLE IF NOT EXISTS users (
 			id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', email TEXT, password_hash TEXT, role TEXT DEFAULT 'client',
 quota_mode TEXT NOT NULL DEFAULT 'legacy',
-					two_factor_secret TEXT, two_factor_backup_codes TEXT, ip_whitelist TEXT,
+					two_factor_secret TEXT, two_factor_enabled BOOLEAN NOT NULL DEFAULT 0, two_factor_backup_codes TEXT, ip_whitelist TEXT,
 			created_at DATETIME, updated_at DATETIME, token_revoked_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE IF NOT EXISTS sessions (
 			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, token TEXT NOT NULL,

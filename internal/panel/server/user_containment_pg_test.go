@@ -86,6 +86,7 @@ func pgTestDB(t *testing.T) *gorm.DB {
 		role user_role NOT NULL DEFAULT 'client',
 quota_mode TEXT NOT NULL DEFAULT 'legacy',
 				two_factor_secret VARCHAR(255),
+		two_factor_enabled BOOLEAN NOT NULL DEFAULT false,
 		two_factor_backup_codes VARCHAR(1000),
 		ip_whitelist JSONB DEFAULT '[]'::jsonb,
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

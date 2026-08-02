@@ -1713,7 +1713,7 @@ func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *pb.Netwo
 	// state and IP, so AddPortForward can resolve the internal IP. ReplaceAll above
 	// wiped any prior DNAT, so this is the authoritative desired set.
 	for _, pf := range req.Config.PortForwards {
-		if err := s.networkMgr.AddPortForward(req.VmId, int(pf.ExternalPort), int(pf.InternalPort), pf.Protocol); err != nil {
+		if err := s.networkMgr.AddPortForward(req.VmId, int(pf.ExternalPort), int(pf.InternalPort), pf.Protocol, pf.SourceCidr); err != nil {
 			log.Printf("[NodeAgent] WARNING: failed to add port forward %d->%d for VM %s: %v",
 				pf.ExternalPort, pf.InternalPort, req.VmId, err)
 		} else {

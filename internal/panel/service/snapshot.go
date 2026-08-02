@@ -355,6 +355,7 @@ func (s *SnapshotService) RestoreSnapshot(ctx context.Context, req *RestoreSnaps
 		SnapshotID: snapshot.ID,
 		Operation:  queue.SnapshotOpRestore,
 		NodeID:     vm.NodeID,
+		Name:       snapshot.Name,
 		DiskPath:   snapshot.DiskPath,
 		Params:     paramsJSON,
 	}
@@ -430,6 +431,7 @@ func (s *SnapshotService) DeleteSnapshot(ctx context.Context, req *DeleteSnapsho
 		SnapshotID: snapshot.ID,
 		Operation:  queue.SnapshotOpDelete,
 		NodeID:     vm.NodeID,
+		Name:       snapshot.Name,
 		DiskPath:   snapshot.DiskPath,
 		Params:     paramsJSON,
 	}

@@ -2216,10 +2216,19 @@ func (w *SnapshotWorker) Work(ctx context.Context, job *river.Job[SnapshotJob]) 
 		snapshotID = job.Args.SnapshotID
 	case SnapshotOpRestore:
 		operation = pb.SnapshotOperationType_SNAPSHOT_OPERATION_TYPE_RESTORE
-		snapshotID = job.Args.SnapshotID
+		// The agent looks up the libvirt snapshot by SnapshotId, but libvirt
+		// created it under the user-given Name — so send the Name (fall back to
+		// the DB id only if Name is missing on an older job).
+		snapshotID = job.Args.Name
+		if snapshotID == "" {
+			snapshotID = job.Args.SnapshotID
+		}
 	case SnapshotOpDelete:
 		operation = pb.SnapshotOperationType_SNAPSHOT_OPERATION_TYPE_DELETE
-		snapshotID = job.Args.SnapshotID
+		snapshotID = job.Args.Name
+		if snapshotID == "" {
+			snapshotID = job.Args.SnapshotID
+		}
 	default:
 		return fmt.Errorf("unsupported snapshot operation: %s", job.Args.Operation)
 	}
@@ -2278,6 +2287,20 @@ func (w *SnapshotWorker) Work(ctx context.Context, job *river.Job[SnapshotJob]) 
 				"error", err,
 				"vm_id", vm.ID,
 			)
+		}
+	}
+
+	// Persist snapshot lifecycle state. The row is created 'pending' and nothing
+	// else moves it — without this, every snapshot stays pending forever and
+	// restore (which requires 'complete') can never run.
+	if globalWorkerContext.DB != nil && job.Args.SnapshotID != "" {
+		switch job.Args.Operation {
+		case SnapshotOpCreate:
+			if err := globalWorkerContext.DB.WithContext(ctx).
+				Model(&models.Snapshot{}).Where("id = ?", job.Args.SnapshotID).
+				Update("status", models.SnapshotStatusComplete).Error; err != nil {
+				w.logger.ErrorContext(ctx, "failed to mark snapshot complete", "error", err, "snapshot_id", job.Args.SnapshotID)
+			}
 		}
 	}
 
