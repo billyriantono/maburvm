@@ -35,7 +35,7 @@ func newAuthzTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, err)
 	ddl := []string{
 		`CREATE TABLE IF NOT EXISTS users (
-			id TEXT PRIMARY KEY, email TEXT, password_hash TEXT, role TEXT DEFAULT 'client',
+			id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', email TEXT, password_hash TEXT, role TEXT DEFAULT 'client',
 quota_mode TEXT NOT NULL DEFAULT 'legacy',
 					two_factor_secret TEXT, two_factor_backup_codes TEXT, ip_whitelist TEXT,
 			created_at DATETIME, updated_at DATETIME, token_revoked_at DATETIME, deleted_at DATETIME)`,

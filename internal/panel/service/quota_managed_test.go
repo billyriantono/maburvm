@@ -22,6 +22,7 @@ import (
 const quotaManagedSchema = `
 CREATE TABLE IF NOT EXISTS users (
 	id TEXT PRIMARY KEY,
+	name TEXT NOT NULL DEFAULT '',
 	email TEXT UNIQUE NOT NULL,
 	password_hash TEXT NOT NULL,
 	role TEXT DEFAULT 'client',

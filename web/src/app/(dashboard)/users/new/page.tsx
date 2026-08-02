@@ -17,9 +17,11 @@ import {
 } from "@/components/ui/select"
 import { Checkbox } from "@/components/ui/checkbox"
 import { IPWhitelistEditor } from "@/components/ip-whitelist-editor"
+import { useCreateUser } from "@/lib/hooks/use-users"
 
 export default function NewUserPage() {
   const router = useRouter()
+  const createUser = useCreateUser()
   const [showPassword, setShowPassword] = useState(false)
   const [formData, setFormData] = useState({
     name: "",
@@ -59,13 +61,21 @@ export default function NewUserPage() {
     return Object.keys(newErrors).length === 0
   }
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-
-    if (validateForm()) {
-      // In production, send to API
-      console.log("Creating user:", formData)
+    if (!validateForm()) return
+    try {
+      await createUser.mutateAsync({
+        name: formData.name,
+        email: formData.email,
+        password: formData.password,
+        role: formData.role,
+        ip_whitelist: formData.ipWhitelist,
+        send_welcome_email: formData.sendWelcomeEmail,
+      })
       router.push("/users")
+    } catch (err) {
+      setErrors({ submit: (err as Error).message || "Failed to create user" })
     }
   }
 
@@ -252,15 +262,18 @@ export default function NewUserPage() {
           </Card>
 
           {/* Actions */}
+          {errors.submit && (
+            <p className="text-sm font-bold text-danger text-right">{errors.submit}</p>
+          )}
           <div className="flex items-center justify-end gap-4">
             <Link href="/users">
               <Button variant="outline" type="button">
                 Cancel
               </Button>
             </Link>
-            <Button type="submit">
+            <Button type="submit" disabled={createUser.isPending}>
               <Save className="w-4 h-4 mr-2" />
-              Create User
+              {createUser.isPending ? "Creating..." : "Create User"}
             </Button>
           </div>
         </div>

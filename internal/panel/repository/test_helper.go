@@ -28,7 +28,7 @@ func SetupTestDB() (*gorm.DB, error) {
 	createTables := []string{
 		`CREATE TABLE IF NOT EXISTS users (
 			id TEXT PRIMARY KEY,
-			email TEXT UNIQUE NOT NULL,
+			name TEXT NOT NULL DEFAULT '', email TEXT UNIQUE NOT NULL,
 			password_hash TEXT NOT NULL,
 			role TEXT DEFAULT 'client',
 quota_mode TEXT NOT NULL DEFAULT 'legacy',

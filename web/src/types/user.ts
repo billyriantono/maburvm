@@ -40,10 +40,12 @@ export interface LoginResponse {
 
 // CreateUserRequest for creating new users
 export interface CreateUserRequest {
+  name?: string;
   email: string;
   password: string;
   role?: UserRole;
   ip_whitelist?: string[];
+  send_welcome_email?: boolean;
 }
 
 // UpdateUserRequest for updating users

@@ -687,10 +687,12 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 
 	users.POST("", func(c echo.Context) error {
 		var req struct {
-			Email       string          `json:"email"`
-			Password    string          `json:"password"`
-			Role        models.UserRole `json:"role"`
-			IPWhitelist []string        `json:"ip_whitelist"`
+			Name             string          `json:"name"`
+			Email            string          `json:"email"`
+			Password         string          `json:"password"`
+			Role             models.UserRole `json:"role"`
+			IPWhitelist      []string        `json:"ip_whitelist"`
+			SendWelcomeEmail bool            `json:"send_welcome_email"`
 		}
 		if err := c.Bind(&req); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request body"})
@@ -730,6 +732,7 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 				return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "hash failed"})
 			}
 			client := models.User{
+				Name:         req.Name,
 				Email:        req.Email,
 				PasswordHash: string(hash),
 				Role:         models.RoleClient,
@@ -737,6 +740,16 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 			}
 			if err := repo.Create(ctx, &client); err != nil {
 				return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "failed to create user"})
+			}
+			// Best-effort welcome email (never fails the creation).
+			if req.SendWelcomeEmail {
+				if cfg, ok, serr := service.LoadSMTPSettings(s.db); serr == nil && ok {
+					if werr := service.SendWelcomeEmail(cfg, client.Email, client.Name, os.Getenv("PANEL_PUBLIC_URL")); werr != nil {
+						slog.Default().Warn("welcome email failed", "email", client.Email, "error", werr)
+					}
+				} else {
+					slog.Default().Warn("welcome email skipped: SMTP not configured", "email", client.Email)
+				}
 			}
 			return c.JSON(http.StatusCreated, map[string]interface{}{"data": client})
 		}
@@ -768,6 +781,7 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 				return fmt.Errorf("hash: %w", err)
 			}
 			created = models.User{
+				Name:         req.Name,
 				Email:        req.Email,
 				PasswordHash: string(hash),
 				Role:         models.RoleAdmin,

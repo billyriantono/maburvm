@@ -60,7 +60,7 @@ func (s *EnrollmentTestSuite) SetupTest() {
 		// Minimal users table: registration_invites/reset FK target.
 		`CREATE TABLE IF NOT EXISTS users (
 			id TEXT PRIMARY KEY,
-			email TEXT UNIQUE NOT NULL,
+			name TEXT NOT NULL DEFAULT '', email TEXT UNIQUE NOT NULL,
 			password_hash TEXT NOT NULL,
 			role TEXT DEFAULT 'client',
 quota_mode TEXT NOT NULL DEFAULT 'legacy',

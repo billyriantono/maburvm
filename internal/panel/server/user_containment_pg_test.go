@@ -81,7 +81,7 @@ func pgTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, gdb.Exec(`CREATE TYPE user_role AS ENUM ('admin', 'client')`).Error)
 	require.NoError(t, gdb.Exec(`CREATE TABLE users (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-		email VARCHAR(255) NOT NULL UNIQUE,
+		name TEXT NOT NULL DEFAULT '', email VARCHAR(255) NOT NULL UNIQUE,
 		password_hash VARCHAR(255) NOT NULL,
 		role user_role NOT NULL DEFAULT 'client',
 quota_mode TEXT NOT NULL DEFAULT 'legacy',
