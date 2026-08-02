@@ -1148,6 +1148,12 @@ func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreJob]) er
 	return nil
 }
 
+// Timeout overrides River's 1-minute default: a disk export + object-storage
+// upload of a multi-GB image routinely exceeds a minute, and letting the job ctx
+// cancel mid-transfer both fails the backup and orphans the qemu-img process
+// (which then holds the disk lock and blocks retries).
+func (w *RestoreWorker) Timeout(*river.Job[RestoreJob]) time.Duration { return 60 * time.Minute }
+
 // BackupWorker handles VM backup operations
 // Queue: batch (10 workers)
 type BackupWorker struct {
@@ -1170,6 +1176,11 @@ func NewBackupWorker(logger *slog.Logger) *BackupWorker {
 
 	return w
 }
+
+// Timeout overrides River's 1-minute default for the same reason as
+// RestoreWorker: a disk export + upload of a multi-GB image exceeds a minute and
+// must not be cancelled mid-transfer (which orphans qemu-img and locks the disk).
+func (w *BackupWorker) Timeout(*river.Job[BackupJob]) time.Duration { return 60 * time.Minute }
 
 // Work implements the backup job handler
 func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) error {
