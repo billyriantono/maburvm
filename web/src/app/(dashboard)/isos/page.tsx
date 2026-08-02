@@ -442,7 +442,7 @@ export default function ISOListPage() {
               <div className="col-span-2">
                 <div className="flex items-center gap-2">
                   <HardDrive className="w-4 h-4 text-gray-600" />
-                  <span className="font-mono text-sm font-bold">-</span>
+                  <span className="font-mono text-sm font-bold">{iso.size_bytes ? formatBytes(iso.size_bytes) : "-"}</span>
                 </div>
               </div>
               

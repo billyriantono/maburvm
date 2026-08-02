@@ -222,7 +222,9 @@ export default function SystemSettingsPage() {
 
   const handleTestEmail = async () => {
     const v = emailForm.getValues()
-    setIsSaving("email")
+    // NOTE: do NOT touch isSaving here — that state drives the "Save Settings"
+    // button's "Saving..." label, which made a test send look like a save.
+    // testEmail.isPending drives the Test Email button's own spinner instead.
     try {
       const res = await testEmail.mutateAsync({
         smtpHost: v.smtpHost,
@@ -235,8 +237,6 @@ export default function SystemSettingsPage() {
       toast.success("Test email sent", { description: res.message })
     } catch (err) {
       toast.error("Test send failed", { description: (err as Error).message })
-    } finally {
-      setIsSaving(null)
     }
   }
 
@@ -896,9 +896,19 @@ export default function SystemSettingsPage() {
                       type="button"
                       variant="secondary"
                       onClick={handleTestEmail}
+                      disabled={testEmail.isPending}
                     >
-                      <Mail className="w-4 h-4 mr-2" />
-                      Test Email
+                      {testEmail.isPending ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Sending...
+                        </>
+                      ) : (
+                        <>
+                          <Mail className="w-4 h-4 mr-2" />
+                          Test Email
+                        </>
+                      )}
                     </Button>
                   </div>
                   <Button type="submit" disabled={isSaving === "email"}>

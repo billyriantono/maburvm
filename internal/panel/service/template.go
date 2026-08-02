@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -170,6 +171,30 @@ func (s *TemplateService) calculateChecksum(fileURL string) (string, error) {
 }
 
 // CreateTemplate creates a new template with checksum verification
+// fetchRemoteSize best-effort resolves a template image's download size via an
+// HTTP HEAD (Content-Length). Returns 0 if it can't be determined — it never
+// blocks template creation on the result.
+func (s *TemplateService) fetchRemoteSize(ctx context.Context, url string) int64 {
+	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+		return 0
+	}
+	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(cctx, http.MethodHead, url, nil)
+	if err != nil {
+		return 0
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 400 || resp.ContentLength < 0 {
+		return 0
+	}
+	return resp.ContentLength
+}
+
 func (s *TemplateService) CreateTemplate(ctx context.Context, req *CreateTemplateRequest) (*CreateTemplateResponse, error) {
 	// Check if template with same name/version already exists
 	exists, err := s.templateRepo.NameAndVersionExists(ctx, req.Name, req.Version)
@@ -188,6 +213,7 @@ func (s *TemplateService) CreateTemplate(ctx context.Context, req *CreateTemplat
 		Name:        req.Name,
 		Version:     req.Version,
 		ImagePath:   req.FileURL,
+		SizeBytes:   s.fetchRemoteSize(ctx, req.FileURL),
 		Description: req.Description,
 		IsActive:    true,
 	}

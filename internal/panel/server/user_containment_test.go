@@ -153,10 +153,9 @@ func clientUser(email string) *models.User {
 	return &models.User{Email: email, Role: models.RoleClient}
 }
 
-// TestUserRoutes_DirectClientCreateRejected verifies that creating a client via
-// the legacy direct user API is rejected (invite-only) rather than silently
-// creating a client.
-func TestUserRoutes_DirectClientCreateRejected(t *testing.T) {
+// TestUserRoutes_AdminCanCreateClient verifies an authenticated admin can
+// directly provision a client account from the panel's Add User page.
+func TestUserRoutes_AdminCanCreateClient(t *testing.T) {
 	founding := adminUser("founding@example.com")
 	db := setupUserContainmentDB(t, founding)
 	s := newUserServer(t, db)
@@ -167,14 +166,9 @@ func TestUserRoutes_DirectClientCreateRejected(t *testing.T) {
 	rec := doUserReq(t, s, http.MethodPost, "/api/v1/users", tok,
 		`{"email":"newclient@example.com","password":"Sup3rSecret!","role":"client"}`)
 
-	assert.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
-	var body map[string]string
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
-	assert.Equal(t, "invitation_only_unavailable", body["error"])
-
-	// No client should have been created.
+	assert.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
 	after := countUsersByRole(t, db, models.RoleClient)
-	assert.Equal(t, before, after, "a client must not be created")
+	assert.Equal(t, before+1, after, "an admin must be able to create a client")
 }
 
 // TestUserRoutes_FoundingAdminCanCreateAdmin verifies the founding admin can
@@ -219,9 +213,10 @@ func TestUserRoutes_PeerAdminCannotCreateAdmin(t *testing.T) {
 	assert.Equal(t, before, after, "peer admin must not create an admin")
 }
 
-// TestUserRoutes_PeerAdminCannotCreateClient verifies a peer admin also cannot
-// directly create a client (still invite-only for everyone).
-func TestUserRoutes_PeerAdminCannotCreateClient(t *testing.T) {
+// TestUserRoutes_PeerAdminCanCreateClient verifies an ordinary (non-founding)
+// admin can also create a client directly — client provisioning is available to
+// any admin, unlike admin creation which is restricted to the founding admin.
+func TestUserRoutes_PeerAdminCanCreateClient(t *testing.T) {
 	founding := adminUser("founding@example.com")
 	peer := adminUser("peer@example.com")
 	db := setupUserContainmentDB(t, founding, peer)
@@ -233,9 +228,9 @@ func TestUserRoutes_PeerAdminCannotCreateClient(t *testing.T) {
 	rec := doUserReq(t, s, http.MethodPost, "/api/v1/users", tok,
 		`{"email":"c@example.com","password":"Sup3rSecret!","role":"client"}`)
 
-	assert.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	assert.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
 	after := countUsersByRole(t, db, models.RoleClient)
-	assert.Equal(t, before, after)
+	assert.Equal(t, before+1, after)
 }
 
 // TestUserRoutes_FoundingAdminCanPromoteAdmin verifies the founding admin can

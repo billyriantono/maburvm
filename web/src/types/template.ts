@@ -4,6 +4,7 @@ export interface OSTemplate {
   name: string;
   version: string;
   image_path: string;
+  size_bytes?: number;
   is_active: boolean;
   description?: string;
   created_at: string;

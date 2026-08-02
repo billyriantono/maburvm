@@ -710,14 +710,35 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 
 		ctx := c.Request().Context()
 
-		// Invitations are client-only. Secure v1 enrollment is invite-only and is
-		// not yet activated, so direct creation of a client via the legacy user
-		// API is rejected rather than silently creating one. This prevents
-		// bypassing the gated enrollment flow.
+		// Admin-initiated direct creation of a CLIENT account. The public
+		// invite-only self-enrollment flow (Phase 1B) is a separate path; an
+		// authenticated admin holding user:create may provision a client directly
+		// from the panel's "Add New User" page.
 		if req.Role == models.RoleClient {
-			return c.JSON(http.StatusForbidden, map[string]interface{}{
-				"error": "invitation_only_unavailable",
-			})
+			adminCaller, ok := panelMiddleware.GetUserContext(c)
+			if !ok || adminCaller.Role != models.RoleAdmin {
+				return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "Insufficient permissions"})
+			}
+			repo := repository.NewUserRepository(s.db)
+			if exists, err := repo.EmailExists(ctx, req.Email); err != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "email check failed"})
+			} else if exists {
+				return c.JSON(http.StatusConflict, map[string]interface{}{"error": "email_exists"})
+			}
+			hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+			if err != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "hash failed"})
+			}
+			client := models.User{
+				Email:        req.Email,
+				PasswordHash: string(hash),
+				Role:         models.RoleClient,
+				IPWhitelist:  req.IPWhitelist,
+			}
+			if err := repo.Create(ctx, &client); err != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "failed to create user"})
+			}
+			return c.JSON(http.StatusCreated, map[string]interface{}{"data": client})
 		}
 
 		// Creating an admin is an interim exception restricted to the founding
