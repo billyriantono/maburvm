@@ -147,7 +147,13 @@ mc ls "${APP_ALIAS}/${BUCKET}"
 # initializer must exit nonzero (not merely warn) so verification is not masked.
 # Best-effort cleanup is still attempted, but the failure is not swallowed.
 _PROBE="maburvm-init-probe-$$"
-if mc cp /dev/null "${APP_ALIAS}/${BUCKET}/${_PROBE}" >/dev/null 2>&1; then
+# Write from a real temp file, not /dev/null: newer mc rejects `/dev/null` as a
+# copy source ("Invalid source /dev/null"), which would fail the probe even
+# though the restricted user has full write access.
+_PROBEFILE="/tmp/${_PROBE}"
+printf 'probe' > "${_PROBEFILE}"
+if mc cp "${_PROBEFILE}" "${APP_ALIAS}/${BUCKET}/${_PROBE}" >/dev/null 2>&1; then
+  rm -f "${_PROBEFILE}"
   if mc rm "${APP_ALIAS}/${BUCKET}/${_PROBE}" >/dev/null 2>&1; then
     echo "minio-init: restricted write/delete probe OK"
   else
