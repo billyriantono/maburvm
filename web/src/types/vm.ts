@@ -96,6 +96,7 @@ export interface CreateVMRequest {
 export interface UpdateVMRequest {
   hostname?: string;
   resources?: Partial<Resources>;
+  user_id?: string;
 }
 
 // VMStartRequest for starting a VM

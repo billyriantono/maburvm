@@ -34,6 +34,8 @@ import (
 var (
 	// ErrVMNotFound is returned when a VM is not found
 	ErrVMNotFound = errors.New("VM not found")
+	// ErrTargetUserNotFound is returned when reassigning a VM to a nonexistent user.
+	ErrTargetUserNotFound = errors.New("target user not found")
 	// ErrNoAvailableNodes is returned when no active nodes are available
 	ErrNoAvailableNodes = errors.New("no available nodes for VM placement")
 	// ErrInvalidResources is returned when resource requirements are invalid
@@ -1171,6 +1173,9 @@ type UpdateVMRequest struct {
 	VMID      string            `json:"vm_id" validate:"required,uuid"`
 	Hostname  string            `json:"hostname,omitempty" validate:"omitempty,max=100"`
 	Resources *models.Resources `json:"resources,omitempty" validate:"omitempty"`
+	// UserID, when set, reassigns VM ownership to another user (admin-only;
+	// enforced at the handler). Empty leaves ownership unchanged.
+	UserID string `json:"user_id,omitempty" validate:"omitempty,uuid"`
 }
 
 // UpdateVM updates VM hostname and/or resources
@@ -1198,6 +1203,20 @@ func (s *VMService) UpdateVM(ctx context.Context, req *UpdateVMRequest) (*models
 			return nil, ErrHostnameExists
 		}
 		vm.Hostname = req.Hostname
+	}
+
+	// Owner reassignment (admin-only; enforced at the handler). Validate the
+	// target user exists before transferring ownership. Persisted by whichever
+	// update path runs below (both write the full VM row).
+	if req.UserID != "" && req.UserID != vm.UserID {
+		var cnt int64
+		if err := s.db.WithContext(ctx).Model(&models.User{}).Where("id = ?", req.UserID).Count(&cnt).Error; err != nil {
+			return nil, fmt.Errorf("failed to validate target user: %w", err)
+		}
+		if cnt == 0 {
+			return nil, ErrTargetUserNotFound
+		}
+		vm.UserID = req.UserID
 	}
 
 	// Resource change → Lane D admission + persistence in one transaction.

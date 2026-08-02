@@ -4,6 +4,7 @@ export type UserRole = 'admin' | 'client';
 // User represents a user in the system
 export interface User {
   id: string;
+  name?: string;
   email: string;
   role: UserRole;
   two_factor_secret?: string;

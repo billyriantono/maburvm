@@ -7,14 +7,15 @@ import {
   Play, Square, RotateCcw, Trash2, RefreshCw, ArrowLeft,
   Copy, Check, Cpu, HardDrive,
   Monitor, MonitorOff, KeyRound, Server, Network, Database, Shield, FileText, Terminal, Activity, ExternalLink,
-  Loader2, AlertCircle, Plus, Disc, CircleSlash, LifeBuoy, ArrowRightLeft
+  Loader2, AlertCircle, Plus, Disc, CircleSlash, LifeBuoy, ArrowRightLeft, User
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { useVM, useVMMetrics, useVMMetricsHistory, useVMAction, useDeleteVM, useAttachISO, useDetachISO, useRescueVM, useUnrescueVM, useMigrateVM, useRegenerateVNCPassword, useSetConsoleEnabled, useRebuildVM, useResetPassword, useCloneVM } from "@/lib/hooks/use-vms"
+import { useVM, useVMMetrics, useVMMetricsHistory, useVMAction, useDeleteVM, useAttachISO, useDetachISO, useRescueVM, useUnrescueVM, useMigrateVM, useRegenerateVNCPassword, useSetConsoleEnabled, useRebuildVM, useResetPassword, useCloneVM, useUpdateVM } from "@/lib/hooks/use-vms"
+import { useUsers } from "@/lib/hooks/use-users"
 import { useSSHKeys } from "@/lib/hooks/use-ssh-keys"
 import { useNodes } from "@/lib/hooks/use-nodes"
 import { Sparkline } from "@/components/ui/sparkline"
@@ -464,6 +465,22 @@ export default function VMDetailPage() {
   const cloneVM = useCloneVM(vmId)
   const { data: sshKeys } = useSSHKeys()
   const { data: allNodes } = useNodes()
+  const { data: usersData } = useUsers({ pageSize: 200 })
+  const updateVM = useUpdateVM(vmId)
+  const [reassignOpen, setReassignOpen] = useState(false)
+  const [reassignUserId, setReassignUserId] = useState("")
+  const handleReassign = useCallback(async () => {
+    if (!reassignUserId) return
+    try {
+      await updateVM.mutateAsync({ user_id: reassignUserId })
+      setReassignOpen(false)
+      setReassignUserId("")
+      setToast({ message: "VM owner reassigned", type: "success" })
+      refetchVM()
+    } catch (err) {
+      setToast({ message: `Reassign failed: ${(err as Error).message}`, type: "error" })
+    }
+  }, [updateVM, reassignUserId, refetchVM])
   const { data: snapshots, isLoading: snapshotsLoading, error: snapshotsError, refetch: refetchSnapshots } = useSnapshots(vmId)
   const createSnapshot = useCreateSnapshot(vmId)
   const restoreSnapshot = useRestoreSnapshot(vmId)
@@ -1002,6 +1019,42 @@ export default function VMDetailPage() {
                   <Button variant="ghost" onClick={() => setMigrateOpen(false)}>Cancel</Button>
                   <Button onClick={handleMigrate} disabled={migrateVM.isPending || !migrateNodeId}>
                     {migrateVM.isPending ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Migrating…</> : <><ArrowRightLeft className="w-4 h-4 mr-2" />Migrate</>}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+
+            {/* Reassign owner (admin) */}
+            <Dialog open={reassignOpen} onOpenChange={setReassignOpen}>
+              <DialogTrigger asChild>
+                <Button variant="secondary" size="sm"><User className="w-4 h-4" />Reassign</Button>
+              </DialogTrigger>
+              <DialogContent className="max-w-md border-4 border-black shadow-neo-xl">
+                <DialogHeader>
+                  <DialogTitle className="text-lg font-black uppercase">Reassign Owner</DialogTitle>
+                  <DialogDescription className="text-sm text-gray-600">
+                    Transfer this VM to another user account.
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4 py-4">
+                  <div>
+                    <span className="text-xs font-bold uppercase text-gray-600 mb-2 block">New Owner</span>
+                    <select
+                      value={reassignUserId}
+                      onChange={(e) => setReassignUserId(e.target.value)}
+                      className="w-full h-12 px-3 border-2 border-black font-medium bg-white"
+                    >
+                      <option value="">Select a user…</option>
+                      {usersData?.data?.filter((u) => u.id !== vm.user_id).map((u) => (
+                        <option key={u.id} value={u.id}>{u.name ? `${u.name} (${u.email})` : u.email}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <DialogFooter>
+                  <Button variant="ghost" onClick={() => setReassignOpen(false)}>Cancel</Button>
+                  <Button onClick={handleReassign} disabled={updateVM.isPending || !reassignUserId}>
+                    {updateVM.isPending ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Reassigning…</> : <><User className="w-4 h-4 mr-2" />Reassign</>}
                   </Button>
                 </DialogFooter>
               </DialogContent>

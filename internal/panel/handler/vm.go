@@ -621,6 +621,7 @@ func (h *VMHandler) GetVM(c echo.Context) error {
 type UpdateVMRequest struct {
 	Hostname  string            `json:"hostname,omitempty"`
 	Resources *models.Resources `json:"resources,omitempty"`
+	UserID    string            `json:"user_id,omitempty"`
 }
 
 // UpdateVM handles PUT /api/vms/:id - Update VM hostname and resources
@@ -655,6 +656,16 @@ func (h *VMHandler) UpdateVM(c echo.Context) error {
 	if req.Resources != nil {
 		updateReq.Resources = req.Resources
 	}
+	if req.UserID != "" {
+		// Owner reassignment is admin-only.
+		userCtx, ok := c.Get("user").(*middleware.UserContext)
+		if !ok || userCtx.Role != models.RoleAdmin {
+			return c.JSON(http.StatusForbidden, map[string]interface{}{
+				"error": "Forbidden", "message": "Only admins can reassign VM ownership",
+			})
+		}
+		updateReq.UserID = req.UserID
+	}
 
 	// Update VM
 	vm, err := h.service.UpdateVM(c.Request().Context(), updateReq)
@@ -669,6 +680,11 @@ func (h *VMHandler) UpdateVM(c echo.Context) error {
 			return c.JSON(http.StatusConflict, map[string]interface{}{
 				"error":   "Conflict",
 				"message": "Hostname already exists",
+			})
+		case errors.Is(err, service.ErrTargetUserNotFound):
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{
+				"error":   "Bad Request",
+				"message": "Target user not found",
 			})
 		case errors.Is(err, service.ErrVMCannotBeModified):
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{
