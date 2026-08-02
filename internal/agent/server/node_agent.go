@@ -1086,15 +1086,22 @@ func (s *NodeAgentService) DetachDisk(ctx context.Context, req *pb.DetachDiskReq
 		return detachDiskErr("vm_id and device are required"), nil
 	}
 	if err := libvirt.DetachDisk(req.VmId, req.Device, req.Path); err != nil {
-		return detachDiskErr(err.Error()), nil
+		// Idempotency: if the device is already gone from the domain, a prior
+		// DetachDisk already detached it (e.g. a retry after a delete-volume
+		// failure). Treat that as detached and fall through to volume deletion so
+		// the operation is retry-safe instead of getting stuck.
+		msg := strings.ToLower(err.Error())
+		if !strings.Contains(msg, "device not found") && !strings.Contains(msg, "no target device") {
+			return detachDiskErr(err.Error()), nil
+		}
+		log.Printf("[NodeAgent] DetachDisk: device %s already absent on VM %s; treating as detached", req.Device, req.VmId)
 	}
 	if req.DeleteVolume && req.Path != "" {
 		if err := storage.NewVolumeManager().DeleteVolume(req.PoolType, req.Path); err != nil {
-			// Disk is already detached from the domain but its backing volume could
-			// not be removed: report failure so the leak surfaces instead of being
-			// silently swallowed. ponytail: a retry re-runs libvirt.DetachDisk, which
-			// errors once the device is already gone; make volume cleanup idempotent
-			// (or split detach vs. delete into separate RPCs) if retry-after-leak matters.
+			// Disk is detached from the domain but its backing volume could not be
+			// removed: report failure so the leak surfaces instead of being silently
+			// swallowed. The detach above is now idempotent, so retrying this call
+			// after the underlying cause is cleared completes the deletion.
 			return detachDiskErr(fmt.Sprintf("detached %s but failed to delete volume %s: %v", req.Device, req.Path, err)), nil
 		}
 	}
