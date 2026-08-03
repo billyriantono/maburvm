@@ -1,8 +1,7 @@
 "use client"
 
 import { useState, useCallback, useRef } from "react"
-import Link from "next/link"
-import { 
+import {
   Plus, 
   Search,
   Download,
@@ -12,7 +11,6 @@ import {
   Disc,
   HardDrive,
   Play,
-  AlertCircle,
   Upload,
   Globe
 } from "lucide-react"
@@ -30,18 +28,7 @@ function formatBytes(bytes: number): string {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
 }
 
-function formatDate(dateString: string): string {
-  const date = new Date(dateString)
-  return date.toLocaleDateString("en-US", { 
-    year: "numeric", 
-    month: "short", 
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  })
-}
-
-function ConfirmDialog({ 
+function ConfirmDialog({
   open, 
   title, 
   message, 
@@ -262,7 +249,7 @@ function UploadDialog({
   )
 }
 
-function Toast({ message, type, onClose }: { message: string, type: "success" | "error", onClose: () => void }) {
+function Toast({ message, type }: { message: string, type: "success" | "error", onClose: () => void }) {
   return (
     <div className={`fixed bottom-4 right-4 z-50 rounded-md border px-6 py-4 shadow-md ${
       type === "success" ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900" : "bg-destructive text-destructive-foreground border-destructive"

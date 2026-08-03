@@ -8,7 +8,6 @@ import {
   HardDrive, 
   Folder,
   Box,
-  Settings,
   Users,
   Activity,
   Zap,
@@ -53,10 +52,9 @@ interface SidebarProps {
   user: User
 }
 
-export function Sidebar({ user }: SidebarProps) {
+export function Sidebar({}: SidebarProps) {
   const pathname = usePathname()
-  const isSettingsActive = pathname.startsWith("/settings")
-  
+
   return (
     <aside className="fixed left-0 top-0 z-50 h-screen w-64 bg-card border-r overflow-hidden">
       {/* Logo */}

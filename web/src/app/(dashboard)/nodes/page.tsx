@@ -10,14 +10,7 @@ import {
   Trash2,
   Loader2,
   Activity,
-  HardDrive,
-  Cpu,
-  Network,
-  AlertTriangle,
-  CheckCircle,
-  XCircle,
-  Database,
-  MemoryStick
+  AlertTriangle
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"

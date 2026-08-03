@@ -2,9 +2,7 @@
 
 import { useState, useEffect } from "react"
 import Link from "next/link"
-import { useRouter } from "next/navigation"
 import {
-  Server,
   ArrowLeft,
   Plus,
   Loader2,
@@ -40,7 +38,6 @@ function Toast({ message, type, onClose }: { message: string, type: "success" | 
 
 
 export default function AddNodePage() {
-  const router = useRouter()
   const createNode = useCreateNode()
 
   // Form state

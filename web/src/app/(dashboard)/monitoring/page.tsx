@@ -1,19 +1,15 @@
 'use client'
 
 import { useState, useEffect, useMemo } from "react"
-import { 
-  Activity, 
-  AlertTriangle, 
-  CheckCircle, 
-  Clock, 
-  Info, 
-  Server, 
-  Cpu, 
-  HardDrive,
+import {
+  Activity,
+  AlertTriangle,
+  CheckCircle,
+  Info,
+  Server,
   Network,
   Database,
   Zap,
-  Loader2,
   AlertCircle
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -37,16 +33,6 @@ interface DerivedAlert {
 }
 
 // Helper functions
-function formatUptime(seconds: number): string {
-  const days = Math.floor(seconds / 86400)
-  const hours = Math.floor((seconds % 86400) / 3600)
-  const minutes = Math.floor((seconds % 3600) / 60)
-  
-  if (days > 0) return `${days}d ${hours}h`
-  if (hours > 0) return `${hours}h ${minutes}m`
-  return `${minutes}m`
-}
-
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B"
   const k = 1024
@@ -201,8 +187,7 @@ function NodeMetricsCard({ node }: { node: Node }) {
 // Derive alerts from node states
 function deriveAlerts(nodes: Node[], metricsMap: Map<string, NodeMetricsType>): DerivedAlert[] {
   const alerts: DerivedAlert[] = []
-  const now = new Date().toISOString()
-  
+
   for (const node of nodes) {
     if (node.status === "offline") {
       alerts.push({

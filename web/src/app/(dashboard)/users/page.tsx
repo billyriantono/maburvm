@@ -3,16 +3,10 @@
 import { useState, useMemo, useEffect, useCallback } from "react"
 import Link from "next/link"
 import { 
-  UserPlus, 
-  Search, 
-  MoreHorizontal, 
-  Shield, 
-  ShieldOff,
-  Mail,
-  Edit,
+  UserPlus,
+  Search,
+  Shield,
   Trash2,
-  RotateCcw,
-  Eye,
   CheckCircle,
   XCircle,
   Loader2,

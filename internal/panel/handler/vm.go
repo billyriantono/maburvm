@@ -14,6 +14,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/maburvm/panel/internal/panel/authz"
 	"github.com/maburvm/panel/internal/panel/middleware"
+	"github.com/maburvm/panel/internal/panel/repository"
 	"github.com/maburvm/panel/internal/panel/service"
 	"github.com/maburvm/panel/internal/panel/vnc"
 	"github.com/maburvm/panel/internal/shared/models"
@@ -28,6 +29,10 @@ type VMHandler struct {
 	sshKeyService *service.SSHKeyService
 	recipeService *service.RecipeService
 	authz         *authz.Authorizer
+	// audit records VM lifecycle actions to audit_logs. Set by RegisterVMRoutes
+	// (which has the db handle). May be nil in tests/constructors that don't wire
+	// it; logVMActivity is a no-op in that case.
+	audit *repository.AuditRepository
 }
 
 // NewVMHandler creates a new VMHandler instance
@@ -359,6 +364,10 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 	if resp.VM.VNCPort != nil {
 		response.VNCPort = *resp.VM.VNCPort
 	}
+
+	h.logVMActivity(c, resp.VM.ID, "vm.create", map[string]any{
+		"hostname": resp.VM.Hostname,
+	})
 
 	return c.JSON(http.StatusCreated, map[string]interface{}{
 		"message": "VM created successfully",
@@ -774,6 +783,8 @@ func (h *VMHandler) DeleteVM(c echo.Context) error {
 		}
 	}
 
+	h.logVMActivity(c, id, "vm.delete", nil)
+
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "VM deletion initiated",
 	})
@@ -875,6 +886,10 @@ func (h *VMHandler) handleLifecycleCommand(c echo.Context, command service.Lifec
 			})
 		}
 	}
+
+	h.logVMActivity(c, id, "vm."+string(command), map[string]any{
+		"new_state": resp.NewState,
+	})
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "Lifecycle command executed",
@@ -982,6 +997,8 @@ func (h *VMHandler) RebuildVM(c echo.Context) error {
 			})
 		}
 	}
+
+	h.logVMActivity(c, id, "vm.rebuild", nil)
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "VM rebuild initiated",
@@ -1450,6 +1467,12 @@ func (h *VMHandler) MigrateVM(c echo.Context) error {
 
 // RegisterVMRoutes registers all VM routes with the Echo router
 func RegisterVMRoutes(e *echo.Echo, handler *VMHandler, db *gorm.DB) {
+	// Wire the audit repo so lifecycle actions are recorded to audit_logs and the
+	// activity endpoint can read them back.
+	if handler.audit == nil {
+		handler.audit = repository.NewAuditRepository(db)
+	}
+
 	// Create VM routes group
 	vms := e.Group("/api/v1/vms")
 
@@ -1515,6 +1538,9 @@ func RegisterVMRoutes(e *echo.Echo, handler *VMHandler, db *gorm.DB) {
 	// VM metrics - require vm:read
 	vms.GET("/:id/metrics", handler.GetVMMetrics)
 	vms.GET("/:id/operation", handler.GetVMOperation)
+
+	// VM activity log (audit_logs for this VM) - require vm:read
+	vms.GET("/:id/activity", handler.GetVMActivity)
 
 	// Console token operations - require vm:console
 	consoleToken := vms.Group("/:id/console")

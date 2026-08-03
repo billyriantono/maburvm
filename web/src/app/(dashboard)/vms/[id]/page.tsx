@@ -5,7 +5,7 @@ import { useParams, useRouter } from "next/navigation"
 import Link from "next/link"
 import { 
   Play, Square, RotateCcw, Trash2, RefreshCw, ArrowLeft,
-  Copy, Check, Cpu, HardDrive,
+  Copy, Check, HardDrive,
   Monitor, MonitorOff, KeyRound, Server, Network, Database, Shield, FileText, Terminal, Activity, ExternalLink,
   Loader2, AlertCircle, Plus, Disc, CircleSlash, LifeBuoy, ArrowRightLeft, User
 } from "lucide-react"
@@ -21,11 +21,12 @@ import { useNodes } from "@/lib/hooks/use-nodes"
 import { Sparkline } from "@/components/ui/sparkline"
 import { useSnapshots, useCreateSnapshot, useRestoreSnapshot, useDeleteSnapshot } from "@/lib/hooks/use-snapshots"
 import { useBackups, useCreateBackup, useDeleteBackup } from "@/lib/hooks/use-backups"
-import { useFirewallRules, useDeleteFirewallRule, useVMNetworks, useSetVMBandwidth } from "@/lib/hooks/use-networks"
+import { useFirewallRules, useDeleteFirewallRule, useCreateFirewallRule, useVMNetworks, useSetVMBandwidth } from "@/lib/hooks/use-networks"
 import type { Network as NetworkIface } from "@/types"
 import { useTemplates } from "@/lib/hooks/use-templates"
 import { useVMBandwidth, useSetBandwidthQuota } from "@/lib/hooks/use-bandwidth"
 import { useVMDisks, useAttachDisk, useDetachDisk } from "@/lib/hooks/use-disks"
+import { useVMActivity } from "@/lib/hooks/use-audit-logs"
 import { VNCConsole } from "@/components/vnc-console"
 import type { VMStatus, Snapshot, Backup, FirewallRule } from "@/types"
 
@@ -447,6 +448,7 @@ export default function VMDetailPage() {
       return s && ["creating", "deleting"].includes(s) ? 3000 : false
     },
   } as Parameters<typeof useVM>[1])
+  const { data: activity, isLoading: activityLoading } = useVMActivity(vmId)
   const { data: metrics } = useVMMetrics(vmId)
   const { data: vmHistory } = useVMMetricsHistory(vmId, 60)
   const cpuTrend = (vmHistory ?? []).map((s) => s.cpu_usage)
@@ -649,6 +651,28 @@ export default function VMDetailPage() {
     }
   }, [deleteBackupMutation, refetchBackups])
 
+  const createFirewallRule = useCreateFirewallRule(vmId)
+  const [fwOpen, setFwOpen] = useState(false)
+  const [fwForm, setFwForm] = useState({ protocol: "tcp", port_range: "", action: "allow", direction: "inbound", source_ip: "", priority: 100 })
+  const handleAddFirewallRule = useCallback(async () => {
+    try {
+      await createFirewallRule.mutateAsync({
+        vm_id: vmId,
+        protocol: fwForm.protocol as "tcp" | "udp" | "icmp" | "all",
+        port_range: fwForm.port_range.trim() || undefined,
+        action: fwForm.action as "allow" | "deny",
+        direction: fwForm.direction as "inbound" | "outbound",
+        source_ip: fwForm.source_ip.trim() || undefined,
+        priority: fwForm.priority,
+      })
+      setFwOpen(false)
+      setFwForm({ protocol: "tcp", port_range: "", action: "allow", direction: "inbound", source_ip: "", priority: 100 })
+      setToast({ message: "Firewall rule added", type: "success" })
+      refetchFirewall()
+    } catch (err) {
+      setToast({ message: `Failed to add rule: ${(err as Error).message}`, type: "error" })
+    }
+  }, [createFirewallRule, fwForm, vmId, refetchFirewall])
   const handleDeleteFirewallRule = useCallback(async (ruleId: string) => {
     try {
       await deleteFirewallRule.mutateAsync(ruleId)
@@ -1273,7 +1297,7 @@ export default function VMDetailPage() {
               <div className="space-y-4">
                 <div className="flex items-center justify-between pb-3 border-b">
                   <span className="text-xs font-medium text-muted-foreground">Node</span>
-                  <span className="text-sm font-semibold">{vm.node_id}</span>
+                  <span className="text-sm font-semibold">{allNodes?.find((n) => n.id === vm.node_id)?.name || vm.node_id}</span>
                 </div>
                 {vmNetworks && vmNetworks.length > 0 && (
                   <div className="flex items-center justify-between pb-3 border-b">
@@ -1287,7 +1311,7 @@ export default function VMDetailPage() {
                 )}
                 <div className="flex items-center justify-between pb-3 border-b">
                   <span className="text-xs font-medium text-muted-foreground">OS Template</span>
-                  <span className="text-sm font-semibold">{vm.os_template_id}</span>
+                  <span className="text-sm font-semibold text-right">{templates?.find((t) => t.id === vm.os_template_id)?.name || vm.os_template_id}</span>
                 </div>
                 <div className="flex items-center justify-between pb-3 border-b">
                   <span className="text-xs font-medium text-muted-foreground">CPU</span>
@@ -1623,6 +1647,60 @@ export default function VMDetailPage() {
               <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
                 <Shield className="w-5 h-5" />Firewall Rules
               </h2>
+              <Dialog open={fwOpen} onOpenChange={setFwOpen}>
+                <DialogTrigger asChild>
+                  <Button size="sm"><Plus className="w-4 h-4 mr-1" />Add Rule</Button>
+                </DialogTrigger>
+                <DialogContent className="max-w-md">
+                  <DialogHeader>
+                    <DialogTitle>Add Firewall Rule</DialogTitle>
+                    <DialogDescription>Allow or deny traffic to this VM.</DialogDescription>
+                  </DialogHeader>
+                  <div className="grid grid-cols-2 gap-3 py-2">
+                    <div>
+                      <span className="text-xs font-medium text-muted-foreground mb-1 block">Direction</span>
+                      <select value={fwForm.direction} onChange={(e) => setFwForm({ ...fwForm, direction: e.target.value })} className="w-full h-10 px-3 border rounded-md bg-background text-sm">
+                        <option value="inbound">Inbound</option>
+                        <option value="outbound">Outbound</option>
+                      </select>
+                    </div>
+                    <div>
+                      <span className="text-xs font-medium text-muted-foreground mb-1 block">Action</span>
+                      <select value={fwForm.action} onChange={(e) => setFwForm({ ...fwForm, action: e.target.value })} className="w-full h-10 px-3 border rounded-md bg-background text-sm">
+                        <option value="allow">Allow</option>
+                        <option value="deny">Deny</option>
+                      </select>
+                    </div>
+                    <div>
+                      <span className="text-xs font-medium text-muted-foreground mb-1 block">Protocol</span>
+                      <select value={fwForm.protocol} onChange={(e) => setFwForm({ ...fwForm, protocol: e.target.value })} className="w-full h-10 px-3 border rounded-md bg-background text-sm">
+                        <option value="tcp">TCP</option>
+                        <option value="udp">UDP</option>
+                        <option value="icmp">ICMP</option>
+                        <option value="all">All</option>
+                      </select>
+                    </div>
+                    <div>
+                      <span className="text-xs font-medium text-muted-foreground mb-1 block">Port / Range</span>
+                      <Input value={fwForm.port_range} onChange={(e) => setFwForm({ ...fwForm, port_range: e.target.value })} placeholder="80 or 8000-8100" />
+                    </div>
+                    <div>
+                      <span className="text-xs font-medium text-muted-foreground mb-1 block">Source IP/CIDR</span>
+                      <Input value={fwForm.source_ip} onChange={(e) => setFwForm({ ...fwForm, source_ip: e.target.value })} placeholder="Any (0.0.0.0/0)" />
+                    </div>
+                    <div>
+                      <span className="text-xs font-medium text-muted-foreground mb-1 block">Priority</span>
+                      <Input type="number" value={fwForm.priority} onChange={(e) => setFwForm({ ...fwForm, priority: parseInt(e.target.value) || 100 })} />
+                    </div>
+                  </div>
+                  <DialogFooter>
+                    <Button variant="ghost" onClick={() => setFwOpen(false)}>Cancel</Button>
+                    <Button onClick={handleAddFirewallRule} disabled={createFirewallRule.isPending}>
+                      {createFirewallRule.isPending ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Adding…</> : "Add Rule"}
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
             </div>
 
             {firewallLoading ? (
@@ -1680,13 +1758,45 @@ export default function VMDetailPage() {
             <h2 className="text-lg font-semibold text-foreground mb-6 flex items-center gap-2">
               <FileText className="w-5 h-5" />Activity Logs
             </h2>
-            <div className="bg-muted border p-8 h-64 flex items-center justify-center">
-              <div className="text-center">
-                <FileText className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-                <p className="text-muted-foreground font-medium text-sm">No activity logs yet for this VM</p>
-                <p className="text-muted-foreground text-xs mt-1">VM activity logging is under development</p>
+            {activityLoading ? (
+              <div className="bg-muted border p-8 h-64 flex items-center justify-center">
+                <p className="text-muted-foreground text-sm">Loading activity...</p>
               </div>
-            </div>
+            ) : !activity || activity.length === 0 ? (
+              <div className="bg-muted border p-8 h-64 flex items-center justify-center">
+                <div className="text-center">
+                  <FileText className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
+                  <p className="text-muted-foreground font-medium text-sm">No activity yet</p>
+                </div>
+              </div>
+            ) : (
+              <div className="divide-y border rounded-lg">
+                {activity.map((log) => {
+                  const detailStr = log.details && Object.keys(log.details).length > 0
+                    ? Object.entries(log.details)
+                        .map(([k, v]) => `${k}: ${String(v)}`)
+                        .join(', ')
+                    : null
+                  return (
+                    <div key={log.id} className="flex items-start gap-3 px-4 py-3">
+                      <FileText className="w-4 h-4 mt-0.5 text-muted-foreground shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm font-medium text-foreground">{log.action}</span>
+                          {log.ip_address && (
+                            <span className="text-xs text-muted-foreground">from {log.ip_address}</span>
+                          )}
+                        </div>
+                        {detailStr && (
+                          <p className="text-xs text-muted-foreground mt-0.5 truncate">{detailStr}</p>
+                        )}
+                      </div>
+                      <span className="text-xs text-muted-foreground whitespace-nowrap">{formatDate(log.created_at)}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
           </div>
         </TabsContent>
       </Tabs>

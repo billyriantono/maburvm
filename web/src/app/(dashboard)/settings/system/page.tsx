@@ -7,7 +7,6 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
 import { z } from "zod"
 import {
-  Settings as SettingsIcon,
   Globe,
   Shield,
   Database,
@@ -18,8 +17,6 @@ import {
   Eye,
   EyeOff,
   RotateCcw,
-  CheckCircle,
-  AlertTriangle,
   Info,
   Clock,
   Calendar,

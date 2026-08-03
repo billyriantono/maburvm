@@ -176,7 +176,7 @@ export default function IPPoolsPage() {
             <div className="col-span-2">Node</div>
             <div className="col-span-1 text-right">Action</div>
           </div>
-          {filteredPools.map((pool, index) => {
+          {filteredPools.map((pool) => {
             const poolNodes = pool.node_ids?.map((nid) => nodes?.find((item) => item.id === nid)?.name).filter(Boolean)
             const nodeLabel = poolNodes && poolNodes.length > 0 ? poolNodes.join(", ") : "Any"
             return (

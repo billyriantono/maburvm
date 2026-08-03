@@ -2111,12 +2111,22 @@ func (s *VMService) GetVNCConfig(ctx context.Context, vmID string, includePasswo
 
 	// Apply the password to the live domain so the browser (which authenticates
 	// against QEMU with exactly this password) matches. Only meaningful while the
-	// VM is running; a failure here would otherwise show up as a baffling
-	// client-side "Authentication failed", so surface it instead of swallowing it.
+	// VM is running.
+	//
+	// This is best-effort, NOT fatal. Imported (e.g. Virtualizor) domains often
+	// run VNC with no password auth (QEMU security type "None"); QMP set_password
+	// then fails because auth can't be enabled at runtime — but the console still
+	// works fine without a password (noVNC just skips the auth handshake). Hard-
+	// failing here is what made GetVNCConfig return 500 "Failed to get VNC config"
+	// for every imported VM. Freshly-created MaburVM domains are defined with a
+	// passwd attribute, so the sync succeeds and the browser password matches; a
+	// rare failure there degrades to a client-side "Authentication failed" (same
+	// as before this endpoint existed) instead of blocking the whole console.
 	node, err := s.nodeRepo.GetByID(ctx, vm.NodeID)
 	if vm.Status == models.VMStatusRunning {
 		if syncErr := s.syncVNCPassword(ctx, vm.NodeID, vmID, vm.VNCPassword); syncErr != nil {
-			return nil, fmt.Errorf("failed to apply VNC password to the running VM: %w", syncErr)
+			s.logger.WarnContext(ctx, "failed to apply VNC password to running VM; serving console without runtime password sync (normal for imported open-VNC domains)",
+				"vm_id", vmID, "error", syncErr)
 		}
 	}
 

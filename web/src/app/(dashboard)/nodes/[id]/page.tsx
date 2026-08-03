@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react"
 import Link from "next/link"
-import { useParams, useRouter } from "next/navigation"
+import { useParams } from "next/navigation"
 import {
   Server,
   ArrowLeft,
@@ -12,13 +12,10 @@ import {
   Terminal,
   Edit2,
   RefreshCw,
-  Activity,
   HardDrive,
   Cpu,
-  Network,
   Clock,
   AlertTriangle,
-  CheckCircle,
   XCircle,
   Database,
   MemoryStick,
@@ -145,7 +142,6 @@ function Toast({ message, type, onClose }: { message: string, type: "success" | 
 
 export default function NodeDetailPage() {
   const params = useParams()
-  const router = useRouter()
   const nodeId = params.id as string
 
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
@@ -534,7 +530,7 @@ export default function NodeDetailPage() {
                 className="gap-2"
                 onClick={async () => {
                   try {
-                    const result = await regenerateToken.mutateAsync()
+                    await regenerateToken.mutateAsync()
                     setShowToken(true)
                     refetchToken()
                     setToast({ message: "Token regenerated. Update the agent config.", type: "success" })

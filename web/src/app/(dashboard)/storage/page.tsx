@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback } from "react"
+import { useState } from "react"
 import {
   Database,
   Plus,
@@ -119,7 +119,7 @@ function VolumesDialog({ pool, onClose }: { pool: StoragePool | null; onClose: (
           ) : !volumes || volumes.length === 0 ? (
             <div className="p-6 text-center text-muted-foreground font-medium text-sm">No volumes yet</div>
           ) : (
-            volumes.map((v, i) => (
+            volumes.map((v) => (
               <div key={v.id} className="grid grid-cols-12 gap-2 p-3 items-center border-t">
                 <div className="col-span-4 font-medium truncate">{v.name}</div>
                 <div className="col-span-2 font-mono text-xs">{formatBytes(v.size)}</div>

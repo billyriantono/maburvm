@@ -538,7 +538,7 @@ export default function VMListPage() {
         ) : filteredVMs.length === 0 ? (
           <EmptyState hasFilters={hasFilters} onClearFilters={clearFilters} />
         ) : (
-          filteredVMs.map((vm, index) => {
+          filteredVMs.map((vm) => {
             const effectiveNodeStatus = vm.node_status || nodeStatusByID.get(vm.node_id) || ""
             const nodeUnavailable = Boolean(effectiveNodeStatus && effectiveNodeStatus !== "active")
 
