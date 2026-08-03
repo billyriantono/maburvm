@@ -1007,8 +1007,11 @@ func (s *Server) setupDashboardRoutes(g *echo.Group) {
 		totalNodes, _ := nodeRepo.Count(ctx)
 		activeNodes, _ := nodeRepo.CountByStatus(ctx, models.NodeStatusActive)
 
-		// Recent activity (last 10 audit logs)
+		// Recent activity (last 10 audit logs), enriched for display with the
+		// actor's email and a human-readable resource name so the feed doesn't
+		// show bare UUIDs / "user".
 		recentLogs, _ := auditRepo.List(ctx, 10, 0)
+		recentActivity := enrichActivity(s.db, recentLogs)
 
 		// Calculate utilization
 		var utilization float64
@@ -1030,10 +1033,80 @@ func (s *Server) setupDashboardRoutes(g *echo.Group) {
 				},
 				"utilization":     utilization,
 				"alerts":          errorVMs,
-				"recent_activity": recentLogs,
+				"recent_activity": recentActivity,
 			},
 		})
 	})
+}
+
+// activityEntry is a display-ready recent-activity row: the raw audit action
+// plus a resolved actor email and a human-readable resource name.
+type activityEntry struct {
+	ID           string    `json:"id"`
+	Action       string    `json:"action"`
+	Actor        string    `json:"actor"`         // user email, or "System"
+	ResourceType string    `json:"resource_type"`
+	ResourceName string    `json:"resource_name"` // e.g. VM hostname, or "" when unknown
+	ResourceID   string    `json:"resource_id"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// enrichActivity turns raw audit logs into display-ready entries: it batch-loads
+// the actor emails and derives a resource name from the log's details (hostname)
+// so the dashboard feed shows "root@… • Created VM web-01" instead of a UUID.
+func enrichActivity(db *gorm.DB, logs []models.AuditLog) []activityEntry {
+	// Batch-resolve actor emails.
+	ids := make([]string, 0, len(logs))
+	seen := map[string]bool{}
+	for _, l := range logs {
+		if l.UserID != nil && !seen[*l.UserID] {
+			seen[*l.UserID] = true
+			ids = append(ids, *l.UserID)
+		}
+	}
+	emails := map[string]string{}
+	if len(ids) > 0 {
+		var rows []struct {
+			ID    string
+			Email string
+		}
+		_ = db.Model(&models.User{}).Select("id", "email").Where("id IN ?", ids).Scan(&rows).Error
+		for _, r := range rows {
+			emails[r.ID] = r.Email
+		}
+	}
+
+	out := make([]activityEntry, 0, len(logs))
+	for _, l := range logs {
+		actor := "System"
+		if l.UserID != nil {
+			if e, ok := emails[*l.UserID]; ok && e != "" {
+				actor = e
+			} else {
+				actor = "user"
+			}
+		}
+		name := ""
+		if l.Details != nil {
+			if h, ok := l.Details["hostname"].(string); ok {
+				name = h
+			}
+		}
+		resourceID := ""
+		if l.ResourceID != nil {
+			resourceID = *l.ResourceID
+		}
+		out = append(out, activityEntry{
+			ID:           l.ID,
+			Action:       l.Action,
+			Actor:        actor,
+			ResourceType: l.ResourceType,
+			ResourceName: name,
+			ResourceID:   resourceID,
+			CreatedAt:    l.CreatedAt,
+		})
+	}
+	return out
 }
 
 // setupAuditLogRoutes configures audit log viewing routes

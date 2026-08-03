@@ -799,6 +799,9 @@ func (h *VMHandler) DeleteVM(c echo.Context) error {
 		return nil
 	}
 
+	// Capture the hostname before the VM is gone so the audit entry is readable.
+	deletedHostname := h.vmHostname(c, id)
+
 	// Delete VM
 	if err := h.service.DeleteVM(c.Request().Context(), id); err != nil {
 		switch {
@@ -815,7 +818,7 @@ func (h *VMHandler) DeleteVM(c echo.Context) error {
 		}
 	}
 
-	h.logVMActivity(c, id, "vm.delete", nil)
+	h.logVMActivity(c, id, "vm.delete", map[string]any{"hostname": deletedHostname})
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "VM deletion initiated",
@@ -921,6 +924,7 @@ func (h *VMHandler) handleLifecycleCommand(c echo.Context, command service.Lifec
 
 	h.logVMActivity(c, id, "vm."+string(command), map[string]any{
 		"new_state": resp.NewState,
+		"hostname":  h.vmHostname(c, id),
 	})
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
@@ -1030,7 +1034,7 @@ func (h *VMHandler) RebuildVM(c echo.Context) error {
 		}
 	}
 
-	h.logVMActivity(c, id, "vm.rebuild", nil)
+	h.logVMActivity(c, id, "vm.rebuild", map[string]any{"hostname": h.vmHostname(c, id)})
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "VM rebuild initiated",

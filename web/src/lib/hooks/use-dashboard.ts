@@ -16,12 +16,11 @@ export interface DashboardStats {
   alerts: number
   recent_activity: {
     id: string
-    user_id: string | null
     action: string
+    actor: string
     resource_type: string
-    resource_id: string | null
-    ip_address: string
-    details: Record<string, unknown>
+    resource_name: string
+    resource_id: string
     created_at: string
   }[]
 }

@@ -12,6 +12,20 @@ import (
 // logVMActivity records a VM lifecycle action to audit_logs. It is best-effort:
 // a nil audit repo or a write error is swallowed so it never fails the
 // underlying operation. resource_type is fixed to "vm"; details is optional.
+// vmHostname returns a VM's hostname best-effort (no agent round-trip), or "" if
+// it can't be resolved. Used to enrich audit details with a human-readable name,
+// especially for delete where the VM row is gone afterward.
+func (h *VMHandler) vmHostname(c echo.Context, vmID string) string {
+	if h.service == nil || vmID == "" {
+		return ""
+	}
+	resp, err := h.service.GetVM(c.Request().Context(), vmID, false)
+	if err != nil || resp == nil || resp.VM == nil {
+		return ""
+	}
+	return resp.VM.Hostname
+}
+
 func (h *VMHandler) logVMActivity(c echo.Context, vmID, action string, details map[string]any) {
 	if h.audit == nil || vmID == "" {
 		return
