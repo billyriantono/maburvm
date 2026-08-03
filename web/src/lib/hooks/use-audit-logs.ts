@@ -48,7 +48,14 @@ export function useAuditLogs(filters: AuditLogParams = {}) {
           page_size: pageSize,
         },
       })
-      return response.data.data
+      // The endpoint returns a FLAT paginated body { data, total, page,
+      // page_size, totalPages } — the array plus its metadata. The shared
+      // api-client types every body as ApiResponse<T> ({ data, success }), which
+      // only models the array; the previous `response.data.data` therefore
+      // dropped total/totalPages and left the page reading .data off a bare array
+      // (undefined → empty). response.data IS the paginated envelope at runtime,
+      // so return it whole, casting past the api-client's ApiResponse assumption.
+      return response.data as unknown as PaginatedResponse<AuditLog>
     },
   })
 }
