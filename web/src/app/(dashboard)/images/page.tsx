@@ -84,13 +84,11 @@ export default function ImagesPage() {
             <div className="col-span-2 text-right">Actions</div>
           </div>
           {images.map((image) => (
-            <div key={image.id} className="grid grid-cols-12 gap-3 p-4 items-center border-b last:border-0">
+            <div key={image.id} className="p-4 border-b last:border-0">
+             <div className="grid grid-cols-12 gap-3 items-center">
               <div className="col-span-3 font-medium text-foreground truncate" title={image.name}>{image.name}</div>
               <div className="col-span-2">
                 <Badge variant={statusVariant(image.status)}>{image.status}</Badge>
-                {image.status === "failed" && image.error_message && (
-                  <p className="text-xs text-destructive mt-1 truncate" title={image.error_message}>{image.error_message}</p>
-                )}
               </div>
               <div className="col-span-1 text-sm font-mono">{image.size_bytes > 0 ? formatBytes(image.size_bytes) : "—"}</div>
               <div className="col-span-2 text-sm text-muted-foreground truncate">{vmName(image.source_vm_id)}</div>
@@ -116,6 +114,12 @@ export default function ImagesPage() {
                   <Trash2 className="w-4 h-4" />
                 </Button>
               </div>
+             </div>
+              {image.status === "failed" && image.error_message && (
+                <p className="mt-2 text-xs text-destructive break-words whitespace-pre-wrap rounded-md bg-destructive/10 px-3 py-2 font-mono">
+                  {image.error_message}
+                </p>
+              )}
             </div>
           ))}
         </div>

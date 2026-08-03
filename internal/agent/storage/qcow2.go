@@ -169,7 +169,12 @@ func (q *QCOW2Manager) ConvertCompressed(source string, dest string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), q.timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, q.qemuImgPath, "convert", "-O", "qcow2", "-c", source, dest)
+	// -U (force-share) lets qemu-img read the disk even while the VM is running and
+	// qemu holds a write lock on it — otherwise the export fails with "Failed to
+	// get shared write lock ... Is another process using the image?". The copy is
+	// crash-consistent (a point-in-time read of a live disk), which is exactly what
+	// the backup/image flow expects.
+	cmd := exec.CommandContext(ctx, q.qemuImgPath, "convert", "-U", "-O", "qcow2", "-c", source, dest)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to export compressed QCOW2 image: %w (output: %s)", err, string(output))
