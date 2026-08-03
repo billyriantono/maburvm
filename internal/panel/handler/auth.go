@@ -3,6 +3,8 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"os"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 	"github.com/maburvm/panel/internal/panel/middleware"
@@ -121,6 +123,56 @@ func (h *AuthHandler) Register(c echo.Context) error {
 	return c.JSON(http.StatusForbidden, map[string]string{
 		"error": "enrollment_unavailable",
 	})
+}
+
+// ForgotPassword handles POST /auth/forgot-password. It always responds 200 with
+// the same generic message regardless of whether the email maps to an account,
+// so it can't be used to enumerate registered users.
+func (h *AuthHandler) ForgotPassword(c echo.Context) error {
+	var req struct {
+		Email string `json:"email"`
+	}
+	_ = c.Bind(&req)
+
+	// resetURLBase is the public frontend reset page. PANEL_PUBLIC_URL is the
+	// panel origin (e.g. https://mabur.gopek.id); fall back to a relative path.
+	base := strings.TrimRight(os.Getenv("PANEL_PUBLIC_URL"), "/")
+	resetURLBase := base + "/reset-password"
+
+	if err := h.userService.RequestPasswordReset(c.Request().Context(), req.Email, resetURLBase); err != nil {
+		// Genuine server error — but still don't reveal account existence.
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "Failed to process request",
+		})
+	}
+	return c.JSON(http.StatusOK, map[string]string{
+		"message": "If an account exists for that email, a reset link has been sent.",
+	})
+}
+
+// ResetPassword handles POST /auth/reset-password. It consumes a reset token and
+// sets a new password.
+func (h *AuthHandler) ResetPassword(c echo.Context) error {
+	var req struct {
+		Token    string `json:"token"`
+		Password string `json:"password"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
+	}
+	if err := h.userService.ResetPassword(c.Request().Context(), req.Token, req.Password); err != nil {
+		switch {
+		case errors.Is(err, service.ErrInvalidResetToken):
+			return c.JSON(http.StatusBadRequest, map[string]string{
+				"error": "This reset link is invalid or has expired. Please request a new one.",
+			})
+		case errors.Is(err, service.ErrWeakPassword):
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+		default:
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to reset password"})
+		}
+	}
+	return c.JSON(http.StatusOK, map[string]string{"message": "Password reset successfully. You can now sign in."})
 }
 
 func (h *AuthHandler) Logout(c echo.Context) error {

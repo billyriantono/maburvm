@@ -28,7 +28,7 @@ export default function AuthLayout({
 
         {/* Footer */}
         <p className="text-center text-xs text-muted-foreground mt-6">
-          Secured with enterprise-grade encryption
+          &copy; {new Date().getFullYear()} MaburVM. All rights reserved.
         </p>
       </div>
     </div>
