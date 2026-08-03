@@ -938,10 +938,15 @@ func (s *NodeAgentService) BackupDisk(ctx context.Context, req *pb.BackupDiskReq
 		key = fmt.Sprintf("backups/%s/%d.qcow2", req.VmId, time.Now().Unix())
 	}
 
-	// Export a standalone, compressed copy of the disk.
+	// Export a standalone, compressed copy of the disk. Compressing a multi-GB
+	// disk routinely exceeds the QCOW2Manager's 5-minute default — which SIGKILLs
+	// qemu-img and surfaces as "signal: killed". Give it a generous ceiling that
+	// matches the backup/image worker's 60-minute River timeout.
 	exportPath := filepath.Join(defaultImageDir, req.VmId+"-backup.qcow2")
 	_ = os.Remove(exportPath)
-	if err := storage.NewQCOW2Manager().ConvertCompressed(diskPath, exportPath); err != nil {
+	qcowExport := storage.NewQCOW2Manager()
+	qcowExport.SetTimeout(60 * time.Minute)
+	if err := qcowExport.ConvertCompressed(diskPath, exportPath); err != nil {
 		return backupDiskErr(fmt.Sprintf("disk export failed: %v", err)), nil
 	}
 	defer os.Remove(exportPath)
