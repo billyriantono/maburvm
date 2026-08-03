@@ -6,7 +6,8 @@ import Link from "next/link"
 import { ArrowLeft, Check, Cpu, MemoryStick, HardDrive, Gauge, KeyRound, Database } from "lucide-react"
 import { usePlans } from "@/lib/hooks/use-plans"
 import { useTemplates } from "@/lib/hooks/use-templates"
-import { useCreateVM } from "@/lib/hooks/use-vms"
+import { useCreateVM, type CreateVMResult } from "@/lib/hooks/use-vms"
+import { Button } from "@/components/ui/button"
 import { useSSHKeys } from "@/lib/hooks/use-ssh-keys"
 import type { OSTemplate } from "@/types"
 import type { Plan } from "@/types/plan"
@@ -26,6 +27,8 @@ export default function OrderVMPage() {
   const [templateId, setTemplateId] = useState<string>("")
   const [hostname, setHostname] = useState<string>("")
   const [error, setError] = useState<string>("")
+  const [created, setCreated] = useState<CreateVMResult | null>(null)
+  const [copied, setCopied] = useState(false)
   // SSH keys are opt-out: every saved key is injected unless the user unchecks it.
   const [excludedKeys, setExcludedKeys] = useState<Set<string>>(new Set())
   const selectedKeyIds = (sshKeys ?? []).filter((k) => !excludedKeys.has(k.id)).map((k) => k.id)
@@ -66,9 +69,43 @@ export default function OrderVMPage() {
         ssh_key_ids: selectedKeyIds,
       },
       {
-        onSuccess: () => router.push("/client/vms"),
+        onSuccess: (data: CreateVMResult) => {
+          // If the server generated a root password (no SSH key / no password),
+          // show it ONCE — otherwise the customer can never log in.
+          if (data.root_password) {
+            setCreated(data)
+          } else {
+            router.push("/client/vms")
+          }
+        },
         onError: (e: Error) => setError(e.message || "Failed to create VM"),
       }
+    )
+  }
+
+  if (created) {
+    return (
+      <div className="space-y-6 max-w-2xl">
+        <div className="flex items-center gap-3">
+          <h1 className="text-2xl font-bold tracking-tight">VM created</h1>
+        </div>
+        <div className="border rounded-lg bg-card p-6 space-y-5">
+          <div>
+            <p className="text-sm text-muted-foreground">Your VM <span className="font-semibold text-foreground">{created.hostname}</span> is being provisioned.</p>
+          </div>
+          <div className="border rounded-md bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-900 p-4">
+            <p className="text-sm font-semibold text-amber-800 dark:text-amber-300 mb-2">Save your root password now — it is shown only once.</p>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 font-mono text-sm bg-background border rounded px-3 py-2 break-all">{created.root_password}</code>
+              <Button variant="outline" size="sm" onClick={() => { navigator.clipboard.writeText(created.root_password || ""); setCopied(true); setTimeout(() => setCopied(false), 1500) }}>
+                {copied ? <Check className="w-4 h-4" /> : "Copy"}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground mt-2">Log in as <span className="font-mono">root</span> with this password. You can change it later from the VM&apos;s console, or reset it from the VM page.</p>
+          </div>
+          <Button onClick={() => router.push("/client/vms")}>Go to My VMs</Button>
+        </div>
+      </div>
     )
   }
 
