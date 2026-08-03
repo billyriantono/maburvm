@@ -1208,6 +1208,47 @@ func extractVNCPort(xmlDesc string) int {
 	return 0
 }
 
+// ensureVNCInXML is the pure XML transform behind EnsureVNCGraphics: given a
+// domain's persistent XML it returns the XML with a VNC graphics device (and a
+// qxl video device when none exists), plus whether anything was added. When the
+// domain already has VNC it returns added=false and the input unchanged.
+func ensureVNCInXML(inactiveXML string) (newXML string, added bool, err error) {
+	var domain libvirtxml.Domain
+	if uerr := xml.Unmarshal([]byte(inactiveXML), &domain); uerr != nil {
+		return "", false, fmt.Errorf("failed to parse domain XML: %w", uerr)
+	}
+	if domain.Devices == nil {
+		domain.Devices = &libvirtxml.DomainDeviceList{}
+	}
+	for _, g := range domain.Devices.Graphics {
+		if g.VNC != nil {
+			return inactiveXML, false, nil
+		}
+	}
+
+	// Inject autoport VNC graphics (matching the create path in GenerateVMXML).
+	domain.Devices.Graphics = append(domain.Devices.Graphics, libvirtxml.DomainGraphic{
+		VNC: &libvirtxml.DomainGraphicVNC{
+			Port:     -1,
+			AutoPort: "yes",
+			Listen:   "0.0.0.0",
+		},
+	})
+	// A graphics device is useless without a video device; imported no-graphics
+	// domains typically lack one too. Add qxl only when none is defined.
+	if len(domain.Devices.Videos) == 0 {
+		domain.Devices.Videos = append(domain.Devices.Videos, libvirtxml.DomainVideo{
+			Model: libvirtxml.DomainVideoModel{Type: "qxl", Heads: 1},
+		})
+	}
+
+	out, merr := xml.MarshalIndent(&domain, "", "  ")
+	if merr != nil {
+		return "", false, fmt.Errorf("failed to marshal domain XML: %w", merr)
+	}
+	return string(out), true, nil
+}
+
 // EnsureVNCGraphics guarantees the domain has a VNC <graphics> device so the
 // console proxy has something to connect to. Imported (e.g. Virtualizor) domains
 // are often defined with NO graphics at all, so the stored vnc_port is fictional
@@ -1249,7 +1290,7 @@ func EnsureVNCGraphics(uuidStr string) (restarted bool, vncPort int, err error) 
 		}
 
 		// Redefine the persistent domain with the added graphics.
-		if _, derr = conn.DomainDefineXML(string(newXML)); derr != nil {
+		if _, derr = conn.DomainDefineXML(newXML); derr != nil {
 			return fmt.Errorf("failed to redefine domain with VNC: %w", derr)
 		}
 
