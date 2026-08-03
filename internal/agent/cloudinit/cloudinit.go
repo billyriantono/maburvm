@@ -152,6 +152,15 @@ func userData(cfg Config) string {
 		b.WriteString("    encoding: b64\n")
 		b.WriteString(fmt.Sprintf("    content: %s\n", enc))
 	}
+	// Ensure sshd actually starts on first boot. On Ubuntu 24.04 (noble) ssh is
+	// socket-activated and can be triggered before cloud-init's ssh module has
+	// generated host keys; sshd then fails "no hostkeys available" and crash-loops
+	// past systemd's StartLimitBurst, so it stays dead even after the keys appear.
+	// This first-boot runcmd regenerates any missing host keys (idempotent),
+	// clears the failed state, and restarts ssh — distro-agnostic (ssh on
+	// Debian/Ubuntu, sshd on RHEL/AlmaLinux).
+	b.WriteString("runcmd:\n")
+	b.WriteString("  - [ sh, -c, \"ssh-keygen -A 2>/dev/null || true; systemctl reset-failed ssh.service sshd.service 2>/dev/null || true; systemctl restart ssh.socket 2>/dev/null || true; systemctl restart ssh.service 2>/dev/null || systemctl restart sshd 2>/dev/null || true\" ]\n")
 	return b.String()
 }
 
