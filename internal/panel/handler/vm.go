@@ -33,7 +33,15 @@ type VMHandler struct {
 	// (which has the db handle). May be nil in tests/constructors that don't wire
 	// it; logVMActivity is a no-op in that case.
 	audit *repository.AuditRepository
+	// imageService resolves a create-from-image source. Set by SetImageService
+	// from the server wiring; nil in tests, in which case source_image_id is
+	// ignored.
+	imageService *service.ImageService
 }
+
+// SetImageService injects the image service used to resolve a create-from-image
+// source. Called from server wiring after construction.
+func (h *VMHandler) SetImageService(s *service.ImageService) { h.imageService = s }
 
 // NewVMHandler creates a new VMHandler instance
 func NewVMHandler(service *service.VMService, vncService *service.VNCService, vncProxy *vnc.ProxyServer, sshKeyService *service.SSHKeyService, recipeService *service.RecipeService, authorizer *authz.Authorizer) *VMHandler {
@@ -162,6 +170,10 @@ type CreateVMRequest struct {
 	// SSHPublicKeys are raw authorized_keys lines pasted at create time (in
 	// addition to any saved SSHKeyIDs) — lets an admin add a key without saving it.
 	SSHPublicKeys []string `json:"ssh_public_keys,omitempty"`
+	// SourceImageID, when set, seeds the new VM's disk from a stored image
+	// (Vultr/DO-style create-from-snapshot) instead of the OS template. The OS
+	// template is derived from the image, so os_template_id is not required then.
+	SourceImageID string `json:"source_image_id,omitempty" validate:"omitempty,uuid"`
 }
 
 // CreateVMResponse represents the response after creating a VM
@@ -188,11 +200,12 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 		})
 	}
 
-	// Validate required fields
-	if req.Hostname == "" || req.OSTemplateID == "" {
+	// Validate required fields. Either an OS template or a source image is
+	// required — a create-from-image derives the template from the image.
+	if req.Hostname == "" || (req.OSTemplateID == "" && req.SourceImageID == "") {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
 			"error":   "Bad Request",
-			"message": "Hostname and OS template ID are required",
+			"message": "Hostname and either an OS template or a source image are required",
 		})
 	}
 
@@ -271,6 +284,25 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 	// return it once (what VirtFusion/Virtualizor do) so the VM is always usable.
 	if req.Password == "" && len(sshPublicKeys) == 0 {
 		createReq.RegeneratePassword = true
+	}
+
+	// Create-from-image: resolve the stored image to a disk source (s3://<key>)
+	// and derive the OS template from it. Ownership + readiness are enforced in
+	// the service. This makes the new VM a full copy of the captured image.
+	if req.SourceImageID != "" && h.imageService != nil {
+		sourceRef, tmplID, ierr := h.imageService.ResolveSource(
+			c.Request().Context(), req.SourceImageID, userCtx.ID, userCtx.Role == models.RoleAdmin)
+		if ierr != nil {
+			status, msg := http.StatusBadRequest, ierr.Error()
+			if errors.Is(ierr, service.ErrImageNotFound) {
+				status, msg = http.StatusNotFound, "Source image not found"
+			} else if errors.Is(ierr, service.ErrImageNotReady) {
+				msg = "Source image is not available yet"
+			}
+			return c.JSON(status, map[string]interface{}{"error": "Bad Request", "message": msg})
+		}
+		createReq.CloneSourceRef = sourceRef
+		createReq.OSTemplateID = tmplID
 	}
 
 	// Gate-1 client networking policy: enforce AutoAssign/IP restriction for

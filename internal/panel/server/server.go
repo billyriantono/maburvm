@@ -449,6 +449,12 @@ func (s *Server) setupVMRoutes(g *echo.Group) {
 
 	vmHandler := handler.NewVMHandler(vmService, vncService, vncProxyServer, service.NewSSHKeyService(s.db), service.NewRecipeService(s.db), authz.NewAuthorizer(s.db))
 
+	// Images: user-owned standalone disk captures that survive VM deletion and can
+	// seed a new VM (create-from-image). Shares the agent BackupDisk export.
+	imageService := service.NewImageService(s.db, s.riverClient, logger)
+	vmHandler.SetImageService(imageService)
+	handler.RegisterImageRoutes(s.echo, handler.NewImageHandler(imageService), s.db)
+
 	handler.RegisterVMRoutes(s.echo, vmHandler, s.db)
 
 	// Real-time VM status stream (SSE), consumed by the dashboard via the web BFF.

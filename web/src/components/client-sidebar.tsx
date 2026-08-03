@@ -4,6 +4,7 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import {
   LayoutDashboard,
+  Layers,
   Monitor,
   PlusCircle,
   User as UserIcon,
@@ -19,6 +20,7 @@ import type { User } from "@/types"
 const navItems = [
   { href: "/client/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/client/vms", label: "My VMs", icon: Monitor },
+  { href: "/client/images", label: "Images", icon: Layers },
   { href: "/client/order", label: "Order VM", icon: PlusCircle },
 ]
 

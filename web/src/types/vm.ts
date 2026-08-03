@@ -74,7 +74,8 @@ export interface VMMetrics {
 // CreateVMRequest for creating new VMs
 export interface CreateVMRequest {
   hostname: string;
-  os_template_id: string;
+  os_template_id?: string;    // optional when source_image_id is set (derived server-side)
+  source_image_id?: string;   // seed the new VM's disk from a saved image
   node_id?: string;
   plan_id?: string;        // derive resources from a VPS plan (flavor)
   resources: Resources;

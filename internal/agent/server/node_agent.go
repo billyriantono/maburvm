@@ -548,6 +548,56 @@ func resolveTemplateImage(ref string) (string, error) {
 		return path, nil
 	}
 
+	// s3://<objectKey> resolves to a stored image in object storage (the
+	// create-from-image / Vultr-style snapshot flow). Download it into the node's
+	// template cache once, keyed by the object key, then clone as usual.
+	if strings.HasPrefix(ref, "s3://") {
+		key := strings.TrimPrefix(ref, "s3://")
+		if key == "" {
+			return "", fmt.Errorf("empty object key in image reference %q", ref)
+		}
+		client, err := backupStorageClientFromEnv()
+		if err != nil {
+			return "", fmt.Errorf("object storage not configured for image source: %w", err)
+		}
+		sum := sha256.Sum256([]byte(key))
+		cachePath := filepath.Join(templateCacheDir, fmt.Sprintf("img-%x.qcow2", sum[:8]))
+		if _, err := os.Stat(cachePath); err == nil {
+			return cachePath, nil
+		}
+		if err := os.MkdirAll(templateCacheDir, 0o755); err != nil {
+			return "", fmt.Errorf("failed to create template cache dir %s: %w", templateCacheDir, err)
+		}
+		log.Printf("[NodeAgent] Downloading image %s -> %s", key, cachePath)
+		rc, err := client.Download(context.Background(), key)
+		if err != nil {
+			return "", fmt.Errorf("failed to download image %s: %w", key, err)
+		}
+		defer rc.Close()
+		// Write to a temp file first so a partial download never gets cached as a
+		// valid image.
+		tmp := cachePath + ".part"
+		f, err := os.Create(tmp)
+		if err != nil {
+			return "", fmt.Errorf("failed to create image cache file: %w", err)
+		}
+		if _, err := io.Copy(f, rc); err != nil {
+			f.Close()
+			_ = os.Remove(tmp)
+			return "", fmt.Errorf("failed to write image cache file: %w", err)
+		}
+		if err := f.Close(); err != nil {
+			_ = os.Remove(tmp)
+			return "", fmt.Errorf("failed to flush image cache file: %w", err)
+		}
+		if err := os.Rename(tmp, cachePath); err != nil {
+			_ = os.Remove(tmp)
+			return "", fmt.Errorf("failed to finalize image cache file: %w", err)
+		}
+		log.Printf("[NodeAgent] Cached image at %s", cachePath)
+		return cachePath, nil
+	}
+
 	if !strings.HasPrefix(ref, "http://") && !strings.HasPrefix(ref, "https://") {
 		if _, err := os.Stat(ref); err != nil {
 			return "", fmt.Errorf("template image not found at %s: %w", ref, err)

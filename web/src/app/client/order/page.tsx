@@ -1,11 +1,12 @@
 "use client"
 
-import { useState } from "react"
-import { useRouter } from "next/navigation"
+import { Suspense, useState } from "react"
+import { useRouter, useSearchParams } from "next/navigation"
 import Link from "next/link"
-import { ArrowLeft, Check, Cpu, MemoryStick, HardDrive, Gauge, KeyRound, Database } from "lucide-react"
+import { ArrowLeft, Check, Cpu, MemoryStick, HardDrive, Gauge, KeyRound, Database, Layers } from "lucide-react"
 import { usePlans } from "@/lib/hooks/use-plans"
 import { useTemplates } from "@/lib/hooks/use-templates"
+import { useImages } from "@/lib/hooks/use-images"
 import { useCreateVM, type CreateVMResult } from "@/lib/hooks/use-vms"
 import { Button } from "@/components/ui/button"
 import { useSSHKeys } from "@/lib/hooks/use-ssh-keys"
@@ -16,10 +17,16 @@ import type { Plan } from "@/types/plan"
 // hostname. Ownership is forced server-side to the caller, and quota is enforced,
 // so this form can't be used to provision on behalf of another tenant or exceed
 // the account's limits.
-export default function OrderVMPage() {
+function OrderVMForm() {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  // Deploy-from-image: when set, the OS template step is skipped — the server
+  // derives the OS from the image and clones its disk.
+  const sourceImageId = searchParams.get("source_image_id") ?? ""
   const { data: plans, isLoading: plansLoading } = usePlans(true)
   const { data: templates, isLoading: templatesLoading } = useTemplates()
+  const { data: images } = useImages()
+  const sourceImage = sourceImageId ? images?.find((img) => img.id === sourceImageId) : undefined
   const { data: sshKeys } = useSSHKeys()
   const createVM = useCreateVM()
 
@@ -43,7 +50,7 @@ export default function OrderVMPage() {
   const selectedPlan = activePlans.find((p) => p.id === planId)
 
   const hostnameValid = /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/.test(hostname)
-  const canSubmit = !!planId && !!templateId && hostnameValid && !createVM.isPending
+  const canSubmit = !!planId && (!!templateId || !!sourceImageId) && hostnameValid && !createVM.isPending
 
   const handleSubmit = () => {
     setError("")
@@ -54,7 +61,10 @@ export default function OrderVMPage() {
     createVM.mutate(
       {
         hostname,
-        os_template_id: templateId,
+        // From-image deploys omit the OS template — the backend derives it from
+        // the image and clones the image's disk instead of a fresh install.
+        os_template_id: sourceImageId ? undefined : templateId,
+        source_image_id: sourceImageId || undefined,
         plan_id: planId,
         // Resources are re-derived from the plan server-side; we send the plan's
         // values so the request passes validation.
@@ -157,11 +167,29 @@ export default function OrderVMPage() {
         </div>
       </section>
 
-      {/* Step 2: OS */}
+      {/* Step 2: OS (skipped when deploying from an image) */}
       <section className="rounded-lg border bg-card text-card-foreground shadow-sm">
         <div className="px-5 py-4 border-b">
-          <h2 className="text-lg font-semibold">2 · Choose an operating system</h2>
+          <h2 className="text-lg font-semibold">
+            {sourceImageId ? "2 · Source image" : "2 · Choose an operating system"}
+          </h2>
         </div>
+        {sourceImageId ? (
+          <div className="p-5">
+            <div className="flex items-center gap-3 rounded-md border border-primary/50 bg-primary/5 p-4">
+              <Layers className="w-5 h-5 text-primary shrink-0" />
+              <div className="text-sm">
+                <p className="font-medium">
+                  Creating from image: <span className="font-semibold">{sourceImage?.name ?? sourceImageId}</span>
+                </p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  The new VM&apos;s disk is cloned from this image — no OS selection needed.{" "}
+                  <Link href="/client/order" className="text-primary hover:underline">Start fresh instead</Link>
+                </p>
+              </div>
+            </div>
+          </div>
+        ) : (
         <div className="p-5">
           {templatesLoading ? (
             <p className="text-muted-foreground">Loading templates…</p>
@@ -182,6 +210,7 @@ export default function OrderVMPage() {
             </select>
           )}
         </div>
+        )}
       </section>
 
       {/* Step 3: hostname */}
@@ -258,5 +287,14 @@ export default function OrderVMPage() {
         {createVM.isPending ? "Creating…" : "Create VM"}
       </button>
     </div>
+  )
+}
+
+// useSearchParams requires a Suspense boundary in Next 15 client pages.
+export default function OrderVMPage() {
+  return (
+    <Suspense fallback={null}>
+      <OrderVMForm />
+    </Suspense>
   )
 }

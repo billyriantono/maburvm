@@ -1,7 +1,7 @@
 "use client"
 
-import { useState, useMemo, useEffect } from "react"
-import { useRouter } from "next/navigation"
+import { useState, useMemo, useEffect, Suspense } from "react"
+import { useRouter, useSearchParams } from "next/navigation"
 import { useForm, Controller } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { z } from "zod"
@@ -16,7 +16,8 @@ import {
   Loader2,
   CheckCircle2,
   AlertCircle,
-  User
+  User,
+  Layers
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -37,6 +38,7 @@ import { useSSHKeys } from "@/lib/hooks/use-ssh-keys"
 import { usePlans } from "@/lib/hooks/use-plans"
 import { useRecipes } from "@/lib/hooks/use-recipes"
 import { useCreateVM, useVM } from "@/lib/hooks/use-vms"
+import { useImages } from "@/lib/hooks/use-images"
 import { OSIcon } from "@/components/os-icon"
 
 // Validation schemas for each step
@@ -58,8 +60,11 @@ const step2Schema = z.object({
   userData: z.string().optional(),
 })
 
+// templateId is optional at the schema level: when creating from an image
+// (?source_image_id=) no template is needed. handleNext enforces the selection
+// manually for the fresh-install path.
 const step3Schema = z.object({
-  templateId: z.string().min(1, "Please select an OS template"),
+  templateId: z.string().optional(),
 })
 
 const step4Schema = z.object({
@@ -84,6 +89,15 @@ const fullSchema = step1Schema.merge(step2Schema).merge(step3Schema).merge(step4
 type FormData = z.infer<typeof fullSchema>
 
 // Steps configuration
+// useSearchParams requires a Suspense boundary in Next 15 client pages.
+export default function NewVMPage() {
+  return (
+    <Suspense fallback={null}>
+      <NewVMForm />
+    </Suspense>
+  )
+}
+
 const steps = [
   { id: 1, title: "Basic", description: "Hostname & Node", icon: Server },
   { id: 2, title: "Resources", description: "CPU, RAM, Disk", icon: Cpu },
@@ -92,8 +106,14 @@ const steps = [
   { id: 5, title: "Review", description: "Confirm & Create", icon: CheckCircle2 },
 ]
 
-export default function NewVMPage() {
+function NewVMForm() {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  // Create-from-image: skips the OS template step; the server derives the OS
+  // from the image and clones its disk.
+  const sourceImageId = searchParams.get("source_image_id") ?? ""
+  const { data: imagesData } = useImages()
+  const sourceImage = sourceImageId ? imagesData?.find((img) => img.id === sourceImageId) : undefined
   const [currentStep, setCurrentStep] = useState(1)
   // SSH keys are opt-out: every saved key is injected unless unchecked. These are
   // the current admin's keys (the create endpoint resolves keys against the caller).
@@ -155,6 +175,7 @@ export default function NewVMPage() {
     watch,
     trigger,
     setValue,
+    setError,
     formState: { errors },
   } = useForm<FormData>({
     resolver: zodResolver(fullSchema),
@@ -211,7 +232,12 @@ export default function NewVMPage() {
         fieldsToValidate = ["cpuCores", "ramGB", "diskGB"]
         break
       case 3:
-        fieldsToValidate = ["templateId"]
+        // Schema-level templateId is optional (image path); enforce it manually
+        // for fresh installs.
+        if (!sourceImageId && !watchedValues.templateId) {
+          setError("templateId", { message: "Please select an OS template" })
+          return
+        }
         break
       case 4:
         fieldsToValidate = ["bandwidthMbps"]
@@ -247,7 +273,10 @@ export default function NewVMPage() {
 
       const result = await createVM.mutateAsync({
         hostname: data.hostname,
-        os_template_id: data.templateId,
+        // From-image creates omit the template — the backend derives the OS from
+        // the image and clones the image's disk.
+        os_template_id: sourceImageId ? undefined : data.templateId,
+        source_image_id: sourceImageId || undefined,
         node_id: data.nodeId || undefined,
         // When a plan is selected the backend derives resources from it; we still
         // send the (plan-synced) sliders for display consistency.
@@ -841,12 +870,26 @@ export default function NewVMPage() {
                   <HardDrive className="w-5 h-5" />
                 </div>
                 <div>
-                  <h2 className="text-xl font-semibold">Select OS Template</h2>
-                  <p className="text-sm text-muted-foreground">Choose an operating system for your VM</p>
+                  <h2 className="text-xl font-semibold">{sourceImageId ? "Source Image" : "Select OS Template"}</h2>
+                  <p className="text-sm text-muted-foreground">
+                    {sourceImageId ? "The VM's disk will be cloned from a saved image" : "Choose an operating system for your VM"}
+                  </p>
                 </div>
               </div>
 
-              {templatesLoading ? (
+              {sourceImageId ? (
+                <div className="flex items-center gap-3 rounded-lg border border-primary/50 bg-primary/5 p-4">
+                  <Layers className="w-5 h-5 text-primary shrink-0" />
+                  <div className="text-sm">
+                    <p className="font-medium">
+                      Creating from image: <span className="font-semibold">{sourceImage?.name ?? sourceImageId}</span>
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      No OS template needed — the OS is derived from the image.
+                    </p>
+                  </div>
+                </div>
+              ) : templatesLoading ? (
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                   {[1, 2, 3, 4, 5, 6].map(i => (
                     <Skeleton key={i} className="h-28 w-full" />
@@ -1204,9 +1247,18 @@ export default function NewVMPage() {
                 {/* OS Template */}
                 <div className="bg-muted border rounded-md p-4">
                   <p className="text-xs font-medium mb-3 flex items-center gap-2">
-                    <HardDrive className="w-4 h-4" /> OS Template
+                    <HardDrive className="w-4 h-4" /> {sourceImageId ? "Source Image" : "OS Template"}
                   </p>
-                  {getSelectedTemplate() && (
+                  {sourceImageId && (
+                    <div className="flex items-center gap-3">
+                      <Layers className="w-8 h-8 text-primary" />
+                      <div>
+                        <p className="font-medium">{sourceImage?.name ?? sourceImageId}</p>
+                        <p className="text-sm text-muted-foreground">Disk cloned from image</p>
+                      </div>
+                    </div>
+                  )}
+                  {!sourceImageId && getSelectedTemplate() && (
                     <div className="flex items-center gap-3">
                       <OSIcon name={getSelectedTemplate()!.name} className="w-8 h-8" />
                       <div>

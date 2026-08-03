@@ -130,6 +130,23 @@ func (j BackupJob) Kind() string {
 	return "backup"
 }
 
+// ImageJob captures a VM's disk to a standalone object-storage image (reusing
+// the agent BackupDisk export). It writes back to an images row on completion.
+type ImageJob struct {
+	ImageID     string `json:"image_id"`
+	VMID        string `json:"vm_id"`
+	Destination string `json:"destination"` // object-storage key (images/<id>.qcow2)
+}
+
+// Kind returns the job kind for image capture.
+func (j ImageJob) Kind() string { return "image" }
+
+// InsertOpts routes image capture to the batch queue with the same
+// long-transfer characteristics as backups.
+func (j ImageJob) InsertOpts() *river.InsertOpts {
+	return &river.InsertOpts{Queue: QueueBatch, Priority: PriorityLow}
+}
+
 // InsertOpts returns insert options for backup (batch queue)
 func (j BackupJob) InsertOpts() *river.InsertOpts {
 	return &river.InsertOpts{

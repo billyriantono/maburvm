@@ -3,8 +3,9 @@
 import { useParams, useRouter } from "next/navigation"
 import Link from "next/link"
 import { useState } from "react"
-import { ArrowLeft, Play, Square, RotateCw, Monitor, Cpu, MemoryStick, HardDrive, Terminal, Trash2, Gauge, RefreshCw } from "lucide-react"
+import { ArrowLeft, Play, Square, RotateCw, Monitor, Cpu, MemoryStick, HardDrive, Terminal, Trash2, Gauge, RefreshCw, Layers } from "lucide-react"
 import { useVM, useVMAction, useDeleteVM, useVMStatusStream, useRebuildVM } from "@/lib/hooks/use-vms"
+import { useCreateImage } from "@/lib/hooks/use-images"
 import { useVMNetworks } from "@/lib/hooks/use-networks"
 import { useTemplates } from "@/lib/hooks/use-templates"
 
@@ -91,6 +92,11 @@ export default function ClientVMDetailPage() {
   const [regenPassword, setRegenPassword] = useState(false)
   const [reinstallError, setReinstallError] = useState("")
   const [newPassword, setNewPassword] = useState("")
+  const createImage = useCreateImage()
+  const [imageOpen, setImageOpen] = useState(false)
+  const [imageName, setImageName] = useState("")
+  const [imageError, setImageError] = useState("")
+  const [imageStarted, setImageStarted] = useState(false)
 
   if (isLoading) {
     return <div className="p-8 text-center text-muted-foreground">Loading…</div>
@@ -127,6 +133,17 @@ export default function ClientVMDetailPage() {
       }
     } catch (err) {
       setReinstallError((err as Error).message || "Reinstall failed")
+    }
+  }
+
+  const handleCreateImage = async () => {
+    if (!imageName.trim()) return
+    setImageError("")
+    try {
+      await createImage.mutateAsync({ vm_id: vmId, name: imageName.trim() })
+      setImageStarted(true)
+    } catch (err) {
+      setImageError((err as Error).message || "Failed to create image")
     }
   }
 
@@ -182,7 +199,65 @@ export default function ClientVMDetailPage() {
         >
           <RefreshCw className="w-4 h-4" /> Reinstall
         </button>
+        <button
+          onClick={() => { setImageOpen(true); setImageError(""); setImageStarted(false); setImageName(`${vm.hostname}-image`) }}
+          className="inline-flex items-center gap-2 h-10 px-4 rounded-md border border-input bg-background text-sm font-medium hover:bg-muted transition-colors"
+        >
+          <Layers className="w-4 h-4" /> Save as Image
+        </button>
       </div>
+
+      {/* Save as Image dialog */}
+      {imageOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setImageOpen(false)}>
+          <div className="w-full max-w-md rounded-lg border bg-card text-card-foreground shadow-lg" onClick={(e) => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b">
+              <h2 className="text-lg font-semibold">Save as Image</h2>
+              <p className="text-sm text-muted-foreground mt-1">
+                Captures this VM&apos;s disk into a reusable image. Images survive VM deletion and can be used to deploy new VMs.
+              </p>
+            </div>
+            <div className="p-5 space-y-4">
+              {imageStarted ? (
+                <div className="rounded-md border border-emerald-200 bg-emerald-50 dark:bg-emerald-950 dark:border-emerald-900 p-3 text-xs">
+                  <p className="font-medium text-emerald-800 dark:text-emerald-300">
+                    Image capture started. Track its progress on the{" "}
+                    <Link href="/client/images" className="underline">Images</Link> page.
+                  </p>
+                </div>
+              ) : (
+                <div>
+                  <span className="text-xs font-medium text-muted-foreground mb-2 block">Image Name</span>
+                  <input
+                    type="text"
+                    value={imageName}
+                    onChange={(e) => setImageName(e.target.value)}
+                    placeholder="e.g., web-base-image"
+                    className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm"
+                  />
+                </div>
+              )}
+              {imageError && (
+                <div className="rounded-md border border-red-200 bg-red-50 dark:bg-red-950 dark:border-red-900 p-3 text-xs text-destructive">{imageError}</div>
+              )}
+            </div>
+            <div className="px-5 py-4 border-t flex items-center justify-end gap-2">
+              <button onClick={() => setImageOpen(false)} className="h-10 px-4 rounded-md border border-input bg-background text-sm font-medium hover:bg-muted transition-colors">
+                {imageStarted ? "Close" : "Cancel"}
+              </button>
+              {!imageStarted && (
+                <button
+                  onClick={handleCreateImage}
+                  disabled={!imageName.trim() || createImage.isPending}
+                  className="inline-flex items-center gap-2 h-10 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+                >
+                  <Layers className={`w-4 h-4 ${createImage.isPending ? "animate-pulse" : ""}`} /> {createImage.isPending ? "Capturing…" : "Capture"}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Reinstall / Rebuild OS dialog */}
       {reinstallOpen && (

@@ -19,7 +19,8 @@ import {
   KeySquare,
   Boxes,
   Globe,
-  ScrollText
+  ScrollText,
+  Layers
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { User } from "@/types"
@@ -29,6 +30,7 @@ const navItems = [
   { href: "/vms", label: "Virtual Machines", icon: Monitor },
   { href: "/plans", label: "Plans", icon: Boxes },
   { href: "/templates", label: "Templates", icon: Box },
+  { href: "/images", label: "Images", icon: Layers },
   { href: "/nodes", label: "Nodes", icon: HardDrive },
   { href: "/storage", label: "Storage", icon: Database },
   { href: "/isos", label: "ISOs", icon: Folder },

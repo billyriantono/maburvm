@@ -5,6 +5,7 @@ export * from './vm';
 export * from './network';
 export * from './template';
 export * from './snapshot';
+export * from './image';
 export * from './backup';
 export * from './audit';
 export * from './storage';

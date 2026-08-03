@@ -20,6 +20,7 @@ import { useSSHKeys } from "@/lib/hooks/use-ssh-keys"
 import { useNodes } from "@/lib/hooks/use-nodes"
 import { Sparkline } from "@/components/ui/sparkline"
 import { useSnapshots, useCreateSnapshot, useRestoreSnapshot, useDeleteSnapshot } from "@/lib/hooks/use-snapshots"
+import { useCreateImage } from "@/lib/hooks/use-images"
 import { useBackups, useCreateBackup, useDeleteBackup } from "@/lib/hooks/use-backups"
 import { useFirewallRules, useDeleteFirewallRule, useCreateFirewallRule, useVMNetworks, useSetVMBandwidth } from "@/lib/hooks/use-networks"
 import type { Network as NetworkIface } from "@/types"
@@ -422,6 +423,8 @@ export default function VMDetailPage() {
   const [consoleActive, setConsoleActive] = useState(false)
   const [snapshotName, setSnapshotName] = useState("")
   const [createSnapshotOpen, setCreateSnapshotOpen] = useState(false)
+  const [imageName, setImageName] = useState("")
+  const [createImageOpen, setCreateImageOpen] = useState(false)
   const [isoDialogOpen, setIsoDialogOpen] = useState(false)
   const [selectedISOUrl, setSelectedISOUrl] = useState("")
   const [manualISOUrl, setManualISOUrl] = useState("")
@@ -611,6 +614,19 @@ export default function VMDetailPage() {
       setToast({ message: `Failed to create snapshot: ${(err as Error).message}`, type: "error" })
     }
   }, [createSnapshot, vmId, snapshotName, refetchSnapshots])
+
+  const createImage = useCreateImage()
+  const handleCreateImage = useCallback(async () => {
+    if (!imageName.trim()) return
+    try {
+      await createImage.mutateAsync({ vm_id: vmId, name: imageName.trim() })
+      setToast({ message: "Image capture started — track progress on the Images page", type: "success" })
+      setImageName("")
+      setCreateImageOpen(false)
+    } catch (err) {
+      setToast({ message: `Failed to create image: ${(err as Error).message}`, type: "error" })
+    }
+  }, [createImage, vmId, imageName])
 
   const handleRestoreSnapshot = useCallback(async (snapshotId: string) => {
     try {
@@ -1547,6 +1563,37 @@ export default function VMDetailPage() {
               <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
                 <Database className="w-5 h-5" />Snapshots
               </h2>
+              <div className="flex items-center gap-2">
+              <Dialog
+                open={createImageOpen}
+                onOpenChange={(open) => {
+                  setCreateImageOpen(open)
+                  if (open && !imageName) setImageName(`${vm?.hostname ?? "vm"}-image`)
+                }}
+              >
+                <DialogTrigger asChild>
+                  <Button variant="outline" size="sm"><Copy className="w-4 h-4 mr-2" />Create Image</Button>
+                </DialogTrigger>
+                <DialogContent className="max-w-sm border shadow-lg">
+                  <DialogHeader>
+                    <DialogTitle className="text-lg font-semibold">Create Image</DialogTitle>
+                    <DialogDescription>
+                      Captures this VM&apos;s disk into a reusable image. Images survive VM deletion and can seed new VMs.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="space-y-3 py-2">
+                    <label htmlFor="image-name" className="text-xs font-medium text-muted-foreground block">Image Name</label>
+                    <Input id="image-name" value={imageName} onChange={(e) => setImageName(e.target.value)} placeholder="e.g., web-base-image" className="border" />
+                  </div>
+                  <DialogFooter>
+                    <Button variant="ghost" onClick={() => setCreateImageOpen(false)}>Cancel</Button>
+                    <Button onClick={handleCreateImage} disabled={!imageName.trim() || createImage.isPending}>
+                      {createImage.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Copy className="w-4 h-4" />}
+                      Capture
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
               <Dialog open={createSnapshotOpen} onOpenChange={setCreateSnapshotOpen}>
                 <DialogTrigger asChild>
                   <Button variant="default" size="sm"><Plus className="w-4 h-4 mr-2" />Create Snapshot</Button>
@@ -1568,6 +1615,7 @@ export default function VMDetailPage() {
                   </DialogFooter>
                 </DialogContent>
               </Dialog>
+              </div>
             </div>
 
             {snapshotsLoading ? (

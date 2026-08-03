@@ -1409,6 +1409,128 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 	return nil
 }
 
+// ImageWorker captures a VM's disk to a standalone object-storage image. It
+// reuses the agent BackupDisk export (ConvertCompressed → Upload → checksum),
+// writing the result back to an images row instead of a backups row. Unlike a
+// backup, the resulting object is not FK-tied to the VM, so it survives the VM's
+// deletion and can seed a new VM.
+type ImageWorker struct {
+	river.WorkerDefaults[ImageJob]
+	logger  *slog.Logger
+	metrics *MetricsCollector
+}
+
+// NewImageWorker creates a new image-capture worker.
+func NewImageWorker(logger *slog.Logger) *ImageWorker {
+	w := &ImageWorker{logger: logger}
+	if globalWorkerContext != nil {
+		w.metrics = globalWorkerContext.Metrics
+	}
+	return w
+}
+
+// Timeout mirrors BackupWorker: a multi-GB disk export + upload exceeds River's
+// 1-minute default and must not be cancelled mid-transfer.
+func (w *ImageWorker) Timeout(*river.Job[ImageJob]) time.Duration { return 60 * time.Minute }
+
+// markImageFailed records a terminal failure on the image row.
+func markImageFailed(ctx context.Context, imageID, msg string) {
+	if globalWorkerContext == nil || imageID == "" {
+		return
+	}
+	_ = globalWorkerContext.DB.WithContext(ctx).
+		Model(&models.Image{}).
+		Where("id = ?", imageID).
+		Updates(map[string]interface{}{
+			"status":        models.ImageStatusFailed,
+			"error_message": msg,
+		}).Error
+}
+
+// Work implements the image-capture job handler.
+func (w *ImageWorker) Work(ctx context.Context, job *river.Job[ImageJob]) error {
+	startTime := time.Now()
+	if globalWorkerContext == nil {
+		return fmt.Errorf("worker context not initialized")
+	}
+
+	vm, err := globalWorkerContext.VMRepo.GetByIDWithNode(ctx, job.Args.VMID)
+	if err != nil {
+		markImageFailed(ctx, job.Args.ImageID, "source VM not found")
+		return river.JobCancel(fmt.Errorf("failed to get VM: %w", err))
+	}
+	node, err := globalWorkerContext.NodeRepo.GetByID(ctx, vm.NodeID)
+	if err != nil {
+		markImageFailed(ctx, job.Args.ImageID, "source node not found")
+		return river.JobCancel(fmt.Errorf("failed to get node: %w", err))
+	}
+	if node.Status != models.NodeStatusActive {
+		return fmt.Errorf("node %s is not active (status: %s)", node.ID, node.Status)
+	}
+
+	client, err := globalWorkerContext.AgentClient.GetClient(node.ID, node.IPAddress)
+	if err != nil {
+		if w.metrics != nil {
+			w.metrics.RecordJobFailed()
+		}
+		return err
+	}
+
+	// Reuse the exact backup export path: crash-consistent qcow2 copy, compressed,
+	// uploaded to object storage, checksummed. Target key is the image's key.
+	resp, err := client.BackupDisk(agentAuthContext(ctx, node), &pb.BackupDiskRequest{
+		VmId:           vm.ID,
+		DestinationKey: job.Args.Destination,
+		Compress:       true,
+	})
+	if err != nil {
+		// Retry while attempts remain; otherwise mark failed so the row never
+		// lingers pending.
+		if IsRetryableError(err) && job.Attempt < job.MaxAttempts {
+			if w.metrics != nil {
+				w.metrics.RecordJobRetried()
+			}
+			return fmt.Errorf("retryable error capturing image: %w", err)
+		}
+		if w.metrics != nil {
+			w.metrics.RecordJobFailed()
+		}
+		markImageFailed(ctx, job.Args.ImageID, err.Error())
+		return river.JobCancel(fmt.Errorf("failed to capture image: %w", err))
+	}
+	if !resp.Success {
+		msg := "disk export failed"
+		if resp.Error != nil {
+			msg = resp.Error.GetMessage()
+		}
+		if w.metrics != nil {
+			w.metrics.RecordJobFailed()
+		}
+		markImageFailed(ctx, job.Args.ImageID, msg)
+		return fmt.Errorf("image capture failed: %s", msg)
+	}
+
+	if err := globalWorkerContext.DB.WithContext(ctx).
+		Model(&models.Image{}).
+		Where("id = ?", job.Args.ImageID).
+		Updates(map[string]interface{}{
+			"status":     models.ImageStatusAvailable,
+			"size_bytes": resp.SizeBytes,
+			"checksum":   resp.Checksum,
+		}).Error; err != nil {
+		w.logger.WarnContext(ctx, "failed to update completed image metadata",
+			"image_id", job.Args.ImageID, "error", err)
+	}
+
+	if w.metrics != nil {
+		w.metrics.RecordJobProcessed("image", time.Since(startTime))
+	}
+	w.logger.InfoContext(ctx, "image captured successfully",
+		"image_id", job.Args.ImageID, "vm_id", vm.ID,
+		"size", resp.SizeBytes, "latency_ms", time.Since(startTime).Milliseconds())
+	return nil
+}
+
 func buildBackupArchive(job *river.Job[BackupJob], vmID, snapshotID string) ([]byte, error) {
 	manifest := map[string]interface{}{
 		"vm_id":          vmID,
