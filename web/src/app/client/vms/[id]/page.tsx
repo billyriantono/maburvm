@@ -3,9 +3,10 @@
 import { useParams, useRouter } from "next/navigation"
 import Link from "next/link"
 import { useState } from "react"
-import { ArrowLeft, Play, Square, RotateCw, Monitor, Cpu, MemoryStick, HardDrive, Terminal, Trash2, Gauge } from "lucide-react"
-import { useVM, useVMAction, useDeleteVM, useVMStatusStream } from "@/lib/hooks/use-vms"
+import { ArrowLeft, Play, Square, RotateCw, Monitor, Cpu, MemoryStick, HardDrive, Terminal, Trash2, Gauge, RefreshCw } from "lucide-react"
+import { useVM, useVMAction, useDeleteVM, useVMStatusStream, useRebuildVM } from "@/lib/hooks/use-vms"
 import { useVMNetworks } from "@/lib/hooks/use-networks"
+import { useTemplates } from "@/lib/hooks/use-templates"
 
 function speedLabel(mbps: number): string {
   if (mbps <= 0) return "Unlimited"
@@ -81,7 +82,15 @@ export default function ClientVMDetailPage() {
   const { data: vm, isLoading, isError } = useVM(vmId)
   const action = useVMAction(vmId)
   const del = useDeleteVM()
+  const rebuild = useRebuildVM(vmId)
+  const { data: templates } = useTemplates()
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [reinstallOpen, setReinstallOpen] = useState(false)
+  const [templateId, setTemplateId] = useState("")
+  const [rootPassword, setRootPassword] = useState("")
+  const [regenPassword, setRegenPassword] = useState(false)
+  const [reinstallError, setReinstallError] = useState("")
+  const [newPassword, setNewPassword] = useState("")
 
   if (isLoading) {
     return <div className="p-8 text-center text-muted-foreground">Loading…</div>
@@ -97,6 +106,28 @@ export default function ClientVMDetailPage() {
 
   const handleDelete = () => {
     del.mutate(vmId, { onSuccess: () => router.push("/client/vms") })
+  }
+
+  const handleReinstall = async () => {
+    if (!templateId) return
+    setReinstallError("")
+    try {
+      const res = await rebuild.mutateAsync({
+        template_id: templateId,
+        preserve_ip: true,
+        password: rootPassword || undefined,
+        regenerate_password: regenPassword,
+      })
+      setNewPassword(res.root_password || "")
+      if (!res.root_password) {
+        setReinstallOpen(false)
+        setTemplateId("")
+        setRootPassword("")
+        setRegenPassword(false)
+      }
+    } catch (err) {
+      setReinstallError((err as Error).message || "Reinstall failed")
+    }
   }
 
   return (
@@ -145,7 +176,89 @@ export default function ClientVMDetailPage() {
         >
           <Terminal className="w-4 h-4" /> Console
         </Link>
+        <button
+          onClick={() => { setReinstallOpen(true); setReinstallError(""); setNewPassword("") }}
+          className="inline-flex items-center gap-2 h-10 px-4 rounded-md border border-input bg-background text-sm font-medium hover:bg-muted transition-colors"
+        >
+          <RefreshCw className="w-4 h-4" /> Reinstall
+        </button>
       </div>
+
+      {/* Reinstall / Rebuild OS dialog */}
+      {reinstallOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setReinstallOpen(false)}>
+          <div className="w-full max-w-md rounded-lg border bg-card text-card-foreground shadow-lg" onClick={(e) => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b">
+              <h2 className="text-lg font-semibold">Reinstall OS</h2>
+              <p className="text-sm text-muted-foreground mt-1">
+                Wipes this VM and reinstalls a fresh OS from a template. All data will be lost. The VM keeps its IP address.
+              </p>
+            </div>
+            <div className="p-5 space-y-4 max-h-[60vh] overflow-y-auto">
+              {vm.status !== "stopped" && (
+                <div className="rounded-md border border-amber-200 bg-amber-50 dark:bg-amber-950 dark:border-amber-900 p-3 text-xs text-amber-800 dark:text-amber-300">
+                  Stop the VM first — it must be powered off to reinstall.
+                </div>
+              )}
+              <div>
+                <span className="text-xs font-medium text-muted-foreground mb-2 block">Operating System</span>
+                <div className="grid grid-cols-2 gap-2">
+                  {templates?.map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() => setTemplateId(t.id)}
+                      className={`p-3 rounded-md border text-left transition-colors ${templateId === t.id ? "border-primary ring-1 ring-primary bg-primary/5" : "bg-background hover:bg-muted/50"}`}
+                    >
+                      <span className="text-xs font-medium block">{t.name}</span>
+                      <span className="text-[10px] text-muted-foreground">v{t.version}</span>
+                    </button>
+                  ))}
+                  {!templates?.length && <p className="text-xs text-muted-foreground col-span-2">No OS templates available.</p>}
+                </div>
+              </div>
+              <div>
+                <span className="text-xs font-medium text-muted-foreground mb-2 block">Root Password</span>
+                <label className="flex items-center gap-2 mb-2 cursor-pointer">
+                  <input type="checkbox" checked={regenPassword} onChange={(e) => { setRegenPassword(e.target.checked); if (e.target.checked) setRootPassword("") }} className="w-4 h-4" />
+                  <span className="text-xs font-medium">Auto-generate a new password</span>
+                </label>
+                <input
+                  type="text"
+                  value={rootPassword}
+                  onChange={(e) => setRootPassword(e.target.value)}
+                  disabled={regenPassword}
+                  placeholder={regenPassword ? "Will be generated & shown once" : "Leave blank to keep template default"}
+                  className="w-full h-10 px-3 rounded-md border border-input bg-background font-mono text-sm disabled:opacity-50"
+                />
+              </div>
+              {newPassword && (
+                <div className="rounded-md border border-emerald-200 bg-emerald-50 dark:bg-emerald-950 dark:border-emerald-900 p-3 text-xs">
+                  <p className="font-medium text-emerald-800 dark:text-emerald-300 mb-1">Reinstall started. New root password (shown once):</p>
+                  <code className="font-mono text-sm break-all">{newPassword}</code>
+                </div>
+              )}
+              {reinstallError && (
+                <div className="rounded-md border border-red-200 bg-red-50 dark:bg-red-950 dark:border-red-900 p-3 text-xs text-destructive">{reinstallError}</div>
+              )}
+            </div>
+            <div className="px-5 py-4 border-t flex items-center justify-end gap-2">
+              <button onClick={() => setReinstallOpen(false)} className="h-10 px-4 rounded-md border border-input bg-background text-sm font-medium hover:bg-muted transition-colors">
+                {newPassword ? "Close" : "Cancel"}
+              </button>
+              {!newPassword && (
+                <button
+                  onClick={handleReinstall}
+                  disabled={!templateId || rebuild.isPending}
+                  className="inline-flex items-center gap-2 h-10 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 transition-colors disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-4 h-4 ${rebuild.isPending ? "animate-spin" : ""}`} /> {rebuild.isPending ? "Reinstalling…" : "Reinstall"}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Specs */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">

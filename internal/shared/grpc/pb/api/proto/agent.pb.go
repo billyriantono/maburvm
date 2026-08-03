@@ -41,6 +41,7 @@ const (
 	VMCommandType_VM_COMMAND_TYPE_RESET_PASSWORD VMCommandType = 11 // Reset the guest root password
 	VMCommandType_VM_COMMAND_TYPE_ATTACH_ISO     VMCommandType = 12 // Attach a bootable install/rescue ISO
 	VMCommandType_VM_COMMAND_TYPE_DETACH_ISO     VMCommandType = 13 // Detach the install/rescue ISO
+	VMCommandType_VM_COMMAND_TYPE_REPAIR_CONSOLE VMCommandType = 14 // Inject a VNC <graphics> device into a domain that lacks one (restarts the VM)
 )
 
 // Enum value maps for VMCommandType.
@@ -60,6 +61,7 @@ var (
 		11: "VM_COMMAND_TYPE_RESET_PASSWORD",
 		12: "VM_COMMAND_TYPE_ATTACH_ISO",
 		13: "VM_COMMAND_TYPE_DETACH_ISO",
+		14: "VM_COMMAND_TYPE_REPAIR_CONSOLE",
 	}
 	VMCommandType_value = map[string]int32{
 		"VM_COMMAND_TYPE_UNSPECIFIED":    0,
@@ -76,6 +78,7 @@ var (
 		"VM_COMMAND_TYPE_RESET_PASSWORD": 11,
 		"VM_COMMAND_TYPE_ATTACH_ISO":     12,
 		"VM_COMMAND_TYPE_DETACH_ISO":     13,
+		"VM_COMMAND_TYPE_REPAIR_CONSOLE": 14,
 	}
 )
 
@@ -7028,7 +7031,7 @@ const file_api_proto_agent_proto_rawDesc = "" +
 	"timeout_ms\x18\x03 \x01(\x05R\ttimeoutMs\"C\n" +
 	"\x10ProbeIPsResponse\x12\x15\n" +
 	"\x06in_use\x18\x01 \x03(\tR\x05inUse\x12\x18\n" +
-	"\achecked\x18\x02 \x03(\tR\achecked*\xaf\x03\n" +
+	"\achecked\x18\x02 \x03(\tR\achecked*\xd3\x03\n" +
 	"\rVMCommandType\x12\x1f\n" +
 	"\x1bVM_COMMAND_TYPE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16VM_COMMAND_TYPE_CREATE\x10\x01\x12\x19\n" +
@@ -7044,7 +7047,8 @@ const file_api_proto_agent_proto_rawDesc = "" +
 	"\x12\"\n" +
 	"\x1eVM_COMMAND_TYPE_RESET_PASSWORD\x10\v\x12\x1e\n" +
 	"\x1aVM_COMMAND_TYPE_ATTACH_ISO\x10\f\x12\x1e\n" +
-	"\x1aVM_COMMAND_TYPE_DETACH_ISO\x10\r*\xda\x01\n" +
+	"\x1aVM_COMMAND_TYPE_DETACH_ISO\x10\r\x12\"\n" +
+	"\x1eVM_COMMAND_TYPE_REPAIR_CONSOLE\x10\x0e*\xda\x01\n" +
 	"\x16DiskStorageDisposition\x12(\n" +
 	"$DISK_STORAGE_DISPOSITION_UNSPECIFIED\x10\x00\x12$\n" +
 	" DISK_STORAGE_DISPOSITION_UNKNOWN\x10\x01\x12$\n" +

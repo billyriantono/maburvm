@@ -278,6 +278,20 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 	case pb.VMCommandType_VM_COMMAND_TYPE_DETACH_ISO:
 		err = libvirt.DetachISO(req.VmId)
 		state = pb.VMState_VM_STATE_STOPPED
+	case pb.VMCommandType_VM_COMMAND_TYPE_REPAIR_CONSOLE:
+		// Inject a VNC graphics device into a domain that lacks one (imported
+		// Virtualizor VMs). Not hot-pluggable, so a running domain is restarted.
+		var restarted bool
+		restarted, _, err = libvirt.EnsureVNCGraphics(req.VmId)
+		// Report the resulting run state: a restart leaves it running; otherwise
+		// the state is unchanged, so read it back rather than assume.
+		if err == nil {
+			if restarted {
+				state = pb.VMState_VM_STATE_RUNNING
+			} else if st, serr := libvirt.GetVMStatus(req.VmId); serr == nil {
+				state = mapVMStatusToPBState(st)
+			}
+		}
 	default:
 		return nil, status.Errorf(codes.InvalidArgument, "unknown command: %v", req.Command)
 	}

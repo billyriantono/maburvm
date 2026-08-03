@@ -1268,6 +1268,61 @@ func (h *VMHandler) EnableConsole(c echo.Context) error { return h.setConsole(c,
 // DisableConsole handles POST /api/vms/:id/console/disable
 func (h *VMHandler) DisableConsole(c echo.Context) error { return h.setConsole(c, false) }
 
+// RepairConsole handles POST /api/vms/:id/console/repair. It injects a VNC
+// graphics device into a domain that lacks one (imported Virtualizor VMs). This
+// RESTARTS the VM if it is running, so it is gated behind an explicit confirm.
+func (h *VMHandler) RepairConsole(c echo.Context) error {
+	id := c.Param("id")
+	if id == "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error":   "Bad Request",
+			"message": "VM ID is required",
+		})
+	}
+
+	if !h.authorizeVM(c, id) {
+		return nil
+	}
+
+	// Restarting a VM is disruptive — require an explicit confirm flag.
+	var body struct {
+		Confirm bool `json:"confirm"`
+	}
+	_ = c.Bind(&body)
+	if !body.Confirm && c.QueryParam("confirm") != "true" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error":   "Confirmation Required",
+			"message": "Repairing the console restarts the VM. Retry with {\"confirm\": true}.",
+		})
+	}
+
+	vm, err := h.service.RepairConsole(c.Request().Context(), id)
+	if err != nil {
+		if errors.Is(err, service.ErrVMNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{
+				"error":   "Not Found",
+				"message": "VM not found",
+			})
+		}
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+			"error":   "Internal Server Error",
+			"message": err.Error(),
+		})
+	}
+
+	port := 0
+	if vm.VNCPort != nil {
+		port = *vm.VNCPort
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Console repaired (VNC enabled); the VM was restarted if it was running",
+		"data": map[string]interface{}{
+			"console_enabled": vm.ConsoleEnabled,
+			"vnc_port":        port,
+		},
+	})
+}
+
 // setConsole toggles VNC console access for a VM.
 func (h *VMHandler) setConsole(c echo.Context, enabled bool) error {
 	id := c.Param("id")
@@ -1550,6 +1605,7 @@ func RegisterVMRoutes(e *echo.Echo, handler *VMHandler, db *gorm.DB) {
 		consoleToken.DELETE("/token", handler.RevokeConsoleToken)
 		consoleToken.POST("/enable", handler.EnableConsole)
 		consoleToken.POST("/disable", handler.DisableConsole)
+		consoleToken.POST("/repair", handler.RepairConsole)
 	}
 }
 

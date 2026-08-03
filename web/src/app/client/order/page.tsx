@@ -3,7 +3,7 @@
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
-import { ArrowLeft, Check, Cpu, MemoryStick, HardDrive, Gauge, KeyRound } from "lucide-react"
+import { ArrowLeft, Check, Cpu, MemoryStick, HardDrive, Gauge, KeyRound, Database } from "lucide-react"
 import { usePlans } from "@/lib/hooks/use-plans"
 import { useTemplates } from "@/lib/hooks/use-templates"
 import { useCreateVM } from "@/lib/hooks/use-vms"
@@ -60,7 +60,9 @@ export default function OrderVMPage() {
           ram: selectedPlan.ram,
           disk: selectedPlan.disk,
         },
-        bandwidth_mbps: selectedPlan.bandwidth_mbps,
+        // Do NOT send bandwidth_mbps/node/pool — clients may not set
+        // infrastructure/network placement (server rejects it). The backend
+        // derives bandwidth + placement from the plan automatically.
         ssh_key_ids: selectedKeyIds,
       },
       {
@@ -108,6 +110,7 @@ export default function OrderVMPage() {
                       <span className="flex items-center gap-1"><MemoryStick className="w-3 h-3" />{p.ram} MB</span>
                       <span className="flex items-center gap-1"><HardDrive className="w-3 h-3" />{p.disk} GB</span>
                       <span className="flex items-center gap-1"><Gauge className="w-3 h-3" />{p.bandwidth_mbps} Mbps</span>
+                      <span className="col-span-2 flex items-center gap-1"><Database className="w-3 h-3" />{p.data_quota_gb === 0 ? "Unlimited transfer" : p.data_quota_gb >= 1000 ? `${p.data_quota_gb / 1000} TB / mo transfer` : `${p.data_quota_gb} GB / mo transfer`}</span>
                     </div>
                   </button>
                 )

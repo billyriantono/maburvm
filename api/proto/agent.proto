@@ -275,6 +275,7 @@ enum VMCommandType {
   VM_COMMAND_TYPE_RESET_PASSWORD = 11; // Reset the guest root password
   VM_COMMAND_TYPE_ATTACH_ISO = 12; // Attach a bootable install/rescue ISO
   VM_COMMAND_TYPE_DETACH_ISO = 13; // Detach the install/rescue ISO
+  VM_COMMAND_TYPE_REPAIR_CONSOLE = 14; // Inject a VNC <graphics> device into a domain that lacks one (restarts the VM)
 }
 
 // DiskStorageDisposition is the fail-closed, idempotent accountability verdict

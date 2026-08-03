@@ -331,6 +331,21 @@ export function useSetConsoleEnabled(id: string) {
   })
 }
 
+// useRepairConsole injects a VNC graphics device into a VM whose libvirt domain
+// has none (imported Virtualizor VMs). This RESTARTS the VM if it is running, so
+// the backend requires an explicit confirm flag.
+export function useRepairConsole(id: string) {
+  const queryClient = useQueryClient()
+  return useMutation<void, Error, void>({
+    mutationFn: async () => {
+      await api.post(`/api/v1/vms/${id}/console/repair`, { confirm: true })
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['vms', 'detail', id] })
+    },
+  })
+}
+
 // useMigrateVM live-migrates a VM to another node.
 export function useMigrateVM(id: string) {
   const queryClient = useQueryClient()

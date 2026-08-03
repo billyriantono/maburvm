@@ -1273,85 +1273,78 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 		return err
 	}
 
-	// Create snapshot based on backup type
-	var snapshotOp pb.SnapshotOperationType
-	switch job.Args.BackupType {
-	case BackupTypeSnapshot:
-		snapshotOp = pb.SnapshotOperationType_SNAPSHOT_OPERATION_TYPE_CREATE
-	case BackupTypeFull:
-		// For full backup, we might need a different approach
-		// For now, use snapshot as base
-		snapshotOp = pb.SnapshotOperationType_SNAPSHOT_OPERATION_TYPE_CREATE
-	}
+	// Full-disk backup (the only type real flows enqueue) exports the qcow2
+	// directly via BackupDisk below. We deliberately DO NOT take a libvirt
+	// snapshot first: imported Virtualizor domains have no snapshot metadata and
+	// CreateSnapshot hangs/errors on them, and the retryable-error path here would
+	// then loop through River's default 25 attempts while the backup row sits stuck
+	// at in_progress/0 B forever. A direct qcow2 export is crash-consistent and is
+	// exactly what the working RestoreDisk path expects.
+	// ponytail: crash-consistent copy of a running disk; add fs-quiesce only if a
+	// restored image ever shows dirty-fs corruption in the field.
+	var snapshotName string
+	if job.Args.BackupType == BackupTypeSnapshot {
+		req := &pb.SnapshotRequest{
+			VmId:        vm.ID,
+			Operation:   pb.SnapshotOperationType_SNAPSHOT_OPERATION_TYPE_CREATE,
+			Name:        fmt.Sprintf("backup_%s_%d", job.Args.BackupType, time.Now().Unix()),
+			Description: fmt.Sprintf("Backup job %s for VM %s", jobID, vm.ID),
+			Quiesce:     true,
+		}
 
-	// Create backup snapshot
-	req := &pb.SnapshotRequest{
-		VmId:        vm.ID,
-		Operation:   snapshotOp,
-		Name:        fmt.Sprintf("backup_%s_%d", job.Args.BackupType, time.Now().Unix()),
-		Description: fmt.Sprintf("Backup job %s for VM %s", jobID, vm.ID),
-		Quiesce:     true,
-	}
+		resp, err := client.CreateSnapshot(agentAuthContext(ctx, node), req)
+		if err != nil {
+			w.logger.ErrorContext(ctx, "failed to create backup snapshot",
+				"error", err,
+				"vm_id", vm.ID,
+			)
 
-	resp, err := client.CreateSnapshot(agentAuthContext(ctx, node), req)
-	if err != nil {
-		w.logger.ErrorContext(ctx, "failed to create backup snapshot",
-			"error", err,
-			"vm_id", vm.ID,
-		)
-
-		if IsRetryableError(err) {
-			if w.metrics != nil {
-				w.metrics.RecordJobRetried()
+			// Only keep retrying while there are attempts left; on the final
+			// attempt mark the row failed so it never lingers in_progress.
+			if IsRetryableError(err) && job.Attempt < job.MaxAttempts {
+				if w.metrics != nil {
+					w.metrics.RecordJobRetried()
+				}
+				return fmt.Errorf("retryable error creating snapshot: %w", err)
 			}
-			return fmt.Errorf("retryable error creating snapshot: %w", err)
+
+			if w.metrics != nil {
+				w.metrics.RecordJobFailed()
+			}
+			markBackupFailed(ctx, job.Args.BackupID, err.Error())
+			return river.JobCancel(fmt.Errorf("error creating snapshot: %w", err))
 		}
 
-		if w.metrics != nil {
-			w.metrics.RecordJobFailed()
+		if !resp.Success {
+			w.logger.ErrorContext(ctx, "backup snapshot creation failed",
+				"vm_id", vm.ID,
+				"error_code", resp.Error.GetCode(),
+				"error_message", resp.Error.GetMessage(),
+			)
+			if w.metrics != nil {
+				w.metrics.RecordJobFailed()
+			}
+			markBackupFailed(ctx, job.Args.BackupID, resp.Error.GetMessage())
+			return fmt.Errorf("snapshot creation failed: %s", resp.Error.GetMessage())
 		}
-		return river.JobCancel(fmt.Errorf("non-retryable error creating snapshot: %w", err))
+
+		// Reap the snapshot this attempt created, on every return path. Without
+		// this, each River retry leaks a host snapshot (fresh name per attempt)
+		// and even successful backups leave it behind. The agent already
+		// implements SNAPSHOT_OPERATION_TYPE_DELETE, so no agent redeploy needed.
+		snapshotName = resp.Snapshot.GetSnapshotId()
+		defer func() {
+			reapCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if _, delErr := client.CreateSnapshot(agentAuthContext(reapCtx, node), &pb.SnapshotRequest{
+				VmId:       vm.ID,
+				Operation:  pb.SnapshotOperationType_SNAPSHOT_OPERATION_TYPE_DELETE,
+				SnapshotId: snapshotName,
+			}); delErr != nil {
+				w.logger.WarnContext(ctx, "failed to reap backup snapshot", "vm_id", vm.ID, "snapshot", snapshotName, "error", delErr)
+			}
+		}()
 	}
-
-	if !resp.Success {
-		w.logger.ErrorContext(ctx, "backup snapshot creation failed",
-			"vm_id", vm.ID,
-			"error_code", resp.Error.GetCode(),
-			"error_message", resp.Error.GetMessage(),
-		)
-		if w.metrics != nil {
-			w.metrics.RecordJobFailed()
-		}
-		if job.Args.BackupID != "" {
-			_ = globalWorkerContext.DB.WithContext(ctx).
-				Model(&models.Backup{}).
-				Where("id = ?", job.Args.BackupID).
-				Updates(map[string]interface{}{
-					"status":        models.BackupStatusFailed,
-					"error_message": resp.Error.GetMessage(),
-				}).Error
-		}
-		return fmt.Errorf("snapshot creation failed: %s", resp.Error.GetMessage())
-	}
-
-	// Reap the snapshot this attempt created, on every return path. Without this,
-	// each River retry leaks a host snapshot (fresh name per attempt) and even
-	// successful backups leave it behind. The agent already implements
-	// SNAPSHOT_OPERATION_TYPE_DELETE, so no agent redeploy is needed.
-	// ponytail: per-attempt reap; a panel crash mid-Work still orphans one — add
-	// an agent-side stale-snapshot sweeper only if that shows up in the field.
-	snapshotName := resp.Snapshot.GetSnapshotId()
-	defer func() {
-		reapCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if _, delErr := client.CreateSnapshot(agentAuthContext(reapCtx, node), &pb.SnapshotRequest{
-			VmId:       vm.ID,
-			Operation:  pb.SnapshotOperationType_SNAPSHOT_OPERATION_TYPE_DELETE,
-			SnapshotId: snapshotName,
-		}); delErr != nil {
-			w.logger.WarnContext(ctx, "failed to reap backup snapshot", "vm_id", vm.ID, "snapshot", snapshotName, "error", delErr)
-		}
-	}()
 
 	// Export the actual disk image and upload it to object storage VIA THE AGENT
 	// (the agent has the disk file and storage credentials). This replaces the
@@ -1406,7 +1399,7 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 	w.logger.InfoContext(ctx, "backup completed successfully",
 		"job_id", jobID,
 		"vm_id", vm.ID,
-		"snapshot_id", resp.Snapshot.GetSnapshotId(),
+		"snapshot_id", snapshotName,
 		"backup_type", job.Args.BackupType,
 		"backup_id", job.Args.BackupID,
 		"backup_size", backupResp.SizeBytes,

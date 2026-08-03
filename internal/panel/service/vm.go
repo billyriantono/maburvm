@@ -2249,6 +2249,70 @@ func (s *VMService) SetConsoleEnabled(ctx context.Context, vmID string, enabled 
 	return vm, nil
 }
 
+// RepairConsole makes the VNC console work for a VM whose libvirt domain has no
+// <graphics> device at all — the case for many imported Virtualizor VMs, whose
+// stored vnc_port is fictional and which `virsh vncdisplay` reports as having no
+// VNC. It asks the agent to inject a VNC graphics device into the persistent
+// domain XML; because graphics is not hot-pluggable, a RUNNING VM is RESTARTED by
+// the agent. Callers MUST gate this behind an explicit confirm. Afterwards the
+// live autoport VNC port is read from the agent and persisted, and console access
+// is enabled.
+func (s *VMService) RepairConsole(ctx context.Context, vmID string) (*models.VM, error) {
+	vm, err := s.vmRepo.GetByIDWithNode(ctx, vmID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrVMNotFound
+		}
+		return nil, fmt.Errorf("failed to get VM: %w", err)
+	}
+
+	client, err := s.getAgentClient(ctx, vm.NodeID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to agent: %w", err)
+	}
+	authCtx, err := s.agentAuthContext(ctx, vm.NodeID)
+	if err != nil {
+		return nil, err
+	}
+	// The agent restarts the VM if it was running, so allow a generous deadline.
+	authCtx, cancel := context.WithTimeout(authCtx, 60*time.Second)
+	defer cancel()
+
+	resp, err := client.ExecuteVMCommand(authCtx, &pb.VMCommandRequest{
+		VmId:    vmID,
+		Command: pb.VMCommandType_VM_COMMAND_TYPE_REPAIR_CONSOLE,
+		Async:   false,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to repair console on node: %w", err)
+	}
+	if !resp.GetSuccess() {
+		return nil, fmt.Errorf("failed to repair console: %s", resp.GetMessage())
+	}
+	s.syncVMStatus(ctx, vm, resp.GetState())
+
+	// Enable console access (was likely off for an imported VM) and refresh the
+	// stored VNC port from the live autoport so the console connects to the right
+	// place without waiting for the reconcile loop.
+	if err := s.db.WithContext(ctx).Model(&models.VM{}).
+		Where("id = ?", vmID).Update("console_enabled", true).Error; err != nil {
+		s.logger.WarnContext(ctx, "failed to enable console after repair", "vm_id", vmID, "error", err)
+	} else {
+		vm.ConsoleEnabled = true
+	}
+
+	if st, serr := s.getVMAgentStatus(ctx, vmID, vm.NodeID); serr == nil && st.GetVncPort() > 0 {
+		livePort := int(st.GetVncPort())
+		if uerr := s.vmRepo.UpdateVNCPort(ctx, vmID, livePort); uerr != nil {
+			s.logger.WarnContext(ctx, "failed to persist VNC port after repair", "vm_id", vmID, "error", uerr)
+		}
+		vm.VNCPort = &livePort
+	}
+
+	s.logger.InfoContext(ctx, "VM console repaired (VNC graphics injected)", "vm_id", vmID)
+	return vm, nil
+}
+
 // ============================================================================
 // Status Sync from Agent Heartbeat
 // ============================================================================

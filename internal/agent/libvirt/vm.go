@@ -1208,6 +1208,77 @@ func extractVNCPort(xmlDesc string) int {
 	return 0
 }
 
+// EnsureVNCGraphics guarantees the domain has a VNC <graphics> device so the
+// console proxy has something to connect to. Imported (e.g. Virtualizor) domains
+// are often defined with NO graphics at all, so the stored vnc_port is fictional
+// and `virsh vncdisplay` errors — there is genuinely no VNC to proxy.
+//
+// When VNC is already present it is a no-op and returns the current port. When it
+// is missing it rewrites the PERSISTENT domain XML to add
+// <graphics type='vnc' port='-1' autoport='yes' listen='0.0.0.0'/> (plus a qxl
+// video device if none exists), because adding graphics is NOT hot-pluggable.
+// If the domain is running it is then RESTARTED (destroy + create) so the new XML
+// takes effect. Returns whether it restarted and the live autoport VNC port.
+func EnsureVNCGraphics(uuidStr string) (restarted bool, vncPort int, err error) {
+	if _, err := uuid.Parse(uuidStr); err != nil {
+		return false, 0, fmt.Errorf("invalid UUID format: %w", err)
+	}
+
+	err = WithConnection(func(conn *libvirt.Connect) error {
+		dom, derr := conn.LookupDomainByUUIDString(uuidStr)
+		if derr != nil {
+			return fmt.Errorf("domain not found: %w", derr)
+		}
+		defer dom.Free()
+
+		// Read the persistent (inactive) config, not the live runtime XML — that's
+		// what DefineXML redefines.
+		inactiveXML, derr := dom.GetXMLDesc(libvirt.DOMAIN_XML_INACTIVE)
+		if derr != nil {
+			return fmt.Errorf("failed to read domain XML: %w", derr)
+		}
+
+		newXML, added, terr := ensureVNCInXML(inactiveXML)
+		if terr != nil {
+			return terr
+		}
+		if !added {
+			// Already has VNC — nothing to repair. Report the live port.
+			vncPort = extractVNCPort(inactiveXML)
+			return nil
+		}
+
+		// Redefine the persistent domain with the added graphics.
+		if _, derr = conn.DomainDefineXML(string(newXML)); derr != nil {
+			return fmt.Errorf("failed to redefine domain with VNC: %w", derr)
+		}
+
+		// Graphics is not hot-pluggable: a running domain must be restarted for the
+		// new device to appear. Destroy + create picks up the redefined XML.
+		state, _, serr := dom.GetState()
+		if serr != nil {
+			return fmt.Errorf("failed to get domain state: %w", serr)
+		}
+		if state == libvirt.DOMAIN_RUNNING || state == libvirt.DOMAIN_PAUSED {
+			if derr = dom.Destroy(); derr != nil {
+				return fmt.Errorf("failed to stop domain for VNC repair: %w", derr)
+			}
+			if derr = dom.Create(); derr != nil {
+				return fmt.Errorf("failed to restart domain after VNC repair: %w", derr)
+			}
+			restarted = true
+		}
+
+		// Read the live port assigned by libvirt's autoport.
+		liveXML, gerr := dom.GetXMLDesc(0)
+		if gerr == nil {
+			vncPort = extractVNCPort(liveXML)
+		}
+		return nil
+	})
+	return restarted, vncPort, err
+}
+
 // ListVMs returns a list of all VMs
 func ListVMs() ([]VMInfo, error) {
 	var vms []VMInfo

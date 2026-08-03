@@ -14,7 +14,7 @@ import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { useVM, useVMMetrics, useVMMetricsHistory, useVMAction, useDeleteVM, useAttachISO, useDetachISO, useRescueVM, useUnrescueVM, useMigrateVM, useRegenerateVNCPassword, useSetConsoleEnabled, useRebuildVM, useResetPassword, useCloneVM, useUpdateVM } from "@/lib/hooks/use-vms"
+import { useVM, useVMMetrics, useVMMetricsHistory, useVMAction, useDeleteVM, useAttachISO, useDetachISO, useRescueVM, useUnrescueVM, useMigrateVM, useRegenerateVNCPassword, useSetConsoleEnabled, useRepairConsole, useRebuildVM, useResetPassword, useCloneVM, useUpdateVM } from "@/lib/hooks/use-vms"
 import { useUsers } from "@/lib/hooks/use-users"
 import { useSSHKeys } from "@/lib/hooks/use-ssh-keys"
 import { useNodes } from "@/lib/hooks/use-nodes"
@@ -462,6 +462,7 @@ export default function VMDetailPage() {
   const migrateVM = useMigrateVM(vmId)
   const regenerateVNC = useRegenerateVNCPassword(vmId)
   const setConsole = useSetConsoleEnabled(vmId)
+  const repairConsole = useRepairConsole(vmId)
   const rebuildVM = useRebuildVM(vmId)
   const resetPassword = useResetPassword(vmId)
   const cloneVM = useCloneVM(vmId)
@@ -1386,6 +1387,20 @@ export default function VMDetailPage() {
                 <Terminal className="w-5 h-5" />Console
               </h2>
               <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={repairConsole.isPending}
+                  onClick={() => {
+                    if (window.confirm("Repair console injects VNC into this VM's definition. If the VM is running it will be RESTARTED. Continue?")) {
+                      repairConsole.mutate()
+                    }
+                  }}
+                  title="Fixes a black/unavailable console on imported VMs by injecting a VNC device (restarts the VM)"
+                >
+                  <MonitorOff className="w-4 h-4 mr-2" />
+                  {repairConsole.isPending ? "Repairing..." : "Repair console"}
+                </Button>
                 {vm.status === "running" && vm.console_enabled !== false && (
                   <Button
                     variant={consoleActive ? "destructive" : "default"}
