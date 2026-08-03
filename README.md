@@ -17,14 +17,26 @@ Panel Server:
 - **Agent**: Lightweight Go agent running on each KVM hypervisor
 - **Communication**: gRPC with TLS between panel and agents
 
+## Features
+
+- **VM lifecycle** — create, start/stop/restart, rebuild/reinstall, delete, live status, resource resize
+- **In-browser consoles** — VNC (noVNC) and SSH (xterm.js) proxied through the panel
+- **Images** — capture a VM's disk to object storage; images survive VM deletion and can seed a new VM (Vultr/DigitalOcean-style)
+- **Snapshots & backups** — libvirt snapshots, scheduled/manual backups to S3-compatible storage, restore
+- **Networking** — IP pools/IPAM, managed private networks (VLAN), firewall rules, port forwarding, bandwidth shaping & monthly data quotas
+- **Multi-tenant** — admin panel + self-service client portal, per-tenant ownership isolation, role-based access
+- **Accounts** — 2FA (TOTP), IP whitelisting, forgot/reset password, SSH-key management, WHMCS provisioning module
+- **Operations** — audit logging, dashboard stats, OS-template sync across nodes, cloud-init guest configuration
+
 ## Tech Stack
 
 | Layer | Technology |
 |-------|-----------|
 | Backend API | Go 1.25, Echo v4 (HTTP) |
-| Frontend | Next.js 14, React 18, TypeScript, Tailwind CSS, shadcn/ui |
+| Frontend | Next.js 15, React 19, TypeScript 5, Tailwind CSS 3, shadcn/ui |
 | Database | PostgreSQL 16 (via GORM) |
 | Job Queue | River (PostgreSQL-based) |
+| Object Storage | S3-compatible (MinIO / Cloudflare R2) for backups & images |
 | Panel-Agent Comm | gRPC with TLS |
 | Agent-KVM | libvirt-go bindings |
 
@@ -156,9 +168,10 @@ All configuration is done via environment variables. See `.env.example` for the 
 
 All routes are under `/api/v1/`:
 
-- **Auth**: POST login, register, logout, GET me
+- **Auth**: POST login, register, logout, forgot-password, reset-password, GET me
 - **Nodes**: CRUD + token regeneration
-- **VMs**: CRUD + lifecycle (start/stop/restart/rebuild)
+- **VMs**: CRUD + lifecycle (start/stop/restart/rebuild) + reset-password + console
+- **Images**: Capture from VM, list, delete, create-VM-from-image
 - **Templates**: CRUD + sync to nodes
 - **Networks**: Network & firewall management
 - **Snapshots**: Create/restore/delete
@@ -203,4 +216,4 @@ maburvm/
 
 ## License
 
-Private - All rights reserved.
+Released under the [MIT License](LICENSE).

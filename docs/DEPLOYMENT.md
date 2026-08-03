@@ -244,6 +244,62 @@ Network layout (honest, least-privilege split):
 A Docker network is **not** a complete host/firewall policy — enforce agent
 ingress at the firewall and treat `edge`/`agent-egress` as ordinary bridges.
 
+### 7.1 Reference production setup (Caddy + Google Trust Services)
+
+The live reference deployment terminates TLS with **Caddy**, obtaining
+certificates from **Google Trust Services (GTS)** via ACME with External Account
+Binding (EAB), and reverse-proxies to the loopback-published `web` container:
+
+```caddyfile
+mabur.gopek.id {
+    tls {
+        # ACME with Google Trust Services (get eab_key_id + eab_mac_key from
+        # Google Cloud → Public CA → external account key).
+        acme_ca https://dv.acme-v02.api.pki.goog/directory
+        acme_eab {
+            key_id  <EAB_KEY_ID>
+            mac_key <EAB_MAC_KEY>
+        }
+    }
+    # web publishes on 127.0.0.1:3000 (WEB_PORT); the panel API is never exposed.
+    reverse_proxy 127.0.0.1:3000
+}
+```
+
+Let's Encrypt (Caddy's default) works with zero extra config if you don't need
+GTS — just drop the `tls` block. Either way, set `PANEL_PUBLIC_URL` and
+`ALLOWED_ORIGINS` to the exact `https://` origin.
+
+### 7.2 Building & shipping on the host
+
+The reference host keeps the repo source under `/root/maburvm` and builds the
+images **on the host** (no registry), then restarts only the changed services:
+
+```bash
+# From your workstation: sync source to the host (per-tree; NEVER lump multiple
+# source dirs into the repo root with --delete — it will delete top-level files
+# like docker-compose*.yml and .env.production). Exclude secrets + env + build junk.
+rsync -az --delete internal/ root@HOST:/root/maburvm/internal/
+rsync -az --delete web/src/ root@HOST:/root/maburvm/web/src/
+
+# On the host: rebuild + roll out. The panel auto-runs SQL + River migrations on
+# boot (see internal/panel/server startup), so schema changes apply on restart.
+cd /root/maburvm
+docker compose -f docker-compose.production.yml --env-file .env.production build panel web
+docker compose -f docker-compose.production.yml --env-file .env.production up -d panel web
+```
+
+`.env.production` is **not** in git. If it is ever lost, reconstruct it from the
+running containers' resolved env (`docker inspect maburvm-panel` /
+`maburvm-minio` → `.Config.Env`) — the required keys are `POSTGRES_USER`,
+`POSTGRES_DB`, `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `PANEL_PUBLIC_URL`,
+`ALLOWED_ORIGINS`. Validate before deploy with
+`docker compose -f docker-compose.production.yml --env-file .env.production config`.
+
+Object storage differs by role: **nodes** back up VM disks / capture images to
+their own configured store (e.g. Cloudflare R2 via `STORAGE_*`/`S3_*` env), while
+the **panel** stack ships a local MinIO for panel-side storage operations.
+
 ## 8. Image / tag review
 
 Before each deploy, confirm every tag in `docker-compose.production.yml` is the
