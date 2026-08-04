@@ -81,3 +81,9 @@ deploy/secrets/
 /codebase_index.md
 /prd.md
 /CLAUDE.md
+
+# Local-only design proposals (never published)
+/proposals/
+
+# Local AI/editor tooling state
+.opencode/
