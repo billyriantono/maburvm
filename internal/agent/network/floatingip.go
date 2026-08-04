@@ -311,27 +311,41 @@ func delHostAddress(ip, bridge string) error {
 	return nil
 }
 
-// forwardingSysctls are the kernel switches every host-side rule depends on.
-// bridge-nf-call-iptables makes bridged guest traffic traverse iptables at all;
-// ip_forward lets the host route the DNAT'd packet on to the guest. Both are
-// usually enabled as a side effect of Docker or libvirt, which is exactly why an
-// unset one is so confusing when it happens: rules are present and simply never
-// match.
-var forwardingSysctls = []string{
-	"net.ipv4.ip_forward",
-	"net.bridge.bridge-nf-call-iptables",
-}
-
-// ensureForwardingSysctls sets each required sysctl to 1, logging loudly on
-// failure rather than aborting: a node whose kernel lacks br_netfilter still
-// runs VMs, it just can't enforce host-side rules, and refusing to start the
-// agent over it would be worse.
+// ensureForwardingSysctls checks the two kernel switches host-side rules depend
+// on. They are usually enabled as a side effect of Docker or libvirt, which is
+// exactly what makes an unset one so confusing: the rules are present and simply
+// never match.
+//
+// The two are treated differently on purpose.
+//
+// ip_forward is SET: without it the host cannot route a DNAT'd packet on to the
+// guest, so floating IPs cannot work at all. Enabling routing on a hypervisor
+// that is already routing guest traffic changes nothing that was working before.
+//
+// bridge-nf-call-iptables is only REPORTED, never set. It decides whether
+// already-bridged guest traffic is subjected to iptables — so flipping it from 0
+// to 1 on a node with live VMs would abruptly start enforcing FORWARD rules that
+// have never applied to them, which can cut customer connectivity. That is a
+// maintenance-window decision for an operator, not something an agent restart
+// should do silently. Floating IPs do not need it (their path is host-routed);
+// per-VM firewall rules on bridged VMs do.
 func ensureForwardingSysctls() {
-	for _, key := range forwardingSysctls {
-		if out, err := exec.Command("sysctl", "-w", key+"=1").CombinedOutput(); err != nil {
-			log.Printf("[NetworkManager] WARNING: could not enable %s (%v: %s) — "+
-				"floating IPs, port forwards and firewall rules will not take effect",
-				key, err, strings.TrimSpace(string(out)))
-		}
+	if out, err := exec.Command("sysctl", "-w", "net.ipv4.ip_forward=1").CombinedOutput(); err != nil {
+		log.Printf("[NetworkManager] WARNING: could not enable net.ipv4.ip_forward (%v: %s) — "+
+			"floating IPs and NAT to guests will not work", err, strings.TrimSpace(string(out)))
+	}
+
+	const bridgeNF = "net.bridge.bridge-nf-call-iptables"
+	out, err := exec.Command("sysctl", "-n", bridgeNF).CombinedOutput()
+	switch {
+	case err != nil:
+		log.Printf("[NetworkManager] NOTE: %s is unavailable (br_netfilter not loaded). "+
+			"Floating IPs are unaffected, but per-VM firewall rules on bridged VMs do not take "+
+			"effect. Enabling it changes traffic handling for running VMs — do it in a "+
+			"maintenance window, not automatically.", bridgeNF)
+	case strings.TrimSpace(string(out)) != "1":
+		log.Printf("[NetworkManager] NOTE: %s is 0. Per-VM firewall rules on bridged VMs do not "+
+			"take effect. Left unchanged on purpose: flipping it would start enforcing FORWARD "+
+			"rules on already-running VMs.", bridgeNF)
 	}
 }
