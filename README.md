@@ -4,7 +4,7 @@
 
 **A modern QEMU/KVM virtual machine management platform.**
 
-Built for VPS hosting businesses managing 500–2000 VMs across multiple physical nodes.
+Multi-tenant VM lifecycle, networking, and storage management across multiple physical nodes.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev)
@@ -31,6 +31,11 @@ Built for VPS hosting businesses managing 500–2000 VMs across multiple physica
 > changes, incomplete features, and rough edges. Independent security review,
 > tested backups, and your own staging validation are strongly advised before
 > running anything you can't afford to lose.
+>
+> **Scale actually exercised to date: ~66 VMs across 2 physical nodes.** The
+> architecture (per-node agents, a job queue, horizontal node scaling) is intended
+> to go further, but larger fleets have not been load-tested — treat any bigger
+> number as an untested design target, not a capability.
 >
 > Suitable today for: evaluation, homelabs, internal/self-hosted infrastructure,
 > and development. If you do run it in anger, please report what breaks.
