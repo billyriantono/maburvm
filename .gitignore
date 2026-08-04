@@ -70,7 +70,7 @@ deploy/secrets/
 .slim/deepwork/
 
 # Local-only planning artifacts (removed from repo + history, kept on disk)
-/.sisyphus/
+.sisyphus/
 /docs/ip-pools-ipam-plan.md
 /docs/MIGRATION_RECOVERY.md
 /docs/virtualizor-parity-checklist.md
