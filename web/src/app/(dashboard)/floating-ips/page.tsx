@@ -30,6 +30,7 @@ import {
   useReleaseFloatingIP,
 } from "@/lib/hooks/use-floating-ips"
 import { useIPPools } from "@/lib/hooks/use-ipam"
+import { useUsers } from "@/lib/hooks/use-users"
 import { useVMs } from "@/lib/hooks/use-vms"
 import type { IPAddress, NATMode } from "@/types"
 
@@ -37,6 +38,7 @@ export default function FloatingIPsPage() {
   const { data: floatingIPs, isLoading, error, refetch } = useFloatingIPs()
   const { data: pools } = useIPPools()
   const { data: vmsData } = useVMs({ pageSize: 100 })
+  const { data: usersData } = useUsers({ pageSize: 100 })
   const allocate = useAllocateFloatingIP()
   const attach = useAttachFloatingIP()
   const detach = useDetachFloatingIP()
@@ -45,6 +47,7 @@ export default function FloatingIPsPage() {
   const [allocateOpen, setAllocateOpen] = useState(false)
   const [poolId, setPoolId] = useState("")
   const [requestedIP, setRequestedIP] = useState("")
+  const [ownerId, setOwnerId] = useState("")
   const [attachTarget, setAttachTarget] = useState<IPAddress | null>(null)
   const [attachVMID, setAttachVMID] = useState("")
   const [natMode, setNatMode] = useState<NATMode | "auto">("auto")
@@ -60,10 +63,12 @@ export default function FloatingIPsPage() {
       const fip = await allocate.mutateAsync({
         pool_id: poolId,
         requested_ip: requestedIP.trim() || undefined,
+        user_id: ownerId || undefined,
       })
       toast.success(`Floating IP ${fip.address} allocated`)
       setAllocateOpen(false)
       setRequestedIP("")
+      setOwnerId("")
     } catch (err) {
       toast.error(`Allocation failed: ${(err as Error).message}`)
     }
@@ -249,6 +254,25 @@ export default function FloatingIPsPage() {
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="fip-owner">Owner</Label>
+              <Select value={ownerId} onValueChange={setOwnerId}>
+                <SelectTrigger id="fip-owner">
+                  <SelectValue placeholder="Yourself" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(usersData?.data ?? []).map((u) => (
+                    <SelectItem key={u.id} value={u.id}>
+                      {u.email}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                The customer this address belongs to. They can then move it between their own VMs
+                from their portal; only you can allocate or release it.
+              </p>
             </div>
             <div className="space-y-2">
               <Label htmlFor="fip-address">Specific address (optional)</Label>

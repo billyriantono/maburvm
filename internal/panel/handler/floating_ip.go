@@ -25,13 +25,16 @@ func NewFloatingIPHandler(s *service.VMService) *FloatingIPHandler {
 func RegisterFloatingIPRoutes(e *echo.Echo, h *FloatingIPHandler, db *gorm.DB) {
 	g := e.Group("/api/v1/floating-ips")
 	g.Use(middleware.RequireAuth(db))
-	g.GET("", h.List, middleware.RequirePermission("network:read"))
+	g.GET("", h.List, middleware.RequirePermission("floating_ip:read"))
 	// Allocating and releasing consume a node's public address space, so they
 	// stay admin-only; attach/detach is a tenant action on an address they own.
 	g.POST("", h.Allocate, middleware.RequirePermission("admin:access"))
 	g.DELETE("/:id", h.Release, middleware.RequirePermission("admin:access"))
-	g.POST("/:id/attach", h.Attach, middleware.RequirePermission("network:update"))
-	g.POST("/:id/detach", h.Detach, middleware.RequirePermission("network:update"))
+	// Clients hold floating_ip:update, so these are reachable for them — the
+	// ownership guards below are what keeps a client to their own addresses and
+	// their own VMs. Allocate/release stay admin:access above.
+	g.POST("/:id/attach", h.Attach, middleware.RequirePermission("floating_ip:update"))
+	g.POST("/:id/detach", h.Detach, middleware.RequirePermission("floating_ip:update"))
 }
 
 // authorizeFloatingIP enforces tenant isolation on a floating IP. Admins may act

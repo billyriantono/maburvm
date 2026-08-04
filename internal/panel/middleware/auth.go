@@ -73,6 +73,7 @@ func GetPermissionsForRole(role models.UserRole) []string {
 			"user:create", "user:read", "user:update", "user:delete",
 			"backup:create", "backup:read", "backup:update", "backup:delete",
 			"network:create", "network:read", "network:update", "network:delete",
+			"floating_ip:read", "floating_ip:update",
 			"firewall:create", "firewall:read", "firewall:update", "firewall:delete",
 			"snapshot:create", "snapshot:read", "snapshot:update", "snapshot:delete",
 			"audit:read",
@@ -88,6 +89,14 @@ func GetPermissionsForRole(role models.UserRole) []string {
 			"vm:lifecycle", "vm:console",
 			"backup:create", "backup:read", "backup:update", "backup:delete",
 			"snapshot:create", "snapshot:read", "snapshot:update", "snapshot:delete",
+			// Floating IPs get their own permissions rather than reusing network:*,
+			// precisely because network:read would expose global IPAM (see below).
+			// These are safe for a client: every floating-IP handler filters by, or
+			// checks, ownership — a client sees only floating IPs allocated to them
+			// and can only point one at a VM they own. Allocating a new address from
+			// a pool and releasing one back to it remain admin:access, so a client
+			// can move what they have but never consume a node's address space.
+			"floating_ip:read", "floating_ip:update",
 			// NOTE: no "network:read". That permission gates GLOBAL, un-tenant-filtered
 			// IPAM (/ipam/pools/*) and DNS reads, which would let any client enumerate
 			// every tenant's IP↔VM↔node↔rDNS mapping. A client's own VM interfaces are
