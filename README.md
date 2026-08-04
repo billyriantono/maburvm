@@ -28,6 +28,7 @@ Built for VPS hosting businesses managing 500–2000 VMs across multiple physica
 - [API Routes](#api-routes)
 - [Development](#development)
 - [Project Structure](#project-structure)
+- [Contributing](#contributing)
 - [License](#license)
 
 ## Features
@@ -239,6 +240,15 @@ maburvm/
 ├── Dockerfile.*         # Production containers
 └── Makefile             # Development commands
 ```
+
+## Contributing
+
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for setup
+instructions, coding conventions, and the pull-request process.
+
+> **Note for contributors:** `go build ./...` only works on Linux with libvirt
+> installed — the node agent links against libvirt via cgo. Scope builds to
+> `./internal/panel/... ./internal/shared/...` on other platforms.
 
 ## License
 
