@@ -256,7 +256,11 @@ services:
         condition: service_healthy
         restart: true
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3000/"]
+      # Use 127.0.0.1, NOT localhost: inside the container "localhost" also
+      # resolves to ::1, wget tries IPv6 first, and Next.js listens on IPv4
+      # (0.0.0.0:3000) only — so the check would fail forever while the app is
+      # actually serving fine.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/"]
       interval: 15s
       timeout: 5s
       retries: 5
