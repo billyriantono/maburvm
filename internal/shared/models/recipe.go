@@ -7,7 +7,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// Recipe is a user's saved first-boot script (Virtualizor "Recipes" parity).
+// Recipe is a user's saved first-boot script (first-boot recipes).
 // A recipe is selectable when creating a VM; its Script is injected as the
 // per-instance cloud-init user-data so it runs once on first boot.
 type Recipe struct {

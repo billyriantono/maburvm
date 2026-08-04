@@ -307,7 +307,7 @@ func (s *NetworkService) primaryNetworkID(ctx context.Context, vmID string) (str
 
 // AddPortForwardForVM adds a port forward to the VM's primary network interface.
 // It backs the VM-level /vms/:id/port-forwards endpoint, which addresses port
-// forwards by VM rather than by a specific interface (Virtualizor-style).
+// forwards by VM rather than by a specific interface.
 func (s *NetworkService) AddPortForwardForVM(ctx context.Context, vmID string, req *AddPortForwardRequest) (*AddPortForwardResponse, error) {
 	networkID, err := s.primaryNetworkID(ctx, vmID)
 	if err != nil {
@@ -490,7 +490,7 @@ func (s *NetworkService) GetNetworkInterfaces(ctx context.Context, vmID string) 
 
 // NetworkInterfaceDetail enriches a VM interface with the gateway, netmask,
 // bridge and rDNS resolved from the owning IPAM pool/address, so the VM detail
-// page can show full per-IP networking like Virtualizor.
+// page can show full per-IP networking.
 type NetworkInterfaceDetail struct {
 	models.Network
 	Gateway string `json:"gateway,omitempty"`
@@ -544,7 +544,7 @@ func (s *NetworkService) GetNetworkInterfaceDetails(ctx context.Context, vmID st
 		}
 	}
 
-	// Virtualizor-style: load all CIDR-matching pools so interfaces whose IP
+	// Per-pool: load all CIDR-matching pools so interfaces whose IP
 	// isn't explicitly assigned (e.g. pre-existing networks or imports) still
 	// get gateway, netmask and bridge from the owning pool.
 	var allPools []models.IPPool
@@ -588,7 +588,7 @@ func (s *NetworkService) GetNetworkInterfaceDetails(ctx context.Context, vmID st
 				}
 			}
 		}
-		// Last-resort Virtualizor-style display fallback: when an imported/pre-existing
+		// Last-resort per-IP display fallback: when an imported/pre-existing
 		// interface has no IPAM pool yet, infer common IPv4 /24 details so the VM page
 		// still shows usable network information instead of blank columns. Operators
 		// can later attach the IP to a real IP pool to override these values.

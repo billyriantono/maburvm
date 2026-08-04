@@ -1,4 +1,4 @@
--- Add Virtualizor-style fields to storage_pools
+-- Add extra fields to storage_pools
 ALTER TABLE storage_pools ADD COLUMN IF NOT EXISTS file_format VARCHAR(20) NOT NULL DEFAULT 'raw';
 ALTER TABLE storage_pools ADD COLUMN IF NOT EXISTS alert_threshold INTEGER NOT NULL DEFAULT 90;
 ALTER TABLE storage_pools ADD COLUMN IF NOT EXISTS overcommit BIGINT NOT NULL DEFAULT 0;

@@ -172,7 +172,7 @@ func (c *MetricsCollector) collectOnce(ctx context.Context) {
 	}
 
 	// Less frequently (every ~5 ticks), ARP-reconcile each node's pool IPs so
-	// addresses used by VMs the panel doesn't manage (pre-existing Virtualizor
+	// addresses used by VMs the panel doesn't manage (pre-existing imported
 	// guests) show as reserved and are never allocated. It's heavier (one ARP per
 	// candidate IP) so it doesn't need to run every tick.
 	c.tick++

@@ -2,7 +2,7 @@
 
 # MaburVM
 
-**A modern QEMU/KVM virtual machine management panel — an open-source Virtualizor replacement.**
+**A modern QEMU/KVM virtual machine management platform.**
 
 Built for VPS hosting businesses managing 500–2000 VMs across multiple physical nodes.
 
@@ -100,8 +100,7 @@ cp .env.example .env
 # 4. Install dependencies
 make install
 
-# 5. Run database migrations (forward-only: applied migrations are immutable;
-#    see docs/MIGRATION_RECOVERY.md for rollback/recovery policy)
+# 5. Run database migrations (forward-only: applied migrations are immutable)
 make migrate
 
 # 6. Create admin user

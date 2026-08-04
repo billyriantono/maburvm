@@ -68,3 +68,12 @@ deploy/secrets/
 
 # Local deepwork progress
 .slim/deepwork/
+
+# Local-only planning artifacts (removed from repo + history, kept on disk)
+/.sisyphus/
+/docs/ip-pools-ipam-plan.md
+/docs/MIGRATION_RECOVERY.md
+/docs/virtualizor-parity-checklist.md
+/docs/virtualizor-parity-matrix.md
+/docs/virtualizor-replacement-readiness-2026-05-29.md
+/docs/virtualizor-replacement-roadmap.md

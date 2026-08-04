@@ -2,7 +2,7 @@ package libvirt
 
 import "testing"
 
-// A Virtualizor-style imported domain defined with NO <graphics> device — the
+// An imported domain defined with NO <graphics> device — the
 // exact case that makes the console unproxyable.
 const noGraphicsDomainXML = `<domain type='kvm'>
   <name>v1153</name>

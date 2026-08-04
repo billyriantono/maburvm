@@ -1,4 +1,4 @@
-// Recipe is a user's saved first-boot script (Virtualizor "Recipes"), injected
+// Recipe is a user's saved first-boot script (first-boot recipes), injected
 // as cloud-init user-data when a VM is created so it runs once on first boot.
 export interface Recipe {
   id: string;

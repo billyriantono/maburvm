@@ -1,4 +1,4 @@
--- Per-user first-boot scripts (Virtualizor "Recipes" parity). A recipe's script
+-- Per-user first-boot scripts (first-boot recipes). A recipe's script
 -- is injected as cloud-init user-data when a VM is created, running once on
 -- first boot. Only the owning user can see or apply their recipes.
 CREATE TABLE IF NOT EXISTS recipes (

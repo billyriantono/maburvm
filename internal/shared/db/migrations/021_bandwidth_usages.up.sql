@@ -1,4 +1,4 @@
--- Per-VM monthly bandwidth accounting (Virtualizor parity). One row per VM per
+-- Per-VM monthly bandwidth accounting (parity). One row per VM per
 -- billing period (calendar month). The metrics collector samples cumulative
 -- rx/tx counters and accumulates deltas here; quota_bytes mirrors the VM's
 -- network bandwidth quota and `exceeded` flags overage.

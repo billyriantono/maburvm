@@ -94,7 +94,7 @@ func NewVMManager() *VMManager {
 // generateDomainXML creates a libvirt domain XML configuration using libvirtxml
 // buildDomainCPU returns the <cpu> element for a guest. An empty model defaults
 // to "kvm64" — a portable baseline that live-migrates across heterogeneous hosts
-// (used when the user doesn't pick a CPU model, à la Virtualizor). "host-model"
+// (used when the user doesn't pick a CPU model). "host-model"
 // and "host-passthrough" maximize performance but reduce migratability; any other
 // value is treated as a named custom model.
 func buildDomainCPU(model string) *libvirtxml.DomainCPU {
@@ -277,8 +277,8 @@ func generateDomainXML(config VMConfig) (string, error) {
 	// serial in addition to attaching the cidata seed. On Debian/Ubuntu cloud
 	// images the cidata volume ALONE is not enough — cloud-init's ds-identify runs
 	// in an early boot generator and only enables cloud-init when it sees a
-	// datasource hint; the SMBIOS serial is that hint (this is what VirtFusion and
-	// `virt-install --cloud-init` do). Without it cloud-init never runs, so the
+	// datasource hint; the SMBIOS serial is that hint (this is what commercial VM
+	// panels and `virt-install --cloud-init` do). Without it cloud-init never runs, so the
 	// guest never applies its static IP/hostname and falls back to DHCP. Verified
 	// live: seed present + correct, but no SMBIOS hint → cloud-init did not run.
 	if config.CloudInitISOPath != "" {
@@ -1250,7 +1250,7 @@ func ensureVNCInXML(inactiveXML string) (newXML string, added bool, err error) {
 }
 
 // EnsureVNCGraphics guarantees the domain has a VNC <graphics> device so the
-// console proxy has something to connect to. Imported (e.g. Virtualizor) domains
+// console proxy has something to connect to. Imported (e.g. from another platform) domains
 // are often defined with NO graphics at all, so the stored vnc_port is fictional
 // and `virsh vncdisplay` errors — there is genuinely no VNC to proxy.
 //

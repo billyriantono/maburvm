@@ -602,7 +602,7 @@ type CloneVMRequest struct {
 // CloneVM provisions a new VM as an independent copy of an existing one: same
 // template/resources/owner, a fresh hostname/IP/MAC/VNC, and a disk copied from
 // the source. The source must be stopped so the copy is consistent. The clone
-// can target a different node (Virtualizor From → To server), in which case the
+// can target a different node (a From → To server migration), in which case the
 // destination node pulls the source disk over SSH. Reuses the create pipeline.
 func (s *VMService) CloneVM(ctx context.Context, req *CloneVMRequest) (*CreateVMResponse, error) {
 	src, err := s.vmRepo.GetByID(ctx, req.SourceVMID)
@@ -2113,7 +2113,7 @@ func (s *VMService) GetVNCConfig(ctx context.Context, vmID string, includePasswo
 	// against QEMU with exactly this password) matches. Only meaningful while the
 	// VM is running.
 	//
-	// This is best-effort, NOT fatal. Imported (e.g. Virtualizor) domains often
+	// This is best-effort, NOT fatal. Imported (e.g. from another platform) domains often
 	// run VNC with no password auth (QEMU security type "None"); QMP set_password
 	// then fails because auth can't be enabled at runtime — but the console still
 	// works fine without a password (noVNC just skips the auth handshake). Hard-
@@ -2250,7 +2250,7 @@ func (s *VMService) SetConsoleEnabled(ctx context.Context, vmID string, enabled 
 }
 
 // RepairConsole makes the VNC console work for a VM whose libvirt domain has no
-// <graphics> device at all — the case for many imported Virtualizor VMs, whose
+// <graphics> device at all — the case for many imported VMs, whose
 // stored vnc_port is fictional and which `virsh vncdisplay` reports as having no
 // VNC. It asks the agent to inject a VNC graphics device into the persistent
 // domain XML; because graphics is not hot-pluggable, a RUNNING VM is RESTARTED by
@@ -2520,7 +2520,7 @@ func (s *VMService) probeIPsOnNode(ctx context.Context, nodeID, bridge string, i
 
 // ReconcileNodePoolIPs ARP-probes each of the node's pool IPs and keeps IPAM in
 // sync with reality: an available IP that answers ARP (used by an unmanaged VM,
-// e.g. a pre-existing Virtualizor guest) is auto-reserved so it's never
+// e.g. a pre-existing imported guest) is auto-reserved so it's never
 // allocated, and a previously auto-reserved IP that has gone quiet is released
 // back to available. Only 'available' and self-reserved (externalIPNote) rows
 // are ever touched — assigned/disabled/admin-reserved addresses are left alone.

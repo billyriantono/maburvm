@@ -1,4 +1,4 @@
--- Extra data disks attached to a VM (Virtualizor parity). The primary boot disk
+-- Extra data disks attached to a VM (parity). The primary boot disk
 -- is not tracked here — only additional disks managed via the disks API.
 CREATE TABLE IF NOT EXISTS vm_disks (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),

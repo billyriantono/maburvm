@@ -13,7 +13,7 @@ import (
 func htons(h uint16) uint16 { return (h<<8)&0xff00 | (h>>8)&0x00ff }
 
 // sendGratuitousARP broadcasts a gratuitous ARP for ip/mac on the given host
-// bridge, exactly as Virtualizor/VirtFusion do when a VM starts. It announces
+// bridge, exactly as commercial VM panels do when a VM starts. It announces
 // "ip is at mac" to the whole L2 segment (including the uplink to the gateway),
 // so the upstream immediately learns the binding — overwriting any stale entry a
 // previously-assigned VM left — and the new VM is reachable from the internet at

@@ -1,5 +1,5 @@
 -- Per-user SSH public keys, selectable when creating or rebuilding a VM
--- (Virtualizor parity). Only public keys are stored.
+-- (parity). Only public keys are stored.
 CREATE TABLE IF NOT EXISTS ssh_keys (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

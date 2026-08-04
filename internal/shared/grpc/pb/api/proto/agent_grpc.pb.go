@@ -83,7 +83,7 @@ type NodeAgentClient interface {
 	// OS version, kernel version, CPU info, memory, disk, and libvirt version.
 	GetNodeInfo(ctx context.Context, in *GetNodeInfoRequest, opts ...grpc.CallOption) (*GetNodeInfoResponse, error)
 	// ImportDisk imports a disk image from a source path to the VM's storage.
-	// Used for VM migration from external sources like Virtualizor.
+	// Used for VM migration from external sources.
 	ImportDisk(ctx context.Context, in *DiskImportRequest, opts ...grpc.CallOption) (*DiskImportResponse, error)
 	// BackupDisk exports a VM's primary disk (compressed qcow2) and uploads it to
 	// the node's configured object storage, returning the object key, size and
@@ -119,7 +119,7 @@ type NodeAgentClient interface {
 	UndefineNetwork(ctx context.Context, in *UndefineNetworkRequest, opts ...grpc.CallOption) (*UndefineNetworkResponse, error)
 	// ProbeIPs ARP-probes a set of IPs on a bridge and returns those that answer
 	// (i.e. are live on the wire). The panel uses this to detect IPs already used
-	// by VMs it doesn't manage (e.g. pre-existing Virtualizor guests), so it never
+	// by VMs it doesn't manage (e.g. pre-existing unmanaged guests), so it never
 	// allocates a live customer IP and its IPAM view reflects reality.
 	ProbeIPs(ctx context.Context, in *ProbeIPsRequest, opts ...grpc.CallOption) (*ProbeIPsResponse, error)
 }
@@ -413,7 +413,7 @@ type NodeAgentServer interface {
 	// OS version, kernel version, CPU info, memory, disk, and libvirt version.
 	GetNodeInfo(context.Context, *GetNodeInfoRequest) (*GetNodeInfoResponse, error)
 	// ImportDisk imports a disk image from a source path to the VM's storage.
-	// Used for VM migration from external sources like Virtualizor.
+	// Used for VM migration from external sources.
 	ImportDisk(context.Context, *DiskImportRequest) (*DiskImportResponse, error)
 	// BackupDisk exports a VM's primary disk (compressed qcow2) and uploads it to
 	// the node's configured object storage, returning the object key, size and
@@ -449,7 +449,7 @@ type NodeAgentServer interface {
 	UndefineNetwork(context.Context, *UndefineNetworkRequest) (*UndefineNetworkResponse, error)
 	// ProbeIPs ARP-probes a set of IPs on a bridge and returns those that answer
 	// (i.e. are live on the wire). The panel uses this to detect IPs already used
-	// by VMs it doesn't manage (e.g. pre-existing Virtualizor guests), so it never
+	// by VMs it doesn't manage (e.g. pre-existing unmanaged guests), so it never
 	// allocates a live customer IP and its IPAM view reflects reality.
 	ProbeIPs(context.Context, *ProbeIPsRequest) (*ProbeIPsResponse, error)
 	mustEmbedUnimplementedNodeAgentServer()

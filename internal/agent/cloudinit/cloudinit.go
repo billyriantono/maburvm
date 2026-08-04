@@ -139,7 +139,7 @@ func userData(cfg Config) string {
 			b.WriteString(fmt.Sprintf("  - %s\n", k))
 		}
 	}
-	// First-boot recipe/startup script (Virtualizor "Recipes" parity). The script
+	// First-boot recipe/startup script (first-boot recipes). The script
 	// is written, base64-encoded, into the per-instance scripts dir, which
 	// cloud-init runs exactly once per instance on first boot. Base64 keeps any
 	// content (quotes, newlines, YAML-special chars) intact without indentation

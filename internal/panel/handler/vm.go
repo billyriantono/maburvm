@@ -281,7 +281,7 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 
 	// Production-grade default: a VM with neither a password nor an SSH key can't
 	// be logged into. If the caller supplied neither, generate a root password and
-	// return it once (what VirtFusion/Virtualizor do) so the VM is always usable.
+	// return it once (what commercial VM panels do) so the VM is always usable.
 	if req.Password == "" && len(sshPublicKeys) == 0 {
 		createReq.RegeneratePassword = true
 	}
@@ -1305,7 +1305,7 @@ func (h *VMHandler) EnableConsole(c echo.Context) error { return h.setConsole(c,
 func (h *VMHandler) DisableConsole(c echo.Context) error { return h.setConsole(c, false) }
 
 // RepairConsole handles POST /api/vms/:id/console/repair. It injects a VNC
-// graphics device into a domain that lacks one (imported Virtualizor VMs). This
+// graphics device into a domain that lacks one (imported VMs). This
 // RESTARTS the VM if it is running, so it is gated behind an explicit confirm.
 func (h *VMHandler) RepairConsole(c echo.Context) error {
 	id := c.Param("id")

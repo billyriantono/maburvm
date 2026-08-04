@@ -23,7 +23,7 @@ func NewVolumeManager() *VolumeManager {
 	return &VolumeManager{qemu: NewQCOW2Manager(), timeout: 300 * time.Second}
 }
 
-// normalizePoolType maps a (possibly Virtualizor-style) pool type to one of the
+// normalizePoolType maps a pool type to one of the
 // supported provisioning backends: "dir", "lvm", or "zfs". Thin/compressed
 // variants map to their base backend (the volume is real; the thin/compression
 // nuance is a pool-level property, not applied per-volume here).

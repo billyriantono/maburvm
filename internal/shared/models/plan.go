@@ -16,7 +16,7 @@ const (
 )
 
 // Plan is a VPS flavor: a named bundle of resources users pick when creating a
-// VM (Virtualizor "Plans").
+// VM ("Plans").
 type Plan struct {
 	ID            string `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
 	Name          string `json:"name" gorm:"type:varchar(100);not null" validate:"required,max=100"`

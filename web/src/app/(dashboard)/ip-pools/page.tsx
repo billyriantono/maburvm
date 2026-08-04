@@ -92,7 +92,7 @@ export default function IPPoolsPage() {
             IP Pools
           </h1>
           <p className="text-muted-foreground text-sm mt-1">
-            Virtualizor-style IPAM — click a pool to manage its addresses &amp; rDNS
+            Per-pool IPAM — click a pool to manage its addresses &amp; rDNS
           </p>
         </div>
         <Button className="gap-2" onClick={() => setShowCreatePool((v) => !v)}>

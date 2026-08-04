@@ -673,7 +673,7 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 	case VMOpCreate:
 		// The agent boots the VM as part of create (and announces its IP via
 		// gratuitous ARP), so a freshly provisioned VM comes up running — as
-		// VirtFusion/Virtualizor do — instead of sitting 'stopped'. If the agent's
+		// commercial VM panels do — instead of sitting 'stopped'. If the agent's
 		// start actually failed, the periodic status reconciler corrects this to
 		// 'stopped' within a minute.
 		newStatus = models.VMStatusRunning
@@ -1275,7 +1275,7 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 
 	// Full-disk backup (the only type real flows enqueue) exports the qcow2
 	// directly via BackupDisk below. We deliberately DO NOT take a libvirt
-	// snapshot first: imported Virtualizor domains have no snapshot metadata and
+	// snapshot first: imported domains have no snapshot metadata and
 	// CreateSnapshot hangs/errors on them, and the retryable-error path here would
 	// then loop through River's default 25 attempts while the backup row sits stuck
 	// at in_progress/0 B forever. A direct qcow2 export is crash-consistent and is
@@ -1695,7 +1695,7 @@ func firstSetRaw(values ...string) string {
 	return ""
 }
 
-// ImportWorker handles VM import operations (e.g., from Virtualizor)
+// ImportWorker handles VM import operations (e.g., from another platform)
 // Queue: batch (10 workers)
 type ImportWorker struct {
 	river.WorkerDefaults[ImportJob]
@@ -1797,26 +1797,26 @@ func (w *ImportWorker) Work(ctx context.Context, job *river.Job[ImportJob]) erro
 
 	switch job.Args.Source {
 	case ImportSourceVirtualizor:
-		w.logger.InfoContext(ctx, "importing from Virtualizor",
+		w.logger.InfoContext(ctx, "importing from external source",
 			"source_id", job.Args.SourceID,
 			"config_path", job.Args.ConfigPath,
 			"disk_path", job.Args.DiskPath,
 		)
 
-		// 1. Parse Virtualizor XML config
+		// 1. Parse imported XML config
 		candidate, err := vmimport.ParseVirtualizorDomainXML(job.Args.ConfigPath)
 		if err != nil {
-			w.logger.ErrorContext(ctx, "failed to parse Virtualizor XML config",
+			w.logger.ErrorContext(ctx, "failed to parse imported XML config",
 				"error", err,
 				"config_path", job.Args.ConfigPath,
 			)
 			if w.metrics != nil {
 				w.metrics.RecordJobFailed()
 			}
-			return fmt.Errorf("failed to parse Virtualizor XML: %w", err)
+			return fmt.Errorf("failed to parse imported XML: %w", err)
 		}
 
-		w.logger.InfoContext(ctx, "parsed Virtualizor config",
+		w.logger.InfoContext(ctx, "parsed imported config",
 			"vm_name", candidate.Name,
 			"uuid", candidate.UUID,
 			"cpu", candidate.CPU,

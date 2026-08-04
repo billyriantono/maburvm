@@ -179,14 +179,14 @@ const (
 	ImportSourceManual      ImportSource = "manual"
 )
 
-// ImportJob represents a VM import job (e.g., from Virtualizor)
+// ImportJob represents a VM import job (e.g., from another platform)
 // This is inserted into the batch queue
 type ImportJob struct {
 	Source     ImportSource    `json:"source"`
 	SourceID   string          `json:"source_id"`   // Original VM ID in source system
 	NodeID     string          `json:"node_id"`     // Target node
 	UserID     string          `json:"user_id"`     // Owner user ID
-	ConfigPath string          `json:"config_path"` // Path to XML config (for Virtualizor)
+	ConfigPath string          `json:"config_path"` // Path to XML config (for imported guests)
 	DiskPath   string          `json:"disk_path"`   // Path to disk image
 	Metadata   json.RawMessage `json:"metadata,omitempty"`
 }

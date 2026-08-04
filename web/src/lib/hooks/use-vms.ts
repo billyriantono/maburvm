@@ -332,7 +332,7 @@ export function useSetConsoleEnabled(id: string) {
 }
 
 // useRepairConsole injects a VNC graphics device into a VM whose libvirt domain
-// has none (imported Virtualizor VMs). This RESTARTS the VM if it is running, so
+// has none (imported VMs). This RESTARTS the VM if it is running, so
 // the backend requires an explicit confirm flag.
 export function useRepairConsole(id: string) {
   const queryClient = useQueryClient()

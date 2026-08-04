@@ -776,7 +776,7 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 	// Inject network + hostname (+ optional password/SSH key) DIRECTLY into the
 	// guest disk via libguestfs, so the guest is configured on first boot without
 	// depending on the guest's cloud-init (which is unreliable across images —
-	// this is how Virtualizor provisions). The cloud-init seed above is kept as a
+	// a common host-side provisioning technique). The cloud-init seed above is kept as a
 	// belt-and-suspenders for images where it does work. Best-effort: on failure
 	// we log and still create the VM (it just may lack static networking).
 	if err := injectGuestConfig(diskPath, hostname, vmCfg, cfg.RootPassword, cfg.SshPublicKey, cfg.UserData); err != nil {
@@ -794,7 +794,7 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 	}
 
 	// Boot the VM now, then announce its IP to the network from the HOST via
-	// gratuitous ARP — this is how Virtualizor/VirtFusion make a new VM instantly
+	// gratuitous ARP — this makes a new VM instantly
 	// reachable. The host advertises guest_IP→guest_MAC on the bridge the moment
 	// the VM comes up, so the upstream gateway learns it immediately (overwriting a
 	// stale entry left by a previously-assigned VM) WITHOUT waiting for the guest to
@@ -2374,7 +2374,7 @@ func queryGuestAgentInfo(domainName string) (hostname string, ipAddresses []stri
 
 // ProbeIPs ARP-probes each requested IP on the given bridge and returns those
 // that answer (are live on the wire). This lets the panel detect IPs already in
-// use by VMs it doesn't manage (e.g. pre-existing Virtualizor guests) so it
+// use by VMs it doesn't manage (e.g. pre-existing unmanaged guests) so it
 // never double-assigns a live customer IP and its IPAM view matches reality.
 // Probes run concurrently (bounded) so scanning a whole /24-/25 stays fast.
 func (s *NodeAgentService) ProbeIPs(ctx context.Context, req *pb.ProbeIPsRequest) (*pb.ProbeIPsResponse, error) {

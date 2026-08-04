@@ -186,7 +186,7 @@ func (s *Server) SetupRoutes() {
 	// SSH key routes (per-user public keys for VM provisioning)
 	s.setupSSHKeyRoutes()
 
-	// Recipe routes (per-user first-boot scripts, Virtualizor "Recipes")
+	// Recipe routes (per-user first-boot scripts)
 	s.setupRecipeRoutes()
 
 	// Public node bootstrap endpoints (install-agent.sh + prebuilt agent binary)
@@ -580,8 +580,8 @@ func (s *Server) setupSSHKeyRoutes() {
 	handler.RegisterSSHKeyRoutes(s.echo, sshKeyHandler, s.db)
 }
 
-// setupRecipeRoutes configures per-user first-boot recipe routes (Virtualizor
-// "Recipes" — saved scripts applied to a VM on first boot via cloud-init).
+// setupRecipeRoutes configures per-user first-boot recipe routes (saved scripts
+// applied to a VM on first boot via cloud-init).
 func (s *Server) setupRecipeRoutes() {
 	recipeService := service.NewRecipeService(s.db)
 	recipeHandler := handler.NewRecipeHandler(recipeService)

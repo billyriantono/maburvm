@@ -837,7 +837,7 @@ function NewVMForm() {
                   className="w-full rounded-md border border-input bg-background p-3 font-mono text-xs resize-y focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                 />
                 <p className="text-xs text-muted-foreground">
-                  Runs once on first boot via cloud-init (Virtualizor-style recipe). Requires a cloud-init image. Plain shell script or cloud-config.
+                  Runs once on first boot via cloud-init (first-boot recipe). Requires a cloud-init image. Plain shell script or cloud-config.
                 </p>
               </div>
 

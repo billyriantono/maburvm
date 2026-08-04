@@ -8,7 +8,7 @@ import (
 )
 
 // ManagedNetwork is an administrator-defined virtual network (bridge/NAT/isolated)
-// on a node — the Virtualizor "Network" concept (distinct from per-VM IP records
+// on a node — the "Network" concept (distinct from per-VM IP records
 // and from IP pools).
 type ManagedNetwork struct {
 	ID        string         `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`

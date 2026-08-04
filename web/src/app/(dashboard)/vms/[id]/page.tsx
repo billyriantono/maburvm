@@ -1508,7 +1508,7 @@ export default function VMDetailPage() {
                 </div>
               </div>
 
-              {/* Interfaces (Virtualizor-style per-IP detail) */}
+              {/* Interfaces (per-IP detail) */}
               <h3 className="text-sm font-semibold text-muted-foreground mb-3">Network Interfaces</h3>
               {!vmNetworks?.length ? (
                 <div className="border border-dashed border-gray-300 p-6 text-center text-sm font-medium text-muted-foreground">

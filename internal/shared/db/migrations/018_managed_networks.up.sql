@@ -1,4 +1,4 @@
--- Administrator-defined virtual networks (bridge/NAT/isolated) — the Virtualizor
+-- Administrator-defined virtual networks (bridge/NAT/isolated) — the managed
 -- "Network" concept, distinct from per-VM IP records and IP pools.
 CREATE TABLE IF NOT EXISTS managed_networks (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),

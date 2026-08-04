@@ -55,7 +55,7 @@ service NodeAgent {
   rpc GetNodeInfo(GetNodeInfoRequest) returns (GetNodeInfoResponse);
 
   // ImportDisk imports a disk image from a source path to the VM's storage.
-  // Used for VM migration from external sources like Virtualizor.
+  // Used for VM migration from external sources.
   rpc ImportDisk(DiskImportRequest) returns (DiskImportResponse);
 
   // BackupDisk exports a VM's primary disk (compressed qcow2) and uploads it to
@@ -102,7 +102,7 @@ service NodeAgent {
 
   // ProbeIPs ARP-probes a set of IPs on a bridge and returns those that answer
   // (i.e. are live on the wire). The panel uses this to detect IPs already used
-  // by VMs it doesn't manage (e.g. pre-existing Virtualizor guests), so it never
+  // by VMs it doesn't manage (e.g. pre-existing unmanaged guests), so it never
   // allocates a live customer IP and its IPAM view reflects reality.
   rpc ProbeIPs(ProbeIPsRequest) returns (ProbeIPsResponse);
 }

@@ -8,7 +8,7 @@ import (
 )
 
 // SSHKey is a user's saved SSH public key, selectable when creating or
-// rebuilding a VM (Virtualizor parity). Only public keys are ever stored.
+// rebuilding a VM (parity). Only public keys are ever stored.
 type SSHKey struct {
 	ID          string         `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
 	UserID      string         `json:"user_id" gorm:"type:uuid;not null;index" validate:"required,uuid"`

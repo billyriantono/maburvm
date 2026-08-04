@@ -79,7 +79,7 @@ type NodeAgentClient interface {
 	// OS version, kernel version, CPU info, memory, disk, and libvirt version.
 	GetNodeInfo(ctx context.Context, in *GetNodeInfoRequest, opts ...grpc.CallOption) (*GetNodeInfoResponse, error)
 	// ImportDisk imports a disk image from a source path to the VM's storage.
-	// Used for VM migration from external sources like Virtualizor.
+	// Used for VM migration from external sources.
 	ImportDisk(ctx context.Context, in *DiskImportRequest, opts ...grpc.CallOption) (*DiskImportResponse, error)
 	// BackupDisk exports a VM's primary disk (compressed qcow2) and uploads it to
 	// the node's configured object storage, returning the object key, size and
@@ -356,7 +356,7 @@ type NodeAgentServer interface {
 	// OS version, kernel version, CPU info, memory, disk, and libvirt version.
 	GetNodeInfo(context.Context, *GetNodeInfoRequest) (*GetNodeInfoResponse, error)
 	// ImportDisk imports a disk image from a source path to the VM's storage.
-	// Used for VM migration from external sources like Virtualizor.
+	// Used for VM migration from external sources.
 	ImportDisk(context.Context, *DiskImportRequest) (*DiskImportResponse, error)
 	// BackupDisk exports a VM's primary disk (compressed qcow2) and uploads it to
 	// the node's configured object storage, returning the object key, size and

@@ -1,4 +1,4 @@
--- Parity schema fixes for Virtualizor replacement readiness
+-- Parity schema fixes for readiness
 -- Adds tables/columns that already exist in Go models but were missing from SQL migrations.
 
 DO $$ BEGIN
