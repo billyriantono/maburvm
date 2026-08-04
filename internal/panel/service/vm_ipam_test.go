@@ -237,7 +237,7 @@ func setupVMIPAMTestDB(t *testing.T) *gorm.DB {
 		`CREATE TABLE vms (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, node_id TEXT NOT NULL, hostname TEXT NOT NULL, os_template_id TEXT NOT NULL, resources TEXT, status TEXT, source_migration TEXT, vnc_port INTEGER, vnc_password TEXT, console_enabled BOOLEAN DEFAULT 1, rescue_mode BOOLEAN DEFAULT 0, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE networks (id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, ip_address TEXT NOT NULL, bandwidth_limit INTEGER DEFAULT 0, bandwidth_quota_gb INTEGER DEFAULT 0, over_quota_policy TEXT DEFAULT 'throttle', throttle_speed_mbps INTEGER DEFAULT 0, throttled BOOLEAN DEFAULT 0, vlan_id INTEGER, anti_spoofing BOOLEAN DEFAULT 1, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE ip_pools (id TEXT PRIMARY KEY, name TEXT NOT NULL, node_id TEXT, family TEXT NOT NULL, cidr TEXT, gateway TEXT, bridge TEXT, range_start TEXT, range_end TEXT, description TEXT, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
-		`CREATE TABLE ip_addresses (id TEXT PRIMARY KEY, pool_id TEXT NOT NULL, node_id TEXT, address TEXT NOT NULL, family TEXT NOT NULL, status TEXT NOT NULL, vm_id TEXT, note TEXT, rdns TEXT DEFAULT '', created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
+		`CREATE TABLE ip_addresses (id TEXT PRIMARY KEY, pool_id TEXT NOT NULL, node_id TEXT, address TEXT NOT NULL, family TEXT NOT NULL, status TEXT NOT NULL, vm_id TEXT, delivery_mode TEXT NOT NULL DEFAULT 'direct', nat_mode TEXT NOT NULL DEFAULT '', user_id TEXT, note TEXT, rdns TEXT DEFAULT '', created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE ip_pool_nodes (pool_id TEXT NOT NULL, node_id TEXT NOT NULL, PRIMARY KEY (pool_id, node_id))`,
 		`CREATE TABLE user_quotas (user_id TEXT PRIMARY KEY, max_vms INTEGER DEFAULT 0, max_vcpu INTEGER DEFAULT 0, max_ram_mb INTEGER DEFAULT 0, max_disk_gb INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, quota_mode TEXT NOT NULL DEFAULT 'legacy', policy_id TEXT, policy_version INTEGER, policy_name TEXT, policy_assigned_at DATETIME, policy_assigned_by TEXT, cap_revision_id TEXT)`,
 		`CREATE TABLE vm_disks (id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, device TEXT NOT NULL, size_gb INTEGER NOT NULL, path TEXT NOT NULL, lifecycle TEXT NOT NULL DEFAULT 'attached', created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, deleted_at DATETIME)`,
@@ -264,4 +264,55 @@ func seedVMIPAMDependencies(t *testing.T, db *gorm.DB) (*models.User, *models.No
 	tmpl := &models.OSTemplate{Name: "debian", Version: "12", ImagePath: "/images/debian.qcow2", IsActive: true}
 	require.NoError(t, db.Create(tmpl).Error)
 	return user, node, tmpl
+}
+
+// A floating IP outliving its VM is the entire point of the feature: deleting the
+// VM must detach the address but keep it reserved for its owner, never return it
+// to the pool where another tenant could take it.
+func TestVMServiceDeleteVMKeepsFloatingIPForOwner(t *testing.T) {
+	db := setupVMIPAMTestDB(t)
+	ctx := context.Background()
+
+	user, node, tmpl := seedVMIPAMDependencies(t, db)
+	pool := &models.IPPool{Name: "public-v4", NodeID: &node.ID, Family: models.IPFamilyIPv4, CIDR: "203.0.113.0/24", Bridge: "viifbr0", Gateway: "203.0.113.1"}
+	require.NoError(t, db.Create(pool).Error)
+	vm := &models.VM{UserID: user.ID.String(), NodeID: node.ID, Hostname: "fip-delete.example.test", OSTemplateID: tmpl.ID, Resources: models.Resources{CPU: 1, RAM: 512, Disk: 10}, Status: models.VMStatusStopped}
+	require.NoError(t, db.Create(vm).Error)
+
+	ownerID := user.ID.String()
+	fip := &models.IPAddress{
+		PoolID: pool.ID, NodeID: &node.ID, Address: "203.0.113.50", Family: models.IPFamilyIPv4,
+		Status: models.IPAddressStatusAssigned, VMID: &vm.ID,
+		DeliveryMode: models.IPDeliveryFloating, NATMode: models.NATModeFull, UserID: &ownerID,
+	}
+	require.NoError(t, db.Create(fip).Error)
+	// A plain directly-assigned address on the same VM, which SHOULD go back to the pool.
+	direct := &models.IPAddress{PoolID: pool.ID, NodeID: &node.ID, Address: "203.0.113.11", Family: models.IPFamilyIPv4, Status: models.IPAddressStatusAssigned, VMID: &vm.ID}
+	require.NoError(t, db.Create(direct).Error)
+	require.NoError(t, db.Create(&models.Network{VMID: vm.ID, IPAddress: direct.Address}).Error)
+
+	svc := NewVMService(
+		db,
+		repository.NewVMRepository(db),
+		repository.NewNodeRepository(db),
+		repository.NewTemplateRepository(db),
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+
+	require.NoError(t, svc.DeleteVM(ctx, vm.ID))
+
+	var updatedFIP models.IPAddress
+	require.NoError(t, db.First(&updatedFIP, "id = ?", fip.ID).Error)
+	require.Equal(t, models.IPAddressStatusReserved, updatedFIP.Status, "floating IP must stay reserved for its owner, not become allocatable")
+	require.Nil(t, updatedFIP.VMID)
+	require.Equal(t, models.IPDeliveryFloating, updatedFIP.DeliveryMode)
+	require.Empty(t, updatedFIP.NATMode)
+	require.NotNil(t, updatedFIP.UserID)
+	require.Equal(t, ownerID, *updatedFIP.UserID)
+
+	var updatedDirect models.IPAddress
+	require.NoError(t, db.First(&updatedDirect, "id = ?", direct.ID).Error)
+	require.Equal(t, models.IPAddressStatusAvailable, updatedDirect.Status)
+	require.Nil(t, updatedDirect.VMID)
 }

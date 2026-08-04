@@ -35,6 +35,13 @@ type VMNetworkState struct {
 
 // NewManager creates a new network manager with all sub-managers initialized
 func NewManager() (*Manager, error) {
+	// Every iptables rule this manager installs — floating IP NAT, port
+	// forwards, and the per-VM firewall chains — is a no-op unless the kernel is
+	// actually routing and passing bridged frames through netfilter. Today that
+	// happens to be true because Docker/libvirt usually enable both, so a node
+	// booting without them would silently drop all of it.
+	ensureForwardingSysctls()
+
 	// Initialize bandwidth manager
 	bwManager := NewBandwidthManager()
 
@@ -385,4 +392,26 @@ func (m *Manager) ListActiveVMs() []string {
 		vms = append(vms, vmID)
 	}
 	return vms
+}
+
+// AttachFloatingIP binds a floating IP on the host and 1:1-NATs it to internalIP.
+// Deliberately independent of m.vmNetworks: a floating IP can point at any VM on
+// the node, including an imported one the agent never provisioned, so the panel
+// supplies the VM's address rather than the agent looking it up.
+func (m *Manager) AttachFloatingIP(vmID, floatingIP, internalIP, bridge, natMode string) error {
+	if err := m.nat.AttachFloatingIP(floatingIP, internalIP, bridge, natMode); err != nil {
+		return err
+	}
+	log.Printf("[NetworkManager] Floating IP %s -> %s (%s) attached for VM %s", floatingIP, internalIP, natMode, vmID)
+	return nil
+}
+
+// DetachFloatingIP removes a floating IP's rules and host address. The VM's
+// baseline masquerade is untouched, so it keeps outbound internet.
+func (m *Manager) DetachFloatingIP(vmID, floatingIP, bridge string) error {
+	if err := m.nat.DetachFloatingIP(floatingIP, bridge); err != nil {
+		return err
+	}
+	log.Printf("[NetworkManager] Floating IP %s detached (was VM %s)", floatingIP, vmID)
+	return nil
 }

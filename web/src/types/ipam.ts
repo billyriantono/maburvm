@@ -26,10 +26,28 @@ export interface IPAddress {
   family: IPFamily
   status: IPAddressStatus
   vm_id?: string
+  /** 'floating' = lives on the host and is 1:1-NATed to the VM, so it can be
+   *  moved between VMs and survives deletion of the VM it was attached to. */
+  delivery_mode?: IPDeliveryMode
+  /** 'inbound' = DNAT only (VM keeps its own egress identity);
+   *  'full' = DNAT + SNAT (VM egresses as the floating IP). */
+  nat_mode?: NATMode
+  /** Tenant owning a floating IP while it is attached to no VM. */
+  user_id?: string
   note?: string
   rdns?: string
   created_at: string
   updated_at: string
+}
+
+export type IPDeliveryMode = 'direct' | 'floating'
+export type NATMode = 'inbound' | 'full'
+
+export interface AllocateFloatingIPRequest {
+  pool_id: string
+  node_id?: string
+  user_id?: string
+  requested_ip?: string
 }
 
 export interface CreateIPPoolRequest {

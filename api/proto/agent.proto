@@ -105,6 +105,13 @@ service NodeAgent {
   // by VMs it doesn't manage (e.g. pre-existing unmanaged guests), so it never
   // allocates a live customer IP and its IPAM view reflects reality.
   rpc ProbeIPs(ProbeIPsRequest) returns (ProbeIPsResponse);
+
+  // ConfigureFloatingIP attaches or detaches a floating (elastic) IP on the
+  // host: the address is bound to the uplink bridge and 1:1-NATed to the VM's
+  // own address, so it can be moved between VMs on the node without any guest
+  // cooperation. Idempotent — the panel re-applies attachments after a node
+  // reboot, since iptables rules are runtime-only state.
+  rpc ConfigureFloatingIP(FloatingIPRequest) returns (FloatingIPResponse);
 }
 
 // ============================================================================
@@ -1511,4 +1518,26 @@ message ProbeIPsRequest {
 message ProbeIPsResponse {
   repeated string in_use = 1;   // IPs that answered ARP (in use by some host)
   repeated string checked = 2;  // IPs actually probed (probe attempted)
+}
+
+// ============================================================================
+// Floating IPs
+// ============================================================================
+
+// FloatingIPRequest attaches or detaches a floating IP on the node. internal_ip
+// and nat_mode are required for detach as well as attach, so the agent can
+// reconstruct and delete the exact rules it added without keeping state.
+message FloatingIPRequest {
+  string floating_ip = 1;  // the public /32 that moves between VMs
+  string vm_id = 2;        // VM the address is (or was) attached to
+  string internal_ip = 3;  // the VM's own address, i.e. the NAT destination
+  string bridge = 4;       // uplink bridge to bind the address to and GARP on
+  bool attach = 5;         // true = attach, false = detach
+  string nat_mode = 6;     // "inbound" (DNAT only) or "full" (DNAT + SNAT)
+}
+
+// FloatingIPResponse reports the result of a floating IP attach/detach.
+message FloatingIPResponse {
+  bool success = 1;
+  ErrorResponse error = 2;
 }

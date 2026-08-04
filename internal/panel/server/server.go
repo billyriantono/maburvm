@@ -457,6 +457,11 @@ func (s *Server) setupVMRoutes(g *echo.Group) {
 
 	handler.RegisterVMRoutes(s.echo, vmHandler, s.db)
 
+	// Floating (elastic) IPs: host-side 1:1-NATed addresses that move between VMs
+	// on a node and outlive the VM they were attached to. Shares VMService for its
+	// agent connections and IPAM access.
+	handler.RegisterFloatingIPRoutes(s.echo, handler.NewFloatingIPHandler(vmService), s.db)
+
 	// Real-time VM status stream (SSE), consumed by the dashboard via the web BFF.
 	eventsHandler := handler.NewEventsHandler(vmService)
 	events := s.echo.Group("/api/v1/events")

@@ -163,9 +163,26 @@ func (r *IPAMRepository) ListAddressesByVMID(ctx context.Context, vmID string) (
 	return addresses, r.db.WithContext(ctx).Where("vm_id = ?", vmID).Find(&addresses).Error
 }
 
+// ReleaseAddressesByVMID frees a deleted VM's addresses.
+//
+// Floating IPs are deliberately NOT returned to the pool: surviving the VM they
+// were attached to is the entire point of a floating IP, so they are only
+// detached (vm_id cleared, held as 'reserved' for their owner). node_id is left
+// set so the floating IP reconciler still knows which node to tear the now-stale
+// NAT rules down on.
 func (r *IPAMRepository) ReleaseAddressesByVMID(ctx context.Context, vmID string) error {
+	if err := r.db.WithContext(ctx).Model(&models.IPAddress{}).
+		Where("vm_id = ? AND delivery_mode = ?", vmID, models.IPDeliveryFloating).
+		Updates(map[string]interface{}{
+			"status":   models.IPAddressStatusReserved,
+			"nat_mode": "",
+			"vm_id":    nil,
+		}).Error; err != nil {
+		return err
+	}
 	return r.db.WithContext(ctx).Model(&models.IPAddress{}).
-		Where("vm_id = ? AND status IN ?", vmID, []string{models.IPAddressStatusAssigned, models.IPAddressStatusReserved}).
+		Where("vm_id = ? AND delivery_mode <> ? AND status IN ?", vmID, models.IPDeliveryFloating,
+			[]string{models.IPAddressStatusAssigned, models.IPAddressStatusReserved}).
 		Updates(map[string]interface{}{
 			"status": models.IPAddressStatusAvailable,
 			"vm_id":  nil,

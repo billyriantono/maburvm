@@ -376,6 +376,11 @@ func (s *IPAMService) allocateAddressInTx(ctx context.Context, tx *gorm.DB, req 
 		if address.Status == models.IPAddressStatusReserved && address.Note == externalIPNote {
 			return nil, ErrNoAvailableIPAddress
 		}
+		// A floating IP is held reserved for its tenant between attachments;
+		// handing it out here as a VM's direct address would hijack it.
+		if address.DeliveryMode == models.IPDeliveryFloating {
+			return nil, ErrNoAvailableIPAddress
+		}
 	} else {
 		address, err = txRepo.FindAvailableAddressForUpdate(ctx, req.PoolID, req.NodeID)
 		if err != nil {
