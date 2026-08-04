@@ -20,6 +20,16 @@ const (
 	// the baseline per-VM MASQUERADE that SetupNAT appends — otherwise the VM
 	// would egress as the node uplink and never as its floating IP.
 	FloatingIPPostChain = "MABURVM-FIP-POST"
+	// FloatingIPFwdChain (filter table) permits the forwarded traffic a floating
+	// IP has just been DNATed to. Its jump is INSERTED at the head of FORWARD.
+	//
+	// This is what makes a floating IP work into a private/managed network:
+	// libvirt guards its own NAT networks with an "ACCEPT established, REJECT the
+	// rest" pair, so a NEW inbound connection is rejected even though the DNAT
+	// succeeded — the address answers ARP, the counters climb, and nothing ever
+	// connects. Inserting ahead of that is the only way in. It also makes
+	// floating IPs survive a node whose FORWARD policy is DROP.
+	FloatingIPFwdChain = "MABURVM-FIP-FWD"
 )
 
 // FloatingIPModeFull and FloatingIPModeInbound mirror models.NATMode*; the agent
@@ -63,15 +73,74 @@ func (nm *NATManager) ensureFloatingChains() error {
 		}
 	}
 
-	// POSTROUTING: insert first (evaluated before the baseline MASQUERADE).
-	ok, err = nm.ipt.Exists(NATTable, PostroutingChain, "-j", FloatingIPPostChain)
-	if err != nil {
-		return fmt.Errorf("failed to check POSTROUTING jump: %w", err)
+	// POSTROUTING: must be FIRST, before the baseline MASQUERADE and before
+	// libvirt's own chain (see ensureJumpFirst).
+	if err := nm.ensureJumpFirst(NATTable, PostroutingChain, FloatingIPPostChain); err != nil {
+		return err
 	}
-	if !ok {
-		if err := nm.ipt.Insert(NATTable, PostroutingChain, 1, "-j", FloatingIPPostChain); err != nil {
-			return fmt.Errorf("failed to add POSTROUTING jump: %w", err)
+
+	// FORWARD (filter): insert first, ahead of libvirt's REJECT for its managed
+	// networks and ahead of any restrictive per-VM rules.
+	fwChains, err := nm.ipt.ListChains(FilterTable)
+	if err != nil {
+		return fmt.Errorf("failed to list filter chains: %w", err)
+	}
+	haveFwd := false
+	for _, c := range fwChains {
+		if c == FloatingIPFwdChain {
+			haveFwd = true
+			break
 		}
+	}
+	if !haveFwd {
+		if err := nm.ipt.NewChain(FilterTable, FloatingIPFwdChain); err != nil {
+			return fmt.Errorf("failed to create chain %s: %w", FloatingIPFwdChain, err)
+		}
+	}
+	if err := nm.ensureJumpFirst(FilterTable, ForwardChain, FloatingIPFwdChain); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ensureJumpFirst guarantees that parent's FIRST rule is the jump to target,
+// moving an existing jump if something has since been inserted above it.
+//
+// Checking mere existence is not enough. libvirt re-inserts LIBVIRT_PRT and
+// LIBVIRT_FWI/FWO at the TOP of POSTROUTING and FORWARD every time one of its
+// networks starts, which silently overtakes a jump added earlier. The
+// consequences are both real and were both observed on a live node: in
+// POSTROUTING libvirt masquerades the guest to the node's address before our
+// SNAT is consulted, so a full-mode floating IP quietly stops being the VM's
+// egress identity; in FORWARD libvirt's REJECT lands first and inbound traffic
+// to the floating IP is dropped after a successful DNAT.
+//
+// Since the panel re-applies attachments periodically, this also self-heals a
+// node where libvirt has jumped ahead after the fact.
+func (nm *NATManager) ensureJumpFirst(table, parent, target string) error {
+	rules, err := nm.ipt.List(table, parent)
+	if err != nil {
+		return fmt.Errorf("failed to list %s/%s: %w", table, parent, err)
+	}
+	// rules[0] is the chain policy line; rules[1] is the first actual rule.
+	if len(rules) > 1 && strings.HasSuffix(strings.TrimSpace(rules[1]), "-j "+target) {
+		return nil // already first
+	}
+	// Drop any existing (mis-positioned) jump, then put it back at the head.
+	for {
+		exists, err := nm.ipt.Exists(table, parent, "-j", target)
+		if err != nil {
+			return fmt.Errorf("failed to check %s/%s jump: %w", table, parent, err)
+		}
+		if !exists {
+			break
+		}
+		if err := nm.ipt.Delete(table, parent, "-j", target); err != nil {
+			return fmt.Errorf("failed to reposition %s/%s jump: %w", table, parent, err)
+		}
+	}
+	if err := nm.ipt.Insert(table, parent, 1, "-j", target); err != nil {
+		return fmt.Errorf("failed to add %s/%s jump: %w", table, parent, err)
 	}
 	return nil
 }
@@ -135,6 +204,19 @@ func needsHairpin(internalIP string) bool {
 	return ip != nil && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast()
 }
 
+// floatingForwardRule permits packets this floating IP has been DNATed to.
+// Scoped by --ctorigdst so it only ever opens the connections that arrived on
+// this address — it does not make the VM generally reachable, and it disappears
+// with the floating IP on detach.
+func floatingForwardRule(floatingIP, internalIP string) []string {
+	return []string{
+		"-d", internalIP + "/32",
+		"-m", "conntrack", "--ctorigdst", floatingIP,
+		"-j", "ACCEPT",
+		"-m", "comment", "--comment", floatingComment(floatingIP),
+	}
+}
+
 // floatingComment is keyed by the address alone, so attach/detach match even if
 // the floating IP has since been pointed at a different VM.
 func floatingComment(floatingIP string) string {
@@ -180,9 +262,15 @@ func (nm *NATManager) AttachFloatingIP(floatingIP, internalIP, bridge, natMode s
 	if err := nm.deleteAllSNATFor(floatingIP); err != nil {
 		return fmt.Errorf("floating IP: clear previous SNAT: %w", err)
 	}
+	if err := nm.deleteAllMatchingIn(FilterTable, FloatingIPFwdChain, floatingComment(floatingIP)); err != nil {
+		return fmt.Errorf("floating IP: clear previous FORWARD accept: %w", err)
+	}
 
 	if err := nm.appendIfMissing(FloatingIPChain, floatingDNATRule(floatingIP, internalIP)); err != nil {
 		return fmt.Errorf("floating IP DNAT: %w", err)
+	}
+	if err := nm.appendIfMissingIn(FilterTable, FloatingIPFwdChain, floatingForwardRule(floatingIP, internalIP)); err != nil {
+		return fmt.Errorf("floating IP FORWARD accept: %w", err)
 	}
 
 	// Without this a directly-bridged VM's reply bypasses the host entirely and
@@ -222,6 +310,9 @@ func (nm *NATManager) DetachFloatingIP(floatingIP, bridge string) error {
 	if err := nm.deleteAllSNATFor(floatingIP); err != nil {
 		return err
 	}
+	if err := nm.deleteAllMatchingIn(FilterTable, FloatingIPFwdChain, floatingComment(floatingIP)); err != nil {
+		return err
+	}
 	if bridge != "" {
 		if err := delHostAddress(floatingIP, bridge); err != nil {
 			return err
@@ -236,16 +327,21 @@ func (nm *NATManager) deleteAllSNATFor(floatingIP string) error {
 	return nm.deleteAllMatching(FloatingIPPostChain, floatingComment(floatingIP))
 }
 
-// appendIfMissing appends a rule only when an identical one isn't already there.
+// appendIfMissing appends a nat-table rule only when an identical one isn't
+// already there.
 func (nm *NATManager) appendIfMissing(chain string, rule []string) error {
-	exists, err := nm.ipt.Exists(NATTable, chain, rule...)
+	return nm.appendIfMissingIn(NATTable, chain, rule)
+}
+
+func (nm *NATManager) appendIfMissingIn(table, chain string, rule []string) error {
+	exists, err := nm.ipt.Exists(table, chain, rule...)
 	if err != nil {
 		return err
 	}
 	if exists {
 		return nil
 	}
-	return nm.ipt.Append(NATTable, chain, rule...)
+	return nm.ipt.Append(table, chain, rule...)
 }
 
 // deleteAllMatching removes every rule in chain whose comment equals the given
@@ -253,7 +349,11 @@ func (nm *NATManager) appendIfMissing(chain string, rule []string) error {
 // rulespec, so detach works even when the caller no longer knows which VM the
 // address pointed at or in which mode it was attached.
 func (nm *NATManager) deleteAllMatching(chain, comment string) error {
-	rules, err := nm.ipt.List(NATTable, chain)
+	return nm.deleteAllMatchingIn(NATTable, chain, comment)
+}
+
+func (nm *NATManager) deleteAllMatchingIn(table, chain, comment string) error {
+	rules, err := nm.ipt.List(table, chain)
 	if err != nil {
 		return fmt.Errorf("failed to list %s: %w", chain, err)
 	}
@@ -263,7 +363,7 @@ func (nm *NATManager) deleteAllMatching(chain, comment string) error {
 		if !floatingRuleMatches(rules[i], comment) {
 			continue
 		}
-		if err := nm.ipt.Delete(NATTable, chain, fmt.Sprintf("%d", i)); err != nil {
+		if err := nm.ipt.Delete(table, chain, fmt.Sprintf("%d", i)); err != nil {
 			return fmt.Errorf("failed to delete rule %d from %s: %w", i, chain, err)
 		}
 	}

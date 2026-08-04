@@ -120,3 +120,26 @@ func TestHairpinRuleIsScopedToTheFloatingIP(t *testing.T) {
 		t.Fatalf("hairpin rule must carry the floating IP comment so detach removes it: %s", rule)
 	}
 }
+
+// libvirt guards its own NAT networks with "ACCEPT established, REJECT the rest",
+// so a floating IP into a private network DNATs correctly and is then rejected in
+// FORWARD — the address answers ARP and the counters climb while nothing ever
+// connects. The FORWARD accept must therefore live in its own chain, jumped from
+// the head of FORWARD, and be scoped to the connections that arrived on this
+// floating IP rather than opening the VM up generally.
+func TestFloatingForwardRuleIsScopedAndSeparate(t *testing.T) {
+	if FloatingIPFwdChain == FloatingIPChain || FloatingIPFwdChain == FloatingIPPostChain {
+		t.Fatal("FORWARD chain must be distinct from the nat-table chains")
+	}
+	rule := strings.Join(floatingForwardRule("203.0.113.10", "10.99.0.10"), " ")
+	if !strings.Contains(rule, "--ctorigdst 203.0.113.10") {
+		t.Fatalf("must only accept traffic that arrived on this floating IP: %s", rule)
+	}
+	if !strings.Contains(rule, "-j ACCEPT") || !strings.Contains(rule, "-d 10.99.0.10/32") {
+		t.Fatalf("must accept traffic destined to the VM: %s", rule)
+	}
+	// Shares the address-keyed comment so detach sweeps it up with the rest.
+	if !strings.Contains(rule, floatingComment("203.0.113.10")) {
+		t.Fatalf("FORWARD rule must carry the floating IP comment: %s", rule)
+	}
+}
