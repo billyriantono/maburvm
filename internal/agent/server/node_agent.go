@@ -279,8 +279,8 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 		err = libvirt.DetachISO(req.VmId)
 		state = pb.VMState_VM_STATE_STOPPED
 	case pb.VMCommandType_VM_COMMAND_TYPE_REPAIR_CONSOLE:
-		// Inject a VNC graphics device into a domain that lacks one (imported
-		// Virtualizor VMs). Not hot-pluggable, so a running domain is restarted.
+		// Inject a VNC graphics device into a domain that lacks one (common for
+		// imported VMs). Not hot-pluggable, so a running domain is restarted.
 		var restarted bool
 		restarted, _, err = libvirt.EnsureVNCGraphics(req.VmId)
 		// Report the resulting run state: a restart leaves it running; otherwise
@@ -2320,7 +2320,7 @@ func getVMXMLDetails(uuidStr string) (*vmXMLDetails, error) {
 	return details, err
 }
 
-// extractHostnameFromMetadata extracts hostname from Virtualizor metadata XML
+// extractHostnameFromMetadata extracts hostname from imported-guest metadata XML
 func extractHostnameFromMetadata(rawXML string) string {
 	if rawXML == "" {
 		return ""
