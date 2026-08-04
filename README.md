@@ -18,6 +18,23 @@ Built for VPS hosting businesses managing 500–2000 VMs across multiple physica
 
 ---
 
+> [!WARNING]
+> **Project maturity: not yet recommended for commercial production use.**
+>
+> MaburVM is under active development and has **not** been hardened, audited, or
+> battle-tested to the standard a paying customer workload deserves. It is not
+> currently suitable as the control plane for a commercial VPS/cloud hosting
+> business, where a defect can mean customer data loss, downtime, or a security
+> incident affecting tenants.
+>
+> There is **no warranty** — see the [MIT License](LICENSE). Expect breaking
+> changes, incomplete features, and rough edges. Independent security review,
+> tested backups, and your own staging validation are strongly advised before
+> running anything you can't afford to lose.
+>
+> Suitable today for: evaluation, homelabs, internal/self-hosted infrastructure,
+> and development. If you do run it in anger, please report what breaks.
+
 ## Table of Contents
 
 - [Features](#features)
