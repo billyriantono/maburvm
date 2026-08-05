@@ -51,6 +51,14 @@ type VM struct {
 	CreatedAt       time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
 	UpdatedAt       time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
 	DeletedAt       gorm.DeletedAt `json:"-" gorm:"index"`
+
+	// Region is where this VM physically runs, filled for responses from its
+	// node. Customers reason in regions, not nodes — node placement is
+	// deliberately never exposed to them — so this is what pairs a VM with the
+	// private networks and floating IPs it can actually use.
+	RegionID      string `json:"region_id,omitempty" gorm:"-"`
+	RegionName    string `json:"region_name,omitempty" gorm:"-"`
+	RegionCountry string `json:"region_country,omitempty" gorm:"-"`
 }
 
 // TableName specifies the table name for VM

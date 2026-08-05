@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { Link2, Link2Off, Loader2, Network, Plus } from "lucide-react"
+import { Link2, Link2Off, Loader2, Network, Plus, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import {
@@ -26,7 +26,10 @@ import {
   useFloatingIPBilling,
   useFloatingIPs,
   useOrderFloatingIP,
+  useReleaseFloatingIP,
 } from "@/lib/hooks/use-floating-ips"
+import { useRegions } from "@/lib/hooks/use-regions"
+import { CountryFlag } from "@/components/country-flag"
 import { useVMs } from "@/lib/hooks/use-vms"
 import type { IPAddress } from "@/types"
 
@@ -41,12 +44,23 @@ export default function ClientFloatingIPsPage() {
   const attach = useAttachFloatingIP()
   const detach = useDetachFloatingIP()
   const order = useOrderFloatingIP()
+  const release = useReleaseFloatingIP()
+  const { data: regions } = useRegions()
   const { data: billing } = useFloatingIPBilling()
 
   const [target, setTarget] = useState<IPAddress | null>(null)
   const [vmID, setVmID] = useState("")
+  const [orderOpen, setOrderOpen] = useState(false)
+  const [orderRegion, setOrderRegion] = useState("")
 
   const vms = vmsData?.data ?? []
+  // Match on region, which is the concept the customer is shown; node placement
+  // is deliberately never surfaced to them. The API still enforces the exact
+  // node-level rule, so this only keeps the form from offering a VM that would
+  // be refused at submit through no fault of the customer.
+  const attachableVMs = vms.filter(
+    (vm) => !target?.region_id || vm.region_id === target.region_id,
+  )
   const vmName = (id?: string) => {
     if (!id) return "—"
     return vms.find((vm) => vm.id === id)?.hostname ?? `${id.slice(0, 8)}…`
@@ -66,8 +80,26 @@ export default function ClientFloatingIPsPage() {
 
   const handleOrder = async () => {
     try {
-      const fip = await order.mutateAsync()
-      toast.success(`${fip.address} is yours — attach it to a VM to put it to use`)
+      const fip = await order.mutateAsync({ region: orderRegion })
+      toast.success(`${fip.address} is yours — attach it to a VM in ${fip.region_name ?? "that location"}`)
+      setOrderOpen(false)
+      setOrderRegion("")
+    } catch (err) {
+      toast.error((err as Error).message)
+    }
+  }
+
+  // Releasing is how a customer stops paying for an address they are not using.
+  const handleRelease = async (fip: IPAddress) => {
+    if (
+      !window.confirm(
+        `Release ${fip.address}? It returns to the pool, you stop being billed for it, and you will not get the same address back.`,
+      )
+    )
+      return
+    try {
+      await release.mutateAsync(fip.id)
+      toast.success(`${fip.address} released`)
     } catch (err) {
       toast.error((err as Error).message)
     }
@@ -99,8 +131,8 @@ export default function ClientFloatingIPsPage() {
             </p>
           )}
         </div>
-        <Button type="button" onClick={handleOrder} disabled={order.isPending} className="gap-1 shrink-0">
-          {order.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+        <Button type="button" onClick={() => setOrderOpen(true)} className="gap-1 shrink-0">
+          <Plus className="w-4 h-4" />
           Order an IP
         </Button>
       </div>
@@ -120,20 +152,25 @@ export default function ClientFloatingIPsPage() {
       ) : (
         <div className="rounded-lg border bg-card overflow-hidden">
           <div className="grid grid-cols-12 gap-3 p-4 bg-muted text-muted-foreground font-medium text-xs">
-            <div className="col-span-4">Address</div>
-            <div className="col-span-4">Currently on</div>
-            <div className="col-span-4 text-right">Actions</div>
+            <div className="col-span-3">Address</div>
+            <div className="col-span-3">Location</div>
+            <div className="col-span-3">Currently on</div>
+            <div className="col-span-3 text-right">Actions</div>
           </div>
           {floatingIPs.map((fip) => (
             <div
               key={fip.id}
               className="grid grid-cols-12 gap-3 items-center p-4 border-b last:border-0"
             >
-              <div className="col-span-4 font-mono text-sm">{fip.address}</div>
-              <div className="col-span-4 text-sm text-muted-foreground truncate">
+              <div className="col-span-3 font-mono text-sm">{fip.address}</div>
+              <div className="col-span-3 text-sm text-muted-foreground flex items-center gap-2">
+                <CountryFlag country={fip.region_country} />
+                {fip.region_name ?? "—"}
+              </div>
+              <div className="col-span-3 text-sm text-muted-foreground truncate">
                 {vmName(fip.vm_id)}
               </div>
-              <div className="col-span-4 flex justify-end items-center gap-1">
+              <div className="col-span-3 flex justify-end items-center gap-1">
                 <Button
                   type="button"
                   variant="outline"
@@ -160,19 +197,68 @@ export default function ClientFloatingIPsPage() {
                     <Link2Off className="w-4 h-4" />
                   </Button>
                 )}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
+                  title={fip.vm_id ? "Detach it before releasing" : "Release — stops the charge"}
+                  disabled={!!fip.vm_id || release.isPending}
+                  onClick={() => handleRelease(fip)}
+                >
+                  <Trash2 className="w-4 h-4" />
+                </Button>
               </div>
             </div>
           ))}
         </div>
       )}
 
+      <Dialog open={orderOpen} onOpenChange={setOrderOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Order a floating IP</DialogTitle>
+            <DialogDescription>
+              An address belongs to one location and can only be attached to VMs there, so pick the
+              location where your VMs are.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label>Location</Label>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {(regions ?? []).map((r) => (
+                <button
+                  key={r.id}
+                  type="button"
+                  onClick={() => setOrderRegion(r.slug)}
+                  className={`flex items-center gap-2 rounded-md border p-3 text-left text-sm transition-colors ${
+                    orderRegion === r.slug ? "border-primary bg-primary/5" : "hover:bg-muted/50"
+                  }`}
+                >
+                  <CountryFlag country={r.country} />
+                  {r.name}
+                </button>
+              ))}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setOrderOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="button" onClick={handleOrder} disabled={!orderRegion || order.isPending}>
+              {order.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "Order"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={!!target} onOpenChange={(open) => !open && setTarget(null)}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Move {target?.address}</DialogTitle>
             <DialogDescription>
-              Pick which of your VMs this address should point at. Nothing needs to change inside
-              the VM, and existing connections to your VM&apos;s own address are unaffected.
+              Only VMs in {target?.region_name ?? "this address's location"} are listed — an address
+              cannot be attached to a VM somewhere else. Nothing needs to change inside the VM.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
@@ -182,7 +268,7 @@ export default function ClientFloatingIPsPage() {
                 <SelectValue placeholder="Select one of your VMs" />
               </SelectTrigger>
               <SelectContent>
-                {vms.map((vm) => (
+                {attachableVMs.map((vm) => (
                   <SelectItem key={vm.id} value={vm.id}>
                     {vm.hostname}
                   </SelectItem>

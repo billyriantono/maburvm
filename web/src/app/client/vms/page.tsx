@@ -3,6 +3,7 @@
 import Link from "next/link"
 import { Monitor, PlusCircle, Play, Square, RotateCw } from "lucide-react"
 import { useVMs, useVMStatusStream, useVMActions } from "@/lib/hooks/use-vms"
+import { CountryFlag } from "@/components/country-flag"
 import type { VM } from "@/types"
 
 function StatusBadge({ status }: { status: string }) {
@@ -62,7 +63,13 @@ export default function ClientVMsPage() {
                   <Monitor className="w-5 h-5 shrink-0 text-muted-foreground" />
                   <div className="min-w-0">
                     <p className="font-medium truncate">{vm.hostname}</p>
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                      {vm.region_name && (
+                        <>
+                          <CountryFlag country={vm.region_country} />
+                          {vm.region_name} ·{" "}
+                        </>
+                      )}
                       {vm.resources.cpu} vCPU · {vm.resources.ram} MB RAM · {vm.resources.disk} GB disk
                     </p>
                   </div>

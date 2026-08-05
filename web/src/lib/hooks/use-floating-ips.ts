@@ -71,9 +71,9 @@ export function useReleaseFloatingIP() {
 // Order takes an address from a pool the operator has opened for self-service.
 export function useOrderFloatingIP() {
   const queryClient = useQueryClient()
-  return useMutation<IPAddress, Error, void>({
-    mutationFn: async () => {
-      const response = await api.post<IPAddress>('/api/v1/floating-ips/order')
+  return useMutation<IPAddress, Error, { region: string }>({
+    mutationFn: async ({ region }) => {
+      const response = await api.post<IPAddress>('/api/v1/floating-ips/order', { region })
       return response.data.data
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: KEY }),

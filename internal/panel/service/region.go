@@ -230,3 +230,40 @@ func (s *RegionService) defaultRegionSlug(ctx context.Context) string {
 // on Windows, so a server-supplied glyph would be invisible to a large share of
 // customers. Sending the ISO code and letting the client pick a flat icon shows
 // the same flag everywhere.
+
+// NodeRegion is the region a node belongs to, as shown to customers.
+type NodeRegion struct {
+	ID      string
+	Name    string
+	Country string
+}
+
+// RegionsByNode maps node id → its region.
+//
+// One helper for every caller: VMs, private networks and floating IPs are all
+// placed on a node and all need to tell the customer where that is. Three
+// separate copies of this lookup existed briefly and would have drifted apart —
+// the region shown next to a VM must be the same one shown next to its floating
+// IP, or the pairing rules stop making sense to the person reading them.
+func RegionsByNode(ctx context.Context, db *gorm.DB) map[string]NodeRegion {
+	out := map[string]NodeRegion{}
+	if db == nil {
+		return out
+	}
+	var rows []struct {
+		NodeID  string
+		ID      string
+		Name    string
+		Country string
+	}
+	if err := db.WithContext(ctx).Table("nodes").
+		Select("nodes.id AS node_id, regions.id, regions.name, regions.country").
+		Joins("JOIN regions ON regions.id = nodes.region_id").
+		Scan(&rows).Error; err != nil {
+		return out
+	}
+	for _, r := range rows {
+		out[r.NodeID] = NodeRegion{ID: r.ID, Name: r.Name, Country: r.Country}
+	}
+	return out
+}

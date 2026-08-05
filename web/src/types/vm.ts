@@ -28,6 +28,12 @@ export interface VMOperation {
 
 // VM represents a virtual machine in the system
 export interface VM {
+  /** Where this VM physically runs. Customers reason in regions, not nodes, so
+   *  this is what pairs a VM with the private networks and floating IPs it can
+   *  actually use. */
+  region_id?: string;
+  region_name?: string;
+  region_country?: string;
   id: string;
   user_id: string;
   node_id: string;

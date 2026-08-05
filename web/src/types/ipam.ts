@@ -36,6 +36,11 @@ export interface IPAddress {
   nat_mode?: NATMode
   /** Tenant owning a floating IP while it is attached to no VM. */
   user_id?: string
+  /** Where the address lives. A floating IP only attaches to VMs on its own
+   *  node, so its region decides which VMs it can serve. */
+  region_id?: string
+  region_name?: string
+  region_country?: string
   note?: string
   rdns?: string
   created_at: string

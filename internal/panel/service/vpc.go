@@ -16,9 +16,13 @@ var (
 	// ErrVPCNotFound is returned for a missing VPC, or one the caller does not own.
 	ErrVPCNotFound = errors.New("VPC not found")
 	// ErrVPCSubnetOverlap is returned when a tenant's new subnet overlaps one of
-	// their OWN existing VPCs. Overlap with another tenant is fine and expected —
-	// each VPC has its own router namespace, so 10.0.0.0/24 can belong to any
-	// number of customers at once.
+	// their own existing VPCs IN THE SAME REGION.
+	//
+	// Overlap with another tenant is fine and expected — each VPC has its own
+	// router namespace, so 10.0.0.0/24 can belong to any number of customers at
+	// once. Overlap with the same tenant in a DIFFERENT region is also fine:
+	// those are different nodes with separate routing tables, and nothing can
+	// collide.
 	ErrVPCSubnetOverlap = errors.New("subnet overlaps one of your existing VPCs")
 	// ErrVPCQuotaExceeded caps how many VPCs one tenant may hold.
 	ErrVPCQuotaExceeded = errors.New("VPC limit reached for this account")
@@ -124,13 +128,31 @@ func (s *VPCService) Create(ctx context.Context, userID string, req *CreateVPCRe
 		if len(existing) >= VPCsPerUser(ctx, s.db) {
 			return ErrVPCQuotaExceeded
 		}
+
+		// Overlap is only a problem WITHIN one region. Two regions are different
+		// nodes with entirely separate routing tables, so the same customer may
+		// hold 10.0.0.0/24 in Jakarta and 10.0.0.0/24 in Purwokerto — nothing can
+		// collide, and every major cloud allows exactly that. Only networks in the
+		// SAME region are compared, where identical ranges would be genuinely
+		// ambiguous to the customer and would block ever routing between them.
+		var sameRegion []models.ManagedNetwork
+		if err := tx.Table("managed_networks AS m").
+			Select("m.*").
+			Joins("JOIN nodes n ON n.id = m.node_id").
+			Joins("JOIN nodes target ON target.id = ?", nodeID).
+			Where("m.user_id = ? AND m.type = ? AND m.deleted_at IS NULL", userID, NetworkTypeVPC).
+			Where("n.region_id IS NOT DISTINCT FROM target.region_id").
+			Scan(&sameRegion).Error; err != nil {
+			return err
+		}
+		existing = sameRegion
 		for i := range existing {
 			_, other, perr := net.ParseCIDR(existing[i].Subnet)
 			if perr != nil {
 				continue
 			}
 			if subnetsOverlap(ipnet, other) {
-				return fmt.Errorf("%w: %s overlaps %s (%s)",
+				return fmt.Errorf("%w: %s overlaps %s (%s) in this same location",
 					ErrVPCSubnetOverlap, req.Subnet, existing[i].Subnet, existing[i].Name)
 			}
 		}
@@ -172,7 +194,11 @@ func (s *VPCService) Create(ctx context.Context, userID string, req *CreateVPCRe
 		_ = s.Delete(ctx, userID, created.ID)
 		return nil, fmt.Errorf("failed to create the VPC's address pool: %w", err)
 	}
-	return created, nil
+	// Annotate before returning so the caller sees which location it landed in
+	// without a second request — the UI shows it straight after creating.
+	one := []models.ManagedNetwork{*created}
+	s.fillRegions(ctx, one)
+	return &one[0], nil
 }
 
 // lockUserVPCs takes a transaction-scoped advisory lock keyed on the tenant, so
@@ -200,22 +226,7 @@ func (s *VPCService) List(ctx context.Context, userID string) ([]models.ManagedN
 // fillRegions annotates networks with the region of the node they sit on, so a
 // customer can see that a VPC belongs to one location rather than all of them.
 func (s *VPCService) fillRegions(ctx context.Context, nets []models.ManagedNetwork) {
-	var rows []struct {
-		NodeID  string
-		ID      string
-		Name    string
-		Country string
-	}
-	if err := s.db.WithContext(ctx).Table("nodes").
-		Select("nodes.id AS node_id, regions.id, regions.name, regions.country").
-		Joins("JOIN regions ON regions.id = nodes.region_id").
-		Scan(&rows).Error; err != nil {
-		return
-	}
-	byNode := make(map[string]struct{ ID, Name, Country string }, len(rows))
-	for _, r := range rows {
-		byNode[r.NodeID] = struct{ ID, Name, Country string }{r.ID, r.Name, r.Country}
-	}
+	byNode := RegionsByNode(ctx, s.db)
 	for i := range nets {
 		if nets[i].NodeID == nil {
 			continue
@@ -239,7 +250,6 @@ func (s *VPCService) Get(ctx context.Context, userID, id string) (*models.Manage
 		}
 		return nil, err
 	}
-	s.fillRegions(ctx, []models.ManagedNetwork{vpc})
 	one := []models.ManagedNetwork{vpc}
 	s.fillRegions(ctx, one)
 	return &one[0], nil

@@ -37,6 +37,30 @@ func TestSubnetsOverlap(t *testing.T) {
 	}
 }
 
+// The rule is per-tenant AND per-region. Two regions are different nodes with
+// separate routing tables, so the same customer holding 10.0.0.0/24 in each is
+// safe and is what every major cloud allows — rejecting it was a bug reported
+// from production. Only same-region overlap is ambiguous enough to refuse.
+func TestOverlapIsScopedToOneRegion(t *testing.T) {
+	cidr := func(s string) *net.IPNet {
+		_, n, err := net.ParseCIDR(s)
+		if err != nil {
+			t.Fatalf("bad test CIDR %q: %v", s, err)
+		}
+		return n
+	}
+	// The comparison itself stays purely about addresses; the region filter is
+	// applied by the caller, so identical ranges must still register as
+	// overlapping when they ARE compared.
+	if !subnetsOverlap(cidr("10.0.0.0/24"), cidr("10.0.0.0/24")) {
+		t.Fatal("identical ranges must overlap when compared within one region")
+	}
+	// And the asymmetric case the customer originally described stays caught.
+	if !subnetsOverlap(cidr("10.0.0.0/23"), cidr("10.0.0.0/24")) {
+		t.Fatal("a /23 must still be refused against an existing /24 in the same region")
+	}
+}
+
 func TestFirstUsableAddress(t *testing.T) {
 	for cidr, want := range map[string]string{
 		"10.0.0.0/24":    "10.0.0.1",

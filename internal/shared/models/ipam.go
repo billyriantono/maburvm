@@ -92,6 +92,13 @@ type IPAddress struct {
 	CreatedAt    time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
 	UpdatedAt    time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
 	DeletedAt    gorm.DeletedAt `json:"-" gorm:"index"`
+
+	// Region is filled for listings from the node this address lives on. A
+	// floating IP can only be attached to a VM on its own node, so a customer who
+	// cannot see its location cannot tell which VMs it will work with.
+	RegionID      string `json:"region_id,omitempty" gorm:"-"`
+	RegionName    string `json:"region_name,omitempty" gorm:"-"`
+	RegionCountry string `json:"region_country,omitempty" gorm:"-"`
 }
 
 func (IPAddress) TableName() string { return "ip_addresses" }

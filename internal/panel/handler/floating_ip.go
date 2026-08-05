@@ -160,11 +160,17 @@ func (h *FloatingIPHandler) Order(c echo.Context) error {
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized"})
 	}
-	addr, err := h.service.OrderFloatingIP(c.Request().Context(), userCtx.ID.String())
+	var req struct {
+		Region string `json:"region"`
+	}
+	_ = c.Bind(&req)
+	addr, err := h.service.OrderFloatingIP(c.Request().Context(), userCtx.ID.String(), req.Region)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrFloatingIPQuotaExceeded):
 			return c.JSON(http.StatusForbidden, map[string]interface{}{"error": err.Error()})
+		case errors.Is(err, service.ErrRegionRequired), errors.Is(err, service.ErrRegionNotFound):
+			return badRequest(c, err.Error())
 		case errors.Is(err, service.ErrNoOrderablePool), errors.Is(err, service.ErrNoAvailableIPAddress):
 			return c.JSON(http.StatusConflict, map[string]interface{}{"error": err.Error()})
 		default:

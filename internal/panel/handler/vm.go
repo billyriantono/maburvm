@@ -452,9 +452,15 @@ type VMListItem struct {
 	UserID       string      `json:"user_id"`
 	OSTemplateID string      `json:"os_template_id"`
 	Resources    VMResources `json:"resources"`
-	VNCPort      int         `json:"vnc_port,omitempty"`
-	CreatedAt    string      `json:"created_at"`
-	UpdatedAt    string      `json:"updated_at"`
+	// Where the VM physically runs. Customers reason in regions, never in nodes,
+	// so this is what pairs a VM with the private networks and floating IPs it
+	// can actually use.
+	RegionID      string `json:"region_id,omitempty"`
+	RegionName    string `json:"region_name,omitempty"`
+	RegionCountry string `json:"region_country,omitempty"`
+	VNCPort       int    `json:"vnc_port,omitempty"`
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
 }
 
 // VMResources for list response
@@ -541,14 +547,17 @@ func (h *VMHandler) ListVMs(c echo.Context) error {
 	for i, vm := range resp.VMs {
 		node := nodeSummaries[vm.NodeID]
 		items[i] = VMListItem{
-			ID:           vm.ID,
-			Hostname:     vm.Hostname,
-			Status:       string(vm.Status),
-			NodeID:       vm.NodeID,
-			NodeName:     node.Name,
-			NodeStatus:   string(node.Status),
-			UserID:       vm.UserID,
-			OSTemplateID: vm.OSTemplateID,
+			RegionID:      vm.RegionID,
+			RegionName:    vm.RegionName,
+			RegionCountry: vm.RegionCountry,
+			ID:            vm.ID,
+			Hostname:      vm.Hostname,
+			Status:        string(vm.Status),
+			NodeID:        vm.NodeID,
+			NodeName:      node.Name,
+			NodeStatus:    string(node.Status),
+			UserID:        vm.UserID,
+			OSTemplateID:  vm.OSTemplateID,
 			Resources: VMResources{
 				CPU:  vm.Resources.CPU,
 				RAM:  vm.Resources.RAM,

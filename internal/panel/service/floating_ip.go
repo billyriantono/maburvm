@@ -87,7 +87,24 @@ func (s *VMService) ListFloatingIPs(ctx context.Context, userID string) ([]model
 	if userID != "" {
 		q = q.Where("user_id = ?", userID)
 	}
-	return addrs, q.Order("address ASC").Find(&addrs).Error
+	if err := q.Order("address ASC").Find(&addrs).Error; err != nil {
+		return nil, err
+	}
+	s.fillAddressRegions(ctx, addrs)
+	return addrs, nil
+}
+
+// fillAddressRegions annotates addresses with the region of the node they are on.
+func (s *VMService) fillAddressRegions(ctx context.Context, addrs []models.IPAddress) {
+	byNode := RegionsByNode(ctx, s.db)
+	for i := range addrs {
+		if addrs[i].NodeID == nil {
+			continue
+		}
+		if reg, ok := byNode[*addrs[i].NodeID]; ok {
+			addrs[i].RegionID, addrs[i].RegionName, addrs[i].RegionCountry = reg.ID, reg.Name, reg.Country
+		}
+	}
 }
 
 // GetFloatingIP loads a single floating IP by address ID.
@@ -429,9 +446,22 @@ var ErrNoOrderablePool = errors.New("no floating IP is available to order right 
 // an administrator has opted into self-service. Node placement is ours to pick:
 // a floating IP is only attachable to VMs on its own node, so the sensible
 // default is a node where the customer already runs something.
-func (s *VMService) OrderFloatingIP(ctx context.Context, userID string) (*models.IPAddress, error) {
+// region names the location to take the address from. A floating IP can only be
+// attached to a VM on its own node, so an address ordered in the wrong place is
+// useless — the customer must say where they want it.
+func (s *VMService) OrderFloatingIP(ctx context.Context, userID, region string) (*models.IPAddress, error) {
 	if userID == "" {
 		return nil, fmt.Errorf("user is required")
+	}
+	var regionID string
+	if s.regionService != nil {
+		reg, rerr := s.regionService.ResolveOrderRegion(ctx, region, region == "")
+		if rerr != nil {
+			return nil, rerr
+		}
+		if reg != nil {
+			regionID = reg.ID
+		}
 	}
 	var held int64
 	if err := s.db.WithContext(ctx).Model(&models.IPAddress{}).
@@ -446,22 +476,21 @@ func (s *VMService) OrderFloatingIP(ctx context.Context, userID string) (*models
 	// Prefer a node the customer already has a VM on, so the address is usable
 	// immediately rather than stranded on a node with nothing to attach it to.
 	var pools []models.IPPool
-	if err := s.db.WithContext(ctx).Where("orderable = ?", true).Find(&pools).Error; err != nil {
+	q := s.db.WithContext(ctx).Table("ip_pools AS p").Select("p.*")
+	if regionID != "" {
+		// Only pools on a node in the chosen region: an address from elsewhere
+		// could never be attached to a VM the customer ordered there.
+		q = q.Joins("JOIN ip_pool_nodes pn ON pn.pool_id = p.id").
+			Joins("JOIN nodes n ON n.id = pn.node_id").
+			Where("n.region_id = ?", regionID)
+	}
+	if err := q.Where("p.orderable = ? AND p.deleted_at IS NULL", true).Scan(&pools).Error; err != nil {
 		return nil, err
 	}
 	if len(pools) == 0 {
 		return nil, ErrNoOrderablePool
 	}
-	preferred := s.nodesWithVMsFor(ctx, userID)
-	ordered := make([]models.IPPool, 0, len(pools))
-	for _, want := range preferred {
-		for i := range pools {
-			if pools[i].NodeID != nil && *pools[i].NodeID == want {
-				ordered = append(ordered, pools[i])
-			}
-		}
-	}
-	ordered = append(ordered, pools...)
+	ordered := pools
 
 	var lastErr error
 	for i := range ordered {

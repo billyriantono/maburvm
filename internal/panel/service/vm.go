@@ -928,6 +928,8 @@ func (s *VMService) ListVMs(ctx context.Context, req *ListVMsRequest) (*ListVMsR
 		return nil, fmt.Errorf("failed to count VMs: %w", err)
 	}
 
+	s.fillVMRegions(ctx, vms)
+
 	return &ListVMsResponse{
 		VMs:     vms,
 		Total:   total,
@@ -951,6 +953,21 @@ type GetVMResponse struct {
 }
 
 // GetVM retrieves a VM by ID with details and status
+// fillVMRegions annotates VMs with where they physically run. Customers reason
+// in regions, never in nodes, so this is what lets them tell which private
+// networks and floating IPs a given VM can actually use.
+func (s *VMService) fillVMRegions(ctx context.Context, vms []models.VM) {
+	if len(vms) == 0 {
+		return
+	}
+	byNode := RegionsByNode(ctx, s.db)
+	for i := range vms {
+		if reg, ok := byNode[vms[i].NodeID]; ok {
+			vms[i].RegionID, vms[i].RegionName, vms[i].RegionCountry = reg.ID, reg.Name, reg.Country
+		}
+	}
+}
+
 // SetVPCService wires tenant VPC lookups for VM placement.
 func (s *VMService) SetVPCService(v *VPCService) { s.vpcService = v }
 
@@ -996,6 +1013,10 @@ func (s *VMService) GetVM(ctx context.Context, vmID string, includeAgentStatus b
 		}
 		return nil, fmt.Errorf("failed to get VM: %w", err)
 	}
+
+	one := []models.VM{vm.VM}
+	s.fillVMRegions(ctx, one)
+	vm.VM = one[0]
 
 	response := &GetVMResponse{
 		VM: &vm.VM,
