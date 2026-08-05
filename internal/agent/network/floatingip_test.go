@@ -90,12 +90,12 @@ func TestNeedsHairpin(t *testing.T) {
 	for ip, want := range map[string]bool{
 		"203.0.113.163": true,  // directly bridged public
 		"198.51.100.7":  true,  // directly bridged public
-		"10.20.0.5":      false, // behind the host
-		"192.168.1.20":   false,
-		"172.16.4.9":     false,
-		"127.0.0.1":      false,
-		"169.254.1.1":    false,
-		"":               false,
+		"10.20.0.5":     false, // behind the host
+		"192.168.1.20":  false,
+		"172.16.4.9":    false,
+		"127.0.0.1":     false,
+		"169.254.1.1":   false,
+		"":              false,
 	} {
 		if got := needsHairpin(ip); got != want {
 			t.Errorf("needsHairpin(%q) = %v, want %v", ip, got, want)
