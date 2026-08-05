@@ -447,6 +447,10 @@ func (m *Manager) AttachFloatingIPVPC(vpcID, floatingIP, internalIP, bridge, gat
 	return nil
 }
 
+// VPCFloatingMAC exposes the MAC that answers for a VPC's floating IPs, so the
+// agent can announce the address from the root namespace with its own GARP.
+func (m *Manager) VPCFloatingMAC(vpcID string) (string, error) { return VPCFloatingMAC(vpcID) }
+
 // DetachFloatingIPVPC removes a floating IP from a VPC's router namespace.
 func (m *Manager) DetachFloatingIPVPC(vpcID, floatingIP string) error {
 	if err := m.nat.DetachFloatingIPVPC(vpcID, floatingIP); err != nil {

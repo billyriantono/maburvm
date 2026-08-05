@@ -106,10 +106,30 @@ func (nm *NATManager) AttachFloatingIPVPC(vpcID, floatingIP, internalIP, bridge,
 		return fmt.Errorf("VPC floating IP SNAT: %w", err)
 	}
 
-	// Announce from the namespace's MAC so upstream stops sending the address to
-	// whoever held it before. Best-effort: arping may be absent.
-	_ = runNS(ns, "arping", "-c", "2", "-A", "-I", "eth-ext", floatingIP)
 	return nil
+}
+
+// VPCFloatingMAC returns the MAC that answers ARP for floating IPs in this VPC,
+// i.e. the router namespace's leg on the public bridge.
+//
+// The announcement itself is made from the ROOT namespace: the leg is bridged
+// onto the same segment, so a frame injected there reaches the same L2 domain,
+// and it lets the agent reuse its own raw-socket GARP instead of shelling out.
+// The previous implementation called arping, which is installed on neither
+// production node — so the announcement silently never happened, and moving a
+// floating IP left upstream pointing at whoever held it before until the ARP
+// cache expired.
+func VPCFloatingMAC(vpcID string) (string, error) {
+	ns := vpcNetns(vpcShortID(vpcID))
+	out, err := nsOutput(ns, "cat", "/sys/class/net/eth-ext/address")
+	if err != nil {
+		return "", fmt.Errorf("read VPC public leg MAC: %w", err)
+	}
+	mac := strings.TrimSpace(out)
+	if _, perr := net.ParseMAC(mac); perr != nil {
+		return "", fmt.Errorf("VPC public leg has no usable MAC (%q)", mac)
+	}
+	return mac, nil
 }
 
 // DetachFloatingIPVPC removes a floating IP from a VPC's router namespace,

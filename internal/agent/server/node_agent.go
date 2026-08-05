@@ -2498,6 +2498,18 @@ func (s *NodeAgentService) ConfigureFloatingIP(ctx context.Context, req *pb.Floa
 		if err := s.networkMgr.AttachFloatingIPVPC(vpcID, fip, internalIP, bridge, strings.TrimSpace(req.GetGateway())); err != nil {
 			return nil, status.Errorf(codes.Internal, "attach floating IP in VPC: %v", err)
 		}
+		// Announce the address from the router namespace's MAC. Without this,
+		// upstream keeps sending the address to whoever held it before until its
+		// ARP cache expires, so moving a floating IP appears to do nothing for
+		// minutes. Injected from the root namespace onto the same bridge the
+		// namespace's public leg sits on, which reaches the same L2 domain.
+		if bridge != "" {
+			if mac, merr := s.networkMgr.VPCFloatingMAC(vpcID); merr != nil {
+				log.Printf("[NodeAgent] WARNING: no GARP for %s in VPC %s: %v", fip, vpcID, merr)
+			} else if err := sendGratuitousARP(bridge, fip, mac); err != nil {
+				log.Printf("[NodeAgent] WARNING: GARP for %s on %s failed: %v", fip, bridge, err)
+			}
+		}
 		log.Printf("[NodeAgent] Floating IP %s -> %s attached inside VPC %s", fip, internalIP, vpcID)
 		return &pb.FloatingIPResponse{Success: true}, nil
 	}
