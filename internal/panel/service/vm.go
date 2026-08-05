@@ -107,7 +107,8 @@ type VMService struct {
 	lastNodeIndex         int
 	nodeMutex             sync.Mutex
 
-	vpcService *VPCService
+	vpcService    *VPCService
+	regionService *RegionService
 
 	// gRPC connections cache
 	grpcConns map[string]*grpc.ClientConn
@@ -190,9 +191,16 @@ type CreateVMRequest struct {
 	// VPCID places the VM inside a tenant VPC. It resolves to that VPC's private
 	// address pool, so a customer never has to know pool or bridge names — and
 	// cannot reach another tenant's.
-	VPCID         string `json:"vpc_id,omitempty" validate:"omitempty,uuid"`
-	RequestedIP   string `json:"requested_ip,omitempty" validate:"omitempty,ip"`
-	BandwidthMbps int    `json:"bandwidth_mbps,omitempty" validate:"omitempty,min=0,max=10000"`
+	VPCID string `json:"vpc_id,omitempty" validate:"omitempty,uuid"`
+	// Region is the location the customer chose, by id or slug. Required for
+	// customer-initiated orders; integrations that predate regions (the WHMCS
+	// webhook) may omit it and fall back to the configured default.
+	Region string `json:"region,omitempty"`
+	// RegionRequired marks a customer-initiated order, where silently choosing a
+	// physical location on their behalf is not acceptable.
+	RegionRequired bool   `json:"-"`
+	RequestedIP    string `json:"requested_ip,omitempty" validate:"omitempty,ip"`
+	BandwidthMbps  int    `json:"bandwidth_mbps,omitempty" validate:"omitempty,min=0,max=10000"`
 	// Monthly data quota (GB) + over-quota policy, normally inherited from the
 	// plan. 0 quota = unlimited. Populated from the plan in CreateVM.
 	DataQuotaGB       int64  `json:"data_quota_gb,omitempty" validate:"omitempty,min=0"`
@@ -313,6 +321,16 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 	}
 
 	// Select node for VM placement
+	// Resolve the region BEFORE node selection: it constrains which nodes are
+	// eligible, and a customer choosing "Jakarta" must not land in Purwokerto.
+	var orderRegion *models.Region
+	if s.regionService != nil {
+		orderRegion, err = s.regionService.ResolveOrderRegion(ctx, req.Region, req.RegionRequired)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	// Resolve a VPC placement BEFORE node selection: a VPC lives in a router
 	// namespace on ONE node, so it dictates where the VM goes. Doing this after
 	// selection let the scheduler pick a different host, and the VM was then
@@ -328,6 +346,12 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 	}
 
 	nodeID := req.NodeID
+	if nodeID == "" && orderRegion != nil {
+		nodeID, err = s.selectNodeInRegion(ctx, orderRegion.ID)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if nodeID == "" {
 		nodeID, err = s.selectNode(ctx)
 		if err != nil {
@@ -702,6 +726,27 @@ func (s *VMService) validateResources(resources *models.Resources) error {
 	}
 	return nil
 }
+
+// selectNodeInRegion picks an active node inside one region. A region with no
+// active node fails loudly here rather than silently spilling the order into a
+// different city.
+func (s *VMService) selectNodeInRegion(ctx context.Context, regionID string) (string, error) {
+	var nodes []models.Node
+	if err := s.db.WithContext(ctx).
+		Where("status = ? AND region_id = ?", models.NodeStatusActive, regionID).
+		Find(&nodes).Error; err != nil {
+		return "", err
+	}
+	if len(nodes) == 0 {
+		return "", ErrRegionNoCapacity
+	}
+	s.nodeMutex.Lock()
+	defer s.nodeMutex.Unlock()
+	return s.selectNodeRoundRobin(nodes), nil
+}
+
+// SetRegionService wires region resolution for order placement.
+func (s *VMService) SetRegionService(r *RegionService) { s.regionService = r }
 
 // selectNode selects an available node for VM placement
 func (s *VMService) selectNode(ctx context.Context) (string, error) {

@@ -162,7 +162,9 @@ type CreateVMRequest struct {
 	ManagedNetworkID string           `json:"managed_network_id,omitempty" validate:"omitempty,uuid"`
 	// VPCID places the VM in one of the caller's own VPCs. Ownership is verified
 	// in the service, so another tenant's id simply fails to resolve.
-	VPCID    string `json:"vpc_id,omitempty" validate:"omitempty,uuid"`
+	VPCID string `json:"vpc_id,omitempty" validate:"omitempty,uuid"`
+	// Region is the location the customer chose (id or slug).
+	Region   string `json:"region,omitempty"`
 	RecipeID string `json:"recipe_id,omitempty" validate:"omitempty,uuid"`
 	// Password sets the new guest's root password. RegeneratePassword (with an
 	// empty Password) asks the server to generate one and return it once.
@@ -264,20 +266,25 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 
 	// Create VM
 	createReq := &service.CreateVMRequest{
-		UserID:             userID,
-		Hostname:           req.Hostname,
-		OSTemplateID:       req.OSTemplateID,
-		Resources:          req.Resources,
-		NodeID:             req.NodeID,
-		PlanID:             req.PlanID,
-		IPPoolID:           req.IPPoolID,
-		RequestedIP:        req.RequestedIP,
-		BandwidthMbps:      req.BandwidthMbps,
-		VLANID:             req.VLANID,
-		CPUModel:           req.CPUModel,
-		UserData:           userData,
-		ManagedNetworkID:   req.ManagedNetworkID,
-		VPCID:              req.VPCID,
+		UserID:           userID,
+		Hostname:         req.Hostname,
+		OSTemplateID:     req.OSTemplateID,
+		Resources:        req.Resources,
+		NodeID:           req.NodeID,
+		PlanID:           req.PlanID,
+		IPPoolID:         req.IPPoolID,
+		RequestedIP:      req.RequestedIP,
+		BandwidthMbps:    req.BandwidthMbps,
+		VLANID:           req.VLANID,
+		CPUModel:         req.CPUModel,
+		UserData:         userData,
+		ManagedNetworkID: req.ManagedNetworkID,
+		VPCID:            req.VPCID,
+		Region:           req.Region,
+		// A customer must choose their location; placing them silently is not the
+		// platform's call. Admin and integration callers may omit it and fall back
+		// to the configured default, which is what keeps WHMCS provisioning working.
+		RegionRequired:     userCtx.Role != models.RoleAdmin,
 		Password:           req.Password,
 		RegeneratePassword: req.RegeneratePassword,
 		SSHPublicKeys:      sshPublicKeys,
@@ -321,6 +328,14 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 		switch {
 		// A VPC the caller does not own must read as "not found", never as a
 		// server fault, and must not confirm the id exists.
+		case errors.Is(err, service.ErrRegionRequired), errors.Is(err, service.ErrRegionNoCapacity):
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{
+				"error": "Bad Request", "message": err.Error(),
+			})
+		case errors.Is(err, service.ErrRegionNotFound):
+			return c.JSON(http.StatusNotFound, map[string]interface{}{
+				"error": "Not Found", "message": "region not found",
+			})
 		case errors.Is(err, service.ErrVPCNotFound):
 			return c.JSON(http.StatusNotFound, map[string]interface{}{
 				"error":   "Not Found",

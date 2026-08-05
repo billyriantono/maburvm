@@ -43,7 +43,7 @@ quota_mode TEXT NOT NULL DEFAULT 'legacy',
 			created_at DATETIME, updated_at DATETIME)`,
 		`CREATE TABLE IF NOT EXISTS nodes (
 			id TEXT PRIMARY KEY, name TEXT, ip_address TEXT, status TEXT, token TEXT,
-			cert_fingerprint TEXT, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
+			cert_fingerprint TEXT, region_id TEXT, zone TEXT NOT NULL DEFAULT '', created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE IF NOT EXISTS vms (
 			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, node_id TEXT NOT NULL, hostname TEXT,
 			os_template_id TEXT, resources TEXT, status TEXT DEFAULT 'stopped',

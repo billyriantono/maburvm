@@ -462,6 +462,11 @@ func (s *Server) setupVMRoutes(g *echo.Group) {
 	// agent connections and IPAM access.
 	handler.RegisterFloatingIPRoutes(s.echo, handler.NewFloatingIPHandler(vmService), s.db)
 
+	// Regions: the location a customer picks when ordering.
+	regionService := service.NewRegionService(s.db)
+	handler.RegisterRegionRoutes(s.echo, handler.NewRegionHandler(regionService), s.db)
+	vmService.SetRegionService(regionService)
+
 	// Tenant VPCs: customer-defined private networks. Two customers may choose the
 	// same subnet — a router namespace per VPC on the node keeps them apart.
 	vpcService := service.NewVPCService(s.db, service.NewIPAMService(s.db, repository.NewIPAMRepository(s.db)))

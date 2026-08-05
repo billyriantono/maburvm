@@ -32,6 +32,7 @@ const navItems = [
   { href: "/plans", label: "Plans", icon: Boxes },
   { href: "/templates", label: "Templates", icon: Box },
   { href: "/images", label: "Images", icon: Layers },
+  { href: "/regions", label: "Regions", icon: Globe },
   { href: "/nodes", label: "Nodes", icon: HardDrive },
   { href: "/storage", label: "Storage", icon: Database },
   { href: "/isos", label: "ISOs", icon: Folder },

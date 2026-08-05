@@ -116,3 +116,23 @@ export interface FloatingIPBilling {
   free: number
   billable: number
 }
+
+// A region is the location a customer picks when ordering: a city holding one or
+// more nodes. `flag` arrives from the API as a Unicode flag glyph, so no icon
+// assets are shipped and nothing needs updating when a region is added.
+export interface Region {
+  id: string
+  slug: string
+  name: string
+  country: string
+  flag: string
+  enabled: boolean
+  node_count: number
+}
+
+export interface CreateRegionRequest {
+  slug: string
+  name: string
+  country: string
+  enabled?: boolean
+}

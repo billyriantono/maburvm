@@ -47,6 +47,8 @@ quota_mode TEXT NOT NULL DEFAULT 'legacy',
 			status TEXT DEFAULT 'offline',
 			token TEXT UNIQUE NOT NULL,
 			cert_fingerprint TEXT NOT NULL DEFAULT '',
+			region_id TEXT,
+			zone TEXT NOT NULL DEFAULT '',
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			deleted_at DATETIME

@@ -6,6 +6,7 @@ import Link from "next/link"
 import { ArrowLeft, Check, Cpu, MemoryStick, HardDrive, Gauge, KeyRound, Database, Layers } from "lucide-react"
 import { usePlans } from "@/lib/hooks/use-plans"
 import { useVPCs } from "@/lib/hooks/use-vpcs"
+import { useRegions } from "@/lib/hooks/use-regions"
 import { useTemplates } from "@/lib/hooks/use-templates"
 import { useImages } from "@/lib/hooks/use-images"
 import { useCreateVM, type CreateVMResult } from "@/lib/hooks/use-vms"
@@ -26,6 +27,7 @@ function OrderVMForm() {
   const sourceImageId = searchParams.get("source_image_id") ?? ""
   const { data: plans, isLoading: plansLoading } = usePlans(true)
   const { data: vpcs } = useVPCs()
+  const { data: regions } = useRegions()
   const { data: templates, isLoading: templatesLoading } = useTemplates()
   const { data: images } = useImages()
   const sourceImage = sourceImageId ? images?.find((img) => img.id === sourceImageId) : undefined
@@ -36,6 +38,7 @@ function OrderVMForm() {
   const [templateId, setTemplateId] = useState<string>("")
   const [hostname, setHostname] = useState<string>("")
   const [vpcId, setVpcId] = useState<string>("")
+  const [region, setRegion] = useState<string>("")
   const [error, setError] = useState<string>("")
   const [created, setCreated] = useState<CreateVMResult | null>(null)
   const [copied, setCopied] = useState(false)
@@ -53,12 +56,19 @@ function OrderVMForm() {
   const selectedPlan = activePlans.find((p) => p.id === planId)
 
   const hostnameValid = /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/.test(hostname)
-  const canSubmit = !!planId && (!!templateId || !!sourceImageId) && hostnameValid && !createVM.isPending
+  // Region is required: it is a physical location with real latency
+  // consequences, so the platform must not choose one silently.
+  const canSubmit =
+    !!planId && (!!templateId || !!sourceImageId) && hostnameValid && !!region && !createVM.isPending
 
   const handleSubmit = () => {
     setError("")
     if (!selectedPlan) {
       setError("Please select a plan.")
+      return
+    }
+    if (!region) {
+      setError("Please choose a region.")
       return
     }
     createVM.mutate(
@@ -84,6 +94,7 @@ function OrderVMForm() {
         // is verified server-side, and the network also decides which node the VM
         // lands on, since a private network lives on one host.
         vpc_id: vpcId || undefined,
+        region,
       },
       {
         onSuccess: (data: CreateVMResult) => {
@@ -135,10 +146,44 @@ function OrderVMForm() {
         <h1 className="text-2xl font-semibold tracking-tight">Order a VM</h1>
       </div>
 
+      {/* Step 0: region — first, because it constrains everything after it */}
+      <section className="rounded-lg border bg-card p-6">
+        <h2 className="text-lg font-semibold">1 · Choose a location</h2>
+        <p className="text-sm text-muted-foreground mt-1">
+          Where your VM physically runs. Pick the one closest to your users — it decides latency,
+          and a VM cannot be moved between locations afterwards.
+        </p>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          {(regions ?? []).map((r) => (
+            <button
+              key={r.id}
+              type="button"
+              onClick={() => setRegion(r.slug)}
+              className={`flex items-center gap-3 rounded-md border p-4 text-left transition-colors ${
+                region === r.slug ? "border-primary bg-primary/5" : "hover:bg-muted/50"
+              }`}
+            >
+              <span className="text-2xl leading-none" aria-hidden="true">
+                {r.flag}
+              </span>
+              <span>
+                <span className="block font-medium">{r.name}</span>
+                <span className="block text-xs text-muted-foreground">{r.slug}</span>
+              </span>
+            </button>
+          ))}
+          {!regions?.length && (
+            <p className="text-sm text-muted-foreground">
+              No location is available to order right now.
+            </p>
+          )}
+        </div>
+      </section>
+
       {/* Step 1: plan */}
       <section className="rounded-lg border bg-card text-card-foreground shadow-sm">
         <div className="px-5 py-4 border-b">
-          <h2 className="text-lg font-semibold">1 · Choose a plan</h2>
+          <h2 className="text-lg font-semibold">2 · Choose a plan</h2>
         </div>
         <div className="p-5">
           {plansLoading ? (
@@ -178,7 +223,7 @@ function OrderVMForm() {
       <section className="rounded-lg border bg-card text-card-foreground shadow-sm">
         <div className="px-5 py-4 border-b">
           <h2 className="text-lg font-semibold">
-            {sourceImageId ? "2 · Source image" : "2 · Choose an operating system"}
+            {sourceImageId ? "3 · Source image" : "3 · Choose an operating system"}
           </h2>
         </div>
         {sourceImageId ? (
@@ -223,7 +268,7 @@ function OrderVMForm() {
       {/* Step 3: hostname */}
       <section className="rounded-lg border bg-card text-card-foreground shadow-sm">
         <div className="px-5 py-4 border-b">
-          <h2 className="text-lg font-semibold">3 · Hostname</h2>
+          <h2 className="text-lg font-semibold">4 · Hostname</h2>
         </div>
         <div className="p-5">
           <input

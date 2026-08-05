@@ -1,0 +1,4 @@
+DROP INDEX IF EXISTS idx_nodes_region;
+ALTER TABLE nodes DROP COLUMN IF EXISTS zone, DROP COLUMN IF EXISTS region_id;
+DROP INDEX IF EXISTS idx_regions_slug;
+DROP TABLE IF EXISTS regions;
