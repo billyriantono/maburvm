@@ -83,12 +83,16 @@ func (h *ImageHandler) DeleteImage(c echo.Context) error {
 }
 
 // RegisterImageRoutes registers image endpoints. Read requires vm:read; capture
-// requires vm:snapshot (same capability that governs snapshots); delete requires
-// vm:snapshot too.
+// Capturing and deleting an image use snapshot:create / snapshot:delete — the
+// permissions the roles are actually granted. They previously required
+// "vm:snapshot", a string no role has ever held, so the endpoints were
+// unreachable for every non-admin: the client area offered "Save as Image" and
+// the request came back 403. Admins were unaffected because admin:access
+// bypasses the check, which is why it survived.
 func RegisterImageRoutes(e *echo.Echo, handler *ImageHandler, db *gorm.DB) {
 	images := e.Group("/api/v1/images")
 	images.Use(middleware.RequireAuth(db))
 	images.GET("", handler.ListImages, middleware.RequirePermission("vm:read"))
-	images.POST("", handler.CreateImage, middleware.RequirePermission("vm:snapshot"))
-	images.DELETE("/:id", handler.DeleteImage, middleware.RequirePermission("vm:snapshot"))
+	images.POST("", handler.CreateImage, middleware.RequirePermission("snapshot:create"))
+	images.DELETE("/:id", handler.DeleteImage, middleware.RequirePermission("snapshot:delete"))
 }

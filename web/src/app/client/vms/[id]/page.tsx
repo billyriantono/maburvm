@@ -4,7 +4,10 @@ import { useParams, useRouter } from "next/navigation"
 import Link from "next/link"
 import { useState } from "react"
 import { ArrowLeft, Play, Square, RotateCw, Monitor, Cpu, MemoryStick, HardDrive, Terminal, Trash2, Gauge, RefreshCw, Layers } from "lucide-react"
-import { useVM, useVMAction, useDeleteVM, useVMStatusStream, useRebuildVM } from "@/lib/hooks/use-vms"
+import { useVM, useVMAction, useDeleteVM, useVMStatusStream, useRebuildVM, useVMMetrics, useVMMetricsHistory } from "@/lib/hooks/use-vms"
+import { Sparkline } from "@/components/ui/sparkline"
+import type { VMMetricSample } from "@/types"
+import { CountryFlag } from "@/components/country-flag"
 import { useCreateImage } from "@/lib/hooks/use-images"
 import { useVMNetworks } from "@/lib/hooks/use-networks"
 import { useTemplates } from "@/lib/hooks/use-templates"
@@ -75,6 +78,32 @@ function Spec({ icon: Icon, label, value }: { icon: React.ElementType; label: st
   )
 }
 
+// One usage figure with its trend. Kept tiny and local: it exists only to stop
+// the four blocks below repeating the same markup four times.
+function UsageStat({ label, value, series }: { label: string; value: string; series: number[] }) {
+  return (
+    <div>
+      <div className="flex items-baseline justify-between">
+        <span className="text-sm text-muted-foreground">{label}</span>
+        <span className="text-sm font-semibold">{value}</span>
+      </div>
+      {series.length > 1 ? (
+        <div className="mt-2">
+          <Sparkline data={series} />
+        </div>
+      ) : (
+        <p className="mt-2 text-xs text-muted-foreground">not enough history yet</p>
+      )}
+    </div>
+  )
+}
+
+function formatRate(bytesPerSec: number): string {
+  if (!bytesPerSec || bytesPerSec < 1024) return `${Math.round(bytesPerSec || 0)} B/s`
+  if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`
+  return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`
+}
+
 export default function ClientVMDetailPage() {
   const params = useParams()
   const router = useRouter()
@@ -85,6 +114,25 @@ export default function ClientVMDetailPage() {
   const del = useDeleteVM()
   const rebuild = useRebuildVM(vmId)
   const { data: templates } = useTemplates()
+  const { data: metrics } = useVMMetrics(vmId)
+  const { data: history } = useVMMetricsHistory(vmId, 60)
+
+  // The template name usually already carries the version ("Debian 12"), so it
+  // is only appended when it does not — otherwise the page reads "Debian 12 12".
+  // Fall back to the newest stored sample when the live reading is unavailable,
+  // so a momentary node timeout shows a slightly stale number rather than a dash.
+  const last = (h?: VMMetricSample[]) => (h && h.length ? h[h.length - 1] : undefined)
+  const latest = (key: "cpu_usage" | "memory_usage", unit: string) => {
+    const s = last(history)
+    return s ? `${Math.round(s[key])}${unit}` : "—"
+  }
+
+  const template = (templates ?? []).find((t) => t.id === vm?.os_template_id)
+  const osLabel = template
+    ? template.version && !template.name.toLowerCase().endsWith(template.version.toLowerCase())
+      ? `${template.name} ${template.version}`
+      : template.name
+    : "—"
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [reinstallOpen, setReinstallOpen] = useState(false)
   const [templateId, setTemplateId] = useState("")
@@ -148,7 +196,11 @@ export default function ClientVMDetailPage() {
   }
 
   return (
-    <div className="space-y-6 max-w-4xl">
+    // Widened from max-w-4xl: that suited a page of text, but it now carries
+    // usage charts, which need room to be readable. max-w-7xl matches the admin
+    // VM page rather than going full-bleed — prose running the width of a 2000px
+    // monitor is worse than the empty space it removes.
+    <div className="space-y-6">
       <div className="flex items-center gap-3">
         <Link href="/client/vms" className="p-2 rounded-md border bg-background hover:bg-muted transition-colors">
           <ArrowLeft className="w-5 h-5" />
@@ -340,6 +392,79 @@ export default function ClientVMDetailPage() {
         <Spec icon={Cpu} label="vCPU" value={`${vm.resources.cpu}`} />
         <Spec icon={MemoryStick} label="Memory" value={`${vm.resources.ram} MB`} />
         <Spec icon={HardDrive} label="Disk" value={`${vm.resources.disk} GB`} />
+      </div>
+
+      {/* Live usage. The samples come from the same collector the admin view
+          uses; a customer asking "why is it slow" should not have to open a
+          ticket to see whether the machine is out of CPU or memory. */}
+      {vm.status === "running" && (
+        <section className="rounded-lg border bg-card">
+          <div className="p-5 border-b flex items-center gap-2">
+            <Gauge className="w-5 h-5" />
+            <h2 className="text-lg font-semibold">Usage</h2>
+            <span className="text-xs text-muted-foreground ml-auto">last 60 minutes</span>
+          </div>
+          {/* Charts come from stored history, the current figure from the live
+              call. History is deliberately the primary source: it is persisted
+              and needs no round-trip to the node, whereas the live reading times
+              out under load — driving the whole panel off it meant one slow node
+              blanked the charts entirely. */}
+          {history?.length || metrics ? (
+            <div className="grid gap-6 p-5 sm:grid-cols-2">
+              <UsageStat
+                label="CPU"
+                value={metrics ? `${Math.round(metrics.cpu_percent)}%` : latest("cpu_usage", "%")}
+                series={(history ?? []).map((h) => h.cpu_usage)}
+              />
+              <UsageStat
+                label="Memory"
+                value={
+                  metrics
+                    ? `${Math.round(metrics.memory_used / (1024 * 1024))} / ${Math.round(
+                        metrics.memory_total / (1024 * 1024),
+                      )} MB`
+                    : latest("memory_usage", "%")
+                }
+                series={(history ?? []).map((h) => h.memory_usage)}
+              />
+              <UsageStat
+                label="Network in"
+                value={formatRate(
+                  metrics?.network_rx_bytes_per_sec ?? last(history)?.network_rx_bytes_per_sec ?? 0,
+                )}
+                series={(history ?? []).map((h) => h.network_rx_bytes_per_sec)}
+              />
+              <UsageStat
+                label="Network out"
+                value={formatRate(
+                  metrics?.network_tx_bytes_per_sec ?? last(history)?.network_tx_bytes_per_sec ?? 0,
+                )}
+                series={(history ?? []).map((h) => h.network_tx_bytes_per_sec)}
+              />
+            </div>
+          ) : (
+            <p className="p-5 text-sm text-muted-foreground">
+              Collecting — the first samples appear within a minute of the VM starting.
+            </p>
+          )}
+        </section>
+      )}
+
+      {/* What this machine actually is: the OS it runs and where it runs. Both
+          were missing, so the page could not answer the two questions a customer
+          opens it to ask. */}
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Spec icon={Layers} label="Operating system" value={osLabel} />
+        <div className="rounded-lg border bg-card p-4">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Gauge className="w-4 h-4" />
+            Location
+          </div>
+          <div className="mt-1 flex items-center gap-2 text-lg font-semibold">
+            <CountryFlag country={vm.region_country} />
+            {vm.region_name ?? "—"}
+          </div>
+        </div>
       </div>
 
       {/* Network speed self-service upgrade */}

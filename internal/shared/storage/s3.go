@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
@@ -162,24 +163,49 @@ func NewClient(cfg *Config) (*Client, error) {
 	return client, nil
 }
 
-// Upload uploads data to S3/MinIO
-func (c *Client) Upload(ctx context.Context, key string, body io.Reader, size int64, contentType string) error {
-	input := &s3.PutObjectInput{
-		Bucket:        aws.String(c.bucket),
-		Key:           aws.String(key),
-		Body:          body,
-		ContentLength: aws.Int64(size),
-	}
+// uploadPartSize is the multipart chunk size.
+//
+// S3 allows at most 10,000 parts, so this sets the ceiling on a single object:
+// 64 MiB × 10,000 is ~640 GB, comfortably above any VM disk we capture, while
+// staying small enough that a failed part is cheap to retry.
+const uploadPartSize = 64 * 1024 * 1024
 
+// uploadConcurrency is deliberately modest: the agent runs on a hypervisor
+// alongside customer VMs, so saturating its uplink and CPU to finish an image a
+// little sooner is the wrong trade.
+const uploadConcurrency = 3
+
+// Upload stores data in S3/MinIO, using multipart for anything large.
+//
+// A single PutObject caps at 5 GB and cannot resume, so VM images above that
+// failed outright with EntityTooLarge, and anything big enough to be slow failed
+// with a 500 after the whole transfer was already spent — both observed in
+// production. The transfer manager splits the object into parts, retries each
+// part on its own, and lifts the size ceiling to something no disk we handle
+// will reach.
+// size is retained for the callers that already compute it, but is no longer
+// sent: the transfer manager derives each part's length and rejects an explicit
+// ContentLength.
+func (c *Client) Upload(ctx context.Context, key string, body io.Reader, size int64, contentType string) error {
+	_ = size
+	input := &s3.PutObjectInput{
+		Bucket: aws.String(c.bucket),
+		Key:    aws.String(key),
+		Body:   body,
+	}
+	// ContentLength is set only for the single-shot path; the transfer manager
+	// derives each part's length itself and rejects the field.
 	if contentType != "" {
 		input.ContentType = aws.String(contentType)
 	}
 
-	_, err := c.s3Client.PutObject(ctx, input)
-	if err != nil {
+	uploader := manager.NewUploader(c.s3Client, func(u *manager.Uploader) {
+		u.PartSize = uploadPartSize
+		u.Concurrency = uploadConcurrency
+	})
+	if _, err := uploader.Upload(ctx, input); err != nil {
 		return fmt.Errorf("failed to upload object: %w", err)
 	}
-
 	return nil
 }
 

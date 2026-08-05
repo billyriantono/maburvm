@@ -499,12 +499,14 @@ func RegisterSnapshotRoutes(e *echo.Echo, handler *SnapshotHandler, db *gorm.DB)
 	// Get snapshot details - requires vm:read
 	snapshots.GET("/:snapshot_id", handler.GetSnapshot)
 
-	// Create snapshot - requires vm:snapshot
-	snapshots.POST("", handler.CreateSnapshot, middleware.RequirePermission("vm:snapshot"))
+	// Create snapshot - requires snapshot:create. It previously required
+	// "vm:snapshot", which no role is granted, so clients got 403 on their own
+	// VMs while admins passed via the admin:access bypass.
+	snapshots.POST("", handler.CreateSnapshot, middleware.RequirePermission("snapshot:create"))
 
-	// Restore snapshot - requires vm:snapshot
-	snapshots.POST("/:snapshot_id/restore", handler.RestoreSnapshot, middleware.RequirePermission("vm:snapshot"))
+	// Restore snapshot - requires snapshot:update
+	snapshots.POST("/:snapshot_id/restore", handler.RestoreSnapshot, middleware.RequirePermission("snapshot:update"))
 
-	// Delete snapshot - requires vm:snapshot
-	snapshots.DELETE("/:snapshot_id", handler.DeleteSnapshot, middleware.RequirePermission("vm:snapshot"))
+	// Delete snapshot - requires snapshot:delete
+	snapshots.DELETE("/:snapshot_id", handler.DeleteSnapshot, middleware.RequirePermission("snapshot:delete"))
 }

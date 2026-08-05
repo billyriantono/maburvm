@@ -44,7 +44,7 @@ export default function ClientProfilePage() {
   }
 
   return (
-    <div className="space-y-6 max-w-2xl">
+    <div className="space-y-6">
       <h1 className="text-2xl font-semibold tracking-tight">Profile</h1>
 
       {/* Account */}

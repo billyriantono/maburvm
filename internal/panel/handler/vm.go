@@ -600,13 +600,17 @@ func (h *VMHandler) ListVMs(c echo.Context) error {
 
 // VMDetailResponse represents detailed VM information
 type VMDetailResponse struct {
-	ID             string                 `json:"id"`
-	Hostname       string                 `json:"hostname"`
-	Status         string                 `json:"status"`
-	NodeID         string                 `json:"node_id"`
-	UserID         string                 `json:"user_id"`
-	OSTemplateID   string                 `json:"os_template_id"`
-	Resources      models.Resources       `json:"resources"`
+	ID           string           `json:"id"`
+	Hostname     string           `json:"hostname"`
+	Status       string           `json:"status"`
+	NodeID       string           `json:"node_id"`
+	UserID       string           `json:"user_id"`
+	OSTemplateID string           `json:"os_template_id"`
+	Resources    models.Resources `json:"resources"`
+	// Where the VM physically runs. Customers reason in regions, never in nodes.
+	RegionID       string                 `json:"region_id,omitempty"`
+	RegionName     string                 `json:"region_name,omitempty"`
+	RegionCountry  string                 `json:"region_country,omitempty"`
 	VNCPort        int                    `json:"vnc_port,omitempty"`
 	ConsoleEnabled bool                   `json:"console_enabled"`
 	RescueMode     bool                   `json:"rescue_mode"`
@@ -650,6 +654,9 @@ func (h *VMHandler) GetVM(c echo.Context) error {
 	}
 
 	resp := VMDetailResponse{
+		RegionID:       vm.VM.RegionID,
+		RegionName:     vm.VM.RegionName,
+		RegionCountry:  vm.VM.RegionCountry,
 		ID:             vm.VM.ID,
 		Hostname:       vm.VM.Hostname,
 		Status:         string(vm.VM.Status),

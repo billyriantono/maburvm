@@ -126,7 +126,7 @@ function OrderVMForm() {
 
   if (created) {
     return (
-      <div className="space-y-6 max-w-2xl">
+      <div className="space-y-6">
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-bold tracking-tight">VM created</h1>
         </div>
@@ -151,7 +151,7 @@ function OrderVMForm() {
   }
 
   return (
-    <div className="space-y-6 max-w-3xl">
+    <div className="space-y-6">
       <div className="flex items-center gap-3">
         <Link href="/client/vms" className="p-2 rounded-md border bg-background hover:bg-muted transition-colors">
           <ArrowLeft className="w-5 h-5" />

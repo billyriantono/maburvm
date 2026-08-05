@@ -38,7 +38,7 @@ export default function ClientImagesPage() {
   }
 
   return (
-    <div className="space-y-6 max-w-5xl">
+    <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold text-foreground flex items-center gap-2">
           <Layers className="w-6 h-6" />
