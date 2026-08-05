@@ -340,6 +340,18 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		if verr != nil {
 			return nil, verr
 		}
+		// A private network does NOT span regions, so a VM cannot be in one region
+		// and in a network that lives in another. Refuse rather than silently
+		// honouring one and discarding the other — the VM would come up in a city
+		// the customer did not choose, and nothing would say so.
+		if orderRegion != nil {
+			var vpcNodeRegion *string
+			if err := s.db.WithContext(ctx).Model(&models.Node{}).
+				Select("region_id").Where("id = ?", vpcNode).Scan(&vpcNodeRegion).Error; err == nil &&
+				vpcNodeRegion != nil && *vpcNodeRegion != orderRegion.ID {
+				return nil, ErrVPCWrongRegion
+			}
+		}
 		req.IPPoolID = poolID
 		req.AutoAssignIP = false
 		req.NodeID = vpcNode

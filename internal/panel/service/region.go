@@ -225,27 +225,8 @@ func (s *RegionService) defaultRegionSlug(ctx context.Context) string {
 	return strings.TrimSpace(raw)
 }
 
-// CountryFlag turns an ISO 3166-1 alpha-2 code into its flag.
-//
-// Deliberately Unicode regional indicators rather than SVG or an icon package:
-// they are real flag glyphs rendered by the system font, so there is no asset to
-// ship, nothing to keep in sync when a region is added, and no dependency.
-//
-// Caveat worth knowing: Windows has no flag glyphs in its emoji font and shows
-// the two letters instead ("ID"). That degrades to something still meaningful
-// rather than to a broken image.
-func CountryFlag(code string) string {
-	code = strings.ToUpper(strings.TrimSpace(code))
-	if len(code) != 2 {
-		return ""
-	}
-	const regionalIndicatorA = 0x1F1E6
-	out := make([]rune, 0, 2)
-	for _, c := range code {
-		if c < 'A' || c > 'Z' {
-			return ""
-		}
-		out = append(out, rune(regionalIndicatorA+(c-'A')))
-	}
-	return string(out)
-}
+// The flag itself is rendered client-side from Country using lipis/flag-icons.
+// The panel deliberately does not send a glyph: emoji flags do not render at all
+// on Windows, so a server-supplied glyph would be invisible to a large share of
+// customers. Sending the ISO code and letting the client pick a flat icon shows
+// the same flag everywhere.

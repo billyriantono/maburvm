@@ -45,10 +45,9 @@ func (h *RegionHandler) List(c echo.Context) error {
 	for i := range regions {
 		out = append(out, map[string]interface{}{
 			"id": regions[i].ID, "slug": regions[i].Slug, "name": regions[i].Name,
-			"country": regions[i].Country,
-			// The flag travels with the region so every client renders the same
-			// glyph without shipping an icon set or mapping codes itself.
-			"flag":       service.CountryFlag(regions[i].Country),
+			// The client renders the flag from this ISO code with a flat icon set;
+			// the panel sends no glyph, because emoji flags are invisible on Windows.
+			"country":    regions[i].Country,
 			"enabled":    regions[i].Enabled,
 			"node_count": regions[i].NodeCount,
 		})

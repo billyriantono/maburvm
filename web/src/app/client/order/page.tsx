@@ -7,6 +7,7 @@ import { ArrowLeft, Check, Cpu, MemoryStick, HardDrive, Gauge, KeyRound, Databas
 import { usePlans } from "@/lib/hooks/use-plans"
 import { useVPCs } from "@/lib/hooks/use-vpcs"
 import { useRegions } from "@/lib/hooks/use-regions"
+import { CountryFlag } from "@/components/country-flag"
 import { useTemplates } from "@/lib/hooks/use-templates"
 import { useImages } from "@/lib/hooks/use-images"
 import { useCreateVM, type CreateVMResult } from "@/lib/hooks/use-vms"
@@ -28,6 +29,7 @@ function OrderVMForm() {
   const { data: plans, isLoading: plansLoading } = usePlans(true)
   const { data: vpcs } = useVPCs()
   const { data: regions } = useRegions()
+
   const { data: templates, isLoading: templatesLoading } = useTemplates()
   const { data: images } = useImages()
   const sourceImage = sourceImageId ? images?.find((img) => img.id === sourceImageId) : undefined
@@ -39,6 +41,17 @@ function OrderVMForm() {
   const [hostname, setHostname] = useState<string>("")
   const [vpcId, setVpcId] = useState<string>("")
   const [region, setRegion] = useState<string>("")
+
+  // Derived AFTER the state it reads: declaring these above `region` put the
+  // component in the temporal dead zone and the page crashed on first render
+  // with "Cannot access 'region' before initialization".
+  const selectedRegion = (regions ?? []).find((r) => r.slug === region)
+  // A private network lives on one node, so it belongs to exactly one region and
+  // cannot be joined from another; offering one from elsewhere would fail at
+  // submit through no fault of the customer.
+  const regionVPCs = (vpcs ?? []).filter(
+    (v) => !!selectedRegion && v.region_id === selectedRegion.id,
+  )
   const [error, setError] = useState<string>("")
   const [created, setCreated] = useState<CreateVMResult | null>(null)
   const [copied, setCopied] = useState(false)
@@ -158,14 +171,15 @@ function OrderVMForm() {
             <button
               key={r.id}
               type="button"
-              onClick={() => setRegion(r.slug)}
+              onClick={() => {
+                setRegion(r.slug)
+                setVpcId("")
+              }}
               className={`flex items-center gap-3 rounded-md border p-4 text-left transition-colors ${
                 region === r.slug ? "border-primary bg-primary/5" : "hover:bg-muted/50"
               }`}
             >
-              <span className="text-2xl leading-none" aria-hidden="true">
-                {r.flag}
-              </span>
+              <CountryFlag country={r.country} className="text-2xl shrink-0" />
               <span>
                 <span className="block font-medium">{r.name}</span>
                 <span className="block text-xs text-muted-foreground">{r.slug}</span>
@@ -256,7 +270,7 @@ function OrderVMForm() {
               <option value="">Select an OS…</option>
               {activeTemplates.map((t) => (
                 <option key={t.id} value={t.id}>
-                  {t.name} {t.version}
+                  {templateLabel(t.name, t.version)}
                 </option>
               ))}
             </select>
@@ -286,8 +300,10 @@ function OrderVMForm() {
         </div>
       </section>
 
-      {/* Step 3b: private network (only shown when the customer has one) */}
-      {!!vpcs?.length && (
+      {/* Private network — only those in the selected region. A VPC lives on one
+          node, so it belongs to exactly one location and cannot be joined from
+          another; offering one from elsewhere would fail at submit. */}
+      {!!regionVPCs.length && (
         <section className="rounded-lg border bg-card p-6">
           <h2 className="text-lg font-semibold">Network</h2>
           <p className="text-sm text-muted-foreground mt-1">
@@ -306,7 +322,7 @@ function OrderVMForm() {
                 <span className="text-muted-foreground"> — reachable from the internet directly</span>
               </span>
             </label>
-            {vpcs.map((v) => (
+            {regionVPCs.map((v) => (
               <label
                 key={v.id}
                 className="flex items-center gap-3 rounded-md border p-3 cursor-pointer hover:bg-muted/50"
@@ -388,6 +404,16 @@ function OrderVMForm() {
 }
 
 // useSearchParams requires a Suspense boundary in Next 15 client pages.
+// Template names usually already carry the version ("Debian 12"), so appending
+// it produced "Debian 12 12". Only append when the name does not already end
+// with it, which keeps names that genuinely lack a version readable.
+function templateLabel(name: string, version?: string): string {
+  const n = (name ?? "").trim()
+  const v = (version ?? "").trim()
+  if (!v || n.toLowerCase().endsWith(v.toLowerCase())) return n
+  return `${n} ${v}`
+}
+
 export default function OrderVMPage() {
   return (
     <Suspense fallback={null}>

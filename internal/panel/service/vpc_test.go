@@ -78,25 +78,3 @@ func TestQuotaSettingsIgnoreNonPositive(t *testing.T) {
 		t.Error("quota must never resolve to zero or less")
 	}
 }
-
-// Flags are Unicode regional indicators rather than SVG or an icon package:
-// real glyphs from the system font, so there is no asset to ship and nothing to
-// keep in sync when a region is added.
-func TestCountryFlag(t *testing.T) {
-	for code, want := range map[string]string{
-		"ID": "\U0001F1EE\U0001F1E9", // Indonesia
-		"SG": "\U0001F1F8\U0001F1EC", // Singapore
-		"id": "\U0001F1EE\U0001F1E9", // case-insensitive
-	} {
-		if got := CountryFlag(code); got != want {
-			t.Errorf("CountryFlag(%q) = %q, want %q", code, got, want)
-		}
-	}
-	// Anything that is not two letters yields nothing rather than a broken glyph,
-	// so a bad value degrades to "no flag" instead of mojibake.
-	for _, bad := range []string{"", "I", "IDN", "1D", "  "} {
-		if got := CountryFlag(bad); got != "" {
-			t.Errorf("CountryFlag(%q) = %q, want empty", bad, got)
-		}
-	}
-}

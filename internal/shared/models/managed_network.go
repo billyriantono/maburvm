@@ -29,6 +29,14 @@ type ManagedNetwork struct {
 	CreatedAt time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
 	UpdatedAt time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
 	DeletedAt gorm.DeletedAt `json:"-" gorm:"index"`
+
+	// Region is filled for listings from the node this network sits on. A VPC
+	// lives in a router namespace on ONE node, so it belongs to exactly one
+	// region — it does NOT span them. Surfacing it stops a customer picking a
+	// network in the wrong location.
+	RegionID      string `json:"region_id,omitempty" gorm:"-"`
+	RegionName    string `json:"region_name,omitempty" gorm:"-"`
+	RegionCountry string `json:"region_country,omitempty" gorm:"-"`
 }
 
 // TableName specifies the table name for ManagedNetwork.

@@ -1,3 +1,8 @@
+/* Flat country flags (lipis/flag-icons). Imported once here rather than per
+   page: it is a shared icon set, and the CSS carries every flag, so importing
+   it in more than one place only duplicates work. */
+@import "flag-icons/css/flag-icons.min.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;

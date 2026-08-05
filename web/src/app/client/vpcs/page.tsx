@@ -15,6 +15,8 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useCreateVPC, useDeleteVPC, useVPCs } from "@/lib/hooks/use-vpcs"
+import { useRegions } from "@/lib/hooks/use-regions"
+import { CountryFlag } from "@/components/country-flag"
 import type { VPC } from "@/types"
 
 // Customers define their own private networks and choose their own address
@@ -23,20 +25,27 @@ import type { VPC } from "@/types"
 // customer's own. That is what the error from the API says when it happens.
 export default function ClientVPCsPage() {
   const { data: vpcs, isLoading } = useVPCs()
+  const { data: regions } = useRegions()
   const createVPC = useCreateVPC()
   const deleteVPC = useDeleteVPC()
 
   const [open, setOpen] = useState(false)
   const [name, setName] = useState("")
   const [subnet, setSubnet] = useState("10.0.0.0/24")
+  const [region, setRegion] = useState("")
 
   const handleCreate = async () => {
     try {
-      const vpc = await createVPC.mutateAsync({ name: name.trim(), subnet: subnet.trim() })
+      const vpc = await createVPC.mutateAsync({
+        name: name.trim(),
+        subnet: subnet.trim(),
+        region,
+      })
       toast.success(`Private network "${vpc.name}" created on ${vpc.subnet}`)
       setOpen(false)
       setName("")
       setSubnet("10.0.0.0/24")
+      setRegion("")
     } catch (err) {
       toast.error((err as Error).message)
     }
@@ -85,14 +94,17 @@ export default function ClientVPCsPage() {
           <div className="grid grid-cols-12 gap-3 p-4 bg-muted text-muted-foreground font-medium text-xs">
             <div className="col-span-4">Name</div>
             <div className="col-span-3">Address range</div>
-            <div className="col-span-3">Gateway</div>
+            <div className="col-span-3">Location</div>
             <div className="col-span-2 text-right">Actions</div>
           </div>
           {vpcs.map((vpc) => (
             <div key={vpc.id} className="grid grid-cols-12 gap-3 items-center p-4 border-b last:border-0">
               <div className="col-span-4 font-medium truncate">{vpc.name}</div>
               <div className="col-span-3 font-mono text-sm">{vpc.subnet}</div>
-              <div className="col-span-3 font-mono text-sm text-muted-foreground">{vpc.gateway}</div>
+              <div className="col-span-3 text-sm text-muted-foreground flex items-center gap-2">
+                <CountryFlag country={vpc.region_country} />
+                {vpc.region_name ?? "—"}
+              </div>
               <div className="col-span-2 flex justify-end">
                 <Button
                   type="button"
@@ -131,6 +143,28 @@ export default function ClientVPCsPage() {
               />
             </div>
             <div className="space-y-2">
+              <Label>Location</Label>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {(regions ?? []).map((r) => (
+                  <button
+                    key={r.id}
+                    type="button"
+                    onClick={() => setRegion(r.slug)}
+                    className={`flex items-center gap-2 rounded-md border p-3 text-left text-sm transition-colors ${
+                      region === r.slug ? "border-primary bg-primary/5" : "hover:bg-muted/50"
+                    }`}
+                  >
+                    <CountryFlag country={r.country} />
+                    {r.name}
+                  </button>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                A private network lives in one location. Only VMs ordered in that same location can
+                join it.
+              </p>
+            </div>
+            <div className="space-y-2">
               <Label htmlFor="vpc-subnet">Address range</Label>
               <Input
                 id="vpc-subnet"
@@ -152,7 +186,7 @@ export default function ClientVPCsPage() {
             <Button
               type="button"
               onClick={handleCreate}
-              disabled={!name.trim() || !subnet.trim() || createVPC.isPending}
+              disabled={!name.trim() || !subnet.trim() || !region || createVPC.isPending}
             >
               {createVPC.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "Create"}
             </Button>

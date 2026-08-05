@@ -336,6 +336,10 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{
 				"error": "Not Found", "message": "region not found",
 			})
+		case errors.Is(err, service.ErrVPCWrongRegion):
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{
+				"error": "Bad Request", "message": err.Error(),
+			})
 		case errors.Is(err, service.ErrVPCNotFound):
 			return c.JSON(http.StatusNotFound, map[string]interface{}{
 				"error":   "Not Found",

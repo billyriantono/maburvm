@@ -30,6 +30,7 @@ import {
   useUpdateRegion,
 } from "@/lib/hooks/use-regions"
 import { useNodes } from "@/lib/hooks/use-nodes"
+import { CountryFlag } from "@/components/country-flag"
 import type { Region } from "@/types"
 
 // Regions are the locations customers choose between when ordering. A region
@@ -139,9 +140,7 @@ export default function RegionsPage() {
           {regions.map((r) => (
             <div key={r.id} className="grid grid-cols-12 gap-3 items-center p-4 border-b last:border-0">
               <div className="col-span-4 font-medium flex items-center gap-2">
-                <span className="text-xl leading-none" aria-hidden="true">
-                  {r.flag}
-                </span>
+                <CountryFlag country={r.country} className="text-xl" />
                 {r.name}
               </div>
               <div className="col-span-2 font-mono text-sm text-muted-foreground">{r.slug}</div>

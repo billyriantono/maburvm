@@ -24,6 +24,10 @@ var (
 	ErrVPCQuotaExceeded = errors.New("VPC limit reached for this account")
 	// ErrVPCInUse blocks deleting a VPC that still has VMs in it.
 	ErrVPCInUse = errors.New("VPC still has VMs in it")
+	// ErrVPCWrongRegion is returned when a VM's chosen region and its chosen
+	// private network are in different places. A VPC lives on one node, so it
+	// belongs to exactly one region and cannot be joined from another.
+	ErrVPCWrongRegion = errors.New("that private network is in a different region; pick a network in the region you selected")
 )
 
 // CreateVPCRequest is a tenant's own description of a private network.
@@ -32,6 +36,10 @@ type CreateVPCRequest struct {
 	Subnet  string `json:"subnet"`
 	Gateway string `json:"gateway,omitempty"` // defaults to the first usable address
 	NodeID  string `json:"node_id,omitempty"` // admin override; otherwise auto-selected
+	// Region the network lives in. A VPC does not span regions, so a customer
+	// must say which location it belongs to — otherwise they discover the answer
+	// only when a VM refuses to join it.
+	Region string `json:"region,omitempty"`
 }
 
 // VPCService owns tenant VPCs: the managed network, its node-side provisioning
@@ -95,7 +103,7 @@ func (s *VPCService) Create(ctx context.Context, userID string, req *CreateVPCRe
 
 	nodeID := strings.TrimSpace(req.NodeID)
 	if nodeID == "" {
-		nodeID, err = s.pickNode(ctx)
+		nodeID, err = s.pickNodeInRegion(ctx, strings.TrimSpace(req.Region))
 		if err != nil {
 			return nil, err
 		}
@@ -182,7 +190,40 @@ func (s *VPCService) List(ctx context.Context, userID string) ([]models.ManagedN
 	if userID != "" {
 		q = q.Where("user_id = ?", userID)
 	}
-	return out, q.Order("created_at DESC").Find(&out).Error
+	if err := q.Order("created_at DESC").Find(&out).Error; err != nil {
+		return nil, err
+	}
+	s.fillRegions(ctx, out)
+	return out, nil
+}
+
+// fillRegions annotates networks with the region of the node they sit on, so a
+// customer can see that a VPC belongs to one location rather than all of them.
+func (s *VPCService) fillRegions(ctx context.Context, nets []models.ManagedNetwork) {
+	var rows []struct {
+		NodeID  string
+		ID      string
+		Name    string
+		Country string
+	}
+	if err := s.db.WithContext(ctx).Table("nodes").
+		Select("nodes.id AS node_id, regions.id, regions.name, regions.country").
+		Joins("JOIN regions ON regions.id = nodes.region_id").
+		Scan(&rows).Error; err != nil {
+		return
+	}
+	byNode := make(map[string]struct{ ID, Name, Country string }, len(rows))
+	for _, r := range rows {
+		byNode[r.NodeID] = struct{ ID, Name, Country string }{r.ID, r.Name, r.Country}
+	}
+	for i := range nets {
+		if nets[i].NodeID == nil {
+			continue
+		}
+		if reg, ok := byNode[*nets[i].NodeID]; ok {
+			nets[i].RegionID, nets[i].RegionName, nets[i].RegionCountry = reg.ID, reg.Name, reg.Country
+		}
+	}
 }
 
 // Get loads one VPC, enforcing ownership for non-admin callers.
@@ -198,7 +239,10 @@ func (s *VPCService) Get(ctx context.Context, userID, id string) (*models.Manage
 		}
 		return nil, err
 	}
-	return &vpc, nil
+	s.fillRegions(ctx, []models.ManagedNetwork{vpc})
+	one := []models.ManagedNetwork{vpc}
+	s.fillRegions(ctx, one)
+	return &one[0], nil
 }
 
 // Delete removes a VPC, its address pool and its node-side namespace. It refuses
@@ -230,11 +274,21 @@ func (s *VPCService) Delete(ctx context.Context, userID, id string) error {
 
 // pickNode chooses a node for a VPC. Any active node will do: a VPC is
 // self-contained on one host, and its subnet cannot clash with another tenant's.
-func (s *VPCService) pickNode(ctx context.Context) (string, error) {
+func (s *VPCService) pickNodeInRegion(ctx context.Context, regionIDOrSlug string) (string, error) {
+	q := s.db.WithContext(ctx).Where("status = ?", "active")
+	if regionIDOrSlug != "" {
+		region, err := NewRegionService(s.db).Get(ctx, regionIDOrSlug)
+		if err != nil {
+			return "", err
+		}
+		q = q.Where("region_id = ?", region.ID)
+	}
 	var node models.Node
-	if err := s.db.WithContext(ctx).
-		Where("status = ?", "active").Order("created_at ASC").First(&node).Error; err != nil {
-		return "", fmt.Errorf("no active node available to host a VPC")
+	if err := q.Order("created_at ASC").First(&node).Error; err != nil {
+		if regionIDOrSlug != "" {
+			return "", ErrRegionNoCapacity
+		}
+		return "", fmt.Errorf("no active node available to host a private network")
 	}
 	return node.ID, nil
 }

@@ -101,6 +101,11 @@ export interface VPC {
   bridge?: string
   node_id?: string
   user_id?: string
+  /** A VPC lives on one node, so it belongs to exactly ONE region and cannot be
+   *  joined from another. Filled by the API from the node it sits on. */
+  region_id?: string
+  region_name?: string
+  region_country?: string
   created_at: string
 }
 
@@ -108,6 +113,8 @@ export interface CreateVPCRequest {
   name: string
   subnet: string
   gateway?: string
+  /** Which location the network lives in; it cannot span regions. */
+  region?: string
 }
 
 export interface FloatingIPBilling {
@@ -118,14 +125,13 @@ export interface FloatingIPBilling {
 }
 
 // A region is the location a customer picks when ordering: a city holding one or
-// more nodes. `flag` arrives from the API as a Unicode flag glyph, so no icon
-// assets are shipped and nothing needs updating when a region is added.
+// more nodes. The flag is rendered client-side from `country` with flag-icons —
+// the API sends no glyph, because emoji flags do not render on Windows.
 export interface Region {
   id: string
   slug: string
   name: string
   country: string
-  flag: string
   enabled: boolean
   node_count: number
 }
