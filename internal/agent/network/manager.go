@@ -435,3 +435,23 @@ func (m *Manager) DeleteVPC(vpcID string) error {
 	log.Printf("[NetworkManager] VPC %s removed", vpcID)
 	return nil
 }
+
+// AttachFloatingIPVPC points a floating IP at a guest inside a tenant VPC. The
+// address is configured in the VPC's router namespace, since the host has no
+// route to the tenant's subnet.
+func (m *Manager) AttachFloatingIPVPC(vpcID, floatingIP, internalIP, bridge, gateway string) error {
+	if err := m.nat.AttachFloatingIPVPC(vpcID, floatingIP, internalIP, bridge, gateway); err != nil {
+		return err
+	}
+	log.Printf("[NetworkManager] Floating IP %s -> %s inside VPC %s", floatingIP, internalIP, vpcID)
+	return nil
+}
+
+// DetachFloatingIPVPC removes a floating IP from a VPC's router namespace.
+func (m *Manager) DetachFloatingIPVPC(vpcID, floatingIP string) error {
+	if err := m.nat.DetachFloatingIPVPC(vpcID, floatingIP); err != nil {
+		return err
+	}
+	log.Printf("[NetworkManager] Floating IP %s detached from VPC %s", floatingIP, vpcID)
+	return nil
+}

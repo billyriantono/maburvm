@@ -1545,6 +1545,15 @@ message FloatingIPRequest {
   string bridge = 4;       // uplink bridge to bind the address to and GARP on
   bool attach = 5;         // true = attach, false = detach
   string nat_mode = 6;     // "inbound" (DNAT only) or "full" (DNAT + SNAT)
+  // vpc_id, when set, means the VM lives in a tenant VPC. The address is then
+  // configured inside that VPC's router namespace rather than on the host: the
+  // host has no route to the VM's subnet at all (that is what lets tenants
+  // overlap), so a host-side DNAT would have nowhere to send the packet.
+  string vpc_id = 7;
+  // gateway is the upstream gateway of the floating IP's pool. A VPC router
+  // namespace needs it explicitly: it has no other route to the internet over
+  // the public bridge.
+  string gateway = 8;
 }
 
 // FloatingIPResponse reports the result of a floating IP attach/detach.

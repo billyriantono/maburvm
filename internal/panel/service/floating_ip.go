@@ -139,6 +139,11 @@ func (s *VMService) AttachFloatingIP(ctx context.Context, addressID, vmID, natMo
 	if natMode == "" {
 		natMode = defaultNATMode(internalIP)
 	}
+	// A VPC guest holds no public address of its own, so inbound-only is
+	// meaningless there — it egresses as the floating IP either way.
+	if s.vpcForVM(ctx, vmID) != "" {
+		natMode = models.NATModeFull
+	}
 	if natMode != models.NATModeInbound && natMode != models.NATModeFull {
 		return nil, fmt.Errorf("invalid nat_mode %q (want %q or %q)", natMode, models.NATModeInbound, models.NATModeFull)
 	}
@@ -278,8 +283,42 @@ func (s *VMService) detachFloatingIPsOnAgentForVM(ctx context.Context, vmID, nod
 	}
 }
 
+// vpcForVM resolves which tenant VPC a VM sits in, or "" when it is an ordinary
+// bridged VM.
+//
+// It deliberately keys on the BRIDGE of the pool the VM's address came from, not
+// on the address itself: two tenants may both run 10.0.0.10, so an address
+// lookup would be ambiguous, while VPC bridge names are unique per VPC.
+func (s *VMService) vpcForVM(ctx context.Context, vmID string) string {
+	var addr models.IPAddress
+	if err := s.db.WithContext(ctx).
+		Where("vm_id = ? AND delivery_mode = ?", vmID, models.IPDeliveryDirect).
+		First(&addr).Error; err != nil {
+		return ""
+	}
+	pool, err := s.ipamService.GetPool(ctx, addr.PoolID)
+	if err != nil || pool == nil || pool.Bridge == "" {
+		return ""
+	}
+	var vpc models.ManagedNetwork
+	if err := s.db.WithContext(ctx).
+		Where("bridge = ? AND type = ?", pool.Bridge, "vpc").
+		First(&vpc).Error; err != nil {
+		return ""
+	}
+	return vpc.ID
+}
+
 // applyFloatingIP issues the attach/detach RPC to the node agent.
 func (s *VMService) applyFloatingIP(ctx context.Context, nodeID, floatingIP, vmID, internalIP, bridge, natMode string, attach bool) error {
+	// A VPC guest is unreachable from the host, so its floating IP has to be
+	// configured inside the VPC's router namespace instead. The upstream gateway
+	// goes with it: the namespace has no other way to learn it.
+	vpcID := s.vpcForVM(ctx, vmID)
+	gateway := ""
+	if vpcID != "" {
+		gateway = s.floatingPoolGateway(ctx, floatingIP)
+	}
 	if nodeID == "" {
 		return ErrNodeNotFound
 	}
@@ -298,8 +337,24 @@ func (s *VMService) applyFloatingIP(ctx context.Context, nodeID, floatingIP, vmI
 		Bridge:     bridge,
 		Attach:     attach,
 		NatMode:    natMode,
+		VpcId:      vpcID,
+		Gateway:    gateway,
 	})
 	return err
+}
+
+// floatingPoolGateway returns the upstream gateway of the pool a floating IP
+// belongs to, which a VPC router namespace needs to reach the internet.
+func (s *VMService) floatingPoolGateway(ctx context.Context, address string) string {
+	var addr models.IPAddress
+	if err := s.db.WithContext(ctx).Where("address = ?", address).First(&addr).Error; err != nil {
+		return ""
+	}
+	pool, err := s.ipamService.GetPool(ctx, addr.PoolID)
+	if err != nil || pool == nil {
+		return ""
+	}
+	return pool.Gateway
 }
 
 // floatingPoolBridge resolves the uplink bridge the address must be bound to.

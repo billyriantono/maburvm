@@ -2471,7 +2471,16 @@ func (s *NodeAgentService) ConfigureFloatingIP(ctx context.Context, req *pb.Floa
 		return nil, status.Error(codes.InvalidArgument, "floating_ip is required")
 	}
 
+	vpcID := strings.TrimSpace(req.GetVpcId())
+
 	if !req.GetAttach() {
+		if vpcID != "" {
+			if err := s.networkMgr.DetachFloatingIPVPC(vpcID, fip); err != nil {
+				return nil, status.Errorf(codes.Internal, "detach floating IP in VPC: %v", err)
+			}
+			log.Printf("[NodeAgent] Floating IP %s detached from VPC %s", fip, vpcID)
+			return &pb.FloatingIPResponse{Success: true}, nil
+		}
 		if err := s.networkMgr.DetachFloatingIP(req.GetVmId(), fip, bridge); err != nil {
 			return nil, status.Errorf(codes.Internal, "detach floating IP: %v", err)
 		}
@@ -2481,6 +2490,16 @@ func (s *NodeAgentService) ConfigureFloatingIP(ctx context.Context, req *pb.Floa
 
 	if internalIP == "" {
 		return nil, status.Error(codes.InvalidArgument, "internal_ip is required to attach")
+	}
+	if vpcID != "" {
+		// Inside a VPC everything happens in the router namespace, including the
+		// gratuitous ARP — the namespace owns the address, so it must be the one
+		// to announce it.
+		if err := s.networkMgr.AttachFloatingIPVPC(vpcID, fip, internalIP, bridge, strings.TrimSpace(req.GetGateway())); err != nil {
+			return nil, status.Errorf(codes.Internal, "attach floating IP in VPC: %v", err)
+		}
+		log.Printf("[NodeAgent] Floating IP %s -> %s attached inside VPC %s", fip, internalIP, vpcID)
+		return &pb.FloatingIPResponse{Success: true}, nil
 	}
 	if err := s.networkMgr.AttachFloatingIP(req.GetVmId(), fip, internalIP, bridge, req.GetNatMode()); err != nil {
 		return nil, status.Errorf(codes.Internal, "attach floating IP: %v", err)

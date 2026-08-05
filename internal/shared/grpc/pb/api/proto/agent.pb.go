@@ -6534,13 +6534,22 @@ func (x *ProbeIPsResponse) GetChecked() []string {
 // and nat_mode are required for detach as well as attach, so the agent can
 // reconstruct and delete the exact rules it added without keeping state.
 type FloatingIPRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	FloatingIp    string                 `protobuf:"bytes,1,opt,name=floating_ip,json=floatingIp,proto3" json:"floating_ip,omitempty"` // the public /32 that moves between VMs
-	VmId          string                 `protobuf:"bytes,2,opt,name=vm_id,json=vmId,proto3" json:"vm_id,omitempty"`                   // VM the address is (or was) attached to
-	InternalIp    string                 `protobuf:"bytes,3,opt,name=internal_ip,json=internalIp,proto3" json:"internal_ip,omitempty"` // the VM's own address, i.e. the NAT destination
-	Bridge        string                 `protobuf:"bytes,4,opt,name=bridge,proto3" json:"bridge,omitempty"`                           // uplink bridge to bind the address to and GARP on
-	Attach        bool                   `protobuf:"varint,5,opt,name=attach,proto3" json:"attach,omitempty"`                          // true = attach, false = detach
-	NatMode       string                 `protobuf:"bytes,6,opt,name=nat_mode,json=natMode,proto3" json:"nat_mode,omitempty"`          // "inbound" (DNAT only) or "full" (DNAT + SNAT)
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	FloatingIp string                 `protobuf:"bytes,1,opt,name=floating_ip,json=floatingIp,proto3" json:"floating_ip,omitempty"` // the public /32 that moves between VMs
+	VmId       string                 `protobuf:"bytes,2,opt,name=vm_id,json=vmId,proto3" json:"vm_id,omitempty"`                   // VM the address is (or was) attached to
+	InternalIp string                 `protobuf:"bytes,3,opt,name=internal_ip,json=internalIp,proto3" json:"internal_ip,omitempty"` // the VM's own address, i.e. the NAT destination
+	Bridge     string                 `protobuf:"bytes,4,opt,name=bridge,proto3" json:"bridge,omitempty"`                           // uplink bridge to bind the address to and GARP on
+	Attach     bool                   `protobuf:"varint,5,opt,name=attach,proto3" json:"attach,omitempty"`                          // true = attach, false = detach
+	NatMode    string                 `protobuf:"bytes,6,opt,name=nat_mode,json=natMode,proto3" json:"nat_mode,omitempty"`          // "inbound" (DNAT only) or "full" (DNAT + SNAT)
+	// vpc_id, when set, means the VM lives in a tenant VPC. The address is then
+	// configured inside that VPC's router namespace rather than on the host: the
+	// host has no route to the VM's subnet at all (that is what lets tenants
+	// overlap), so a host-side DNAT would have nowhere to send the packet.
+	VpcId string `protobuf:"bytes,7,opt,name=vpc_id,json=vpcId,proto3" json:"vpc_id,omitempty"`
+	// gateway is the upstream gateway of the floating IP's pool. A VPC router
+	// namespace needs it explicitly: it has no other route to the internet over
+	// the public bridge.
+	Gateway       string `protobuf:"bytes,8,opt,name=gateway,proto3" json:"gateway,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6613,6 +6622,20 @@ func (x *FloatingIPRequest) GetAttach() bool {
 func (x *FloatingIPRequest) GetNatMode() string {
 	if x != nil {
 		return x.NatMode
+	}
+	return ""
+}
+
+func (x *FloatingIPRequest) GetVpcId() string {
+	if x != nil {
+		return x.VpcId
+	}
+	return ""
+}
+
+func (x *FloatingIPRequest) GetGateway() string {
+	if x != nil {
+		return x.Gateway
 	}
 	return ""
 }
@@ -7310,7 +7333,7 @@ const file_api_proto_agent_proto_rawDesc = "" +
 	"timeout_ms\x18\x03 \x01(\x05R\ttimeoutMs\"C\n" +
 	"\x10ProbeIPsResponse\x12\x15\n" +
 	"\x06in_use\x18\x01 \x03(\tR\x05inUse\x12\x18\n" +
-	"\achecked\x18\x02 \x03(\tR\achecked\"\xb5\x01\n" +
+	"\achecked\x18\x02 \x03(\tR\achecked\"\xe6\x01\n" +
 	"\x11FloatingIPRequest\x12\x1f\n" +
 	"\vfloating_ip\x18\x01 \x01(\tR\n" +
 	"floatingIp\x12\x13\n" +
@@ -7319,7 +7342,9 @@ const file_api_proto_agent_proto_rawDesc = "" +
 	"internalIp\x12\x16\n" +
 	"\x06bridge\x18\x04 \x01(\tR\x06bridge\x12\x16\n" +
 	"\x06attach\x18\x05 \x01(\bR\x06attach\x12\x19\n" +
-	"\bnat_mode\x18\x06 \x01(\tR\anatMode\"Z\n" +
+	"\bnat_mode\x18\x06 \x01(\tR\anatMode\x12\x15\n" +
+	"\x06vpc_id\x18\a \x01(\tR\x05vpcId\x12\x18\n" +
+	"\agateway\x18\b \x01(\tR\agateway\"Z\n" +
 	"\x12FloatingIPResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12*\n" +
 	"\x05error\x18\x02 \x01(\v2\x14.agent.ErrorResponseR\x05error\"m\n" +

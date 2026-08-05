@@ -214,6 +214,7 @@ func (nm *NATManager) DeleteVPC(vpcID string) error {
 	_ = run("ip", "netns", "del", ns)
 	_ = run("ip", "link", "del", vpcIntVeth(id8))
 	_ = run("ip", "link", "del", vpcUpVeth(id8))
+	_ = run("ip", "link", "del", vpcExtVeth(id8))
 	_ = run("ip", "link", "del", vpcBridge(id8))
 	if hostIP != "" {
 		_ = nm.ipt.Delete(NATTable, VPCPostChain, vpcHostNATRule(hostIP, id8)...)
@@ -373,3 +374,10 @@ func runNS(ns string, args ...string) error {
 
 // VPCNetnsName exposes the router namespace name for diagnostics.
 func VPCNetnsName(vpcID string) string { return vpcNetns(vpcShortID(vpcID)) }
+
+// nsOutput runs a command inside a namespace and returns its combined output.
+func nsOutput(ns string, args ...string) (string, error) {
+	full := append([]string{"netns", "exec", ns}, args...)
+	out, err := exec.Command("ip", full...).CombinedOutput()
+	return string(out), err
+}
