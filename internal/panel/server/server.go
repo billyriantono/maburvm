@@ -462,6 +462,12 @@ func (s *Server) setupVMRoutes(g *echo.Group) {
 	// agent connections and IPAM access.
 	handler.RegisterFloatingIPRoutes(s.echo, handler.NewFloatingIPHandler(vmService), s.db)
 
+	// Tenant VPCs: customer-defined private networks. Two customers may choose the
+	// same subnet — a router namespace per VPC on the node keeps them apart.
+	vpcService := service.NewVPCService(s.db, service.NewIPAMService(s.db, repository.NewIPAMRepository(s.db)))
+	handler.RegisterVPCRoutes(s.echo, handler.NewVPCHandler(vpcService), s.db)
+	vmService.SetVPCService(vpcService)
+
 	// Real-time VM status stream (SSE), consumed by the dashboard via the web BFF.
 	eventsHandler := handler.NewEventsHandler(vmService)
 	events := s.echo.Group("/api/v1/events")
@@ -1049,7 +1055,7 @@ func (s *Server) setupDashboardRoutes(g *echo.Group) {
 type activityEntry struct {
 	ID           string    `json:"id"`
 	Action       string    `json:"action"`
-	Actor        string    `json:"actor"`         // user email, or "System"
+	Actor        string    `json:"actor"` // user email, or "System"
 	ResourceType string    `json:"resource_type"`
 	ResourceName string    `json:"resource_name"` // e.g. VM hostname, or "" when unknown
 	ResourceID   string    `json:"resource_id"`

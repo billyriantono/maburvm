@@ -52,6 +52,36 @@ func (s *ManagedNetworkService) List(ctx context.Context) ([]models.ManagedNetwo
 
 // Create persists a managed network and, for isolated/NAT types bound to a node,
 // provisions the libvirt network there, recording the resulting bridge.
+// CreateTx is Create, persisting through a caller-supplied transaction so the
+// row and the node-side provisioning succeed or fail together.
+func (s *ManagedNetworkService) CreateTx(ctx context.Context, tx *gorm.DB, net *models.ManagedNetwork) error {
+	if err := s.provision(ctx, net); err != nil {
+		return err
+	}
+	return tx.WithContext(ctx).Create(net).Error
+}
+
+// provision fills in defaults and materialises the network on its node.
+func (s *ManagedNetworkService) provision(ctx context.Context, net *models.ManagedNetwork) error {
+	if net.Name == "" {
+		return fmt.Errorf("network name is required")
+	}
+	if net.Type == "" {
+		net.Type = "bridge"
+	}
+	if net.ID == "" {
+		net.ID = uuid.NewString()
+	}
+	if net.NodeID != nil && *net.NodeID != "" && needsProvisioning(net.Type) {
+		bridge, err := s.defineOnNode(ctx, *net.NodeID, net)
+		if err != nil {
+			return fmt.Errorf("failed to provision network on node: %w", err)
+		}
+		net.Bridge = bridge
+	}
+	return nil
+}
+
 func (s *ManagedNetworkService) Create(ctx context.Context, net *models.ManagedNetwork) error {
 	if net.Name == "" {
 		return fmt.Errorf("network name is required")

@@ -24,7 +24,7 @@ func (r *IPAMRepository) WithDB(db *gorm.DB) *IPAMRepository {
 // --- Pool CRUD ---
 
 func (r *IPAMRepository) CreatePool(ctx context.Context, pool *models.IPPool) error {
-	if err := r.db.WithContext(ctx).Create(pool).Error; err != nil {
+	if err := r.db.WithContext(ctx).Omit(emptyInetColumns(pool)...).Create(pool).Error; err != nil {
 		return err
 	}
 	// Insert junction rows
@@ -89,6 +89,27 @@ func (r *IPAMRepository) ListPoolsForNode(ctx context.Context, nodeID string) ([
 		pools[i].NodeIDs = nodeIDs
 	}
 	return pools, nil
+}
+
+// emptyInetColumns lists the inet-typed columns that are blank on this pool.
+//
+// Postgres rejects "" for inet ("invalid input syntax for type inet"), and these
+// fields are genuinely optional — a pool may be defined by CIDR alone. Omitting
+// them lets the column default to NULL instead of failing the insert. Every
+// caller that happened to fill all three worked; the first one that did not
+// (VPC pools) hit it.
+func emptyInetColumns(pool *models.IPPool) []string {
+	var omit []string
+	if pool.Gateway == "" {
+		omit = append(omit, "Gateway")
+	}
+	if pool.RangeStart == "" {
+		omit = append(omit, "RangeStart")
+	}
+	if pool.RangeEnd == "" {
+		omit = append(omit, "RangeEnd")
+	}
+	return omit
 }
 
 func (r *IPAMRepository) UpdatePool(ctx context.Context, pool *models.IPPool) error {

@@ -160,7 +160,10 @@ type CreateVMRequest struct {
 	CPUModel         string           `json:"cpu_model,omitempty" validate:"omitempty,max=64"`
 	UserData         string           `json:"user_data,omitempty" validate:"omitempty,max=65536"`
 	ManagedNetworkID string           `json:"managed_network_id,omitempty" validate:"omitempty,uuid"`
-	RecipeID         string           `json:"recipe_id,omitempty" validate:"omitempty,uuid"`
+	// VPCID places the VM in one of the caller's own VPCs. Ownership is verified
+	// in the service, so another tenant's id simply fails to resolve.
+	VPCID    string `json:"vpc_id,omitempty" validate:"omitempty,uuid"`
+	RecipeID string `json:"recipe_id,omitempty" validate:"omitempty,uuid"`
 	// Password sets the new guest's root password. RegeneratePassword (with an
 	// empty Password) asks the server to generate one and return it once.
 	Password           string `json:"password,omitempty" validate:"omitempty,min=8,max=128"`
@@ -274,6 +277,7 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 		CPUModel:           req.CPUModel,
 		UserData:           userData,
 		ManagedNetworkID:   req.ManagedNetworkID,
+		VPCID:              req.VPCID,
 		Password:           req.Password,
 		RegeneratePassword: req.RegeneratePassword,
 		SSHPublicKeys:      sshPublicKeys,
@@ -315,6 +319,13 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 	resp, err := h.service.CreateVM(c.Request().Context(), createReq)
 	if err != nil {
 		switch {
+		// A VPC the caller does not own must read as "not found", never as a
+		// server fault, and must not confirm the id exists.
+		case errors.Is(err, service.ErrVPCNotFound):
+			return c.JSON(http.StatusNotFound, map[string]interface{}{
+				"error":   "Not Found",
+				"message": "VPC not found",
+			})
 		case errors.Is(err, service.ErrHostnameExists):
 			return c.JSON(http.StatusConflict, map[string]interface{}{
 				"error":   "Conflict",

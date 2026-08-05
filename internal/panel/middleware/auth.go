@@ -74,6 +74,7 @@ func GetPermissionsForRole(role models.UserRole) []string {
 			"backup:create", "backup:read", "backup:update", "backup:delete",
 			"network:create", "network:read", "network:update", "network:delete",
 			"floating_ip:read", "floating_ip:update",
+			"vpc:read", "vpc:create", "vpc:delete",
 			"firewall:create", "firewall:read", "firewall:update", "firewall:delete",
 			"snapshot:create", "snapshot:read", "snapshot:update", "snapshot:delete",
 			"audit:read",
@@ -97,6 +98,11 @@ func GetPermissionsForRole(role models.UserRole) []string {
 			// a pool and releasing one back to it remain admin:access, so a client
 			// can move what they have but never consume a node's address space.
 			"floating_ip:read", "floating_ip:update",
+			// Tenant VPCs. Safe for a client for the same reason as floating IPs:
+			// every handler scopes by owner, and two tenants may hold identical
+			// subnets without interfering, so nothing about another tenant's
+			// topology is exposed.
+			"vpc:read", "vpc:create", "vpc:delete",
 			// NOTE: no "network:read". That permission gates GLOBAL, un-tenant-filtered
 			// IPAM (/ipam/pools/*) and DNS reads, which would let any client enumerate
 			// every tenant's IP↔VM↔node↔rDNS mapping. A client's own VM interfaces are

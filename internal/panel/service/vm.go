@@ -107,6 +107,8 @@ type VMService struct {
 	lastNodeIndex         int
 	nodeMutex             sync.Mutex
 
+	vpcService *VPCService
+
 	// gRPC connections cache
 	grpcConns map[string]*grpc.ClientConn
 	connMutex sync.RWMutex
@@ -178,15 +180,19 @@ func (s *VMService) GetNodeSummaries(ctx context.Context) (map[string]NodeSummar
 
 // CreateVMRequest contains parameters for creating a new VM
 type CreateVMRequest struct {
-	UserID        string           `json:"user_id" validate:"required,uuid"`
-	Hostname      string           `json:"hostname" validate:"required,max=100,hostname_rfc1123"`
-	OSTemplateID  string           `json:"os_template_id" validate:"required,uuid"`
-	Resources     models.Resources `json:"resources" validate:"required"`
-	NodeID        string           `json:"node_id,omitempty" validate:"omitempty,uuid"` // Optional: specific node
-	PlanID        string           `json:"plan_id,omitempty" validate:"omitempty,uuid"` // Optional: derive resources from a plan
-	IPPoolID      string           `json:"ip_pool_id,omitempty" validate:"omitempty,uuid"`
-	RequestedIP   string           `json:"requested_ip,omitempty" validate:"omitempty,ip"`
-	BandwidthMbps int              `json:"bandwidth_mbps,omitempty" validate:"omitempty,min=0,max=10000"`
+	UserID       string           `json:"user_id" validate:"required,uuid"`
+	Hostname     string           `json:"hostname" validate:"required,max=100,hostname_rfc1123"`
+	OSTemplateID string           `json:"os_template_id" validate:"required,uuid"`
+	Resources    models.Resources `json:"resources" validate:"required"`
+	NodeID       string           `json:"node_id,omitempty" validate:"omitempty,uuid"` // Optional: specific node
+	PlanID       string           `json:"plan_id,omitempty" validate:"omitempty,uuid"` // Optional: derive resources from a plan
+	IPPoolID     string           `json:"ip_pool_id,omitempty" validate:"omitempty,uuid"`
+	// VPCID places the VM inside a tenant VPC. It resolves to that VPC's private
+	// address pool, so a customer never has to know pool or bridge names — and
+	// cannot reach another tenant's.
+	VPCID         string `json:"vpc_id,omitempty" validate:"omitempty,uuid"`
+	RequestedIP   string `json:"requested_ip,omitempty" validate:"omitempty,ip"`
+	BandwidthMbps int    `json:"bandwidth_mbps,omitempty" validate:"omitempty,min=0,max=10000"`
 	// Monthly data quota (GB) + over-quota policy, normally inherited from the
 	// plan. 0 quota = unlimited. Populated from the plan in CreateVM.
 	DataQuotaGB       int64  `json:"data_quota_gb,omitempty" validate:"omitempty,min=0"`
@@ -307,6 +313,20 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 	}
 
 	// Select node for VM placement
+	// Resolve a VPC placement BEFORE node selection: a VPC lives in a router
+	// namespace on ONE node, so it dictates where the VM goes. Doing this after
+	// selection let the scheduler pick a different host, and the VM was then
+	// rejected for using a pool that node cannot reach.
+	if req.VPCID != "" {
+		poolID, vpcNode, verr := s.vpcPoolForUser(ctx, req.UserID, req.VPCID)
+		if verr != nil {
+			return nil, verr
+		}
+		req.IPPoolID = poolID
+		req.AutoAssignIP = false
+		req.NodeID = vpcNode
+	}
+
 	nodeID := req.NodeID
 	if nodeID == "" {
 		nodeID, err = s.selectNode(ctx)
@@ -346,6 +366,8 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		vm.VNCPort = &vncConfig.Port
 	}
 
+	// A VPC placement resolves to that VPC's own private pool. Ownership is
+	// checked here, so passing another tenant's VPC id simply fails to resolve.
 	// Decide which pool(s) to allocate a public IP from. An explicit IPPoolID
 	// wins; otherwise AutoAssignIP (client self-service) tries every pool eligible
 	// for the node until one yields a free address. With neither, the VM gets no
@@ -872,6 +894,29 @@ type GetVMResponse struct {
 }
 
 // GetVM retrieves a VM by ID with details and status
+// SetVPCService wires tenant VPC lookups for VM placement.
+func (s *VMService) SetVPCService(v *VPCService) { s.vpcService = v }
+
+// vpcPoolForUser resolves a tenant's VPC to the private IP pool its VMs draw
+// from, refusing a VPC the user does not own.
+func (s *VMService) vpcPoolForUser(ctx context.Context, userID, vpcID string) (string, string, error) {
+	if s.vpcService == nil {
+		return "", "", fmt.Errorf("VPC support is not configured")
+	}
+	vpc, err := s.vpcService.Get(ctx, userID, vpcID)
+	if err != nil {
+		return "", "", err
+	}
+	if vpc.Bridge == "" || vpc.NodeID == nil || *vpc.NodeID == "" {
+		return "", "", fmt.Errorf("VPC %q is not provisioned on a node yet", vpc.Name)
+	}
+	var pool models.IPPool
+	if err := s.db.WithContext(ctx).Where("bridge = ?", vpc.Bridge).First(&pool).Error; err != nil {
+		return "", "", fmt.Errorf("VPC %q has no address pool", vpc.Name)
+	}
+	return pool.ID, *vpc.NodeID, nil
+}
+
 // GetVMOwner returns the user ID that owns the given VM. It is a cheap lookup
 // (no agent round-trip) used for per-resource authorization. Returns ErrVMNotFound
 // if the VM does not exist.
