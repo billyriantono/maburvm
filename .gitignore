@@ -87,3 +87,4 @@ deploy/secrets/
 
 # Local AI/editor tooling state
 .opencode/
+.obsidian/
