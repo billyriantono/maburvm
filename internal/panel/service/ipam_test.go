@@ -28,6 +28,7 @@ func setupIPAMServiceTestDB(t *testing.T) *gorm.DB {
 		range_start TEXT,
 		range_end TEXT,
 		description TEXT,
+		orderable BOOLEAN NOT NULL DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		deleted_at DATETIME

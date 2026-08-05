@@ -45,6 +45,7 @@ type CreateIPPoolRequest struct {
 	RangeStart  string   `json:"range_start,omitempty"`
 	RangeEnd    string   `json:"range_end,omitempty"`
 	Description string   `json:"description,omitempty"`
+	Orderable   bool     `json:"orderable,omitempty"`
 }
 
 // UpdateIPPoolRequest carries editable metadata for an existing pool. Every
@@ -58,6 +59,7 @@ type UpdateIPPoolRequest struct {
 	Bridge      *string   `json:"bridge,omitempty"`
 	Description *string   `json:"description,omitempty"`
 	NodeIDs     *[]string `json:"node_ids,omitempty"`
+	Orderable   *bool     `json:"orderable,omitempty"`
 }
 
 type CreateIPAddressRequest struct {
@@ -96,6 +98,7 @@ func (s *IPAMService) CreatePool(ctx context.Context, req *CreateIPPoolRequest) 
 		RangeStart:  req.RangeStart,
 		RangeEnd:    req.RangeEnd,
 		Description: req.Description,
+		Orderable:   req.Orderable,
 	}
 	if err := s.repo.CreatePool(ctx, pool); err != nil {
 		return nil, err
@@ -146,6 +149,9 @@ func (s *IPAMService) UpdatePool(ctx context.Context, id string, req *UpdateIPPo
 	}
 	if req.Description != nil {
 		pool.Description = *req.Description
+	}
+	if req.Orderable != nil {
+		pool.Orderable = *req.Orderable
 	}
 	if err := s.repo.UpdatePool(ctx, pool); err != nil {
 		return nil, err

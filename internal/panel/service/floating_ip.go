@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"strconv"
+	"strings"
 
 	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 	"github.com/maburvm/panel/internal/shared/models"
@@ -206,10 +209,15 @@ func (s *VMService) DetachFloatingIP(ctx context.Context, addressID string) (*mo
 // ReleaseFloatingIP returns a floating IP to its pool as an ordinary allocatable
 // address. It refuses while the address is still attached, so a release can't
 // silently pull an address out from under a running VM.
-func (s *VMService) ReleaseFloatingIP(ctx context.Context, addressID string) error {
+// ReleaseFloatingIP returns an address to its pool. userID scopes it to the
+// caller's own addresses; empty means an administrator acting on any.
+func (s *VMService) ReleaseFloatingIP(ctx context.Context, userID, addressID string) error {
 	addr, err := s.GetFloatingIP(ctx, addressID)
 	if err != nil {
 		return err
+	}
+	if userID != "" && (addr.UserID == nil || *addr.UserID != userID) {
+		return ErrIPAddressNotFound
 	}
 	if addr.VMID != nil {
 		return ErrFloatingIPInUse
@@ -396,4 +404,109 @@ func defaultNATMode(internalIP string) string {
 		return models.NATModeFull
 	}
 	return models.NATModeInbound
+}
+
+// ErrFloatingIPQuotaExceeded caps how many floating IPs one tenant may hold.
+var ErrFloatingIPQuotaExceeded = errors.New("floating IP limit reached for this account")
+
+// ErrNoOrderablePool is returned when no pool has been opened for self-service.
+var ErrNoOrderablePool = errors.New("no floating IP is available to order right now")
+
+// defaultFloatingIPsPerUser caps self-service orders. Public addresses are a
+// finite, billable resource, so an unbounded count would let one account drain a
+// node's block.
+// ponytail: a flat per-account cap; move it into UserQuota if plans need to differ.
+const defaultFloatingIPsPerUser = 3
+
+func floatingIPsPerUser() int {
+	if v := strings.TrimSpace(os.Getenv("FLOATING_IP_MAX_PER_USER")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return defaultFloatingIPsPerUser
+}
+
+// OrderFloatingIP lets a customer take a floating IP for themselves, from a pool
+// an administrator has opted into self-service. Node placement is ours to pick:
+// a floating IP is only attachable to VMs on its own node, so the sensible
+// default is a node where the customer already runs something.
+func (s *VMService) OrderFloatingIP(ctx context.Context, userID string) (*models.IPAddress, error) {
+	if userID == "" {
+		return nil, fmt.Errorf("user is required")
+	}
+	var held int64
+	if err := s.db.WithContext(ctx).Model(&models.IPAddress{}).
+		Where("user_id = ? AND delivery_mode = ?", userID, models.IPDeliveryFloating).
+		Count(&held).Error; err != nil {
+		return nil, err
+	}
+	if held >= int64(floatingIPsPerUser()) {
+		return nil, ErrFloatingIPQuotaExceeded
+	}
+
+	// Prefer a node the customer already has a VM on, so the address is usable
+	// immediately rather than stranded on a node with nothing to attach it to.
+	var pools []models.IPPool
+	if err := s.db.WithContext(ctx).Where("orderable = ?", true).Find(&pools).Error; err != nil {
+		return nil, err
+	}
+	if len(pools) == 0 {
+		return nil, ErrNoOrderablePool
+	}
+	preferred := s.nodesWithVMsFor(ctx, userID)
+	ordered := make([]models.IPPool, 0, len(pools))
+	for _, want := range preferred {
+		for i := range pools {
+			if pools[i].NodeID != nil && *pools[i].NodeID == want {
+				ordered = append(ordered, pools[i])
+			}
+		}
+	}
+	ordered = append(ordered, pools...)
+
+	var lastErr error
+	for i := range ordered {
+		addr, err := s.AllocateFloatingIP(ctx, ordered[i].ID, "", userID, "")
+		if err == nil {
+			return addr, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, ErrNoAvailableIPAddress
+}
+
+// nodesWithVMsFor lists the nodes a customer already runs VMs on.
+func (s *VMService) nodesWithVMsFor(ctx context.Context, userID string) []string {
+	var nodes []string
+	_ = s.db.WithContext(ctx).Model(&models.VM{}).
+		Where("user_id = ?", userID).Distinct().Pluck("node_id", &nodes).Error
+	return nodes
+}
+
+// BillableFloatingIPs reports how many of a tenant's floating IPs are chargeable.
+//
+// One ATTACHED address is free — the common "your first public IP is included"
+// offer. Everything else counts, including addresses sitting detached, which is
+// deliberate: charging for an idle address is what makes a customer hand it back
+// instead of hoarding a scarce public resource.
+func (s *VMService) BillableFloatingIPs(ctx context.Context, userID string) (total int64, free int64, billable int64, err error) {
+	var addrs []models.IPAddress
+	if err = s.db.WithContext(ctx).
+		Where("user_id = ? AND delivery_mode = ?", userID, models.IPDeliveryFloating).
+		Find(&addrs).Error; err != nil {
+		return 0, 0, 0, err
+	}
+	total = int64(len(addrs))
+	for i := range addrs {
+		if addrs[i].VMID != nil {
+			free = 1
+			break
+		}
+	}
+	billable = total - free
+	return total, free, billable, nil
 }

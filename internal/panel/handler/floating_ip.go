@@ -28,8 +28,14 @@ func RegisterFloatingIPRoutes(e *echo.Echo, h *FloatingIPHandler, db *gorm.DB) {
 	g.GET("", h.List, middleware.RequirePermission("floating_ip:read"))
 	// Allocating and releasing consume a node's public address space, so they
 	// stay admin-only; attach/detach is a tenant action on an address they own.
+	// Allocating on someone else's behalf (and choosing the pool) stays with an
+	// administrator; ordering one for yourself is self-service.
 	g.POST("", h.Allocate, middleware.RequirePermission("admin:access"))
-	g.DELETE("/:id", h.Release, middleware.RequirePermission("admin:access"))
+	g.POST("/order", h.Order, middleware.RequirePermission("floating_ip:create"))
+	// Releasing is how a customer stops being billed for an address, so it must
+	// be available to them — scoped to their own by the guard in the service.
+	g.DELETE("/:id", h.Release, middleware.RequirePermission("floating_ip:delete"))
+	g.GET("/billing", h.Billing, middleware.RequirePermission("floating_ip:read"))
 	// Clients hold floating_ip:update, so these are reachable for them — the
 	// ownership guards below are what keeps a client to their own addresses and
 	// their own VMs. Allocate/release stay admin:access above.
@@ -147,8 +153,56 @@ func (h *FloatingIPHandler) Detach(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": addr})
 }
 
+// Order takes a floating IP for the caller from a pool an administrator has
+// opened for self-service.
+func (h *FloatingIPHandler) Order(c echo.Context) error {
+	userCtx, ok := middleware.GetUserContext(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized"})
+	}
+	addr, err := h.service.OrderFloatingIP(c.Request().Context(), userCtx.ID.String())
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrFloatingIPQuotaExceeded):
+			return c.JSON(http.StatusForbidden, map[string]interface{}{"error": err.Error()})
+		case errors.Is(err, service.ErrNoOrderablePool), errors.Is(err, service.ErrNoAvailableIPAddress):
+			return c.JSON(http.StatusConflict, map[string]interface{}{"error": err.Error()})
+		default:
+			return badRequest(c, err.Error())
+		}
+	}
+	return c.JSON(http.StatusCreated, map[string]interface{}{"success": true, "data": addr})
+}
+
+// Billing reports what a tenant is chargeable for. One attached address is free;
+// idle ones still count, which is what discourages hoarding.
+func (h *FloatingIPHandler) Billing(c echo.Context) error {
+	userCtx, ok := middleware.GetUserContext(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized"})
+	}
+	// An administrator may ask about any account; everyone else only their own.
+	target := userCtx.ID.String()
+	if userCtx.Role == models.RoleAdmin {
+		if q := c.QueryParam("user_id"); q != "" {
+			target = q
+		}
+	}
+	total, free, billable, err := h.service.BillableFloatingIPs(c.Request().Context(), target)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{
+		"user_id": target, "total": total, "free": free, "billable": billable,
+	}})
+}
+
 func (h *FloatingIPHandler) Release(c echo.Context) error {
-	if err := h.service.ReleaseFloatingIP(c.Request().Context(), c.Param("id")); err != nil {
+	owner := ""
+	if userCtx, ok := middleware.GetUserContext(c); ok && userCtx.Role != models.RoleAdmin {
+		owner = userCtx.ID.String()
+	}
+	if err := h.service.ReleaseFloatingIP(c.Request().Context(), owner, c.Param("id")); err != nil {
 		return floatingIPError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)

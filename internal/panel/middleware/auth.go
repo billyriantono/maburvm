@@ -73,7 +73,7 @@ func GetPermissionsForRole(role models.UserRole) []string {
 			"user:create", "user:read", "user:update", "user:delete",
 			"backup:create", "backup:read", "backup:update", "backup:delete",
 			"network:create", "network:read", "network:update", "network:delete",
-			"floating_ip:read", "floating_ip:update",
+			"floating_ip:read", "floating_ip:update", "floating_ip:create", "floating_ip:delete",
 			"vpc:read", "vpc:create", "vpc:delete",
 			"firewall:create", "firewall:read", "firewall:update", "firewall:delete",
 			"snapshot:create", "snapshot:read", "snapshot:update", "snapshot:delete",
@@ -98,6 +98,10 @@ func GetPermissionsForRole(role models.UserRole) []string {
 			// a pool and releasing one back to it remain admin:access, so a client
 			// can move what they have but never consume a node's address space.
 			"floating_ip:read", "floating_ip:update",
+			// Ordering an address for yourself, and releasing it again so the
+			// billing stops. Choosing the pool or allocating on someone else's
+			// behalf stays with an administrator.
+			"floating_ip:create", "floating_ip:delete",
 			// Tenant VPCs. Safe for a client for the same reason as floating IPs:
 			// every handler scopes by owner, and two tenants may hold identical
 			// subnets without interfering, so nothing about another tenant's

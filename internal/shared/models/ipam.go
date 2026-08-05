@@ -35,19 +35,22 @@ const (
 // IPPool represents a first-class IPAM pool. It intentionally does not replace
 // the VM-attached networks table.
 type IPPool struct {
-	ID          string         `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	Name        string         `json:"name" gorm:"type:varchar(255);not null" validate:"required"`
-	NodeID      *string        `json:"node_id,omitempty" gorm:"type:uuid" validate:"omitempty,uuid"`
-	Family      string         `json:"family" gorm:"type:varchar(8);not null;default:'ipv4'" validate:"required,oneof=ipv4 ipv6"`
-	CIDR        string         `json:"cidr,omitempty" gorm:"column:cidr;type:cidr" validate:"omitempty,cidr"`
-	Gateway     string         `json:"gateway,omitempty" gorm:"type:inet" validate:"omitempty,ip"`
-	Bridge      string         `json:"bridge,omitempty" gorm:"type:varchar(64)" validate:"omitempty,max=64"`
-	RangeStart  string         `json:"range_start,omitempty" gorm:"type:inet" validate:"omitempty,ip"`
-	RangeEnd    string         `json:"range_end,omitempty" gorm:"type:inet" validate:"omitempty,ip"`
-	Description string         `json:"description,omitempty" gorm:"type:text"`
-	CreatedAt   time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
-	UpdatedAt   time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
-	DeletedAt   gorm.DeletedAt `json:"-" gorm:"index"`
+	ID          string  `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	Name        string  `json:"name" gorm:"type:varchar(255);not null" validate:"required"`
+	NodeID      *string `json:"node_id,omitempty" gorm:"type:uuid" validate:"omitempty,uuid"`
+	Family      string  `json:"family" gorm:"type:varchar(8);not null;default:'ipv4'" validate:"required,oneof=ipv4 ipv6"`
+	CIDR        string  `json:"cidr,omitempty" gorm:"column:cidr;type:cidr" validate:"omitempty,cidr"`
+	Gateway     string  `json:"gateway,omitempty" gorm:"type:inet" validate:"omitempty,ip"`
+	Bridge      string  `json:"bridge,omitempty" gorm:"type:varchar(64)" validate:"omitempty,max=64"`
+	RangeStart  string  `json:"range_start,omitempty" gorm:"type:inet" validate:"omitempty,ip"`
+	RangeEnd    string  `json:"range_end,omitempty" gorm:"type:inet" validate:"omitempty,ip"`
+	Description string  `json:"description,omitempty" gorm:"type:text"`
+	// Orderable opts this pool into customer self-service. Off by default so a
+	// pool reserved for infrastructure is never handed out by accident.
+	Orderable bool           `json:"orderable" gorm:"not null;default:false"`
+	CreatedAt time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
+	UpdatedAt time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
+	DeletedAt gorm.DeletedAt `json:"-" gorm:"index"`
 
 	// Many-to-many: loaded separately via ip_pool_nodes junction table
 	// When junction table exists, this takes precedence over NodeID
