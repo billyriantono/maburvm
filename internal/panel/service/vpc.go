@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"net"
-	"os"
-	"strconv"
 	"strings"
 
 	"github.com/maburvm/panel/internal/shared/models"
@@ -27,22 +25,6 @@ var (
 	// ErrVPCInUse blocks deleting a VPC that still has VMs in it.
 	ErrVPCInUse = errors.New("VPC still has VMs in it")
 )
-
-// defaultVPCsPerUser caps tenant VPCs. Each one consumes a network namespace,
-// three veth pairs and a bridge on the node, so an unbounded count is a real
-// resource risk rather than a theoretical one.
-// ponytail: a flat per-account cap; move it into UserQuota if plans ever need to
-// differ, which is a column and a migration rather than a redesign.
-const defaultVPCsPerUser = 5
-
-func vpcsPerUser() int {
-	if v := strings.TrimSpace(os.Getenv("VPC_MAX_PER_USER")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
-		}
-	}
-	return defaultVPCsPerUser
-}
 
 // CreateVPCRequest is a tenant's own description of a private network.
 type CreateVPCRequest struct {
@@ -131,7 +113,7 @@ func (s *VPCService) Create(ctx context.Context, userID string, req *CreateVPCRe
 		if err := tx.Where("user_id = ? AND type = ?", userID, NetworkTypeVPC).Find(&existing).Error; err != nil {
 			return err
 		}
-		if len(existing) >= vpcsPerUser() {
+		if len(existing) >= VPCsPerUser(ctx, s.db) {
 			return ErrVPCQuotaExceeded
 		}
 		for i := range existing {

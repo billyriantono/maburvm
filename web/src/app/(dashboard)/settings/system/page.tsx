@@ -12,6 +12,7 @@ import {
   Database,
   Key,
   Mail,
+  Users,
   Save,
   Loader2,
   Eye,
@@ -63,6 +64,14 @@ const apiSchema = z.object({
   rateLimit: z.number().min(10).max(1000),
 })
 
+// Per-account limits. Both are kept optional-with-minimum rather than allowing
+// zero: a zero would silently switch the feature off for every customer, which
+// is never what someone editing a "limit" field intends.
+const quotaSchema = z.object({
+  vpcMaxPerUser: z.number().min(1).max(100),
+  floatingIpMaxPerUser: z.number().min(1).max(100),
+})
+
 // Email settings schema
 const emailSchema = z.object({
   smtpHost: z.string().min(1, "SMTP host is required"),
@@ -78,6 +87,7 @@ type GeneralFormData = z.infer<typeof generalSchema>
 type SecurityFormData = z.infer<typeof securitySchema>
 type BackupFormData = z.infer<typeof backupSchema>
 type APIFormData = z.infer<typeof apiSchema>
+type QuotaFormData = z.infer<typeof quotaSchema>
 type EmailFormData = z.infer<typeof emailSchema>
 
 // Default form values — will be populated from API when system settings endpoint is available
@@ -107,6 +117,11 @@ const defaultApiSettings = {
   hmacSecret: "your-hmac-secret-key-here-min-32-chars",
   enableApi: true,
   rateLimit: 100,
+}
+
+const defaultQuotaSettings = {
+  vpcMaxPerUser: 5,
+  floatingIpMaxPerUser: 3,
 }
 
 const defaultEmailSettings = {
@@ -168,6 +183,11 @@ export default function SystemSettingsPage() {
   })
 
   // API form
+  const quotaForm = useForm<QuotaFormData>({
+    resolver: zodResolver(quotaSchema),
+    defaultValues: defaultQuotaSettings,
+  })
+
   const apiForm = useForm<APIFormData>({
     resolver: zodResolver(apiSchema),
     defaultValues: defaultApiSettings,
@@ -186,6 +206,7 @@ export default function SystemSettingsPage() {
     if (sysSettings.security) securityForm.reset({ ...defaultSecuritySettings, ...sysSettings.security })
     if (sysSettings.backup) backupForm.reset({ ...defaultBackupSettings, ...sysSettings.backup })
     if (sysSettings.api) apiForm.reset({ ...defaultApiSettings, ...sysSettings.api })
+    if (sysSettings.quotas) quotaForm.reset({ ...defaultQuotaSettings, ...sysSettings.quotas })
     if (sysSettings.email) emailForm.reset({ ...defaultEmailSettings, ...sysSettings.email })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sysSettings])
@@ -243,6 +264,7 @@ export default function SystemSettingsPage() {
       Security: () => securityForm.reset(defaultSecuritySettings),
       Backup: () => backupForm.reset(defaultBackupSettings),
       API: () => apiForm.reset(defaultApiSettings),
+      Quotas: () => quotaForm.reset(defaultQuotaSettings),
       Email: () => emailForm.reset(defaultEmailSettings),
     }
     toast.info(`Reset ${type} settings to defaults?`, {
@@ -279,7 +301,7 @@ export default function SystemSettingsPage() {
 
       {/* Settings Tabs */}
       <Tabs defaultValue="general" className="space-y-6">
-        <TabsList className="grid w-full grid-cols-2 md:grid-cols-5 gap-2 bg-transparent p-0 border-none">
+        <TabsList className="grid w-full grid-cols-2 md:grid-cols-6 gap-2 bg-transparent p-0 border-none">
           <TabsTrigger value="general" className="text-xs">
             <Globe className="w-4 h-4 mr-2" />
             General
@@ -295,6 +317,10 @@ export default function SystemSettingsPage() {
           <TabsTrigger value="api" className="text-xs">
             <Key className="w-4 h-4 mr-2" />
             API
+          </TabsTrigger>
+          <TabsTrigger value="quotas" className="text-xs">
+            <Users className="w-4 h-4 mr-2" />
+            Quotas
           </TabsTrigger>
           <TabsTrigger value="email" className="text-xs">
             <Mail className="w-4 h-4 mr-2" />
@@ -637,6 +663,75 @@ export default function SystemSettingsPage() {
         </TabsContent>
 
         {/* API Settings */}
+        <TabsContent value="quotas">
+          <Card>
+            <CardHeader className="border-b">
+              <CardTitle className="flex items-center gap-2">
+                <Users className="w-5 h-5" />
+                Per-account limits
+              </CardTitle>
+              <CardDescription>
+                How much a single customer may take of the resources that are finite on a node.
+                Changes apply immediately — no restart.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="pt-6">
+              <form
+                onSubmit={quotaForm.handleSubmit((data) =>
+                  saveSection("quotas", data, "Quota settings", "New limits apply to the next request"),
+                )}
+                className="space-y-6"
+              >
+                <div className="grid gap-6 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <label htmlFor="vpcMaxPerUser" className="block text-sm font-medium text-muted-foreground mb-2">
+                      Private networks per account
+                    </label>
+                    <Input
+                      id="vpcMaxPerUser"
+                      type="number"
+                      {...quotaForm.register("vpcMaxPerUser", { valueAsNumber: true })}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Each one costs a network namespace, a bridge and three virtual links on the
+                      node, so this is a real resource limit rather than a policy one.
+                    </p>
+                    {quotaForm.formState.errors.vpcMaxPerUser && (
+                      <p className="text-xs text-destructive">
+                        {quotaForm.formState.errors.vpcMaxPerUser.message}
+                      </p>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <label htmlFor="floatingIpMaxPerUser" className="block text-sm font-medium text-muted-foreground mb-2">
+                      Floating IPs per account
+                    </label>
+                    <Input
+                      id="floatingIpMaxPerUser"
+                      type="number"
+                      {...quotaForm.register("floatingIpMaxPerUser", { valueAsNumber: true })}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Caps self-service ordering. Public addresses are finite, so without a cap one
+                      account can drain a node&apos;s block.
+                    </p>
+                    {quotaForm.formState.errors.floatingIpMaxPerUser && (
+                      <p className="text-xs text-destructive">
+                        {quotaForm.formState.errors.floatingIpMaxPerUser.message}
+                      </p>
+                    )}
+                  </div>
+                </div>
+                <div className="flex justify-end">
+                  <Button type="submit" disabled={isSaving === "quotas"}>
+                    {isSaving === "quotas" ? "Saving..." : "Save limits"}
+                  </Button>
+                </div>
+              </form>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
         <TabsContent value="api">
           <Card>
             <CardHeader className="border-b">

@@ -5,9 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
-	"strconv"
-	"strings"
 
 	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 	"github.com/maburvm/panel/internal/shared/models"
@@ -166,6 +163,9 @@ func (s *VMService) AttachFloatingIP(ctx context.Context, addressID, vmID, natMo
 	if err := s.db.WithContext(ctx).Save(addr).Error; err != nil {
 		return nil, err
 	}
+	if addr.UserID != nil {
+		s.notifyFloatingIPBilling(ctx, *addr.UserID, addr.Address, "attached")
+	}
 	return addr, nil
 }
 
@@ -203,6 +203,11 @@ func (s *VMService) DetachFloatingIP(ctx context.Context, addressID string) (*mo
 	if err := s.db.WithContext(ctx).Save(addr).Error; err != nil {
 		return nil, err
 	}
+	// Detaching makes a previously free address chargeable, so billing must hear
+	// about it as promptly as an order does.
+	if addr.UserID != nil {
+		s.notifyFloatingIPBilling(ctx, *addr.UserID, addr.Address, "detached")
+	}
 	return addr, nil
 }
 
@@ -222,12 +227,20 @@ func (s *VMService) ReleaseFloatingIP(ctx context.Context, userID, addressID str
 	if addr.VMID != nil {
 		return ErrFloatingIPInUse
 	}
-	return s.db.WithContext(ctx).Model(addr).Updates(map[string]interface{}{
+	owner := ""
+	if addr.UserID != nil {
+		owner = *addr.UserID
+	}
+	if err := s.db.WithContext(ctx).Model(addr).Updates(map[string]interface{}{
 		"status":        models.IPAddressStatusAvailable,
 		"delivery_mode": models.IPDeliveryDirect,
 		"nat_mode":      "",
 		"user_id":       nil,
-	}).Error
+	}).Error; err != nil {
+		return err
+	}
+	s.notifyFloatingIPBilling(ctx, owner, addr.Address, "released")
+	return nil
 }
 
 // ReconcileFloatingIPs re-applies every attached floating IP on a node.
@@ -412,21 +425,6 @@ var ErrFloatingIPQuotaExceeded = errors.New("floating IP limit reached for this 
 // ErrNoOrderablePool is returned when no pool has been opened for self-service.
 var ErrNoOrderablePool = errors.New("no floating IP is available to order right now")
 
-// defaultFloatingIPsPerUser caps self-service orders. Public addresses are a
-// finite, billable resource, so an unbounded count would let one account drain a
-// node's block.
-// ponytail: a flat per-account cap; move it into UserQuota if plans need to differ.
-const defaultFloatingIPsPerUser = 3
-
-func floatingIPsPerUser() int {
-	if v := strings.TrimSpace(os.Getenv("FLOATING_IP_MAX_PER_USER")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
-		}
-	}
-	return defaultFloatingIPsPerUser
-}
-
 // OrderFloatingIP lets a customer take a floating IP for themselves, from a pool
 // an administrator has opted into self-service. Node placement is ours to pick:
 // a floating IP is only attachable to VMs on its own node, so the sensible
@@ -441,7 +439,7 @@ func (s *VMService) OrderFloatingIP(ctx context.Context, userID string) (*models
 		Count(&held).Error; err != nil {
 		return nil, err
 	}
-	if held >= int64(floatingIPsPerUser()) {
+	if held >= int64(FloatingIPsPerUser(ctx, s.db)) {
 		return nil, ErrFloatingIPQuotaExceeded
 	}
 
@@ -469,6 +467,7 @@ func (s *VMService) OrderFloatingIP(ctx context.Context, userID string) (*models
 	for i := range ordered {
 		addr, err := s.AllocateFloatingIP(ctx, ordered[i].ID, "", userID, "")
 		if err == nil {
+			s.notifyFloatingIPBilling(ctx, userID, addr.Address, "ordered")
 			return addr, nil
 		}
 		lastErr = err

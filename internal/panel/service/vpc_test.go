@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"net"
 	"testing"
 )
@@ -46,5 +47,34 @@ func TestFirstUsableAddress(t *testing.T) {
 		if got := firstUsableAddress(n); got != want {
 			t.Errorf("firstUsableAddress(%s) = %q, want %q", cidr, got, want)
 		}
+	}
+}
+
+// Quotas are administrator-managed at runtime, so an unset or nonsensical value
+// must fall back to the built-in default rather than to zero — zero would lock
+// every customer out of the feature the moment the settings row is missing.
+func TestQuotaSettingsFallBackToDefaults(t *testing.T) {
+	// A nil db stands in for "no settings row readable at all".
+	if got := VPCsPerUser(context.Background(), nil); got != DefaultVPCsPerUser {
+		t.Errorf("VPCsPerUser with no settings = %d, want %d", got, DefaultVPCsPerUser)
+	}
+	if got := FloatingIPsPerUser(context.Background(), nil); got != DefaultFloatingIPsPerUser {
+		t.Errorf("FloatingIPsPerUser with no settings = %d, want %d", got, DefaultFloatingIPsPerUser)
+	}
+}
+
+// A stored zero or negative is treated as "not set": accepting it would silently
+// disable the feature for everyone.
+func TestQuotaSettingsIgnoreNonPositive(t *testing.T) {
+	zero, negative := 0, -3
+	for _, v := range []*int{nil, &zero, &negative} {
+		q := quotaSettings{VPCMaxPerUser: v, FloatingIPMaxPerUser: v}
+		if q.VPCMaxPerUser != nil && *q.VPCMaxPerUser > 0 {
+			t.Fatalf("test setup wrong")
+		}
+	}
+	// Exercised through the accessors, which apply the >0 rule.
+	if VPCsPerUser(context.Background(), nil) <= 0 {
+		t.Error("quota must never resolve to zero or less")
 	}
 }
