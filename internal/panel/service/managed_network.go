@@ -35,9 +35,16 @@ func NewManagedNetworkService(db *gorm.DB) *ManagedNetworkService {
 // libvirtNetworkName is the stable per-network libvirt network name on nodes.
 func libvirtNetworkName(id string) string { return "maburvm-" + id }
 
-// needsProvisioning reports whether the type is materialized by libvirt on the
-// node (isolated/nat) vs. referencing a pre-existing host bridge ("bridge").
-func needsProvisioning(t string) bool { return t == "isolated" || t == "nat" }
+// needsProvisioning reports whether the type is materialized on the node
+// (isolated/nat via libvirt, vpc via a router namespace) vs. referencing a
+// pre-existing host bridge ("bridge").
+func needsProvisioning(t string) bool { return t == "isolated" || t == "nat" || t == NetworkTypeVPC }
+
+// NetworkTypeVPC is a tenant VPC: a guest bridge plus a router network
+// namespace holding the gateway. Unlike the libvirt types, two VPCs may carry
+// the SAME subnet — the namespace is what keeps them apart, so tenants can pick
+// their own ranges without coordinating.
+const NetworkTypeVPC = "vpc"
 
 func (s *ManagedNetworkService) List(ctx context.Context) ([]models.ManagedNetwork, error) {
 	return s.repo.List(ctx)
@@ -70,7 +77,7 @@ func (s *ManagedNetworkService) Create(ctx context.Context, net *models.ManagedN
 func (s *ManagedNetworkService) Delete(ctx context.Context, id string) error {
 	if net, err := s.repo.GetByID(ctx, id); err == nil &&
 		net.NodeID != nil && *net.NodeID != "" && needsProvisioning(net.Type) {
-		_ = s.undefineOnNode(ctx, *net.NodeID, id)
+		_ = s.undefineTypedOnNode(ctx, *net.NodeID, id, net.Type)
 	}
 	return s.repo.Delete(ctx, id)
 }
@@ -81,6 +88,21 @@ func (s *ManagedNetworkService) defineOnNode(ctx context.Context, nodeID string,
 		return "", err
 	}
 	defer closeConn()
+	if net.Type == NetworkTypeVPC {
+		resp, err := client.ConfigureVPC(authCtx, &pb.VPCRequest{
+			VpcId:   net.ID,
+			Subnet:  net.Subnet,
+			Gateway: net.Gateway,
+			Create:  true,
+		})
+		if err != nil {
+			return "", err
+		}
+		if !resp.Success {
+			return "", fmt.Errorf("%s", agentErrorMessage(resp.Error))
+		}
+		return resp.Bridge, nil
+	}
 	resp, err := client.DefineNetwork(authCtx, &pb.DefineNetworkRequest{
 		Name:   libvirtNetworkName(net.ID),
 		Mode:   net.Type,
@@ -98,11 +120,25 @@ func (s *ManagedNetworkService) defineOnNode(ctx context.Context, nodeID string,
 }
 
 func (s *ManagedNetworkService) undefineOnNode(ctx context.Context, nodeID, id string) error {
+	return s.undefineTypedOnNode(ctx, nodeID, id, "")
+}
+
+func (s *ManagedNetworkService) undefineTypedOnNode(ctx context.Context, nodeID, id, netType string) error {
 	client, authCtx, closeConn, err := s.agentClient(ctx, nodeID)
 	if err != nil {
 		return err
 	}
 	defer closeConn()
+	if netType == NetworkTypeVPC {
+		resp, err := client.ConfigureVPC(authCtx, &pb.VPCRequest{VpcId: id, Create: false})
+		if err != nil {
+			return err
+		}
+		if !resp.Success {
+			return fmt.Errorf("%s", agentErrorMessage(resp.Error))
+		}
+		return nil
+	}
 	resp, err := client.UndefineNetwork(authCtx, &pb.UndefineNetworkRequest{Name: libvirtNetworkName(id)})
 	if err != nil {
 		return err

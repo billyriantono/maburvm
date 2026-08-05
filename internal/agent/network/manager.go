@@ -415,3 +415,23 @@ func (m *Manager) DetachFloatingIP(vmID, floatingIP, bridge string) error {
 	log.Printf("[NetworkManager] Floating IP %s detached (was VM %s)", floatingIP, vmID)
 	return nil
 }
+
+// CreateVPC provisions a tenant VPC on this node and returns the bridge guests
+// attach to. Idempotent, so it doubles as the repair path after a node reboot.
+func (m *Manager) CreateVPC(vpcID, subnet, gateway string) (string, error) {
+	bridge, err := m.nat.CreateVPC(vpcID, subnet, gateway)
+	if err != nil {
+		return "", err
+	}
+	log.Printf("[NetworkManager] VPC %s up: subnet=%s gw=%s bridge=%s", vpcID, subnet, gateway, bridge)
+	return bridge, nil
+}
+
+// DeleteVPC removes a tenant VPC's namespace, bridge and links.
+func (m *Manager) DeleteVPC(vpcID string) error {
+	if err := m.nat.DeleteVPC(vpcID); err != nil {
+		return err
+	}
+	log.Printf("[NetworkManager] VPC %s removed", vpcID)
+	return nil
+}

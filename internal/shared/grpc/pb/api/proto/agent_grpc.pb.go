@@ -43,6 +43,7 @@ const (
 	NodeAgent_UndefineNetwork_FullMethodName     = "/agent.NodeAgent/UndefineNetwork"
 	NodeAgent_ProbeIPs_FullMethodName            = "/agent.NodeAgent/ProbeIPs"
 	NodeAgent_ConfigureFloatingIP_FullMethodName = "/agent.NodeAgent/ConfigureFloatingIP"
+	NodeAgent_ConfigureVPC_FullMethodName        = "/agent.NodeAgent/ConfigureVPC"
 )
 
 // NodeAgentClient is the client API for NodeAgent service.
@@ -129,6 +130,16 @@ type NodeAgentClient interface {
 	// cooperation. Idempotent — the panel re-applies attachments after a node
 	// reboot, since iptables rules are runtime-only state.
 	ConfigureFloatingIP(ctx context.Context, in *FloatingIPRequest, opts ...grpc.CallOption) (*FloatingIPResponse, error)
+	// ConfigureVPC creates or removes a tenant VPC on this node: a bridge for the
+	// guests plus a router network namespace holding the VPC's gateway and NAT.
+	//
+	// The gateway deliberately lives in a namespace rather than on the host. The
+	// host has a single routing table, so two tenants using the same subnet would
+	// otherwise produce two competing routes and the kernel would deliver both
+	// tenants' traffic to whichever bridge came first — a cross-tenant misdelivery,
+	// not merely a clash. A namespace per VPC gives each its own routing table, so
+	// overlapping tenant subnets are safe.
+	ConfigureVPC(ctx context.Context, in *VPCRequest, opts ...grpc.CallOption) (*VPCResponse, error)
 }
 
 type nodeAgentClient struct {
@@ -391,6 +402,16 @@ func (c *nodeAgentClient) ConfigureFloatingIP(ctx context.Context, in *FloatingI
 	return out, nil
 }
 
+func (c *nodeAgentClient) ConfigureVPC(ctx context.Context, in *VPCRequest, opts ...grpc.CallOption) (*VPCResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VPCResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_ConfigureVPC_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // NodeAgentServer is the server API for NodeAgent service.
 // All implementations must embed UnimplementedNodeAgentServer
 // for forward compatibility.
@@ -475,6 +496,16 @@ type NodeAgentServer interface {
 	// cooperation. Idempotent — the panel re-applies attachments after a node
 	// reboot, since iptables rules are runtime-only state.
 	ConfigureFloatingIP(context.Context, *FloatingIPRequest) (*FloatingIPResponse, error)
+	// ConfigureVPC creates or removes a tenant VPC on this node: a bridge for the
+	// guests plus a router network namespace holding the VPC's gateway and NAT.
+	//
+	// The gateway deliberately lives in a namespace rather than on the host. The
+	// host has a single routing table, so two tenants using the same subnet would
+	// otherwise produce two competing routes and the kernel would deliver both
+	// tenants' traffic to whichever bridge came first — a cross-tenant misdelivery,
+	// not merely a clash. A namespace per VPC gives each its own routing table, so
+	// overlapping tenant subnets are safe.
+	ConfigureVPC(context.Context, *VPCRequest) (*VPCResponse, error)
 	mustEmbedUnimplementedNodeAgentServer()
 }
 
@@ -556,6 +587,9 @@ func (UnimplementedNodeAgentServer) ProbeIPs(context.Context, *ProbeIPsRequest) 
 }
 func (UnimplementedNodeAgentServer) ConfigureFloatingIP(context.Context, *FloatingIPRequest) (*FloatingIPResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ConfigureFloatingIP not implemented")
+}
+func (UnimplementedNodeAgentServer) ConfigureVPC(context.Context, *VPCRequest) (*VPCResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ConfigureVPC not implemented")
 }
 func (UnimplementedNodeAgentServer) mustEmbedUnimplementedNodeAgentServer() {}
 func (UnimplementedNodeAgentServer) testEmbeddedByValue()                   {}
@@ -992,6 +1026,24 @@ func _NodeAgent_ConfigureFloatingIP_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NodeAgent_ConfigureVPC_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VPCRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).ConfigureVPC(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_ConfigureVPC_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).ConfigureVPC(ctx, req.(*VPCRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // NodeAgent_ServiceDesc is the grpc.ServiceDesc for NodeAgent service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1086,6 +1138,10 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ConfigureFloatingIP",
 			Handler:    _NodeAgent_ConfigureFloatingIP_Handler,
+		},
+		{
+			MethodName: "ConfigureVPC",
+			Handler:    _NodeAgent_ConfigureVPC_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

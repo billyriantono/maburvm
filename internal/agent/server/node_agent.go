@@ -2504,3 +2504,35 @@ func (s *NodeAgentService) ConfigureFloatingIP(ctx context.Context, req *pb.Floa
 	log.Printf("[NodeAgent] Floating IP %s -> %s (%s) attached on %s", fip, internalIP, req.GetNatMode(), bridge)
 	return &pb.FloatingIPResponse{Success: true}, nil
 }
+
+// ConfigureVPC creates or removes a tenant VPC on this node.
+//
+// The VPC's gateway lives in a router network namespace rather than on the host
+// so that two tenants may use the same subnet: the host has one routing table,
+// and two identical subnets on it make the kernel deliver both tenants' traffic
+// to whichever bridge was created first.
+func (s *NodeAgentService) ConfigureVPC(ctx context.Context, req *pb.VPCRequest) (*pb.VPCResponse, error) {
+	if _, authenticated := GetNodeIDFromContext(ctx); !authenticated {
+		return nil, status.Error(codes.Unauthenticated, "not authenticated")
+	}
+	if s.networkMgr == nil {
+		return nil, status.Error(codes.FailedPrecondition, "network manager not initialized")
+	}
+	vpcID := strings.TrimSpace(req.GetVpcId())
+	if vpcID == "" {
+		return nil, status.Error(codes.InvalidArgument, "vpc_id is required")
+	}
+
+	if !req.GetCreate() {
+		if err := s.networkMgr.DeleteVPC(vpcID); err != nil {
+			return nil, status.Errorf(codes.Internal, "delete VPC: %v", err)
+		}
+		return &pb.VPCResponse{Success: true}, nil
+	}
+
+	bridge, err := s.networkMgr.CreateVPC(vpcID, strings.TrimSpace(req.GetSubnet()), strings.TrimSpace(req.GetGateway()))
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "create VPC: %v", err)
+	}
+	return &pb.VPCResponse{Success: true, Bridge: bridge, RouterNetns: network.VPCNetnsName(vpcID)}, nil
+}

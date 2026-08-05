@@ -112,6 +112,17 @@ service NodeAgent {
   // cooperation. Idempotent — the panel re-applies attachments after a node
   // reboot, since iptables rules are runtime-only state.
   rpc ConfigureFloatingIP(FloatingIPRequest) returns (FloatingIPResponse);
+
+  // ConfigureVPC creates or removes a tenant VPC on this node: a bridge for the
+  // guests plus a router network namespace holding the VPC's gateway and NAT.
+  //
+  // The gateway deliberately lives in a namespace rather than on the host. The
+  // host has a single routing table, so two tenants using the same subnet would
+  // otherwise produce two competing routes and the kernel would deliver both
+  // tenants' traffic to whichever bridge came first — a cross-tenant misdelivery,
+  // not merely a clash. A namespace per VPC gives each its own routing table, so
+  // overlapping tenant subnets are safe.
+  rpc ConfigureVPC(VPCRequest) returns (VPCResponse);
 }
 
 // ============================================================================
@@ -1540,4 +1551,25 @@ message FloatingIPRequest {
 message FloatingIPResponse {
   bool success = 1;
   ErrorResponse error = 2;
+}
+
+// ============================================================================
+// Tenant VPCs (router namespace per VPC)
+// ============================================================================
+
+// VPCRequest creates or removes a VPC on the node. Create is idempotent, so the
+// panel can re-apply it to restore VPCs after a node reboot.
+message VPCRequest {
+  string vpc_id = 1;   // tenant VPC id; derives the namespace/bridge names
+  string subnet = 2;   // customer-chosen CIDR, e.g. "10.0.0.0/24" (may overlap another tenant's)
+  string gateway = 3;  // gateway address inside subnet, held by the router namespace
+  bool create = 4;     // true = create/repair, false = remove
+}
+
+// VPCResponse reports the result and the bridge guests must attach to.
+message VPCResponse {
+  bool success = 1;
+  string bridge = 2;        // host bridge for guest NICs (carries NO IP)
+  string router_netns = 3;  // namespace holding the gateway, for diagnostics
+  ErrorResponse error = 4;
 }
