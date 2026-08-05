@@ -756,6 +756,13 @@ func (s *VMService) generateRandomPassword(length int) string {
 }
 
 func (s *VMService) cleanupVMAllocation(ctx context.Context, vmID string, deleteVM bool) error {
+	// Floating IPs survive their VM, so they are not returned to the pool below —
+	// but their host-side NAT rules must go, or the address keeps answering and
+	// forwarding to a dead VM's address. Done before the transaction because it
+	// needs the VM's node and an agent round-trip.
+	if vm, err := s.vmRepo.GetByID(ctx, vmID); err == nil && vm != nil {
+		s.detachFloatingIPsOnAgentForVM(ctx, vmID, vm.NodeID)
+	}
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := s.ipamService.ReleaseAddressesByVMIDInTx(ctx, tx, vmID); err != nil {
 			return err

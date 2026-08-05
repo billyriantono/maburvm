@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -2446,4 +2447,60 @@ func arpProbe(bridge, ip string, timeout time.Duration) bool {
 		return false
 	}
 	return !strings.Contains(s, "failed") && !strings.Contains(s, "incomplete")
+}
+
+// ConfigureFloatingIP attaches or detaches a floating (elastic) IP on this node.
+//
+// The address lives on the HOST (bound to the uplink bridge and 1:1-NATed to the
+// VM), never inside the guest, so it works on every VM including imported ones
+// with no guest agent and can be repointed in the time it takes to rewrite two
+// iptables rules. Attach is idempotent — the panel re-runs it periodically so
+// floating IPs survive a node reboot, which wipes all iptables state.
+func (s *NodeAgentService) ConfigureFloatingIP(ctx context.Context, req *pb.FloatingIPRequest) (*pb.FloatingIPResponse, error) {
+	if _, authenticated := GetNodeIDFromContext(ctx); !authenticated {
+		return nil, status.Error(codes.Unauthenticated, "not authenticated")
+	}
+	if s.networkMgr == nil {
+		return nil, status.Error(codes.FailedPrecondition, "network manager not initialized")
+	}
+
+	fip := strings.TrimSpace(req.GetFloatingIp())
+	bridge := strings.TrimSpace(req.GetBridge())
+	internalIP := strings.TrimSpace(req.GetInternalIp())
+	if fip == "" {
+		return nil, status.Error(codes.InvalidArgument, "floating_ip is required")
+	}
+
+	if !req.GetAttach() {
+		if err := s.networkMgr.DetachFloatingIP(req.GetVmId(), fip, bridge); err != nil {
+			return nil, status.Errorf(codes.Internal, "detach floating IP: %v", err)
+		}
+		log.Printf("[NodeAgent] Floating IP %s detached", fip)
+		return &pb.FloatingIPResponse{Success: true}, nil
+	}
+
+	if internalIP == "" {
+		return nil, status.Error(codes.InvalidArgument, "internal_ip is required to attach")
+	}
+	if err := s.networkMgr.AttachFloatingIP(req.GetVmId(), fip, internalIP, bridge, req.GetNatMode()); err != nil {
+		return nil, status.Errorf(codes.Internal, "attach floating IP: %v", err)
+	}
+
+	// Announce the address from the HOST's MAC: unlike a directly-assigned IP,
+	// a floating IP is answered by the host, so upstream must map it to the
+	// host's MAC. Without this the gateway keeps a stale binding (the previous
+	// VM's MAC, or the host's from before a move) until its ARP cache expires
+	// and traffic goes nowhere in the meantime.
+	if bridge != "" {
+		if iface, err := net.InterfaceByName(bridge); err == nil && len(iface.HardwareAddr) == 6 {
+			if err := sendGratuitousARP(bridge, fip, iface.HardwareAddr.String()); err != nil {
+				log.Printf("[NodeAgent] WARNING: GARP for floating IP %s on %s failed: %v", fip, bridge, err)
+			}
+		} else if err != nil {
+			log.Printf("[NodeAgent] WARNING: cannot resolve bridge %s for floating IP GARP: %v", bridge, err)
+		}
+	}
+
+	log.Printf("[NodeAgent] Floating IP %s -> %s (%s) attached on %s", fip, internalIP, req.GetNatMode(), bridge)
+	return &pb.FloatingIPResponse{Success: true}, nil
 }

@@ -689,6 +689,13 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 		// Doing this before agent confirmation risked handing a still-live IP to
 		// the next VM. On cleanup failure we return an error so the job retries
 		// rather than leaving the IP leaked and the row orphaned.
+		// Tear the VM's floating IPs off the host BEFORE releasing addresses. A
+		// floating IP survives its VM by design, but its DNAT still points at the
+		// VM's own address — which cleanupDeletedVM is about to return to the
+		// pool. Left in place, the next VM to be handed that address silently
+		// receives traffic destined for someone else's floating IP.
+		w.detachFloatingIPsOnNode(ctx, client, node, vm.ID)
+
 		stepVMOperation(ctx, opDB, deleteOpID, 2, "Releasing IP & network")
 		if err := w.cleanupDeletedVM(ctx, vm.ID); err != nil {
 			w.logger.ErrorContext(ctx, "failed to clean up deleted VM records",
@@ -2495,4 +2502,50 @@ func (w *AuditWorker) Work(ctx context.Context, job *river.Job[AuditJob]) error 
 	)
 
 	return nil
+}
+
+// detachFloatingIPsOnNode removes the host-side rules of every floating IP
+// attached to a VM that has just been destroyed.
+//
+// This lives here rather than only in VMService because, with the job queue
+// enabled (i.e. in production), DeleteVM merely enqueues and it is this worker —
+// not the service — that performs the cleanup. Doing it in the service alone
+// meant the rules were never torn down on a real delete.
+//
+// Ordering matters: it must run BEFORE the VM's own address is released back to
+// the pool, otherwise a stale DNAT keeps pointing at an address that has been
+// handed to a different tenant's VM.
+//
+// Best-effort: an unreachable node leaves rules behind, which the panel's
+// floating IP reconciler and the next attach both overwrite.
+func (w *VMOperationWorker) detachFloatingIPsOnNode(ctx context.Context, client pb.NodeAgentClient, node *models.Node, vmID string) {
+	if client == nil || globalWorkerContext == nil || globalWorkerContext.DB == nil {
+		return
+	}
+	var addrs []models.IPAddress
+	if err := globalWorkerContext.DB.WithContext(ctx).
+		Where("vm_id = ? AND delivery_mode = ?", vmID, models.IPDeliveryFloating).
+		Find(&addrs).Error; err != nil || len(addrs) == 0 {
+		return
+	}
+	for i := range addrs {
+		bridge := ""
+		if globalWorkerContext.IPAMRepo != nil {
+			if pool, err := globalWorkerContext.IPAMRepo.GetPool(ctx, addrs[i].PoolID); err == nil && pool != nil {
+				bridge = pool.Bridge
+			}
+		}
+		if _, err := client.ConfigureFloatingIP(agentAuthContext(ctx, node), &pb.FloatingIPRequest{
+			FloatingIp: addrs[i].Address,
+			VmId:       vmID,
+			Bridge:     bridge,
+			Attach:     false,
+		}); err != nil {
+			w.logger.WarnContext(ctx, "failed to detach floating IP on node during VM delete",
+				"vm_id", vmID, "address", addrs[i].Address, "error", err)
+		} else {
+			w.logger.InfoContext(ctx, "floating IP detached on node during VM delete",
+				"vm_id", vmID, "address", addrs[i].Address)
+		}
+	}
 }

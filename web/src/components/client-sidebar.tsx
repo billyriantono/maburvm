@@ -6,6 +6,7 @@ import {
   LayoutDashboard,
   Layers,
   Monitor,
+  Network,
   PlusCircle,
   User as UserIcon,
 } from "lucide-react"
@@ -21,6 +22,7 @@ const navItems = [
   { href: "/client/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/client/vms", label: "My VMs", icon: Monitor },
   { href: "/client/images", label: "Images", icon: Layers },
+  { href: "/client/floating-ips", label: "Floating IPs", icon: Network },
   { href: "/client/order", label: "Order VM", icon: PlusCircle },
 ]
 

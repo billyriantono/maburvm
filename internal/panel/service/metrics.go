@@ -180,6 +180,10 @@ func (c *MetricsCollector) collectOnce(ctx context.Context) {
 		for nodeID := range online {
 			rctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 			c.vmService.ReconcileNodePoolIPs(rctx, nodeID)
+			// Floating IPs are pure iptables/host-address state, so a node reboot
+			// silently drops them. Re-applying the desired set (attach is
+			// idempotent) is what makes them survive one.
+			c.vmService.ReconcileFloatingIPs(rctx, nodeID)
 			cancel()
 		}
 	}

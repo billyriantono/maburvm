@@ -20,7 +20,8 @@ import {
   Boxes,
   Globe,
   ScrollText,
-  Layers
+  Layers,
+  Waypoints
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { User } from "@/types"
@@ -36,6 +37,7 @@ const navItems = [
   { href: "/isos", label: "ISOs", icon: Folder },
   { href: "/networks", label: "Networks", icon: Zap },
   { href: "/ip-pools", label: "IP Pools", icon: Network },
+  { href: "/floating-ips", label: "Floating IPs", icon: Waypoints },
   { href: "/dns", label: "DNS", icon: Globe },
   { href: "/users", label: "Users", icon: Users },
   { href: "/monitoring", label: "Monitoring", icon: Activity },

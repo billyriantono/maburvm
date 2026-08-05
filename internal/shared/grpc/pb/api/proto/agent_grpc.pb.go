@@ -42,6 +42,7 @@ const (
 	NodeAgent_DefineNetwork_FullMethodName       = "/agent.NodeAgent/DefineNetwork"
 	NodeAgent_UndefineNetwork_FullMethodName     = "/agent.NodeAgent/UndefineNetwork"
 	NodeAgent_ProbeIPs_FullMethodName            = "/agent.NodeAgent/ProbeIPs"
+	NodeAgent_ConfigureFloatingIP_FullMethodName = "/agent.NodeAgent/ConfigureFloatingIP"
 )
 
 // NodeAgentClient is the client API for NodeAgent service.
@@ -122,6 +123,12 @@ type NodeAgentClient interface {
 	// by VMs it doesn't manage (e.g. pre-existing unmanaged guests), so it never
 	// allocates a live customer IP and its IPAM view reflects reality.
 	ProbeIPs(ctx context.Context, in *ProbeIPsRequest, opts ...grpc.CallOption) (*ProbeIPsResponse, error)
+	// ConfigureFloatingIP attaches or detaches a floating (elastic) IP on the
+	// host: the address is bound to the uplink bridge and 1:1-NATed to the VM's
+	// own address, so it can be moved between VMs on the node without any guest
+	// cooperation. Idempotent — the panel re-applies attachments after a node
+	// reboot, since iptables rules are runtime-only state.
+	ConfigureFloatingIP(ctx context.Context, in *FloatingIPRequest, opts ...grpc.CallOption) (*FloatingIPResponse, error)
 }
 
 type nodeAgentClient struct {
@@ -374,6 +381,16 @@ func (c *nodeAgentClient) ProbeIPs(ctx context.Context, in *ProbeIPsRequest, opt
 	return out, nil
 }
 
+func (c *nodeAgentClient) ConfigureFloatingIP(ctx context.Context, in *FloatingIPRequest, opts ...grpc.CallOption) (*FloatingIPResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FloatingIPResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_ConfigureFloatingIP_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // NodeAgentServer is the server API for NodeAgent service.
 // All implementations must embed UnimplementedNodeAgentServer
 // for forward compatibility.
@@ -452,6 +469,12 @@ type NodeAgentServer interface {
 	// by VMs it doesn't manage (e.g. pre-existing unmanaged guests), so it never
 	// allocates a live customer IP and its IPAM view reflects reality.
 	ProbeIPs(context.Context, *ProbeIPsRequest) (*ProbeIPsResponse, error)
+	// ConfigureFloatingIP attaches or detaches a floating (elastic) IP on the
+	// host: the address is bound to the uplink bridge and 1:1-NATed to the VM's
+	// own address, so it can be moved between VMs on the node without any guest
+	// cooperation. Idempotent — the panel re-applies attachments after a node
+	// reboot, since iptables rules are runtime-only state.
+	ConfigureFloatingIP(context.Context, *FloatingIPRequest) (*FloatingIPResponse, error)
 	mustEmbedUnimplementedNodeAgentServer()
 }
 
@@ -530,6 +553,9 @@ func (UnimplementedNodeAgentServer) UndefineNetwork(context.Context, *UndefineNe
 }
 func (UnimplementedNodeAgentServer) ProbeIPs(context.Context, *ProbeIPsRequest) (*ProbeIPsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ProbeIPs not implemented")
+}
+func (UnimplementedNodeAgentServer) ConfigureFloatingIP(context.Context, *FloatingIPRequest) (*FloatingIPResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ConfigureFloatingIP not implemented")
 }
 func (UnimplementedNodeAgentServer) mustEmbedUnimplementedNodeAgentServer() {}
 func (UnimplementedNodeAgentServer) testEmbeddedByValue()                   {}
@@ -948,6 +974,24 @@ func _NodeAgent_ProbeIPs_Handler(srv interface{}, ctx context.Context, dec func(
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NodeAgent_ConfigureFloatingIP_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FloatingIPRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).ConfigureFloatingIP(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_ConfigureFloatingIP_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).ConfigureFloatingIP(ctx, req.(*FloatingIPRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // NodeAgent_ServiceDesc is the grpc.ServiceDesc for NodeAgent service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1038,6 +1082,10 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ProbeIPs",
 			Handler:    _NodeAgent_ProbeIPs_Handler,
+		},
+		{
+			MethodName: "ConfigureFloatingIP",
+			Handler:    _NodeAgent_ConfigureFloatingIP_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

@@ -15,6 +15,21 @@ const (
 	IPAddressStatusReserved  = "reserved"
 	IPAddressStatusAssigned  = "assigned"
 	IPAddressStatusDisabled  = "disabled"
+
+	// Delivery mode: how the address reaches the VM.
+	// Direct = bridged and bound inside the guest (the pre-existing model).
+	// Floating = configured on the host and NATed to the VM's own address, so it
+	// can be moved between VMs on the node without touching either guest.
+	IPDeliveryDirect   = "direct"
+	IPDeliveryFloating = "floating"
+
+	// NAT mode for a floating IP.
+	// Inbound = DNAT only; conntrack reverses it for replies, and the VM still
+	// egresses under its own identity (baseline masquerade or its own public IP).
+	// Full = DNAT + SNAT; the VM egresses *as* the floating IP. Only one full-mode
+	// floating IP per VM makes sense, since it overrides the egress identity.
+	NATModeInbound = "inbound"
+	NATModeFull    = "full"
 )
 
 // IPPool represents a first-class IPAM pool. It intentionally does not replace
@@ -55,18 +70,25 @@ func (p *IPPool) Validate() ValidationErrors { return ValidateStruct(p) }
 
 // IPAddress represents a managed address in an IPAM pool.
 type IPAddress struct {
-	ID        string         `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	PoolID    string         `json:"pool_id" gorm:"type:uuid;not null;index" validate:"required,uuid"`
-	NodeID    *string        `json:"node_id,omitempty" gorm:"type:uuid;index" validate:"omitempty,uuid"`
-	Address   string         `json:"address" gorm:"type:inet;not null" validate:"required,ip"`
-	Family    string         `json:"family" gorm:"type:varchar(8);not null;default:'ipv4'" validate:"required,oneof=ipv4 ipv6"`
-	Status    string         `json:"status" gorm:"type:varchar(16);not null;default:'available';index" validate:"required,oneof=available reserved assigned disabled"`
-	VMID      *string        `json:"vm_id,omitempty" gorm:"type:uuid;index" validate:"omitempty,uuid"`
-	Note      string         `json:"note,omitempty" gorm:"type:text"`
-	RDNS      string         `json:"rdns,omitempty" gorm:"column:rdns;type:varchar(253)"` // reverse DNS (PTR) hostname
-	CreatedAt time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
-	UpdatedAt time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
-	DeletedAt gorm.DeletedAt `json:"-" gorm:"index"`
+	ID      string  `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	PoolID  string  `json:"pool_id" gorm:"type:uuid;not null;index" validate:"required,uuid"`
+	NodeID  *string `json:"node_id,omitempty" gorm:"type:uuid;index" validate:"omitempty,uuid"`
+	Address string  `json:"address" gorm:"type:inet;not null" validate:"required,ip"`
+	Family  string  `json:"family" gorm:"type:varchar(8);not null;default:'ipv4'" validate:"required,oneof=ipv4 ipv6"`
+	Status  string  `json:"status" gorm:"type:varchar(16);not null;default:'available';index" validate:"required,oneof=available reserved assigned disabled"`
+	VMID    *string `json:"vm_id,omitempty" gorm:"type:uuid;index" validate:"omitempty,uuid"`
+	// DeliveryMode/NATMode describe floating IPs (see the IPDelivery* constants).
+	// A direct address keeps NATMode empty. UserID records the tenant that owns a
+	// floating IP while it is attached to no VM — a floating IP deliberately
+	// survives deletion of the VM it was attached to.
+	DeliveryMode string         `json:"delivery_mode" gorm:"type:varchar(16);not null;default:'direct'" validate:"omitempty,oneof=direct floating"`
+	NATMode      string         `json:"nat_mode,omitempty" gorm:"type:varchar(16);not null;default:''" validate:"omitempty,oneof=inbound full"`
+	UserID       *string        `json:"user_id,omitempty" gorm:"type:uuid;index" validate:"omitempty,uuid"`
+	Note         string         `json:"note,omitempty" gorm:"type:text"`
+	RDNS         string         `json:"rdns,omitempty" gorm:"column:rdns;type:varchar(253)"` // reverse DNS (PTR) hostname
+	CreatedAt    time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
+	UpdatedAt    time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
+	DeletedAt    gorm.DeletedAt `json:"-" gorm:"index"`
 }
 
 func (IPAddress) TableName() string { return "ip_addresses" }
@@ -80,6 +102,9 @@ func (a *IPAddress) BeforeCreate(tx *gorm.DB) error {
 	}
 	if a.Status == "" {
 		a.Status = IPAddressStatusAvailable
+	}
+	if a.DeliveryMode == "" {
+		a.DeliveryMode = IPDeliveryDirect
 	}
 	return nil
 }
