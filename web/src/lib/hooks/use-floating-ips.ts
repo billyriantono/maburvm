@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api-client'
-import type { AllocateFloatingIPRequest, IPAddress, NATMode } from '@/types'
+import type { AllocateFloatingIPRequest, FloatingIPBilling, IPAddress, NATMode } from '@/types'
 
 const KEY = ['floating-ips']
 
@@ -64,6 +64,30 @@ export function useReleaseFloatingIP() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: KEY })
       queryClient.invalidateQueries({ queryKey: ['ipam'] })
+    },
+  })
+}
+
+// Order takes an address from a pool the operator has opened for self-service.
+export function useOrderFloatingIP() {
+  const queryClient = useQueryClient()
+  return useMutation<IPAddress, Error, void>({
+    mutationFn: async () => {
+      const response = await api.post<IPAddress>('/api/v1/floating-ips/order')
+      return response.data.data
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: KEY }),
+  })
+}
+
+// One attached address is included; idle ones are charged, which is why the
+// count is worth showing the customer rather than hiding on an invoice.
+export function useFloatingIPBilling() {
+  return useQuery<FloatingIPBilling>({
+    queryKey: ['floating-ips', 'billing'],
+    queryFn: async () => {
+      const response = await api.get<FloatingIPBilling>('/api/v1/floating-ips/billing')
+      return response.data.data
     },
   })
 }

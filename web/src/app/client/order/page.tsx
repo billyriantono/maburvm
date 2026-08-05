@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation"
 import Link from "next/link"
 import { ArrowLeft, Check, Cpu, MemoryStick, HardDrive, Gauge, KeyRound, Database, Layers } from "lucide-react"
 import { usePlans } from "@/lib/hooks/use-plans"
+import { useVPCs } from "@/lib/hooks/use-vpcs"
 import { useTemplates } from "@/lib/hooks/use-templates"
 import { useImages } from "@/lib/hooks/use-images"
 import { useCreateVM, type CreateVMResult } from "@/lib/hooks/use-vms"
@@ -24,6 +25,7 @@ function OrderVMForm() {
   // derives the OS from the image and clones its disk.
   const sourceImageId = searchParams.get("source_image_id") ?? ""
   const { data: plans, isLoading: plansLoading } = usePlans(true)
+  const { data: vpcs } = useVPCs()
   const { data: templates, isLoading: templatesLoading } = useTemplates()
   const { data: images } = useImages()
   const sourceImage = sourceImageId ? images?.find((img) => img.id === sourceImageId) : undefined
@@ -33,6 +35,7 @@ function OrderVMForm() {
   const [planId, setPlanId] = useState<string>("")
   const [templateId, setTemplateId] = useState<string>("")
   const [hostname, setHostname] = useState<string>("")
+  const [vpcId, setVpcId] = useState<string>("")
   const [error, setError] = useState<string>("")
   const [created, setCreated] = useState<CreateVMResult | null>(null)
   const [copied, setCopied] = useState(false)
@@ -77,6 +80,10 @@ function OrderVMForm() {
         // infrastructure/network placement (server rejects it). The backend
         // derives bandwidth + placement from the plan automatically.
         ssh_key_ids: selectedKeyIds,
+        // Placing the VM in one of the customer's own private networks. Ownership
+        // is verified server-side, and the network also decides which node the VM
+        // lands on, since a private network lives on one host.
+        vpc_id: vpcId || undefined,
       },
       {
         onSuccess: (data: CreateVMResult) => {
@@ -233,6 +240,51 @@ function OrderVMForm() {
           )}
         </div>
       </section>
+
+      {/* Step 3b: private network (only shown when the customer has one) */}
+      {!!vpcs?.length && (
+        <section className="rounded-lg border bg-card p-6">
+          <h2 className="text-lg font-semibold">Network</h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            Put this VM in one of your private networks, or leave it on a public address.
+          </p>
+          <div className="mt-4 space-y-2">
+            <label className="flex items-center gap-3 rounded-md border p-3 cursor-pointer hover:bg-muted/50">
+              <input
+                type="radio"
+                name="vpc"
+                checked={vpcId === ""}
+                onChange={() => setVpcId("")}
+              />
+              <span className="text-sm">
+                <span className="font-medium">Public IP</span>
+                <span className="text-muted-foreground"> — reachable from the internet directly</span>
+              </span>
+            </label>
+            {vpcs.map((v) => (
+              <label
+                key={v.id}
+                className="flex items-center gap-3 rounded-md border p-3 cursor-pointer hover:bg-muted/50"
+              >
+                <input
+                  type="radio"
+                  name="vpc"
+                  checked={vpcId === v.id}
+                  onChange={() => setVpcId(v.id)}
+                />
+                <span className="text-sm">
+                  <span className="font-medium">{v.name}</span>
+                  <span className="text-muted-foreground font-mono"> {v.subnet}</span>
+                  <span className="text-muted-foreground">
+                    {" "}
+                    — private; attach a floating IP to expose it
+                  </span>
+                </span>
+              </label>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Step 4: SSH keys */}
       <section className="rounded-lg border bg-card text-card-foreground shadow-sm">

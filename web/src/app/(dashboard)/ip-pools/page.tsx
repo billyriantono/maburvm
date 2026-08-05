@@ -6,18 +6,20 @@ import {
   AlertCircle,
   ChevronRight,
   Loader2,
+  Lock,
   Network,
   Plus,
   RefreshCw,
   Search,
   Server,
+  Unlock,
   Trash2,
 } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { useCreateIPPool, useDeleteIPPool, useIPPools } from "@/lib/hooks/use-ipam"
+import { useCreateIPPool, useDeleteIPPool, useIPPools, useSetPoolOrderable } from "@/lib/hooks/use-ipam"
 import { useNodes } from "@/lib/hooks/use-nodes"
 import type { CreateIPPoolRequest, IPFamily, IPPool } from "@/types"
 
@@ -47,6 +49,7 @@ export default function IPPoolsPage() {
   const { data: nodes } = useNodes()
   const createPool = useCreateIPPool()
   const deletePool = useDeleteIPPool()
+  const updatePoolOrderable = useSetPoolOrderable()
 
   const filteredPools = useMemo(() => {
     if (!pools) return []
@@ -70,6 +73,22 @@ export default function IPPoolsPage() {
       router.push(`/ip-pools/${pool.id}`)
     } catch (err) {
       toast.error(`Failed to create IP pool: ${(err as Error).message}`)
+    }
+  }
+
+  // Opening a pool is deliberate and reversible: nothing becomes orderable by
+  // customers until an operator says so, so a pool reserved for infrastructure
+  // is never handed out by accident.
+  const handleToggleOrderable = async (pool: IPPool) => {
+    try {
+      await updatePoolOrderable.mutateAsync({ id: pool.id, orderable: !pool.orderable })
+      toast.success(
+        pool.orderable
+          ? `"${pool.name}" is no longer orderable by customers`
+          : `"${pool.name}" is now orderable by customers`,
+      )
+    } catch (err) {
+      toast.error((err as Error).message)
     }
   }
 
@@ -190,12 +209,31 @@ export default function IPPoolsPage() {
               >
                 <div className="col-span-4 font-medium text-foreground truncate" title={pool.name}>{pool.name}</div>
                 <div className="col-span-3 font-mono text-sm truncate">{pool.cidr || "No CIDR"}</div>
-                <div className="col-span-2"><Badge variant={pool.family === "ipv4" ? "secondary" : "warning"}>{pool.family}</Badge></div>
+                <div className="col-span-2 flex items-center gap-1">
+                  <Badge variant={pool.family === "ipv4" ? "secondary" : "warning"}>{pool.family}</Badge>
+                  {pool.orderable && (
+                    <Badge variant="success" title="Customers may order a floating IP from this pool">
+                      self-service
+                    </Badge>
+                  )}
+                </div>
                 <div className="col-span-2 text-xs text-muted-foreground truncate flex items-center gap-1" title={nodeLabel}>
                   <Server className="w-3 h-3 shrink-0" />
                   {nodeLabel}
                 </div>
                 <div className="col-span-1 flex justify-end items-center gap-1">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={(e) => { e.stopPropagation(); handleToggleOrderable(pool) }}
+                    className="h-8 w-8 p-0 text-muted-foreground"
+                    title={pool.orderable
+                      ? "Close to self-service: customers can no longer order from this pool"
+                      : "Open to self-service: customers may order a floating IP from this pool"}
+                  >
+                    {pool.orderable ? <Lock className="w-4 h-4" /> : <Unlock className="w-4 h-4" />}
+                  </Button>
                   <Button type="button" variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); handleDeletePool(pool) }} className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive" title="Delete pool">
                     <Trash2 className="w-4 h-4" />
                   </Button>

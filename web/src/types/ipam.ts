@@ -14,6 +14,8 @@ export interface IPPool {
   range_start?: string
   range_end?: string
   description?: string
+  /** Customers may order a floating IP from this pool. Off unless an operator opens it. */
+  orderable?: boolean
   created_at: string
   updated_at: string
 }
@@ -85,4 +87,32 @@ export interface AllocateIPAddressRequest {
   pool_id?: string
   node_id?: string
   vm_id?: string
+}
+
+// A VPC is a customer-defined private network. Two customers may hold the SAME
+// subnet — each one's gateway lives in its own router namespace on the node — so
+// only a customer's own VPCs are checked against each other for overlap.
+export interface VPC {
+  id: string
+  name: string
+  type: string
+  subnet: string
+  gateway: string
+  bridge?: string
+  node_id?: string
+  user_id?: string
+  created_at: string
+}
+
+export interface CreateVPCRequest {
+  name: string
+  subnet: string
+  gateway?: string
+}
+
+export interface FloatingIPBilling {
+  user_id: string
+  total: number
+  free: number
+  billable: number
 }

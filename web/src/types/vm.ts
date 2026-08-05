@@ -86,6 +86,7 @@ export interface CreateVMRequest {
   cpu_model?: string;      // guest CPU model; empty → node default (kvm64, migratable)
   user_data?: string;      // first-boot script/recipe (cloud-init), run once per instance
   managed_network_id?: string; // attach to a private VPC / managed network instead of a pool
+  vpc_id?: string;         // place in one of the caller's own private networks; also fixes the node
   recipe_id?: string;      // first-boot recipe to inject as user_data (ignored if user_data set)
   password?: string;       // root password to inject (min 8 chars); omit to auto-generate
   regenerate_password?: boolean; // generate a root password and return it once

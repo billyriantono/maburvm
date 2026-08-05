@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { Link2, Link2Off, Loader2, Network } from "lucide-react"
+import { Link2, Link2Off, Loader2, Network, Plus } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import {
@@ -23,7 +23,9 @@ import {
 import {
   useAttachFloatingIP,
   useDetachFloatingIP,
+  useFloatingIPBilling,
   useFloatingIPs,
+  useOrderFloatingIP,
 } from "@/lib/hooks/use-floating-ips"
 import { useVMs } from "@/lib/hooks/use-vms"
 import type { IPAddress } from "@/types"
@@ -38,6 +40,8 @@ export default function ClientFloatingIPsPage() {
   const { data: vmsData } = useVMs({ pageSize: 100 })
   const attach = useAttachFloatingIP()
   const detach = useDetachFloatingIP()
+  const order = useOrderFloatingIP()
+  const { data: billing } = useFloatingIPBilling()
 
   const [target, setTarget] = useState<IPAddress | null>(null)
   const [vmID, setVmID] = useState("")
@@ -60,6 +64,15 @@ export default function ClientFloatingIPsPage() {
     }
   }
 
+  const handleOrder = async () => {
+    try {
+      const fip = await order.mutateAsync()
+      toast.success(`${fip.address} is yours — attach it to a VM to put it to use`)
+    } catch (err) {
+      toast.error((err as Error).message)
+    }
+  }
+
   const handleDetach = async (fip: IPAddress) => {
     try {
       await detach.mutateAsync(fip.id)
@@ -71,12 +84,25 @@ export default function ClientFloatingIPsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Floating IPs</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Move a public address between your VMs without changing anything inside them. The switch
-          takes about a second, and the address stays yours even if you delete the VM it was on.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Floating IPs</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Move a public address between your VMs without changing anything inside them. The switch
+            takes about a second, and the address stays yours even if you delete the VM it was on.
+          </p>
+          {billing && billing.total > 0 && (
+            <p className="text-sm text-muted-foreground mt-2">
+              {billing.free > 0
+                ? `1 attached address is included. ${billing.billable} charged.`
+                : `${billing.billable} charged — attach one to a VM and it becomes free.`}
+            </p>
+          )}
+        </div>
+        <Button type="button" onClick={handleOrder} disabled={order.isPending} className="gap-1 shrink-0">
+          {order.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+          Order an IP
+        </Button>
       </div>
 
       {isLoading ? (
@@ -88,7 +114,7 @@ export default function ClientFloatingIPsPage() {
           <Network className="w-16 h-16 text-muted-foreground/40 mx-auto mb-4" />
           <p className="text-muted-foreground font-medium">You have no floating IPs</p>
           <p className="text-sm text-muted-foreground mt-1">
-            Contact support to add one to your account.
+            Order one above, then attach it to a VM.
           </p>
         </div>
       ) : (

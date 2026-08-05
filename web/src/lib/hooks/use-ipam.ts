@@ -170,3 +170,19 @@ export async function downloadReverseZone(poolId: string, poolName: string) {
   a.click()
   URL.revokeObjectURL(url)
 }
+
+// useSetPoolOrderable opens or closes a pool to customer self-service. Kept
+// separate from the general pool edit so the intent reads clearly at the call
+// site and in the audit trail.
+export function useSetPoolOrderable() {
+  const queryClient = useQueryClient()
+  return useMutation<IPPool, Error, { id: string; orderable: boolean }>({
+    mutationFn: async ({ id, orderable }) => {
+      const response = await api.put<IPPool>(`/api/v1/ip-pools/${id}`, { orderable })
+      return response.data.data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['ipam', 'pools'] })
+    },
+  })
+}

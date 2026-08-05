@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation"
 import {
   LayoutDashboard,
   Layers,
+  Boxes,
   Monitor,
   Network,
   PlusCircle,
@@ -22,6 +23,7 @@ const navItems = [
   { href: "/client/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/client/vms", label: "My VMs", icon: Monitor },
   { href: "/client/images", label: "Images", icon: Layers },
+  { href: "/client/vpcs", label: "Private Networks", icon: Boxes },
   { href: "/client/floating-ips", label: "Floating IPs", icon: Network },
   { href: "/client/order", label: "Order VM", icon: PlusCircle },
 ]
