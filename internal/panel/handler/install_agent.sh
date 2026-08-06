@@ -45,6 +45,33 @@ fi
 # Start the libvirt daemon (modular virtqemud on newer distros, monolithic libvirtd otherwise).
 systemctl enable --now libvirtd 2>/dev/null || systemctl enable --now virtqemud 2>/dev/null || true
 
+# Kernel switches the per-VM firewall depends on.
+#
+# Traffic between ports of one bridge is switched at L2 and never reaches the IP
+# stack, so iptables does not see it: without br_netfilter a VM's firewall rules
+# exist and filter nothing. ip_forward is what lets the host route a DNATed
+# packet on to a guest, which floating IPs need.
+#
+# Done at install time on purpose. Turning it on later, on a node already running
+# customer VMs, starts enforcing rules that have never applied to them — correct,
+# but indistinguishable from an outage. A fresh node has no VMs yet.
+#
+# Both the module and the sysctl are persisted: the sysctl alone silently fails
+# to apply on the next boot if the module is not loaded first, and the firewall
+# goes quiet again with nothing to show for it.
+echo "==> Enabling bridge/forward netfilter ..."
+modprobe br_netfilter 2>/dev/null || true
+install -d /etc/modules-load.d /etc/sysctl.d
+echo "br_netfilter" > /etc/modules-load.d/maburvm.conf
+cat > /etc/sysctl.d/99-maburvm.conf <<'SYSCTL'
+net.ipv4.ip_forward = 1
+net.bridge.bridge-nf-call-iptables = 1
+SYSCTL
+sysctl --system >/dev/null 2>&1 || true
+if [ "$(cat /proc/sys/net/bridge/bridge-nf-call-iptables 2>/dev/null || echo 0)" != "1" ]; then
+  echo "WARN: br_netfilter unavailable — per-VM firewall rules will not take effect on this node." >&2
+fi
+
 echo "==> Fetching agent binary from ${PANEL_URL} ..."
 install -d "$INSTALL_DIR"
 curl -fsSL "${PANEL_URL}/api/v1/nodes/agent-binary?arch=${GOARCH}" -o "${INSTALL_DIR}/agent.new"

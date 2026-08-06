@@ -246,6 +246,20 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 	case pb.VMCommandType_VM_COMMAND_TYPE_DESTROY:
 		err = libvirt.DeleteVM(req.VmId)
 		state = pb.VMState_VM_STATE_DESTROYED
+		// Destroying the domain left every host-side rule behind: firewall,
+		// anti-spoof, bandwidth shaping and NAT. That was invisible while
+		// br_netfilter was off, because the firewall rules matched nothing — but
+		// a deleted VM's default-DROP outlives it, and its address is handed to
+		// the next VM within minutes. The new owner's traffic is then dropped by
+		// a rule belonging to a machine that no longer exists.
+		//
+		// Best-effort and after the domain is gone: failing to tidy up must not
+		// turn a successful delete into a failed one.
+		if s.networkMgr != nil {
+			if cerr := s.networkMgr.CleanupVMNetwork(req.VmId); cerr != nil {
+				log.Printf("[NodeAgent] WARNING: network cleanup after destroy of %s: %v", req.VmId, cerr)
+			}
+		}
 	case pb.VMCommandType_VM_COMMAND_TYPE_PAUSE:
 		err = libvirt.SuspendVM(req.VmId)
 		state = pb.VMState_VM_STATE_PAUSED
