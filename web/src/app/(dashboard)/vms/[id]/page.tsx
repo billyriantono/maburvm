@@ -30,6 +30,7 @@ import { useVMDisks, useAttachDisk, useDetachDisk } from "@/lib/hooks/use-disks"
 import { useVMActivity } from "@/lib/hooks/use-audit-logs"
 import { VNCConsole } from "@/components/vnc-console"
 import type { VMStatus, Snapshot, Backup, FirewallRule } from "@/types"
+import { useConfirm } from "@/components/confirm-provider"
 
 // --- Utility Components ---
 
@@ -222,6 +223,7 @@ function SectionEmpty({ icon: Icon, message }: { icon: React.ElementType; messag
 }
 
 function DisksCard({ vmId }: { vmId: string }) {
+  const confirm = useConfirm()
   const { data: disks, isLoading } = useVMDisks(vmId)
   const attach = useAttachDisk(vmId)
   const detach = useDetachDisk(vmId)
@@ -242,10 +244,21 @@ function DisksCard({ vmId }: { vmId: string }) {
     }
   }
 
+  // Genuinely three-way, which is why window.confirm could not express it: the
+  // old dialog put "keep the volume" on the Cancel button, so backing out of the
+  // decision detached the disk anyway. Cancel now means cancel.
   const handleDetach = async (device: string) => {
-    const deleteVolume = window.confirm(`Detach ${device}?\n\nClick OK to also DELETE its data permanently, or Cancel to keep the volume on disk.`)
+    const answer = await confirm.choose({
+      title: `Detach ${device}?`,
+      description:
+        "Detaching removes the disk from this VM. You can either keep the volume on the node to reattach later, or delete its data for good.",
+      confirmLabel: "Detach and delete data",
+      alternateLabel: "Detach, keep volume",
+      destructive: true,
+    })
+    if (answer === "cancel") return
     try {
-      await detach.mutateAsync({ device, deleteVolume })
+      await detach.mutateAsync({ device, deleteVolume: answer === "confirm" })
     } catch (e) {
       setErr((e as Error).message)
     }
@@ -408,6 +421,7 @@ function BandwidthUsageCard({ vmId }: { vmId: string }) {
 // --- Main Component ---
 
 export default function VMDetailPage() {
+  const confirm = useConfirm()
   const params = useParams()
   const router = useRouter()
   const vmId = params.id as string
@@ -1407,10 +1421,19 @@ export default function VMDetailPage() {
                   variant="outline"
                   size="sm"
                   disabled={repairConsole.isPending}
-                  onClick={() => {
-                    if (window.confirm("Repair console injects VNC into this VM's definition. If the VM is running it will be RESTARTED. Continue?")) {
-                      repairConsole.mutate()
-                    }
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: "Repair this VM's console?",
+                      description:
+                        "A VNC device is injected into the VM's definition, which fixes a black or unavailable console on imported machines.",
+                      confirmLabel: "Repair and restart",
+                      destructive: vm.status === "running",
+                      details:
+                        vm.status === "running"
+                          ? [{ label: "Warning", value: "The VM is running and will be restarted" }]
+                          : undefined,
+                    })
+                    if (ok) repairConsole.mutate()
                   }}
                   title="Fixes a black/unavailable console on imported VMs by injecting a VNC device (restarts the VM)"
                 >

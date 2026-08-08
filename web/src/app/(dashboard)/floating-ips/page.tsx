@@ -33,8 +33,10 @@ import { useIPPools } from "@/lib/hooks/use-ipam"
 import { useUsers } from "@/lib/hooks/use-users"
 import { useVMs } from "@/lib/hooks/use-vms"
 import type { IPAddress, NATMode } from "@/types"
+import { useConfirm } from "@/components/confirm-provider"
 
 export default function FloatingIPsPage() {
+  const confirm = useConfirm()
   const { data: floatingIPs, isLoading, error, refetch } = useFloatingIPs()
   const { data: pools } = useIPPools()
   const { data: vmsData } = useVMs({ pageSize: 100 })
@@ -101,7 +103,14 @@ export default function FloatingIPsPage() {
   }
 
   const handleRelease = async (fip: IPAddress) => {
-    if (!window.confirm(`Release ${fip.address} back to its pool? It becomes allocatable to any VM.`)) return
+    const ok = await confirm({
+      title: `Release ${fip.address}?`,
+      description:
+        "The address goes back to its pool and can be handed to any customer's VM next. Anything still pointing at it — DNS, firewall rules elsewhere, remote allowlists — will be pointing at someone else.",
+      confirmLabel: "Release address",
+      destructive: true,
+    })
+    if (!ok) return
     try {
       await release.mutateAsync(fip.id)
       toast.success(`${fip.address} released`)

@@ -32,12 +32,14 @@ import {
 import { useNodes } from "@/lib/hooks/use-nodes"
 import { CountryFlag } from "@/components/country-flag"
 import type { Region } from "@/types"
+import { useConfirm } from "@/components/confirm-provider"
 
 // Regions are the locations customers choose between when ordering. A region
 // holds one or more nodes; today each holds exactly one, which is why VPCs and
 // floating IPs — both node-scoped — behave the way customers expect
 // region-scoped resources to behave.
 export default function RegionsPage() {
+  const confirm = useConfirm()
   const { data: regions, isLoading } = useRegions()
   const { data: nodesData } = useNodes()
   const createRegion = useCreateRegion()
@@ -76,7 +78,18 @@ export default function RegionsPage() {
   }
 
   const handleDelete = async (r: Region) => {
-    if (!window.confirm(`Delete region "${r.name}"?`)) return
+    const ok = await confirm({
+      title: `Delete region "${r.name}"?`,
+      description:
+        "Customers will no longer see it when ordering. Nodes must be moved out of it first.",
+      confirmLabel: "Delete region",
+      destructive: true,
+      details: [
+        { label: "Slug", value: r.slug },
+        { label: "Active nodes", value: r.node_count },
+      ],
+    })
+    if (!ok) return
     try {
       await deleteRegion.mutateAsync(r.id)
       toast.success(`"${r.name}" deleted`)

@@ -18,12 +18,14 @@ import { useCreateVPC, useDeleteVPC, useVPCs } from "@/lib/hooks/use-vpcs"
 import { useRegions } from "@/lib/hooks/use-regions"
 import { CountryFlag } from "@/components/country-flag"
 import type { VPC } from "@/types"
+import { useConfirm } from "@/components/confirm-provider"
 
 // Customers define their own private networks and choose their own address
 // range. Another customer may be using the very same range — each network gets
 // its own router on the node — so the only ranges that must not overlap are the
 // customer's own. That is what the error from the API says when it happens.
 export default function ClientVPCsPage() {
+  const confirm = useConfirm()
   const { data: vpcs, isLoading } = useVPCs()
   const { data: regions } = useRegions()
   const createVPC = useCreateVPC()
@@ -52,7 +54,18 @@ export default function ClientVPCsPage() {
   }
 
   const handleDelete = async (vpc: VPC) => {
-    if (!window.confirm(`Delete "${vpc.name}" (${vpc.subnet})?`)) return
+    const ok = await confirm({
+      title: `Delete "${vpc.name}"?`,
+      description:
+        "The private network and its gateway are removed. Only possible while no VMs are still in it.",
+      confirmLabel: "Delete network",
+      destructive: true,
+      details: [
+        { label: "Address range", value: vpc.subnet },
+        { label: "Location", value: vpc.region_name ?? "—" },
+      ],
+    })
+    if (!ok) return
     try {
       await deleteVPC.mutateAsync(vpc.id)
       toast.success(`"${vpc.name}" deleted`)

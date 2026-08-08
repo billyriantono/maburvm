@@ -18,6 +18,7 @@ import {
   downloadZoneFile,
 } from "@/lib/hooks/use-dns"
 import type { CreateRecordRequest, CreateZoneRequest, DNSRecordType, DNSZone } from "@/types/dns"
+import { useConfirm } from "@/components/confirm-provider"
 
 const RECORD_TYPES: DNSRecordType[] = ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV"]
 
@@ -25,6 +26,7 @@ const emptyZone: CreateZoneRequest = { name: "", primary_ns: "", admin_email: ""
 const emptyRecord: CreateRecordRequest = { name: "@", type: "A", content: "", ttl: 3600, priority: 0 }
 
 export default function DNSPage() {
+  const confirm = useConfirm()
   const { data: zones, isLoading, error } = useDNSZones()
   const { data: provider } = useDNSProvider()
   const createZone = useCreateDNSZone()
@@ -56,7 +58,14 @@ export default function DNSPage() {
   }
 
   const handleDeleteZone = async (zone: DNSZone) => {
-    if (!window.confirm(`Delete zone "${zone.name}" and all its records?`)) return
+    const ok = await confirm({
+      title: `Delete zone "${zone.name}"?`,
+      description:
+        "Every record in it goes too, so anything resolving through this zone stops resolving.",
+      confirmLabel: "Delete zone",
+      destructive: true,
+    })
+    if (!ok) return
     try {
       await deleteZone.mutateAsync(zone.id)
       if (selectedZoneId === zone.id) setSelectedZoneId(undefined)

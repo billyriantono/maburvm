@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { usePlans, useCreatePlan, useUpdatePlan, useDeletePlan } from "@/lib/hooks/use-plans"
 import type { CreatePlanRequest, Plan } from "@/types/plan"
+import { useConfirm } from "@/components/confirm-provider"
 
 const emptyForm: CreatePlanRequest = {
   name: "",
@@ -33,6 +34,7 @@ const emptyForm: CreatePlanRequest = {
 }
 
 export default function PlansPage() {
+  const confirm = useConfirm()
   const { data: plans, isLoading, error } = usePlans()
   const createPlan = useCreatePlan()
   const updatePlan = useUpdatePlan()
@@ -84,7 +86,14 @@ export default function PlansPage() {
   }
 
   const handleDelete = async (plan: Plan) => {
-    if (!window.confirm(`Delete plan "${plan.name}"? VMs already created keep their resources.`)) return
+    const ok = await confirm({
+      title: `Delete plan "${plan.name}"?`,
+      description:
+        "New orders can no longer choose it. VMs already created on this plan keep the resources they have.",
+      confirmLabel: "Delete plan",
+      destructive: true,
+    })
+    if (!ok) return
     try {
       await deletePlan.mutateAsync(plan.id)
       toast.success(`Plan "${plan.name}" deleted`)

@@ -22,6 +22,7 @@ import { Input } from "@/components/ui/input"
 import { useCreateIPPool, useDeleteIPPool, useIPPools, useSetPoolOrderable } from "@/lib/hooks/use-ipam"
 import { useNodes } from "@/lib/hooks/use-nodes"
 import type { CreateIPPoolRequest, IPFamily, IPPool } from "@/types"
+import { useConfirm } from "@/components/confirm-provider"
 
 const emptyPoolForm: CreateIPPoolRequest = {
   name: "",
@@ -40,6 +41,7 @@ function cleanPoolPayload(payload: CreateIPPoolRequest): CreateIPPoolRequest {
 }
 
 export default function IPPoolsPage() {
+  const confirm = useConfirm()
   const router = useRouter()
   const [searchQuery, setSearchQuery] = useState("")
   const [showCreatePool, setShowCreatePool] = useState(false)
@@ -93,7 +95,15 @@ export default function IPPoolsPage() {
   }
 
   const handleDeletePool = async (pool: IPPool) => {
-    if (!window.confirm(`Delete IP pool "${pool.name}"? Addresses in this pool may be removed too.`)) return
+    const ok = await confirm({
+      title: `Delete IP pool "${pool.name}"?`,
+      description:
+        "Addresses belonging to this pool may be removed with it, including ones already assigned to VMs.",
+      confirmLabel: "Delete pool",
+      destructive: true,
+      details: [{ label: "Range", value: pool.cidr }],
+    })
+    if (!ok) return
     try {
       await deletePool.mutateAsync(pool.id)
       toast.success(`IP pool "${pool.name}" deleted`)

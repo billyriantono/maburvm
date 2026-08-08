@@ -9,6 +9,7 @@ import { useDeleteImage, useImages } from "@/lib/hooks/use-images"
 import { useVMs } from "@/lib/hooks/use-vms"
 import { formatBytes } from "@/lib/hooks/use-bandwidth"
 import type { Image } from "@/types"
+import { useConfirm } from "@/components/confirm-provider"
 
 function statusVariant(status: Image["status"]): "success" | "warning" | "destructive" {
   if (status === "available") return "success"
@@ -17,6 +18,7 @@ function statusVariant(status: Image["status"]): "success" | "warning" | "destru
 }
 
 export default function ClientImagesPage() {
+  const confirm = useConfirm()
   const { data: images, isLoading, error, refetch } = useImages()
   const { data: vmsData } = useVMs({ pageSize: 100 })
   const deleteImage = useDeleteImage()
@@ -28,7 +30,13 @@ export default function ClientImagesPage() {
   }
 
   const handleDelete = async (image: Image) => {
-    if (!window.confirm(`Delete image "${image.name}"? This cannot be undone.`)) return
+    const ok = await confirm({
+      title: `Delete image "${image.name}"?`,
+      description: "The stored image is removed. This cannot be undone.",
+      confirmLabel: "Delete image",
+      destructive: true,
+    })
+    if (!ok) return
     setActionError("")
     try {
       await deleteImage.mutateAsync(image.id)

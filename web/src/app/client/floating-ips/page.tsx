@@ -32,6 +32,7 @@ import { useRegions } from "@/lib/hooks/use-regions"
 import { CountryFlag } from "@/components/country-flag"
 import { useVMs } from "@/lib/hooks/use-vms"
 import type { IPAddress } from "@/types"
+import { useConfirm } from "@/components/confirm-provider"
 
 // Client-facing floating IPs. Deliberately narrower than the admin page: a
 // customer can move an address they already hold between their own VMs, but
@@ -39,6 +40,7 @@ import type { IPAddress } from "@/types"
 // node's public address space and stay with an administrator. NAT mode is not
 // exposed either; the panel picks the only one that can work.
 export default function ClientFloatingIPsPage() {
+  const confirm = useConfirm()
   const { data: floatingIPs, isLoading } = useFloatingIPs()
   const { data: vmsData } = useVMs({ pageSize: 100 })
   const attach = useAttachFloatingIP()
@@ -91,12 +93,14 @@ export default function ClientFloatingIPsPage() {
 
   // Releasing is how a customer stops paying for an address they are not using.
   const handleRelease = async (fip: IPAddress) => {
-    if (
-      !window.confirm(
-        `Release ${fip.address}? It returns to the pool, you stop being billed for it, and you will not get the same address back.`,
-      )
-    )
-      return
+    const ok = await confirm({
+      title: `Release ${fip.address}?`,
+      description:
+        "The address returns to the pool and you stop being billed for it. You will not get this same address back, so anything pointing at it — DNS, remote allowlists — needs changing first.",
+      confirmLabel: "Release address",
+      destructive: true,
+    })
+    if (!ok) return
     try {
       await release.mutateAsync(fip.id)
       toast.success(`${fip.address} released`)

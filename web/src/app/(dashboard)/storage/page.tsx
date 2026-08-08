@@ -28,6 +28,7 @@ import {
 } from "@/lib/hooks/use-storage"
 import { useNodes } from "@/lib/hooks/use-nodes"
 import type { StoragePool } from "@/types"
+import { useConfirm } from "@/components/confirm-provider"
 import { toast } from "sonner"
 
 function formatBytes(bytes: number): string {
@@ -51,6 +52,7 @@ const GIB = 1024 * 1024 * 1024
 
 // VolumesDialog lists, provisions, and deletes real disk volumes in a pool.
 function VolumesDialog({ pool, onClose }: { pool: StoragePool | null; onClose: () => void }) {
+  const confirm = useConfirm()
   const poolId = pool?.id ?? ""
   const { data: volumes, isLoading } = useStorageVolumes(poolId)
   const createVolume = useCreateStorageVolume(poolId)
@@ -75,7 +77,14 @@ function VolumesDialog({ pool, onClose }: { pool: StoragePool | null; onClose: (
   }
 
   const handleDelete = async (volumeId: string, volumeName: string) => {
-    if (!window.confirm(`Delete volume "${volumeName}"? Its disk image will be removed from the node.`)) return
+    const ok = await confirm({
+      title: `Delete volume "${volumeName}"?`,
+      description:
+        "Its disk image is removed from the node and the data on it is gone. This cannot be undone.",
+      confirmLabel: "Delete volume",
+      destructive: true,
+    })
+    if (!ok) return
     try {
       await deleteVolume.mutateAsync(volumeId)
       toast.success(`Volume "${volumeName}" deleted`)
@@ -212,43 +221,8 @@ function StorageBar({ used, total }: { used: number; total: number }) {
   )
 }
 
-function ConfirmDialog({
-  open,
-  title,
-  message,
-  confirmLabel = "Confirm",
-  onConfirm,
-  onCancel
-}: {
-  open: boolean
-  title: string
-  message: string
-  confirmLabel?: string
-  onConfirm: () => void
-  onCancel: () => void
-}) {
-  if (!open) return null
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-label="Confirm dialog">
-      <button type="button" className="absolute inset-0 bg-black/50 cursor-default focus:outline-none" onClick={onCancel} aria-label="Close dialog" />
-      <div className="relative bg-background border rounded-lg p-6 shadow-lg max-w-md w-full mx-4">
-        <h3 className="text-lg font-semibold mb-2">{title}</h3>
-        <p className="text-muted-foreground text-sm mb-6">{message}</p>
-        <div className="flex gap-3 justify-end">
-          <Button variant="outline" onClick={onCancel}>
-            Cancel
-          </Button>
-          <Button variant="destructive" onClick={onConfirm}>
-            {confirmLabel}
-          </Button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 export default function StorageListPage() {
+  const confirm = useConfirm()
   const { data: pools, isLoading, error } = useStoragePools()
   const { data: nodes, isLoading: isLoadingNodes } = useNodes()
   const createPool = useCreateStoragePool()
@@ -256,7 +230,6 @@ export default function StorageListPage() {
   const deletePool = useDeleteStoragePool()
   const [searchQuery, setSearchQuery] = useState("")
   const [typeFilter, setTypeFilter] = useState<string>("")
-  const [deleteConfirm, setDeleteConfirm] = useState<NonNullable<typeof pools>[number] | null>(null)
   const [showAddPool, setShowAddPool] = useState(false)
   const [resizeTarget, setResizeTarget] = useState<NonNullable<typeof pools>[number] | null>(null)
   const [newPool, setNewPool] = useState({ name: "", path: "", type: "dir", node_id: "", total_space: 107374182400, file_format: "raw", alert_threshold: 90, overcommit: 0, is_primary: false })
@@ -283,14 +256,22 @@ export default function StorageListPage() {
     availableStorage: pools?.reduce((sum, p) => sum + (p.available_space ?? 0), 0) ?? 0,
   }
 
-  const handleDelete = () => {
-    if (!deleteConfirm) return
-    deletePool.mutate(deleteConfirm.id, {
-      onSuccess: () => {
-        toast.success(`Storage pool "${deleteConfirm.name}" deleted`)
-        setDeleteConfirm(null)
-      },
-      onError: (err) => toast.error(`Failed to delete: ${err.message}`)
+  const handleDelete = async (pool: NonNullable<typeof pools>[number]) => {
+    const ok = await confirm({
+      title: `Delete storage pool "${pool.name}"?`,
+      description:
+        "The pool is removed from the panel. Volumes it holds are no longer manageable from here.",
+      confirmLabel: "Delete pool",
+      destructive: true,
+      details: [
+        { label: "Type", value: pool.type },
+        { label: "Path", value: pool.path ?? "—" },
+      ],
+    })
+    if (!ok) return
+    deletePool.mutate(pool.id, {
+      onSuccess: () => toast.success(`Storage pool "${pool.name}" deleted`),
+      onError: (err) => toast.error(`Failed to delete: ${err.message}`),
     })
   }
 
@@ -524,7 +505,7 @@ export default function StorageListPage() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => setDeleteConfirm(pool)}
+                    onClick={() => handleDelete(pool)}
                     className="text-red-600 hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950"
                     title="Delete"
                   >
@@ -537,13 +518,6 @@ export default function StorageListPage() {
         )}
       </div>
 
-      <ConfirmDialog
-        open={!!deleteConfirm}
-        title="Delete Storage Pool"
-        message={`Are you sure you want to delete "${deleteConfirm?.name}"? This action cannot be undone.`}
-        onConfirm={handleDelete}
-        onCancel={() => setDeleteConfirm(null)}
-      />
 
       {/* Add Pool Dialog */}
       {showAddPool && (
