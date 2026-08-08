@@ -63,6 +63,12 @@ func NewNodeService(repo *repository.NodeRepository, db ...*gorm.DB) *NodeServic
 	}
 }
 
+// AgentClient exposes the connection pool so other services can talk to nodes
+// without opening a second one. Sharing matters: the pool holds the per-node
+// registration and circuit breaker state, and a second client would re-dial
+// every node and keep its own view of which ones are failing.
+func (s *NodeService) AgentClient() *client.AgentClient { return s.agentClient }
+
 // SetAgentPort sets the agent port for connectivity checks (useful for testing)
 func (s *NodeService) SetAgentPort(port int) {
 	s.agentPort = port
@@ -423,6 +429,8 @@ func (s *NodeService) GetNodeMetrics(ctx context.Context, id string) (*NodeMetri
 				AvailableMemoryMB:    memTotalMB,
 				AvailableDiskGB:      diskTotalGB,
 				LoadAvg:              []float64{liveInfo.LoadAvg1, liveInfo.LoadAvg5, liveInfo.LoadAvg15},
+				ConntrackCount:       liveInfo.ConntrackCount,
+				ConntrackMax:         liveInfo.ConntrackMax,
 				Status:               "online",
 			}, nil
 		}
@@ -473,4 +481,12 @@ type NodeMetrics struct {
 	AvailableDiskGB      int64     `json:"available_disk_gb"`
 	LoadAvg              []float64 `json:"load_avg"`
 	Status               string    `json:"status"` // online, offline
+
+	// ConntrackCount/Max are the node's connection tracking table. Unlike CPU or
+	// memory this is a hard ceiling: once full the node refuses NEW connections
+	// for every tenant on it while every other metric here still reads healthy,
+	// which is exactly how a live incident went unnoticed. A zero Max means the
+	// node could not read it — unknown, not empty.
+	ConntrackCount int64 `json:"conntrack_count"`
+	ConntrackMax   int64 `json:"conntrack_max"`
 }

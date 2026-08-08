@@ -28,6 +28,8 @@ func setupMetricsTestDB(t *testing.T) *gorm.DB {
 		network_tx_bytes_per_sec REAL NOT NULL DEFAULT 0,
 		vm_count INTEGER NOT NULL DEFAULT 0,
 		status TEXT NOT NULL DEFAULT '',
+		conntrack_count INTEGER NOT NULL DEFAULT 0,
+		conntrack_max INTEGER NOT NULL DEFAULT 0,
 		recorded_at DATETIME NOT NULL
 	)`).Error)
 	require.NoError(t, db.Exec(`CREATE TABLE vm_metrics (

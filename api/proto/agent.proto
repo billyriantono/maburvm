@@ -123,6 +123,20 @@ service NodeAgent {
   // not merely a clash. A namespace per VPC gives each its own routing table, so
   // overlapping tenant subnets are safe.
   rpc ConfigureVPC(VPCRequest) returns (VPCResponse);
+
+  // SetQuarantine cuts a guest off the network, or puts it back, without
+  // stopping it — the owner keeps console access and their data while the abuse
+  // stops. Keyed on MAC rather than VM id because the guests that need this are
+  // often ones the panel does not manage, and an abusive guest may be running a
+  // spoofed or duplicated address.
+  rpc SetQuarantine(SetQuarantineRequest) returns (SetQuarantineResponse);
+
+  // GetGuestConnections reports how fast each guest on this node is opening new
+  // outbound connections. Bandwidth cannot answer that question: a port scan is
+  // enormous in packets and connections but trivial in bytes, so traffic graphs
+  // stay flat while the node's conntrack table fills and every tenant on it
+  // loses connectivity.
+  rpc GetGuestConnections(GetGuestConnectionsRequest) returns (GetGuestConnectionsResponse);
 }
 
 // ============================================================================
@@ -191,6 +205,34 @@ message HeartbeatRequest {
 
   // vm_bandwidth_usage reports per-VM traffic counters
   repeated VMBandwidthReport vm_bandwidth_usage = 6;
+}
+
+// GuestConnectionReport counts new outbound TCP connections attempted by one
+// guest, as measured by the agent's own iptables counters.
+//
+// Reported per MAC and covering every libvirt domain on the node, including
+// ones the panel has never seen: on 2026-08-08 the guests that exhausted a
+// node's conntrack table were legacy VMs the panel did not manage, so anything
+// keyed on the panel's VM list would have shown nothing wrong.
+message GuestConnectionReport {
+  // mac is the guest interface's hardware address — the only identifier the
+  // host assigns and the guest cannot quietly change.
+  string mac = 1;
+
+  // vm_id is the libvirt domain UUID, empty when the domain cannot be resolved.
+  string vm_id = 2;
+
+  // interface_name is the host-side tap (e.g. vnet3).
+  string interface_name = 3;
+
+  // syn_packets is a CUMULATIVE count of new outbound TCP connections since the
+  // counter was created. The panel differences successive heartbeats to get a
+  // rate; a counter that goes backwards means the agent restarted and the
+  // sample is simply skipped.
+  int64 syn_packets = 4;
+
+  // quarantined reports whether this guest's traffic is currently being dropped.
+  bool quarantined = 5;
 }
 
 // VMBandwidthReport contains cumulative traffic counters for a single VM.
@@ -1459,8 +1501,29 @@ message GetLiveMetricsResponse {
   // available_disk_gb is the available disk space in GB
   int64 available_disk_gb = 19;
 
+  // conntrack_count and conntrack_max report the kernel's connection tracking
+  // table. This is a hard ceiling, not a soft metric: once the table is full the
+  // node silently refuses NEW connections for every tenant on it, and the
+  // agent's own RPCs start timing out. A node was found pinned at 100% on
+  // 2026-08-08 while CPU, memory and bandwidth all looked healthy — which is
+  // exactly why it belongs next to them.
+  int64 conntrack_count = 21;
+  int64 conntrack_max = 22;
+
   // error details if failed
   ErrorResponse error = 20;
+}
+
+// ============================================================================
+// Guest connection abuse
+// ============================================================================
+
+message GetGuestConnectionsRequest {}
+
+message GetGuestConnectionsResponse {
+  bool success = 1;
+  repeated GuestConnectionReport guests = 2;
+  ErrorResponse error = 3;
 }
 
 // ============================================================================
@@ -1581,4 +1644,31 @@ message VPCResponse {
   string bridge = 2;        // host bridge for guest NICs (carries NO IP)
   string router_netns = 3;  // namespace holding the gateway, for diagnostics
   ErrorResponse error = 4;
+}
+
+// ============================================================================
+// Quarantine
+// ============================================================================
+
+message SetQuarantineRequest {
+  // mac identifies the guest interface to cut off or restore.
+  string mac = 1;
+
+  // quarantined true drops the guest's traffic, false restores it.
+  bool quarantined = 2;
+
+  // reason is recorded in the node's quarantine file so an operator reading it
+  // months later knows why a guest is cut off and who to ask about it.
+  string reason = 3;
+}
+
+message SetQuarantineResponse {
+  bool success = 1;
+
+  // quarantined_macs is the full list after the change, so the panel can
+  // reconcile rather than assume its own view is authoritative — the file can
+  // also be edited by hand on the node.
+  repeated string quarantined_macs = 2;
+
+  ErrorResponse error = 3;
 }

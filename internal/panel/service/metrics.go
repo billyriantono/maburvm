@@ -63,6 +63,7 @@ type MetricsCollector struct {
 	enforce        bool   // apply restrictive over-quota actions (throttle/suspend)
 	overageSecret  string // env fallback HMAC secret (BILLING_WEBHOOK_SECRET)
 	httpClient     *http.Client
+	abuse          *AbuseService
 	logger         *slog.Logger
 	tick           int // collectOnce counter, for slower-cadence work (IP reconcile)
 }
@@ -77,12 +78,17 @@ func NewMetricsCollector(db *gorm.DB, riverClient *river.Client[pgx.Tx], interva
 	vmRepo := repository.NewVMRepository(db)
 	networkRepo := repository.NewNetworkRepository(db)
 	firewallRepo := repository.NewFirewallRepository(db)
+	nodeService := NewNodeService(nodeRepo, db)
 	return &MetricsCollector{
 		nodeRepo:    nodeRepo,
 		vmRepo:      vmRepo,
 		networkRepo: networkRepo,
 		storageRepo: repository.NewStorageRepository(db),
-		nodeService: NewNodeService(nodeRepo, db),
+		nodeService: nodeService,
+		// Shares the node service's connection pool: the abuse sample runs on the
+		// same tick and against the same nodes, so a second pool would re-dial
+		// every node for no gain.
+		abuse: NewAbuseService(db, nodeService.AgentClient(), logger),
 		// riverClient lets the collector enqueue throttle/restore network jobs.
 		vmService:      NewVMService(db, vmRepo, nodeRepo, repository.NewTemplateRepository(db), riverClient, logger),
 		bwService:      NewBandwidthService(repository.NewBandwidthUsageRepository(db), logger),
@@ -148,6 +154,8 @@ func (c *MetricsCollector) collectOnce(ctx context.Context) {
 			NetworkTxBytesPerSec: m.NetworkTxBytesPerSec,
 			VMCount:              m.VMCount,
 			Status:               m.Status,
+			ConntrackCount:       m.ConntrackCount,
+			ConntrackMax:         m.ConntrackMax,
 			RecordedAt:           time.Now(),
 		}
 		if err := c.repo.InsertNodeSample(ctx, sample); err != nil {
@@ -155,6 +163,13 @@ func (c *MetricsCollector) collectOnce(ctx context.Context) {
 		}
 		if m.Status == "online" {
 			online[nodeID] = true
+			// Guest connection rates: the only view that catches a compromised
+			// guest, and the only one that sees guests the panel does not manage.
+			actx, acancel := context.WithTimeout(ctx, 20*time.Second)
+			if err := c.abuse.SampleNode(actx, nodeID); err != nil {
+				c.logger.Warn("metrics collector: guest connection sample failed", "node_id", nodeID, "error", err)
+			}
+			acancel()
 			// Keep each node's default storage pool present and its capacity
 			// live from the node's real disk, so /storage reflects the node.
 			c.syncDefaultStoragePool(&nodes[i], m)

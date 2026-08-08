@@ -21,7 +21,8 @@ import {
   Globe,
   ScrollText,
   Layers,
-  Waypoints
+  Waypoints,
+  ShieldAlert,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { User } from "@/types"
@@ -42,6 +43,7 @@ const navItems = [
   { href: "/dns", label: "DNS", icon: Globe },
   { href: "/users", label: "Users", icon: Users },
   { href: "/monitoring", label: "Monitoring", icon: Activity },
+  { href: "/abuse", label: "Abuse", icon: ShieldAlert },
 ]
 
 // Settings navigation with sub-items

@@ -52,6 +52,70 @@ func GetVMInterfaceIPs(uuidStr string) ([]string, error) {
 	return ips, err
 }
 
+// GuestInterface identifies one NIC of one running domain on this node.
+type GuestInterface struct {
+	// MAC is the guest-side hardware address — the identifier the host assigns
+	// and the guest cannot quietly change, unlike its IP.
+	MAC string
+	// VMID is the libvirt domain UUID.
+	VMID string
+	// Name is the domain name, which for imported guests is often just the UUID.
+	Name string
+	// Target is the host-side tap device (e.g. vnet3), empty if not yet attached.
+	Target string
+}
+
+// ListGuestInterfaces returns every NIC of every running domain.
+//
+// Deliberately sourced from libvirt rather than from the panel's VM list: the
+// guests that exhausted a node's conntrack table on 2026-08-08 were legacy
+// domains the panel had never seen, so anything driven by the panel's own
+// records would have reported nothing wrong while the node was falling over.
+func ListGuestInterfaces() ([]GuestInterface, error) {
+	var out []GuestInterface
+	err := WithConnection(func(conn *libvirt.Connect) error {
+		doms, err := conn.ListAllDomains(libvirt.CONNECT_LIST_DOMAINS_ACTIVE)
+		if err != nil {
+			return fmt.Errorf("failed to list domains: %w", err)
+		}
+		defer func() {
+			for i := range doms {
+				_ = doms[i].Free()
+			}
+		}()
+
+		for i := range doms {
+			xmlDesc, err := doms[i].GetXMLDesc(0)
+			if err != nil {
+				continue // a domain that disappears mid-scan is not an error
+			}
+			var def libvirtxml.Domain
+			if err := def.Unmarshal(xmlDesc); err != nil {
+				continue
+			}
+			if def.Devices == nil {
+				continue
+			}
+			for _, iface := range def.Devices.Interfaces {
+				if iface.MAC == nil || iface.MAC.Address == "" {
+					continue
+				}
+				gi := GuestInterface{
+					MAC:  strings.ToLower(iface.MAC.Address),
+					VMID: def.UUID,
+					Name: def.Name,
+				}
+				if iface.Target != nil {
+					gi.Target = iface.Target.Dev
+				}
+				out = append(out, gi)
+			}
+		}
+		return nil
+	})
+	return out, err
+}
+
 // DefineNetwork creates and starts a managed libvirt network used for private
 // VPC segments. mode is "isolated" (no uplink — VMs on it reach only each other
 // and the host) or "nat" (outbound via the host). It returns the bridge name

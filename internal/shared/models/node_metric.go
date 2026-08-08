@@ -16,6 +16,13 @@ type NodeMetricSample struct {
 	NetworkTxBytesPerSec float64   `json:"network_tx_bytes_per_sec" gorm:"column:network_tx_bytes_per_sec;not null;default:0"`
 	VMCount              int       `json:"vm_count" gorm:"column:vm_count;not null;default:0"`
 	Status               string    `json:"status" gorm:"column:status;type:varchar(20);not null;default:''"`
+
+	// ConntrackCount/Max record the node's connection tracking table. It sits
+	// with the other node metrics because it fails the same way they do — but
+	// silently: a full table refuses new connections for every tenant while CPU,
+	// memory and bandwidth all still read healthy.
+	ConntrackCount int64 `json:"conntrack_count" gorm:"column:conntrack_count;not null;default:0"`
+	ConntrackMax   int64 `json:"conntrack_max" gorm:"column:conntrack_max;not null;default:0"`
 	RecordedAt           time.Time `json:"recorded_at" gorm:"column:recorded_at;not null;index"`
 }
 

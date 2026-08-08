@@ -494,6 +494,11 @@ func (h *NodeHandler) GetNodeMetrics(c echo.Context) error {
 			"available_memory_mb":      metrics.AvailableMemoryMB,
 			"available_disk_gb":        metrics.AvailableDiskGB,
 			"load_avg":                 metrics.LoadAvg,
+			// A hard ceiling rather than a percentage of something elastic: once
+			// full, the node refuses new connections for every tenant on it while
+			// every other figure here still reads healthy.
+			"conntrack_count": metrics.ConntrackCount,
+			"conntrack_max":   metrics.ConntrackMax,
 		},
 	})
 }

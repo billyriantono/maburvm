@@ -749,6 +749,13 @@ type LiveMetricsResult struct {
 	AvailableCpus        int32
 	AvailableMemoryMb    int64
 	AvailableDiskGb      int64
+
+	// ConntrackCount/Max are the node's connection tracking table. A zero Max
+	// means the node could not read it, which callers must treat as unknown
+	// rather than as an empty table — reporting 0/0 as "healthy" would hide
+	// exactly the failure this exists to catch.
+	ConntrackCount int64
+	ConntrackMax   int64
 }
 
 // GetLiveMetrics retrieves real-time system metrics from a node without the
@@ -790,6 +797,8 @@ func (c *AgentClient) GetLiveMetrics(ctx context.Context, nodeID string) (*LiveM
 			AvailableCpus:        resp.GetAvailableCpus(),
 			AvailableMemoryMb:    resp.GetAvailableMemoryMb(),
 			AvailableDiskGb:      resp.GetAvailableDiskGb(),
+			ConntrackCount:       resp.GetConntrackCount(),
+			ConntrackMax:         resp.GetConntrackMax(),
 		}
 		return nil
 	})
@@ -951,4 +960,83 @@ func (c *AgentClient) NodeAddresses() map[string]string {
 	}
 
 	return addresses
+}
+
+// GuestConnectionReport is one guest NIC's cumulative count of attempted new
+// outbound connections on a node.
+type GuestConnectionReport struct {
+	MAC           string
+	VMID          string
+	InterfaceName string
+	SYNPackets    int64
+	Quarantined   bool
+}
+
+// GetGuestConnections asks a node how fast each of its guests is opening new
+// outbound connections. The node answers for every libvirt domain it has,
+// including guests the panel does not manage — which is the whole point, since
+// those are invisible to every other view in the panel.
+func (c *AgentClient) GetGuestConnections(ctx context.Context, nodeID string) ([]GuestConnectionReport, error) {
+	node, err := c.getNodeInfo(nodeID)
+	if err != nil {
+		return nil, err
+	}
+
+	var out []GuestConnectionReport
+	err = c.executeWithRetry(ctx, node, func(ctx context.Context, client pb.NodeAgentClient) error {
+		resp, err := client.GetGuestConnections(ctx, &pb.GetGuestConnectionsRequest{})
+		if err != nil {
+			return err
+		}
+		if !resp.Success {
+			return fmt.Errorf("GetGuestConnections failed: %s", resp.Error.GetMessage())
+		}
+		out = out[:0]
+		for _, g := range resp.GetGuests() {
+			out = append(out, GuestConnectionReport{
+				MAC:           g.GetMac(),
+				VMID:          g.GetVmId(),
+				InterfaceName: g.GetInterfaceName(),
+				SYNPackets:    g.GetSynPackets(),
+				Quarantined:   g.GetQuarantined(),
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// SetQuarantine cuts a guest off the network, or puts it back, without stopping
+// it. It returns the node's full list afterwards so the caller reconciles
+// against the node rather than trusting the panel's own view — the node's
+// quarantine file is also meant to be editable by hand.
+func (c *AgentClient) SetQuarantine(ctx context.Context, nodeID, mac, reason string, quarantined bool) ([]string, error) {
+	node, err := c.getNodeInfo(nodeID)
+	if err != nil {
+		return nil, err
+	}
+
+	var macs []string
+	err = c.executeWithRetry(ctx, node, func(ctx context.Context, client pb.NodeAgentClient) error {
+		resp, err := client.SetQuarantine(ctx, &pb.SetQuarantineRequest{
+			Mac:         mac,
+			Quarantined: quarantined,
+			Reason:      reason,
+		})
+		if err != nil {
+			return err
+		}
+		if !resp.Success {
+			return fmt.Errorf("SetQuarantine failed: %s", resp.Error.GetMessage())
+		}
+		macs = resp.GetQuarantinedMacs()
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return macs, nil
 }

@@ -44,6 +44,8 @@ const (
 	NodeAgent_ProbeIPs_FullMethodName            = "/agent.NodeAgent/ProbeIPs"
 	NodeAgent_ConfigureFloatingIP_FullMethodName = "/agent.NodeAgent/ConfigureFloatingIP"
 	NodeAgent_ConfigureVPC_FullMethodName        = "/agent.NodeAgent/ConfigureVPC"
+	NodeAgent_SetQuarantine_FullMethodName       = "/agent.NodeAgent/SetQuarantine"
+	NodeAgent_GetGuestConnections_FullMethodName = "/agent.NodeAgent/GetGuestConnections"
 )
 
 // NodeAgentClient is the client API for NodeAgent service.
@@ -140,6 +142,18 @@ type NodeAgentClient interface {
 	// not merely a clash. A namespace per VPC gives each its own routing table, so
 	// overlapping tenant subnets are safe.
 	ConfigureVPC(ctx context.Context, in *VPCRequest, opts ...grpc.CallOption) (*VPCResponse, error)
+	// SetQuarantine cuts a guest off the network, or puts it back, without
+	// stopping it — the owner keeps console access and their data while the abuse
+	// stops. Keyed on MAC rather than VM id because the guests that need this are
+	// often ones the panel does not manage, and an abusive guest may be running a
+	// spoofed or duplicated address.
+	SetQuarantine(ctx context.Context, in *SetQuarantineRequest, opts ...grpc.CallOption) (*SetQuarantineResponse, error)
+	// GetGuestConnections reports how fast each guest on this node is opening new
+	// outbound connections. Bandwidth cannot answer that question: a port scan is
+	// enormous in packets and connections but trivial in bytes, so traffic graphs
+	// stay flat while the node's conntrack table fills and every tenant on it
+	// loses connectivity.
+	GetGuestConnections(ctx context.Context, in *GetGuestConnectionsRequest, opts ...grpc.CallOption) (*GetGuestConnectionsResponse, error)
 }
 
 type nodeAgentClient struct {
@@ -412,6 +426,26 @@ func (c *nodeAgentClient) ConfigureVPC(ctx context.Context, in *VPCRequest, opts
 	return out, nil
 }
 
+func (c *nodeAgentClient) SetQuarantine(ctx context.Context, in *SetQuarantineRequest, opts ...grpc.CallOption) (*SetQuarantineResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetQuarantineResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_SetQuarantine_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeAgentClient) GetGuestConnections(ctx context.Context, in *GetGuestConnectionsRequest, opts ...grpc.CallOption) (*GetGuestConnectionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetGuestConnectionsResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_GetGuestConnections_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // NodeAgentServer is the server API for NodeAgent service.
 // All implementations must embed UnimplementedNodeAgentServer
 // for forward compatibility.
@@ -506,6 +540,18 @@ type NodeAgentServer interface {
 	// not merely a clash. A namespace per VPC gives each its own routing table, so
 	// overlapping tenant subnets are safe.
 	ConfigureVPC(context.Context, *VPCRequest) (*VPCResponse, error)
+	// SetQuarantine cuts a guest off the network, or puts it back, without
+	// stopping it — the owner keeps console access and their data while the abuse
+	// stops. Keyed on MAC rather than VM id because the guests that need this are
+	// often ones the panel does not manage, and an abusive guest may be running a
+	// spoofed or duplicated address.
+	SetQuarantine(context.Context, *SetQuarantineRequest) (*SetQuarantineResponse, error)
+	// GetGuestConnections reports how fast each guest on this node is opening new
+	// outbound connections. Bandwidth cannot answer that question: a port scan is
+	// enormous in packets and connections but trivial in bytes, so traffic graphs
+	// stay flat while the node's conntrack table fills and every tenant on it
+	// loses connectivity.
+	GetGuestConnections(context.Context, *GetGuestConnectionsRequest) (*GetGuestConnectionsResponse, error)
 	mustEmbedUnimplementedNodeAgentServer()
 }
 
@@ -590,6 +636,12 @@ func (UnimplementedNodeAgentServer) ConfigureFloatingIP(context.Context, *Floati
 }
 func (UnimplementedNodeAgentServer) ConfigureVPC(context.Context, *VPCRequest) (*VPCResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ConfigureVPC not implemented")
+}
+func (UnimplementedNodeAgentServer) SetQuarantine(context.Context, *SetQuarantineRequest) (*SetQuarantineResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetQuarantine not implemented")
+}
+func (UnimplementedNodeAgentServer) GetGuestConnections(context.Context, *GetGuestConnectionsRequest) (*GetGuestConnectionsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetGuestConnections not implemented")
 }
 func (UnimplementedNodeAgentServer) mustEmbedUnimplementedNodeAgentServer() {}
 func (UnimplementedNodeAgentServer) testEmbeddedByValue()                   {}
@@ -1044,6 +1096,42 @@ func _NodeAgent_ConfigureVPC_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NodeAgent_SetQuarantine_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetQuarantineRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).SetQuarantine(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_SetQuarantine_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).SetQuarantine(ctx, req.(*SetQuarantineRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeAgent_GetGuestConnections_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetGuestConnectionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).GetGuestConnections(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_GetGuestConnections_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).GetGuestConnections(ctx, req.(*GetGuestConnectionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // NodeAgent_ServiceDesc is the grpc.ServiceDesc for NodeAgent service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1142,6 +1230,14 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ConfigureVPC",
 			Handler:    _NodeAgent_ConfigureVPC_Handler,
+		},
+		{
+			MethodName: "SetQuarantine",
+			Handler:    _NodeAgent_SetQuarantine_Handler,
+		},
+		{
+			MethodName: "GetGuestConnections",
+			Handler:    _NodeAgent_GetGuestConnections_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

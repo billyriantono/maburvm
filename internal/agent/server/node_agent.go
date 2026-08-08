@@ -2128,6 +2128,11 @@ func (s *NodeAgentService) GetLiveMetrics(ctx context.Context, req *pb.GetLiveMe
 
 	metrics := s.healthCollector.Collect()
 
+	// Read straight from procfs rather than through the health collector: this is
+	// a kernel table with a hard ceiling, not a sampled rate, and it needs no
+	// smoothing or history to be meaningful.
+	conntrackCount, conntrackMax := network.ConntrackUsage()
+
 	var loadAvg1, loadAvg5, loadAvg15 float64
 	if len(metrics.LoadAvg) >= 3 {
 		loadAvg1 = metrics.LoadAvg[0]
@@ -2155,7 +2160,86 @@ func (s *NodeAgentService) GetLiveMetrics(ctx context.Context, req *pb.GetLiveMe
 		AvailableCpus:        metrics.AvailableCPUs,
 		AvailableMemoryMb:    metrics.AvailableMemoryMB,
 		AvailableDiskGb:      metrics.AvailableDiskGB,
+		ConntrackCount:       conntrackCount,
+		ConntrackMax:         conntrackMax,
 	}, nil
+}
+
+// GetGuestConnections reports how fast each guest on this node is opening new
+// outbound connections, so the panel can tell a compromised guest from a busy
+// one. The guest list comes from libvirt, not from anything the panel told us,
+// so guests the panel has never seen are still reported.
+func (s *NodeAgentService) GetGuestConnections(ctx context.Context, req *pb.GetGuestConnectionsRequest) (*pb.GetGuestConnectionsResponse, error) {
+	if _, authenticated := GetNodeIDFromContext(ctx); !authenticated {
+		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
+	}
+	if s.networkMgr == nil {
+		return &pb.GetGuestConnectionsResponse{
+			Success: false,
+			Error:   &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: "network manager not initialized"},
+		}, nil
+	}
+
+	ifaces, err := libvirt.ListGuestInterfaces()
+	if err != nil {
+		return &pb.GetGuestConnectionsResponse{
+			Success: false,
+			Error:   &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: err.Error()},
+		}, nil
+	}
+
+	macs := make([]string, 0, len(ifaces))
+	byMAC := make(map[string]libvirt.GuestInterface, len(ifaces))
+	for _, iface := range ifaces {
+		macs = append(macs, iface.MAC)
+		byMAC[iface.MAC] = iface
+	}
+
+	counters, err := s.networkMgr.GuestConnectionCounters(macs)
+	if err != nil {
+		return &pb.GetGuestConnectionsResponse{
+			Success: false,
+			Error:   &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: err.Error()},
+		}, nil
+	}
+
+	guests := make([]*pb.GuestConnectionReport, 0, len(counters))
+	for _, c := range counters {
+		iface := byMAC[c.MAC]
+		guests = append(guests, &pb.GuestConnectionReport{
+			Mac:           c.MAC,
+			VmId:          iface.VMID,
+			InterfaceName: iface.Target,
+			SynPackets:    c.SYNPackets,
+			Quarantined:   c.Quarantined,
+		})
+	}
+	return &pb.GetGuestConnectionsResponse{Success: true, Guests: guests}, nil
+}
+
+// SetQuarantine cuts a guest off the network, or puts it back, without stopping
+// it — the owner keeps console access and their data while the abuse stops.
+func (s *NodeAgentService) SetQuarantine(ctx context.Context, req *pb.SetQuarantineRequest) (*pb.SetQuarantineResponse, error) {
+	if _, authenticated := GetNodeIDFromContext(ctx); !authenticated {
+		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
+	}
+	if s.networkMgr == nil {
+		return &pb.SetQuarantineResponse{
+			Success: false,
+			Error:   &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: "network manager not initialized"},
+		}, nil
+	}
+
+	macs, err := s.networkMgr.SetQuarantine(req.Mac, req.Reason, req.Quarantined)
+	if err != nil {
+		return &pb.SetQuarantineResponse{
+			Success: false,
+			Error:   &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INVALID_ARGUMENT, Message: err.Error()},
+		}, nil
+	}
+
+	log.Printf("[NodeAgent] quarantine %v for %s (%s)", req.Quarantined, req.Mac, req.Reason)
+	return &pb.SetQuarantineResponse{Success: true, QuarantinedMacs: macs}, nil
 }
 
 // ScanVMs scans the node for all VMs via libvirt and returns their info for import

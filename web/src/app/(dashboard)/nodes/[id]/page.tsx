@@ -140,6 +140,16 @@ function Toast({ message, type, onClose }: { message: string, type: "success" | 
   )
 }
 
+// conntrackTone colours the connection-tracking bar. The thresholds are low on
+// purpose: unlike CPU, a full table is not slow — it is an outage for every
+// tenant on the node, so the warning has to arrive with room to act.
+function conntrackTone(count: number, max: number): string {
+  const used = max > 0 ? count / max : 0
+  if (used >= 0.9) return "bg-red-500"
+  if (used >= 0.7) return "bg-amber-500"
+  return "bg-emerald-500"
+}
+
 export default function NodeDetailPage() {
   const params = useParams()
   const nodeId = params.id as string
@@ -403,6 +413,35 @@ export default function NodeDetailPage() {
                     <span className="text-lg font-semibold">{formatBytesPerSec(metrics.disk_write_bytes_per_sec)}</span>
                   </div>
                 </div>
+                {/* Connection tracking. Shown next to throughput because that is
+                    where an operator looks when tenants report dropped
+                    connections — and because it is the one figure here that can
+                    be at its limit while every other reads healthy. */}
+                {metrics.conntrack_max > 0 && (
+                  <div className="mt-4 pt-4 border-t">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-medium text-muted-foreground">
+                        Connection tracking
+                      </span>
+                      <span className="font-mono text-xs">
+                        {metrics.conntrack_count.toLocaleString()} / {metrics.conntrack_max.toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="h-2 rounded-full bg-muted overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${conntrackTone(metrics.conntrack_count, metrics.conntrack_max)}`}
+                        style={{ width: `${Math.min(100, (metrics.conntrack_count / metrics.conntrack_max) * 100)}%` }}
+                      />
+                    </div>
+                    {metrics.conntrack_count / metrics.conntrack_max >= 0.7 && (
+                      <p className="text-xs text-amber-600 mt-2">
+                        Nearing the limit. When this table fills, the node refuses new
+                        connections for every VM on it — check Abuse for a guest opening
+                        connections faster than it should.
+                      </p>
+                    )}
+                  </div>
+                )}
                 {metrics.load_avg && metrics.load_avg.length >= 3 && (
                   <div className="mt-4 pt-4 border-t">
                     <span className="text-xs font-medium text-muted-foreground">Load Average: </span>
