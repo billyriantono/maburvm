@@ -66,6 +66,15 @@ func NewManager() (*Manager, error) {
 		return nil, fmt.Errorf("failed to initialize Anti-Spoof manager: %w", err)
 	}
 
+	// Node-wide, not per-VM: this has to cover guests the agent never configured,
+	// which is exactly where the abuse came from. A failure here is logged rather
+	// than fatal — losing the rate limit is bad, refusing to start the agent and
+	// losing all VM management with it is worse.
+	if err := ensureScanGuard(fwManager.ipt); err != nil {
+		log.Printf("[NetworkManager] WARNING: outbound scan guard not installed (%v) — "+
+			"a single compromised guest can exhaust this node's conntrack table", err)
+	}
+
 	return &Manager{
 		bandwidth:  bwManager,
 		nat:        natManager,

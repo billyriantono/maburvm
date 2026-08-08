@@ -6,6 +6,8 @@ import (
 	"net"
 	"os/exec"
 	"strings"
+
+	"github.com/coreos/go-iptables/iptables"
 )
 
 const (
@@ -75,7 +77,7 @@ func (nm *NATManager) ensureFloatingChains() error {
 
 	// POSTROUTING: must be FIRST, before the baseline MASQUERADE and before
 	// libvirt's own chain (see ensureJumpFirst).
-	if err := nm.ensureJumpFirst(NATTable, PostroutingChain, FloatingIPPostChain); err != nil {
+	if err := ensureJumpFirst(nm.ipt, NATTable, PostroutingChain, FloatingIPPostChain); err != nil {
 		return err
 	}
 
@@ -97,7 +99,7 @@ func (nm *NATManager) ensureFloatingChains() error {
 			return fmt.Errorf("failed to create chain %s: %w", FloatingIPFwdChain, err)
 		}
 	}
-	if err := nm.ensureJumpFirst(FilterTable, ForwardChain, FloatingIPFwdChain); err != nil {
+	if err := ensureJumpFirst(nm.ipt, FilterTable, ForwardChain, FloatingIPFwdChain); err != nil {
 		return err
 	}
 	return nil
@@ -117,8 +119,8 @@ func (nm *NATManager) ensureFloatingChains() error {
 //
 // Since the panel re-applies attachments periodically, this also self-heals a
 // node where libvirt has jumped ahead after the fact.
-func (nm *NATManager) ensureJumpFirst(table, parent, target string) error {
-	rules, err := nm.ipt.List(table, parent)
+func ensureJumpFirst(ipt *iptables.IPTables, table, parent, target string) error {
+	rules, err := ipt.List(table, parent)
 	if err != nil {
 		return fmt.Errorf("failed to list %s/%s: %w", table, parent, err)
 	}
@@ -128,18 +130,18 @@ func (nm *NATManager) ensureJumpFirst(table, parent, target string) error {
 	}
 	// Drop any existing (mis-positioned) jump, then put it back at the head.
 	for {
-		exists, err := nm.ipt.Exists(table, parent, "-j", target)
+		exists, err := ipt.Exists(table, parent, "-j", target)
 		if err != nil {
 			return fmt.Errorf("failed to check %s/%s jump: %w", table, parent, err)
 		}
 		if !exists {
 			break
 		}
-		if err := nm.ipt.Delete(table, parent, "-j", target); err != nil {
+		if err := ipt.Delete(table, parent, "-j", target); err != nil {
 			return fmt.Errorf("failed to reposition %s/%s jump: %w", table, parent, err)
 		}
 	}
-	if err := nm.ipt.Insert(table, parent, 1, "-j", target); err != nil {
+	if err := ipt.Insert(table, parent, 1, "-j", target); err != nil {
 		return fmt.Errorf("failed to add %s/%s jump: %w", table, parent, err)
 	}
 	return nil
