@@ -22,43 +22,47 @@ import type { GuestConnection } from "@/types"
 // port scan is trivial in bandwidth and enormous in connections, so a traffic
 // graph stays flat while the node's connection tracking table fills — at which
 // point the node refuses new connections for every VM on it.
+// guestLabel names a guest the way a person would refer to it. Falls back to the
+// MAC only when there is genuinely nothing better — a guest the panel does not
+// manage has no hostname, and pretending otherwise would be worse than the raw
+// address.
+function guestLabel(g: GuestConnection): string {
+  return g.vm_hostname || `unmanaged guest ${g.mac}`
+}
+
 export default function AbusePage() {
   const [showAll, setShowAll] = useState(false)
   const { data, isLoading } = useAbuseGuests(showAll)
   const setQuarantine = useSetQuarantine()
 
-  const [target, setTarget] = useState<GuestConnection | null>(null)
+  // One dialog for both directions. Cutting a guest off and putting it back are
+  // the same decision seen from two sides, and both need the machine named:
+  // nobody recognises a customer by MAC address.
+  const [target, setTarget] = useState<{ guest: GuestConnection; mode: "cut" | "restore" } | null>(
+    null
+  )
   const [reason, setReason] = useState("")
 
   const guests = data?.guests ?? []
   const threshold = data?.threshold ?? 0
 
-  const handleQuarantine = async () => {
+  const handleConfirm = async () => {
     if (!target) return
-    try {
-      await setQuarantine.mutateAsync({
-        node_id: target.node_id,
-        mac: target.mac,
-        quarantined: true,
-        reason: reason.trim(),
-      })
-      toast.success(`${target.mac} taken off the network`)
-      setTarget(null)
-      setReason("")
-    } catch (err) {
-      toast.error((err as Error).message)
-    }
-  }
-
-  const handleRelease = async (guest: GuestConnection) => {
-    if (!window.confirm(`Put ${guest.mac} back on the network?`)) return
+    const { guest, mode } = target
     try {
       await setQuarantine.mutateAsync({
         node_id: guest.node_id,
         mac: guest.mac,
-        quarantined: false,
+        quarantined: mode === "cut",
+        reason: mode === "cut" ? reason.trim() : "",
       })
-      toast.success(`${guest.mac} restored`)
+      toast.success(
+        mode === "cut"
+          ? `${guestLabel(guest)} taken off the network`
+          : `${guestLabel(guest)} is back on the network`
+      )
+      setTarget(null)
+      setReason("")
     } catch (err) {
       toast.error((err as Error).message)
     }
@@ -158,7 +162,7 @@ export default function AbusePage() {
                     variant="outline"
                     size="sm"
                     disabled={setQuarantine.isPending}
-                    onClick={() => handleRelease(g)}
+                    onClick={() => setTarget({ guest: g, mode: "restore" })}
                   >
                     Restore
                   </Button>
@@ -168,7 +172,7 @@ export default function AbusePage() {
                     variant="destructive"
                     size="sm"
                     disabled={setQuarantine.isPending}
-                    onClick={() => setTarget(g)}
+                    onClick={() => setTarget({ guest: g, mode: "cut" })}
                   >
                     Cut off
                   </Button>
@@ -181,40 +185,94 @@ export default function AbusePage() {
 
       <Dialog open={!!target} onOpenChange={(o) => !o && setTarget(null)}>
         <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Cut {target?.mac} off the network</DialogTitle>
-            <DialogDescription>
-              The machine keeps running — its console and its data are untouched. Only its traffic
-              is dropped, so an owner whose server was compromised does not lose anything while you
-              work out what happened.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2">
-            <Label htmlFor="q-reason">Reason</Label>
-            <Input
-              id="q-reason"
-              placeholder="outbound port scan, ~3000 conn/s"
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-            />
-            <p className="text-xs text-muted-foreground">
-              Recorded on the node itself and in the audit log, so whoever reads it next knows why
-              this guest is offline.
-            </p>
-          </div>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setTarget(null)}>
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              onClick={handleQuarantine}
-              disabled={setQuarantine.isPending}
-            >
-              {setQuarantine.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "Cut off"}
-            </Button>
-          </DialogFooter>
+          {target && (
+            <>
+              <DialogHeader>
+                {/* Named, not addressed. An operator recognises
+                    "rtbh.jalafiber.net.id"; nobody recognises 00:16:3e:07:32:2c,
+                    and a dialog that only shows a MAC is an invitation to act on
+                    the wrong customer. */}
+                <DialogTitle>
+                  {target.mode === "cut" ? "Cut off " : "Restore "}
+                  {guestLabel(target.guest)}
+                </DialogTitle>
+                <DialogDescription>
+                  {target.mode === "cut"
+                    ? "The machine keeps running — its console and its data are untouched. Only its traffic is dropped, so an owner whose server was compromised does not lose anything while you work out what happened."
+                    : "Its traffic starts flowing again immediately. If the machine is still compromised it will resume whatever it was doing, so check before you restore it."}
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="rounded-md border bg-muted/40 p-3 space-y-1 text-sm">
+                <div className="flex justify-between gap-3">
+                  <span className="text-muted-foreground">Node</span>
+                  <span className="font-medium">{target.guest.node_name || "—"}</span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span className="text-muted-foreground">MAC</span>
+                  <span className="font-mono text-xs">{target.guest.mac}</span>
+                </div>
+                {target.guest.interface_name && (
+                  <div className="flex justify-between gap-3">
+                    <span className="text-muted-foreground">Interface</span>
+                    <span className="font-mono text-xs">{target.guest.interface_name}</span>
+                  </div>
+                )}
+                <div className="flex justify-between gap-3">
+                  <span className="text-muted-foreground">New connections/s</span>
+                  <span className="font-mono">
+                    {Math.round(target.guest.syn_rate).toLocaleString()} now ·{" "}
+                    {Math.round(target.guest.peak_rate).toLocaleString()} peak
+                  </span>
+                </div>
+              </div>
+
+              {target.mode === "cut" ? (
+                <div className="space-y-2">
+                  <Label htmlFor="q-reason">Reason</Label>
+                  <Input
+                    id="q-reason"
+                    placeholder="outbound port scan, ~3000 conn/s"
+                    value={reason}
+                    onChange={(e) => setReason(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Recorded on the node itself and in the audit log, so whoever reads it next knows
+                    why this guest is offline.
+                  </p>
+                </div>
+              ) : (
+                target.guest.quarantine_reason && (
+                  <div className="space-y-1">
+                    <Label>Cut off because</Label>
+                    <p className="text-sm text-muted-foreground">
+                      {target.guest.quarantine_reason}
+                    </p>
+                  </div>
+                )
+              )}
+
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setTarget(null)}>
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  variant={target.mode === "cut" ? "destructive" : "default"}
+                  onClick={handleConfirm}
+                  disabled={setQuarantine.isPending}
+                >
+                  {setQuarantine.isPending ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : target.mode === "cut" ? (
+                    "Cut off"
+                  ) : (
+                    "Restore"
+                  )}
+                </Button>
+              </DialogFooter>
+            </>
+          )}
         </DialogContent>
       </Dialog>
     </div>
