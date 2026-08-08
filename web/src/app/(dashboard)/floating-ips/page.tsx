@@ -109,14 +109,10 @@ export default function FloatingIPsPage() {
         "The address goes back to its pool and can be handed to any customer's VM next. Anything still pointing at it — DNS, firewall rules elsewhere, remote allowlists — will be pointing at someone else.",
       confirmLabel: "Release address",
       destructive: true,
+      action: () => release.mutateAsync(fip.id),
     })
     if (!ok) return
-    try {
-      await release.mutateAsync(fip.id)
-      toast.success(`${fip.address} released`)
-    } catch (err) {
-      toast.error(`Release failed: ${(err as Error).message}`)
-    }
+    toast.success(`${fip.address} released`)
   }
 
   return (

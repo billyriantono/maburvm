@@ -35,14 +35,10 @@ export default function ClientImagesPage() {
       description: "The stored image is removed. This cannot be undone.",
       confirmLabel: "Delete image",
       destructive: true,
+      action: () => deleteImage.mutateAsync(image.id),
     })
     if (!ok) return
     setActionError("")
-    try {
-      await deleteImage.mutateAsync(image.id)
-    } catch (err) {
-      setActionError(`Failed to delete image: ${(err as Error).message}`)
-    }
   }
 
   return (

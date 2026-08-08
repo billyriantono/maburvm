@@ -99,14 +99,10 @@ export default function ClientFloatingIPsPage() {
         "The address returns to the pool and you stop being billed for it. You will not get this same address back, so anything pointing at it — DNS, remote allowlists — needs changing first.",
       confirmLabel: "Release address",
       destructive: true,
+      action: () => release.mutateAsync(fip.id),
     })
     if (!ok) return
-    try {
-      await release.mutateAsync(fip.id)
-      toast.success(`${fip.address} released`)
-    } catch (err) {
-      toast.error((err as Error).message)
-    }
+    toast.success(`${fip.address} released`)
   }
 
   const handleDetach = async (fip: IPAddress) => {

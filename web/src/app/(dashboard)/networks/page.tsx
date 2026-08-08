@@ -53,14 +53,10 @@ export default function NetworksPage() {
         "The managed network is removed from its node. VMs still attached to it lose that connection.",
       confirmLabel: "Delete network",
       destructive: true,
+      action: () => deleteNetwork.mutateAsync(network.id),
     })
     if (!ok) return
-    try {
-      await deleteNetwork.mutateAsync(network.id)
-      toast.success(`Network "${network.name}" deleted`)
-    } catch (err) {
-      toast.error(`Failed to delete network: ${(err as Error).message}`)
-    }
+    toast.success(`Network "${network.name}" deleted`)
   }
 
   if (isLoading) {

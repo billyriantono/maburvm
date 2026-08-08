@@ -88,14 +88,10 @@ export default function RegionsPage() {
         { label: "Slug", value: r.slug },
         { label: "Active nodes", value: r.node_count },
       ],
+      action: () => deleteRegion.mutateAsync(r.id),
     })
     if (!ok) return
-    try {
-      await deleteRegion.mutateAsync(r.id)
-      toast.success(`"${r.name}" deleted`)
-    } catch (err) {
-      toast.error((err as Error).message)
-    }
+    toast.success(`"${r.name}" deleted`)
   }
 
   const handleAssign = async () => {

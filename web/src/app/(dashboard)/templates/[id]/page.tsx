@@ -76,15 +76,11 @@ export default function TemplateDetailPage() {
       confirmLabel: "Delete template",
       destructive: true,
       details: templateVMs.length > 0 ? [{ label: "VMs from it", value: templateVMs.length }] : undefined,
+      action: () => deleteTemplate.mutateAsync(templateId),
     })
     if (!ok) return
-    try {
-      await deleteTemplate.mutateAsync(templateId)
-      setToast({ message: "Template deleted", type: "success" })
-      setTimeout(() => router.push("/templates"), 1000)
-    } catch (err) {
-      setToast({ message: `Failed to delete: ${(err as Error).message}`, type: "error" })
-    }
+    setToast({ message: "Template deleted", type: "success" })
+    setTimeout(() => router.push("/templates"), 1000)
   }, [confirm, template, templateVMs.length, deleteTemplate, templateId, router])
 
   // Edit handler

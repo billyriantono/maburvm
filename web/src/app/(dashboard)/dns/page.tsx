@@ -64,15 +64,11 @@ export default function DNSPage() {
         "Every record in it goes too, so anything resolving through this zone stops resolving.",
       confirmLabel: "Delete zone",
       destructive: true,
+      action: () => deleteZone.mutateAsync(zone.id),
     })
     if (!ok) return
-    try {
-      await deleteZone.mutateAsync(zone.id)
-      if (selectedZoneId === zone.id) setSelectedZoneId(undefined)
-      toast.success(`Zone "${zone.name}" deleted`)
-    } catch (err) {
-      toast.error(`Failed to delete zone: ${(err as Error).message}`)
-    }
+    if (selectedZoneId === zone.id) setSelectedZoneId(undefined)
+    toast.success(`Zone "${zone.name}" deleted`)
   }
 
   const handleCreateRecord = async (e: FormEvent) => {

@@ -92,14 +92,10 @@ export default function PlansPage() {
         "New orders can no longer choose it. VMs already created on this plan keep the resources they have.",
       confirmLabel: "Delete plan",
       destructive: true,
+      action: () => deletePlan.mutateAsync(plan.id),
     })
     if (!ok) return
-    try {
-      await deletePlan.mutateAsync(plan.id)
-      toast.success(`Plan "${plan.name}" deleted`)
-    } catch (err) {
-      toast.error(`Failed to delete plan: ${(err as Error).message}`)
-    }
+    toast.success(`Plan "${plan.name}" deleted`)
   }
 
   const saving = createPlan.isPending || updatePlan.isPending

@@ -255,13 +255,9 @@ function DisksCard({ vmId }: { vmId: string }) {
       confirmLabel: "Detach and delete data",
       alternateLabel: "Detach, keep volume",
       destructive: true,
+      action: (choice) => detach.mutateAsync({ device, deleteVolume: choice === "confirm" }),
     })
     if (answer === "cancel") return
-    try {
-      await detach.mutateAsync({ device, deleteVolume: answer === "confirm" })
-    } catch (e) {
-      setErr((e as Error).message)
-    }
   }
 
   return (
@@ -1432,8 +1428,9 @@ export default function VMDetailPage() {
                         vm.status === "running"
                           ? [{ label: "Warning", value: "The VM is running and will be restarted" }]
                           : undefined,
+                      action: () => repairConsole.mutateAsync(),
                     })
-                    if (ok) repairConsole.mutate()
+                    if (!ok) return
                   }}
                   title="Fixes a black/unavailable console on imported VMs by injecting a VNC device (restarts the VM)"
                 >

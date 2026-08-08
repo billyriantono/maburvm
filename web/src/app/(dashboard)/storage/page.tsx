@@ -83,14 +83,10 @@ function VolumesDialog({ pool, onClose }: { pool: StoragePool | null; onClose: (
         "Its disk image is removed from the node and the data on it is gone. This cannot be undone.",
       confirmLabel: "Delete volume",
       destructive: true,
+      action: () => deleteVolume.mutateAsync(volumeId),
     })
     if (!ok) return
-    try {
-      await deleteVolume.mutateAsync(volumeId)
-      toast.success(`Volume "${volumeName}" deleted`)
-    } catch (err) {
-      toast.error(`Failed to delete volume: ${(err as Error).message}`)
-    }
+    toast.success(`Volume "${volumeName}" deleted`)
   }
 
   return (
@@ -267,12 +263,10 @@ export default function StorageListPage() {
         { label: "Type", value: pool.type },
         { label: "Path", value: pool.path ?? "—" },
       ],
+      action: () => deletePool.mutateAsync(pool.id),
     })
     if (!ok) return
-    deletePool.mutate(pool.id, {
-      onSuccess: () => toast.success(`Storage pool "${pool.name}" deleted`),
-      onError: (err) => toast.error(`Failed to delete: ${err.message}`),
-    })
+    toast.success(`Storage pool "${pool.name}" deleted`)
   }
 
   const handleAddPool = () => {

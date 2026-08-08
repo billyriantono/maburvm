@@ -97,16 +97,11 @@ export default function NodesListPage() {
         "The panel stops managing this hypervisor. VMs on it keep running, but become unmanageable from here.",
       confirmLabel: "Delete node",
       destructive: true,
+      action: () => deleteNode.mutateAsync(node.id),
     })
     if (!ok) return
-
-    try {
-      await deleteNode.mutateAsync(node.id)
-      setToast({ message: `Node ${node.name} deleted`, type: "success" })
-      refetch()
-    } catch (err) {
-      setToast({ message: `Failed to delete node: ${(err as Error).message}`, type: "error" })
-    }
+    setToast({ message: `Node ${node.name} deleted`, type: "success" })
+    refetch()
   }, [confirm, deleteNode, refetch])
 
   const clearFilters = () => {

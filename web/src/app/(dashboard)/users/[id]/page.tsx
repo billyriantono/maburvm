@@ -94,15 +94,11 @@ export default function UserDetailPage() {
       confirmLabel: "Delete user",
       destructive: true,
       details: userVMs.length > 0 ? [{ label: "VMs owned", value: userVMs.length }] : undefined,
+      action: () => deleteUser.mutateAsync(userId),
     })
     if (!ok) return
-    try {
-      await deleteUser.mutateAsync(userId)
-      setToast({ message: "User deleted", type: "success" })
-      setTimeout(() => router.push("/users"), 1000)
-    } catch (err) {
-      setToast({ message: `Failed to delete: ${(err as Error).message}`, type: "error" })
-    }
+    setToast({ message: "User deleted", type: "success" })
+    setTimeout(() => router.push("/users"), 1000)
   }, [confirm, user, userVMs.length, deleteUser, userId, router])
 
   // Edit handler

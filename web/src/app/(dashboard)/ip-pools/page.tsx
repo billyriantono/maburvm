@@ -102,14 +102,10 @@ export default function IPPoolsPage() {
       confirmLabel: "Delete pool",
       destructive: true,
       details: [{ label: "Range", value: pool.cidr }],
+      action: () => deletePool.mutateAsync(pool.id),
     })
     if (!ok) return
-    try {
-      await deletePool.mutateAsync(pool.id)
-      toast.success(`IP pool "${pool.name}" deleted`)
-    } catch (err) {
-      toast.error(`Failed to delete IP pool: ${(err as Error).message}`)
-    }
+    toast.success(`IP pool "${pool.name}" deleted`)
   }
 
   return (

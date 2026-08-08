@@ -168,15 +168,11 @@ export default function UsersPage() {
         "They lose access immediately. Resources they own are not deleted with them, so check what they still hold first.",
       confirmLabel: "Delete user",
       destructive: true,
+      action: () => deleteUser.mutateAsync(user.id),
     })
     if (!ok) return
-    try {
-      await deleteUser.mutateAsync(user.id)
-      setToast({ message: `User "${user.email}" deleted`, type: "success" })
-      refetch()
-    } catch (err) {
-      setToast({ message: `Failed to delete: ${(err as Error).message}`, type: "error" })
-    }
+    setToast({ message: `User "${user.email}" deleted`, type: "success" })
+    refetch()
   }, [confirm, deleteUser, refetch])
 
   const clearFilters = () => { setSearchQuery(""); setRoleFilter("") }

@@ -78,15 +78,11 @@ export default function TemplateListPage() {
         "New VMs can no longer be built from it. Machines already created from this template are unaffected.",
       confirmLabel: "Delete template",
       destructive: true,
+      action: () => deleteTemplate.mutateAsync(template.id),
     })
     if (!ok) return
-    try {
-      await deleteTemplate.mutateAsync(template.id)
-      setToast({ message: `Template "${template.name}" deleted`, type: "success" })
-      refetch()
-    } catch (err) {
-      setToast({ message: `Failed to delete: ${(err as Error).message}`, type: "error" })
-    }
+    setToast({ message: `Template "${template.name}" deleted`, type: "success" })
+    refetch()
   }, [confirm, deleteTemplate, refetch])
 
   const clearFilters = () => { setSearchQuery(""); setActiveFilter("") }

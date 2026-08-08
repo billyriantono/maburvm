@@ -64,14 +64,10 @@ export default function ClientVPCsPage() {
         { label: "Address range", value: vpc.subnet },
         { label: "Location", value: vpc.region_name ?? "—" },
       ],
+      action: () => deleteVPC.mutateAsync(vpc.id),
     })
     if (!ok) return
-    try {
-      await deleteVPC.mutateAsync(vpc.id)
-      toast.success(`"${vpc.name}" deleted`)
-    } catch (err) {
-      toast.error((err as Error).message)
-    }
+    toast.success(`"${vpc.name}" deleted`)
   }
 
   return (

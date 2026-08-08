@@ -257,15 +257,11 @@ export default function ISOListPage() {
       description: "The stored image is removed from the nodes. This cannot be undone.",
       confirmLabel: "Delete ISO",
       destructive: true,
+      action: () => deleteTemplate.mutateAsync(iso.id),
     })
     if (!ok) return
-    try {
-      await deleteTemplate.mutateAsync(iso.id)
-      setToast({ message: `ISO "${iso.name}" deleted`, type: "success" })
-      refetch()
-    } catch (err) {
-      setToast({ message: `Failed to delete: ${(err as Error).message}`, type: "error" })
-    }
+    setToast({ message: `ISO "${iso.name}" deleted`, type: "success" })
+    refetch()
   }, [confirm, deleteTemplate, refetch])
 
   const handleUpload = useCallback(() => {

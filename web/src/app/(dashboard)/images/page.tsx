@@ -34,14 +34,10 @@ export default function ImagesPage() {
       description: "The stored disk image is removed. This cannot be undone.",
       confirmLabel: "Delete image",
       destructive: true,
+      action: () => deleteImage.mutateAsync(image.id),
     })
     if (!ok) return
-    try {
-      await deleteImage.mutateAsync(image.id)
-      toast.success(`Image "${image.name}" deleted`)
-    } catch (err) {
-      toast.error(`Failed to delete image: ${(err as Error).message}`)
-    }
+    toast.success(`Image "${image.name}" deleted`)
   }
 
   return (

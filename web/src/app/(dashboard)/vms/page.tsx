@@ -397,17 +397,12 @@ export default function VMListPage() {
         { label: "Status", value: vm.status },
         { label: "Location", value: vm.region_name ?? vm.node_name ?? "—" },
       ],
+      action: () => deleteVM.mutateAsync(vm.id),
     })
     if (!ok) return
-
-    try {
-      await deleteVM.mutateAsync(vm.id)
-      // Deletion is async + multi-step; open the progress dialog to track it
-      // instead of claiming success immediately.
-      setDeletingVM({ id: vm.id, hostname: vm.hostname })
-    } catch (err) {
-      setToast({ message: `Failed to delete VM: ${(err as Error).message}`, type: "error" })
-    }
+    // Deletion is async + multi-step; the dialog only covers accepting the
+    // request, so hand over to the progress dialog that tracks the rest.
+    setDeletingVM({ id: vm.id, hostname: vm.hostname })
   }, [confirm, deleteVM])
   
   return (
