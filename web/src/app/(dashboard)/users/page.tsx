@@ -30,6 +30,7 @@ import { useUsers, useDeleteUser } from "@/lib/hooks/use-users"
 import { useUserQuota, useSetUserQuota } from "@/lib/hooks/use-quota"
 import type { SetQuotaRequest } from "@/types/quota"
 import type { User } from "@/types"
+import { useConfirm } from "@/components/confirm-provider"
 
 function Toast({ message, type, onClose }: { message: string; type: "success" | "error"; onClose: () => void }) {
   useEffect(() => {
@@ -45,29 +46,6 @@ function Toast({ message, type, onClose }: { message: string; type: "success" | 
     </div>
   )
 }
-
-function ConfirmDialog({ open, title, message, loading, confirmLabel, variant, onConfirm, onCancel }: { 
-  open: boolean; title: string; message: string; loading?: boolean; confirmLabel?: string; variant?: "destructive" | "default"; onConfirm: () => void; onCancel: () => void 
-}) {
-  if (!open) return null
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-label="Confirm dialog">
-      <button type="button" className="absolute inset-0 bg-black/50 cursor-default focus:outline-none" onClick={onCancel} aria-label="Close dialog" />
-      <div className="relative bg-background border rounded-lg p-6 shadow-lg max-w-md w-full mx-4">
-        <h3 className="text-lg font-semibold mb-2">{title}</h3>
-        <p className="text-muted-foreground text-sm mb-6">{message}</p>
-        <div className="flex gap-3 justify-end">
-          <Button variant="outline" onClick={onCancel} disabled={loading}>Cancel</Button>
-          <Button variant={variant === "destructive" ? "destructive" : "default"} onClick={onConfirm} disabled={loading}>
-            {loading && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
-            {confirmLabel || "Confirm"}
-          </Button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 function formatDate(dateString: string): string {
   return new Date(dateString).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })
 }
@@ -151,9 +129,9 @@ function QuotaDialog({ user, onClose, onNotify }: {
 }
 
 export default function UsersPage() {
+  const confirm = useConfirm()
   const [searchQuery, setSearchQuery] = useState("")
   const [roleFilter, setRoleFilter] = useState<string>("")
-  const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; email: string } | null>(null)
   const [quotaUser, setQuotaUser] = useState<User | null>(null)
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
 
@@ -183,17 +161,23 @@ export default function UsersPage() {
   }, [users, searchQuery, roleFilter])
 
   // Delete handler
-  const handleDelete = useCallback(async () => {
-    if (!deleteConfirm) return
+  const handleDelete = useCallback(async (user: { id: string; email: string }) => {
+    const ok = await confirm({
+      title: `Delete user "${user.email}"?`,
+      description:
+        "They lose access immediately. Resources they own are not deleted with them, so check what they still hold first.",
+      confirmLabel: "Delete user",
+      destructive: true,
+    })
+    if (!ok) return
     try {
-      await deleteUser.mutateAsync(deleteConfirm.id)
-      setToast({ message: `User "${deleteConfirm.email}" deleted`, type: "success" })
-      setDeleteConfirm(null)
+      await deleteUser.mutateAsync(user.id)
+      setToast({ message: `User "${user.email}" deleted`, type: "success" })
       refetch()
     } catch (err) {
       setToast({ message: `Failed to delete: ${(err as Error).message}`, type: "error" })
     }
-  }, [deleteConfirm, deleteUser, refetch])
+  }, [confirm, deleteUser, refetch])
 
   const clearFilters = () => { setSearchQuery(""); setRoleFilter("") }
   const hasFilters = searchQuery || roleFilter
@@ -366,7 +350,7 @@ export default function UsersPage() {
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => setDeleteConfirm({ id: user.id, email: user.email })}
+                  onClick={() => handleDelete({ id: user.id, email: user.email })}
                   disabled={deleteUser.isPending}
                   className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
                   title="Delete"
@@ -379,16 +363,6 @@ export default function UsersPage() {
         )}
       </div>
 
-      <ConfirmDialog
-        open={!!deleteConfirm}
-        title="Delete User"
-        message={`Are you sure you want to delete "${deleteConfirm?.email}"? This action cannot be undone.`}
-        loading={deleteUser.isPending}
-        confirmLabel="Delete User"
-        variant="destructive"
-        onConfirm={handleDelete}
-        onCancel={() => setDeleteConfirm(null)}
-      />
 
       <QuotaDialog
         user={quotaUser}

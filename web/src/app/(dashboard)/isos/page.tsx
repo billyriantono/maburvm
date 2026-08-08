@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input"
 import { useTemplates, useDeleteTemplate } from "@/lib/hooks/use-templates"
 import { api } from "@/lib/api-client"
 import { cn } from "@/lib/utils"
+import { useConfirm } from "@/components/confirm-provider"
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B"
@@ -27,41 +28,6 @@ function formatBytes(bytes: number): string {
   const i = Math.floor(Math.log(bytes) / Math.log(k))
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
 }
-
-function ConfirmDialog({
-  open, 
-  title, 
-  message, 
-  onConfirm, 
-  onCancel 
-}: { 
-  open: boolean
-  title: string
-  message: string
-  onConfirm: () => void
-  onCancel: () => void
-}) {
-  if (!open) return null
-  
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-label="Confirm dialog">
-      <button type="button" className="absolute inset-0 bg-black/50 cursor-default focus:outline-none" onClick={onCancel} aria-label="Close dialog" />
-      <div className="relative bg-background border rounded-lg p-6 shadow-lg max-w-md w-full mx-4">
-        <h3 className="text-lg font-semibold mb-4">{title}</h3>
-        <p className="text-muted-foreground text-sm mb-6">{message}</p>
-        <div className="flex gap-3 justify-end">
-          <Button variant="outline" onClick={onCancel}>
-            Cancel
-          </Button>
-          <Button variant="destructive" onClick={onConfirm}>
-            Confirm Delete
-          </Button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 function UploadDialog({
   open,
   onClose,
@@ -260,11 +226,11 @@ function Toast({ message, type }: { message: string, type: "success" | "error", 
 }
 
 export default function ISOListPage() {
+  const confirm = useConfirm()
   const { data: templates, isLoading, error, refetch } = useTemplates({ type: 'iso' })
   const deleteTemplate = useDeleteTemplate()
   const [searchQuery, setSearchQuery] = useState("")
   const [osFilter, setOsFilter] = useState("")
-  const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string } | null>(null)
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false)
   
@@ -285,17 +251,22 @@ export default function ISOListPage() {
     return matchesSearch && matchesOs
   }) || []
 
-  const handleDelete = useCallback(async () => {
-    if (!deleteConfirm) return
+  const handleDelete = useCallback(async (iso: { id: string; name: string }) => {
+    const ok = await confirm({
+      title: `Delete ISO "${iso.name}"?`,
+      description: "The stored image is removed from the nodes. This cannot be undone.",
+      confirmLabel: "Delete ISO",
+      destructive: true,
+    })
+    if (!ok) return
     try {
-      await deleteTemplate.mutateAsync(deleteConfirm.id)
-      setToast({ message: `ISO "${deleteConfirm.name}" deleted`, type: "success" })
-      setDeleteConfirm(null)
+      await deleteTemplate.mutateAsync(iso.id)
+      setToast({ message: `ISO "${iso.name}" deleted`, type: "success" })
       refetch()
     } catch (err) {
       setToast({ message: `Failed to delete: ${(err as Error).message}`, type: "error" })
     }
-  }, [deleteConfirm, deleteTemplate, refetch])
+  }, [confirm, deleteTemplate, refetch])
 
   const handleUpload = useCallback(() => {
     setUploadDialogOpen(false)
@@ -461,7 +432,7 @@ export default function ISOListPage() {
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => setDeleteConfirm({ id: iso.id, name: iso.name })}
+                  onClick={() => handleDelete({ id: iso.id, name: iso.name })}
                   className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
                   title="Delete"
                 >
@@ -473,13 +444,6 @@ export default function ISOListPage() {
         )}
       </div>
       
-      <ConfirmDialog
-        open={!!deleteConfirm}
-        title="Delete ISO"
-        message={`Are you sure you want to delete "${deleteConfirm?.name}"? This action cannot be undone.`}
-        onConfirm={handleDelete}
-        onCancel={() => setDeleteConfirm(null)}
-      />
 
       <UploadDialog
         open={uploadDialogOpen}

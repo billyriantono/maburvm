@@ -26,6 +26,7 @@ import { useTemplate, useDeleteTemplate, useUpdateTemplate } from "@/lib/hooks/u
 import { useVMs } from "@/lib/hooks/use-vms"
 import { OSIcon } from "@/components/os-icon"
 import type { VM } from "@/types"
+import { useConfirm } from "@/components/confirm-provider"
 
 function formatDate(dateString: string): string {
   return new Date(dateString).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
@@ -44,11 +45,11 @@ function Toast({ message, type, onClose }: { message: string; type: "success" | 
 }
 
 export default function TemplateDetailPage() {
+  const confirm = useConfirm()
   const params = useParams()
   const router = useRouter()
   const templateId = params.id as string
 
-  const [deleteConfirm, setDeleteConfirm] = useState(false)
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
   const [editOpen, setEditOpen] = useState(false)
   const [editName, setEditName] = useState("")
@@ -66,15 +67,25 @@ export default function TemplateDetailPage() {
 
   // Delete handler
   const handleDelete = useCallback(async () => {
+    const ok = await confirm({
+      title: `Delete template "${template?.name ?? ""}"?`,
+      description:
+        templateVMs.length > 0
+          ? `${templateVMs.length} VM(s) were built from this template. They keep running, but the template is gone for new builds.`
+          : "New VMs can no longer be built from it. This cannot be undone.",
+      confirmLabel: "Delete template",
+      destructive: true,
+      details: templateVMs.length > 0 ? [{ label: "VMs from it", value: templateVMs.length }] : undefined,
+    })
+    if (!ok) return
     try {
       await deleteTemplate.mutateAsync(templateId)
       setToast({ message: "Template deleted", type: "success" })
-      setDeleteConfirm(false)
       setTimeout(() => router.push("/templates"), 1000)
     } catch (err) {
       setToast({ message: `Failed to delete: ${(err as Error).message}`, type: "error" })
     }
-  }, [deleteTemplate, templateId, router])
+  }, [confirm, template, templateVMs.length, deleteTemplate, templateId, router])
 
   // Edit handler
   const handleEdit = useCallback(async () => {
@@ -174,7 +185,7 @@ export default function TemplateDetailPage() {
               </DialogFooter>
             </DialogContent>
           </Dialog>
-          <Button variant="destructive" onClick={() => setDeleteConfirm(true)} className="gap-2"><Trash2 className="w-4 h-4" />Delete</Button>
+          <Button variant="destructive" onClick={() => handleDelete()} className="gap-2"><Trash2 className="w-4 h-4" />Delete</Button>
         </div>
       </div>
 
@@ -254,28 +265,6 @@ export default function TemplateDetailPage() {
         </div>
       </div>
 
-      {/* Delete Confirmation */}
-      {deleteConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-label="Delete confirmation">
-          <button type="button" className="absolute inset-0 bg-black/50 cursor-default focus:outline-none" onClick={() => setDeleteConfirm(false)} aria-label="Close dialog" />
-          <div className="relative bg-background border rounded-lg p-6 shadow-lg max-w-md w-full mx-4">
-            <h3 className="text-lg font-semibold mb-4 flex items-center gap-2"><AlertTriangle className="w-6 h-6 text-amber-500" />Delete Template</h3>
-            {templateVMs.length > 0 ? (
-              <p className="text-muted-foreground text-sm mb-6">
-                <span className="text-destructive font-semibold">WARNING:</span> This template is used by {templateVMs.length} VM(s). Deleting it may affect those VMs. Are you sure?
-              </p>
-            ) : (
-              <p className="text-muted-foreground text-sm mb-6">Are you sure you want to delete &quot;{template.name}&quot;? This action cannot be undone.</p>
-            )}
-            <div className="flex gap-3 justify-end">
-              <Button variant="outline" onClick={() => setDeleteConfirm(false)} disabled={deleteTemplate.isPending}>Cancel</Button>
-              <Button variant="destructive" onClick={handleDelete} disabled={deleteTemplate.isPending}>
-                {deleteTemplate.isPending && <Loader2 className="w-4 h-4 animate-spin mr-2" />}Delete Template
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
     </div>

@@ -17,6 +17,7 @@ import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useNodes, useDeleteNode } from "@/lib/hooks/use-nodes"
 import type { NodeStatus } from "@/types"
+import { useConfirm } from "@/components/confirm-provider"
 
 // Status indicator component
 function StatusIndicator({ status }: { status: NodeStatus }) {
@@ -36,47 +37,6 @@ function StatusIndicator({ status }: { status: NodeStatus }) {
   )
 }
 
-// Confirm dialog component
-function ConfirmDialog({
-  open,
-  title,
-  message,
-  confirmLabel = "Confirm",
-  loading = false,
-  onConfirm,
-  onCancel
-}: {
-  open: boolean
-  title: string
-  message: string
-  confirmLabel?: string
-  loading?: boolean
-  onConfirm: () => void
-  onCancel: () => void
-}) {
-  if (!open) return null
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-label="Confirm dialog">
-      <button type="button" className="absolute inset-0 bg-black/50 cursor-default focus:outline-none" onClick={onCancel} aria-label="Close dialog" />
-      <div className="relative bg-background border rounded-lg p-6 shadow-lg max-w-md w-full mx-4">
-        <h3 className="text-lg font-semibold mb-2">{title}</h3>
-        <p className="text-muted-foreground text-sm mb-6">{message}</p>
-        <div className="flex gap-3 justify-end">
-          <Button variant="outline" onClick={onCancel} disabled={loading}>
-            Cancel
-          </Button>
-          <Button variant="destructive" onClick={onConfirm} disabled={loading}>
-            {loading && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
-            {confirmLabel}
-          </Button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// Toast notification component
 function Toast({ message, type, onClose }: { message: string, type: "success" | "error", onClose: () => void }) {
   useEffect(() => {
     const timer = setTimeout(onClose, 3000)
@@ -99,10 +59,10 @@ function formatDate(dateString: string) {
 }
 
 export default function NodesListPage() {
+  const confirm = useConfirm()
   // State
   const [searchQuery, setSearchQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState<string>("")
-  const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string } | null>(null)
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
 
   // Data hooks
@@ -130,18 +90,24 @@ export default function NodesListPage() {
   }, [nodes, searchQuery, statusFilter])
 
   // Action handlers
-  const handleDelete = useCallback(async () => {
-    if (!deleteConfirm) return
+  const handleDelete = useCallback(async (node: { id: string; name: string }) => {
+    const ok = await confirm({
+      title: `Delete node "${node.name}"?`,
+      description:
+        "The panel stops managing this hypervisor. VMs on it keep running, but become unmanageable from here.",
+      confirmLabel: "Delete node",
+      destructive: true,
+    })
+    if (!ok) return
 
     try {
-      await deleteNode.mutateAsync(deleteConfirm.id)
-      setToast({ message: `Node ${deleteConfirm.name} deleted`, type: "success" })
-      setDeleteConfirm(null)
+      await deleteNode.mutateAsync(node.id)
+      setToast({ message: `Node ${node.name} deleted`, type: "success" })
       refetch()
     } catch (err) {
       setToast({ message: `Failed to delete node: ${(err as Error).message}`, type: "error" })
     }
-  }, [deleteConfirm, deleteNode, refetch])
+  }, [confirm, deleteNode, refetch])
 
   const clearFilters = () => {
     setSearchQuery("")
@@ -365,7 +331,7 @@ export default function NodesListPage() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => setDeleteConfirm({ id: node.id, name: node.name })}
+                    onClick={() => handleDelete({ id: node.id, name: node.name })}
                     disabled={deleteNode.isPending}
                     className="text-red-600 hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950"
                     title="Delete"
@@ -380,15 +346,6 @@ export default function NodesListPage() {
       </div>
 
       {/* Delete Confirmation Dialog */}
-      <ConfirmDialog
-        open={!!deleteConfirm}
-        title="Delete Node"
-        message={`Are you sure you want to delete "${deleteConfirm?.name}"? This action cannot be undone.`}
-        confirmLabel="Delete"
-        loading={deleteNode.isPending}
-        onConfirm={handleDelete}
-        onCancel={() => setDeleteConfirm(null)}
-      />
 
       {/* Toast */}
       {toast && (

@@ -23,6 +23,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { useVMs, useDeleteVM, useVMActions, useVMStatusStream, useVMOperation } from "@/lib/hooks/use-vms"
 import { useNodes } from "@/lib/hooks/use-nodes"
 import type { VM, VMNodeStatus, VMStatus } from "@/types"
+import { useConfirm } from "@/components/confirm-provider"
 
 // Status badge component
 function StatusBadge({ status }: { status: VMStatus }) {
@@ -177,46 +178,6 @@ function SkeletonRow() {
   )
 }
 
-// Confirm dialog component
-function ConfirmDialog({ 
-  open, 
-  title, 
-  message, 
-  onConfirm, 
-  onCancel,
-  loading = false
-}: { 
-  open: boolean
-  title: string
-  message: string
-  onConfirm: () => void
-  onCancel: () => void
-  loading?: boolean
-}) {
-  if (!open) return null
-  
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-label="Confirm dialog">
-      <button type="button" className="absolute inset-0 bg-black/50 cursor-default focus:outline-none" onClick={onCancel} aria-label="Close dialog" />
-      <div className="relative bg-background border rounded-lg p-6 shadow-lg max-w-md w-full mx-4">
-        <h3 className="text-lg font-semibold mb-2">{title}</h3>
-        <p className="text-muted-foreground text-sm mb-6">{message}</p>
-        <div className="flex gap-3 justify-end">
-          <Button variant="ghost" onClick={onCancel} className="border" disabled={loading}>
-            Cancel
-          </Button>
-          <Button variant="destructive" onClick={onConfirm} disabled={loading}>
-            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Confirm Delete"}
-          </Button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// DeleteProgressDialog polls the VM's delete operation and shows each step
-// (destroy on host → release IP/network → remove records) with a progress bar,
-// so the operator sees real progress and whether it actually succeeded.
 function DeleteProgressDialog({ vm, onClose }: { vm: { id: string; hostname: string } | null; onClose: () => void }) {
   const { data: op } = useVMOperation(vm?.id ?? null, !!vm)
   if (!vm) return null
@@ -326,13 +287,13 @@ function EmptyState({ hasFilters, onClearFilters }: { hasFilters: boolean, onCle
 }
 
 export default function VMListPage() {
+  const confirm = useConfirm()
   // State
   const [currentPage, setCurrentPage] = useState(1)
   const [searchQuery, setSearchQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState<string>("")
   const [nodeFilter, setNodeFilter] = useState<string>("")
   const [debouncedSearch, setDebouncedSearch] = useState("")
-  const [deleteConfirm, setDeleteConfirm] = useState<VM | null>(null)
   // VM whose deletion is in progress — drives the step-by-step progress dialog.
   const [deletingVM, setDeletingVM] = useState<{ id: string; hostname: string } | null>(null)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
@@ -425,19 +386,29 @@ export default function VMListPage() {
     }
   }, [vmActions, refetch])
   
-  const handleDelete = useCallback(async () => {
-    if (!deleteConfirm) return
-    
+  const handleDelete = useCallback(async (vm: VM) => {
+    const ok = await confirm({
+      title: `Delete "${vm.hostname}"?`,
+      description:
+        "The machine and its disks are destroyed and its addresses go back to the pool. This cannot be undone.",
+      confirmLabel: "Delete VM",
+      destructive: true,
+      details: [
+        { label: "Status", value: vm.status },
+        { label: "Location", value: vm.region_name ?? vm.node_name ?? "—" },
+      ],
+    })
+    if (!ok) return
+
     try {
-      await deleteVM.mutateAsync(deleteConfirm.id)
+      await deleteVM.mutateAsync(vm.id)
       // Deletion is async + multi-step; open the progress dialog to track it
       // instead of claiming success immediately.
-      setDeletingVM({ id: deleteConfirm.id, hostname: deleteConfirm.hostname })
-      setDeleteConfirm(null)
+      setDeletingVM({ id: vm.id, hostname: vm.hostname })
     } catch (err) {
       setToast({ message: `Failed to delete VM: ${(err as Error).message}`, type: "error" })
     }
-  }, [deleteConfirm, deleteVM])
+  }, [confirm, deleteVM])
   
   return (
     <div className="max-w-7xl mx-auto">
@@ -642,7 +613,7 @@ export default function VMListPage() {
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => setDeleteConfirm(vm)}
+                  onClick={() => handleDelete(vm)}
                   disabled={!!actionLoading}
                   className="h-8 w-8 p-0 border hover:bg-destructive hover:text-destructive-foreground"
                   title="Delete"
@@ -671,14 +642,6 @@ export default function VMListPage() {
       )}
       
       {/* Delete Confirmation Dialog */}
-      <ConfirmDialog
-        open={!!deleteConfirm}
-        title="Delete VM"
-        message={`Are you sure you want to delete "${deleteConfirm?.hostname}"? This action cannot be undone.`}
-        onConfirm={handleDelete}
-        onCancel={() => setDeleteConfirm(null)}
-        loading={deleteVM.isPending}
-      />
 
       {/* Delete Progress (step-by-step) */}
       <DeleteProgressDialog

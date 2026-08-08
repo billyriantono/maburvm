@@ -27,6 +27,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogT
 import { useUser, useUpdateUser, useDeleteUser } from "@/lib/hooks/use-users"
 import { useVMs } from "@/lib/hooks/use-vms"
 import type { VM, VMStatus } from "@/types"
+import { useConfirm } from "@/components/confirm-provider"
 
 function formatDate(dateString: string): string {
   return new Date(dateString).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
@@ -62,12 +63,12 @@ function VMStatusBadge({ status }: { status: VMStatus }) {
 }
 
 export default function UserDetailPage() {
+  const confirm = useConfirm()
   const params = useParams()
   const router = useRouter()
   const userId = params.id as string
 
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
-  const [deleteConfirm, setDeleteConfirm] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
   const [editEmail, setEditEmail] = useState("")
   const [editRole, setEditRole] = useState<string>("")
@@ -82,15 +83,27 @@ export default function UserDetailPage() {
 
   // Delete handler
   const handleDelete = useCallback(async () => {
+    // The VM count is the whole reason this confirmation exists: deleting an
+    // account that still owns machines is the mistake worth interrupting.
+    const ok = await confirm({
+      title: `Delete user "${user?.email ?? ""}"?`,
+      description:
+        userVMs.length > 0
+          ? `This account still owns ${userVMs.length} VM(s). They are not deleted with it, and will be left without an owner.`
+          : "They lose access immediately. This cannot be undone.",
+      confirmLabel: "Delete user",
+      destructive: true,
+      details: userVMs.length > 0 ? [{ label: "VMs owned", value: userVMs.length }] : undefined,
+    })
+    if (!ok) return
     try {
       await deleteUser.mutateAsync(userId)
       setToast({ message: "User deleted", type: "success" })
-      setDeleteConfirm(false)
       setTimeout(() => router.push("/users"), 1000)
     } catch (err) {
       setToast({ message: `Failed to delete: ${(err as Error).message}`, type: "error" })
     }
-  }, [deleteUser, userId, router])
+  }, [confirm, user, userVMs.length, deleteUser, userId, router])
 
   // Edit handler
   const handleEdit = useCallback(async () => {
@@ -195,7 +208,7 @@ export default function UserDetailPage() {
               </DialogFooter>
             </DialogContent>
           </Dialog>
-          <Button variant="destructive" onClick={() => setDeleteConfirm(true)} className="gap-2"><Trash2 className="w-4 h-4" />Delete</Button>
+          <Button variant="destructive" onClick={() => handleDelete()} className="gap-2"><Trash2 className="w-4 h-4" />Delete</Button>
         </div>
       </div>
 
@@ -284,28 +297,6 @@ export default function UserDetailPage() {
         </div>
       </div>
 
-      {/* Delete Confirmation */}
-      {deleteConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-label="Delete confirmation">
-          <button type="button" className="absolute inset-0 bg-black/50 cursor-default focus:outline-none" onClick={() => setDeleteConfirm(false)} aria-label="Close dialog" />
-          <div className="relative bg-background border rounded-lg p-6 shadow-lg max-w-md w-full mx-4">
-            <h3 className="text-lg font-semibold mb-4 flex items-center gap-2"><AlertCircle className="w-6 h-6 text-amber-500" />Delete User</h3>
-            {userVMs.length > 0 ? (
-              <p className="text-muted-foreground text-sm mb-6">
-                <span className="text-destructive font-semibold">WARNING:</span> This user owns {userVMs.length} VM(s). Deleting this user may affect those VMs. Are you sure?
-              </p>
-            ) : (
-              <p className="text-muted-foreground text-sm mb-6">Are you sure you want to delete &quot;{user.email}&quot;? This action cannot be undone.</p>
-            )}
-            <div className="flex gap-3 justify-end">
-              <Button variant="outline" onClick={() => setDeleteConfirm(false)} disabled={deleteUser.isPending}>Cancel</Button>
-              <Button variant="destructive" onClick={handleDelete} disabled={deleteUser.isPending}>
-                {deleteUser.isPending && <Loader2 className="w-4 h-4 animate-spin mr-2" />}Delete User
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
     </div>

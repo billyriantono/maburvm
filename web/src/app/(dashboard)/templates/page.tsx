@@ -18,6 +18,7 @@ import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useTemplates, useDeleteTemplate } from "@/lib/hooks/use-templates"
 import { OSIcon } from "@/components/os-icon"
+import { useConfirm } from "@/components/confirm-provider"
 
 function formatDate(dateString: string): string {
   return new Date(dateString).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })
@@ -37,31 +38,10 @@ function Toast({ message, type, onClose }: { message: string; type: "success" | 
     </div>
   )
 }
-
-function ConfirmDialog({ open, title, message, loading, onConfirm, onCancel }: { open: boolean; title: string; message: string; loading?: boolean; onConfirm: () => void; onCancel: () => void }) {
-  if (!open) return null
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-label="Confirm dialog">
-      <button type="button" className="absolute inset-0 bg-black/50 cursor-default focus:outline-none" onClick={onCancel} aria-label="Close dialog" />
-      <div className="relative bg-background border rounded-lg p-6 shadow-lg max-w-md w-full mx-4">
-        <h3 className="text-lg font-semibold mb-4">{title}</h3>
-        <p className="text-muted-foreground text-sm mb-6">{message}</p>
-        <div className="flex gap-3 justify-end">
-          <Button variant="outline" onClick={onCancel} disabled={loading}>Cancel</Button>
-          <Button variant="destructive" onClick={onConfirm} disabled={loading}>
-            {loading && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
-            Confirm Delete
-          </Button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 export default function TemplateListPage() {
+  const confirm = useConfirm()
   const [searchQuery, setSearchQuery] = useState("")
   const [activeFilter, setActiveFilter] = useState<string>("")
-  const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string } | null>(null)
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
 
   // Data hooks
@@ -91,17 +71,23 @@ export default function TemplateListPage() {
   }, [templates, searchQuery, activeFilter])
 
   // Delete handler
-  const handleDelete = useCallback(async () => {
-    if (!deleteConfirm) return
+  const handleDelete = useCallback(async (template: { id: string; name: string }) => {
+    const ok = await confirm({
+      title: `Delete template "${template.name}"?`,
+      description:
+        "New VMs can no longer be built from it. Machines already created from this template are unaffected.",
+      confirmLabel: "Delete template",
+      destructive: true,
+    })
+    if (!ok) return
     try {
-      await deleteTemplate.mutateAsync(deleteConfirm.id)
-      setToast({ message: `Template "${deleteConfirm.name}" deleted`, type: "success" })
-      setDeleteConfirm(null)
+      await deleteTemplate.mutateAsync(template.id)
+      setToast({ message: `Template "${template.name}" deleted`, type: "success" })
       refetch()
     } catch (err) {
       setToast({ message: `Failed to delete: ${(err as Error).message}`, type: "error" })
     }
-  }, [deleteConfirm, deleteTemplate, refetch])
+  }, [confirm, deleteTemplate, refetch])
 
   const clearFilters = () => { setSearchQuery(""); setActiveFilter("") }
   const hasFilters = searchQuery || activeFilter
@@ -242,7 +228,7 @@ export default function TemplateListPage() {
                 <Link href={`/templates/${template.id}`}>
                   <Button variant="outline" size="sm" className="h-8">Details</Button>
                 </Link>
-                <Button variant="ghost" size="sm" onClick={() => setDeleteConfirm({ id: template.id, name: template.name })} disabled={deleteTemplate.isPending} className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive" title="Delete">
+                <Button variant="ghost" size="sm" onClick={() => handleDelete({ id: template.id, name: template.name })} disabled={deleteTemplate.isPending} className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive" title="Delete">
                   <Trash2 className="w-4 h-4" />
                 </Button>
               </div>
@@ -251,14 +237,6 @@ export default function TemplateListPage() {
         )}
       </div>
 
-      <ConfirmDialog
-        open={!!deleteConfirm}
-        title="Delete Template"
-        message={`Are you sure you want to delete "${deleteConfirm?.name}"? This action cannot be undone.`}
-        loading={deleteTemplate.isPending}
-        onConfirm={handleDelete}
-        onCancel={() => setDeleteConfirm(null)}
-      />
 
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
     </div>

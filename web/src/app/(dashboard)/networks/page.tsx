@@ -16,46 +16,19 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useNetworks, useDeleteNetwork } from "@/lib/hooks/use-networks"
+import { useConfirm } from "@/components/confirm-provider"
 import { toast } from "sonner"
 
 function formatDate(dateString: string): string {
   const date = new Date(dateString)
   return date.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })
 }
-
-function ConfirmDialog({ open, title, message, loading, onConfirm, onCancel }: {
-  open: boolean
-  title: string
-  message: string
-  loading?: boolean
-  onConfirm: () => void
-  onCancel: () => void
-}) {
-  if (!open) return null
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-label="Confirm dialog">
-      <button type="button" className="absolute inset-0 bg-black/50 cursor-default focus:outline-none" onClick={onCancel} aria-label="Close dialog" />
-      <div className="relative rounded-lg border bg-background p-6 shadow-lg max-w-md w-full mx-4">
-        <h3 className="text-lg font-semibold mb-4">{title}</h3>
-        <p className="text-muted-foreground mb-6">{message}</p>
-        <div className="flex gap-3 justify-end">
-          <Button variant="outline" onClick={onCancel} disabled={loading}>Cancel</Button>
-          <Button variant="destructive" onClick={onConfirm} disabled={loading}>
-            {loading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-            Confirm Delete
-          </Button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 export default function NetworksPage() {
+  const confirm = useConfirm()
   const router = useRouter()
   const { data: networks, isLoading, error } = useNetworks()
   const deleteNetwork = useDeleteNetwork()
   const [searchQuery, setSearchQuery] = useState("")
-  const [deleteConfirm, setDeleteConfirm] = useState<NonNullable<typeof networks>[number] | null>(null)
 
   const filteredNetworks = networks?.filter((n) => {
     if (!searchQuery) return true
@@ -73,12 +46,18 @@ export default function NetworksPage() {
   const natNetworks = networks?.filter((n) => n.type === "nat").length ?? 0
   const bridgeNetworks = networks?.filter((n) => n.type === "bridge").length ?? 0
 
-  const handleDelete = async () => {
-    if (!deleteConfirm) return
+  const handleDelete = async (network: { id: string; name: string }) => {
+    const ok = await confirm({
+      title: `Delete network "${network.name}"?`,
+      description:
+        "The managed network is removed from its node. VMs still attached to it lose that connection.",
+      confirmLabel: "Delete network",
+      destructive: true,
+    })
+    if (!ok) return
     try {
-      await deleteNetwork.mutateAsync(deleteConfirm.id)
-      toast.success(`Network "${deleteConfirm.name}" deleted`)
-      setDeleteConfirm(null)
+      await deleteNetwork.mutateAsync(network.id)
+      toast.success(`Network "${network.name}" deleted`)
     } catch (err) {
       toast.error(`Failed to delete network: ${(err as Error).message}`)
     }
@@ -231,7 +210,7 @@ export default function NetworksPage() {
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => setDeleteConfirm(network)}
+                  onClick={() => handleDelete(network)}
                   className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
                   title="Delete network"
                 >
@@ -243,14 +222,6 @@ export default function NetworksPage() {
         )}
       </div>
 
-      <ConfirmDialog
-        open={!!deleteConfirm}
-        title="Delete Network"
-        message={`Are you sure you want to delete network "${deleteConfirm?.name}"? This cannot be undone.`}
-        loading={deleteNetwork.isPending}
-        onConfirm={handleDelete}
-        onCancel={() => setDeleteConfirm(null)}
-      />
     </div>
   )
 }

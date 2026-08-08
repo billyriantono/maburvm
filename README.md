@@ -62,9 +62,13 @@ Multi-tenant VM lifecycle, networking, and storage management across multiple ph
 | 💿 **Images** | Capture a VM's disk to object storage; images survive VM deletion and can seed a new VM (Vultr/DigitalOcean-style) |
 | 📸 **Snapshots & backups** | libvirt snapshots, scheduled/manual backups to S3-compatible storage, restore |
 | 🌐 **Networking** | IP pools/IPAM, managed private networks (VLAN), firewall rules, port forwarding, bandwidth shaping & monthly data quotas |
+| 📍 **Regions** | Customers choose a location when ordering; a region holds one or more nodes, and regions with no capacity are hidden rather than offered |
+| 🕸️ **Tenant VPCs** | Customers define their own private networks and pick their own subnets. Two customers may both use `10.0.0.0/24` — each VPC gets its own router network namespace on the node, so overlapping tenant subnets stay isolated rather than colliding |
+| 🎈 **Floating IPs** | Public addresses that attach, detach and move between VMs by rewriting host NAT, with no guest cooperation; orderable per region and billable via webhook |
 | 👥 **Multi-tenant** | Admin panel + self-service client portal, per-tenant ownership isolation, role-based access |
 | 🔐 **Accounts** | 2FA (TOTP), IP whitelisting, forgot/reset password, SSH-key management, WHMCS provisioning module |
-| 📊 **Operations** | Audit logging, dashboard stats, OS-template sync across nodes, cloud-init guest configuration |
+| 🛡️ **Abuse containment** | Per-source rate limit on new outbound connections, plus an admin view ranking guests by connection rate — the measure that catches a compromised VM, since a port scan is huge in connections and trivial in bytes. Quarantine cuts a guest's traffic while leaving it running |
+| 📊 **Operations** | Audit logging, dashboard stats, node conntrack utilisation, OS-template sync across nodes, cloud-init guest configuration |
 
 ## Architecture
 
@@ -223,10 +227,14 @@ All routes are under `/api/v1/`:
 | **Images** | Capture from VM, list, delete, create-VM-from-image |
 | **Templates** | CRUD + sync to nodes |
 | **Networks** | Network & firewall management |
+| **Regions** | List (any caller) + CRUD and node assignment (admin only) |
+| **VPCs** | Customer-defined private networks: list, create, delete |
+| **Floating IPs** | Order, attach, detach, release, billing summary |
 | **Snapshots** | Create/restore/delete |
 | **Backups** | Create, schedule, restore |
 | **Storage** | Pool & volume management |
 | **Users** | CRUD (admin only) |
+| **Abuse** | Guest connection rates + quarantine (admin only) |
 | **Audit Logs** | Action history (admin only) |
 | **Dashboard** | Statistics overview |
 
