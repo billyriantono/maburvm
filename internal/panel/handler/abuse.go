@@ -105,11 +105,15 @@ func (h *AbuseHandler) logQuarantine(c echo.Context, req setQuarantineRequest) {
 	if !req.Quarantined {
 		action = "guest.quarantine.release"
 	}
-	mac := req.MAC
+	// resource_id is a uuid column, so it holds the node — the only UUID this
+	// action has. The guest is identified by MAC, which lives in details.
+	// Putting the MAC in resource_id looks natural and fails the insert
+	// silently, which is how this trail came back empty the first time.
+	nodeID := req.NodeID
 	entry := &models.AuditLog{
 		Action:       action,
 		ResourceType: "guest_connection",
-		ResourceID:   &mac,
+		ResourceID:   &nodeID,
 		IPAddress:    c.RealIP(),
 		UserAgent:    c.Request().UserAgent(),
 		Details: map[string]any{
@@ -122,5 +126,9 @@ func (h *AbuseHandler) logQuarantine(c echo.Context, req setQuarantineRequest) {
 		uid := uc.ID.String()
 		entry.UserID = &uid
 	}
-	_ = h.audit.Create(c.Request().Context(), entry)
+	// Best-effort, but never silent: an audit write that fails without a trace
+	// is indistinguishable from an action nobody took.
+	if err := h.audit.Create(c.Request().Context(), entry); err != nil {
+		c.Logger().Errorf("audit: could not record %s for %s on node %s: %v", action, req.MAC, req.NodeID, err)
+	}
 }

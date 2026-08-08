@@ -470,7 +470,7 @@ func (s *Server) setupVMRoutes(g *echo.Group) {
 	// Abuse visibility: which guests are opening new outbound connections fast
 	// enough to threaten the node they sit on, including guests the panel does
 	// not manage. Shares the node service's agent connection pool.
-	abuseService := service.NewAbuseService(s.db, service.NewNodeService(repository.NewNodeRepository(s.db), s.db).AgentClient(), nil)
+	abuseService := service.NewAbuseService(s.db, service.NewNodeService(repository.NewNodeRepository(s.db), s.db), nil)
 	handler.RegisterAbuseRoutes(s.echo, handler.NewAbuseHandler(abuseService, repository.NewAuditRepository(s.db)), s.db)
 
 	// Tenant VPCs: customer-defined private networks. Two customers may choose the

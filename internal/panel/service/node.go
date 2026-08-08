@@ -67,7 +67,41 @@ func NewNodeService(repo *repository.NodeRepository, db ...*gorm.DB) *NodeServic
 // without opening a second one. Sharing matters: the pool holds the per-node
 // registration and circuit breaker state, and a second client would re-dial
 // every node and keep its own view of which ones are failing.
+//
+// Call EnsureAgentRegistered first. The pool only knows nodes that have been
+// registered into it, and registration is per client instance.
 func (s *NodeService) AgentClient() *client.AgentClient { return s.agentClient }
+
+// EnsureAgentRegistered teaches the connection pool how to reach a node.
+//
+// Every RPC resolves the node through this registry, so a caller that skips it
+// gets "not found in connection registry" — even though the node is online and
+// other parts of the panel are talking to it happily through their own pool.
+// That is exactly what happened to the quarantine button: it went through a
+// different NodeService instance than the metrics collector, whose pool had
+// been populated as a side effect of fetching metrics.
+//
+// Idempotent, and cheap: registration only records the address and token, it
+// does not dial.
+func (s *NodeService) EnsureAgentRegistered(ctx context.Context, nodeID string) error {
+	if s.agentClient == nil {
+		return fmt.Errorf("no agent client configured")
+	}
+	node, err := s.repo.GetByID(ctx, nodeID)
+	if err != nil {
+		return err
+	}
+	if node == nil {
+		return fmt.Errorf("node %s not found", nodeID)
+	}
+	s.agentClient.RegisterNode(client.NodeInfo{
+		ID:         node.ID,
+		Address:    fmt.Sprintf("%s:%d", node.IPAddress, s.agentPort),
+		Token:      node.Token,
+		TLSEnabled: true,
+	})
+	return nil
+}
 
 // SetAgentPort sets the agent port for connectivity checks (useful for testing)
 func (s *NodeService) SetAgentPort(port int) {

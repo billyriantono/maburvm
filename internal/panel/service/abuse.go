@@ -24,16 +24,33 @@ import (
 // nothing. The data therefore comes from the node's own iptables counters,
 // keyed on MAC, covering every libvirt domain the node has.
 type AbuseService struct {
-	db          *gorm.DB
-	agentClient *client.AgentClient
-	logger      *slog.Logger
+	db *gorm.DB
+	// nodes owns the agent connection pool. Held as the service rather than the
+	// bare client because reaching a node needs its address and token registered
+	// into that pool first, and only the node service knows how to do that.
+	nodes  *NodeService
+	logger *slog.Logger
 }
 
-func NewAbuseService(db *gorm.DB, agentClient *client.AgentClient, logger *slog.Logger) *AbuseService {
+func NewAbuseService(db *gorm.DB, nodes *NodeService, logger *slog.Logger) *AbuseService {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &AbuseService{db: db, agentClient: agentClient, logger: logger}
+	return &AbuseService{db: db, nodes: nodes, logger: logger}
+}
+
+// agentFor returns a client that can actually reach the node. Registration is
+// per pool and is not implied by the node existing in the database, so every
+// entry point has to do this — not just the ones that happen to run after the
+// metrics collector.
+func (s *AbuseService) agentFor(ctx context.Context, nodeID string) (*client.AgentClient, error) {
+	if s.nodes == nil {
+		return nil, fmt.Errorf("no agent connection configured")
+	}
+	if err := s.nodes.EnsureAgentRegistered(ctx, nodeID); err != nil {
+		return nil, err
+	}
+	return s.nodes.AgentClient(), nil
 }
 
 // SampleNode reads one node's guest counters and folds them into the stored
@@ -43,11 +60,12 @@ func NewAbuseService(db *gorm.DB, agentClient *client.AgentClient, logger *slog.
 // whatever that tick is; the rate is computed from the actual elapsed time
 // rather than an assumed interval so a slow or skipped tick cannot inflate it.
 func (s *AbuseService) SampleNode(ctx context.Context, nodeID string) error {
-	if s.agentClient == nil {
-		return nil
+	agent, err := s.agentFor(ctx, nodeID)
+	if err != nil {
+		return err
 	}
 
-	reports, err := s.agentClient.GetGuestConnections(ctx, nodeID)
+	reports, err := agent.GetGuestConnections(ctx, nodeID)
 	if err != nil {
 		return err
 	}
@@ -165,15 +183,16 @@ func (s *AbuseService) List(ctx context.Context, flaggedOnly bool) ([]models.Gue
 // succeeded: a row claiming a guest is quarantined while its traffic still flows
 // is worse than an error, because it stops anyone from looking further.
 func (s *AbuseService) SetQuarantine(ctx context.Context, nodeID, mac, reason string, on bool) error {
-	if s.agentClient == nil {
-		return fmt.Errorf("no agent connection configured")
-	}
 	mac = strings.ToLower(strings.TrimSpace(mac))
 	if mac == "" {
 		return fmt.Errorf("mac is required")
 	}
 
-	if _, err := s.agentClient.SetQuarantine(ctx, nodeID, mac, reason, on); err != nil {
+	agent, err := s.agentFor(ctx, nodeID)
+	if err != nil {
+		return err
+	}
+	if _, err := agent.SetQuarantine(ctx, nodeID, mac, reason, on); err != nil {
 		return fmt.Errorf("node refused the change: %w", err)
 	}
 

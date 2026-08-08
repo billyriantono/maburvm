@@ -88,7 +88,7 @@ func NewMetricsCollector(db *gorm.DB, riverClient *river.Client[pgx.Tx], interva
 		// Shares the node service's connection pool: the abuse sample runs on the
 		// same tick and against the same nodes, so a second pool would re-dial
 		// every node for no gain.
-		abuse: NewAbuseService(db, nodeService.AgentClient(), logger),
+		abuse: NewAbuseService(db, nodeService, logger),
 		// riverClient lets the collector enqueue throttle/restore network jobs.
 		vmService:      NewVMService(db, vmRepo, nodeRepo, repository.NewTemplateRepository(db), riverClient, logger),
 		bwService:      NewBandwidthService(repository.NewBandwidthUsageRepository(db), logger),
