@@ -462,6 +462,10 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 
 	// Build VM config from params
 	var vmConfig *pb.VMConfig
+	// Where the panel decided this VM's disk should live. Threaded separately
+	// from VMConfig because it describes placement on the node, not the shape of
+	// the machine.
+	var poolPath string
 	needsConfig := job.Args.Operation == VMOpCreate || job.Args.Operation == VMOpRebuild ||
 		job.Args.Operation == VMOpResize || job.Args.Operation == VMOpResetPassword ||
 		job.Args.Operation == VMOpAttachISO
@@ -483,6 +487,10 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 			SSHPublicKey  string            `json:"ssh_public_key"`
 			UserData      string            `json:"user_data"`
 			Metadata      map[string]string `json:"metadata"`
+			// PoolPath is the storage pool the panel placed this VM in. Empty
+			// leaves the choice to the node, which defaults to its root
+			// filesystem — fine as a fallback, wrong as a destination.
+			PoolPath string `json:"pool_path"`
 		}
 
 		if err := json.Unmarshal(job.Args.Params, &params); err != nil {
@@ -490,6 +498,7 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 				"error", err,
 			)
 		} else {
+			poolPath = params.PoolPath
 			metadata := params.Metadata
 			if metadata == nil {
 				metadata = map[string]string{}
@@ -591,6 +600,7 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 		Command:        command,
 		Config:         vmConfig,
 		TimeoutSeconds: 300, // 5 minutes
+		PoolPath:       poolPath,
 	}
 
 	// Attach the node's auth token + id; the agent's auth interceptor requires a

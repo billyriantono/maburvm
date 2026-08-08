@@ -125,6 +125,20 @@ func (s *storageService) UpdatePool(id string, pool *models.StoragePool) error {
 	if pool.AvailableSpace > 0 {
 		existing.AvailableSpace = pool.AvailableSpace
 	}
+	if pool.AlertThreshold > 0 && pool.AlertThreshold <= 100 {
+		existing.AlertThreshold = pool.AlertThreshold
+	}
+
+	// Promoting a pool demotes its siblings, so a node always has exactly one
+	// provisioning target. Demotion is deliberately not offered: clearing the
+	// only primary would silently send every new VM back to the node's root
+	// filesystem, which is the fault this exists to prevent.
+	if pool.IsPrimary && !existing.IsPrimary {
+		if err := s.repo.SetPrimaryPool(existing.NodeID, existing.ID); err != nil {
+			return err
+		}
+		existing.IsPrimary = true
+	}
 
 	return s.repo.UpdatePool(existing)
 }

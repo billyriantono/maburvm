@@ -344,8 +344,33 @@ func primaryBridge(cfg *pb.VMConfig) string {
 	return ""
 }
 
-// defaultImageDir is where VM disk images are provisioned on the node.
+// defaultImageDir is where VM disk images are provisioned when the caller names
+// no pool. It sits on the node's root filesystem, which is why it is a fallback
+// and not a destination anyone should rely on: a node that fills its root
+// filesystem loses libvirt, this agent and its logging, not merely the ability
+// to create another VM.
 const defaultImageDir = "/var/lib/libvirt/images"
+
+// imageDirFor resolves where a VM's disk and seed ISO are provisioned.
+//
+// The panel sends the path of the pool it placed the VM in. An empty value, or
+// anything that is not an existing absolute directory, falls back to the node's
+// default: the node owns its filesystem layout, and a malformed path from the
+// panel must not become an arbitrary write location on the hypervisor.
+func imageDirFor(poolPath string) string {
+	p := strings.TrimSpace(poolPath)
+	if p == "" || !filepath.IsAbs(p) {
+		return defaultImageDir
+	}
+	// Reject anything that is not already a real directory rather than creating
+	// it: a typo would otherwise silently provision onto the root filesystem
+	// under a plausible-looking path.
+	if info, err := os.Stat(p); err != nil || !info.IsDir() {
+		log.Printf("[NodeAgent] WARNING: pool path %q is not a directory on this node; using %s", p, defaultImageDir)
+		return defaultImageDir
+	}
+	return p
+}
 
 // templateCacheDir is where downloaded OS template images are cached on the node
 // so repeated VM creations from the same template reuse a single download.
@@ -684,7 +709,8 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 	}
 
 	diskGB := int(cfg.Resources.DiskGb)
-	diskPath := filepath.Join(defaultImageDir, req.VmId+".qcow2")
+	imageDir := imageDirFor(req.GetPoolPath())
+	diskPath := filepath.Join(imageDir, req.VmId+".qcow2")
 	if _, err := os.Stat(diskPath); err == nil {
 		return fmt.Errorf("disk already exists for VM %s at %s", req.VmId, diskPath)
 	}
@@ -770,7 +796,10 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 			hostname = h
 		}
 	}
-	seedPath := filepath.Join(defaultImageDir, req.VmId+"-seed.iso")
+	// Beside the disk, not in the default directory: a seed ISO left behind on
+	// the root filesystem outlives nothing useful and is missed by every cleanup
+	// that walks the pool.
+	seedPath := filepath.Join(imageDir, req.VmId+"-seed.iso")
 	if err := cloudinit.GenerateSeedISO(cloudinit.Config{
 		InstanceID:   req.VmId,
 		Hostname:     hostname,

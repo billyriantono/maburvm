@@ -1427,6 +1427,15 @@ type VMCommandRequest struct {
 	// the recorded result on retry after response loss. Omitting it makes the
 	// agent fail closed (UNKNOWN/PRESENT) for destructive commands.
 	OperationId string `protobuf:"bytes,6,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
+	// pool_path is the directory the VM's disk (and its cloud-init seed) is
+	// provisioned into, for CREATE.
+	//
+	// Empty means the node's own default, which is what every caller used to send.
+	// That default is /var/lib/libvirt/images — on the node's ROOT filesystem —
+	// so every new VM landed on the OS volume regardless of what storage the
+	// operator had provisioned for VMs. Filling that volume does not merely fail
+	// the next VM: it takes libvirt, the agent and logging down with it.
+	PoolPath string `protobuf:"bytes,8,opt,name=pool_path,json=poolPath,proto3" json:"pool_path,omitempty"`
 	// delete_volumes requests that the VM's managed backing storage be destroyed
 	// along with the domain. This is the explicit destructive-data-volume flag for
 	// the DESTROY command. When false (or omitted), the agent must NOT claim an
@@ -1506,6 +1515,13 @@ func (x *VMCommandRequest) GetAsync() bool {
 func (x *VMCommandRequest) GetOperationId() string {
 	if x != nil {
 		return x.OperationId
+	}
+	return ""
+}
+
+func (x *VMCommandRequest) GetPoolPath() string {
+	if x != nil {
+		return x.PoolPath
 	}
 	return ""
 }
@@ -7494,14 +7510,15 @@ const file_api_proto_agent_proto_rawDesc = "" +
 	"\aswap_mb\x18\x04 \x01(\x03R\x06swapMb\x124\n" +
 	"\x16network_bandwidth_mbps\x18\x05 \x01(\x05R\x14networkBandwidthMbps\x12\x1d\n" +
 	"\n" +
-	"iops_limit\x18\x06 \x01(\x05R\tiopsLimit\"\x89\x02\n" +
+	"iops_limit\x18\x06 \x01(\x05R\tiopsLimit\"\xa6\x02\n" +
 	"\x10VMCommandRequest\x12\x13\n" +
 	"\x05vm_id\x18\x01 \x01(\tR\x04vmId\x12.\n" +
 	"\acommand\x18\x02 \x01(\x0e2\x14.agent.VMCommandTypeR\acommand\x12'\n" +
 	"\x06config\x18\x03 \x01(\v2\x0f.agent.VMConfigR\x06config\x12'\n" +
 	"\x0ftimeout_seconds\x18\x04 \x01(\x05R\x0etimeoutSeconds\x12\x14\n" +
 	"\x05async\x18\x05 \x01(\bR\x05async\x12!\n" +
-	"\foperation_id\x18\x06 \x01(\tR\voperationId\x12%\n" +
+	"\foperation_id\x18\x06 \x01(\tR\voperationId\x12\x1b\n" +
+	"\tpool_path\x18\b \x01(\tR\bpoolPath\x12%\n" +
 	"\x0edelete_volumes\x18\a \x01(\bR\rdeleteVolumes\"\xd1\x02\n" +
 	"\x11VMCommandResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x13\n" +

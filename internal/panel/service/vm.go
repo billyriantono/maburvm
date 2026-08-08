@@ -359,7 +359,7 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 
 	nodeID := req.NodeID
 	if nodeID == "" && orderRegion != nil {
-		nodeID, err = s.selectNodeInRegion(ctx, orderRegion.ID)
+		nodeID, err = s.selectNodeInRegion(ctx, orderRegion.ID, req.Resources.Disk)
 		if err != nil {
 			return nil, err
 		}
@@ -610,6 +610,14 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		generatedPassword = rootPassword
 	}
 
+	// Tell the node which pool to provision into. Without it the agent falls back
+	// to /var/lib/libvirt/images — the node's ROOT filesystem — so every VM would
+	// land on the OS volume no matter what storage the operator provisioned, and
+	// filling that volume takes libvirt and the agent down with it.
+	if pool := PrimaryPool(ctx, s.db, nodeID); pool != nil {
+		params["pool_path"] = pool.Path
+	}
+
 	paramsJSON, _ := json.Marshal(params)
 
 	if s.riverClient == nil {
@@ -742,7 +750,7 @@ func (s *VMService) validateResources(resources *models.Resources) error {
 // selectNodeInRegion picks an active node inside one region. A region with no
 // active node fails loudly here rather than silently spilling the order into a
 // different city.
-func (s *VMService) selectNodeInRegion(ctx context.Context, regionID string) (string, error) {
+func (s *VMService) selectNodeInRegion(ctx context.Context, regionID string, diskGB int) (string, error) {
 	var nodes []models.Node
 	if err := s.db.WithContext(ctx).
 		Where("status = ? AND region_id = ?", models.NodeStatusActive, regionID).
@@ -752,9 +760,38 @@ func (s *VMService) selectNodeInRegion(ctx context.Context, regionID string) (st
 	if len(nodes) == 0 {
 		return "", ErrRegionNoCapacity
 	}
+	nodes = s.nodesWithRoom(ctx, nodes, diskGB)
+	if len(nodes) == 0 {
+		return "", ErrRegionNoCapacity
+	}
 	s.nodeMutex.Lock()
 	defer s.nodeMutex.Unlock()
 	return s.selectNodeRoundRobin(nodes), nil
+}
+
+// nodesWithRoom drops nodes whose provisioning pool cannot hold the disk.
+//
+// Placement previously ignored storage entirely — round-robin would happily put
+// a VM on a node with nothing left, and the failure surfaced as a provisioning
+// error after the customer had already been charged. Nodes whose storage the
+// panel has not measured are kept: absence of a reading is not evidence of a
+// full disk, and excluding them would stop orders on a healthy node.
+func (s *VMService) nodesWithRoom(ctx context.Context, nodes []models.Node, diskGB int) []models.Node {
+	if diskGB <= 0 {
+		return nodes
+	}
+	out := make([]models.Node, 0, len(nodes))
+	for i := range nodes {
+		pool := PrimaryPool(ctx, s.db, nodes[i].ID)
+		if PoolFits(pool, diskGB) {
+			out = append(out, nodes[i])
+			continue
+		}
+		s.logger.WarnContext(ctx, "node skipped: provisioning pool has no room",
+			"node_id", nodes[i].ID, "pool", pool.Path,
+			"available_bytes", pool.AvailableSpace, "requested_gb", diskGB)
+	}
+	return out
 }
 
 // SetRegionService wires region resolution for order placement.

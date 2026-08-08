@@ -15,6 +15,7 @@ type StorageRepository interface {
 	GetPoolsByNodeID(nodeID string) ([]models.StoragePool, error)
 	CreatePool(pool *models.StoragePool) error
 	UpdatePool(pool *models.StoragePool) error
+	SetPrimaryPool(nodeID, poolID string) error
 	DeletePool(id string) error
 
 	// Volume operations
@@ -27,6 +28,25 @@ type StorageRepository interface {
 // storageRepository implements StorageRepository
 type storageRepository struct {
 	db *gorm.DB
+}
+
+// SetPrimaryPool makes one pool the node's provisioning target and clears the
+// flag on its siblings, in one transaction.
+//
+// Exactly one primary per node is the whole point: two would make the
+// destination of a new VM depend on row order, and none would send every VM to
+// the node's root filesystem.
+func (r *storageRepository) SetPrimaryPool(nodeID, poolID string) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.StoragePool{}).
+			Where("node_id = ? AND id <> ?", nodeID, poolID).
+			Update("is_primary", false).Error; err != nil {
+			return err
+		}
+		return tx.Model(&models.StoragePool{}).
+			Where("id = ?", poolID).
+			Update("is_primary", true).Error
+	})
 }
 
 // NewStorageRepository creates a new storage repository

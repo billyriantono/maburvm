@@ -397,6 +397,16 @@ message VMCommandRequest {
   // agent fail closed (UNKNOWN/PRESENT) for destructive commands.
   string operation_id = 6;
 
+  // pool_path is the directory the VM's disk (and its cloud-init seed) is
+  // provisioned into, for CREATE.
+  //
+  // Empty means the node's own default, which is what every caller used to send.
+  // That default is /var/lib/libvirt/images — on the node's ROOT filesystem —
+  // so every new VM landed on the OS volume regardless of what storage the
+  // operator had provisioned for VMs. Filling that volume does not merely fail
+  // the next VM: it takes libvirt, the agent and logging down with it.
+  string pool_path = 8;
+
   // delete_volumes requests that the VM's managed backing storage be destroyed
   // along with the domain. This is the explicit destructive-data-volume flag for
   // the DESTROY command. When false (or omitted), the agent must NOT claim an

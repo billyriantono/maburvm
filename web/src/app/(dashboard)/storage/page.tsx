@@ -21,6 +21,7 @@ import {
   useStoragePools,
   useCreateStoragePool,
   useResizeStoragePool,
+  useSetPrimaryPool,
   useDeleteStoragePool,
   useStorageVolumes,
   useCreateStorageVolume,
@@ -251,6 +252,7 @@ export default function StorageListPage() {
   const { data: nodes, isLoading: isLoadingNodes } = useNodes()
   const createPool = useCreateStoragePool()
   const resizePool = useResizeStoragePool()
+  const setPrimary = useSetPrimaryPool()
   const deletePool = useDeleteStoragePool()
   const [searchQuery, setSearchQuery] = useState("")
   const [typeFilter, setTypeFilter] = useState<string>("")
@@ -473,6 +475,15 @@ export default function StorageListPage() {
                     <p className="text-sm font-mono text-muted-foreground">{pool.path}</p>
                   </div>
                   <div className="flex items-center gap-2">
+                    {/* Where this node puts new VMs. Worth showing on the card
+                        rather than in a settings screen: a node with the wrong
+                        one provisions onto its OS volume, and nothing else in
+                        the UI would reveal that. */}
+                    {pool.is_primary && (
+                      <span className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300">
+                        NEW VMs
+                      </span>
+                    )}
                     <StatusBadge status={pool.status === 'online' ? 'online' : pool.status === 'offline' ? 'offline' : 'degraded'} />
                     <TypeBadge type={pool.type} />
                   </div>
@@ -518,6 +529,32 @@ export default function StorageListPage() {
                     <Settings className="w-4 h-4" />
                     <span className="ml-1">Volumes</span>
                   </Button>
+
+                  {!pool.is_primary && pool.status === "online" && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      title="Send new VMs on this node to this pool"
+                      onClick={async () => {
+                        const ok = await confirm({
+                          title: `Provision new VMs into "${pool.name}"?`,
+                          description:
+                            "New VMs on this node will have their disks created here. Machines already running are not moved.",
+                          confirmLabel: "Use for new VMs",
+                          details: [
+                            { label: "Path", value: pool.path },
+                            { label: "Free", value: formatBytes(pool.available_space ?? 0) },
+                          ],
+                          action: () => setPrimary.mutateAsync(pool.id),
+                        })
+                        if (!ok) return
+                        toast.success(`New VMs will be created in "${pool.name}"`)
+                      }}
+                    >
+                      <HardDrive className="w-4 h-4" />
+                      <span className="ml-1">Use for new VMs</span>
+                    </Button>
+                  )}
 
                   <Button
                     variant="outline"
