@@ -2165,6 +2165,48 @@ func (s *NodeAgentService) GetLiveMetrics(ctx context.Context, req *pb.GetLiveMe
 	}, nil
 }
 
+// GetStorageReport measures each pool path's own filesystem and reports where
+// the node's domains actually keep their disks.
+//
+// The panel used to derive every pool's usage from the node's root filesystem,
+// which was wrong in both directions at once: a pool directory holding nothing
+// reported gigabytes in use, while the separate volume holding every customer's
+// disk sat at 76% full and invisible. Measuring the pool's own path fixes the
+// number; the disk locations are what reveal storage in use that was never
+// registered as a pool.
+func (s *NodeAgentService) GetStorageReport(ctx context.Context, req *pb.GetStorageReportRequest) (*pb.GetStorageReportResponse, error) {
+	if _, authenticated := GetNodeIDFromContext(ctx); !authenticated {
+		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
+	}
+
+	pools := make([]*pb.PoolCapacity, 0, len(req.GetPaths()))
+	for _, p := range req.GetPaths() {
+		c := storage.Capacity(p)
+		pools = append(pools, &pb.PoolCapacity{
+			Path:           c.Path,
+			Exists:         c.Exists,
+			TotalBytes:     c.Total,
+			UsedBytes:      c.Used,
+			AvailableBytes: c.Available,
+			Filesystem:     c.Filesystem,
+		})
+	}
+
+	// Best-effort: a node whose libvirt is unreachable should still report the
+	// capacity figures, which are the part that stops an operator overfilling a
+	// volume.
+	var locations []*pb.DiskLocation
+	if found, err := libvirt.DiskLocations(); err != nil {
+		log.Printf("[NodeAgent] WARNING: could not enumerate disk locations: %v", err)
+	} else {
+		for path, count := range found {
+			locations = append(locations, &pb.DiskLocation{Path: path, DiskCount: int32(count)})
+		}
+	}
+
+	return &pb.GetStorageReportResponse{Success: true, Pools: pools, DiskLocations: locations}, nil
+}
+
 // GetGuestConnections reports how fast each guest on this node is opening new
 // outbound connections, so the panel can tell a compromised guest from a busy
 // one. The guest list comes from libvirt, not from anything the panel told us,

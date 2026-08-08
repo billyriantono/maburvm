@@ -35,6 +35,7 @@ const (
 	NodeAgent_ScanVMs_FullMethodName             = "/agent.NodeAgent/ScanVMs"
 	NodeAgent_CreateStorageVolume_FullMethodName = "/agent.NodeAgent/CreateStorageVolume"
 	NodeAgent_DeleteStorageVolume_FullMethodName = "/agent.NodeAgent/DeleteStorageVolume"
+	NodeAgent_GetStorageReport_FullMethodName    = "/agent.NodeAgent/GetStorageReport"
 	NodeAgent_MigrateVM_FullMethodName           = "/agent.NodeAgent/MigrateVM"
 	NodeAgent_SyncTemplate_FullMethodName        = "/agent.NodeAgent/SyncTemplate"
 	NodeAgent_AttachDisk_FullMethodName          = "/agent.NodeAgent/AttachDisk"
@@ -107,6 +108,16 @@ type NodeAgentClient interface {
 	CreateStorageVolume(ctx context.Context, in *CreateStorageVolumeRequest, opts ...grpc.CallOption) (*CreateStorageVolumeResponse, error)
 	// DeleteStorageVolume removes a previously provisioned volume file from the node.
 	DeleteStorageVolume(ctx context.Context, in *DeleteStorageVolumeRequest, opts ...grpc.CallOption) (*DeleteStorageVolumeResponse, error)
+	// GetStorageReport measures the filesystem behind each given pool path, and
+	// reports where the node's domains actually keep their disks.
+	//
+	// Both halves exist because of the same failure: the panel used to show every
+	// pool the node's ROOT filesystem usage, so a pool directory holding nothing
+	// reported gigabytes in use while the volume holding every customer's disk —
+	// mounted elsewhere and 76% full — was invisible. Measuring the pool's own
+	// path fixes the number; reporting the disk locations is what reveals storage
+	// in use that nobody registered as a pool at all.
+	GetStorageReport(ctx context.Context, in *GetStorageReportRequest, opts ...grpc.CallOption) (*GetStorageReportResponse, error)
 	// MigrateVM live-migrates a domain from this (source) node to a destination
 	// libvirt URI using peer-to-peer migration.
 	MigrateVM(ctx context.Context, in *MigrateVMRequest, opts ...grpc.CallOption) (*MigrateVMResponse, error)
@@ -336,6 +347,16 @@ func (c *nodeAgentClient) DeleteStorageVolume(ctx context.Context, in *DeleteSto
 	return out, nil
 }
 
+func (c *nodeAgentClient) GetStorageReport(ctx context.Context, in *GetStorageReportRequest, opts ...grpc.CallOption) (*GetStorageReportResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetStorageReportResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_GetStorageReport_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *nodeAgentClient) MigrateVM(ctx context.Context, in *MigrateVMRequest, opts ...grpc.CallOption) (*MigrateVMResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(MigrateVMResponse)
@@ -505,6 +526,16 @@ type NodeAgentServer interface {
 	CreateStorageVolume(context.Context, *CreateStorageVolumeRequest) (*CreateStorageVolumeResponse, error)
 	// DeleteStorageVolume removes a previously provisioned volume file from the node.
 	DeleteStorageVolume(context.Context, *DeleteStorageVolumeRequest) (*DeleteStorageVolumeResponse, error)
+	// GetStorageReport measures the filesystem behind each given pool path, and
+	// reports where the node's domains actually keep their disks.
+	//
+	// Both halves exist because of the same failure: the panel used to show every
+	// pool the node's ROOT filesystem usage, so a pool directory holding nothing
+	// reported gigabytes in use while the volume holding every customer's disk —
+	// mounted elsewhere and 76% full — was invisible. Measuring the pool's own
+	// path fixes the number; reporting the disk locations is what reveals storage
+	// in use that nobody registered as a pool at all.
+	GetStorageReport(context.Context, *GetStorageReportRequest) (*GetStorageReportResponse, error)
 	// MigrateVM live-migrates a domain from this (source) node to a destination
 	// libvirt URI using peer-to-peer migration.
 	MigrateVM(context.Context, *MigrateVMRequest) (*MigrateVMResponse, error)
@@ -609,6 +640,9 @@ func (UnimplementedNodeAgentServer) CreateStorageVolume(context.Context, *Create
 }
 func (UnimplementedNodeAgentServer) DeleteStorageVolume(context.Context, *DeleteStorageVolumeRequest) (*DeleteStorageVolumeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteStorageVolume not implemented")
+}
+func (UnimplementedNodeAgentServer) GetStorageReport(context.Context, *GetStorageReportRequest) (*GetStorageReportResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetStorageReport not implemented")
 }
 func (UnimplementedNodeAgentServer) MigrateVM(context.Context, *MigrateVMRequest) (*MigrateVMResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method MigrateVM not implemented")
@@ -934,6 +968,24 @@ func _NodeAgent_DeleteStorageVolume_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NodeAgent_GetStorageReport_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetStorageReportRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).GetStorageReport(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_GetStorageReport_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).GetStorageReport(ctx, req.(*GetStorageReportRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _NodeAgent_MigrateVM_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(MigrateVMRequest)
 	if err := dec(in); err != nil {
@@ -1194,6 +1246,10 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteStorageVolume",
 			Handler:    _NodeAgent_DeleteStorageVolume_Handler,
+		},
+		{
+			MethodName: "GetStorageReport",
+			Handler:    _NodeAgent_GetStorageReport_Handler,
 		},
 		{
 			MethodName: "MigrateVM",

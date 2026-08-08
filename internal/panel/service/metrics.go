@@ -10,9 +10,11 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/maburvm/panel/internal/panel/client"
 	"github.com/maburvm/panel/internal/panel/repository"
 	"github.com/maburvm/panel/internal/shared/models"
 	"github.com/riverqueue/river"
@@ -172,7 +174,7 @@ func (c *MetricsCollector) collectOnce(ctx context.Context) {
 			acancel()
 			// Keep each node's default storage pool present and its capacity
 			// live from the node's real disk, so /storage reflects the node.
-			c.syncDefaultStoragePool(&nodes[i], m)
+			c.syncStoragePools(ctx, &nodes[i])
 		}
 	}
 
@@ -294,46 +296,117 @@ const defaultPoolPath = "/var/lib/libvirt/images"
 // syncDefaultStoragePool ensures each online node has a 'local' dir storage pool
 // at the node's image dir and refreshes its capacity/status from the node's live
 // disk metrics, so /storage shows real per-node storage instead of static values.
-func (c *MetricsCollector) syncDefaultStoragePool(node *models.Node, m *NodeMetrics) {
-	if m.DiskTotal <= 0 {
-		return // no usable disk figure this tick
-	}
+// syncStoragePools refreshes every pool on a node from the filesystem that
+// actually backs it, and records storage in use that no pool covers.
+//
+// It replaces a version that took the node's ROOT filesystem usage and wrote it
+// onto whichever pool pointed at the default image directory. That was wrong in
+// both directions at once on a live node: the pool directory was empty and
+// reported 104 GB in use, while the separate volume holding all 24 customers'
+// disks sat at 76% full and was not represented at all. An operator reading the
+// panel saw 89% free on storage that had 214 GB left.
+func (c *MetricsCollector) syncStoragePools(ctx context.Context, node *models.Node) {
 	pools, err := c.storageRepo.GetPoolsByNodeID(node.ID)
 	if err != nil {
 		c.logger.Error("storage sync: list pools failed", "node_id", node.ID, "error", err)
 		return
 	}
-	var pool *models.StoragePool
+
+	paths := make([]string, 0, len(pools)+1)
+	seen := map[string]bool{}
 	for i := range pools {
-		if pools[i].Path == defaultPoolPath {
-			pool = &pools[i]
-			break
+		if p := pools[i].Path; p != "" && !seen[p] {
+			paths = append(paths, p)
+			seen[p] = true
 		}
 	}
-	avail := max(m.DiskTotal-m.DiskUsed, 0)
-	if pool == nil {
-		if err := c.storageRepo.CreatePool(&models.StoragePool{
-			Name:           "local",
-			Type:           "dir",
-			Status:         "online",
-			Path:           defaultPoolPath,
-			FileFormat:     "qcow2",
-			IsPrimary:      true,
-			NodeID:         node.ID,
-			TotalSpace:     m.DiskTotal,
-			UsedSpace:      m.DiskUsed,
-			AvailableSpace: avail,
-		}); err != nil {
-			c.logger.Error("storage sync: create default pool failed", "node_id", node.ID, "error", err)
-		}
+	// Always measure the default directory, so a node with no pools yet still
+	// gets one created with real numbers.
+	if !seen[defaultPoolPath] {
+		paths = append(paths, defaultPoolPath)
+	}
+
+	rctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	report, err := c.nodeService.AgentClient().GetStorageReport(rctx, node.ID, paths)
+	cancel()
+	if err != nil {
+		c.logger.Warn("storage sync: report failed", "node_id", node.ID, "error", err)
 		return
 	}
-	pool.TotalSpace = m.DiskTotal
-	pool.UsedSpace = m.DiskUsed
-	pool.AvailableSpace = avail
-	pool.Status = "online"
-	if err := c.storageRepo.UpdatePool(pool); err != nil {
-		c.logger.Error("storage sync: update default pool failed", "node_id", node.ID, "error", err)
+
+	byPath := make(map[string]client.PoolCapacity, len(report.Pools))
+	for _, p := range report.Pools {
+		byPath[p.Path] = p
+	}
+
+	for i := range pools {
+		cap, ok := byPath[pools[i].Path]
+		if !ok {
+			continue
+		}
+		// A pool whose path is missing on the node is degraded, not empty.
+		// Leaving it "online" with zero usage would read as a healthy empty pool
+		// and invite an operator to place VMs on storage that is not there.
+		if !cap.Exists {
+			pools[i].Status = "degraded"
+			if err := c.storageRepo.UpdatePool(&pools[i]); err != nil {
+				c.logger.Error("storage sync: update pool failed", "pool_id", pools[i].ID, "error", err)
+			}
+			continue
+		}
+		pools[i].TotalSpace = cap.Total
+		pools[i].UsedSpace = cap.Used
+		pools[i].AvailableSpace = cap.Available
+		pools[i].Status = "online"
+		if err := c.storageRepo.UpdatePool(&pools[i]); err != nil {
+			c.logger.Error("storage sync: update pool failed", "pool_id", pools[i].ID, "error", err)
+		}
+	}
+
+	if !seen[defaultPoolPath] {
+		if cap, ok := byPath[defaultPoolPath]; ok && cap.Exists {
+			if err := c.storageRepo.CreatePool(&models.StoragePool{
+				Name:           "local",
+				Type:           "dir",
+				Status:         "online",
+				Path:           defaultPoolPath,
+				FileFormat:     "qcow2",
+				IsPrimary:      true,
+				NodeID:         node.ID,
+				TotalSpace:     cap.Total,
+				UsedSpace:      cap.Used,
+				AvailableSpace: cap.Available,
+			}); err != nil {
+				c.logger.Error("storage sync: create default pool failed", "node_id", node.ID, "error", err)
+			}
+		}
+	}
+
+	c.warnUnregisteredStorage(node, pools, report.DiskLocations)
+}
+
+// warnUnregisteredStorage logs directories holding domain disks that no pool
+// covers.
+//
+// This is how the original fault would have been caught: both nodes kept nearly
+// every customer disk on a mount the panel had no pool for, so nothing watched
+// the filesystem that mattered. Logged per tick rather than stored, because the
+// remedy is for an operator to register the pool — at which point the message
+// stops on its own.
+func (c *MetricsCollector) warnUnregisteredStorage(node *models.Node, pools []models.StoragePool, locations []client.DiskLocation) {
+	if len(locations) == 0 {
+		return
+	}
+	covered := make(map[string]bool, len(pools))
+	for i := range pools {
+		covered[strings.TrimSuffix(pools[i].Path, "/")] = true
+	}
+	for _, loc := range locations {
+		if covered[strings.TrimSuffix(loc.Path, "/")] {
+			continue
+		}
+		c.logger.Warn("storage sync: domain disks live outside any registered pool",
+			"node_id", node.ID, "path", loc.Path, "disks", loc.DiskCount)
 	}
 }
 

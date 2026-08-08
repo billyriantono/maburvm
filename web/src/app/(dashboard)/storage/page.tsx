@@ -187,12 +187,31 @@ function TypeBadge({ type }: { type: string }) {
   )
 }
 
-function StorageBar({ used, total }: { used: number; total: number }) {
+// StorageBar shows how full a pool is, and — more usefully — how much is left.
+//
+// Free space is the number an operator acts on: "76% used" and "214 GB left"
+// answer different questions, and only the second one tells you whether the
+// next VM fits. The threshold comes from the pool rather than being hardcoded,
+// because what counts as alarming differs between a scratch pool and the volume
+// holding every customer's disk.
+function StorageBar({
+  used,
+  total,
+  available,
+  threshold,
+}: {
+  used: number
+  total: number
+  available: number
+  threshold?: number
+}) {
   const percentage = total > 0 ? Math.round((used / total) * 100) : 0
+  const alertAt = threshold && threshold > 0 ? threshold : 90
+  const warnAt = Math.max(alertAt - 15, 50)
 
   const getColorClass = () => {
-    if (percentage >= 90) return "bg-red-500"
-    if (percentage >= 75) return "bg-amber-500"
+    if (percentage >= alertAt) return "bg-red-500"
+    if (percentage >= warnAt) return "bg-amber-500"
     if (percentage >= 50) return "bg-blue-500"
     return "bg-emerald-500"
   }
@@ -213,6 +232,15 @@ function StorageBar({ used, total }: { used: number; total: number }) {
         <span>{formatBytes(used)} used</span>
         <span>{formatBytes(total)} total</span>
       </div>
+      {percentage >= warnAt && (
+        <p
+          className={`text-[11px] font-medium ${
+            percentage >= alertAt ? "text-red-600" : "text-amber-600"
+          }`}
+        >
+          {formatBytes(available)} left
+        </p>
+      )}
     </div>
   )
 }
@@ -465,7 +493,12 @@ export default function StorageListPage() {
                 </div>
 
                 <div className="mb-4">
-                  <StorageBar used={pool.used_space ?? 0} total={pool.total_space ?? 0} />
+                  <StorageBar
+                    used={pool.used_space ?? 0}
+                    total={pool.total_space ?? 0}
+                    available={pool.available_space ?? 0}
+                    threshold={pool.alert_threshold}
+                  />
                 </div>
 
                 <div className="bg-muted rounded-md p-2 mb-4">

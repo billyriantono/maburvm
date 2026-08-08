@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"path/filepath"
 	"strings"
 
 	"libvirt.org/go/libvirt"
@@ -109,6 +110,52 @@ func ListGuestInterfaces() ([]GuestInterface, error) {
 					gi.Target = iface.Target.Dev
 				}
 				out = append(out, gi)
+			}
+		}
+		return nil
+	})
+	return out, err
+}
+
+// DiskLocations counts, per directory, how many domain disks live there.
+//
+// Covers every defined domain, running or not, and every domain the panel does
+// not manage — which is the point. A node's registered pools describe where the
+// panel *thinks* disks are; this describes where they actually are. On a node
+// imported from another platform the two can disagree completely, and the first
+// symptom of that is a full filesystem nobody was watching.
+//
+// ISO/cdrom sources are included: they occupy the same filesystem and a large
+// ISO library is a real reason a volume fills up.
+func DiskLocations() (map[string]int, error) {
+	out := map[string]int{}
+	err := WithConnection(func(conn *libvirt.Connect) error {
+		doms, err := conn.ListAllDomains(0) // 0 = all, active and inactive
+		if err != nil {
+			return fmt.Errorf("failed to list domains: %w", err)
+		}
+		defer func() {
+			for i := range doms {
+				_ = doms[i].Free()
+			}
+		}()
+
+		for i := range doms {
+			xmlDesc, err := doms[i].GetXMLDesc(0)
+			if err != nil {
+				continue // a domain that disappears mid-scan is not an error
+			}
+			var def libvirtxml.Domain
+			if err := def.Unmarshal(xmlDesc); err != nil || def.Devices == nil {
+				continue
+			}
+			for _, disk := range def.Devices.Disks {
+				if disk.Source == nil || disk.Source.File == nil {
+					continue // network-backed (RBD/iSCSI) disks have no local path
+				}
+				if f := strings.TrimSpace(disk.Source.File.File); f != "" {
+					out[filepath.Dir(f)]++
+				}
 			}
 		}
 		return nil

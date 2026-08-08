@@ -82,6 +82,17 @@ service NodeAgent {
   // DeleteStorageVolume removes a previously provisioned volume file from the node.
   rpc DeleteStorageVolume(DeleteStorageVolumeRequest) returns (DeleteStorageVolumeResponse);
 
+  // GetStorageReport measures the filesystem behind each given pool path, and
+  // reports where the node's domains actually keep their disks.
+  //
+  // Both halves exist because of the same failure: the panel used to show every
+  // pool the node's ROOT filesystem usage, so a pool directory holding nothing
+  // reported gigabytes in use while the volume holding every customer's disk —
+  // mounted elsewhere and 76% full — was invisible. Measuring the pool's own
+  // path fixes the number; reporting the disk locations is what reveals storage
+  // in use that nobody registered as a pool at all.
+  rpc GetStorageReport(GetStorageReportRequest) returns (GetStorageReportResponse);
+
   // MigrateVM live-migrates a domain from this (source) node to a destination
   // libvirt URI using peer-to-peer migration.
   rpc MigrateVM(MigrateVMRequest) returns (MigrateVMResponse);
@@ -1436,6 +1447,53 @@ message SyncTemplateResponse {
 // ============================================================================
 // Live Metrics
 // ============================================================================
+
+// ============================================================================
+// Storage reporting
+// ============================================================================
+
+message GetStorageReportRequest {
+  // paths are the pool paths to measure. Each is measured on its own, because
+  // pools on a node routinely live on different filesystems.
+  repeated string paths = 1;
+}
+
+// PoolCapacity is one pool path's real filesystem usage.
+message PoolCapacity {
+  string path = 1;
+
+  // exists is false when the path is missing on the node. Reported rather than
+  // silently zeroed: a pool pointing at a path that is not there is a
+  // misconfiguration, and zero bytes used looks like an empty pool.
+  bool exists = 2;
+
+  int64 total_bytes = 3;
+  int64 used_bytes = 4;
+  int64 available_bytes = 5;
+
+  // filesystem identifies the mount backing this path, so two pools that share
+  // one filesystem can be shown as sharing it rather than as independent
+  // capacity that can be added up.
+  string filesystem = 6;
+}
+
+// DiskLocation is a directory the node's domains actually keep disks in.
+message DiskLocation {
+  string path = 1;
+  int32 disk_count = 2;
+}
+
+message GetStorageReportResponse {
+  bool success = 1;
+  repeated PoolCapacity pools = 2;
+
+  // disk_locations covers every defined domain, including ones the panel does
+  // not manage, so storage in use outside any registered pool becomes visible
+  // instead of being discovered during an outage.
+  repeated DiskLocation disk_locations = 3;
+
+  ErrorResponse error = 4;
+}
 
 // GetLiveMetricsRequest requests real-time system metrics from the node.
 message GetLiveMetricsRequest {

@@ -1040,3 +1040,72 @@ func (c *AgentClient) SetQuarantine(ctx context.Context, nodeID, mac, reason str
 	}
 	return macs, nil
 }
+
+// PoolCapacity is one pool path's real filesystem usage on a node.
+type PoolCapacity struct {
+	Path       string
+	Exists     bool
+	Total      int64
+	Used       int64
+	Available  int64
+	Filesystem string
+}
+
+// DiskLocation is a directory a node's domains actually keep disks in.
+type DiskLocation struct {
+	Path      string
+	DiskCount int
+}
+
+// StorageReport is what a node knows about its own storage.
+type StorageReport struct {
+	Pools         []PoolCapacity
+	DiskLocations []DiskLocation
+}
+
+// GetStorageReport measures each pool path on the node and reports where its
+// domains actually keep their disks.
+//
+// Paths are measured individually because pools on one node routinely sit on
+// different filesystems — deriving them all from the node's root filesystem is
+// the bug this replaces.
+func (c *AgentClient) GetStorageReport(ctx context.Context, nodeID string, paths []string) (*StorageReport, error) {
+	node, err := c.getNodeInfo(nodeID)
+	if err != nil {
+		return nil, err
+	}
+
+	var out *StorageReport
+	err = c.executeWithRetry(ctx, node, func(ctx context.Context, client pb.NodeAgentClient) error {
+		resp, err := client.GetStorageReport(ctx, &pb.GetStorageReportRequest{Paths: paths})
+		if err != nil {
+			return err
+		}
+		if !resp.Success {
+			return fmt.Errorf("GetStorageReport failed: %s", resp.Error.GetMessage())
+		}
+		report := &StorageReport{}
+		for _, p := range resp.GetPools() {
+			report.Pools = append(report.Pools, PoolCapacity{
+				Path:       p.GetPath(),
+				Exists:     p.GetExists(),
+				Total:      p.GetTotalBytes(),
+				Used:       p.GetUsedBytes(),
+				Available:  p.GetAvailableBytes(),
+				Filesystem: p.GetFilesystem(),
+			})
+		}
+		for _, l := range resp.GetDiskLocations() {
+			report.DiskLocations = append(report.DiskLocations, DiskLocation{
+				Path:      l.GetPath(),
+				DiskCount: int(l.GetDiskCount()),
+			})
+		}
+		out = report
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
