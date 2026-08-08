@@ -45,8 +45,11 @@ type GuestConnection struct {
 	FirstFlaggedAt *time.Time `json:"first_flagged_at" gorm:"column:first_flagged_at"`
 	LastSeenAt     time.Time  `json:"last_seen_at" gorm:"column:last_seen_at;not null"`
 
-	// NodeName is filled for display only and is not a column.
-	NodeName string `json:"node_name" gorm:"-"`
+	// NodeName comes from a join, not from this table. It must be read-only
+	// ("->") rather than ignored ("-"): ignored fields are skipped when scanning
+	// too, so the joined value silently never arrives and every row renders
+	// without a node.
+	NodeName string `json:"node_name" gorm:"column:node_name;->"`
 }
 
 func (GuestConnection) TableName() string { return "guest_connections" }
