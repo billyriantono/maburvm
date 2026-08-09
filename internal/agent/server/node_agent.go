@@ -1030,6 +1030,13 @@ func (s *NodeAgentService) BackupDisk(ctx context.Context, req *pb.BackupDiskReq
 	// which is a far worse outcome than a failed backup.
 	exportPath := filepath.Join(filepath.Dir(diskPath), req.VmId+"-backup.qcow2")
 	_ = os.Remove(exportPath)
+	// Registered before the export, not after it: a failed export leaves a
+	// partial file that is as large as the work it got through — 17.9 GB was
+	// found sitting on a node after one timed out — and the cleanup that used to
+	// sit below the error return never ran on precisely the path that creates
+	// the mess.
+	defer os.Remove(exportPath)
+
 	// The deadline is derived from the disk's size inside ConvertCompressed;
 	// compression runs at single-digit MiB/s, so a flat ceiling is either absurd
 	// for a small disk or fatal for a large one.
@@ -1037,7 +1044,6 @@ func (s *NodeAgentService) BackupDisk(ctx context.Context, req *pb.BackupDiskReq
 	if err := qcowExport.ConvertCompressed(diskPath, exportPath); err != nil {
 		return backupDiskErr(fmt.Sprintf("disk export failed: %v", err)), nil
 	}
-	defer os.Remove(exportPath)
 
 	checksum, size, err := fileSHA256(exportPath)
 	if err != nil {
