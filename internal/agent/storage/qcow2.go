@@ -155,10 +155,43 @@ func (q *QCOW2Manager) CloneImage(source string, dest string) error {
 	return nil
 }
 
+// compressedExportBytesPerSecond is the throughput a compressed export is
+// budgeted at when deriving its deadline.
+//
+// Measured on a production node: 11 MiB/s on an idle disk, and as low as 2 MiB/s
+// with two exports competing for the same spindle. qemu-img's qcow2 compression
+// is zlib and effectively single-threaded, so a 72-core host does not help. The
+// budget is deliberately below the worst figure observed — a deadline that is
+// too generous merely delays an error, while one that is too tight destroys
+// hours of completed work.
+const compressedExportBytesPerSecond = 2 * 1024 * 1024
+
+// compressedExportBaseTimeout covers process start, metadata and the fixed cost
+// of small images, so a tiny disk is not given a near-zero deadline.
+const compressedExportBaseTimeout = 15 * time.Minute
+
+// exportTimeout budgets a compressed export from the size of its source.
+//
+// A flat ceiling cannot work here: the same limit is either absurd for a 1 GB
+// disk or fatal for a 91 GB one. The previous flat hour killed exports of
+// anything past roughly 40 GB — after they had already run for an hour.
+func exportTimeout(sourceBytes int64) time.Duration {
+	if sourceBytes <= 0 {
+		return compressedExportBaseTimeout
+	}
+	return compressedExportBaseTimeout +
+		time.Duration(sourceBytes/compressedExportBytesPerSecond)*time.Second
+}
+
 // ConvertCompressed exports source into a standalone, compressed qcow2 at dest.
 // Used for disk backups (independent of any backing chain).
+//
+// The deadline is derived from the source size rather than taken from the
+// manager's flat timeout, because compression throughput is roughly constant
+// and the work is not.
 func (q *QCOW2Manager) ConvertCompressed(source string, dest string) error {
-	if _, err := os.Stat(source); err != nil {
+	info, err := os.Stat(source)
+	if err != nil {
 		return fmt.Errorf("source image not found: %s", source)
 	}
 	dir := filepath.Dir(dest)
@@ -166,7 +199,12 @@ func (q *QCOW2Manager) ConvertCompressed(source string, dest string) error {
 		return fmt.Errorf("failed to create directory %s: %w", dir, err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), q.timeout)
+	deadline := exportTimeout(info.Size())
+	if q.timeout > deadline {
+		// An explicit, larger timeout from the caller still wins.
+		deadline = q.timeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 	defer cancel()
 
 	// -U (force-share) lets qemu-img read the disk even while the VM is running and
@@ -177,6 +215,15 @@ func (q *QCOW2Manager) ConvertCompressed(source string, dest string) error {
 	cmd := exec.CommandContext(ctx, q.qemuImgPath, "convert", "-U", "-O", "qcow2", "-c", source, dest)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		// Say which of the two it was. "signal: killed" with empty output tells
+		// an operator nothing, and the two causes need opposite responses: a
+		// deadline means give it longer or use a faster path, while a real
+		// failure means look at the disk.
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("compressed export of %s (%d bytes) exceeded its %s deadline; "+
+				"compression runs at roughly %d MiB/s on this node",
+				source, info.Size(), deadline, compressedExportBytesPerSecond/(1024*1024))
+		}
 		return fmt.Errorf("failed to export compressed QCOW2 image: %w (output: %s)", err, string(output))
 	}
 

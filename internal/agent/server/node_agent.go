@@ -77,6 +77,12 @@ type NodeAgentService struct {
 
 // NewNodeAgentService creates a new NodeAgentService with all dependencies
 func NewNodeAgentService(libvirtMgr *libvirt.VMManager, networkMgr *network.Manager, healthCollector *health.MetricsCollector, vncProxy *vncproxy.Proxy) *NodeAgentService {
+	// An export interrupted by a crash or a restart leaves its partial file
+	// behind: the cleanup is deferred inside the agent, so a process that dies
+	// never runs it. These are multi-GB files on the volume holding customer
+	// disks, and nothing else would ever remove them.
+	cleanStaleExports()
+
 	return &NodeAgentService{
 		libvirt:         libvirtMgr,
 		networkMgr:      networkMgr,
@@ -342,6 +348,41 @@ func primaryBridge(cfg *pb.VMConfig) string {
 		}
 	}
 	return ""
+}
+
+// cleanStaleExports removes leftover backup/image export files.
+//
+// Only files older than an hour are touched: an export running right now is a
+// legitimate file of the same shape, and deleting one mid-write would turn a
+// slow backup into a corrupt one. An agent restart during an export therefore
+// leaves the file until the next restart, which is the safe order to get this
+// wrong in.
+func cleanStaleExports() {
+	dirs := map[string]bool{defaultImageDir: true}
+	if locations, err := libvirt.DiskLocations(); err == nil {
+		for path := range locations {
+			dirs[path] = true
+		}
+	}
+	cutoff := time.Now().Add(-time.Hour)
+	for dir := range dirs {
+		matches, err := filepath.Glob(filepath.Join(dir, "*-backup.qcow2"))
+		if err != nil {
+			continue
+		}
+		for _, path := range matches {
+			info, err := os.Stat(path)
+			if err != nil || info.ModTime().After(cutoff) {
+				continue
+			}
+			if err := os.Remove(path); err != nil {
+				log.Printf("[NodeAgent] WARNING: could not remove stale export %s: %v", path, err)
+				continue
+			}
+			log.Printf("[NodeAgent] removed stale export %s (%d bytes, last written %s)",
+				path, info.Size(), info.ModTime().Format(time.RFC3339))
+		}
+	}
 }
 
 // defaultImageDir is where VM disk images are provisioned when the caller names
@@ -982,14 +1023,17 @@ func (s *NodeAgentService) BackupDisk(ctx context.Context, req *pb.BackupDiskReq
 		key = fmt.Sprintf("backups/%s/%d.qcow2", req.VmId, time.Now().Unix())
 	}
 
-	// Export a standalone, compressed copy of the disk. Compressing a multi-GB
-	// disk routinely exceeds the QCOW2Manager's 5-minute default — which SIGKILLs
-	// qemu-img and surfaces as "signal: killed". Give it a generous ceiling that
-	// matches the backup/image worker's 60-minute River timeout.
-	exportPath := filepath.Join(defaultImageDir, req.VmId+"-backup.qcow2")
+	// Write the export beside the disk it came from, not into the default image
+	// directory. That directory is on the node's ROOT filesystem, so exporting a
+	// large VM whose disk lives on a separate volume would pile tens of GB onto
+	// the OS volume — and filling that takes libvirt and this agent down with it,
+	// which is a far worse outcome than a failed backup.
+	exportPath := filepath.Join(filepath.Dir(diskPath), req.VmId+"-backup.qcow2")
 	_ = os.Remove(exportPath)
+	// The deadline is derived from the disk's size inside ConvertCompressed;
+	// compression runs at single-digit MiB/s, so a flat ceiling is either absurd
+	// for a small disk or fatal for a large one.
 	qcowExport := storage.NewQCOW2Manager()
-	qcowExport.SetTimeout(60 * time.Minute)
 	if err := qcowExport.ConvertCompressed(diskPath, exportPath); err != nil {
 		return backupDiskErr(fmt.Sprintf("disk export failed: %v", err)), nil
 	}

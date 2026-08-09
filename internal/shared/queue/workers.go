@@ -1169,7 +1169,11 @@ func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreJob]) er
 // upload of a multi-GB image routinely exceeds a minute, and letting the job ctx
 // cancel mid-transfer both fails the backup and orphans the qemu-img process
 // (which then holds the disk lock and blocks retries).
-func (w *RestoreWorker) Timeout(*river.Job[RestoreJob]) time.Duration { return 60 * time.Minute }
+// The node compresses at single-digit MiB/s, so a 90 GB disk needs hours. A
+// deadline shorter than the work destroys an export that was going to succeed,
+// and the job is a background one — waiting costs nothing that failing does not
+// cost more.
+func (w *RestoreWorker) Timeout(*river.Job[RestoreJob]) time.Duration { return 8 * time.Hour }
 
 // BackupWorker handles VM backup operations
 // Queue: batch (10 workers)
@@ -1197,7 +1201,11 @@ func NewBackupWorker(logger *slog.Logger) *BackupWorker {
 // Timeout overrides River's 1-minute default for the same reason as
 // RestoreWorker: a disk export + upload of a multi-GB image exceeds a minute and
 // must not be cancelled mid-transfer (which orphans qemu-img and locks the disk).
-func (w *BackupWorker) Timeout(*river.Job[BackupJob]) time.Duration { return 60 * time.Minute }
+// The node compresses at single-digit MiB/s, so a 90 GB disk needs hours. A
+// deadline shorter than the work destroys an export that was going to succeed,
+// and the job is a background one — waiting costs nothing that failing does not
+// cost more.
+func (w *BackupWorker) Timeout(*river.Job[BackupJob]) time.Duration { return 8 * time.Hour }
 
 // Work implements the backup job handler
 func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) error {
@@ -1448,7 +1456,11 @@ func NewImageWorker(logger *slog.Logger) *ImageWorker {
 
 // Timeout mirrors BackupWorker: a multi-GB disk export + upload exceeds River's
 // 1-minute default and must not be cancelled mid-transfer.
-func (w *ImageWorker) Timeout(*river.Job[ImageJob]) time.Duration { return 60 * time.Minute }
+// The node compresses at single-digit MiB/s, so a 90 GB disk needs hours. A
+// deadline shorter than the work destroys an export that was going to succeed,
+// and the job is a background one — waiting costs nothing that failing does not
+// cost more.
+func (w *ImageWorker) Timeout(*river.Job[ImageJob]) time.Duration { return 8 * time.Hour }
 
 // markImageFailed records a terminal failure on the image row.
 func markImageFailed(ctx context.Context, imageID, msg string) {

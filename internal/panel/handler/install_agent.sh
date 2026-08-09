@@ -94,6 +94,12 @@ ExecStart=${INSTALL_DIR}/agent
 Restart=always
 RestartSec=5
 LimitNOFILE=65536
+# Only the agent gets the stop signal, not everything it started. The agent
+# spawns qemu-img for backups and image captures, and those run for hours on a
+# large disk; with the default control-group behaviour an ordinary agent restart
+# SIGTERMs them mid-flight and destroys the work, which is exactly how a
+# customer's image capture was lost during a routine deploy.
+KillMode=mixed
 
 [Install]
 WantedBy=multi-user.target
