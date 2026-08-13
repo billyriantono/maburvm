@@ -2,6 +2,8 @@ package network
 
 import (
 	"fmt"
+	"log"
+	"net"
 	"strconv"
 	"strings"
 	"sync"
@@ -96,6 +98,29 @@ func (nm *NATManager) ensureChain() error {
 	return nil
 }
 
+// isPrivateAddress reports whether an address needs the host to translate it to
+// reach the internet.
+//
+// Anything routable does not: it is the VM's own identity on the wire, and
+// rewriting it breaks the VM while leaving inbound connections working, which is
+// what makes the fault so hard to recognise.
+func isPrivateAddress(addr string) bool {
+	ip := net.ParseIP(strings.TrimSpace(strings.SplitN(addr, "/", 2)[0]))
+	if ip == nil {
+		// Unparseable: masquerade, matching the previous behaviour. An address
+		// we cannot classify is more likely a private one from a managed network
+		// than a public allocation.
+		return true
+	}
+	// Carrier-grade NAT space (100.64.0.0/10) is not covered by IsPrivate but is
+	// equally unroutable from the internet.
+	cgnat := &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
+	if cgnat.Contains(ip) {
+		return true
+	}
+	return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast()
+}
+
 // SetupNAT sets up MASQUERADE for a VM's internal IP
 // This allows the VM to access external networks through NAT
 func (nm *NATManager) SetupNAT(vmID string, internalIP string) error {
@@ -107,18 +132,41 @@ func (nm *NATManager) SetupNAT(vmID string, internalIP string) error {
 		return fmt.Errorf("internal IP cannot be empty")
 	}
 
-	// Add MASQUERADE rule for outgoing traffic from the VM
-	// Format: -t nat -A POSTROUTING -s <internalIP> -j MASQUERADE
-	rule := []string{"-s", internalIP, "-j", "MASQUERADE", "-m", "comment", "--comment", fmt.Sprintf("maburvm-vm-%s", vmID)}
+	// Masquerade ONLY a VM whose address is private.
+	//
+	// A VM holding a routable public address is bridged onto the uplink and is
+	// its own identity on the wire; rewriting its source to the host's address
+	// sends packets out of a VLAN carrying a source from a different subnet,
+	// which the upstream router discards. The symptom is precise and confusing:
+	// replies to inbound connections keep working, because their conntrack entry
+	// was created by the inbound packet and carries no NAT, while every
+	// connection the VM itself opens dies silently. Observed on a live VM with
+	// 161 packets counted against the rule and no outbound connectivity.
+	if isPrivateAddress(internalIP) {
+		rule := []string{"-s", internalIP, "-j", "MASQUERADE", "-m", "comment", "--comment", fmt.Sprintf("maburvm-vm-%s", vmID)}
 
-	exists, err := nm.ipt.Exists(NATTable, PostroutingChain, rule...)
-	if err != nil {
-		return fmt.Errorf("failed to check MASQUERADE rule: %w", err)
-	}
+		exists, err := nm.ipt.Exists(NATTable, PostroutingChain, rule...)
+		if err != nil {
+			return fmt.Errorf("failed to check MASQUERADE rule: %w", err)
+		}
 
-	if !exists {
-		if err := nm.ipt.Append(NATTable, PostroutingChain, rule...); err != nil {
-			return fmt.Errorf("failed to add MASQUERADE rule: %w", err)
+		if !exists {
+			if err := nm.ipt.Append(NATTable, PostroutingChain, rule...); err != nil {
+				return fmt.Errorf("failed to add MASQUERADE rule: %w", err)
+			}
+		}
+	} else {
+		// A public address may carry a masquerade left by an earlier version, or
+		// by a private address previously assigned to this VM. Remove it, so a
+		// VM that was broken by it recovers on the next network config push
+		// rather than needing someone to notice and clear it by hand.
+		stale := []string{"-s", internalIP, "-j", "MASQUERADE", "-m", "comment", "--comment", fmt.Sprintf("maburvm-vm-%s", vmID)}
+		if ok, cerr := nm.ipt.Exists(NATTable, PostroutingChain, stale...); cerr == nil && ok {
+			if derr := nm.ipt.Delete(NATTable, PostroutingChain, stale...); derr != nil {
+				log.Printf("[NATManager] WARNING: could not remove masquerade for public address %s: %v", internalIP, derr)
+			} else {
+				log.Printf("[NATManager] removed masquerade for public address %s (a routable VM must egress as itself)", internalIP)
+			}
 		}
 	}
 
@@ -128,7 +176,7 @@ func (nm *NATManager) SetupNAT(vmID string, internalIP string) error {
 
 	// Add FORWARD rule to allow traffic from/to this VM
 	forwardRule := []string{"-s", internalIP, "-j", "ACCEPT", "-m", "comment", "--comment", fmt.Sprintf("maburvm-vm-%s-out", vmID)}
-	exists, err = nm.ipt.Exists(FilterTable, ForwardChain, forwardRule...)
+	exists, err := nm.ipt.Exists(FilterTable, ForwardChain, forwardRule...)
 	if err != nil {
 		return fmt.Errorf("failed to check FORWARD rule: %w", err)
 	}
