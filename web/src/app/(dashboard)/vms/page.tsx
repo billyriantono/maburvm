@@ -324,6 +324,7 @@ export default function VMListPage() {
     pageSize: itemsPerPage,
     status: statusFilter || undefined,
     nodeId: nodeFilter || undefined,
+    search: debouncedSearch || undefined,
   })
   
   const { data: nodes } = useNodes()
@@ -338,18 +339,10 @@ export default function VMListPage() {
   const deleteVM = useDeleteVM()
   const vmActions = useVMActions()
   
-  // Filter VMs client-side for search
-  const filteredVMs = useMemo(() => {
-    if (!data?.data) return []
-    
-    if (!debouncedSearch) return data.data
-    
-    const query = debouncedSearch.toLowerCase()
-    return data.data.filter(vm => 
-      vm.hostname.toLowerCase().includes(query) || 
-      vm.id.toLowerCase().includes(query)
-    )
-  }, [data, debouncedSearch])
+  // The API does the searching. Filtering here instead would only ever look at
+  // the ten rows this page happens to hold, so a VM on any other page reads as
+  // "No VMs found" — beside a total that still says 65.
+  const filteredVMs = data?.data ?? []
   
   // Calculate total pages
   const totalPages = data?.totalPages || 1

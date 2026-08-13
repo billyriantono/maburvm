@@ -46,6 +46,7 @@ const (
 	NodeAgent_ConfigureFloatingIP_FullMethodName = "/agent.NodeAgent/ConfigureFloatingIP"
 	NodeAgent_ConfigureVPC_FullMethodName        = "/agent.NodeAgent/ConfigureVPC"
 	NodeAgent_SetQuarantine_FullMethodName       = "/agent.NodeAgent/SetQuarantine"
+	NodeAgent_SetConsoleAccess_FullMethodName    = "/agent.NodeAgent/SetConsoleAccess"
 	NodeAgent_GetGuestConnections_FullMethodName = "/agent.NodeAgent/GetGuestConnections"
 )
 
@@ -159,6 +160,13 @@ type NodeAgentClient interface {
 	// often ones the panel does not manage, and an abusive guest may be running a
 	// spoofed or duplicated address.
 	SetQuarantine(ctx context.Context, in *SetQuarantineRequest, opts ...grpc.CallOption) (*SetQuarantineResponse, error)
+	// SetConsoleAccess enforces console enable/disable on the domain itself.
+	//
+	// The panel used to record this as a flag and nothing more, which gated its
+	// own proxy while qemu carried on listening on 0.0.0.0 — so a "disabled"
+	// console was still reachable by anyone who could route to the node and knew
+	// the VNC password. Enforcement has to happen where the socket is.
+	SetConsoleAccess(ctx context.Context, in *SetConsoleAccessRequest, opts ...grpc.CallOption) (*SetConsoleAccessResponse, error)
 	// GetGuestConnections reports how fast each guest on this node is opening new
 	// outbound connections. Bandwidth cannot answer that question: a port scan is
 	// enormous in packets and connections but trivial in bytes, so traffic graphs
@@ -457,6 +465,16 @@ func (c *nodeAgentClient) SetQuarantine(ctx context.Context, in *SetQuarantineRe
 	return out, nil
 }
 
+func (c *nodeAgentClient) SetConsoleAccess(ctx context.Context, in *SetConsoleAccessRequest, opts ...grpc.CallOption) (*SetConsoleAccessResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetConsoleAccessResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_SetConsoleAccess_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *nodeAgentClient) GetGuestConnections(ctx context.Context, in *GetGuestConnectionsRequest, opts ...grpc.CallOption) (*GetGuestConnectionsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetGuestConnectionsResponse)
@@ -577,6 +595,13 @@ type NodeAgentServer interface {
 	// often ones the panel does not manage, and an abusive guest may be running a
 	// spoofed or duplicated address.
 	SetQuarantine(context.Context, *SetQuarantineRequest) (*SetQuarantineResponse, error)
+	// SetConsoleAccess enforces console enable/disable on the domain itself.
+	//
+	// The panel used to record this as a flag and nothing more, which gated its
+	// own proxy while qemu carried on listening on 0.0.0.0 — so a "disabled"
+	// console was still reachable by anyone who could route to the node and knew
+	// the VNC password. Enforcement has to happen where the socket is.
+	SetConsoleAccess(context.Context, *SetConsoleAccessRequest) (*SetConsoleAccessResponse, error)
 	// GetGuestConnections reports how fast each guest on this node is opening new
 	// outbound connections. Bandwidth cannot answer that question: a port scan is
 	// enormous in packets and connections but trivial in bytes, so traffic graphs
@@ -673,6 +698,9 @@ func (UnimplementedNodeAgentServer) ConfigureVPC(context.Context, *VPCRequest) (
 }
 func (UnimplementedNodeAgentServer) SetQuarantine(context.Context, *SetQuarantineRequest) (*SetQuarantineResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetQuarantine not implemented")
+}
+func (UnimplementedNodeAgentServer) SetConsoleAccess(context.Context, *SetConsoleAccessRequest) (*SetConsoleAccessResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetConsoleAccess not implemented")
 }
 func (UnimplementedNodeAgentServer) GetGuestConnections(context.Context, *GetGuestConnectionsRequest) (*GetGuestConnectionsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetGuestConnections not implemented")
@@ -1166,6 +1194,24 @@ func _NodeAgent_SetQuarantine_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NodeAgent_SetConsoleAccess_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetConsoleAccessRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).SetConsoleAccess(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_SetConsoleAccess_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).SetConsoleAccess(ctx, req.(*SetConsoleAccessRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _NodeAgent_GetGuestConnections_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetGuestConnectionsRequest)
 	if err := dec(in); err != nil {
@@ -1290,6 +1336,10 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetQuarantine",
 			Handler:    _NodeAgent_SetQuarantine_Handler,
+		},
+		{
+			MethodName: "SetConsoleAccess",
+			Handler:    _NodeAgent_SetConsoleAccess_Handler,
 		},
 		{
 			MethodName: "GetGuestConnections",

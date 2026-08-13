@@ -1109,3 +1109,45 @@ func (c *AgentClient) GetStorageReport(ctx context.Context, nodeID string, paths
 	}
 	return out, nil
 }
+
+// ConsoleAccessResult is what a node reports after enforcing a console change.
+type ConsoleAccessResult struct {
+	VNCPort int
+	// RestartRequired is true when only the persistent definition could be
+	// changed: graphics is not hot-pluggable, so a running domain keeps its
+	// current listen address until it next boots.
+	RestartRequired bool
+}
+
+// SetConsoleAccess enforces console enable/disable on the domain, rather than
+// only in the panel's own records.
+func (c *AgentClient) SetConsoleAccess(ctx context.Context, nodeID, vmID string, enabled bool, vncPassword string) (*ConsoleAccessResult, error) {
+	node, err := c.getNodeInfo(nodeID)
+	if err != nil {
+		return nil, err
+	}
+
+	var out *ConsoleAccessResult
+	err = c.executeWithRetry(ctx, node, func(ctx context.Context, client pb.NodeAgentClient) error {
+		resp, err := client.SetConsoleAccess(ctx, &pb.SetConsoleAccessRequest{
+			VmId:        vmID,
+			Enabled:     enabled,
+			VncPassword: vncPassword,
+		})
+		if err != nil {
+			return err
+		}
+		if !resp.Success {
+			return fmt.Errorf("SetConsoleAccess failed: %s", resp.Error.GetMessage())
+		}
+		out = &ConsoleAccessResult{
+			VNCPort:         int(resp.GetVncPort()),
+			RestartRequired: resp.GetRestartRequired(),
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}

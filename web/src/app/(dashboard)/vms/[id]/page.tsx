@@ -1375,8 +1375,12 @@ export default function VMDetailPage() {
             </div>
           </div>
 
-          {/* VNC Access */}
-          {vm.vnc_port && vm.status === "running" && (
+          {/* VNC Access. Shown without a port too: a domain imported from another
+              platform often has no <graphics> device at all, and the old card
+              simply vanished — leaving no hint that Repair console is what adds
+              one. Worse, a remembered 5900 used to be displayed as if it were
+              real, sending operators to a console that could never connect. */}
+          {vm.status === "running" && (
             <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
               <h2 className="text-lg font-semibold text-foreground mb-6 flex items-center gap-2">
                 <Monitor className="w-5 h-5" />VNC Access
@@ -1384,7 +1388,17 @@ export default function VMDetailPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <span className="text-xs font-medium text-muted-foreground block mb-1">VNC Port</span>
-                  <span className="text-xl font-semibold font-mono">{vm.vnc_port}</span>
+                  {vm.vnc_port ? (
+                    <span className="text-xl font-semibold font-mono">{vm.vnc_port}</span>
+                  ) : (
+                    <>
+                      <span className="text-xl font-semibold text-amber-600">No console device</span>
+                      <span className="block text-xs text-muted-foreground mt-1 max-w-md">
+                        This VM has no VNC device in its definition. Use Repair console on the
+                        Console tab to add one — it restarts the VM.
+                      </span>
+                    </>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
                   <Link href={`/vms/${vm.id}/ssh`} target="_blank">
@@ -1393,8 +1407,13 @@ export default function VMDetailPage() {
                       SSH Console
                     </Button>
                   </Link>
-                  <Link href={`/vms/${vm.id}/console`} target="_blank">
-                    <Button variant="accent" className="gap-2">
+                  <Link
+                    href={`/vms/${vm.id}/console`}
+                    target="_blank"
+                    className={vm.vnc_port ? "" : "pointer-events-none"}
+                    aria-disabled={!vm.vnc_port}
+                  >
+                    <Button variant="accent" className="gap-2" disabled={!vm.vnc_port}>
                       <ExternalLink className="w-4 h-4" />
                       Open VNC Console
                     </Button>

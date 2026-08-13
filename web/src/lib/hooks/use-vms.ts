@@ -22,6 +22,8 @@ interface VMListParams {
   userId?: string
   nodeId?: string
   status?: string;
+  /** Matched against hostname or VM id by the API, across every page. */
+  search?: string;
 }
 
 // useVMOperation polls the VM's latest multi-step operation (e.g. a delete),
@@ -45,10 +47,10 @@ export function useVMOperation(vmId: string | null, enabled: boolean) {
 }
 
 export function useVMs(params: VMListParams = {}) {
-  const { page = 1, pageSize = 20, userId, nodeId, status } = params
+  const { page = 1, pageSize = 20, userId, nodeId, status, search } = params
 
   return useQuery<PaginatedResponse<VM>>({
-    queryKey: ['vms', 'list', { page, pageSize, userId, nodeId, status }],
+    queryKey: ['vms', 'list', { page, pageSize, userId, nodeId, status, search }],
     queryFn: async () => {
       const response = await api.get<PaginatedResponse<VM>>('/api/v1/vms', {
         params: {
@@ -57,6 +59,7 @@ export function useVMs(params: VMListParams = {}) {
           user_id: userId,
           node_id: nodeId,
           status,
+          search: search || undefined,
         },
       })
       return response.data as unknown as PaginatedResponse<VM>

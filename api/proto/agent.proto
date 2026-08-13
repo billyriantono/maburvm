@@ -142,6 +142,14 @@ service NodeAgent {
   // spoofed or duplicated address.
   rpc SetQuarantine(SetQuarantineRequest) returns (SetQuarantineResponse);
 
+  // SetConsoleAccess enforces console enable/disable on the domain itself.
+  //
+  // The panel used to record this as a flag and nothing more, which gated its
+  // own proxy while qemu carried on listening on 0.0.0.0 — so a "disabled"
+  // console was still reachable by anyone who could route to the node and knew
+  // the VNC password. Enforcement has to happen where the socket is.
+  rpc SetConsoleAccess(SetConsoleAccessRequest) returns (SetConsoleAccessResponse);
+
   // GetGuestConnections reports how fast each guest on this node is opening new
   // outbound connections. Bandwidth cannot answer that question: a port scan is
   // enormous in packets and connections but trivial in bytes, so traffic graphs
@@ -1728,6 +1736,34 @@ message SetQuarantineRequest {
   // reason is recorded in the node's quarantine file so an operator reading it
   // months later knows why a guest is cut off and who to ask about it.
   string reason = 3;
+}
+
+message SetConsoleAccessRequest {
+  string vm_id = 1;
+
+  // enabled false restricts the domain's VNC to loopback and invalidates the
+  // live session password; true restores it.
+  bool enabled = 2;
+
+  // vnc_password is applied to the live domain when enabling, so the panel's
+  // proxy can still connect. Ignored when disabling, where a value nobody holds
+  // is generated instead.
+  string vnc_password = 3;
+}
+
+message SetConsoleAccessResponse {
+  bool success = 1;
+
+  // vnc_port is the domain's live VNC port after the change, 0 when it has no
+  // console device at all.
+  int32 vnc_port = 2;
+
+  // restart_required is true when the listen address could only be changed in
+  // the persistent definition — graphics is not hot-pluggable, so a running
+  // domain keeps its current socket until it next boots.
+  bool restart_required = 3;
+
+  ErrorResponse error = 4;
 }
 
 message SetQuarantineResponse {

@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"strings"
 
 	"gorm.io/gorm"
 
@@ -250,6 +251,16 @@ func (r *VMRepository) UpdateVNCPort(ctx context.Context, id string, port int) e
 	return r.db.WithContext(ctx).Model(&models.VM{}).Where("id = ?", id).Update("vnc_port", port).Error
 }
 
+// ClearVNCPort records that a VM has no console port at all.
+//
+// Needed because the alternative is leaving a stale number in place, and the UI
+// cannot tell a real port from a remembered one. Imported domains frequently
+// have no <graphics> device, and were being shown "VNC Port 5900" — a default
+// that was never true and sent operators to a console that could not connect.
+func (r *VMRepository) ClearVNCPort(ctx context.Context, id string) error {
+	return r.db.WithContext(ctx).Model(&models.VM{}).Where("id = ?", id).Update("vnc_port", nil).Error
+}
+
 // UpdateVNCPassword updates a VM's VNC password
 func (r *VMRepository) UpdateVNCPassword(ctx context.Context, id string, password string) error {
 	return r.db.WithContext(ctx).Model(&models.VM{}).Where("id = ?", id).Update("vnc_password", password).Error
@@ -312,4 +323,67 @@ func (r *VMRepository) GetIDsByStatus(ctx context.Context, status models.VMStatu
 		return nil, err
 	}
 	return ids, nil
+}
+
+// VMFilter narrows a VM listing. Zero-valued fields are ignored, and every
+// non-zero field applies — unlike the switch it replaces, which honoured only
+// one filter at a time and silently dropped the rest.
+type VMFilter struct {
+	UserID string
+	NodeID string
+	Status models.VMStatus
+	// Search matches the hostname (case-insensitive substring) or an exact VM
+	// id. Applied in the database rather than in the browser, because filtering
+	// the page the client happens to be holding cannot find a VM on any other
+	// page — it reports "no VMs found" next to a total of 65.
+	Search string
+}
+
+// applyVMFilter builds the WHERE clause shared by ListFiltered and CountFiltered,
+// so the page and its total can never disagree about what was asked for.
+func (r *VMRepository) applyVMFilter(query *gorm.DB, f VMFilter) *gorm.DB {
+	if f.UserID != "" {
+		query = query.Where("user_id = ?", f.UserID)
+	}
+	if f.NodeID != "" {
+		query = query.Where("node_id = ?", f.NodeID)
+	}
+	if f.Status != "" {
+		query = query.Where("status = ?", f.Status)
+	}
+	if s := strings.TrimSpace(f.Search); s != "" {
+		like := "%" + strings.ToLower(s) + "%"
+		// CAST rather than the shorter id::text: comparing a uuid column against
+		// arbitrary text errors instead of simply not matching, and the cast form
+		// is also the one sqlite accepts, which is what the tests run on.
+		query = query.Where("LOWER(hostname) LIKE ? OR LOWER(CAST(id AS TEXT)) = ?", like, strings.ToLower(s))
+	}
+	return query
+}
+
+// ListFiltered returns one page of VMs matching every supplied filter.
+func (r *VMRepository) ListFiltered(ctx context.Context, f VMFilter, limit, offset int) ([]models.VM, error) {
+	var vms []models.VM
+	query := r.applyVMFilter(r.db.WithContext(ctx).Model(&models.VM{}), f).
+		Order("created_at DESC")
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+	if offset > 0 {
+		query = query.Offset(offset)
+	}
+	if err := query.Find(&vms).Error; err != nil {
+		return nil, err
+	}
+	return vms, nil
+}
+
+// CountFiltered returns how many VMs match the filter, for pagination.
+func (r *VMRepository) CountFiltered(ctx context.Context, f VMFilter) (int64, error) {
+	var count int64
+	if err := r.applyVMFilter(r.db.WithContext(ctx).Model(&models.VM{}), f).
+		Count(&count).Error; err != nil {
+		return 0, err
+	}
+	return count, nil
 }

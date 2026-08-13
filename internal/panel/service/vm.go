@@ -908,8 +908,11 @@ type ListVMsRequest struct {
 	UserID string          `json:"user_id,omitempty" validate:"omitempty,uuid"`
 	NodeID string          `json:"node_id,omitempty" validate:"omitempty,uuid"`
 	Status models.VMStatus `json:"status,omitempty" validate:"omitempty,oneof=running stopped suspended creating deleting error"`
-	Limit  int             `json:"limit,omitempty" validate:"omitempty,min=1,max=100"`
-	Offset int             `json:"offset,omitempty" validate:"omitempty,min=0"`
+	// Search matches hostname or VM id across the whole result set, not just the
+	// page being returned.
+	Search string `json:"search,omitempty" validate:"omitempty,max=253"`
+	Limit  int    `json:"limit,omitempty" validate:"omitempty,min=1,max=100"`
+	Offset int    `json:"offset,omitempty" validate:"omitempty,min=0"`
 }
 
 // ListVMsResponse contains the list of VMs and pagination info
@@ -929,37 +932,22 @@ func (s *VMService) ListVMs(ctx context.Context, req *ListVMsRequest) (*ListVMsR
 		limit = 20
 	}
 
-	var vms []models.VM
-	var total int64
-	var err error
-
-	// Apply filters
-	switch {
-	case req.UserID != "":
-		vms, err = s.vmRepo.ListByUserID(ctx, req.UserID, limit, req.Offset)
-		if err != nil {
-			return nil, fmt.Errorf("failed to list VMs by user: %w", err)
-		}
-		total, err = s.vmRepo.CountByUserID(ctx, req.UserID)
-	case req.NodeID != "":
-		vms, err = s.vmRepo.ListByNodeID(ctx, req.NodeID, limit, req.Offset)
-		if err != nil {
-			return nil, fmt.Errorf("failed to list VMs by node: %w", err)
-		}
-		total, err = s.vmRepo.CountByNodeID(ctx, req.NodeID)
-	case req.Status != "":
-		vms, err = s.vmRepo.ListByStatus(ctx, req.Status, limit, req.Offset)
-		if err != nil {
-			return nil, fmt.Errorf("failed to list VMs by status: %w", err)
-		}
-		total, err = s.vmRepo.CountByStatus(ctx, req.Status)
-	default:
-		vms, err = s.vmRepo.List(ctx, limit, req.Offset)
-		if err != nil {
-			return nil, fmt.Errorf("failed to list VMs: %w", err)
-		}
-		total, err = s.vmRepo.Count(ctx)
+	// Every supplied filter applies together. The previous switch honoured only
+	// the first match, so a customer — whose owner filter is always set for
+	// tenant isolation — had their status and node filters silently ignored,
+	// and searching returned results that did not match what was asked for.
+	filter := repository.VMFilter{
+		UserID: req.UserID,
+		NodeID: req.NodeID,
+		Status: req.Status,
+		Search: req.Search,
 	}
+
+	vms, err := s.vmRepo.ListFiltered(ctx, filter, limit, req.Offset)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list VMs: %w", err)
+	}
+	total, err := s.vmRepo.CountFiltered(ctx, filter)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to count VMs: %w", err)
@@ -1725,6 +1713,27 @@ func (s *VMService) executeSyncLifecycle(
 	// no-ops on unknown/unspecified states, so this is safe to call always.
 	s.syncVMStatus(ctx, vm, resp.State)
 
+	// A command the node refused is a failure, and must reach the caller as one.
+	// It used to be returned with a nil error, so the handler answered 200, the
+	// UI showed nothing, and the audit log recorded the attempt as though it had
+	// worked — a VM that never booted left a "vm.start … new_state: RUNNING"
+	// entry behind it.
+	//
+	// The exception is a command that was already satisfied: asking a running
+	// domain to start returns Success=false with "already running", and treating
+	// that as an error would make an idempotent action look broken.
+	if !resp.Success && !stateSatisfiesCommand(command, resp.State) {
+		s.logger.WarnContext(ctx, "node refused lifecycle command",
+			"vm_id", vm.ID, "command", command, "message", resp.Message, "state", resp.State.String())
+		return &LifecycleResponse{
+			VMID:     vm.ID,
+			Command:  string(req.Command),
+			Success:  false,
+			Message:  resp.Message,
+			NewState: resp.State.String(),
+		}, fmt.Errorf("%w: %s", ErrVMLifecycleFailed, resp.Message)
+	}
+
 	return &LifecycleResponse{
 		VMID:     vm.ID,
 		Command:  string(req.Command),
@@ -1732,6 +1741,21 @@ func (s *VMService) executeSyncLifecycle(
 		Message:  resp.Message,
 		NewState: resp.State.String(),
 	}, nil
+}
+
+// stateSatisfiesCommand reports whether the domain is already in the state the
+// command was asking for, which makes a refusal harmless rather than a failure.
+func stateSatisfiesCommand(command pb.VMCommandType, state pb.VMState) bool {
+	switch command {
+	case pb.VMCommandType_VM_COMMAND_TYPE_START, pb.VMCommandType_VM_COMMAND_TYPE_RESUME:
+		return state == pb.VMState_VM_STATE_RUNNING
+	case pb.VMCommandType_VM_COMMAND_TYPE_STOP, pb.VMCommandType_VM_COMMAND_TYPE_FORCE_STOP:
+		return state == pb.VMState_VM_STATE_STOPPED
+	case pb.VMCommandType_VM_COMMAND_TYPE_PAUSE:
+		return state == pb.VMState_VM_STATE_PAUSED
+	default:
+		return false
+	}
 }
 
 // ============================================================================
@@ -2412,8 +2436,72 @@ func (s *VMService) SetConsoleEnabled(ctx context.Context, vmID string, enabled 
 	}
 	vm.ConsoleEnabled = enabled
 
+	// Enforce it on the domain, not just in this table. The flag alone gates the
+	// panel's proxy while qemu keeps listening on 0.0.0.0, so a console reported
+	// as disabled stayed reachable by anyone who could route to the node.
+	s.applyConsoleAccess(ctx, vm, enabled)
+
 	s.logger.InfoContext(ctx, "VM console access toggled", "vm_id", vmID, "enabled", enabled)
 	return vm, nil
+}
+
+// applyConsoleAccess pushes the console decision down to the node and records
+// the port it reports back.
+//
+// Best-effort: a node that cannot be reached leaves the panel's flag in place,
+// which still blocks the panel's own console route. The gap that leaves — direct
+// access to the node's VNC socket — is logged rather than hidden, because an
+// operator who disabled a console needs to know it did not fully take.
+func (s *VMService) applyConsoleAccess(ctx context.Context, vm *models.VM, enabled bool) {
+	client, err := s.getAgentClient(ctx, vm.NodeID)
+	if err != nil {
+		s.logger.ErrorContext(ctx, "console access not enforced on node; the VNC socket is unchanged",
+			"vm_id", vm.ID, "enabled", enabled, "error", err)
+		return
+	}
+	authCtx, err := s.agentAuthContext(ctx, vm.NodeID)
+	if err != nil {
+		s.logger.ErrorContext(ctx, "console access not enforced on node", "vm_id", vm.ID, "error", err)
+		return
+	}
+	authCtx, cancel := context.WithTimeout(authCtx, 20*time.Second)
+	defer cancel()
+
+	resp, err := client.SetConsoleAccess(authCtx, &pb.SetConsoleAccessRequest{
+		VmId:        vm.ID,
+		Enabled:     enabled,
+		VncPassword: vm.VNCPassword,
+	})
+	if err != nil {
+		s.logger.ErrorContext(ctx, "console access not enforced on node; the VNC socket is unchanged",
+			"vm_id", vm.ID, "enabled", enabled, "error", err)
+		return
+	}
+	if !resp.GetSuccess() {
+		s.logger.ErrorContext(ctx, "node refused the console change; the VNC socket is unchanged",
+			"vm_id", vm.ID, "enabled", enabled, "message", resp.GetError().GetMessage())
+		return
+	}
+
+	if resp.GetVncPort() > 0 {
+		port := int(resp.GetVncPort())
+		if uerr := s.vmRepo.UpdateVNCPort(ctx, vm.ID, port); uerr != nil {
+			s.logger.WarnContext(ctx, "failed to persist VNC port", "vm_id", vm.ID, "error", uerr)
+		} else {
+			vm.VNCPort = &port
+		}
+	} else if enabled {
+		// Enabled but the domain has no console device: clear the port rather
+		// than keep a number that will not connect.
+		if uerr := s.vmRepo.ClearVNCPort(ctx, vm.ID); uerr == nil {
+			vm.VNCPort = nil
+		}
+	}
+
+	if resp.GetRestartRequired() {
+		s.logger.InfoContext(ctx, "console listen address applied to the stored definition; takes effect on next boot",
+			"vm_id", vm.ID, "enabled", enabled)
+	}
 }
 
 // RepairConsole makes the VNC console work for a VM whose libvirt domain has no

@@ -1,15 +1,19 @@
 package libvirt
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -1209,6 +1213,37 @@ func extractVNCPort(xmlDesc string) int {
 }
 
 // ensureVNCInXML is the pure XML transform behind EnsureVNCGraphics: given a
+// listenAddressIsUsable reports whether qemu could bind a VNC listen address on
+// this host.
+//
+// The wildcards and loopback always work. Anything else has to be an address
+// this machine actually holds — an address belonging to some other host is the
+// failure mode this exists to catch, and it is silent until a boot is attempted.
+func listenAddressIsUsable(listen string) bool {
+	switch listen {
+	case "0.0.0.0", "::", "127.0.0.1", "::1", "localhost":
+		return true
+	}
+	target := net.ParseIP(listen)
+	if target == nil {
+		// Not an IP literal (a hostname or an interface name); leave it alone
+		// rather than rewriting something we do not understand.
+		return true
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		// Cannot tell. Do not rewrite on a guess — an unnecessary redefine of a
+		// working domain is worse than leaving a broken one for the operator.
+		return true
+	}
+	for _, a := range addrs {
+		if ipnet, ok := a.(*net.IPNet); ok && ipnet.IP.Equal(target) {
+			return true
+		}
+	}
+	return false
+}
+
 // domain's persistent XML it returns the XML with a VNC graphics device (and a
 // qxl video device when none exists), plus whether anything was added. When the
 // domain already has VNC it returns added=false and the input unchanged.
@@ -1220,10 +1255,30 @@ func ensureVNCInXML(inactiveXML string) (newXML string, added bool, err error) {
 	if domain.Devices == nil {
 		domain.Devices = &libvirtxml.DomainDeviceList{}
 	}
-	for _, g := range domain.Devices.Graphics {
-		if g.VNC != nil {
-			return inactiveXML, false, nil
+	for i, g := range domain.Devices.Graphics {
+		if g.VNC == nil {
+			continue
 		}
+		// A VNC device exists — but it is only useful if qemu can bind the
+		// address it names. Domains imported from another platform routinely
+		// carry that platform's node address, and when the hardware is renumbered
+		// qemu fails with "Failed to bind socket: Cannot assign requested
+		// address" and the VM simply will not start. Twelve domains across two
+		// nodes were in that state, undetected until someone tried to boot one.
+		if listen := strings.TrimSpace(g.VNC.Listen); listen != "" && !listenAddressIsUsable(listen) {
+			domain.Devices.Graphics[i].VNC.Listen = "0.0.0.0"
+			for j := range domain.Devices.Graphics[i].VNC.Listeners {
+				if a := domain.Devices.Graphics[i].VNC.Listeners[j].Address; a != nil {
+					a.Address = "0.0.0.0"
+				}
+			}
+			out, merr := xml.MarshalIndent(&domain, "", "  ")
+			if merr != nil {
+				return "", false, fmt.Errorf("failed to marshal domain XML: %w", merr)
+			}
+			return string(out), true, nil
+		}
+		return inactiveXML, false, nil
 	}
 
 	// Inject autoport VNC graphics (matching the create path in GenerateVMXML).
@@ -1879,4 +1934,115 @@ func SetVMPassword(uuidStr, user, password string) error {
 		}
 		return nil
 	})
+}
+
+// SetConsoleAccess enforces console enable/disable on the domain itself.
+//
+// Two layers, because neither alone is enough:
+//
+//   - The persistent definition's listen address becomes 127.0.0.1 when
+//     disabled and 0.0.0.0 when enabled. This is what survives a reboot, but
+//     graphics is not hot-pluggable so it does not affect a running domain.
+//   - The live domain's VNC password is replaced, with existing viewers
+//     disconnected. That takes effect immediately, which is what makes
+//     "disable" mean something on a VM that is already running.
+//
+// Disabling generates a password nobody holds rather than clearing it: an empty
+// VNC password means *no authentication* in qemu, which would turn disabling the
+// console into opening it.
+func SetConsoleAccess(uuidStr string, enabled bool, vncPassword string) (vncPort int, restartRequired bool, err error) {
+	if _, perr := uuid.Parse(uuidStr); perr != nil {
+		return 0, false, fmt.Errorf("invalid UUID format: %w", perr)
+	}
+
+	livePassword := vncPassword
+	if !enabled {
+		buf := make([]byte, 16)
+		if _, rerr := rand.Read(buf); rerr != nil {
+			return 0, false, fmt.Errorf("failed to generate lockout password: %w", rerr)
+		}
+		livePassword = hex.EncodeToString(buf)
+	}
+
+	listen := "127.0.0.1"
+	if enabled {
+		listen = "0.0.0.0"
+	}
+
+	err = WithConnection(func(conn *libvirt.Connect) error {
+		dom, derr := conn.LookupDomainByUUIDString(uuidStr)
+		if derr != nil {
+			return fmt.Errorf("domain not found: %w", derr)
+		}
+		defer dom.Free()
+
+		inactiveXML, derr := dom.GetXMLDesc(libvirt.DOMAIN_XML_INACTIVE | libvirt.DOMAIN_XML_SECURE)
+		if derr != nil {
+			return fmt.Errorf("failed to read domain XML: %w", derr)
+		}
+
+		var domain libvirtxml.Domain
+		if uerr := xml.Unmarshal([]byte(inactiveXML), &domain); uerr != nil {
+			return fmt.Errorf("failed to parse domain XML: %w", uerr)
+		}
+		if domain.Devices == nil {
+			return fmt.Errorf("domain has no devices")
+		}
+
+		found := false
+		for i, g := range domain.Devices.Graphics {
+			if g.VNC == nil {
+				continue
+			}
+			found = true
+			domain.Devices.Graphics[i].VNC.Listen = listen
+			for j := range domain.Devices.Graphics[i].VNC.Listeners {
+				if a := domain.Devices.Graphics[i].VNC.Listeners[j].Address; a != nil {
+					a.Address = listen
+				}
+			}
+			if vncPort == 0 {
+				vncPort = domain.Devices.Graphics[i].VNC.Port
+			}
+		}
+		if !found {
+			// Nothing to enforce. Not an error: the caller's flag is still
+			// meaningful for the panel's own proxy, and RepairConsole is the
+			// action that gives this domain a console in the first place.
+			return nil
+		}
+
+		out, merr := xml.MarshalIndent(&domain, "", "  ")
+		if merr != nil {
+			return fmt.Errorf("failed to marshal domain XML: %w", merr)
+		}
+		newDom, rerr := conn.DomainDefineXML(string(out))
+		if rerr != nil {
+			return fmt.Errorf("failed to redefine domain: %w", rerr)
+		}
+		defer newDom.Free()
+
+		active, _ := dom.IsActive()
+		if !active {
+			return nil
+		}
+		// A running domain keeps its socket until it reboots, so say so rather
+		// than let the caller believe the listen address already changed.
+		restartRequired = true
+
+		// The password change, unlike the listen address, applies live.
+		graphicsXML := fmt.Sprintf(
+			`<graphics type='vnc' passwd='%s' connected='disconnect'/>`, livePassword)
+		if uerr := dom.UpdateDeviceFlags(graphicsXML, libvirt.DOMAIN_DEVICE_MODIFY_LIVE); uerr != nil {
+			return fmt.Errorf("failed to apply console password to the running domain: %w", uerr)
+		}
+
+		if liveXML, gerr := dom.GetXMLDesc(0); gerr == nil {
+			if p := extractVNCPort(liveXML); p > 0 {
+				vncPort = p
+			}
+		}
+		return nil
+	})
+	return vncPort, restartRequired, err
 }

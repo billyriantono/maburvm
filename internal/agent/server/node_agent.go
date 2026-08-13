@@ -226,6 +226,15 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 		state = pb.VMState_VM_STATE_STOPPED
 	case pb.VMCommandType_VM_COMMAND_TYPE_START:
 		state = pb.VMState_VM_STATE_RUNNING
+		// Self-heal a VNC listen address this host cannot bind, for the same
+		// reason the bridge is healed below: a domain imported from another
+		// platform keeps that platform's node address, and qemu then refuses to
+		// start with "Cannot assign requested address". Silent until someone
+		// tries to boot, and twelve domains were in that state. Best-effort —
+		// failing to repair graphics must not block a start that would work.
+		if _, _, verr := libvirt.EnsureVNCGraphics(req.VmId); verr != nil {
+			log.Printf("[NodeAgent] WARNING: could not verify VNC graphics for %s before start: %v", req.VmId, verr)
+		}
 		// Self-heal the NIC bridge from the pool (the panel sends the pool's
 		// current bridge in NetworkConfig) before booting, so a VM whose domain
 		// XML still points at a removed bridge (e.g. virbr0) can start once the
@@ -320,6 +329,14 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 	if err != nil {
 		log.Printf("[NodeAgent] Failed to execute command %v on VM %s: %v", req.Command, req.VmId, err)
 		msg := fmt.Sprintf("Failed to execute command: %v", err)
+		// Report where the domain actually ended up, not where the command was
+		// trying to take it. `state` is assigned optimistically at the top of
+		// each case, so a failed START used to answer RUNNING — which the panel
+		// wrote into its own status and its audit log, leaving a record that a
+		// start had succeeded when the VM had never booted.
+		if actual, serr := libvirt.GetVMStatus(req.VmId); serr == nil {
+			state = mapVMStatusToPBState(actual)
+		}
 		return &pb.VMCommandResponse{
 			Success: false,
 			VmId:    req.VmId,
@@ -2241,6 +2258,39 @@ func (s *NodeAgentService) GetLiveMetrics(ctx context.Context, req *pb.GetLiveMe
 		AvailableDiskGb:      metrics.AvailableDiskGB,
 		ConntrackCount:       conntrackCount,
 		ConntrackMax:         conntrackMax,
+	}, nil
+}
+
+// SetConsoleAccess enforces console enable/disable on the domain itself.
+//
+// Recording the flag in the panel alone gated only the panel's own proxy: qemu
+// carried on listening on 0.0.0.0, so a console shown as disabled was still
+// reachable by anyone who could route to the node and knew the VNC password.
+func (s *NodeAgentService) SetConsoleAccess(ctx context.Context, req *pb.SetConsoleAccessRequest) (*pb.SetConsoleAccessResponse, error) {
+	if _, authenticated := GetNodeIDFromContext(ctx); !authenticated {
+		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
+	}
+	if req.GetVmId() == "" {
+		return &pb.SetConsoleAccessResponse{
+			Success: false,
+			Error:   &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INVALID_ARGUMENT, Message: "vm_id is required"},
+		}, nil
+	}
+
+	port, restartRequired, err := libvirt.SetConsoleAccess(req.GetVmId(), req.GetEnabled(), req.GetVncPassword())
+	if err != nil {
+		return &pb.SetConsoleAccessResponse{
+			Success: false,
+			Error:   &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: err.Error()},
+		}, nil
+	}
+
+	log.Printf("[NodeAgent] console access for %s set to %v (port=%d, restart_required=%v)",
+		req.GetVmId(), req.GetEnabled(), port, restartRequired)
+	return &pb.SetConsoleAccessResponse{
+		Success:         true,
+		VncPort:         int32(port),
+		RestartRequired: restartRequired,
 	}, nil
 }
 

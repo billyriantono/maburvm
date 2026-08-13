@@ -476,6 +476,7 @@ func (h *VMHandler) ListVMs(c echo.Context) error {
 	status := c.QueryParam("status")
 	nodeID := c.QueryParam("node_id")
 	userID := c.QueryParam("user_id")
+	search := c.QueryParam("search")
 	limitStr := c.QueryParam("limit")
 	offsetStr := c.QueryParam("offset")
 	pageStr := c.QueryParam("page")
@@ -513,6 +514,9 @@ func (h *VMHandler) ListVMs(c echo.Context) error {
 	}
 	if nodeID != "" {
 		listReq.NodeID = nodeID
+	}
+	if search != "" {
+		listReq.Search = search
 	}
 	// Tenant isolation: a non-admin caller may only ever see their own VMs, so we
 	// force the owner filter to their ID and ignore any client-supplied user_id
