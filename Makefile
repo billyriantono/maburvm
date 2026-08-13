@@ -66,10 +66,12 @@ proto:
 	@if command -v protoc >/dev/null 2>&1; then \
 		protoc --go_out=internal/shared/grpc/pb --go_opt=paths=source_relative \
 			--go-grpc_out=internal/shared/grpc/pb --go-grpc_opt=paths=source_relative \
-			api/proto/*.proto; \
+			api/proto/*.proto \
+			|| { echo "Proto generation FAILED — generated code is unchanged"; exit 1; }; \
 		echo "Proto generation complete: internal/shared/grpc/pb/"; \
 	else \
 		echo "protoc not found, skipping proto generation"; \
+		exit 1; \
 	fi
 
 # Run database migrations

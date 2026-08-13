@@ -3954,6 +3954,14 @@ type GetNodeInfoResponse struct {
 	DiskTotalBytes int64 `protobuf:"varint,5,opt,name=disk_total_bytes,json=diskTotalBytes,proto3" json:"disk_total_bytes,omitempty"`
 	// libvirt_version is the installed libvirt version
 	LibvirtVersion string `protobuf:"bytes,6,opt,name=libvirt_version,json=libvirtVersion,proto3" json:"libvirt_version,omitempty"`
+	// agent_commit and agent_build_time identify the build of the agent itself.
+	//
+	// Nodes on this fleet routinely run different revisions — a node with a long
+	// export in flight is deliberately left until it finishes — and until now the
+	// only way to tell was to read the binary's timestamp over SSH.
+	AgentCommit    string `protobuf:"bytes,24,opt,name=agent_commit,json=agentCommit,proto3" json:"agent_commit,omitempty"`
+	AgentBuildTime string `protobuf:"bytes,25,opt,name=agent_build_time,json=agentBuildTime,proto3" json:"agent_build_time,omitempty"`
+	AgentVersion   string `protobuf:"bytes,26,opt,name=agent_version,json=agentVersion,proto3" json:"agent_version,omitempty"`
 	// error details if failed
 	Error *ErrorResponse `protobuf:"bytes,7,opt,name=error,proto3" json:"error,omitempty"`
 	// cpu_percent is the current CPU usage percentage (0-100)
@@ -4060,6 +4068,27 @@ func (x *GetNodeInfoResponse) GetDiskTotalBytes() int64 {
 func (x *GetNodeInfoResponse) GetLibvirtVersion() string {
 	if x != nil {
 		return x.LibvirtVersion
+	}
+	return ""
+}
+
+func (x *GetNodeInfoResponse) GetAgentCommit() string {
+	if x != nil {
+		return x.AgentCommit
+	}
+	return ""
+}
+
+func (x *GetNodeInfoResponse) GetAgentBuildTime() string {
+	if x != nil {
+		return x.AgentBuildTime
+	}
+	return ""
+}
+
+func (x *GetNodeInfoResponse) GetAgentVersion() string {
+	if x != nil {
+		return x.AgentVersion
 	}
 	return ""
 }
@@ -7868,14 +7897,17 @@ const file_api_proto_agent_proto_rawDesc = "" +
 	"\fDetailsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x14\n" +
-	"\x12GetNodeInfoRequest\"\xe7\a\n" +
+	"\x12GetNodeInfoRequest\"\xd9\b\n" +
 	"\x13GetNodeInfoResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12&\n" +
 	"\aos_info\x18\x02 \x01(\v2\r.agent.OSInfoR\x06osInfo\x12)\n" +
 	"\bcpu_info\x18\x03 \x01(\v2\x0e.agent.CPUInfoR\acpuInfo\x12,\n" +
 	"\x12memory_total_bytes\x18\x04 \x01(\x03R\x10memoryTotalBytes\x12(\n" +
 	"\x10disk_total_bytes\x18\x05 \x01(\x03R\x0ediskTotalBytes\x12'\n" +
-	"\x0flibvirt_version\x18\x06 \x01(\tR\x0elibvirtVersion\x12*\n" +
+	"\x0flibvirt_version\x18\x06 \x01(\tR\x0elibvirtVersion\x12!\n" +
+	"\fagent_commit\x18\x18 \x01(\tR\vagentCommit\x12(\n" +
+	"\x10agent_build_time\x18\x19 \x01(\tR\x0eagentBuildTime\x12#\n" +
+	"\ragent_version\x18\x1a \x01(\tR\fagentVersion\x12*\n" +
 	"\x05error\x18\a \x01(\v2\x14.agent.ErrorResponseR\x05error\x12\x1f\n" +
 	"\vcpu_percent\x18\b \x01(\x01R\n" +
 	"cpuPercent\x12*\n" +

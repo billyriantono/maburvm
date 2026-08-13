@@ -144,6 +144,13 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.panel
+      args:
+        # Supplied by the deploy (see docs/DEPLOYMENT.md). Empty is tolerated —
+        # the panel then reports itself as unstamped rather than inventing a
+        # version, which is the honest answer for a build nobody identified.
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        BUILD_TIME: ${BUILD_TIME:-}
+        APP_VERSION: ${APP_VERSION:-}
     image: maburvm-panel:local
     container_name: maburvm-panel
     restart: unless-stopped

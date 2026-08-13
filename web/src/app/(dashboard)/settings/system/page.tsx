@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
+import { useSystemVersion } from "@/lib/hooks/use-version"
 import { useSystemSettings, useSaveSystemSettings, useTestEmail } from "@/lib/hooks/use-settings"
 import { toast } from "sonner"
 import { zodResolver } from "@hookform/resolvers/zod"
@@ -156,6 +157,79 @@ const schedulePresets = [
   { value: "0 */6 * * *", label: "Every 6 hours" },
   { value: "0 */12 * * *", label: "Every 12 hours" },
 ]
+
+// BuildPanel shows the panel's build and each node's agent build.
+//
+// Both, because they are deployed separately: the panel can be current while a
+// node still runs an older agent — sometimes on purpose, since a node with a
+// long export in flight is left alone until it finishes. A single version number
+// would hide exactly the difference an operator is checking for.
+function BuildPanel() {
+  const { data, isLoading } = useSystemVersion()
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center gap-3 p-4 rounded-md border bg-muted">
+        <Loader2 className="w-4 h-4 animate-spin" />
+        <span className="text-sm text-muted-foreground">Reading build information…</span>
+      </div>
+    )
+  }
+  if (!data) return null
+
+  const panel = data.panel
+  const nodes = data.nodes ?? []
+
+  return (
+    <div className="rounded-md border bg-muted p-4 space-y-3">
+      <div className="flex items-start gap-3">
+        <Info className="w-5 h-5 text-muted-foreground flex-shrink-0 mt-0.5" />
+        <div className="min-w-0">
+          <p className="text-sm font-medium">Panel build</p>
+          <p className="text-xs text-muted-foreground mt-1 font-mono break-all">
+            {panel.stamped ? (
+              <>
+                {panel.short_sha} · {panel.version}
+                {panel.build_time ? ` · built ${panel.build_time}` : ""}
+              </>
+            ) : (
+              // An unstamped build is not "up to date" — it is unidentified, and
+              // saying so is the difference between a check and a guess.
+              <span className="text-amber-600">
+                not stamped — this image was built without a revision
+              </span>
+            )}
+          </p>
+        </div>
+      </div>
+
+      {nodes.length > 0 && (
+        <div className="pl-8 space-y-1">
+          <p className="text-xs font-medium text-muted-foreground">Node agents</p>
+          {nodes.map((n) => (
+            <div key={n.node_id} className="flex items-center justify-between gap-3 text-xs">
+              <span className="font-medium truncate">{n.node_name}</span>
+              {n.error ? (
+                <span className="text-muted-foreground truncate max-w-[60%]" title={n.error}>
+                  unreachable
+                </span>
+              ) : (
+                <span className="font-mono flex items-center gap-2">
+                  <span>{n.short_sha || "not stamped"}</span>
+                  {n.commit && panel.stamped && (
+                    <span className={n.matches_panel ? "text-emerald-600" : "text-amber-600"}>
+                      {n.matches_panel ? "same as panel" : "older build"}
+                    </span>
+                  )}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function SystemSettingsPage() {
   const [isSaving, setIsSaving] = useState<string | null>(null)
@@ -382,16 +456,10 @@ export default function SystemSettingsPage() {
                   </div>
                 </div>
 
-                {/* Info Box */}
-                <div className="flex items-start gap-3 p-4 rounded-md border bg-muted">
-                  <Info className="w-5 h-5 text-muted-foreground flex-shrink-0 mt-0.5" />
-                  <div>
-                    <p className="text-sm font-medium">Panel Information</p>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Version: 1.0.0 | License: Enterprise | Nodes: 3
-                    </p>
-                  </div>
-                </div>
+                {/* Which build is actually running. Replaces a hardcoded
+                    "Version: 1.0.0 | Nodes: 3" that never changed, and so could
+                    not answer the only question it was there to answer. */}
+                <BuildPanel />
 
                 <div className="flex items-center justify-between pt-4 border-t">
                   <Button

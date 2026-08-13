@@ -467,6 +467,12 @@ func (s *Server) setupVMRoutes(g *echo.Group) {
 	handler.RegisterRegionRoutes(s.echo, handler.NewRegionHandler(regionService), s.db)
 	vmService.SetRegionService(regionService)
 
+	// Build identification: which panel build is live, and which agent build each
+	// node is on. Agents are deployed separately from the panel, so "did my
+	// change land?" has two different answers.
+	versionNodeService := service.NewNodeService(repository.NewNodeRepository(s.db), s.db)
+	handler.RegisterVersionRoutes(s.echo, handler.NewVersionHandler(versionNodeService), s.db)
+
 	// Abuse visibility: which guests are opening new outbound connections fast
 	// enough to threaten the node they sit on, including guests the panel does
 	// not manage. Shares the node service's agent connection pool.

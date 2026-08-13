@@ -26,6 +26,7 @@ import (
 	"github.com/maburvm/panel/internal/agent/network"
 	"github.com/maburvm/panel/internal/agent/storage"
 	"github.com/maburvm/panel/internal/agent/vncproxy"
+	"github.com/maburvm/panel/internal/shared/buildinfo"
 	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 	"github.com/maburvm/panel/internal/shared/models"
 	sharedstorage "github.com/maburvm/panel/internal/shared/storage"
@@ -2171,6 +2172,7 @@ func (s *NodeAgentService) GetNodeInfo(ctx context.Context, req *pb.GetNodeInfoR
 		}
 	}
 
+	agentBuild := buildinfo.Get()
 	return &pb.GetNodeInfoResponse{
 		Success: true,
 		OsInfo: &pb.OSInfo{
@@ -2187,6 +2189,9 @@ func (s *NodeAgentService) GetNodeInfo(ctx context.Context, req *pb.GetNodeInfoR
 		MemoryTotalBytes:     memTotalBytes,
 		DiskTotalBytes:       diskTotalBytes,
 		LibvirtVersion:       libvirtVersion,
+		AgentCommit:          agentBuild.Commit,
+		AgentBuildTime:       agentBuild.BuildTime,
+		AgentVersion:         agentBuild.Version,
 		CpuPercent:           cpuPercent,
 		MemoryUsedBytes:      memUsedBytes,
 		MemoryUsedPercent:    memUsedPercent,

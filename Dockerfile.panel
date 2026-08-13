@@ -19,7 +19,18 @@ COPY api/ ./api/
 COPY integrations/ ./integrations/
 
 # Build the panel binary (static, no CGO)
-RUN CGO_ENABLED=0 GOOS=linux go build -o /app/bin/panel ./cmd/panel
+# Stamped at build time because the image cannot discover it: the COPY lines
+# above deliberately exclude .git, so Go's automatic VCS stamping finds nothing.
+# Without this the panel cannot answer "which build am I?", which is the only way
+# to confirm a deploy landed.
+ARG GIT_COMMIT=""
+ARG BUILD_TIME=""
+ARG APP_VERSION=""
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags "-X github.com/maburvm/panel/internal/shared/buildinfo.Commit=${GIT_COMMIT} \
+              -X github.com/maburvm/panel/internal/shared/buildinfo.BuildTime=${BUILD_TIME} \
+              -X github.com/maburvm/panel/internal/shared/buildinfo.Version=${APP_VERSION}" \
+    -o /app/bin/panel ./cmd/panel
 
 # Runtime stage
 FROM alpine:3.24

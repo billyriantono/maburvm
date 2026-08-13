@@ -653,6 +653,12 @@ type NodeSystemInfo struct {
 	MemoryTotal    int64
 	DiskTotal      int64
 	LibvirtVersion string
+	// AgentCommit/AgentBuildTime/AgentVersion identify the build running on the
+	// node, so a node left on an older agent is visible instead of having to be
+	// inspected over SSH.
+	AgentCommit    string
+	AgentBuildTime string
+	AgentVersion   string
 	// Live metrics
 	CpuPercent           float64
 	MemoryUsedBytes      int64
@@ -701,6 +707,9 @@ func (c *AgentClient) GetNodeInfo(ctx context.Context, nodeID string) (*NodeSyst
 			MemoryTotal:          resp.MemoryTotalBytes,
 			DiskTotal:            resp.DiskTotalBytes,
 			LibvirtVersion:       resp.LibvirtVersion,
+			AgentCommit:          resp.GetAgentCommit(),
+			AgentBuildTime:       resp.GetAgentBuildTime(),
+			AgentVersion:         resp.GetAgentVersion(),
 			CpuPercent:           resp.GetCpuPercent(),
 			MemoryUsedBytes:      resp.GetMemoryUsedBytes(),
 			MemoryUsedPercent:    resp.GetMemoryUsedPercent(),

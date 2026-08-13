@@ -1111,6 +1111,15 @@ message GetNodeInfoResponse {
   // libvirt_version is the installed libvirt version
   string libvirt_version = 6;
 
+  // agent_commit and agent_build_time identify the build of the agent itself.
+  //
+  // Nodes on this fleet routinely run different revisions — a node with a long
+  // export in flight is deliberately left until it finishes — and until now the
+  // only way to tell was to read the binary's timestamp over SSH.
+  string agent_commit = 24;
+  string agent_build_time = 25;
+  string agent_version = 26;
+
   // error details if failed
   ErrorResponse error = 7;
 
