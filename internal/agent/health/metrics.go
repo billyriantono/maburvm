@@ -32,6 +32,28 @@ type NodeMetrics struct {
 	LoadAvg              []float64
 }
 
+// counterRate turns two readings of a monotonic counter into a per-second rate.
+//
+// Returns 0 whenever the pair cannot be trusted rather than a number that
+// merely looks like one:
+//
+//   - No previous reading (first sample, or the first after a restart): there is
+//     no delta to take. Subtracting zero from a lifetime counter yields a rate
+//     larger than any hardware can produce.
+//   - The counter went backwards: interface counters reset, and these are
+//     unsigned, so the subtraction would wrap to something astronomical instead
+//     of going negative.
+//   - No elapsed time: nothing can be divided by it.
+//
+// A missing sample costs one gap in a graph. A fabricated one sets the scale for
+// every other point and hides them all.
+func counterRate(previous, current uint64, havePrevious bool, intervalSeconds float64) int64 {
+	if !havePrevious || intervalSeconds <= 0 || current < previous {
+		return 0
+	}
+	return int64(float64(current-previous) / intervalSeconds)
+}
+
 // MetricsCollector collects system metrics.
 type MetricsCollector struct {
 	mu             sync.RWMutex
@@ -121,13 +143,13 @@ func (m *MetricsCollector) Collect() *NodeMetrics {
 			totalWrite += counter.WriteBytes
 		}
 		// Calculate per-second rate
-		if m.lastCollection.IsZero() {
-			metrics.DiskReadBytesPerSec = 0
-			metrics.DiskWriteBytesPerSec = 0
-		} else {
-			metrics.DiskReadBytesPerSec = int64(float64(totalRead-m.lastDiskStats["totalRead"]) / interval)
-			metrics.DiskWriteBytesPerSec = int64(float64(totalWrite-m.lastDiskStats["totalWrite"]) / interval)
-		}
+		// Same fault as the network counters below: the guard never fired, so the
+		// first sample after a restart published the disk's lifetime byte count
+		// as an instantaneous rate.
+		prevRead, haveRead := m.lastDiskStats["totalRead"]
+		prevWrite, haveWrite := m.lastDiskStats["totalWrite"]
+		metrics.DiskReadBytesPerSec = counterRate(prevRead, totalRead, haveRead, interval)
+		metrics.DiskWriteBytesPerSec = counterRate(prevWrite, totalWrite, haveWrite, interval)
 		m.lastDiskStats["totalRead"] = totalRead
 		m.lastDiskStats["totalWrite"] = totalWrite
 	}
@@ -141,13 +163,18 @@ func (m *MetricsCollector) Collect() *NodeMetrics {
 			totalTX += counter.BytesSent
 		}
 		// Calculate per-second rate
-		if m.lastCollection.IsZero() {
-			metrics.NetworkRXBytesPerSec = 0
-			metrics.NetworkTXBytesPerSec = 0
-		} else {
-			metrics.NetworkRXBytesPerSec = int64(float64(totalRX-m.lastNetStats["totalRX"]) / interval)
-			metrics.NetworkTXBytesPerSec = int64(float64(totalTX-m.lastNetStats["totalTX"]) / interval)
-		}
+		// Presence in the map, not lastCollection.IsZero(): the constructor sets
+		// lastCollection to now, so that guard never fired. The first sample
+		// after an agent restart therefore subtracted zero from a counter that
+		// had been accumulating since the node booted and published the node's
+		// entire lifetime traffic as an instantaneous rate — 4.6e17 bytes/sec was
+		// recorded on a live node, which is 460 exabytes per second. One such
+		// sample sets the scale of every chart drawn from the series, flattening
+		// every real measurement to the axis.
+		prevRX, haveRX := m.lastNetStats["totalRX"]
+		prevTX, haveTX := m.lastNetStats["totalTX"]
+		metrics.NetworkRXBytesPerSec = counterRate(prevRX, totalRX, haveRX, interval)
+		metrics.NetworkTXBytesPerSec = counterRate(prevTX, totalTX, haveTX, interval)
 		m.lastNetStats["totalRX"] = totalRX
 		m.lastNetStats["totalTX"] = totalTX
 	}
