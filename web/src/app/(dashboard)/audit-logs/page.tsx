@@ -233,6 +233,10 @@ export default function AuditLogsPage() {
     const query = searchTerm.toLowerCase()
     return logs.filter(log =>
       log.resource_id?.toLowerCase().includes(query) ||
+      // Names as well as ids: an operator searches for the hostname or the
+      // email they remember, not a UUID they have never seen.
+      log.resource_name?.toLowerCase().includes(query) ||
+      log.user_email?.toLowerCase().includes(query) ||
       log.user_id?.toLowerCase().includes(query) ||
       log.action.toLowerCase().includes(query)
     )

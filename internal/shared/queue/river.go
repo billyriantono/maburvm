@@ -225,6 +225,41 @@ func (c *Client) Start(ctx context.Context) error {
 	return nil
 }
 
+// StopAndCancel shuts down River, cancelling any jobs still running.
+//
+// Cancelling rather than waiting is deliberate. A job here can legitimately run
+// for hours — a compressed disk export of a large VM is measured in hours, not
+// minutes — so waiting would hang shutdown until the deploy timed out and the
+// container was killed anyway.
+//
+// The alternative, which is what used to happen, is worse: the process simply
+// exited and left the job's row marked `running` with no client behind it.
+// River's rescuer will not reclaim such a row until the worker's own timeout has
+// elapsed, so raising the image/backup timeouts to eight hours (necessary, since
+// the export genuinely takes that long) meant an orphaned capture sat at
+// "pending" for eight hours. Cancelling puts it straight back on the queue,
+// where the next process picks it up.
+func (c *Client) StopAndCancel(ctx context.Context) error {
+	c.logger.Info("stopping queue client, cancelling in-flight jobs")
+	if c.riverClient != nil {
+		if err := c.riverClient.StopAndCancel(ctx); err != nil {
+			c.logger.Error("failed to stop River client", "error", err)
+		}
+		c.riverClient = nil
+	}
+	if c.agentClient != nil {
+		if err := c.agentClient.Close(); err != nil {
+			c.logger.Error("failed to close agent client", "error", err)
+		}
+		c.agentClient = nil
+	}
+	if c.pool != nil {
+		c.pool.Close()
+		c.pool = nil
+	}
+	return nil
+}
+
 // Stop gracefully shuts down the River client and database pool
 // Must be called to ensure graceful shutdown
 func (c *Client) Stop(ctx context.Context) error {

@@ -1189,6 +1189,8 @@ func (s *Server) setupAuditLogRoutes(g *echo.Group) {
 			totalPages = 1
 		}
 
+		enrichAuditLogs(c.Request().Context(), s.db, logs)
+
 		return c.JSON(http.StatusOK, map[string]interface{}{
 			"data":       logs,
 			"total":      total,
@@ -1511,6 +1513,17 @@ func (s *Server) Start() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// Hand any running jobs back to the queue before exiting. Without this the
+	// process left them marked `running` with nothing behind them, and River's
+	// rescuer waits for the worker's own timeout before reclaiming a stuck job —
+	// eight hours for an image capture. Six captures sat at "pending" that way
+	// after a routine deploy.
+	if s.queueClient != nil {
+		if err := s.queueClient.StopAndCancel(ctx); err != nil {
+			fmt.Printf("queue shutdown: %v\n", err)
+		}
+	}
+
 	return s.echo.Shutdown(ctx)
 }
 
@@ -1586,4 +1599,88 @@ func (s *Server) handleListManagedNetworks(repo *repository.ManagedNetworkReposi
 		}
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": nets})
 	}
+}
+
+
+// enrichAuditLogs fills in the names behind the identifiers.
+//
+// The log stores UUIDs, which is right for a record that must stay meaningful
+// after the thing it refers to is deleted. It is useless to read, though: a page
+// of "abca12c1-f85… performed vm.delete on 147a9c1f-245…" tells an operator
+// nothing they came to find out. The names are resolved for display only and
+// never replace the ids.
+//
+// Deleted rows are included deliberately — the most interesting audit entries
+// are about things that no longer exist, and "(deleted)" beside a hostname is
+// far more use than a bare UUID.
+func enrichAuditLogs(ctx context.Context, db *gorm.DB, logs []models.AuditLog) {
+	if db == nil || len(logs) == 0 {
+		return
+	}
+
+	userIDs := map[string]bool{}
+	vmIDs := map[string]bool{}
+	for i := range logs {
+		if id := logs[i].UserID; id != nil && *id != "" {
+			userIDs[*id] = true
+		}
+		if logs[i].ResourceType == "vm" && logs[i].ResourceID != nil && *logs[i].ResourceID != "" {
+			vmIDs[*logs[i].ResourceID] = true
+		}
+	}
+
+	emails := map[string]string{}
+	if len(userIDs) > 0 {
+		var rows []struct{ ID, Email string }
+		if err := db.WithContext(ctx).Table("users").
+			Select("id, email").Where("id IN ?", keysOf(userIDs)).Scan(&rows).Error; err == nil {
+			for _, r := range rows {
+				emails[r.ID] = r.Email
+			}
+		}
+	}
+
+	hostnames := map[string]string{}
+	if len(vmIDs) > 0 {
+		var rows []struct {
+			ID        string
+			Hostname  string
+			DeletedAt *time.Time
+		}
+		if err := db.WithContext(ctx).Table("vms").Unscoped().
+			Select("id, hostname, deleted_at").Where("id IN ?", keysOf(vmIDs)).Scan(&rows).Error; err == nil {
+			for _, r := range rows {
+				name := r.Hostname
+				if r.DeletedAt != nil {
+					name += " (deleted)"
+				}
+				hostnames[r.ID] = name
+			}
+		}
+	}
+
+	for i := range logs {
+		if id := logs[i].UserID; id != nil {
+			logs[i].UserEmail = emails[*id]
+		}
+		if logs[i].ResourceID != nil {
+			logs[i].ResourceName = hostnames[*logs[i].ResourceID]
+		}
+		// A VM deleted before this enrichment existed has no row left, but the
+		// hostname was captured in the entry's details at the time — which is
+		// exactly why it was recorded there.
+		if logs[i].ResourceName == "" && logs[i].Details != nil {
+			if h, ok := logs[i].Details["hostname"].(string); ok && h != "" {
+				logs[i].ResourceName = h
+			}
+		}
+	}
+}
+
+func keysOf(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }

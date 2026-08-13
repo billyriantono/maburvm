@@ -20,6 +20,13 @@ type AuditLog struct {
 	BeforeSnapshot *map[string]any `json:"before_snapshot" gorm:"type:jsonb;serializer:json" validate:"-"`
 	AfterSnapshot  *map[string]any `json:"after_snapshot" gorm:"type:jsonb;serializer:json" validate:"-"`
 	CreatedAt      time.Time       `json:"created_at" gorm:"not null;default:NOW()"`
+
+	// UserEmail and ResourceName are filled for display and are not columns. The
+	// stored record keeps UUIDs on purpose — they stay correct after a rename and
+	// after the thing they point at is deleted — but a page of truncated UUIDs
+	// tells the person reading it nothing.
+	UserEmail    string `json:"user_email,omitempty" gorm:"-"`
+	ResourceName string `json:"resource_name,omitempty" gorm:"-"`
 }
 
 // TableName specifies the table name for AuditLog
