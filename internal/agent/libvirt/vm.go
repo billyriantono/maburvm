@@ -977,9 +977,31 @@ func DeleteVM(uuidStr string) error {
 		// Parse XML to find disk paths
 		diskPaths := extractDiskPaths(xmlDesc)
 
-		// Undefine the domain
-		if err := dom.Undefine(); err != nil {
-			return fmt.Errorf("failed to undefine domain: %w", err)
+		// Undefine the domain, taking everything attached to it with it.
+		//
+		// A plain Undefine refuses a domain that still has snapshot metadata:
+		// "cannot delete inactive domain with 1 snapshots". The delete then
+		// half-completed — the domain was destroyed but never removed — and the
+		// panel marked the VM as errored, leaving an operator to discover that
+		// retrying could not work either, because nothing in the product removes
+		// snapshots as a side effect of deleting their VM.
+		//
+		// The flags cover the other things libvirt likewise refuses to orphan: a
+		// managed save image, UEFI NVRAM, and checkpoint metadata. All of them
+		// belong to the machine being deleted, so taking them is what the
+		// operator asked for; leaving them behind is what strands the domain.
+		undefineFlags := libvirt.DOMAIN_UNDEFINE_SNAPSHOTS_METADATA |
+			libvirt.DOMAIN_UNDEFINE_MANAGED_SAVE |
+			libvirt.DOMAIN_UNDEFINE_NVRAM |
+			libvirt.DOMAIN_UNDEFINE_CHECKPOINTS_METADATA
+
+		if err := dom.UndefineFlags(undefineFlags); err != nil {
+			// An older libvirt may reject a flag it does not know. Fall back to a
+			// plain undefine so a domain with nothing attached still deletes,
+			// rather than failing over a capability it never needed.
+			if plain := dom.Undefine(); plain != nil {
+				return fmt.Errorf("failed to undefine domain: %w", err)
+			}
 		}
 
 		// Delete storage files
