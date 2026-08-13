@@ -913,6 +913,11 @@ func RegisterNetworkRoutes(e *echo.Echo, handler *NetworkHandler, db *gorm.DB) {
 	// Network interface routes
 	vms.POST("/:id/networks", handler.AddNetworkInterface, middleware.RequirePermission("vm:update"))
 	vms.GET("/:id/networks", handler.ListNetworkInterfaces, middleware.RequirePermission("vm:read"))
+	// Attaching an address to an existing VM. Separate from POST /networks,
+	// which requires the caller to already know a free address; this allocates
+	// one from a pool the way VM creation does.
+	vms.POST("/:id/ip-addresses", handler.AssignIPAddress, middleware.RequirePermission("vm:update"))
+	vms.DELETE("/:id/ip-addresses/:network_id", handler.ReleaseIPAddress, middleware.RequirePermission("vm:update"))
 
 	// Bandwidth routes
 	vms.PUT("/:id/networks/:network_id/bandwidth", handler.SetBandwidthLimit, middleware.RequirePermission("vm:update"))
@@ -938,4 +943,106 @@ func RegisterNetworkRoutes(e *echo.Echo, handler *NetworkHandler, db *gorm.DB) {
 	vms.POST("/:id/firewall-rules", handler.AddFirewallRule, middleware.RequirePermission("vm:update"))
 	vms.GET("/:id/firewall-rules", handler.ListFirewallRules, middleware.RequirePermission("vm:read"))
 	vms.DELETE("/:id/firewall-rules/:rule_id", handler.RemoveFirewallRule, middleware.RequirePermission("vm:update"))
+}
+
+// AssignIPRequest asks for an address to be attached to a VM.
+type AssignIPRequest struct {
+	// PoolID is optional. Empty means "any pool available on this VM's node",
+	// which is what an operator wants nine times out of ten.
+	PoolID string `json:"pool_id"`
+	// IPAddress pins a specific address and requires PoolID, since an address is
+	// only meaningful against the pool that owns it.
+	IPAddress string `json:"ip_address"`
+}
+
+// AssignIPAddress handles POST /api/v1/vms/:id/ip-addresses.
+//
+// Attaching an address to an existing VM had no route at all: the only way a
+// machine got one was at creation, so an imported VM without an address could
+// not be given one short of a rebuild.
+func (h *NetworkHandler) AssignIPAddress(c echo.Context) error {
+	vmID := c.Param("id")
+	if vmID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error": "Bad Request", "message": "VM ID is required",
+		})
+	}
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
+	}
+	// Choosing addresses and pools is infrastructure, and a client picking their
+	// own would be picking from other tenants' space.
+	if isClientRole(c) {
+		return clientNetworkSelectionDenied(c)
+	}
+
+	var req AssignIPRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error": "Bad Request", "message": "Invalid request body",
+		})
+	}
+
+	network, err := h.service.AssignIPAddress(c.Request().Context(), vmID, req.PoolID, req.IPAddress)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrIPAlreadyInUse):
+			return c.JSON(http.StatusConflict, map[string]interface{}{
+				"error": "Conflict", "message": err.Error(),
+			})
+		case err.Error() == "VM not found":
+			return c.JSON(http.StatusNotFound, map[string]interface{}{
+				"error": "Not Found", "message": "VM not found",
+			})
+		default:
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{
+				"error": "Bad Request", "message": err.Error(),
+			})
+		}
+	}
+
+	return c.JSON(http.StatusCreated, map[string]interface{}{
+		"message": "IP address assigned",
+		"data": map[string]interface{}{
+			"id":         network.ID,
+			"vm_id":      network.VMID,
+			"ip_address": network.IPAddress,
+		},
+	})
+}
+
+// ReleaseIPAddress handles DELETE /api/v1/vms/:id/ip-addresses/:network_id.
+func (h *NetworkHandler) ReleaseIPAddress(c echo.Context) error {
+	vmID := c.Param("id")
+	networkID := c.Param("network_id")
+	if vmID == "" || networkID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error": "Bad Request", "message": "VM ID and interface ID are required",
+		})
+	}
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
+	}
+	if isClientRole(c) {
+		return clientNetworkSelectionDenied(c)
+	}
+
+	if err := h.service.ReleaseIPAddress(c.Request().Context(), vmID, networkID); err != nil {
+		switch {
+		case errors.Is(err, service.ErrVMHasNoSuchInterface):
+			return c.JSON(http.StatusNotFound, map[string]interface{}{
+				"error": "Not Found", "message": err.Error(),
+			})
+		case err.Error() == "VM not found":
+			return c.JSON(http.StatusNotFound, map[string]interface{}{
+				"error": "Not Found", "message": "VM not found",
+			})
+		default:
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+				"error": "Internal Server Error", "message": err.Error(),
+			})
+		}
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{"message": "IP address released"})
 }

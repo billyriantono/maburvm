@@ -546,6 +546,10 @@ func (s *Server) setupNetworkRoutes() {
 	vmRepo := repository.NewVMRepository(s.db)
 	nodeRepo := repository.NewNodeRepository(s.db)
 	networkService := service.NewNetworkService(s.db, networkRepo, firewallRepo, vmRepo, nodeRepo, s.riverClient)
+	// Lets an address be attached to a VM that already exists, allocating from a
+	// pool the same way VM creation does. Without it the only route to an IP was
+	// to create the machine with one.
+	networkService.SetIPAMService(service.NewIPAMService(s.db, repository.NewIPAMRepository(s.db)))
 	networkHandler := handler.NewNetworkHandler(networkService, authz.NewAuthorizer(s.db))
 	handler.RegisterNetworkRoutes(s.echo, networkHandler, s.db)
 

@@ -14,7 +14,8 @@ import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { useVM, useVMMetrics, useVMMetricsHistory, useVMAction, useDeleteVM, useAttachISO, useDetachISO, useRescueVM, useUnrescueVM, useMigrateVM, useRegenerateVNCPassword, useSetConsoleEnabled, useRepairConsole, useRebuildVM, useResetPassword, useCloneVM, useUpdateVM } from "@/lib/hooks/use-vms"
+import { useVM, useVMMetrics, useVMMetricsHistory, useVMAction, useDeleteVM, useAttachISO, useDetachISO, useRescueVM, useUnrescueVM, useMigrateVM, useRegenerateVNCPassword, useSetConsoleEnabled, useRepairConsole, useRebuildVM, useResetPassword, useCloneVM, useUpdateVM, useAssignVMIP, useReleaseVMIP } from "@/lib/hooks/use-vms"
+import { useIPPools } from "@/lib/hooks/use-ipam"
 import { useUsers } from "@/lib/hooks/use-users"
 import { useSSHKeys } from "@/lib/hooks/use-ssh-keys"
 import { useNodes } from "@/lib/hooks/use-nodes"
@@ -509,6 +510,11 @@ export default function VMDetailPage() {
   const { data: templates } = useTemplates()
   const { data: isoTemplates } = useTemplates({ type: "iso" })
   const { data: vmNetworks } = useVMNetworks(vmId)
+  const { data: ipPools } = useIPPools()
+  const assignIP = useAssignVMIP(vmId)
+  const releaseIP = useReleaseVMIP(vmId)
+  const [assignIPOpen, setAssignIPOpen] = useState(false)
+  const [assignPoolID, setAssignPoolID] = useState("")
 
   // Handlers
   const handleAction = useCallback(async (action: string) => {
@@ -1548,7 +1554,13 @@ export default function VMDetailPage() {
               </div>
 
               {/* Interfaces (per-IP detail) */}
-              <h3 className="text-sm font-semibold text-muted-foreground mb-3">Network Interfaces</h3>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold text-muted-foreground">Network Interfaces</h3>
+                <Button type="button" size="sm" variant="outline" onClick={() => setAssignIPOpen(true)}>
+                  <Plus className="w-4 h-4 mr-1" />
+                  Assign IP address
+                </Button>
+              </div>
               {!vmNetworks?.length ? (
                 <div className="border border-dashed border-gray-300 p-6 text-center text-sm font-medium text-muted-foreground">
                   No network interfaces attached
@@ -1564,6 +1576,7 @@ export default function VMDetailPage() {
                         <th className="text-left p-3">VLAN</th>
                         <th className="text-left p-3">Bandwidth</th>
                         <th className="text-left p-3">rDNS</th>
+                        <th className="text-right p-3"></th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1579,6 +1592,29 @@ export default function VMDetailPage() {
                           <td className="p-3 font-mono">{iface.vlan_id ?? "—"}</td>
                           <td className="p-3"><BandwidthCell vmId={vmId} iface={iface} /></td>
                           <td className="p-3 font-mono text-xs">{iface.rdns || "—"}</td>
+                          <td className="p-3 text-right">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
+                              title="Release this address back to its pool"
+                              onClick={async () => {
+                                const ok = await confirm({
+                                  title: `Release ${iface.ip_address}?`,
+                                  description:
+                                    "The address returns to its pool and can be given to another VM. The guest keeps using it until you change its configuration, so it will stop working rather than fail over.",
+                                  confirmLabel: "Release address",
+                                  destructive: true,
+                                  action: () => releaseIP.mutateAsync(iface.id),
+                                })
+                                if (!ok) return
+                                setToast({ message: `${iface.ip_address} released`, type: "success" })
+                              }}
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </Button>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -1902,6 +1938,68 @@ export default function VMDetailPage() {
           </div>
         </TabsContent>
       </Tabs>
+
+      {/* Assign an address to a VM that already exists. */}
+      <Dialog open={assignIPOpen} onOpenChange={setAssignIPOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Assign an IP address to {vm.hostname}</DialogTitle>
+            <DialogDescription>
+              An address is taken from a pool on this VM&apos;s node and reserved for it. The host is
+              configured to route it — anti-spoofing and firewall rules follow the address.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-2">
+            <label htmlFor="assign-pool" className="text-sm font-medium">Pool</label>
+            <select
+              id="assign-pool"
+              className="w-full border rounded-md px-3 py-2 text-sm bg-background"
+              value={assignPoolID}
+              onChange={(e) => setAssignPoolID(e.target.value)}
+            >
+              <option value="">Any pool available on this node</option>
+              {(ipPools ?? []).map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} ({p.cidr})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Said plainly, because the alternative is the operator assigning an
+              address, seeing it listed, and wondering why the VM is unreachable.
+              Only a rebuild regenerates cloud-init, so an imported machine has
+              to be configured from inside. */}
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
+            The address is not written into the guest. Unless this VM is rebuilt, you must configure
+            it inside the operating system — the panel reserves it and prepares the host, nothing
+            more.
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setAssignIPOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              disabled={assignIP.isPending}
+              onClick={async () => {
+                try {
+                  await assignIP.mutateAsync({ pool_id: assignPoolID || undefined })
+                  setAssignIPOpen(false)
+                  setAssignPoolID("")
+                  setToast({ message: "IP address assigned", type: "success" })
+                } catch (err) {
+                  setToast({ message: (err as Error).message, type: "error" })
+                }
+              }}
+            >
+              {assignIP.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "Assign"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Toast */}
       {toast && (

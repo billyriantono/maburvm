@@ -389,3 +389,32 @@ export function useVMMetrics(id: string) {
     refetchInterval: 5000,
   })
 }
+
+// Attaching an address to a VM that already exists. Until this existed the only
+// way a machine got an IP was at creation, so an imported VM without one — or
+// one whose address had been released — had no route back short of a rebuild.
+export function useAssignVMIP(vmId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<void, Error, { pool_id?: string; ip_address?: string }>({
+    mutationFn: async (body) => {
+      await api.post(`/api/v1/vms/${vmId}/ip-addresses`, body)
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['vms', vmId] })
+      queryClient.invalidateQueries({ queryKey: ['networks', 'vm', vmId] })
+    },
+  })
+}
+
+export function useReleaseVMIP(vmId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<void, Error, string>({
+    mutationFn: async (networkId) => {
+      await api.delete(`/api/v1/vms/${vmId}/ip-addresses/${networkId}`)
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['vms', vmId] })
+      queryClient.invalidateQueries({ queryKey: ['networks', 'vm', vmId] })
+    },
+  })
+}

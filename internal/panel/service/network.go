@@ -42,6 +42,9 @@ type NetworkService struct {
 	vmRepo       *repository.VMRepository
 	nodeRepo     *repository.NodeRepository
 	riverClient  *river.Client[pgx.Tx]
+	// ipamService is optional: without it the service still manages interfaces
+	// that already exist, it just cannot allocate new addresses.
+	ipamService *IPAMService
 }
 
 // NewNetworkService creates a new NetworkService instance
