@@ -14,6 +14,21 @@ export interface Image {
   status: ImageStatus;
   error_message?: string;
   created_at: string;
+  /** Present only while the node is exporting this image's disk. */
+  progress?: ExportProgress;
+}
+
+// ExportProgress is how far an in-flight capture has got.
+//
+// Deliberately no percentage: the output is compressed, so written/source is the
+// compression ratio, not completion. Bytes and elapsed time are honest; a
+// percentage would look precise and be wrong.
+export interface ExportProgress {
+  written_bytes: number;
+  source_bytes: number;
+  started_at: string;
+  elapsed_seconds: number;
+  bytes_per_second: number;
 }
 
 // CreateImageRequest for capturing an image from a VM

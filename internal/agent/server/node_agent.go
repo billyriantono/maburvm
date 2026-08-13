@@ -1059,6 +1059,21 @@ func (s *NodeAgentService) BackupDisk(ctx context.Context, req *pb.BackupDiskReq
 	// compression runs at single-digit MiB/s, so a flat ceiling is either absurd
 	// for a small disk or fatal for a large one.
 	qcowExport := storage.NewQCOW2Manager()
+
+	// Make the export observable while it runs. Without this the only signal an
+	// operator had was a qemu-img process visible over SSH — the panel showed
+	// "pending" for hours, which looks identical to a job that never started.
+	var sourceBytes int64
+	if info, serr := os.Stat(diskPath); serr == nil {
+		sourceBytes = info.Size()
+	}
+	kind := "backup"
+	if req.GetDestinationKey() != "" && strings.Contains(req.GetDestinationKey(), "images/") {
+		kind = "image"
+	}
+	doneTracking := storage.TrackExport(req.VmId, kind, diskPath, exportPath, sourceBytes)
+	defer doneTracking()
+
 	if err := qcowExport.ConvertCompressed(diskPath, exportPath); err != nil {
 		return backupDiskErr(fmt.Sprintf("disk export failed: %v", err)), nil
 	}
@@ -2264,6 +2279,26 @@ func (s *NodeAgentService) GetLiveMetrics(ctx context.Context, req *pb.GetLiveMe
 		ConntrackCount:       conntrackCount,
 		ConntrackMax:         conntrackMax,
 	}, nil
+}
+
+// GetExportProgress reports the disk exports running on this node right now.
+func (s *NodeAgentService) GetExportProgress(ctx context.Context, req *pb.GetExportProgressRequest) (*pb.GetExportProgressResponse, error) {
+	if _, authenticated := GetNodeIDFromContext(ctx); !authenticated {
+		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
+	}
+
+	running := storage.ListExports()
+	out := make([]*pb.ExportProgress, 0, len(running))
+	for _, e := range running {
+		out = append(out, &pb.ExportProgress{
+			VmId:         e.VMID,
+			Kind:         e.Kind,
+			SourceBytes:  e.SourceBytes,
+			WrittenBytes: storage.WrittenBytes(e.DestPath),
+			StartedAt:    timestamppb.New(e.StartedAt),
+		})
+	}
+	return &pb.GetExportProgressResponse{Success: true, Exports: out}, nil
 }
 
 // SetConsoleAccess enforces console enable/disable on the domain itself.

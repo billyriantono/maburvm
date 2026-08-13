@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useMemo } from "react"
 import {
   Database,
   Plus,
@@ -250,6 +250,10 @@ export default function StorageListPage() {
   const confirm = useConfirm()
   const { data: pools, isLoading, error } = useStoragePools()
   const { data: nodes, isLoading: isLoadingNodes } = useNodes()
+  const nodeNames = useMemo(
+    () => new Map((nodes ?? []).map((n) => [n.id, n.name])),
+    [nodes]
+  )
   const createPool = useCreateStoragePool()
   const resizePool = useResizeStoragePool()
   const setPrimary = useSetPrimaryPool()
@@ -265,7 +269,8 @@ export default function StorageListPage() {
   const filteredPools = pools?.filter(pool =>
     pool.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
     pool.path.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    pool.node_id?.toLowerCase().includes(searchQuery.toLowerCase())
+    pool.node_id?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      nodeNames.get(pool.node_id)?.toLowerCase().includes(searchQuery.toLowerCase())
   ).filter(pool => !typeFilter || pool.type === typeFilter) ?? []
 
   const hasFilters = searchQuery || typeFilter
@@ -497,7 +502,13 @@ export default function StorageListPage() {
                       <Server className="w-4 h-4" />
                     </div>
                     <div>
-                      <p className="text-sm font-semibold">{pool.node_id || 'N/A'}</p>
+                      {/* The node's name, not its UUID. These cards carry
+                          Delete and "Use for new VMs", and choosing between two
+                          identical-looking UUIDs is how an operator acts on the
+                          wrong node. */}
+                      <p className="text-sm font-semibold">
+                        {nodeNames.get(pool.node_id) ?? pool.node_id ?? 'N/A'}
+                      </p>
                       <p className="text-[10px] font-medium text-muted-foreground">Node</p>
                     </div>
                   </div>

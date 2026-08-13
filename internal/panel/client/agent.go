@@ -1160,3 +1160,49 @@ func (c *AgentClient) SetConsoleAccess(ctx context.Context, nodeID, vmID string,
 	}
 	return out, nil
 }
+
+// ExportProgress is one disk export running on a node.
+type ExportProgress struct {
+	VMID         string
+	Kind         string
+	SourceBytes  int64
+	WrittenBytes int64
+	StartedAt    time.Time
+}
+
+// GetExportProgress reports the exports a node is running right now.
+//
+// The panel has no other way to tell a queued capture from one that is three
+// hours into compressing a 90 GB disk: both look like a row marked "pending".
+func (c *AgentClient) GetExportProgress(ctx context.Context, nodeID string) ([]ExportProgress, error) {
+	node, err := c.getNodeInfo(nodeID)
+	if err != nil {
+		return nil, err
+	}
+
+	var out []ExportProgress
+	err = c.executeWithRetry(ctx, node, func(ctx context.Context, client pb.NodeAgentClient) error {
+		resp, err := client.GetExportProgress(ctx, &pb.GetExportProgressRequest{})
+		if err != nil {
+			return err
+		}
+		if !resp.Success {
+			return fmt.Errorf("GetExportProgress failed: %s", resp.Error.GetMessage())
+		}
+		out = out[:0]
+		for _, e := range resp.GetExports() {
+			out = append(out, ExportProgress{
+				VMID:         e.GetVmId(),
+				Kind:         e.GetKind(),
+				SourceBytes:  e.GetSourceBytes(),
+				WrittenBytes: e.GetWrittenBytes(),
+				StartedAt:    e.GetStartedAt().AsTime(),
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}

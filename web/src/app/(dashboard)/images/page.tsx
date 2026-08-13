@@ -17,6 +17,33 @@ function statusVariant(status: Image["status"]): "success" | "warning" | "destru
   return "warning"
 }
 
+// ExportProgressRow shows what a running capture has actually produced.
+//
+// No percentage bar, on purpose. The output is compressed, so its size against
+// the source disk is the compression ratio and not completion — a bar drawn from
+// that would move at a rate nobody could interpret and would routinely stop far
+// short of the end. Bytes written, elapsed time and current rate answer the
+// question actually being asked ("is this moving?") without inventing precision.
+function ExportProgressRow({ progress }: { progress: NonNullable<Image["progress"]> }) {
+  const mins = Math.floor(progress.elapsed_seconds / 60)
+  const elapsed = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`
+  const rate = progress.bytes_per_second > 0 ? `${formatBytes(progress.bytes_per_second)}/s` : "starting…"
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+      <span className="flex items-center gap-2">
+        <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+        <span className="font-mono text-foreground">{formatBytes(progress.written_bytes)}</span> written
+        {progress.source_bytes > 0 && (
+          <> from a <span className="font-mono">{formatBytes(progress.source_bytes)}</span> disk</>
+        )}
+      </span>
+      <span>· {elapsed} elapsed</span>
+      <span>· {rate}</span>
+    </div>
+  )
+}
+
 export default function ImagesPage() {
   const confirm = useConfirm()
   const { data: images, isLoading, error, refetch } = useImages()
@@ -119,6 +146,7 @@ export default function ImagesPage() {
                 </Button>
               </div>
              </div>
+              {image.progress && <ExportProgressRow progress={image.progress} />}
               {image.status === "failed" && image.error_message && (
                 <p className="mt-2 text-xs text-destructive break-words whitespace-pre-wrap rounded-md bg-destructive/10 px-3 py-2 font-mono">
                   {image.error_message}

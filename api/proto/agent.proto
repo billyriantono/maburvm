@@ -150,6 +150,14 @@ service NodeAgent {
   // the VNC password. Enforcement has to happen where the socket is.
   rpc SetConsoleAccess(SetConsoleAccessRequest) returns (SetConsoleAccessResponse);
 
+  // GetExportProgress reports the disk exports running on this node right now.
+  //
+  // A compressed export of a large disk takes hours, during which the panel
+  // showed only "pending" — indistinguishable from a job that had never
+  // started, and from one that was stuck. Operators were left guessing whether
+  // to wait or to intervene.
+  rpc GetExportProgress(GetExportProgressRequest) returns (GetExportProgressResponse);
+
   // GetGuestConnections reports how fast each guest on this node is opening new
   // outbound connections. Bandwidth cannot answer that question: a port scan is
   // enormous in packets and connections but trivial in bytes, so traffic graphs
@@ -1745,6 +1753,34 @@ message SetQuarantineRequest {
   // reason is recorded in the node's quarantine file so an operator reading it
   // months later knows why a guest is cut off and who to ask about it.
   string reason = 3;
+}
+
+message GetExportProgressRequest {}
+
+// ExportProgress is one disk export in flight.
+message ExportProgress {
+  string vm_id = 1;
+
+  // kind is "backup" or "image" — the same export path serves both.
+  string kind = 2;
+
+  // source_bytes is the size of the disk being read. written_bytes is the size
+  // of the compressed output so far.
+  //
+  // The ratio of the two is NOT the completion percentage: the output is
+  // compressed, so it lags the input by whatever ratio the data achieves. The
+  // panel reports bytes written and elapsed time, and leaves it at that rather
+  // than showing a percentage that would be wrong in a way nobody could see.
+  int64 source_bytes = 3;
+  int64 written_bytes = 4;
+
+  google.protobuf.Timestamp started_at = 5;
+}
+
+message GetExportProgressResponse {
+  bool success = 1;
+  repeated ExportProgress exports = 2;
+  ErrorResponse error = 3;
 }
 
 message SetConsoleAccessRequest {

@@ -47,6 +47,7 @@ const (
 	NodeAgent_ConfigureVPC_FullMethodName        = "/agent.NodeAgent/ConfigureVPC"
 	NodeAgent_SetQuarantine_FullMethodName       = "/agent.NodeAgent/SetQuarantine"
 	NodeAgent_SetConsoleAccess_FullMethodName    = "/agent.NodeAgent/SetConsoleAccess"
+	NodeAgent_GetExportProgress_FullMethodName   = "/agent.NodeAgent/GetExportProgress"
 	NodeAgent_GetGuestConnections_FullMethodName = "/agent.NodeAgent/GetGuestConnections"
 )
 
@@ -167,6 +168,13 @@ type NodeAgentClient interface {
 	// console was still reachable by anyone who could route to the node and knew
 	// the VNC password. Enforcement has to happen where the socket is.
 	SetConsoleAccess(ctx context.Context, in *SetConsoleAccessRequest, opts ...grpc.CallOption) (*SetConsoleAccessResponse, error)
+	// GetExportProgress reports the disk exports running on this node right now.
+	//
+	// A compressed export of a large disk takes hours, during which the panel
+	// showed only "pending" — indistinguishable from a job that had never
+	// started, and from one that was stuck. Operators were left guessing whether
+	// to wait or to intervene.
+	GetExportProgress(ctx context.Context, in *GetExportProgressRequest, opts ...grpc.CallOption) (*GetExportProgressResponse, error)
 	// GetGuestConnections reports how fast each guest on this node is opening new
 	// outbound connections. Bandwidth cannot answer that question: a port scan is
 	// enormous in packets and connections but trivial in bytes, so traffic graphs
@@ -475,6 +483,16 @@ func (c *nodeAgentClient) SetConsoleAccess(ctx context.Context, in *SetConsoleAc
 	return out, nil
 }
 
+func (c *nodeAgentClient) GetExportProgress(ctx context.Context, in *GetExportProgressRequest, opts ...grpc.CallOption) (*GetExportProgressResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetExportProgressResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_GetExportProgress_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *nodeAgentClient) GetGuestConnections(ctx context.Context, in *GetGuestConnectionsRequest, opts ...grpc.CallOption) (*GetGuestConnectionsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetGuestConnectionsResponse)
@@ -602,6 +620,13 @@ type NodeAgentServer interface {
 	// console was still reachable by anyone who could route to the node and knew
 	// the VNC password. Enforcement has to happen where the socket is.
 	SetConsoleAccess(context.Context, *SetConsoleAccessRequest) (*SetConsoleAccessResponse, error)
+	// GetExportProgress reports the disk exports running on this node right now.
+	//
+	// A compressed export of a large disk takes hours, during which the panel
+	// showed only "pending" — indistinguishable from a job that had never
+	// started, and from one that was stuck. Operators were left guessing whether
+	// to wait or to intervene.
+	GetExportProgress(context.Context, *GetExportProgressRequest) (*GetExportProgressResponse, error)
 	// GetGuestConnections reports how fast each guest on this node is opening new
 	// outbound connections. Bandwidth cannot answer that question: a port scan is
 	// enormous in packets and connections but trivial in bytes, so traffic graphs
@@ -701,6 +726,9 @@ func (UnimplementedNodeAgentServer) SetQuarantine(context.Context, *SetQuarantin
 }
 func (UnimplementedNodeAgentServer) SetConsoleAccess(context.Context, *SetConsoleAccessRequest) (*SetConsoleAccessResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetConsoleAccess not implemented")
+}
+func (UnimplementedNodeAgentServer) GetExportProgress(context.Context, *GetExportProgressRequest) (*GetExportProgressResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetExportProgress not implemented")
 }
 func (UnimplementedNodeAgentServer) GetGuestConnections(context.Context, *GetGuestConnectionsRequest) (*GetGuestConnectionsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetGuestConnections not implemented")
@@ -1212,6 +1240,24 @@ func _NodeAgent_SetConsoleAccess_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NodeAgent_GetExportProgress_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetExportProgressRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).GetExportProgress(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_GetExportProgress_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).GetExportProgress(ctx, req.(*GetExportProgressRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _NodeAgent_GetGuestConnections_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetGuestConnectionsRequest)
 	if err := dec(in); err != nil {
@@ -1340,6 +1386,10 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetConsoleAccess",
 			Handler:    _NodeAgent_SetConsoleAccess_Handler,
+		},
+		{
+			MethodName: "GetExportProgress",
+			Handler:    _NodeAgent_GetExportProgress_Handler,
 		},
 		{
 			MethodName: "GetGuestConnections",

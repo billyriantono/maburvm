@@ -1,10 +1,13 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/maburvm/panel/internal/panel/client"
 	"github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/panel/service"
 	"github.com/maburvm/panel/internal/shared/models"
@@ -16,11 +19,20 @@ import (
 // admins (all images) and clients (their own).
 type ImageHandler struct {
 	service *service.ImageService
+	// nodes lets the list endpoint ask each node what it is exporting right now.
+	// Optional: without it the list still works, it just cannot show progress.
+	nodes *service.NodeService
 }
 
 // NewImageHandler creates a new ImageHandler.
 func NewImageHandler(s *service.ImageService) *ImageHandler {
 	return &ImageHandler{service: s}
+}
+
+// WithNodeService enables live capture progress on the image list.
+func (h *ImageHandler) WithNodeService(n *service.NodeService) *ImageHandler {
+	h.nodes = n
+	return h
 }
 
 // CreateImageRequest is the body for capturing an image from a VM.
@@ -63,7 +75,72 @@ func (h *ImageHandler) ListImages(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Internal Server Error", "message": err.Error()})
 	}
+	h.attachProgress(c.Request().Context(), images)
+
 	return c.JSON(http.StatusOK, map[string]interface{}{"data": images})
+}
+
+// attachProgress fills in how far each in-flight capture has got.
+//
+// Asked of the nodes rather than stored, because it describes work happening
+// right now: a stored figure would survive the process doing the work and go on
+// reporting progress for an export that had already died. One call per node, not
+// per image, and a node that cannot be reached simply contributes nothing —
+// missing progress is a far smaller problem than a list that fails to load.
+func (h *ImageHandler) attachProgress(ctx context.Context, images []models.Image) {
+	if h.nodes == nil || len(images) == 0 {
+		return
+	}
+	pending := false
+	for i := range images {
+		if images[i].Status == models.ImageStatusPending {
+			pending = true
+			break
+		}
+	}
+	if !pending {
+		return
+	}
+
+	nodes, err := h.nodes.ListNodes(ctx, nil, 0, 0)
+	if err != nil {
+		return
+	}
+
+	byVM := map[string]client.ExportProgress{}
+	for i := range nodes {
+		nctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		if rerr := h.nodes.EnsureAgentRegistered(nctx, nodes[i].ID); rerr == nil {
+			if running, gerr := h.nodes.AgentClient().GetExportProgress(nctx, nodes[i].ID); gerr == nil {
+				for _, e := range running {
+					byVM[e.VMID] = e
+				}
+			}
+		}
+		cancel()
+	}
+
+	for i := range images {
+		if images[i].SourceVMID == nil {
+			continue
+		}
+		e, ok := byVM[images[i].SourceVMID.String()]
+		if !ok {
+			continue
+		}
+		elapsed := int64(time.Since(e.StartedAt).Seconds())
+		rate := int64(0)
+		if elapsed > 0 {
+			rate = e.WrittenBytes / elapsed
+		}
+		images[i].Progress = &models.ExportProgress{
+			WrittenBytes:   e.WrittenBytes,
+			SourceBytes:    e.SourceBytes,
+			StartedAt:      e.StartedAt,
+			ElapsedSecs:    elapsed,
+			BytesPerSecond: rate,
+		}
+	}
 }
 
 // DeleteImage removes an image and its backing object-storage file.

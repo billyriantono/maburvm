@@ -32,8 +32,27 @@ func (r *AuditRepository) GetByID(ctx context.Context, id string) (*models.Audit
 }
 
 // List retrieves audit logs with optional filtering and pagination
+// List returns audit entries newest first.
+//
+// The generic base List applies no ORDER BY, so Postgres returned them in
+// storage order — oldest first for an append-only table. Every reader of an
+// audit log wants the opposite: the dashboard's "Recent Activity" was showing
+// ten-day-old entries, and page 1 of the audit page was the beginning of time.
+// The filtered variants below already ordered correctly, which is why this went
+// unnoticed.
 func (r *AuditRepository) List(ctx context.Context, limit, offset int) ([]models.AuditLog, error) {
-	return r.base.List(ctx, limit, offset)
+	var logs []models.AuditLog
+	query := r.db.WithContext(ctx).Order("created_at DESC")
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+	if offset > 0 {
+		query = query.Offset(offset)
+	}
+	if err := query.Find(&logs).Error; err != nil {
+		return nil, err
+	}
+	return logs, nil
 }
 
 // ListByUser retrieves audit logs for a specific user

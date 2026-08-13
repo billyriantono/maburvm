@@ -34,6 +34,33 @@ type Image struct {
 	CreatedAt    time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
 	UpdatedAt    time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
 	DeletedAt    gorm.DeletedAt `json:"-" gorm:"index"`
+
+	// Progress is filled for display when the node is currently exporting this
+	// image's disk. Not a column: it describes work happening right now, and a
+	// stored copy would outlive the process doing it and start lying.
+	Progress *ExportProgress `json:"progress,omitempty" gorm:"-"`
+}
+
+// ExportProgress is how far a capture has got, as reported by the node.
+//
+// A capture of a large disk runs for hours. Without this the panel showed only
+// "pending", which reads the same as a job that never started and as one that is
+// stuck — so the honest answer to "is this working?" was to SSH to the node and
+// look for a qemu-img process.
+type ExportProgress struct {
+	// WrittenBytes is the compressed output produced so far; SourceBytes is the
+	// disk being read.
+	//
+	// Deliberately not expressed as a percentage: the output is compressed, so
+	// the ratio between them is the compression ratio, not completion. A number
+	// that looks like progress but is not would be worse than no number.
+	WrittenBytes int64     `json:"written_bytes"`
+	SourceBytes  int64     `json:"source_bytes"`
+	StartedAt    time.Time `json:"started_at"`
+	ElapsedSecs  int64     `json:"elapsed_seconds"`
+	// BytesPerSecond lets the reader judge whether it is moving at all, which is
+	// the question actually being asked.
+	BytesPerSecond int64 `json:"bytes_per_second"`
 }
 
 // TableName specifies the table name for Image.
