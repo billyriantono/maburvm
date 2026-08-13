@@ -6,6 +6,8 @@ import {
   HardDriveDownload, KeyRound, Pencil, Activity as ActivityIcon,
 } from 'lucide-react'
 import { useDashboardStats } from '@/lib/hooks/use-dashboard'
+import { useNodes, useNodeMetricsHistory } from '@/lib/hooks/use-nodes'
+import { BandwidthChart } from '@/components/ui/bandwidth-chart'
 
 function formatTimeAgo(dateStr: string): string {
   const date = new Date(dateStr)
@@ -83,6 +85,63 @@ function describeActivity(a: {
   // Fallback: "vm.foo" -> "Foo vm"
   const verb = a.action.includes('.') ? a.action.split('.').slice(1).join(' ') : a.action
   return { icon: ActivityIcon, tone: 'muted', label: `${titleCase(verb)} ${resourceLabel}`, target }
+}
+
+// formatRate renders a bytes-per-second figure at a sensible magnitude.
+function formatRate(bytesPerSec: number): string {
+  if (!Number.isFinite(bytesPerSec) || bytesPerSec <= 0) return "0 B/s"
+  const units = ["B/s", "KB/s", "MB/s", "GB/s"]
+  let value = bytesPerSec
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit++
+  }
+  return `${value >= 10 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`
+}
+
+// NodeBandwidthCard is one node's inbound/outbound trend.
+function NodeBandwidthCard({ nodeId, name }: { nodeId: string; name: string }) {
+  const { data: samples, isLoading } = useNodeMetricsHistory(nodeId, 60)
+
+  const points = (samples ?? []).map((s) => ({
+    rx: s.network_rx_bytes_per_sec ?? 0,
+    tx: s.network_tx_bytes_per_sec ?? 0,
+  }))
+
+  return (
+    <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-semibold truncate" title={name}>{name}</h3>
+        <span className="text-[10px] font-medium text-muted-foreground">last 60m</span>
+      </div>
+      {isLoading ? (
+        <div className="h-[96px] flex items-center justify-center text-xs text-muted-foreground">
+          Loading…
+        </div>
+      ) : (
+        <BandwidthChart data={points} format={formatRate} />
+      )}
+    </div>
+  )
+}
+
+// NodeBandwidthSection shows every node side by side.
+function NodeBandwidthSection() {
+  const { data: nodes } = useNodes()
+  const list = nodes ?? []
+  if (list.length === 0) return null
+
+  return (
+    <div className="mb-6">
+      <h2 className="text-lg font-semibold tracking-tight mb-3">Bandwidth by node</h2>
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        {list.map((node) => (
+          <NodeBandwidthCard key={node.id} nodeId={node.id} name={node.name} />
+        ))}
+      </div>
+    </div>
+  )
 }
 
 export default function DashboardPage() {
@@ -165,6 +224,12 @@ export default function DashboardPage() {
           </p>
         </div>
       </div>
+
+      {/* Per-node bandwidth. Small multiples rather than one combined chart:
+          the question is "which node is carrying what", and stacking several
+          nodes onto shared axes answers a different one while making each
+          node's own shape harder to read. */}
+      <NodeBandwidthSection />
 
       {/* Main Content Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
