@@ -63,6 +63,7 @@ const apiSchema = z.object({
   hmacSecret: z.string().min(32, "HMAC secret must be at least 32 characters").or(z.literal("")),
   enableApi: z.boolean(),
   rateLimit: z.number().min(10).max(1000),
+  abuseipdbToken: z.string().or(z.literal("")),
 })
 
 // Per-account limits. Both are kept optional-with-minimum rather than allowing
@@ -118,6 +119,7 @@ const defaultApiSettings = {
   hmacSecret: "your-hmac-secret-key-here-min-32-chars",
   enableApi: true,
   rateLimit: 100,
+  abuseipdbToken: "",
 }
 
 const defaultQuotaSettings = {
@@ -849,6 +851,27 @@ export default function SystemSettingsPage() {
                         {apiForm.formState.errors.webhookUrl.message}
                       </p>
                     )}
+                  </div>
+
+                  {/* AbuseIPDB */}
+                  <div>
+                    <label htmlFor="abuseipdbToken" className="block text-sm font-medium text-muted-foreground mb-2">
+                      AbuseIPDB API key
+                    </label>
+                    <Input
+                      id="abuseipdbToken"
+                      type="password"
+                      {...apiForm.register("abuseipdbToken")}
+                      placeholder="optional"
+                    />
+                    {/* Optional on purpose: the blocklist checks need no
+                        credentials and carry IP Reputation on their own. The key
+                        only adds a confidence score, and its free tier is 1,000
+                        checks a day — enough for a few hundred addresses. */}
+                    <p className="text-[11px] text-muted-foreground mt-1 font-medium">
+                      Optional. Adds a confidence score and report count to IP Reputation; the
+                      blocklist checks work without it. Free tier allows 1,000 checks a day.
+                    </p>
                   </div>
 
                   {/* Rate Limit */}

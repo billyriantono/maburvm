@@ -66,6 +66,7 @@ type MetricsCollector struct {
 	overageSecret  string // env fallback HMAC secret (BILLING_WEBHOOK_SECRET)
 	httpClient     *http.Client
 	abuse          *AbuseService
+	reputation     *ReputationService
 	logger         *slog.Logger
 	tick           int // collectOnce counter, for slower-cadence work (IP reconcile)
 }
@@ -91,6 +92,10 @@ func NewMetricsCollector(db *gorm.DB, riverClient *river.Client[pgx.Tx], interva
 		// same tick and against the same nodes, so a second pool would re-dial
 		// every node for no gain.
 		abuse: NewAbuseService(db, nodeService, logger),
+		// Address reputation is checked on the same loop but far more slowly:
+		// blocklists and AbuseIPDB both meter queries daily, and a fleet swept
+		// every minute would exhaust the quota and then learn nothing.
+		reputation: NewReputationService(db, logger),
 		// riverClient lets the collector enqueue throttle/restore network jobs.
 		vmService:      NewVMService(db, vmRepo, nodeRepo, repository.NewTemplateRepository(db), riverClient, logger),
 		bwService:      NewBandwidthService(repository.NewBandwidthUsageRepository(db), logger),
@@ -209,6 +214,20 @@ func (c *MetricsCollector) collectOnce(ctx context.Context) {
 
 	// Restore any throttled VMs whose quota has reset for the new period.
 	c.restoreResetThrottles(ctx)
+
+	// Address reputation, on a much slower cadence and in small batches. The
+	// external services meter by the day, so sweeping the whole fleet at once
+	// would burn the quota and leave the rest unchecked while reporting nothing
+	// wrong. Assigned addresses are checked first inside the service: a listing
+	// on an address nobody uses costs nothing today, one on a customer's address
+	// is costing them right now.
+	if c.tick%20 == 1 {
+		rctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		if n := c.reputation.CheckDueAddresses(rctx, 24*time.Hour, 25); n > 0 {
+			c.logger.Info("reputation: addresses checked", "count", n)
+		}
+		cancel()
+	}
 
 	if c.retention > 0 {
 		cutoff := time.Now().Add(-c.retention)

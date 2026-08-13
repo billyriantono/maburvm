@@ -23,6 +23,7 @@ import {
   Layers,
   Waypoints,
   ShieldAlert,
+  ShieldX,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { User } from "@/types"
@@ -44,6 +45,7 @@ const navItems = [
   { href: "/users", label: "Users", icon: Users },
   { href: "/monitoring", label: "Monitoring", icon: Activity },
   { href: "/abuse", label: "Abuse", icon: ShieldAlert },
+  { href: "/ip-reputation", label: "IP Reputation", icon: ShieldX },
 ]
 
 // Settings navigation with sub-items

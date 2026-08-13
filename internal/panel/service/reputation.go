@@ -314,3 +314,7 @@ func (s *ReputationService) List(ctx context.Context, flaggedOnly bool) ([]model
 	}
 	return out, nil
 }
+
+// AbuseScoreNotCheckedValue exposes the sentinel for tests and callers that need
+// to distinguish "never checked" from a genuine score of zero.
+func AbuseScoreNotCheckedValue() int { return models.AbuseScoreNotChecked }

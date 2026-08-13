@@ -479,6 +479,12 @@ func (s *Server) setupVMRoutes(g *echo.Group) {
 	versionNodeService := service.NewNodeService(repository.NewNodeRepository(s.db), s.db)
 	handler.RegisterVersionRoutes(s.echo, handler.NewVersionHandler(versionNodeService), s.db)
 
+	// Address reputation: what the outside world thinks of the space we hand to
+	// customers. An address burned by abuse keeps its listings after the abuse
+	// stops, and the customer who receives it next inherits them.
+	reputationService := service.NewReputationService(s.db, nil)
+	handler.RegisterReputationRoutes(s.echo, handler.NewReputationHandler(reputationService), s.db)
+
 	// Abuse visibility: which guests are opening new outbound connections fast
 	// enough to threaten the node they sit on, including guests the panel does
 	// not manage. Shares the node service's agent connection pool.
