@@ -2,6 +2,7 @@ package service
 
 import (
 	"net"
+	"strings"
 	"testing"
 )
 
@@ -45,5 +46,18 @@ func TestReverseIPv4(t *testing.T) {
 func TestAbuseScoreNotCheckedIsDistinctFromClean(t *testing.T) {
 	if AbuseScoreNotCheckedValue() >= 0 {
 		t.Error("the not-checked sentinel must be negative so it cannot be confused with a real score")
+	}
+}
+
+
+// The address arrives from an inet column, and whether Postgres hands it over
+// with a /32 depends on how it was selected. A suffix must not make the check
+// fail — that would have silently disabled the feature for every address.
+func TestCIDRSuffixIsTolerated(t *testing.T) {
+	for _, in := range []string{"103.118.174.33", "103.118.174.33/32", " 103.118.174.33 "} {
+		bare := strings.SplitN(strings.TrimSpace(in), "/", 2)[0]
+		if net.ParseIP(bare) == nil {
+			t.Errorf("%q should reduce to a parseable address, got %q", in, bare)
+		}
 	}
 }

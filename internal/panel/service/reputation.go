@@ -192,10 +192,15 @@ func (s *ReputationService) abuseIPDBToken(ctx context.Context) string {
 
 // CheckAddress evaluates one address and stores the result.
 func (s *ReputationService) CheckAddress(ctx context.Context, address, poolID, token string, zones []string) error {
-	ip := net.ParseIP(address)
+	// Tolerate a CIDR suffix as well as a bare address: callers read these from
+	// an inet column, and whether the suffix survives depends on how it was
+	// selected.
+	bare := strings.SplitN(strings.TrimSpace(address), "/", 2)[0]
+	ip := net.ParseIP(bare)
 	if ip == nil {
 		return fmt.Errorf("%q is not an address", address)
 	}
+	address = bare
 	reversed, ok := reverseIPv4(ip)
 	if !ok {
 		// IPv6 blocklist coverage is thin and the reversal differs; skip rather
@@ -261,7 +266,10 @@ func (s *ReputationService) CheckDueAddresses(ctx context.Context, staleAfter ti
 	cutoff := time.Now().Add(-staleAfter)
 
 	if err := s.db.WithContext(ctx).Raw(`
-		SELECT a.address::text AS address, a.pool_id::text AS pool_id
+		-- host() rather than a plain cast: casting an inet yields "1.2.3.4/32",
+		-- which net.ParseIP rejects, so every check would have failed on a
+		-- suffix the database added.
+		SELECT host(a.address) AS address, a.pool_id::text AS pool_id
 		FROM ip_addresses a
 		JOIN ip_pools p ON p.id = a.pool_id
 		LEFT JOIN ip_reputation r ON r.address = a.address
@@ -301,7 +309,10 @@ func (s *ReputationService) List(ctx context.Context, flaggedOnly bool) ([]model
 		        (a.status = 'assigned') AS assigned`).
 		Joins("LEFT JOIN ip_pools p ON p.id = r.pool_id").
 		Joins("LEFT JOIN ip_addresses a ON a.address = r.address").
-		Joins("LEFT JOIN vms v ON v.id::text = a.vm_id").
+		// Both columns are uuid. An earlier cast to text here made the comparison
+		// text = uuid, which Postgres has no operator for, so every request to
+		// this endpoint failed — a query that had never actually been run.
+		Joins("LEFT JOIN vms v ON v.id = a.vm_id").
 		Order("(jsonb_array_length(r.listings) > 0) DESC, r.abuse_score DESC, r.address")
 
 	if flaggedOnly {
