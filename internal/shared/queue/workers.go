@@ -591,7 +591,10 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 		opDB = globalWorkerContext.DB
 	}
 	if job.Args.Operation == VMOpDelete {
-		deleteOpID = startVMOperation(ctx, opDB, vm.ID, "delete", "Destroying VM & disk on host", 3)
+		// Two steps, because two are reported: destroy on the host, then release
+		// the addressing and records. Declaring three left the last one forever
+		// unaccounted for, which is what made a finished delete look unfinished.
+		deleteOpID = startVMOperation(ctx, opDB, vm.ID, "delete", "Destroying VM & disk on host", 2)
 	}
 
 	// Execute VM command via gRPC

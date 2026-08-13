@@ -56,8 +56,14 @@ func completeVMOperation(ctx context.Context, db *gorm.DB, opID, label string) {
 		return
 	}
 	now := time.Now()
+	// Advance the step counter to the end as well. Without it a finished
+	// operation kept whatever step it last announced, so the dialog read
+	// "VM deleted · step 2/3" beside a full progress bar — three claims, one of
+	// which says the work is not finished. A completed operation is at its last
+	// step by definition.
 	_ = db.WithContext(ctx).Model(&models.VMOperation{}).Where("id = ?", opID).Updates(map[string]interface{}{
 		"status":       models.VMOperationCompleted,
+		"current_step": gorm.Expr("total_steps"),
 		"step_label":   label,
 		"updated_at":   now,
 		"completed_at": now,

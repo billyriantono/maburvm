@@ -186,6 +186,10 @@ function DeleteProgressDialog({ vm, onClose }: { vm: { id: string; hostname: str
   const step = op?.current_step || 0
   const done = op?.status === "completed"
   const failed = op?.status === "failed"
+  // A finished operation is at its last step. The backend now says so too, but
+  // the UI must not contradict itself on rows written before that fix — a full
+  // bar beside "step 2/3" is three statements where one denies the other two.
+  const shownStep = done ? total : Math.min(step, total)
   const pct = done ? 100 : Math.round((Math.max(step - (op?.status === "running" ? 1 : 0), 0) / total) * 100)
   const finished = done || failed
   const label = failed
@@ -202,7 +206,7 @@ function DeleteProgressDialog({ vm, onClose }: { vm: { id: string; hostname: str
         <p className="text-sm font-medium mb-4 flex items-center gap-2">
           {!finished && <Loader2 className="w-4 h-4 animate-spin" />}
           <span className={failed ? "text-destructive" : done ? "text-emerald-600" : ""}>{label}</span>
-          {!failed && <span className="text-muted-foreground">· step {Math.min(step, total)}/{total}</span>}
+          {!failed && <span className="text-muted-foreground">· step {shownStep}/{total}</span>}
         </p>
 
         <div className="w-full h-2 rounded-full border bg-muted overflow-hidden mb-4">
