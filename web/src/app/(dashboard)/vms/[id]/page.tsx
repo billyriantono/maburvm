@@ -16,6 +16,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useVM, useVMMetrics, useVMMetricsHistory, useVMAction, useDeleteVM, useAttachISO, useDetachISO, useRescueVM, useUnrescueVM, useMigrateVM, useRegenerateVNCPassword, useSetConsoleEnabled, useRepairConsole, useRebuildVM, useResetPassword, useCloneVM, useUpdateVM, useAssignVMIP, useReleaseVMIP } from "@/lib/hooks/use-vms"
 import { useIPPools } from "@/lib/hooks/use-ipam"
+import { DeleteProgressDialog } from "@/components/vm-delete-progress"
 import { useUsers } from "@/lib/hooks/use-users"
 import { useSSHKeys } from "@/lib/hooks/use-ssh-keys"
 import { useNodes } from "@/lib/hooks/use-nodes"
@@ -514,6 +515,8 @@ export default function VMDetailPage() {
   const assignIP = useAssignVMIP(vmId)
   const releaseIP = useReleaseVMIP(vmId)
   const [assignIPOpen, setAssignIPOpen] = useState(false)
+  // Set once a delete has been accepted; drives the progress dialog.
+  const [deletingVM, setDeletingVM] = useState<{ id: string; hostname: string } | null>(null)
   const [assignPoolID, setAssignPoolID] = useState("")
 
   // Handlers
@@ -533,13 +536,16 @@ export default function VMDetailPage() {
   const handleDelete = useCallback(async () => {
     try {
       await deleteVM.mutateAsync(vmId)
-      setToast({ message: "VM deleted", type: "success" })
       setDeleteDialogOpen(false)
-      router.push("/vms")
+      // Follow the delete to the end instead of announcing success and leaving.
+      // Accepting the job says nothing about whether the machine was removed:
+      // the delete that failed on a domain with snapshots reported "VM deleted"
+      // here while the VM was still on the node.
+      setDeletingVM({ id: vmId, hostname: vm?.hostname ?? vmId })
     } catch (err) {
       setToast({ message: `Failed to delete VM: ${(err as Error).message}`, type: "error" })
     }
-  }, [deleteVM, vmId, router])
+  }, [deleteVM, vmId, vm?.hostname])
 
   const handleAttachISO = useCallback(async () => {
     const url = (manualISOUrl.trim() || selectedISOUrl).trim()
@@ -2000,6 +2006,17 @@ export default function VMDetailPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Delete progress. Leaving for the list only once it has finished means
+          the outcome is always seen — including a failure, which previously
+          scrolled past as a toast on a page the operator had already left. */}
+      <DeleteProgressDialog
+        vm={deletingVM}
+        onClose={() => {
+          setDeletingVM(null)
+          router.push("/vms")
+        }}
+      />
 
       {/* Toast */}
       {toast && (
