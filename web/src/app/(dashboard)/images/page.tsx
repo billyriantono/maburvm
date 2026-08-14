@@ -5,7 +5,7 @@ import { AlertCircle, Layers, Loader2, Plus, RefreshCw, Trash2 } from "lucide-re
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { useDeleteImage, useImages } from "@/lib/hooks/use-images"
+import { useDeleteImage, useImages, useRetryImage } from "@/lib/hooks/use-images"
 import { useVMs } from "@/lib/hooks/use-vms"
 import { formatBytes } from "@/lib/hooks/use-bandwidth"
 import type { Image } from "@/types"
@@ -49,6 +49,7 @@ export default function ImagesPage() {
   const { data: images, isLoading, error, refetch } = useImages()
   const { data: vmsData } = useVMs({ pageSize: 100 })
   const deleteImage = useDeleteImage()
+  const retryImage = useRetryImage()
 
   const vmName = (vmId?: string) => {
     if (!vmId) return "—"
@@ -125,6 +126,29 @@ export default function ImagesPage() {
               <div className="col-span-2 text-sm text-muted-foreground truncate">{vmName(image.source_vm_id)}</div>
               <div className="col-span-2 text-sm text-muted-foreground">{new Date(image.created_at).toLocaleString()}</div>
               <div className="col-span-2 flex justify-end items-center gap-1">
+                {/* A capture that failed — including one interrupted by a panel
+                    restart — can be run again on the same row, rather than
+                    forcing the operator to delete it and start over. */}
+                {image.status === "failed" && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="gap-1"
+                    disabled={retryImage.isPending}
+                    onClick={async () => {
+                      try {
+                        await retryImage.mutateAsync(image.id)
+                        toast.success(`Capture of "${image.name}" restarted`)
+                      } catch (err) {
+                        toast.error((err as Error).message)
+                      }
+                    }}
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                    Retry
+                  </Button>
+                )}
                 {image.status === "available" && (
                   <Button asChild variant="outline" size="sm" className="gap-1">
                     <Link href={`/vms/new?source_image_id=${image.id}`}>

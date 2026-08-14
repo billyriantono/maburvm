@@ -453,6 +453,13 @@ func (s *Server) setupVMRoutes(g *echo.Group) {
 	// seed a new VM (create-from-image). Shares the agent BackupDisk export.
 	imageService := service.NewImageService(s.db, s.riverClient, logger)
 	vmHandler.SetImageService(imageService)
+	// Any capture still marked pending with no job behind it was interrupted —
+	// most likely by this process's predecessor shutting down. Say so, rather
+	// than leave a row that reads identically to work in progress.
+	if n := imageService.ReconcileStuckCaptures(context.Background()); n > 0 {
+		fmt.Printf("marked %d interrupted image capture(s) as failed\n", n)
+	}
+
 	// The node service lets the image list report live capture progress: a
 	// capture of a large disk runs for hours, and "pending" alone reads the same
 	// as a job that never started.

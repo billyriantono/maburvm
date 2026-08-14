@@ -44,3 +44,15 @@ export function useDeleteImage() {
     },
   })
 }
+
+// Retrying reuses the same image row, so the name and object key stay stable and
+// a retry does not multiply rows in the list.
+export function useRetryImage() {
+  const queryClient = useQueryClient()
+  return useMutation<void, Error, string>({
+    mutationFn: async (id) => {
+      await api.post(`/api/v1/images/${id}/retry`, {})
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['images', 'list'] }),
+  })
+}

@@ -199,3 +199,94 @@ func storageClientFromEnv() *storage.Client {
 	}
 	return client
 }
+
+// ErrImageNotRetryable is returned when an image is not in a state a retry can
+// help with.
+var ErrImageNotRetryable = errors.New("only a failed or interrupted capture can be retried")
+
+// RetryCapture re-runs a capture that did not finish.
+//
+// Needed because a capture can end without ever reporting a failure: a panel
+// restart cancels the job that was running it, and the image row is left saying
+// "pending" with nothing behind it. Eight were in that state after a routine
+// deploy, indistinguishable from work still in progress, with no way to ask for
+// it again short of deleting the row and starting over.
+//
+// The same image row is reused rather than a new one created, so the name and
+// the object key stay stable and a retry does not multiply rows in the list.
+func (s *ImageService) RetryCapture(ctx context.Context, imageID string, userID uuid.UUID, isAdmin bool) (*models.Image, error) {
+	img, err := s.getOwned(ctx, imageID, userID, isAdmin)
+	if err != nil {
+		return nil, err
+	}
+
+	// A capture that is genuinely still running must not be started twice: two
+	// exports of the same disk would compete for the node's CPU and both take
+	// longer than one would have.
+	if img.Status == models.ImageStatusAvailable {
+		return nil, ErrImageNotRetryable
+	}
+	if img.Status == models.ImageStatusPending && s.hasActiveJob(ctx, img.ID.String()) {
+		return nil, fmt.Errorf("this capture is still running")
+	}
+	if img.SourceVMID == nil {
+		return nil, fmt.Errorf("this image has no source VM to capture from")
+	}
+
+	if err := s.db.WithContext(ctx).Model(img).Updates(map[string]any{
+		"status":        models.ImageStatusPending,
+		"error_message": "",
+	}).Error; err != nil {
+		return nil, err
+	}
+	img.Status = models.ImageStatusPending
+	img.ErrorMessage = ""
+
+	if _, err := s.riverClient.Insert(ctx, queue.ImageJob{
+		ImageID:     img.ID.String(),
+		VMID:        img.SourceVMID.String(),
+		Destination: img.ObjectKey,
+	}, nil); err != nil {
+		return nil, fmt.Errorf("failed to enqueue the capture: %w", err)
+	}
+	return img, nil
+}
+
+// hasActiveJob reports whether a capture job for this image is still queued or
+// running, so a retry cannot start a second export of the same disk.
+func (s *ImageService) hasActiveJob(ctx context.Context, imageID string) bool {
+	var count int64
+	if err := s.db.WithContext(ctx).Raw(`
+		SELECT count(*) FROM river_job
+		WHERE kind = 'image'
+		  AND state IN ('available', 'running', 'retryable', 'scheduled')
+		  AND args->>'image_id' = ?`, imageID).Scan(&count).Error; err != nil {
+		// Unable to tell: assume it is running. Refusing a retry is recoverable;
+		// starting a duplicate export of a 90 GB disk is not.
+		return true
+	}
+	return count > 0
+}
+
+// ReconcileStuckCaptures marks as failed any capture whose job is gone.
+//
+// Called at startup, because that is exactly when the previous process's
+// in-flight jobs were cancelled. Without it those rows say "pending" forever —
+// which reads identically to work in progress and hides the fact that nothing is
+// happening.
+func (s *ImageService) ReconcileStuckCaptures(ctx context.Context) int64 {
+	res := s.db.WithContext(ctx).Exec(`
+		UPDATE images SET
+			status = 'failed',
+			error_message = 'The capture was interrupted before it finished, most likely by a panel restart. Retry to run it again.',
+			updated_at = NOW()
+		WHERE status = 'pending'
+		  AND deleted_at IS NULL
+		  AND NOT EXISTS (
+			SELECT 1 FROM river_job j
+			WHERE j.kind = 'image'
+			  AND j.state IN ('available', 'running', 'retryable', 'scheduled')
+			  AND j.args->>'image_id' = images.id::text
+		  )`)
+	return res.RowsAffected
+}

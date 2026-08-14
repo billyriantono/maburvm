@@ -143,6 +143,26 @@ func (h *ImageHandler) attachProgress(ctx context.Context, images []models.Image
 	}
 }
 
+// RetryImage re-runs a capture that did not finish.
+func (h *ImageHandler) RetryImage(c echo.Context) error {
+	userCtx, ok := middleware.GetUserContext(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized"})
+	}
+	img, err := h.service.RetryCapture(c.Request().Context(), c.Param("id"), userCtx.ID, userCtx.Role == models.RoleAdmin)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrImageNotFound):
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "Image not found"})
+		case errors.Is(err, service.ErrImageNotRetryable):
+			return c.JSON(http.StatusConflict, map[string]interface{}{"error": "Conflict", "message": err.Error()})
+		default:
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
+		}
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"message": "Capture restarted", "data": img})
+}
+
 // DeleteImage removes an image and its backing object-storage file.
 func (h *ImageHandler) DeleteImage(c echo.Context) error {
 	userCtx, ok := middleware.GetUserContext(c)
@@ -171,5 +191,8 @@ func RegisterImageRoutes(e *echo.Echo, handler *ImageHandler, db *gorm.DB) {
 	images.Use(middleware.RequireAuth(db))
 	images.GET("", handler.ListImages, middleware.RequirePermission("vm:read"))
 	images.POST("", handler.CreateImage, middleware.RequirePermission("snapshot:create"))
+	// Retrying re-runs an existing capture, so it needs the same permission as
+	// starting one.
+	images.POST("/:id/retry", handler.RetryImage, middleware.RequirePermission("snapshot:create"))
 	images.DELETE("/:id", handler.DeleteImage, middleware.RequirePermission("snapshot:delete"))
 }
