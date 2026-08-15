@@ -744,13 +744,26 @@ func (h *VMHandler) UpdateVM(c echo.Context) error {
 	if req.Hostname != "" {
 		updateReq.Hostname = req.Hostname
 	}
+	userCtx, hasUser := c.Get("user").(*middleware.UserContext)
+	isAdmin := hasUser && userCtx.Role == models.RoleAdmin
+
 	if req.Resources != nil {
+		// Resizing is admin-only. Ownership reassignment below was already
+		// gated, but resources were not: a customer holding vm:update on their
+		// own machine — which they must, to rename it — could PUT themselves
+		// more vCPU, RAM and disk than they pay for, and the plan and quota
+		// accounting would never see it.
+		if !isAdmin {
+			return c.JSON(http.StatusForbidden, map[string]interface{}{
+				"error":   "Forbidden",
+				"message": "Only administrators can change a VM's resources",
+			})
+		}
 		updateReq.Resources = req.Resources
 	}
 	if req.UserID != "" {
 		// Owner reassignment is admin-only.
-		userCtx, ok := c.Get("user").(*middleware.UserContext)
-		if !ok || userCtx.Role != models.RoleAdmin {
+		if !isAdmin {
 			return c.JSON(http.StatusForbidden, map[string]interface{}{
 				"error": "Forbidden", "message": "Only admins can reassign VM ownership",
 			})

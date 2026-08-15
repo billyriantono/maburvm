@@ -4,7 +4,8 @@ import { useParams, useRouter } from "next/navigation"
 import Link from "next/link"
 import { useState } from "react"
 import { ArrowLeft, Play, Square, RotateCw, Monitor, Cpu, MemoryStick, HardDrive, Terminal, Trash2, Gauge, RefreshCw, Layers } from "lucide-react"
-import { useVM, useVMAction, useDeleteVM, useVMStatusStream, useRebuildVM, useVMMetrics, useVMMetricsHistory } from "@/lib/hooks/use-vms"
+import { VMNameEditor } from "@/components/vm-name-editor"
+import { useVM, useVMAction, useDeleteVM, useVMStatusStream, useRebuildVM, useUpdateVM, useVMMetrics, useVMMetricsHistory } from "@/lib/hooks/use-vms"
 import { Sparkline } from "@/components/ui/sparkline"
 import type { VMMetricSample } from "@/types"
 import { CountryFlag } from "@/components/country-flag"
@@ -112,6 +113,7 @@ export default function ClientVMDetailPage() {
   const { data: vm, isLoading, isError } = useVM(vmId)
   const action = useVMAction(vmId)
   const del = useDeleteVM()
+  const updateVM = useUpdateVM(vmId)
   const rebuild = useRebuildVM(vmId)
   const { data: templates } = useTemplates()
   const { data: metrics } = useVMMetrics(vmId)
@@ -206,7 +208,15 @@ export default function ClientVMDetailPage() {
           <ArrowLeft className="w-5 h-5" />
         </Link>
         <Monitor className="w-6 h-6 text-muted-foreground" />
-        <h1 className="text-2xl font-semibold tracking-tight truncate">{vm.hostname}</h1>
+        {/* Customers get the same rename: a machine called "v1064" means
+            nothing to the person paying for it. */}
+        <VMNameEditor
+          hostname={vm.hostname}
+          headingClassName="text-2xl font-semibold tracking-tight truncate"
+          onRename={async (name) => {
+            await updateVM.mutateAsync({ hostname: name })
+          }}
+        />
         <StatusBadge status={vm.status} />
       </div>
 

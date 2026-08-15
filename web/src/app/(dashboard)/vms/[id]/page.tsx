@@ -7,7 +7,8 @@ import {
   Play, Square, RotateCcw, Trash2, RefreshCw, ArrowLeft,
   Copy, Check, HardDrive,
   Monitor, MonitorOff, KeyRound, Server, Network, Database, Shield, FileText, Terminal, Activity, ExternalLink,
-  Loader2, AlertCircle, Plus, Disc, CircleSlash, LifeBuoy, ArrowRightLeft, User
+  Loader2, AlertCircle, Plus, Disc, CircleSlash, LifeBuoy, ArrowRightLeft, User,
+  Pencil
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -17,6 +18,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useVM, useVMMetrics, useVMMetricsHistory, useVMAction, useDeleteVM, useAttachISO, useDetachISO, useRescueVM, useUnrescueVM, useMigrateVM, useRegenerateVNCPassword, useSetConsoleEnabled, useRepairConsole, useRebuildVM, useResetPassword, useCloneVM, useUpdateVM, useAssignVMIP, useReleaseVMIP } from "@/lib/hooks/use-vms"
 import { useIPPools } from "@/lib/hooks/use-ipam"
 import { DeleteProgressDialog } from "@/components/vm-delete-progress"
+import { VMNameEditor } from "@/components/vm-name-editor"
 import { useUsers } from "@/lib/hooks/use-users"
 import { useSSHKeys } from "@/lib/hooks/use-ssh-keys"
 import { useNodes } from "@/lib/hooks/use-nodes"
@@ -853,7 +855,13 @@ export default function VMDetailPage() {
               <Monitor className="w-8 h-8" />
             </div>
             <div>
-              <h1 className="text-2xl lg:text-3xl font-semibold text-foreground">{vm.hostname}</h1>
+              <VMNameEditor
+                hostname={vm.hostname}
+                onRename={async (name) => {
+                  await updateVM.mutateAsync({ hostname: name })
+                  setToast({ message: `Renamed to "${name}"`, type: "success" })
+                }}
+              />
               <div className="flex items-center gap-3 mt-2">
                 <StatusBadge status={vm.status} />
                 {vm.rescue_mode && (
