@@ -136,6 +136,20 @@ apiClient.interceptors.response.use(
       }
     }
 
+    // Surface the server's explanation instead of axios's generic
+    // "Request failed with status code 400".
+    //
+    // The API answers a refused action with a message that says what actually
+    // happened — "Domain is already active", "that region has no capacity" —
+    // and every caller displays err.message. Leaving axios's default there threw
+    // the useful half away and left an operator with a status code to guess
+    // from.
+    const data = error.response?.data as { message?: string; error?: string } | undefined;
+    const serverMessage = data?.message || data?.error;
+    if (serverMessage) {
+      error.message = serverMessage;
+    }
+
     return Promise.reject(error);
   }
 );

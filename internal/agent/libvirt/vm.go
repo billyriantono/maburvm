@@ -396,6 +396,17 @@ func StartVM(uuidStr string) error {
 			return fmt.Errorf("domain is already running")
 		}
 
+		// A paused domain is already active — Create fails on it with "Domain is
+		// already active", which is true and useless. Resuming is what "Start"
+		// means to anyone looking at a paused machine, and it is the only thing
+		// that can make it run.
+		if state == libvirt.DOMAIN_PAUSED || state == libvirt.DOMAIN_PMSUSPENDED {
+			if err := dom.Resume(); err != nil {
+				return fmt.Errorf("failed to resume paused domain: %w", err)
+			}
+			return nil
+		}
+
 		// Start the domain
 		if err := dom.Create(); err != nil {
 			return fmt.Errorf("failed to start domain: %w", err)

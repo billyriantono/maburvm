@@ -1071,6 +1071,26 @@ func (s *NodeAgentService) BackupDisk(ctx context.Context, req *pb.BackupDiskReq
 	if req.GetDestinationKey() != "" && strings.Contains(req.GetDestinationKey(), "images/") {
 		kind = "image"
 	}
+	// Refuse rather than fill the volume the customers' disks live on.
+	//
+	// Exports write beside the source disk, which is right — the alternative
+	// piles tens of GB onto the node's root filesystem — but it means an export
+	// now competes for the same space as running VMs. qemu pauses a VM the
+	// moment a write fails, so an export that runs the volume dry does not fail
+	// alone: it takes every VM on that filesystem down with it.
+	//
+	// The compressed output is smaller than the source, so the source size is a
+	// generous bound, and the margin leaves room to act afterwards.
+	if cap := storage.Capacity(filepath.Dir(exportPath)); cap.Exists && cap.Total > 0 {
+		const exportHeadroomBytes = 20 * 1024 * 1024 * 1024 // 20 GiB
+		if cap.Available < sourceBytes+exportHeadroomBytes {
+			return backupDiskErr(fmt.Sprintf(
+				"not enough room on %s: %d bytes free, and this export could need up to %d plus a %d reserve. "+
+					"Free space or move the export elsewhere — running it would risk pausing every VM on this volume.",
+				cap.Filesystem, cap.Available, sourceBytes, int64(exportHeadroomBytes))), nil
+		}
+	}
+
 	doneTracking := storage.TrackExport(req.VmId, kind, diskPath, exportPath, sourceBytes)
 	defer doneTracking()
 
