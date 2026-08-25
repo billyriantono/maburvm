@@ -597,18 +597,31 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 		deleteOpID = startVMOperation(ctx, opDB, vm.ID, "delete", "Destroying VM & disk on host", 2)
 	}
 
+	// CREATE provisions the disk before it answers: for a plain template that is
+	// seconds, but creating from a stored image first downloads a multi-GB object
+	// and then clones it, which routinely runs past five minutes. The call used to
+	// inherit the client's 30s default and time out mid-clone — leaving a partial
+	// disk that made every later retry fail with "disk already exists", so the VM
+	// could never be provisioned at all.
+	timeout := 5 * time.Minute
+	if command == pb.VMCommandType_VM_COMMAND_TYPE_CREATE {
+		timeout = time.Hour
+	}
+	cmdCtx, cancelCmd := context.WithTimeout(ctx, timeout)
+	defer cancelCmd()
+
 	// Execute VM command via gRPC
 	req := &pb.VMCommandRequest{
 		VmId:           vm.ID,
 		Command:        command,
 		Config:         vmConfig,
-		TimeoutSeconds: 300, // 5 minutes
+		TimeoutSeconds: int32(timeout.Seconds()),
 		PoolPath:       poolPath,
 	}
 
 	// Attach the node's auth token + id; the agent's auth interceptor requires a
 	// Bearer token over TLS, otherwise the call is rejected as Unauthenticated.
-	resp, err := client.ExecuteVMCommand(agentAuthContext(ctx, node), req)
+	resp, err := client.ExecuteVMCommand(agentAuthContext(cmdCtx, node), req)
 
 	// Idempotent delete: if the domain is already gone on the node, that IS the
 	// desired end state of a delete — treat it as success and proceed to release

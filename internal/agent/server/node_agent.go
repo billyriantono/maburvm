@@ -738,6 +738,32 @@ func resolveTemplateImage(ref string) (string, error) {
 // domain for it. The domain is created in the stopped state; a subsequent START
 // command boots it. Network settings (bridge, MAC, VLAN, bandwidth) are embedded
 // in the domain XML so libvirt enforces them when the VM starts.
+// createsInFlight records the VMs whose CREATE is running on this node right now.
+//
+// In memory, like the export registry: a create cannot outlive the process that
+// is running it, so a record that survived a restart would only ever describe
+// work that has stopped.
+var createsInFlight = struct {
+	sync.Mutex
+	ids map[string]bool
+}{ids: map[string]bool{}}
+
+// beginCreate claims a VM for provisioning, reporting whether another create for
+// it is already running.
+func beginCreate(vmID string) (release func(), busy bool) {
+	createsInFlight.Lock()
+	defer createsInFlight.Unlock()
+	if createsInFlight.ids[vmID] {
+		return func() {}, true
+	}
+	createsInFlight.ids[vmID] = true
+	return func() {
+		createsInFlight.Lock()
+		delete(createsInFlight.ids, vmID)
+		createsInFlight.Unlock()
+	}, false
+}
+
 func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 	if req.VmId == "" {
 		return fmt.Errorf("vm_id is required")
@@ -751,6 +777,20 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 		log.Printf("[NodeAgent] CREATE: domain %s already exists; treating as idempotent success", req.VmId)
 		return nil
 	}
+	// Claim the VM for the duration of this create. A create whose RPC deadline
+	// expired keeps running on this node — the panel's cancellation does not stop
+	// the download or the clone — so a retry can arrive while the first attempt is
+	// still writing the disk. Without this claim, the recovery below would delete
+	// a disk that is actively being written.
+	releaseCreate, busy := beginCreate(req.VmId)
+	if busy {
+		// Retryable on purpose: the attempt in flight will either finish and
+		// define the domain (making the next retry an idempotent success) or fail
+		// and free the disk.
+		return fmt.Errorf("a create for VM %s is already running on this node", req.VmId)
+	}
+	defer releaseCreate()
+
 	cfg := req.Config
 	if cfg == nil || cfg.Resources == nil {
 		return fmt.Errorf("config with resources is required for CREATE")
@@ -771,7 +811,15 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 	imageDir := imageDirFor(req.GetPoolPath())
 	diskPath := filepath.Join(imageDir, req.VmId+".qcow2")
 	if _, err := os.Stat(diskPath); err == nil {
-		return fmt.Errorf("disk already exists for VM %s at %s", req.VmId, diskPath)
+		// No domain uses this file: the check at the top of this function returned
+		// early if one existed, and the claim above rules out a create in flight.
+		// So it is debris from an attempt that died mid-provision — refusing here
+		// (as this did) wedged the VM permanently, because every retry found the
+		// same debris and failed the same way.
+		log.Printf("[NodeAgent] CREATE: removing orphaned disk %s from a previous failed attempt", diskPath)
+		if err := os.Remove(diskPath); err != nil {
+			return fmt.Errorf("failed to clear orphaned disk %s: %w", diskPath, err)
+		}
 	}
 
 	// Provision the disk as an independent copy of the template, then grow it to

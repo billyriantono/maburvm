@@ -437,7 +437,18 @@ func (c *AgentClient) executeWithRetry(ctx context.Context, node NodeInfo, opera
 		}
 
 		authCtx := c.createAuthContext(ctx, pc.token)
-		timeoutCtx, cancel := context.WithTimeout(authCtx, c.config.RequestTimeout)
+		// RequestTimeout is the default for callers that expressed no opinion, not
+		// a ceiling. A caller that set its own, longer deadline has decided how
+		// long the operation may take — provisioning a disk from a multi-GB image
+		// legitimately runs for many minutes, and capping it at 30s cut the clone
+		// off mid-write and left a partial disk on the node.
+		timeout := c.config.RequestTimeout
+		if deadline, ok := authCtx.Deadline(); ok {
+			if remaining := time.Until(deadline); remaining > timeout {
+				timeout = remaining
+			}
+		}
+		timeoutCtx, cancel := context.WithTimeout(authCtx, timeout)
 
 		err = operation(timeoutCtx, pc.client)
 		cancel()
