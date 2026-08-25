@@ -473,7 +473,13 @@ func injectGuestConfig(diskPath, hostname string, vmCfg libvirt.VMConfig, rootPa
 		// keyword and reads sshd_config.d/*.conf in alphabetical order, so a drop-in
 		// sorted BEFORE 50-cloud-init.conf (00-...) wins. Enable root password login
 		// only when a password is actually set (SSH-key-only VMs stay key-only).
+		// --mkdir first: virt-customize aborts the WHOLE customize run if a
+		// --write lands in a directory that doesn't exist, and sshd_config.d is
+		// absent on images that never had cloud-init. The abort takes every later
+		// step with it, so one missing directory silently costs the VM its SSH key
+		// and its static addressing.
 		args = append(args,
+			"--mkdir", "/etc/ssh/sshd_config.d",
 			"--write", "/etc/ssh/sshd_config.d/00-maburvm.conf:PermitRootLogin yes\nPasswordAuthentication yes\n")
 	}
 	if key := strings.TrimSpace(sshKey); key != "" {
@@ -505,6 +511,7 @@ func injectGuestConfig(diskPath, hostname string, vmCfg libvirt.VMConfig, rootPa
 		f.Close()
 
 		args = append(args,
+			"--mkdir", "/etc/systemd/network",
 			"--upload", tmpNet+":/etc/systemd/network/10-maburvm.network",
 			// systemd-networkd runs as the unprivileged systemd-network user and
 			// REFUSES to read a .network file it can't open — the uploaded temp file
@@ -523,6 +530,12 @@ func injectGuestConfig(diskPath, hostname string, vmCfg libvirt.VMConfig, rootPa
 			// network module makes our injected config the sole authority from the
 			// very first boot. (This was the real cause of "new VM not reachable until
 			// rebooted".)
+			// Same trap as sshd_config.d, and this one has already bitten: a guest
+			// with no cloud-init has no /etc/cloud/cloud.cfg.d, so this write
+			// aborted the run — after the network file was uploaded, but before
+			// anything that came later. Creating the directory is harmless on a
+			// guest without cloud-init: nothing reads it.
+			"--mkdir", "/etc/cloud/cloud.cfg.d",
 			"--write", "/etc/cloud/cloud.cfg.d/99-maburvm-network.cfg:network: {config: disabled}\n")
 
 		// Populate the upstream gateway's ARP cache as soon as the guest is online.
