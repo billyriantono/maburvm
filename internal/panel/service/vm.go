@@ -310,7 +310,15 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		}
 		return nil, fmt.Errorf("failed to get template: %w", err)
 	}
-	if !template.IsActive {
+	// An inactive template only bars a fresh install. When the disk is cloned —
+	// from a captured image or another VM — the template is a label recording
+	// what the machine runs, and the bytes come from somewhere else entirely.
+	//
+	// Deactivating a template means "stop offering this for new installs". Taking
+	// it to mean "images captured from it can no longer be used" makes every such
+	// image unusable, which is what happened: creating from an image resolves the
+	// image's own template, and an imported VM's template is never active.
+	if req.CloneSourceRef == "" && !template.IsActive {
 		return nil, fmt.Errorf("OS template is not active")
 	}
 	// A real install needs a real base image. Imported templates carry the
