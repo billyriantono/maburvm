@@ -109,7 +109,12 @@ func buildDomainCPU(model string) *libvirtxml.DomainCPU {
 		return &libvirtxml.DomainCPU{Mode: "host-passthrough"}
 	}
 	if model == "" {
-		model = "kvm64"
+		// Default to host-passthrough, not an ancient baseline model: kvm64/qemu64
+		// lack x86-64-v2 (SSE4.2/AVX...), and modern software SIGILLs on them —
+		// MongoDB 7 core-dumps, mysql:9 aborts with "CPU does not support
+		// x86-64-v2". Live migration is not part of this platform's flows, so
+		// pinning the guest to the host CPU costs nothing.
+		return &libvirtxml.DomainCPU{Mode: "host-passthrough"}
 	}
 	return &libvirtxml.DomainCPU{
 		Mode:  "custom",
@@ -266,6 +271,22 @@ func generateDomainXML(config VMConfig) (string, error) {
 			},
 			MemBalloon: &libvirtxml.DomainMemBalloon{
 				Model: "virtio",
+			},
+			// qemu-guest-agent virtio-serial channel. Cloud images ship the
+			// agent; without this channel the panel/operators can never reach
+			// it (`virsh qemu-agent-command`). Path omitted so libvirt
+			// auto-manages the host socket.
+			Channels: []libvirtxml.DomainChannel{
+				{
+					Source: &libvirtxml.DomainChardevSource{
+						UNIX: &libvirtxml.DomainChardevSourceUNIX{},
+					},
+					Target: &libvirtxml.DomainChannelTarget{
+						VirtIO: &libvirtxml.DomainChannelTargetVirtIO{
+							Name: "org.qemu.guest_agent.0",
+						},
+					},
+				},
 			},
 		},
 		Metadata: &libvirtxml.DomainMetadata{
