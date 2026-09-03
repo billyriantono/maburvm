@@ -461,6 +461,25 @@ func injectGuestConfig(diskPath, hostname string, vmCfg libvirt.VMConfig, rootPa
 	// --no-network: the customize appliance needs no outbound network.
 	args := []string{"-a", diskPath, "--no-network"}
 
+	// Generate SSH host keys offline. Cloud images ship WITHOUT host keys and
+	// delegate generation to cloud-init's once-per-instance ssh module — which the
+	// baked NoCloud seed in these images makes cloud-init SKIP on clones (same
+	// trap as the first-boot recipe below). On Ubuntu 24.04 sshd then accepts the
+	// TCP connection and immediately resets it, so every SSH attempt fails until
+	// someone runs `ssh-keygen -A` by hand on the console. ssh-keygen -A only
+	// creates keys that are missing, so this is a no-op on images that have them.
+	args = append(args, "--run-command", "ssh-keygen -A")
+	// ...and stop cloud-init from UNDOING that: with the default
+	// ssh_deletekeys=true, a first boot under a fresh instance-id DELETES the
+	// host keys and regenerates them — and the post-provision hard power-cycle
+	// (~40s into first boot) interrupts that regeneration, leaving zero-byte
+	// key files that sshd rejects forever (second boot skips the module, so it
+	// never self-heals). Seen on Ubuntu 24.04 and Debian 13 images; older
+	// images skip the module entirely via their baked NoCloud seed.
+	args = append(args,
+		"--mkdir", "/etc/cloud/cloud.cfg.d",
+		"--write", "/etc/cloud/cloud.cfg.d/99-maburvm-ssh.cfg:ssh_deletekeys: false\nssh_genkeytypes: []\n")
+
 	if hostname != "" {
 		args = append(args, "--hostname", hostname)
 	}
