@@ -53,6 +53,27 @@ func (h *SSHKeyHandler) CreateSSHKey(c echo.Context) error {
 	return c.JSON(http.StatusCreated, map[string]interface{}{"success": true, "data": key})
 }
 
+// GenerateSSHKey handles POST /api/v1/ssh-keys/generate. It stores only the
+// public key and returns the private key PEM exactly once.
+func (h *SSHKeyHandler) GenerateSSHKey(c echo.Context) error {
+	user, ok := panelMiddleware.GetUserContext(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized"})
+	}
+	var req service.GenerateSSHKeyRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request body"})
+	}
+	generated, err := h.service.GenerateSSHKey(c.Request().Context(), user.ID.String(), req)
+	if err != nil {
+		if errors.Is(err, service.ErrSSHKeyDuplicate) {
+			return c.JSON(http.StatusConflict, map[string]interface{}{"error": err.Error()})
+		}
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to generate SSH key"})
+	}
+	return c.JSON(http.StatusCreated, map[string]interface{}{"success": true, "data": generated})
+}
+
 // DeleteSSHKey handles DELETE /api/v1/ssh-keys/:id (current user's key only).
 func (h *SSHKeyHandler) DeleteSSHKey(c echo.Context) error {
 	user, ok := panelMiddleware.GetUserContext(c)
@@ -74,5 +95,6 @@ func RegisterSSHKeyRoutes(e *echo.Echo, h *SSHKeyHandler, db *gorm.DB) {
 	g.Use(panelMiddleware.RequireAuth(db))
 	g.GET("", h.ListSSHKeys)
 	g.POST("", h.CreateSSHKey)
+	g.POST("/generate", h.GenerateSSHKey)
 	g.DELETE("/:id", h.DeleteSSHKey)
 }

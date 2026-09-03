@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api-client'
-import type { SSHKey, CreateSSHKeyRequest } from '@/types/ssh-key'
+import type { SSHKey, CreateSSHKeyRequest, GenerateSSHKeyRequest, GeneratedSSHKey } from '@/types/ssh-key'
 
 export function useSSHKeys() {
   return useQuery<SSHKey[]>({
@@ -17,6 +17,19 @@ export function useCreateSSHKey() {
   return useMutation<SSHKey, Error, CreateSSHKeyRequest>({
     mutationFn: async (data) => {
       const response = await api.post<SSHKey>('/api/v1/ssh-keys', data)
+      return response.data.data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['ssh-keys', 'list'] })
+    },
+  })
+}
+
+export function useGenerateSSHKey() {
+  const queryClient = useQueryClient()
+  return useMutation<GeneratedSSHKey, Error, GenerateSSHKeyRequest>({
+    mutationFn: async (data) => {
+      const response = await api.post<GeneratedSSHKey>('/api/v1/ssh-keys/generate', data)
       return response.data.data
     },
     onSuccess: () => {

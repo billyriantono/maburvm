@@ -13,3 +13,13 @@ export interface CreateSSHKeyRequest {
   name?: string;
   public_key: string;
 }
+
+export interface GenerateSSHKeyRequest {
+  name?: string;
+}
+
+// Returned exactly once — the private key is never stored server-side.
+export interface GeneratedSSHKey {
+  key: SSHKey;
+  private_key: string;
+}

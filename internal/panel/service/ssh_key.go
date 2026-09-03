@@ -2,6 +2,9 @@ package service
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"strings"
@@ -83,6 +86,43 @@ func (s *SSHKeyService) CreateSSHKey(ctx context.Context, userID string, req Cre
 		return nil, err
 	}
 	return key, nil
+}
+
+// GenerateSSHKeyRequest is the payload for generating a keypair server-side.
+type GenerateSSHKeyRequest struct {
+	Name string `json:"name"`
+}
+
+// GeneratedSSHKey pairs the stored public key with the private key PEM, which
+// is returned to the caller exactly once and never persisted or logged.
+type GeneratedSSHKey struct {
+	Key        *models.SSHKey `json:"key"`
+	PrivateKey string         `json:"private_key"`
+}
+
+// GenerateSSHKey creates an ed25519 keypair, stores only the public half via
+// the normal creation path, and returns the private key PEM one time.
+func (s *SSHKeyService) GenerateSSHKey(ctx context.Context, userID string, req GenerateSSHKeyRequest) (*GeneratedSSHKey, error) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate key: %w", err)
+	}
+	sshPub, err := ssh.NewPublicKey(pub)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode public key: %w", err)
+	}
+	block, err := ssh.MarshalPrivateKey(priv, "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode private key: %w", err)
+	}
+	key, err := s.CreateSSHKey(ctx, userID, CreateSSHKeyRequest{
+		Name:      req.Name,
+		PublicKey: string(ssh.MarshalAuthorizedKey(sshPub)),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &GeneratedSSHKey{Key: key, PrivateKey: string(pem.EncodeToMemory(block))}, nil
 }
 
 // ListSSHKeys returns all of the user's saved keys (newest first).

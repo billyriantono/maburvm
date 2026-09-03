@@ -9,6 +9,8 @@ import {
   Trash2,
   AlertCircle,
   Loader2,
+  Sparkles,
+  Download,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -22,8 +24,19 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { useSSHKeys, useCreateSSHKey, useDeleteSSHKey } from "@/lib/hooks/use-ssh-keys"
-import type { SSHKey } from "@/types/ssh-key"
+import { useSSHKeys, useCreateSSHKey, useGenerateSSHKey, useDeleteSSHKey } from "@/lib/hooks/use-ssh-keys"
+import type { SSHKey, GeneratedSSHKey } from "@/types/ssh-key"
+
+function downloadPrivateKey(generated: GeneratedSSHKey) {
+  const safeName = generated.key.name.replace(/[^A-Za-z0-9._-]/g, "_") || "ssh-key"
+  const blob = new Blob([generated.private_key], { type: "application/x-pem-file" })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = `${safeName}.pem`
+  a.click()
+  URL.revokeObjectURL(url)
+}
 
 function formatDate(value?: string): string {
   if (!value) return "—"
@@ -34,12 +47,14 @@ function formatDate(value?: string): string {
 export default function SSHKeysSettingsPage() {
   const { data: keys, isLoading, error } = useSSHKeys()
   const createKey = useCreateSSHKey()
+  const generateKey = useGenerateSSHKey()
   const deleteKey = useDeleteSSHKey()
 
   const [showCreate, setShowCreate] = useState(false)
   const [name, setName] = useState("")
   const [publicKey, setPublicKey] = useState("")
   const [deleteTarget, setDeleteTarget] = useState<SSHKey | null>(null)
+  const [generated, setGenerated] = useState<GeneratedSSHKey | null>(null)
 
   const handleCreate = async () => {
     const key = publicKey.trim()
@@ -55,6 +70,19 @@ export default function SSHKeysSettingsPage() {
       setPublicKey("")
     } catch (err) {
       toast.error("Failed to add SSH key", { description: (err as Error).message })
+    }
+  }
+
+  const handleGenerate = async () => {
+    try {
+      const result = await generateKey.mutateAsync({ name: name.trim() || undefined })
+      downloadPrivateKey(result)
+      setShowCreate(false)
+      setName("")
+      setPublicKey("")
+      setGenerated(result)
+    } catch (err) {
+      toast.error("Failed to generate SSH key", { description: (err as Error).message })
     }
   }
 
@@ -184,19 +212,66 @@ export default function SSHKeysSettingsPage() {
                 rows={4}
                 className="w-full rounded-md border border-input bg-background p-3 font-mono text-xs resize-y focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               />
+              <p className="text-xs text-muted-foreground mt-1">
+                Don&apos;t have a keypair? Generate one instead — the private key downloads to your browser.
+              </p>
             </div>
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setShowCreate(false)}>
               Cancel
             </Button>
-            <Button onClick={handleCreate} disabled={createKey.isPending}>
+            <Button variant="outline" onClick={handleGenerate} disabled={generateKey.isPending || createKey.isPending}>
+              {generateKey.isPending ? (
+                <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Generating...</>
+              ) : (
+                <><Sparkles className="w-4 h-4 mr-2" />Generate New Key</>
+              )}
+            </Button>
+            <Button onClick={handleCreate} disabled={createKey.isPending || generateKey.isPending}>
               {createKey.isPending ? (
                 <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Adding...</>
               ) : (
                 <><Plus className="w-4 h-4 mr-2" />Add Key</>
               )}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Generated key (one-time private key) */}
+      <Dialog open={!!generated} onOpenChange={(open) => !open && setGenerated(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Sparkles className="w-5 h-5" />
+              SSH Key Generated
+            </DialogTitle>
+            <DialogDescription>
+              &quot;{generated?.key.name}&quot; was added to your keys and the private key was downloaded.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <p className="text-sm font-medium text-muted-foreground mb-1">Fingerprint</p>
+              <code className="text-xs font-mono break-all">{generated?.key.fingerprint}</code>
+            </div>
+            <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm">
+              <p className="flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 mt-0.5 shrink-0 text-destructive" />
+                <span>
+                  This is the only time the private key is available — it is not stored on the server
+                  and cannot be retrieved again. Keep the downloaded .pem file safe.
+                </span>
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => generated && downloadPrivateKey(generated)}>
+              <Download className="w-4 h-4 mr-2" />
+              Download Again
+            </Button>
+            <Button onClick={() => setGenerated(null)}>Done</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
