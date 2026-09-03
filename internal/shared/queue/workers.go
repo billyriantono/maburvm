@@ -703,6 +703,12 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 		// start actually failed, the periodic status reconciler corrects this to
 		// 'stopped' within a minute.
 		newStatus = models.VMStatusRunning
+
+		// The domain now exists on the node, so push the VM's stored network
+		// state (IP, bandwidth, the default firewall seed) to the host.
+		// Best-effort: a failure here leaves the VM as open as it was before
+		// this feature, and any later firewall mutation re-applies full state.
+		w.applyPostCreateNetworkConfig(ctx, client, node, vm)
 	case VMOpStart:
 		newStatus = models.VMStatusRunning
 	case VMOpStop:
@@ -762,6 +768,54 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 	)
 
 	return nil
+}
+
+// applyPostCreateNetworkConfig enforces a freshly created VM's stored network
+// state (IP, bandwidth, VLAN, anti-spoofing, firewall rules) on the node right
+// after the create succeeded — without it the default firewall seeded by the
+// panel would sit in the DB unenforced until the first firewall mutation.
+// Best-effort: errors are logged, never failing the create.
+func (w *VMOperationWorker) applyPostCreateNetworkConfig(ctx context.Context, client pb.NodeAgentClient, node *models.Node, vm *models.VM) {
+	if globalWorkerContext == nil || globalWorkerContext.NetworkRepo == nil {
+		return
+	}
+	network, err := globalWorkerContext.NetworkRepo.GetByVMID(ctx, vm.ID)
+	if err != nil || network.IPAddress == "" {
+		// No interface → nothing enforceable; rules apply on IP assignment.
+		return
+	}
+	rules, err := repository.NewFirewallRepository(globalWorkerContext.DB).ListByVMID(ctx, vm.ID, 0, 0)
+	if err != nil {
+		w.logger.WarnContext(ctx, "post-create: failed to load firewall rules", "vm_id", vm.ID, "error", err)
+		return
+	}
+	if len(rules) == 0 {
+		// Nothing to enforce, and an empty ReplaceAll would still be a no-op
+		// firewall-wise — skip the round-trip.
+		return
+	}
+
+	params, err := json.Marshal(map[string]interface{}{
+		"ip_address":      network.IPAddress,
+		"bandwidth_limit": network.BandwidthLimit,
+		"vlan_id":         network.VLANID,
+		"anti_spoofing":   network.AntiSpoofing,
+		"firewall_rules":  rules,
+	})
+	if err != nil {
+		return
+	}
+
+	job := &river.Job[VMOperationJob]{Args: VMOperationJob{
+		VMID:      vm.ID,
+		NodeID:    vm.NodeID,
+		Operation: VMOpConfigureNetwork,
+		Params:    params,
+	}}
+	if err := w.handleConfigureNetwork(ctx, client, node, vm, job); err != nil {
+		w.logger.WarnContext(ctx, "post-create network config failed; default firewall not yet enforced (re-applied on next firewall change)",
+			"vm_id", vm.ID, "error", err)
+	}
 }
 
 // cleanupDeletedVM releases a destroyed VM's IP/network allocation and removes

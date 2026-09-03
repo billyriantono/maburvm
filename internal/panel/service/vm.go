@@ -658,12 +658,40 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		"node_id", nodeID,
 	)
 
+	// Seed the default inbound firewall for the new VM. Best-effort: a VM
+	// without its seed is no worse off than before (fully open), so never fail
+	// the create for it.
+	s.seedDefaultFirewall(ctx, vm.ID)
+
 	return &CreateVMResponse{
 		VM:           vm,
 		JobID:        result.Job.ID,
 		Status:       "pending",
 		RootPassword: generatedPassword,
 	}, nil
+}
+
+// seedDefaultFirewall inserts the default inbound ruleset for a NEWLY created
+// VM: allow SSH (tcp/22), ICMP, HTTP (tcp/80) and HTTPS (tcp/443) from
+// anywhere. Everything else inbound is dropped by the agent: once a VM has ANY
+// firewall rules, its applier appends a per-VM default DROP, and return
+// traffic for outbound connections passes via the chain's conntrack
+// ESTABLISHED/RELATED accept. Existing VMs (no rules) are untouched — an empty
+// rule set still means "everything open".
+//
+// The rules are enforced on the host by the post-create network-config apply
+// in the create worker (and by any later firewall resync).
+func (s *VMService) seedDefaultFirewall(ctx context.Context, vmID string) {
+	rules := []models.FirewallRule{
+		{VMID: vmID, Protocol: "tcp", PortRange: "22", Action: "allow", Direction: "inbound", SourceIP: "0.0.0.0/0", Priority: 10},
+		{VMID: vmID, Protocol: "icmp", Action: "allow", Direction: "inbound", SourceIP: "0.0.0.0/0", Priority: 20},
+		{VMID: vmID, Protocol: "tcp", PortRange: "80", Action: "allow", Direction: "inbound", SourceIP: "0.0.0.0/0", Priority: 30},
+		{VMID: vmID, Protocol: "tcp", PortRange: "443", Action: "allow", Direction: "inbound", SourceIP: "0.0.0.0/0", Priority: 40},
+	}
+	if err := s.db.WithContext(ctx).Create(&rules).Error; err != nil {
+		s.logger.WarnContext(ctx, "failed to seed default firewall rules; VM inbound traffic is unrestricted",
+			"vm_id", vmID, "error", err)
+	}
 }
 
 // CloneVMRequest describes a VM-clone operation.
