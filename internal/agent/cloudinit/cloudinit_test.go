@@ -102,8 +102,55 @@ func TestUserDataNoPasswordOrKeys(t *testing.T) {
 	if strings.Contains(ud, "chpasswd") || strings.Contains(ud, "ssh_authorized_keys") {
 		t.Errorf("user-data should omit password/keys when none set:\n%s", ud)
 	}
-	if strings.Contains(ud, "write_files") {
-		t.Errorf("user-data should omit write_files when no recipe set:\n%s", ud)
+	// write_files is always emitted now: it carries the sudoers backstop even when
+	// there is no recipe. Only the recipe entry itself should be absent.
+	if strings.Contains(ud, "maburvm-recipe.sh") {
+		t.Errorf("user-data should omit the recipe entry when no recipe set:\n%s", ud)
+	}
+}
+
+// A VM created with only an SSH key (no password) must still be administrable:
+// the default user needs passwordless sudo, because there is no password to type.
+func TestUserDataAlwaysGrantsPasswordlessSudo(t *testing.T) {
+	for _, cfg := range []Config{
+		{InstanceID: "vm-8", Hostname: "keyonly", SSHPublicKey: "ssh-ed25519 AAAAkey user@host"},
+		{InstanceID: "vm-9", Hostname: "bare"},
+	} {
+		ud := userData(cfg)
+		if !strings.Contains(ud, "/etc/sudoers.d/90-maburvm-default-user") {
+			t.Fatalf("user-data must write the sudoers backstop:\n%s", ud)
+		}
+		// Content is base64 so YAML-special characters survive; decode and check it.
+		var found bool
+		for line := range strings.SplitSeq(ud, "\n") {
+			enc, ok := strings.CutPrefix(strings.TrimSpace(line), "content: ")
+			if !ok {
+				continue
+			}
+			raw, err := base64.StdEncoding.DecodeString(enc)
+			if err != nil {
+				continue
+			}
+			if strings.Contains(string(raw), "%sudo ALL=(ALL) NOPASSWD:ALL") &&
+				strings.Contains(string(raw), "%wheel ALL=(ALL) NOPASSWD:ALL") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("sudoers backstop must grant NOPASSWD to sudo and wheel:\n%s", ud)
+		}
+	}
+}
+
+// The panel's reset-password and rescue actions drive the guest agent, so every
+// guest must try to install it - the stock cloud images do not ship it.
+func TestUserDataInstallsGuestAgent(t *testing.T) {
+	ud := userData(Config{InstanceID: "vm-10", Hostname: "ga"})
+	if !strings.Contains(ud, "qemu-guest-agent") {
+		t.Fatalf("user-data must install qemu-guest-agent:\n%s", ud)
+	}
+	if !strings.Contains(ud, "command -v qemu-ga") {
+		t.Fatalf("guest agent install should be idempotent (skip when present):\n%s", ud)
 	}
 }
 

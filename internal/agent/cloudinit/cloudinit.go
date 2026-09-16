@@ -139,6 +139,26 @@ func userData(cfg Config) string {
 			b.WriteString(fmt.Sprintf("  - %s\n", k))
 		}
 	}
+	// Everything that needs writing to the guest goes in a single write_files
+	// block (cloud-config allows only one).
+	b.WriteString("write_files:\n")
+	// Guarantee the default user can escalate. cloud-init normally writes
+	// /etc/sudoers.d/90-cloud-init-users itself, but that file ends up EMPTY if the
+	// first boot is interrupted before the fs commits, leaving the default user with
+	// sudo-by-group (which prompts) and a locked password — i.e. no way in at all
+	// when the customer supplied only an SSH key. Granting by group rather than by
+	// username keeps this distro-agnostic (sudo on Debian/Ubuntu, wheel on RHEL);
+	// a group that doesn't exist simply never matches.
+	sudoers := "# Managed by MaburVM - do not edit.\n" +
+		"# Backstop for cloud-init's 90-cloud-init-users, which can be written empty\n" +
+		"# if the first boot is interrupted. Without this a key-only VM is unusable.\n" +
+		"%sudo ALL=(ALL) NOPASSWD:ALL\n" +
+		"%wheel ALL=(ALL) NOPASSWD:ALL\n"
+	b.WriteString("  - path: /etc/sudoers.d/90-maburvm-default-user\n")
+	b.WriteString("    permissions: '0440'\n")
+	b.WriteString("    owner: root:root\n")
+	b.WriteString("    encoding: b64\n")
+	b.WriteString(fmt.Sprintf("    content: %s\n", base64.StdEncoding.EncodeToString([]byte(sudoers))))
 	// First-boot recipe/startup script (first-boot recipes). The script
 	// is written, base64-encoded, into the per-instance scripts dir, which
 	// cloud-init runs exactly once per instance on first boot. Base64 keeps any
@@ -146,7 +166,6 @@ func userData(cfg Config) string {
 	// gymnastics.
 	if script := strings.TrimSpace(cfg.UserData); script != "" {
 		enc := base64.StdEncoding.EncodeToString([]byte(script))
-		b.WriteString("write_files:\n")
 		b.WriteString("  - path: /var/lib/cloud/scripts/per-instance/maburvm-recipe.sh\n")
 		b.WriteString("    permissions: '0755'\n")
 		b.WriteString("    encoding: b64\n")
@@ -161,6 +180,11 @@ func userData(cfg Config) string {
 	// Debian/Ubuntu, sshd on RHEL/AlmaLinux).
 	b.WriteString("runcmd:\n")
 	b.WriteString("  - [ sh, -c, \"ssh-keygen -A 2>/dev/null || true; systemctl reset-failed ssh.service sshd.service 2>/dev/null || true; systemctl restart ssh.socket 2>/dev/null || true; systemctl restart ssh.service 2>/dev/null || systemctl restart sshd 2>/dev/null || true\" ]\n")
+	// The panel's reset-password and rescue flows drive the guest agent, so the
+	// guest is useless for those unless qemu-guest-agent is actually present — the
+	// stock cloud images do NOT ship it. Best-effort: never fail the boot over it
+	// (a guest with no package mirror reachable is still a valid guest).
+	b.WriteString("  - [ sh, -c, \"command -v qemu-ga >/dev/null 2>&1 || { apt-get install -y -q qemu-guest-agent || dnf install -y qemu-guest-agent || yum install -y qemu-guest-agent; } >/dev/null 2>&1; systemctl enable --now qemu-guest-agent >/dev/null 2>&1 || true\" ]\n")
 	return b.String()
 }
 

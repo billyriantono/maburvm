@@ -1007,9 +1007,36 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 				_ = sendGratuitousARP(bridge, ip, mac)
 				time.Sleep(5 * time.Second)
 			}
-			if serr := libvirt.StopVM(vmID, true); serr != nil {
-				log.Printf("[NodeAgent] post-provision reboot: stop %s failed: %v", vmID, serr)
-				return
+			// Stop GRACEFULLY, never with force. A hard power-cut here corrupts the
+			// first boot: the guest's root fs is mounted with commit=30, so anything
+			// cloud-init wrote in the preceding ~30s is lost while the (already
+			// created) files survive as zero-length. That silently produced empty
+			// /etc/sudoers.d/90-cloud-init-users (default user left with no NOPASSWD
+			// sudo and a locked password => unusable VM when the customer supplied
+			// only an SSH key) and an empty runcmd script, which cloud-init then
+			// reports as "Missing #! in script" and marks the modules as already run,
+			// so the second boot never repairs them.
+			if serr := libvirt.StopVM(vmID, false); serr != nil {
+				log.Printf("[NodeAgent] post-provision reboot: graceful stop %s failed: %v", vmID, serr)
+			}
+			// Give the guest time to flush and power off on its own. Only fall back to
+			// a forced destroy if ACPI shutdown is ignored (e.g. the guest hasn't
+			// reached a state where it handles the power button yet).
+			stopped := false
+			for i := 0; i < 30; i++ { // up to ~60s
+				time.Sleep(2 * time.Second)
+				info, ierr := libvirt.GetVMInfo(vmID)
+				if ierr == nil && info.Status == libvirt.VMStatusStopped {
+					stopped = true
+					break
+				}
+			}
+			if !stopped {
+				log.Printf("[NodeAgent] post-provision reboot: %s ignored ACPI shutdown, forcing", vmID)
+				if serr := libvirt.StopVM(vmID, true); serr != nil {
+					log.Printf("[NodeAgent] post-provision reboot: force stop %s failed: %v", vmID, serr)
+					return
+				}
 			}
 			time.Sleep(2 * time.Second)
 			if serr := libvirt.StartVM(vmID); serr != nil {
