@@ -1907,7 +1907,9 @@ type VMResetPasswordResponse struct {
 }
 
 // ResetPassword resets the guest root password. It is applied via the guest
-// agent on the running VM (cloud images ship qemu-guest-agent).
+// agent on the running VM. The stock cloud images do NOT ship qemu-guest-agent,
+// so the agent's cloud-init installs it on first boot; VMs provisioned before
+// that was added have no agent and will not respond to this.
 func (s *VMService) ResetPassword(ctx context.Context, req *VMResetPasswordRequest) (*VMResetPasswordResponse, error) {
 	vm, err := s.vmRepo.GetByID(ctx, req.VMID)
 	if err != nil {
@@ -2437,8 +2439,17 @@ func (s *VMService) RefreshVNCPassword(ctx context.Context, vmID string) (*VNCCo
 	if err := s.vmRepo.UpdateVNCPassword(ctx, vmID, vncConfig.Password); err != nil {
 		return nil, fmt.Errorf("failed to update VNC password: %w", err)
 	}
-	if err := s.vmRepo.UpdateVNCPort(ctx, vmID, vncConfig.Port); err != nil {
-		return nil, fmt.Errorf("failed to update VNC port: %w", err)
+	// Only persist a real port. generateVNCCredentials returns 0 to mean "the
+	// agent picks one via autoport", but the VM already HAS a live port here and
+	// vms.vnc_port is constrained to NULL or >= 5900 — writing the 0 made every
+	// rotation fail with a constraint violation, so no VNC password could ever be
+	// rotated. A refresh changes the password, not the port.
+	if vncConfig.Port > 0 {
+		if err := s.vmRepo.UpdateVNCPort(ctx, vmID, vncConfig.Port); err != nil {
+			return nil, fmt.Errorf("failed to update VNC port: %w", err)
+		}
+	} else if vm.VNCPort != nil {
+		vncConfig.Port = *vm.VNCPort
 	}
 
 	// Apply the new password to the live domain via the agent (QEMU monitor)
