@@ -169,3 +169,12 @@ func TestUserDataRecipe(t *testing.T) {
 		t.Fatalf("recipe content (base64) missing from user-data:\n%s", ud)
 	}
 }
+
+// Cloud images ship with empty apt lists, so a bare `apt-get install` fails with
+// "unable to locate package". The guest agent install must refresh and retry.
+func TestUserDataGuestAgentRefreshesPackageLists(t *testing.T) {
+	ud := userData(Config{InstanceID: "vm-11", Hostname: "ga2"})
+	if !strings.Contains(ud, "apt-get update") {
+		t.Fatalf("guest agent install must retry after refreshing apt lists:\n%s", ud)
+	}
+}

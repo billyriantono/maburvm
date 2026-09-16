@@ -184,7 +184,11 @@ func userData(cfg Config) string {
 	// guest is useless for those unless qemu-guest-agent is actually present — the
 	// stock cloud images do NOT ship it. Best-effort: never fail the boot over it
 	// (a guest with no package mirror reachable is still a valid guest).
-	b.WriteString("  - [ sh, -c, \"command -v qemu-ga >/dev/null 2>&1 || { apt-get install -y -q qemu-guest-agent || dnf install -y qemu-guest-agent || yum install -y qemu-guest-agent; } >/dev/null 2>&1; systemctl enable --now qemu-guest-agent >/dev/null 2>&1 || true\" ]\n")
+	// The first install attempt is deliberately made WITHOUT refreshing the package
+	// lists (cheap, and works on images whose lists are warm). Cloud images ship
+	// with /var/lib/apt/lists empty, so that attempt fails "unable to locate
+	// package" - hence the apt-get update retry before giving up.
+	b.WriteString("  - [ sh, -c, \"command -v qemu-ga >/dev/null 2>&1 || { apt-get install -y -q qemu-guest-agent || { apt-get update -q; apt-get install -y -q qemu-guest-agent; } || dnf install -y qemu-guest-agent || yum install -y qemu-guest-agent; } >/dev/null 2>&1; systemctl enable --now qemu-guest-agent >/dev/null 2>&1 || true\" ]\n")
 	return b.String()
 }
 
