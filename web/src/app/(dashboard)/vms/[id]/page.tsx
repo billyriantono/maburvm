@@ -8,7 +8,7 @@ import {
   Copy, Check, HardDrive,
   Monitor, MonitorOff, KeyRound, Server, Network, Database, Shield, FileText, Terminal, Activity, ExternalLink,
   Loader2, AlertCircle, Plus, Disc, CircleSlash, LifeBuoy, ArrowRightLeft, User,
-  Pencil
+  Pencil, Cpu
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -444,6 +444,12 @@ export default function VMDetailPage() {
   const [manualISOUrl, setManualISOUrl] = useState("")
   const [migrateOpen, setMigrateOpen] = useState(false)
   const [migrateNodeId, setMigrateNodeId] = useState("")
+  // Resize (admin-only, VM must be stopped). Kept as strings so the inputs can
+  // be cleared while typing instead of snapping back to 0.
+  const [resizeOpen, setResizeOpen] = useState(false)
+  const [resizeCpu, setResizeCpu] = useState("")
+  const [resizeRam, setResizeRam] = useState("")
+  const [resizeDisk, setResizeDisk] = useState("")
   // Rebuild options
   const [rebuildPassword, setRebuildPassword] = useState("")
   const [rebuildRegenPassword, setRebuildRegenPassword] = useState(false)
@@ -625,6 +631,40 @@ export default function VMDetailPage() {
       setToast({ message: `Migration failed: ${(err as Error).message}`, type: "error" })
     }
   }, [migrateVM, migrateNodeId])
+
+  // Prefill from the VM's current spec each time the dialog opens, so the
+  // fields always start from reality rather than a stale previous edit.
+  const openResize = useCallback(() => {
+    if (!vm) return
+    setResizeCpu(String(vm.resources.cpu))
+    setResizeRam(String(vm.resources.ram))
+    setResizeDisk(String(vm.resources.disk))
+    setResizeOpen(true)
+  }, [vm])
+
+  const handleResize = useCallback(async () => {
+    const cpu = Number(resizeCpu)
+    const ram = Number(resizeRam)
+    const disk = Number(resizeDisk)
+    if (!Number.isInteger(cpu) || !Number.isInteger(ram) || !Number.isInteger(disk)) {
+      setToast({ message: "CPU, RAM and disk must be whole numbers", type: "error" })
+      return
+    }
+    // Mirror the server's grow-only rule here so the user finds out before a
+    // round trip; the backend rejects it regardless.
+    if (vm && disk < vm.resources.disk) {
+      setToast({ message: `Disk can only be grown (currently ${vm.resources.disk} GB)`, type: "error" })
+      return
+    }
+    try {
+      await updateVM.mutateAsync({ resources: { cpu, ram, disk } })
+      setToast({ message: "Resize queued — applied on next boot", type: "success" })
+      setResizeOpen(false)
+      refetchVM()
+    } catch (err) {
+      setToast({ message: `Resize failed: ${(err as Error).message}`, type: "error" })
+    }
+  }, [updateVM, resizeCpu, resizeRam, resizeDisk, vm, refetchVM])
 
   const handleCreateSnapshot = useCallback(async () => {
     if (!snapshotName.trim()) return
@@ -1056,6 +1096,72 @@ export default function VMDetailPage() {
             )}
 
             {/* Live migrate */}
+            <Dialog open={resizeOpen} onOpenChange={setResizeOpen}>
+              <DialogTrigger asChild>
+                <Button variant="secondary" size="sm" onClick={openResize}>
+                  <Cpu className="w-4 h-4" />Resize
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="max-w-md border shadow-lg">
+                <DialogHeader>
+                  <DialogTitle className="text-lg font-semibold">Resize VM</DialogTitle>
+                  <DialogDescription className="text-sm text-muted-foreground">
+                    Change vCPU, RAM and disk. The VM must be stopped; the new spec is applied on next boot.
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4 py-4">
+                  <div className="grid grid-cols-3 gap-3">
+                    <div>
+                      <span className="text-xs font-medium text-muted-foreground mb-2 block">vCPU</span>
+                      <input
+                        type="number" min={1} max={128} value={resizeCpu}
+                        onChange={(e) => setResizeCpu(e.target.value)}
+                        className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm"
+                      />
+                    </div>
+                    <div>
+                      <span className="text-xs font-medium text-muted-foreground mb-2 block">RAM (MB)</span>
+                      <input
+                        type="number" min={128} max={131072} step={128} value={resizeRam}
+                        onChange={(e) => setResizeRam(e.target.value)}
+                        className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm"
+                      />
+                    </div>
+                    <div>
+                      <span className="text-xs font-medium text-muted-foreground mb-2 block">Disk (GB)</span>
+                      <input
+                        type="number" min={vm.resources.disk} value={resizeDisk}
+                        onChange={(e) => setResizeDisk(e.target.value)}
+                        className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm"
+                      />
+                    </div>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Current: {vm.resources.cpu} vCPU · {vm.resources.ram} MB · {vm.resources.disk} GB
+                  </p>
+                  {vm.status !== "stopped" && (
+                    <div className="flex items-center gap-2 p-3 bg-muted border">
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                      <p className="text-xs font-medium">VM must be stopped before it can be resized.</p>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2 p-3 bg-muted border">
+                    <HardDrive className="w-4 h-4 shrink-0" />
+                    <p className="text-xs font-medium">
+                      Disk can only be grown, never shrunk — and the guest still has to extend its own
+                      partition and filesystem afterwards.
+                    </p>
+                  </div>
+                </div>
+                <DialogFooter>
+                  <Button variant="ghost" onClick={() => setResizeOpen(false)}>Cancel</Button>
+                  <Button onClick={handleResize} disabled={updateVM.isPending || vm.status !== "stopped"}>
+                    {updateVM.isPending ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Resizing…</> : <><Cpu className="w-4 h-4 mr-2" />Resize</>}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+
             <Dialog open={migrateOpen} onOpenChange={setMigrateOpen}>
               <DialogTrigger asChild>
                 <Button variant="secondary" size="sm"><ArrowRightLeft className="w-4 h-4" />Migrate</Button>
