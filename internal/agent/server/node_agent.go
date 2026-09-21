@@ -1843,6 +1843,22 @@ func (s *NodeAgentService) collectVMMetrics(vmID string) *pb.VMMetricsResponse {
 	s.metricsCache.lastNetCollect[vmID] = now
 	s.metricsCache.lastDiskCollect[vmID] = now
 
+	// Prefer the guest's own view of memory. RSS is the host-side QEMU
+	// resident set: it covers every guest page ever touched plus QEMU
+	// overhead and never shrinks, so a long-lived guest reads as ~100% used
+	// however idle it actually is.
+	//
+	// available-minus-usable is what `free` calls "used": it excludes page
+	// cache, which the guest can reclaim on demand. Using "unused" (MemFree)
+	// instead would count all cache as used and peg a busy guest near 100%
+	// again. Fall back to RSS only when no balloon driver is reporting.
+	memUsed := vmStats.MemoryRSS
+	if vmStats.MemoryAvailable > 0 && vmStats.MemoryUsable > 0 {
+		if used := vmStats.MemoryAvailable - vmStats.MemoryUsable; used >= 0 {
+			memUsed = used
+		}
+	}
+
 	return &pb.VMMetricsResponse{
 		Timestamp: timestamppb.New(now),
 		VmId:      vmID,
@@ -1850,8 +1866,8 @@ func (s *NodeAgentService) collectVMMetrics(vmID string) *pb.VMMetricsResponse {
 			UsagePercent: cpuPercent,
 		},
 		Memory: &pb.MemoryMetrics{
-			UsedBytes:      vmStats.MemoryRSS,
-			AvailableBytes: vmStats.MemoryActual - vmStats.MemoryRSS,
+			UsedBytes:      memUsed,
+			AvailableBytes: vmStats.MemoryActual - memUsed,
 			TotalBytes:     vmStats.MemoryActual,
 		},
 		Disk: &pb.DiskMetrics{

@@ -1803,12 +1803,23 @@ func DeleteSnapshot(uuidStr, snapshotName string) error {
 	})
 }
 
+// memoryStatsPeriodSec is how often the guest refreshes its virtio-balloon
+// stats. 10s comfortably outpaces the metrics poll without being chatty.
+const memoryStatsPeriodSec = 10
+
 // VMStats holds real-time VM statistics
 type VMStats struct {
-	CPUTime        uint64
-	MemoryActual   int64
-	MemoryRSS      int64
-	SwapIn         int64
+	CPUTime      uint64
+	MemoryActual int64
+	MemoryRSS    int64
+	// MemoryUnused/Available/Usable come from the virtio-balloon guest stats
+	// and are the only figures that reflect memory as the guest sees it.
+	// They are 0 when no balloon driver is reporting, and stale unless a
+	// stats polling period is set on the domain (see ensureMemoryStatsPeriod).
+	MemoryUnused    int64
+	MemoryAvailable int64
+	MemoryUsable    int64
+	SwapIn          int64
 	SwapOut        int64
 	NetRXBytes     int64
 	NetTXBytes     int64
@@ -1856,18 +1867,37 @@ func GetVMStats(uuidStr string) (*VMStats, error) {
 					stats.MemoryActual = int64(stat.Val) * 1024
 				case int32(libvirt.DOMAIN_MEMORY_STAT_RSS):
 					stats.MemoryRSS = int64(stat.Val) * 1024
+				case int32(libvirt.DOMAIN_MEMORY_STAT_UNUSED):
+					stats.MemoryUnused = int64(stat.Val) * 1024
+				case int32(libvirt.DOMAIN_MEMORY_STAT_AVAILABLE):
+					stats.MemoryAvailable = int64(stat.Val) * 1024
+				case int32(libvirt.DOMAIN_MEMORY_STAT_USABLE):
+					stats.MemoryUsable = int64(stat.Val) * 1024
 				case int32(libvirt.DOMAIN_MEMORY_STAT_SWAP_IN):
 					stats.SwapIn = int64(stat.Val) * 1024
 				case int32(libvirt.DOMAIN_MEMORY_STAT_SWAP_OUT):
 					stats.SwapOut = int64(stat.Val) * 1024
 				}
 			}
+
 		}
 
 		// Get interface stats - parse from XML instead of InterfaceAddresses
 		// (InterfaceAddresses is not available in current libvirt Go bindings)
 		xmlDesc, err := dom.GetXMLDesc(0)
 		if err == nil {
+			// The guest only refreshes its balloon stats when libvirt polls it
+			// on a period. Without one the figures sit frozen at whatever they
+			// were shortly after boot — "almost everything free" — which reads
+			// as a suspiciously idle VM forever. Note the stats are *present*
+			// in that state, just stale, so the XML is what tells us it is
+			// unset. Takes effect from the next poll; guests with no balloon
+			// driver error here, which is fine.
+			if !strings.Contains(xmlDesc, "<stats period=") {
+				_ = dom.SetMemoryStatsPeriod(memoryStatsPeriodSec,
+					libvirt.DOMAIN_MEM_LIVE|libvirt.DOMAIN_MEM_CONFIG)
+			}
+
 			// Extract interface names from XML using regex
 			ifaceNames := extractInterfaceNames(xmlDesc)
 			for _, ifaceName := range ifaceNames {
