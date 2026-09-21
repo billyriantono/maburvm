@@ -189,6 +189,50 @@ func (fm *FirewallManager) ApplyFirewallRules(vmID string, internalIP string, ru
 	return nil
 }
 
+// maxMultiportEntries is iptables' own limit on -m multiport --dports.
+const maxMultiportEntries = 15
+
+// normalizePortSpec converts the panel's port syntax into the one iptables
+// speaks, and validates it.
+//
+// The panel — and the admin UI that feeds it — accept "80", "1000-11000" and
+// "80,443,8080". iptables writes a range with a colon, and needs -m multiport
+// for anything that is not a single port. The agent used to understand only
+// the colon form, so a hyphenated range was rejected outright; because rules
+// are applied as a set, that single rejection aborted the whole apply and left
+// the VM with no rules at all rather than with the other, valid ones.
+//
+// Returns the iptables-form spec and whether multiport is required.
+func normalizePortSpec(portRange string) (string, bool, error) {
+	spec := strings.ReplaceAll(portRange, "-", ":")
+	multi := strings.ContainsAny(spec, ":,")
+
+	entries := strings.Split(spec, ",")
+	if len(entries) > maxMultiportEntries {
+		return "", false, fmt.Errorf("too many port entries (iptables allows %d): %s", maxMultiportEntries, portRange)
+	}
+	for _, entry := range entries {
+		bounds := strings.Split(entry, ":")
+		if len(bounds) > 2 {
+			return "", false, fmt.Errorf("invalid port range: %s", portRange)
+		}
+		prev := 0
+		for _, b := range bounds {
+			port, err := strconv.Atoi(b)
+			if err != nil || port < 1 || port > 65535 {
+				return "", false, fmt.Errorf("invalid port: %s", portRange)
+			}
+			// A range must ascend; "11000-1000" silently matches nothing in
+			// iptables, which is worse than refusing it.
+			if prev != 0 && port < prev {
+				return "", false, fmt.Errorf("invalid port range: %s", portRange)
+			}
+			prev = port
+		}
+	}
+	return spec, multi, nil
+}
+
 // applyRuleInternal applies a single firewall rule (assumes lock is held)
 func (fm *FirewallManager) applyRuleInternal(vmID string, internalIP string, rule FirewallRule) error {
 	// Validate rule
@@ -218,14 +262,14 @@ func (fm *FirewallManager) applyRuleInternal(vmID string, internalIP string, rul
 
 	// Add port if specified (only for tcp/udp)
 	if rule.PortRange != "" && (rule.Protocol == "tcp" || rule.Protocol == "udp") {
-		if strings.Contains(rule.PortRange, ":") {
-			// Port range
-			ruleSpec = append(ruleSpec, "-m", "multiport", "--dports", rule.PortRange)
+		spec, multi, err := normalizePortSpec(rule.PortRange)
+		if err != nil {
+			return err
+		}
+		if multi {
+			ruleSpec = append(ruleSpec, "-m", "multiport", "--dports", spec)
 		} else {
-			// Single port
-			if _, err := strconv.Atoi(rule.PortRange); err == nil {
-				ruleSpec = append(ruleSpec, "--dport", rule.PortRange)
-			}
+			ruleSpec = append(ruleSpec, "--dport", spec)
 		}
 	}
 
@@ -272,21 +316,8 @@ func validateRule(rule FirewallRule) error {
 
 	// Validate port range if specified
 	if rule.PortRange != "" {
-		if strings.Contains(rule.PortRange, ":") {
-			parts := strings.Split(rule.PortRange, ":")
-			if len(parts) != 2 {
-				return fmt.Errorf("invalid port range: %s", rule.PortRange)
-			}
-			start, err1 := strconv.Atoi(parts[0])
-			end, err2 := strconv.Atoi(parts[1])
-			if err1 != nil || err2 != nil || start < 1 || end > 65535 || start > end {
-				return fmt.Errorf("invalid port range: %s", rule.PortRange)
-			}
-		} else {
-			port, err := strconv.Atoi(rule.PortRange)
-			if err != nil || port < 1 || port > 65535 {
-				return fmt.Errorf("invalid port: %s", rule.PortRange)
-			}
+		if _, _, err := normalizePortSpec(rule.PortRange); err != nil {
+			return err
 		}
 	}
 
