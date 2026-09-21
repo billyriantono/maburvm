@@ -72,6 +72,10 @@ const apiSchema = z.object({
 const quotaSchema = z.object({
   vpcMaxPerUser: z.number().min(1).max(100),
   floatingIpMaxPerUser: z.number().min(1).max(100),
+  // Overcommit ratios allow 0, unlike the limits above: for these, 0 is a
+  // meaningful setting ("do not enforce") rather than an accidental lockout.
+  ramOvercommitRatio: z.number().min(0).max(20),
+  diskOvercommitRatio: z.number().min(0).max(20),
 })
 
 // Email settings schema
@@ -125,6 +129,11 @@ const defaultApiSettings = {
 const defaultQuotaSettings = {
   vpcMaxPerUser: 5,
   floatingIpMaxPerUser: 3,
+  // Must mirror DefaultRAMOvercommitRatio / DefaultDiskOvercommitRatio in
+  // internal/panel/service/settings.go: 0 = RAM unenforced, 1 = disk admitted
+  // against real free space.
+  ramOvercommitRatio: 0,
+  diskOvercommitRatio: 1,
 }
 
 const defaultEmailSettings = {
@@ -792,6 +801,61 @@ export default function SystemSettingsPage() {
                     )}
                   </div>
                 </div>
+
+                <div className="pt-2 border-t">
+                  <h3 className="text-sm font-medium mb-1">Node overcommit</h3>
+                  <p className="text-xs text-muted-foreground mb-4">
+                    How far a node may be allocated beyond what it physically has. These are
+                    per-node ceilings, not per-account ones — they decide where a VM can be placed,
+                    not what a customer is entitled to.
+                  </p>
+                  <div className="grid gap-6 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <label htmlFor="ramOvercommitRatio" className="block text-sm font-medium text-muted-foreground mb-2">
+                        RAM overcommit ratio
+                      </label>
+                      <Input
+                        id="ramOvercommitRatio"
+                        type="number"
+                        step="0.1"
+                        {...quotaForm.register("ramOvercommitRatio", { valueAsNumber: true })}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        0 disables the check entirely, which is the default and what the panel did
+                        before this existed. At 1.5, a 128 GB node accepts 192 GB of allocated RAM.
+                        Be deliberate raising this: a host that runs out of RAM does not degrade, the
+                        kernel kills a running VM.
+                      </p>
+                      {quotaForm.formState.errors.ramOvercommitRatio && (
+                        <p className="text-xs text-destructive">
+                          {quotaForm.formState.errors.ramOvercommitRatio.message}
+                        </p>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      <label htmlFor="diskOvercommitRatio" className="block text-sm font-medium text-muted-foreground mb-2">
+                        Disk overcommit ratio
+                      </label>
+                      <Input
+                        id="diskOvercommitRatio"
+                        type="number"
+                        step="0.1"
+                        {...quotaForm.register("diskOvercommitRatio", { valueAsNumber: true })}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Multiplies a pool&apos;s free space when placing or growing a disk. 1 admits
+                        only what exists. Disk images are thin, so higher ratios are usually safe —
+                        a full pool is still recoverable, unlike full RAM.
+                      </p>
+                      {quotaForm.formState.errors.diskOvercommitRatio && (
+                        <p className="text-xs text-destructive">
+                          {quotaForm.formState.errors.diskOvercommitRatio.message}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
                 <div className="flex justify-end">
                   <Button type="submit" disabled={isSaving === "quotas"}>
                     {isSaving === "quotas" ? "Saving..." : "Save limits"}

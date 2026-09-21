@@ -35,8 +35,13 @@ type Node struct {
 	// availability zone implies a VPC that spans it, a floating IP that crosses
 	// it, and failover between zones — none of which exist. Kept so introducing
 	// zones later needs no migration.
-	Zone      string         `json:"-" gorm:"type:varchar(64);not null;default:''"`
-	CreatedAt time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
+	Zone string `json:"-" gorm:"type:varchar(64);not null;default:''"`
+	// MemoryTotalBytes is the node's physical RAM, refreshed by the metrics
+	// collector. Only overcommit admission reads it. 0 means "not measured
+	// yet" and is treated as unlimited, so a node the panel has not polled
+	// yet keeps provisioning rather than failing closed.
+	MemoryTotalBytes int64          `json:"memory_total_bytes" gorm:"not null;default:0"`
+	CreatedAt        time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
 	UpdatedAt time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
 	DeletedAt gorm.DeletedAt `json:"-" gorm:"index"`
 }

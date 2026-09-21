@@ -475,6 +475,12 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		if err := s.quotaService.AdmitVMCreateTx(ctx, tx, req.UserID, req.Resources); err != nil {
 			return err
 		}
+		// Node RAM overcommit, checked in the same transaction for the same
+		// reason. Placement already filtered on storage; RAM had no ceiling
+		// at all until an operator sets a ratio.
+		if err := s.quotaService.AdmitNodeRAMTx(ctx, tx, vm.NodeID, req.Resources.RAM); err != nil {
+			return err
+		}
 		if err := s.vmRepo.WithDB(tx).Create(ctx, vm); err != nil {
 			return fmt.Errorf("failed to create VM record: %w", err)
 		}
@@ -816,10 +822,14 @@ func (s *VMService) nodesWithRoom(ctx context.Context, nodes []models.Node, disk
 	if diskGB <= 0 {
 		return nodes
 	}
+	// Use the operator's ratio here too, so placement and admission agree: a
+	// node filtered out at selection time that the create transaction would
+	// have accepted just means orders fail for no reason.
+	ratio := DiskOvercommitRatio(ctx, s.db)
 	out := make([]models.Node, 0, len(nodes))
 	for i := range nodes {
 		pool := PrimaryPool(ctx, s.db, nodes[i].ID)
-		if PoolFits(pool, diskGB) {
+		if PoolFitsRatio(pool, diskGB, ratio) {
 			out = append(out, nodes[i])
 			continue
 		}
@@ -1420,11 +1430,26 @@ func (s *VMService) UpdateVM(ctx context.Context, req *UpdateVMRequest) (*models
 		if req.Resources.Disk < vm.Resources.Disk {
 			return nil, fmt.Errorf("disk can only be grown (current %dGB, requested %dGB)", vm.Resources.Disk, req.Resources.Disk)
 		}
+		// Growing the disk consumes node storage the same way a new VM does, so
+		// apply the same check placement makes on create. Only the delta is new
+		// — the VM's current disk is already accounted for in the pool.
+		// An unmeasured pool fits, per PoolFits.
+		if grow := req.Resources.Disk - vm.Resources.Disk; grow > 0 {
+			ratio := DiskOvercommitRatio(ctx, s.db)
+			if !PoolFitsRatio(PrimaryPool(ctx, s.db, vm.NodeID), grow, ratio) {
+				return nil, fmt.Errorf("node has insufficient storage to grow disk by %dGB", grow)
+			}
+		}
 		oldRes := vm.Resources
 		// Admit + persist atomically: the per-user lock + authoritative in-tx quota
 		// check serialize with the resource write, so a resize can't overcommit.
 		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			if err := s.quotaService.AdmitVMResizeTx(ctx, tx, vm.UserID, oldRes, *req.Resources); err != nil {
+				return err
+			}
+			// Node capacity is checked in the same transaction as the user's
+			// quota, so the headroom two concurrent resizes see is serialized.
+			if err := s.quotaService.AdmitNodeRAMTx(ctx, tx, vm.NodeID, req.Resources.RAM-oldRes.RAM); err != nil {
 				return err
 			}
 			vm.Resources = *req.Resources

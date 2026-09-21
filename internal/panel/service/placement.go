@@ -73,9 +73,24 @@ const DefaultNodeImageDir = "/var/lib/libvirt/images"
 // on a healthy node. A pool reporting no total capacity is treated the same way
 // — that is a missing measurement, not a full disk.
 func PoolFits(pool *models.StoragePool, diskGB int) bool {
+	return PoolFitsRatio(pool, diskGB, DefaultDiskOvercommitRatio)
+}
+
+// PoolFitsRatio is PoolFits with an operator-configured overcommit ratio, which
+// scales the free space admission is allowed to draw on. At 1.0 it is identical
+// to PoolFits — allocate only what physically exists. Above that it lets the
+// pool carry more allocated disk than it has bytes, which thin provisioning
+// makes workable right up until guests actually write, hence the reserve below
+// staying un-scaled: overcommit is a bet on usage, but the margin that lets an
+// operator recover when the bet goes wrong should not shrink with it.
+func PoolFitsRatio(pool *models.StoragePool, diskGB int, ratio float64) bool {
 	if pool == nil || pool.TotalSpace <= 0 {
 		return true
 	}
+	if ratio <= 0 {
+		ratio = DefaultDiskOvercommitRatio
+	}
+	usable := int64(float64(pool.AvailableSpace) * ratio)
 	need := int64(diskGB)*1024*1024*1024 + diskHeadroomBytes
-	return pool.AvailableSpace >= need
+	return usable >= need
 }

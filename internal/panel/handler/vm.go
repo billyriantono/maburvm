@@ -405,6 +405,14 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 				"error":   "Quota Exceeded",
 				"message": err.Error(),
 			})
+		case errors.Is(err, service.ErrNodeCapacityExceeded):
+			// 503, not 403: the request is permitted, the machine is simply
+			// full. Retrying on another node (or after the operator raises the
+			// overcommit ratio) is the fix, not a quota change.
+			return c.JSON(http.StatusServiceUnavailable, map[string]interface{}{
+				"error":   "Node Capacity Exceeded",
+				"message": err.Error(),
+			})
 		default:
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
 				"error":   "Internal Server Error",
@@ -805,12 +813,32 @@ func (h *VMHandler) UpdateVM(c echo.Context) error {
 				"error":   "Quota Exceeded",
 				"message": err.Error(),
 			})
+		case errors.Is(err, service.ErrNodeCapacityExceeded):
+			// 503, not 403: the request is permitted, the machine is simply
+			// full. Retrying on another node (or after the operator raises the
+			// overcommit ratio) is the fix, not a quota change.
+			return c.JSON(http.StatusServiceUnavailable, map[string]interface{}{
+				"error":   "Node Capacity Exceeded",
+				"message": err.Error(),
+			})
 		default:
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
 				"error":   "Internal Server Error",
 				"message": err.Error(),
 			})
 		}
+	}
+
+	// A resize changes what the customer is paying for and is applied
+	// asynchronously, so record who asked for it and what changed. Other
+	// lifecycle actions already log; this path did not.
+	if req.Resources != nil {
+		h.logVMActivity(c, id, "vm.resize", map[string]interface{}{
+			"hostname": vm.Hostname,
+			"cpu":      vm.Resources.CPU,
+			"ram_mb":   vm.Resources.RAM,
+			"disk_gb":  vm.Resources.Disk,
+		})
 	}
 
 	return c.JSON(http.StatusOK, map[string]interface{}{

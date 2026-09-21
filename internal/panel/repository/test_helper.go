@@ -48,7 +48,7 @@ quota_mode TEXT NOT NULL DEFAULT 'legacy',
 			token TEXT UNIQUE NOT NULL,
 			cert_fingerprint TEXT NOT NULL DEFAULT '',
 			region_id TEXT,
-			zone TEXT NOT NULL DEFAULT '',
+			zone TEXT NOT NULL DEFAULT '', memory_total_bytes INTEGER NOT NULL DEFAULT 0,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			deleted_at DATETIME

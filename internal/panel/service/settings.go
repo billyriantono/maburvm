@@ -23,6 +23,16 @@ const SettingsSectionQuotas = "quotas"
 const (
 	DefaultVPCsPerUser        = 5
 	DefaultFloatingIPsPerUser = 3
+
+	// DefaultRAMOvercommitRatio is 0, meaning "no node RAM limit at all" —
+	// which is what the panel did before overcommit existed. Defaulting to a
+	// real ratio would start rejecting provisioning that works today the
+	// moment this ships, so RAM overcommit is opt-in.
+	DefaultRAMOvercommitRatio = 0.0
+	// DefaultDiskOvercommitRatio is 1.0: admit against the pool's real free
+	// space, exactly as PoolFits did before. Raising it trades safety for
+	// density, betting that thin-provisioned guests will not all fill up.
+	DefaultDiskOvercommitRatio = 1.0
 )
 
 // quotaSettings is the shape stored under the 'quotas' section. The JSON names
@@ -30,6 +40,11 @@ const (
 type quotaSettings struct {
 	VPCMaxPerUser        *int `json:"vpcMaxPerUser"`
 	FloatingIPMaxPerUser *int `json:"floatingIpMaxPerUser"`
+	// Overcommit ratios are node-capacity limits rather than per-account ones,
+	// but they live in the same section so the admin page keeps a single
+	// "limits" form instead of growing a tab for two numbers.
+	RAMOvercommitRatio  *float64 `json:"ramOvercommitRatio"`
+	DiskOvercommitRatio *float64 `json:"diskOvercommitRatio"`
 }
 
 // loadQuotaSettings reads the admin-managed limits. A missing row, unset field
@@ -64,4 +79,30 @@ func FloatingIPsPerUser(ctx context.Context, db *gorm.DB) int {
 		return *v
 	}
 	return DefaultFloatingIPsPerUser
+}
+
+// RAMOvercommitRatio is how many times a node's physical RAM may be allocated
+// to VMs. 0 disables the check entirely (unlimited), which is the default —
+// overselling RAM is normal in hosting, and guests rarely touch all of it.
+//
+// It is worth being deliberate when enabling this: unlike disk, exhausting RAM
+// has no graceful failure. The host OOM killer picks a QEMU process and kills
+// it, which is an abrupt hard-off for somebody's VM.
+func RAMOvercommitRatio(ctx context.Context, db *gorm.DB) float64 {
+	if v := loadQuotaSettings(ctx, db).RAMOvercommitRatio; v != nil && *v > 0 {
+		return *v
+	}
+	return DefaultRAMOvercommitRatio
+}
+
+// DiskOvercommitRatio multiplies a storage pool's free space when deciding
+// whether a new or grown disk fits. qcow2 images are thin-provisioned, so a
+// pool can safely carry far more allocated disk than it has bytes — but only
+// until the guests actually write. 1.0 keeps admission pinned to real free
+// space.
+func DiskOvercommitRatio(ctx context.Context, db *gorm.DB) float64 {
+	if v := loadQuotaSettings(ctx, db).DiskOvercommitRatio; v != nil && *v > 0 {
+		return *v
+	}
+	return DefaultDiskOvercommitRatio
 }

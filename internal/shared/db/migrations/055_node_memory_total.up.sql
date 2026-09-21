@@ -1,0 +1,12 @@
+-- Overcommit admission needs to compare a node's allocated RAM against its
+-- physical RAM, and nothing persisted the latter: node totals were only ever
+-- read live from the agent (GetNodeMetrics) and discarded, while node_metrics
+-- stores percentages only. Disk already had storage_pools.total_space; RAM had
+-- no equivalent.
+--
+-- Written by the metrics collector on each tick from the value it already
+-- holds. 0 means "not measured yet" and is deliberately treated as "fits" by
+-- the admission check, matching PoolFits: absence of a reading is not evidence
+-- that a node is full, and refusing to provision on an unmeasured node would
+-- be worse than provisioning where the node has always provisioned.
+ALTER TABLE nodes ADD COLUMN IF NOT EXISTS memory_total_bytes BIGINT NOT NULL DEFAULT 0;

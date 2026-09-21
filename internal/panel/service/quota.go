@@ -26,6 +26,14 @@ var ErrDiskQuotaExceeded = errors.New("disk quota exceeded")
 // ErrQuotaExceeded is returned when creating/resizing a VM would exceed a user's quota.
 var ErrQuotaExceeded = errors.New("quota exceeded")
 
+// ErrNodeCapacityExceeded is returned when placing or growing a VM would push a
+// node's allocated RAM past its physical RAM times the operator's overcommit
+// ratio. It is deliberately distinct from ErrQuotaExceeded: that one means "this
+// customer may not have more", this one means "this machine cannot hold more" —
+// the same request may well succeed on another node, and the operator can lift
+// it by raising the ratio rather than by editing a customer's entitlement.
+var ErrNodeCapacityExceeded = errors.New("node capacity exceeded")
+
 // ErrQuotaNotAvailable is returned for managed users when no usable quota can be
 // resolved (missing quota row, invalid mode/provenance, or no finite positive
 // limits). Managed accounts fail closed; this is distinct from ErrQuotaExceeded
@@ -622,6 +630,57 @@ func (s *QuotaService) AdmitVMResizeTx(ctx context.Context, tx *gorm.DB, userID 
 		RAMMB:  usage.RAMMB - oldRes.RAM + newRes.RAM,
 		DiskGB: usage.DiskGB - oldRes.Disk + newRes.Disk,
 	})
+}
+
+// AdmitNodeRAMTx checks that a node can still hold deltaRAMMB more megabytes of
+// allocated RAM under the operator's overcommit ratio. It runs in the caller's
+// transaction, alongside the per-user quota admission, so two concurrent
+// requests cannot both pass against the same headroom.
+//
+// Three cases deliberately admit rather than refuse: ratio 0 (the default —
+// RAM overcommit is opt-in), a node whose RAM has never been measured, and a
+// shrink. Failing closed on a missing measurement would stop provisioning on a
+// perfectly healthy node, which is the worse outcome — the same reasoning
+// PoolFits applies to unmeasured storage pools.
+func (s *QuotaService) AdmitNodeRAMTx(ctx context.Context, tx *gorm.DB, nodeID string, deltaRAMMB int) error {
+	if tx == nil {
+		return ErrQuotaAdmissionTransactionRequired
+	}
+	if nodeID == "" || deltaRAMMB <= 0 {
+		return nil
+	}
+	ratio := RAMOvercommitRatio(ctx, tx)
+	if ratio <= 0 {
+		return nil
+	}
+
+	var totalBytes int64
+	if err := tx.WithContext(ctx).Model(&models.Node{}).
+		Where("id = ?", nodeID).
+		Select("memory_total_bytes").Scan(&totalBytes).Error; err != nil {
+		return fmt.Errorf("failed to read node memory total: %w", err)
+	}
+	if totalBytes <= 0 {
+		return nil
+	}
+
+	// Sum what is already allocated on this node. Soft-deleted VMs are excluded
+	// deliberately: their domains are gone from the hypervisor, so counting them
+	// would reserve RAM nothing is using.
+	var allocatedMB int64
+	if err := tx.WithContext(ctx).
+		Raw(`SELECT COALESCE(SUM((resources->>'ram')::bigint), 0)
+		     FROM vms WHERE node_id = ? AND deleted_at IS NULL`, nodeID).
+		Scan(&allocatedMB).Error; err != nil {
+		return fmt.Errorf("failed to sum node RAM allocation: %w", err)
+	}
+
+	capacityMB := int64(float64(totalBytes) / (1024 * 1024) * ratio)
+	if allocatedMB+int64(deltaRAMMB) > capacityMB {
+		return fmt.Errorf("%w: RAM %d/%d MB allocated on node (ratio %.2fx)",
+			ErrNodeCapacityExceeded, allocatedMB+int64(deltaRAMMB), capacityMB, ratio)
+	}
+	return nil
 }
 
 // resolveQuotaCore is the single authoritative resolution used by BOTH the public

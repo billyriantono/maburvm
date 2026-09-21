@@ -168,6 +168,18 @@ func (c *MetricsCollector) collectOnce(ctx context.Context) {
 		if err := c.repo.InsertNodeSample(ctx, sample); err != nil {
 			c.logger.Error("metrics collector: insert node sample failed", "node_id", nodeID, "error", err)
 		}
+		// Persist physical RAM for overcommit admission. The samples table keeps
+		// percentages only, and this total is otherwise read live and thrown
+		// away — but admission runs inside a DB transaction and cannot call the
+		// agent. Only written when the node actually reported a total, so a
+		// failed read never overwrites a good value with 0 ("unmeasured").
+		if m.MemoryTotal > 0 && m.MemoryTotal != nodes[i].MemoryTotalBytes {
+			if err := c.db.WithContext(ctx).Model(&models.Node{}).
+				Where("id = ?", nodeID).
+				Update("memory_total_bytes", m.MemoryTotal).Error; err != nil {
+				c.logger.Warn("metrics collector: persist node memory total failed", "node_id", nodeID, "error", err)
+			}
+		}
 		if m.Status == "online" {
 			online[nodeID] = true
 			// Guest connection rates: the only view that catches a compromised
