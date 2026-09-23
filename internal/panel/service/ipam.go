@@ -465,7 +465,10 @@ func (s *IPAMService) AssignImportedAddressInTx(ctx context.Context, tx *gorm.DB
 			return err
 		}
 		if address.Status != models.IPAddressStatusAvailable && address.Status != models.IPAddressStatusReserved {
-			return nil
+			if address.VMID != nil && *address.VMID == vmID {
+				return nil
+			}
+			return fmt.Errorf("%s is already %s in pool %s (vm %v)", ip, address.Status, pool.Name, address.VMID)
 		}
 		address.Status = models.IPAddressStatusAssigned
 		address.VMID = &vmID
@@ -475,6 +478,78 @@ func (s *IPAMService) AssignImportedAddressInTx(ctx context.Context, tx *gorm.DB
 		return txRepo.UpdateAddress(ctx, address)
 	}
 	return nil
+}
+
+// AdoptVMAddressesForNode makes IPAM own every public address a live VM on the
+// node already holds in its network records. Imported/copied VMs can have a
+// network row with no IPAM row (or an IPAM row still 'available'), which lets
+// the allocator hand their address to a new VM. Returns the number of rows
+// fixed and the addresses that are assigned to a DIFFERENT VM in IPAM — real
+// collisions an operator has to resolve by hand.
+func (s *IPAMService) AdoptVMAddressesForNode(ctx context.Context, nodeID string) (int, []string, error) {
+	pools, err := s.repo.ListPoolsForNode(ctx, nodeID)
+	if err != nil {
+		return 0, nil, err
+	}
+	var rows []struct {
+		VMID      string
+		IPAddress string
+	}
+	if err := s.db.WithContext(ctx).Table("networks").
+		Select("networks.vm_id AS vm_id, networks.ip_address AS ip_address").
+		Joins("JOIN vms ON vms.id = networks.vm_id AND vms.deleted_at IS NULL").
+		Where("vms.node_id = ? AND networks.deleted_at IS NULL", nodeID).
+		Scan(&rows).Error; err != nil {
+		return 0, nil, err
+	}
+	adopted := 0
+	var conflicts []string
+	for _, r := range rows {
+		ip := net.ParseIP(strings.SplitN(r.IPAddress, "/", 2)[0])
+		// Private ranges are VPC/managed-network space where tenants may overlap;
+		// only public addresses are globally unique.
+		if ip == nil || ip.IsPrivate() || ip.IsLoopback() {
+			continue
+		}
+		for i := range pools {
+			if pools[i].Family != ipFamily(ip) || !ipInPool(ip, &pools[i]) {
+				continue
+			}
+			var a models.IPAddress
+			err := s.db.WithContext(ctx).Where("pool_id = ? AND address = ?", pools[i].ID, ip.String()).First(&a).Error
+			switch {
+			case errors.Is(err, gorm.ErrRecordNotFound):
+				nid := nodeID
+				vid := r.VMID
+				a = models.IPAddress{PoolID: pools[i].ID, NodeID: &nid, Address: ip.String(), Family: ipFamily(ip),
+					Status: models.IPAddressStatusAssigned, VMID: &vid, Note: "adopted from VM network record"}
+				if err := s.db.WithContext(ctx).Create(&a).Error; err != nil {
+					return adopted, conflicts, err
+				}
+				adopted++
+			case err != nil:
+				return adopted, conflicts, err
+			case a.VMID != nil && *a.VMID == r.VMID:
+				// already correct
+			case a.DeliveryMode == models.IPDeliveryFloating:
+				// floating IPs have their own attach/detach lifecycle
+			case a.Status == models.IPAddressStatusAvailable || (a.Status == models.IPAddressStatusReserved && a.Note == externalIPNote):
+				vid := r.VMID
+				note := a.Note
+				if note == externalIPNote {
+					note = ""
+				}
+				if err := s.db.WithContext(ctx).Model(&models.IPAddress{}).Where("id = ?", a.ID).
+					Updates(map[string]interface{}{"status": models.IPAddressStatusAssigned, "vm_id": vid, "note": note}).Error; err != nil {
+					return adopted, conflicts, err
+				}
+				adopted++
+			case a.Status == models.IPAddressStatusAssigned:
+				conflicts = append(conflicts, fmt.Sprintf("%s: network of vm %s but IPAM assigned to vm %v", ip, r.VMID, a.VMID))
+			}
+		}
+	}
+	return adopted, conflicts, nil
 }
 
 func ipInPool(ip net.IP, pool *models.IPPool) bool {

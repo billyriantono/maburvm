@@ -316,3 +316,55 @@ func TestVMServiceDeleteVMKeepsFloatingIPForOwner(t *testing.T) {
 	require.Equal(t, models.IPAddressStatusAvailable, updatedDirect.Status)
 	require.Nil(t, updatedDirect.VMID)
 }
+
+// An imported VM's address that IPAM never learned about (or still lists as
+// 'available') must be claimed for that VM, or the allocator hands it to the
+// next VM created — a live collision. An address IPAM says belongs to a
+// different VM is reported, not silently rewritten.
+func TestIPAMAdoptVMAddressesForNode(t *testing.T) {
+	db := setupVMIPAMTestDB(t)
+	ctx := context.Background()
+	user, node, tmpl := seedVMIPAMDependencies(t, db)
+	ipam := NewIPAMService(db, repository.NewIPAMRepository(db))
+
+	pool := &models.IPPool{Name: "pub", Family: "ipv4", CIDR: "203.0.113.0/24", Bridge: "br0", NodeIDs: []string{node.ID}}
+	require.NoError(t, db.Create(pool).Error)
+	newVM := func(host string) *models.VM {
+		vm := &models.VM{UserID: user.ID.String(), NodeID: node.ID, Hostname: host, OSTemplateID: tmpl.ID, Status: models.VMStatusRunning}
+		require.NoError(t, db.Create(vm).Error)
+		return vm
+	}
+	vmMissing, vmAvail, vmOther := newVM("missing"), newVM("avail"), newVM("other")
+	require.NoError(t, db.Create(&models.Network{VMID: vmMissing.ID, IPAddress: "203.0.113.10"}).Error)
+	require.NoError(t, db.Create(&models.Network{VMID: vmAvail.ID, IPAddress: "203.0.113.11"}).Error)
+	require.NoError(t, db.Create(&models.Network{VMID: vmOther.ID, IPAddress: "203.0.113.12"}).Error)
+	require.NoError(t, db.Create(&models.Network{VMID: vmOther.ID, IPAddress: "10.0.0.5"}).Error) // private: ignored
+	require.NoError(t, db.Create(&models.IPAddress{PoolID: pool.ID, Address: "203.0.113.11", Family: "ipv4",
+		Status: models.IPAddressStatusReserved, Note: externalIPNote}).Error)
+	otherOwner := vmMissing.ID
+	require.NoError(t, db.Create(&models.IPAddress{PoolID: pool.ID, Address: "203.0.113.12", Family: "ipv4",
+		Status: models.IPAddressStatusAssigned, VMID: &otherOwner}).Error)
+
+	adopted, conflicts, err := ipam.AdoptVMAddressesForNode(ctx, node.ID)
+	require.NoError(t, err)
+	require.Equal(t, 2, adopted)
+	require.Len(t, conflicts, 1)
+	require.Contains(t, conflicts[0], "203.0.113.12")
+
+	var a, b models.IPAddress
+	require.NoError(t, db.Where("address = ?", "203.0.113.10").First(&a).Error)
+	require.Equal(t, models.IPAddressStatusAssigned, a.Status)
+	require.Equal(t, vmMissing.ID, *a.VMID)
+	require.NoError(t, db.Where("address = ?", "203.0.113.11").First(&b).Error)
+	require.Equal(t, models.IPAddressStatusAssigned, b.Status)
+	require.Equal(t, vmAvail.ID, *b.VMID)
+	require.Empty(t, b.Note)
+	var private int64
+	require.NoError(t, db.Model(&models.IPAddress{}).Where("address = ?", "10.0.0.5").Count(&private).Error)
+	require.Zero(t, private)
+
+	// Idempotent: a second pass changes nothing.
+	adopted, _, err = ipam.AdoptVMAddressesForNode(ctx, node.ID)
+	require.NoError(t, err)
+	require.Zero(t, adopted)
+}
