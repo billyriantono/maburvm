@@ -949,6 +949,11 @@ message NetworkConfigRequest {
 
   // replace_all if true, replaces entire config; if false, merges
   bool replace_all = 3;
+
+  // configure_guest asks the agent to also rewrite the guest OS's network
+  // configuration (address/prefix/gateway of the primary interface). Set only
+  // when the address itself changed; host-side rule syncs leave it false.
+  bool configure_guest = 4;
 }
 
 // NetworkConfigResponse reports the result of network configuration.

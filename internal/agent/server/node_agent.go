@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -453,6 +454,178 @@ func generateMAC(vmID string) string {
 // most systemd distros), and matching by MAC binds the correct NIC regardless of
 // its kernel name. When no static IP is configured, only hostname/password/SSH
 // are applied and the guest keeps DHCP.
+const (
+	guestNetworkFilePath  = "/etc/systemd/network/10-maburvm.network"
+	guestAnnounceUnitPath = "/etc/systemd/system/maburvm-announce.service"
+)
+
+// guestNetworkFile is the systemd-networkd unit that gives the guest its static
+// address; it matches the NIC by MAC so interface naming never matters.
+func guestNetworkFile(mac, ip string, prefix int, gateway string) string {
+	var b strings.Builder
+	b.WriteString("[Match]\n")
+	b.WriteString(fmt.Sprintf("MACAddress=%s\n\n", strings.ToLower(mac)))
+	b.WriteString("[Network]\n")
+	b.WriteString(fmt.Sprintf("Address=%s/%d\n", ip, prefix))
+	if gateway != "" {
+		b.WriteString(fmt.Sprintf("Gateway=%s\n", gateway))
+	}
+	b.WriteString("DNS=1.1.1.1\nDNS=8.8.8.8\n")
+	return b.String()
+}
+
+// guestAnnounceUnit pings the gateway and an external anchor for a minute after
+// boot. The gateway ping teaches the local L2; the external ping traverses the
+// full upstream path so every hop holding a stale ARP/route for a reused IP
+// relearns it promptly.
+func guestAnnounceUnit(gateway string) string {
+	return "[Unit]\n" +
+		"Description=MaburVM: announce IP to gateway/upstream (populate ARP)\n\n" +
+		"[Service]\n" +
+		"Type=oneshot\n" +
+		fmt.Sprintf("ExecStart=/bin/sh -c 'for i in $(seq 1 30); do ping -c1 -w2 %s >/dev/null 2>&1; ping -c1 -w2 1.1.1.1 >/dev/null 2>&1; sleep 2; done; exit 0'\n", gateway) +
+		"\n[Install]\nWantedBy=multi-user.target\n"
+}
+
+// applyGuestNetwork makes the guest OS use ip/prefix/gateway on its primary
+// NIC — the in-guest half of an address change, the host rules being the other.
+//
+// Running guest with a responsive qemu-guest-agent: the files are written and
+// networkd restarted live, no downtime. Otherwise the config is written onto the
+// disk with virt-customize, which needs the domain off: a stopped VM is simply
+// edited, a running one is shut down (ACPI, then forced), edited and started.
+// ponytail: only systemd-networkd guests (everything this agent provisions);
+// imports on netplan/NetworkManager keep their address until edited by hand.
+func (s *NodeAgentService) applyGuestNetwork(vmID, ip string, prefix int, gateway string) error {
+	mac, err := libvirt.GetVMInterfaceMAC(vmID)
+	if err != nil {
+		return err
+	}
+	info, err := libvirt.GetVMInfo(vmID)
+	if err != nil {
+		return err
+	}
+	netFile := guestNetworkFile(mac, ip, prefix, gateway)
+	unit := guestAnnounceUnit(gateway)
+
+	if info.Status == libvirt.VMStatusRunning {
+		script := "set -e\n" +
+			"mkdir -p /etc/systemd/network\n" +
+			"cat > " + guestNetworkFilePath + " <<'MABURVM_EOF'\n" + netFile + "MABURVM_EOF\n" +
+			"chmod 0644 " + guestNetworkFilePath + "\n" +
+			"cat > " + guestAnnounceUnitPath + " <<'MABURVM_EOF'\n" + unit + "MABURVM_EOF\n" +
+			"systemctl daemon-reload\n" +
+			"systemctl enable maburvm-announce.service >/dev/null 2>&1 || true\n" +
+			"systemctl restart systemd-networkd\n" +
+			"systemctl restart --no-block maburvm-announce.service >/dev/null 2>&1 || true\n"
+		if err := guestExec(info.Name, script, 30*time.Second); err == nil {
+			log.Printf("[NodeAgent] guest %s reconfigured live to %s/%d via guest agent", vmID, ip, prefix)
+			return nil
+		} else {
+			log.Printf("[NodeAgent] guest agent unavailable for VM %s (%v); reconfiguring via disk with a reboot", vmID, err)
+		}
+		if err := libvirt.StopVM(vmID, false); err != nil {
+			return fmt.Errorf("shutdown before guest reconfigure: %w", err)
+		}
+		if !waitVMStatus(vmID, libvirt.VMStatusStopped, 90*time.Second) {
+			log.Printf("[NodeAgent] VM %s ignored ACPI shutdown; forcing off for guest reconfigure", vmID)
+			if err := libvirt.StopVM(vmID, true); err != nil {
+				return fmt.Errorf("force stop before guest reconfigure: %w", err)
+			}
+			waitVMStatus(vmID, libvirt.VMStatusStopped, 15*time.Second)
+		}
+		defer func() {
+			if err := libvirt.StartVM(vmID); err != nil {
+				log.Printf("[NodeAgent] WARNING: failed to start VM %s after guest reconfigure: %v", vmID, err)
+			}
+		}()
+	}
+
+	diskPath, err := libvirt.GetVMPrimaryDiskPath(vmID)
+	if err != nil {
+		return err
+	}
+	if _, err := exec.LookPath("virt-customize"); err != nil {
+		return fmt.Errorf("virt-customize not found (install libguestfs-tools): %w", err)
+	}
+	args := []string{"-a", diskPath, "--no-network",
+		"--mkdir", "/etc/systemd/network",
+		"--write", guestNetworkFilePath + ":" + netFile,
+		"--chmod", "0644:" + guestNetworkFilePath,
+		"--write", guestAnnounceUnitPath + ":" + unit,
+		"--run-command", "systemctl enable systemd-networkd maburvm-announce.service >/dev/null 2>&1 || true",
+	}
+	if out, err := exec.Command("virt-customize", args...).CombinedOutput(); err != nil {
+		return fmt.Errorf("virt-customize: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	log.Printf("[NodeAgent] guest %s reconfigured on disk to %s/%d", vmID, ip, prefix)
+	return nil
+}
+
+// waitVMStatus polls until the VM reports want or timeout elapses.
+func waitVMStatus(vmID string, want libvirt.VMStatus, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if info, err := libvirt.GetVMInfo(vmID); err == nil && info.Status == want {
+			return true
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return false
+}
+
+// guestExec runs script with /bin/sh inside the guest through qemu-guest-agent
+// and waits for it to exit. Any failure — no agent, agent not connected, a
+// non-zero exit — is an error so callers can fall back.
+func guestExec(domainName, script string, timeout time.Duration) error {
+	req, _ := json.Marshal(map[string]interface{}{
+		"execute": "guest-exec",
+		"arguments": map[string]interface{}{
+			"path": "/bin/sh", "arg": []string{"-c", script}, "capture-output": true,
+		},
+	})
+	out, err := exec.Command("virsh", "qemu-agent-command", domainName, string(req)).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("guest-exec: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	var started struct {
+		Return struct {
+			PID int `json:"pid"`
+		} `json:"return"`
+	}
+	if err := json.Unmarshal(out, &started); err != nil || started.Return.PID == 0 {
+		return fmt.Errorf("guest-exec: unexpected reply %s", strings.TrimSpace(string(out)))
+	}
+	statusReq, _ := json.Marshal(map[string]interface{}{
+		"execute": "guest-exec-status", "arguments": map[string]int{"pid": started.Return.PID},
+	})
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		time.Sleep(time.Second)
+		out, err := exec.Command("virsh", "qemu-agent-command", domainName, string(statusReq)).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("guest-exec-status: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+		var st struct {
+			Return struct {
+				Exited   bool   `json:"exited"`
+				ExitCode int    `json:"exitcode"`
+				ErrData  string `json:"err-data"`
+			} `json:"return"`
+		}
+		if err := json.Unmarshal(out, &st); err != nil {
+			return fmt.Errorf("guest-exec-status: unexpected reply %s", strings.TrimSpace(string(out)))
+		}
+		if st.Return.Exited {
+			if st.Return.ExitCode != 0 {
+				return fmt.Errorf("guest script exited %d: %s", st.Return.ExitCode, st.Return.ErrData)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("guest script did not finish within %s", timeout)
+}
+
 func injectGuestConfig(diskPath, hostname string, vmCfg libvirt.VMConfig, rootPassword, sshKey, userData string) error {
 	if _, err := exec.LookPath("virt-customize"); err != nil {
 		return fmt.Errorf("virt-customize not found (install libguestfs-tools): %w", err)
@@ -507,22 +680,12 @@ func injectGuestConfig(diskPath, hostname string, vmCfg libvirt.VMConfig, rootPa
 
 	var tmpNet string
 	if vmCfg.IPAddress != "" && vmCfg.Netmask > 0 {
-		var b strings.Builder
-		b.WriteString("[Match]\n")
-		b.WriteString(fmt.Sprintf("MACAddress=%s\n\n", strings.ToLower(vmCfg.MACAddress)))
-		b.WriteString("[Network]\n")
-		b.WriteString(fmt.Sprintf("Address=%s/%d\n", vmCfg.IPAddress, vmCfg.Netmask))
-		if vmCfg.Gateway != "" {
-			b.WriteString(fmt.Sprintf("Gateway=%s\n", vmCfg.Gateway))
-		}
-		b.WriteString("DNS=1.1.1.1\nDNS=8.8.8.8\n")
-
 		f, err := os.CreateTemp("", "maburvm-*.network")
 		if err != nil {
 			return fmt.Errorf("failed to stage network config: %w", err)
 		}
 		tmpNet = f.Name()
-		if _, err := f.WriteString(b.String()); err != nil {
+		if _, err := f.WriteString(guestNetworkFile(vmCfg.MACAddress, vmCfg.IPAddress, vmCfg.Netmask, vmCfg.Gateway)); err != nil {
 			f.Close()
 			os.Remove(tmpNet)
 			return fmt.Errorf("failed to write staged network config: %w", err)
@@ -569,18 +732,8 @@ func injectGuestConfig(diskPath, hostname string, vmCfg libvirt.VMConfig, rootPa
 			// isn't enabled), which would leave the unit stuck and never run. Instead
 			// it starts with multi-user.target and loops long enough for the network
 			// to come up on its own.
-			svc := "[Unit]\n" +
-				"Description=MaburVM: announce IP to gateway/upstream (populate ARP)\n\n" +
-				"[Service]\n" +
-				"Type=oneshot\n" +
-				// Ping the gateway AND an external anchor repeatedly. The gateway ping
-				// teaches the local L2; the external ping traverses the full upstream
-				// path so every hop that may hold a stale ARP/route for a reused IP
-				// relearns it → the VM is reachable from the internet promptly.
-				fmt.Sprintf("ExecStart=/bin/sh -c 'for i in $(seq 1 30); do ping -c1 -w2 %s >/dev/null 2>&1; ping -c1 -w2 1.1.1.1 >/dev/null 2>&1; sleep 2; done; exit 0'\n", vmCfg.Gateway) +
-				"\n[Install]\nWantedBy=multi-user.target\n"
 			args = append(args,
-				"--write", "/etc/systemd/system/maburvm-announce.service:"+svc,
+				"--write", guestAnnounceUnitPath+":"+guestAnnounceUnit(vmCfg.Gateway),
 				"--run-command", "systemctl enable maburvm-announce.service >/dev/null 2>&1 || true")
 		}
 	}
@@ -2087,6 +2240,24 @@ func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *pb.Netwo
 
 	log.Printf("[NodeAgent] Network config applied to VM %s (IP: %s, bandwidth: %d Mbps, rules: %d)",
 		req.VmId, internalIP, bandwidthMbps, len(fwRules))
+
+	// The address changed: the guest must adopt it too, or it keeps talking
+	// from the old one that the rules above now block.
+	if req.ConfigureGuest && internalIP != "" {
+		var prefix int
+		var gateway string
+		for _, iface := range req.Config.Interfaces {
+			if iface.IpAddress == internalIP {
+				prefix, gateway = int(iface.Netmask), iface.Gateway
+				break
+			}
+		}
+		if prefix == 0 {
+			log.Printf("[NodeAgent] WARNING: guest reconfigure for VM %s skipped: no prefix for %s", req.VmId, internalIP)
+		} else if err := s.applyGuestNetwork(req.VmId, internalIP, prefix, gateway); err != nil {
+			return nil, status.Errorf(codes.Internal, "host rules applied but guest reconfiguration failed: %v", err)
+		}
+	}
 
 	appliedInterfaces := make([]*pb.NetworkInterface, 0, len(req.Config.Interfaces))
 	for _, iface := range req.Config.Interfaces {

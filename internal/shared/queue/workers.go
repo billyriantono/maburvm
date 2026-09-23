@@ -859,6 +859,9 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 		BandwidthLimit int64  `json:"bandwidth_limit"`
 		VLANID         *int   `json:"vlan_id,omitempty"`
 		AntiSpoofing   bool   `json:"anti_spoofing"`
+		Gateway        string `json:"gateway"`
+		Netmask        int    `json:"netmask"`
+		ConfigureGuest bool   `json:"configure_guest"`
 		FirewallRules  []struct {
 			Direction string `json:"direction"`
 			Action    string `json:"action"`
@@ -903,6 +906,8 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 		IpAddress:    params.IPAddress,
 		AntiSpoofing: params.AntiSpoofing,
 		VlanId:       vlanID,
+		Netmask:      int32(params.Netmask),
+		Gateway:      params.Gateway,
 	}
 
 	var pfRules []*pb.PortForward
@@ -926,7 +931,8 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 				EgressRateMbps:  int32(params.BandwidthLimit),
 			},
 		},
-		ReplaceAll: true,
+		ReplaceAll:     true,
+		ConfigureGuest: params.ConfigureGuest,
 	}
 
 	resp, err := client.ApplyNetworkConfig(agentAuthContext(ctx, node), req)
