@@ -768,6 +768,13 @@ func (s *NetworkService) enqueueNetworkConfig(ctx context.Context, vm *models.VM
 		params.Netmask = prefixFromCIDR(pool.CIDR)
 		params.ConfigureGuest = true
 	}
+	if others, err := s.networkRepo.ListByVMID(ctx, vm.ID); err == nil {
+		for _, o := range others {
+			if o.IPAddress != "" && o.IPAddress != network.IPAddress {
+				params.ExtraIPs = append(params.ExtraIPs, o.IPAddress)
+			}
+		}
+	}
 
 	// Ship the VM's port forwards as part of the desired state so a full
 	// ReplaceAll re-apply (which wipes MABURVM-NAT) re-creates them instead of
@@ -819,6 +826,9 @@ type NetworkConfigParams struct {
 	AntiSpoofing   bool                  `json:"anti_spoofing"`
 	FirewallRules  []models.FirewallRule `json:"firewall_rules,omitempty"`
 	PortForwards   []PortForwardParam    `json:"port_forwards,omitempty"`
+	// ExtraIPs are the VM's other interface addresses; the agent applies the
+	// same firewall policy to each of them.
+	ExtraIPs []string `json:"extra_ips,omitempty"`
 	// Set only when the address itself changed: the agent then also rewrites
 	// the guest's network config, which may mean a reboot for a guest without
 	// a responsive qemu-guest-agent. Rule/bandwidth syncs leave these empty.

@@ -855,13 +855,14 @@ func (w *VMOperationWorker) cleanupDeletedVM(ctx context.Context, vmID string) e
 // via the ApplyNetworkConfig gRPC method.
 func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client pb.NodeAgentClient, node *models.Node, vm *models.VM, job *river.Job[VMOperationJob]) error {
 	var params struct {
-		IPAddress      string `json:"ip_address"`
-		BandwidthLimit int64  `json:"bandwidth_limit"`
-		VLANID         *int   `json:"vlan_id,omitempty"`
-		AntiSpoofing   bool   `json:"anti_spoofing"`
-		Gateway        string `json:"gateway"`
-		Netmask        int    `json:"netmask"`
-		ConfigureGuest bool   `json:"configure_guest"`
+		IPAddress      string   `json:"ip_address"`
+		BandwidthLimit int64    `json:"bandwidth_limit"`
+		VLANID         *int     `json:"vlan_id,omitempty"`
+		AntiSpoofing   bool     `json:"anti_spoofing"`
+		Gateway        string   `json:"gateway"`
+		Netmask        int      `json:"netmask"`
+		ConfigureGuest bool     `json:"configure_guest"`
+		ExtraIPs       []string `json:"extra_ips"`
 		FirewallRules  []struct {
 			Direction string `json:"direction"`
 			Action    string `json:"action"`
@@ -909,6 +910,14 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 		Netmask:      int32(params.Netmask),
 		Gateway:      params.Gateway,
 	}
+	interfaces := []*pb.NetworkInterface{iface}
+	for i, ip := range params.ExtraIPs {
+		interfaces = append(interfaces, &pb.NetworkInterface{
+			Name:      fmt.Sprintf("eth0:%d", i+1),
+			Type:      pb.NetworkInterfaceType_NETWORK_INTERFACE_TYPE_BRIDGE,
+			IpAddress: ip,
+		})
+	}
 
 	var pfRules []*pb.PortForward
 	for _, pf := range params.PortForwards {
@@ -923,7 +932,7 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 	req := &pb.NetworkConfigRequest{
 		VmId: vm.ID,
 		Config: &pb.VMNetworkConfig{
-			Interfaces:    []*pb.NetworkInterface{iface},
+			Interfaces:    interfaces,
 			FirewallRules: fwRules,
 			PortForwards:  pfRules,
 			BandwidthLimits: &pb.BandwidthLimit{

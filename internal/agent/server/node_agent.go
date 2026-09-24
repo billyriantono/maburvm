@@ -2154,12 +2154,18 @@ func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *pb.Netwo
 		return nil, status.Errorf(codes.NotFound, "VM not found: %v", err)
 	}
 
-	// Determine the primary IP from the first interface with an IP
+	// Determine the primary IP from the first interface with an IP; any further
+	// addressed interfaces are firewalled with the same rule set.
 	var internalIP string
+	var extraIPs []string
 	for _, iface := range req.Config.Interfaces {
-		if iface.IpAddress != "" {
+		if iface.IpAddress == "" || iface.IpAddress == internalIP {
+			continue
+		}
+		if internalIP == "" {
 			internalIP = iface.IpAddress
-			break
+		} else {
+			extraIPs = append(extraIPs, iface.IpAddress)
 		}
 	}
 
@@ -2197,7 +2203,7 @@ func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *pb.Netwo
 	}
 
 	// Apply the full network configuration
-	if err := s.networkMgr.SetupVMNetwork(req.VmId, internalIP, vlanID, bandwidthMbps, fwRules); err != nil {
+	if err := s.networkMgr.SetupVMNetwork(req.VmId, internalIP, vlanID, bandwidthMbps, fwRules, extraIPs...); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to apply network config: %v", err)
 	}
 
