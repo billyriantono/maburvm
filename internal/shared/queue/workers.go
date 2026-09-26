@@ -851,6 +851,17 @@ func (w *VMOperationWorker) cleanupDeletedVM(ctx context.Context, vmID string) e
 	})
 }
 
+// Timeout overrides River's 1-minute default for address changes. Rewriting
+// the guest can take a guest-agent wait, an ACPI shutdown, a disk edit and a
+// boot; a shorter deadline made River retry while the agent was still working,
+// and the two calls fought over the VM.
+func (w *VMOperationWorker) Timeout(job *river.Job[VMOperationJob]) time.Duration {
+	if job.Args.Operation == VMOpConfigureNetwork {
+		return 5 * time.Minute
+	}
+	return 0 // River's default
+}
+
 // handleConfigureNetwork dispatches a ConfigureNetwork operation to the agent
 // via the ApplyNetworkConfig gRPC method.
 func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client pb.NodeAgentClient, node *models.Node, vm *models.VM, job *river.Job[VMOperationJob]) error {
