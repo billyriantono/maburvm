@@ -29,6 +29,8 @@ func RegisterIPAMRoutes(e *echo.Echo, h *IPAMHandler, db *gorm.DB) {
 	pools.PUT("/:id", h.UpdatePool, panelMiddleware.RequirePermission("admin:access"))
 	pools.DELETE("/:id", h.DeletePool, panelMiddleware.RequirePermission("admin:access"))
 	pools.GET("/:id/addresses", h.ListAddresses, panelMiddleware.RequirePermission("network:read"))
+	// Admin only: the list names every VM holding a prefix.
+	pools.GET("/:id/prefixes", h.ListPrefixes, panelMiddleware.RequirePermission("admin:access"))
 	pools.POST("/:id/addresses", h.AddAddress, panelMiddleware.RequirePermission("admin:access"))
 	pools.POST("/:id/allocate", h.AllocateAddress, panelMiddleware.RequirePermission("admin:access"))
 	pools.POST("/:id/generate", h.GenerateAddresses, panelMiddleware.RequirePermission("admin:access"))
@@ -220,4 +222,17 @@ func (h *IPAMHandler) GenerateAddresses(c echo.Context) error {
 		"message": fmt.Sprintf("Generated %d addresses", count),
 		"data":    map[string]interface{}{"count": count},
 	})
+}
+
+// ListPrefixes handles GET /api/v1/ip-pools/:id/prefixes: a delegating IPv6
+// pool's assigned /64s and the VMs holding them.
+func (h *IPAMHandler) ListPrefixes(c echo.Context) error {
+	prefixes, err := h.service.ListDelegatedPrefixes(c.Request().Context(), c.Param("id"))
+	if err != nil {
+		if errors.Is(err, service.ErrIPPoolNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "IP pool not found"})
+		}
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": prefixes})
 }

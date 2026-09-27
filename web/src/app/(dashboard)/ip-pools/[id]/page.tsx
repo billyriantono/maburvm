@@ -26,6 +26,7 @@ import { Input } from "@/components/ui/input"
 import {
   useAddIPAddress,
   useAllocateIPAddress,
+  useDelegatedPrefixes,
   useIPAddresses,
   useIPPool,
   useImportRDNS,
@@ -90,6 +91,7 @@ export default function IPPoolDetailPage() {
   const router = useRouter()
   const poolId = (params?.id as string) || ""
 
+  const { data: prefixes } = useDelegatedPrefixes(poolId, true)
   const { data: pool, isLoading: poolLoading, error: poolError } = useIPPool(poolId)
   const { data: addresses, isLoading, refetch } = useIPAddresses(poolId)
   const { data: nodes } = useNodes()
@@ -309,6 +311,34 @@ export default function IPPoolDetailPage() {
             prefixes delegated out of {pool.cidr}. The first /{pool.delegated_prefix_len} is the router↔node link
             network and is never handed out. Assign or release a prefix from a VM&apos;s Network tab.
           </p>
+          {prefixes && prefixes.length > 0 && (
+            <div className="mt-4 overflow-hidden rounded-md border">
+              <table className="w-full text-sm">
+                <thead className="bg-muted text-xs text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2 text-left font-medium">Prefix</th>
+                    <th className="px-3 py-2 text-left font-medium">VM</th>
+                    <th className="px-3 py-2 text-left font-medium">Assigned</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {prefixes.map((p) => (
+                    <tr key={p.prefix}>
+                      <td className="px-3 py-2 font-mono text-xs">{p.prefix}</td>
+                      <td className="px-3 py-2">
+                        <Link href={`/vms/${p.vm_id}`} className="hover:underline">
+                          {p.hostname || p.vm_id}
+                        </Link>
+                      </td>
+                      <td className="px-3 py-2 text-xs text-muted-foreground">
+                        {new Date(p.created_at).toLocaleString()}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       ) : (<>
       {/* Actions — grouped + in their own section for clarity */}

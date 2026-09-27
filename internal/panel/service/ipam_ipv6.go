@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"time"
 
 	"github.com/maburvm/panel/internal/shared/models"
 	"gorm.io/gorm"
@@ -193,4 +194,25 @@ func (s *IPAMService) countDelegated(ctx context.Context, pool *models.IPPool) {
 		return
 	}
 	_ = s.db.WithContext(ctx).Model(&models.VMIPv6Prefix{}).Where("pool_id = ?", pool.ID).Count(&pool.DelegatedCount).Error
+}
+
+// DelegatedPrefix is one /64 of a delegating pool with the VM that holds it.
+type DelegatedPrefix struct {
+	Prefix    string    `json:"prefix"`
+	VMID      string    `json:"vm_id"`
+	Hostname  string    `json:"hostname"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// ListDelegatedPrefixes lists a delegating pool's assigned prefixes, lowest first.
+func (s *IPAMService) ListDelegatedPrefixes(ctx context.Context, poolID string) ([]DelegatedPrefix, error) {
+	if _, err := s.GetPool(ctx, poolID); err != nil {
+		return nil, err
+	}
+	out := []DelegatedPrefix{}
+	err := s.db.WithContext(ctx).Table("vm_ipv6_prefixes p").
+		Select("p.prefix::text AS prefix, p.vm_id, coalesce(v.hostname, '') AS hostname, p.created_at").
+		Joins("LEFT JOIN vms v ON v.id = p.vm_id").
+		Where("p.pool_id = ?", poolID).Order("p.idx").Scan(&out).Error
+	return out, err
 }

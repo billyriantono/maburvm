@@ -87,6 +87,25 @@ export function useIPAddresses(poolId?: string) {
   })
 }
 
+/** A delegating IPv6 pool's assigned prefixes and the VMs holding them (admin). */
+export interface DelegatedPrefix {
+  prefix: string
+  vm_id: string
+  hostname: string
+  created_at: string
+}
+
+export function useDelegatedPrefixes(poolId?: string, enabled = true) {
+  return useQuery<DelegatedPrefix[]>({
+    queryKey: ['ipam', 'prefixes', poolId],
+    queryFn: async () => {
+      const response = await api.get<DelegatedPrefix[]>(`/api/v1/ip-pools/${poolId}/prefixes`)
+      return response.data.data
+    },
+    enabled: !!poolId && enabled,
+  })
+}
+
 export function useAddIPAddress(poolId?: string) {
   const queryClient = useQueryClient()
 

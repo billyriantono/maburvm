@@ -112,8 +112,25 @@ func emptyInetColumns(pool *models.IPPool) []string {
 	return omit
 }
 
+// UpdatePool saves every column, but an empty gateway/range must become NULL:
+// Postgres rejects ” for inet (a delegated IPv6 pool has no range at all, so
+// every edit of one failed with "invalid input syntax for type inet").
 func (r *IPAMRepository) UpdatePool(ctx context.Context, pool *models.IPPool) error {
-	return r.db.WithContext(ctx).Save(pool).Error
+	empty := emptyInetColumns(pool)
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Omit(empty...).Save(pool).Error; err != nil {
+			return err
+		}
+		if len(empty) == 0 {
+			return nil
+		}
+		cols := map[string]string{"Gateway": "gateway", "RangeStart": "range_start", "RangeEnd": "range_end"}
+		set := map[string]interface{}{}
+		for _, f := range empty {
+			set[cols[f]] = gorm.Expr("NULL")
+		}
+		return tx.Model(&models.IPPool{}).Where("id = ?", pool.ID).Updates(set).Error
+	})
 }
 
 func (r *IPAMRepository) UpdatePoolNodes(ctx context.Context, poolID string, nodeIDs []string) error {
