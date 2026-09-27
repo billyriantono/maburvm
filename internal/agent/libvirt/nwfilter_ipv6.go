@@ -26,7 +26,8 @@ const (
 
 // ipv6CleanTrafficXML is clean-traffic (libvirt 6.0 layout) with maburvm-ipv6
 // spliced in before no-other-l2-traffic. Rules inside an 'ipv6' chain use the
-// ipv6-specific element names (udp-ipv6, icmpv6).
+// ebtables-level <ipv6> matches only (protocol/type attributes, libvirt >= 1.2.12):
+// the ip6tables-level elements (icmpv6, udp-ipv6) would depend on br_netfilter.
 const ipv6CleanTrafficXML = `<filter name='` + IPv6CleanTrafficFilter + `' chain='root'>
   <filterref filter='no-mac-spoofing'/>
   <filterref filter='no-ip-spoofing'/>
@@ -44,9 +45,9 @@ const ipv6CleanTrafficXML = `<filter name='` + IPv6CleanTrafficFilter + `' chain
 // guest never legitimately answers NS - and dropping it stops one guest from
 // claiming fe80::1 or another guest's address.
 const ipv6ChainXML = `<filter name='` + ipv6ChainFilter + `' chain='ipv6' priority='-600'>
-  <rule action='drop' direction='out' priority='100'><icmpv6 type='134'/></rule>
-  <rule action='drop' direction='out' priority='110'><icmpv6 type='136'/></rule>
-  <rule action='drop' direction='out' priority='120'><udp-ipv6 srcportstart='547'/></rule>
+  <rule action='drop' direction='out' priority='100'><ipv6 protocol='icmpv6' type='134'/></rule>
+  <rule action='drop' direction='out' priority='110'><ipv6 protocol='icmpv6' type='136'/></rule>
+  <rule action='drop' direction='out' priority='120'><ipv6 protocol='udp' srcportstart='547' srcportend='547'/></rule>
   <rule action='accept' direction='out' priority='200'><ipv6 srcipaddr='fe80::' srcipmask='10'/></rule>
   <rule action='accept' direction='out' priority='210'><ipv6 srcipaddr='::' srcipmask='128'/></rule>
   <rule action='accept' direction='out' priority='300'><ipv6 srcipaddr='$IPV6_PREFIX' srcipmask='64'/></rule>
