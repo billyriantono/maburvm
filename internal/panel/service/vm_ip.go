@@ -124,6 +124,88 @@ func (s *NetworkService) AssignIPAddress(ctx context.Context, vmID, poolID, requ
 	return created, nil
 }
 
+// AssignIPv6Prefix delegates the next free prefix of pool poolID to the VM and
+// pushes it to the node and into the guest. The VM must already have an IPv4
+// interface: the prefix travels on that interface's network-config job, and
+// the guest reconfigure that writes the address is the same one that writes
+// the IPv4 config.
+func (s *NetworkService) AssignIPv6Prefix(ctx context.Context, vmID, poolID string) (*models.VMIPv6Prefix, error) {
+	if s.ipamService == nil {
+		return nil, fmt.Errorf("address allocation is not configured")
+	}
+	vm, err := s.vmRepo.GetByID(ctx, vmID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("VM not found")
+		}
+		return nil, fmt.Errorf("failed to get VM: %w", err)
+	}
+	network, v4Pool, err := s.primaryNetworkWithPool(ctx, vm.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	var created *models.VMIPv6Prefix
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		p, aerr := s.ipamService.AllocateIPv6PrefixInTx(ctx, tx, poolID, vm.ID, vm.NodeID)
+		created = p
+		return aerr
+	})
+	if err != nil {
+		return nil, err
+	}
+	if cerr := s.enqueueNetworkConfig(ctx, vm, network, v4Pool); cerr != nil {
+		return created, fmt.Errorf("prefix assigned but node configuration could not be queued: %w", cerr)
+	}
+	return created, nil
+}
+
+// ReleaseIPv6Prefix returns the VM's delegated prefix to its pool and re-pushes
+// the remaining config so the host route and guest address go away.
+func (s *NetworkService) ReleaseIPv6Prefix(ctx context.Context, vmID string) error {
+	if s.ipamService == nil {
+		return fmt.Errorf("address allocation is not configured")
+	}
+	vm, err := s.vmRepo.GetByID(ctx, vmID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("VM not found")
+		}
+		return fmt.Errorf("failed to get VM: %w", err)
+	}
+	if err := s.ipamService.ReleaseIPv6PrefixByVMInTx(ctx, s.db, vm.ID); err != nil {
+		return err
+	}
+	network, v4Pool, err := s.primaryNetworkWithPool(ctx, vm.ID)
+	if err != nil {
+		// Nothing left to configure on the host; the row is gone, which is the
+		// release itself.
+		return nil
+	}
+	if cerr := s.enqueueNetworkConfig(ctx, vm, network, v4Pool); cerr != nil {
+		return fmt.Errorf("prefix released but node configuration could not be queued: %w", cerr)
+	}
+	return nil
+}
+
+// primaryNetworkWithPool returns the VM's first interface and the IPAM pool
+// its address came from — what a guest reconfigure needs (prefix + gateway).
+func (s *NetworkService) primaryNetworkWithPool(ctx context.Context, vmID string) (*models.Network, *models.IPPool, error) {
+	network, err := s.networkRepo.GetByVMID(ctx, vmID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("VM has no IPv4 interface to carry the IPv6 prefix on")
+	}
+	var addr models.IPAddress
+	if err := s.db.WithContext(ctx).Where("vm_id = ? AND address = ?", vmID, hostOnlyIP(network.IPAddress)).First(&addr).Error; err != nil {
+		return nil, nil, fmt.Errorf("the VM's address %s is not tracked by IPAM", network.IPAddress)
+	}
+	var pool models.IPPool
+	if err := s.db.WithContext(ctx).Where("id = ?", addr.PoolID).First(&pool).Error; err != nil {
+		return nil, nil, fmt.Errorf("pool of %s could not be loaded: %w", network.IPAddress, err)
+	}
+	return network, &pool, nil
+}
+
 // ReleaseIPAddress takes an address off a VM and returns it to its pool.
 //
 // The interface must belong to the VM named in the request — checked rather than

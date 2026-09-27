@@ -130,7 +130,7 @@ func (h *VMHandler) applyClientVMPolicy(c echo.Context, userCtx *middleware.User
 	}
 	// Reject an explicit client-supplied infrastructure/network choice. Default
 	// (empty/zero) values are allowed; only a concrete, nonzero choice blocks.
-	if req.NodeID != "" || req.IPPoolID != "" || req.RequestedIP != "" ||
+	if req.NodeID != "" || req.IPPoolID != "" || req.IPv6PoolID != "" || req.RequestedIP != "" ||
 		req.ManagedNetworkID != "" || req.CPUModel != "" ||
 		req.BandwidthMbps != 0 || req.VLANID != 0 {
 		_ = clientNetworkSelectionDenied(c)
@@ -154,6 +154,7 @@ type CreateVMRequest struct {
 	NodeID           string           `json:"node_id,omitempty" validate:"omitempty,uuid"`
 	PlanID           string           `json:"plan_id,omitempty" validate:"omitempty,uuid"`
 	IPPoolID         string           `json:"ip_pool_id,omitempty" validate:"omitempty,uuid"`
+	IPv6PoolID       string           `json:"ipv6_pool_id,omitempty" validate:"omitempty,uuid"`
 	RequestedIP      string           `json:"requested_ip,omitempty" validate:"omitempty,ip"`
 	BandwidthMbps    int              `json:"bandwidth_mbps,omitempty" validate:"omitempty,min=0,max=10000"`
 	VLANID           int              `json:"vlan_id,omitempty" validate:"omitempty,min=0,max=4094"`
@@ -273,6 +274,7 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 		NodeID:           req.NodeID,
 		PlanID:           req.PlanID,
 		IPPoolID:         req.IPPoolID,
+		IPv6PoolID:       req.IPv6PoolID,
 		RequestedIP:      req.RequestedIP,
 		BandwidthMbps:    req.BandwidthMbps,
 		VLANID:           req.VLANID,
@@ -627,8 +629,12 @@ type VMDetailResponse struct {
 	ConsoleEnabled bool                   `json:"console_enabled"`
 	RescueMode     bool                   `json:"rescue_mode"`
 	AgentStatus    map[string]interface{} `json:"agent_status,omitempty"`
-	CreatedAt      string                 `json:"created_at"`
-	UpdatedAt      string                 `json:"updated_at"`
+	// Routed IPv6 delegated to the VM; all empty when it has none.
+	IPv6Prefix  string `json:"ipv6_prefix,omitempty"`
+	IPv6Address string `json:"ipv6_address,omitempty"`
+	IPv6Gateway string `json:"ipv6_gateway,omitempty"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
 }
 
 // GetVM handles GET /api/vms/:id - Get VM details and status
@@ -684,6 +690,11 @@ func (h *VMHandler) GetVM(c echo.Context) error {
 
 	if vm.VM.VNCPort != nil {
 		resp.VNCPort = *vm.VM.VNCPort
+	}
+	if vm.IPv6 != nil {
+		resp.IPv6Prefix = vm.IPv6.Prefix
+		resp.IPv6Address = vm.IPv6.Address()
+		resp.IPv6Gateway = models.IPv6LinkLocalGateway
 	}
 
 	// Include agent status if available

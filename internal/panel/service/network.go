@@ -768,6 +768,14 @@ func (s *NetworkService) enqueueNetworkConfig(ctx context.Context, vm *models.VM
 		params.Netmask = prefixFromCIDR(pool.CIDR)
 		params.ConfigureGuest = true
 	}
+	// The VM's routed IPv6 prefix rides on the primary interface in the same
+	// job: the agent applies one interface set per job, so a separate v6 job
+	// would clobber the v4 one (and vice versa).
+	if p, err := vmIPv6Prefix(ctx, s.db, vm.ID); err == nil && p != nil {
+		params.IPv6Prefix = p.Prefix
+		params.IPv6Address = p.Address()
+		params.IPv6Gateway = models.IPv6LinkLocalGateway
+	}
 	if others, err := s.networkRepo.ListByVMID(ctx, vm.ID); err == nil {
 		for _, o := range others {
 			if o.IPAddress != "" && o.IPAddress != network.IPAddress {
@@ -835,6 +843,11 @@ type NetworkConfigParams struct {
 	Gateway        string `json:"gateway,omitempty"`
 	Netmask        int    `json:"netmask,omitempty"`
 	ConfigureGuest bool   `json:"configure_guest,omitempty"`
+	// Routed IPv6 delegated to the VM (prefix, the guest's ::1 address in CIDR
+	// form, and the link-local gateway). All empty when the VM has none.
+	IPv6Prefix  string `json:"ipv6_prefix,omitempty"`
+	IPv6Address string `json:"ipv6_address,omitempty"`
+	IPv6Gateway string `json:"ipv6_gateway,omitempty"`
 }
 
 // PortForwardParam is a DNAT rule carried in a network-config job.

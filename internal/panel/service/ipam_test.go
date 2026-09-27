@@ -29,9 +29,19 @@ func setupIPAMServiceTestDB(t *testing.T) *gorm.DB {
 		range_end TEXT,
 		description TEXT,
 		orderable BOOLEAN NOT NULL DEFAULT 0,
+		delegated_prefix_len INTEGER,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		deleted_at DATETIME
+	)`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE vm_ipv6_prefixes (
+		id TEXT PRIMARY KEY,
+		pool_id TEXT NOT NULL,
+		vm_id TEXT NOT NULL UNIQUE,
+		prefix TEXT NOT NULL UNIQUE,
+		idx INTEGER NOT NULL,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE (pool_id, idx)
 	)`).Error)
 	require.NoError(t, db.Exec(`CREATE TABLE ip_addresses (
 		id TEXT PRIMARY KEY,
