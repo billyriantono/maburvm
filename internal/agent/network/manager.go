@@ -32,6 +32,8 @@ type VMNetworkState struct {
 	PortForwards     map[int]portForwardEntry
 	FirewallRules    []string // Rule IDs
 	AntiSpoofEnabled bool
+	// IPv6 is the routed prefix the host forwards to this VM, nil when none.
+	IPv6 *IPv6Delegation
 }
 
 // NewManager creates a new network manager with all sub-managers initialized
@@ -87,8 +89,9 @@ func NewManager() (*Manager, error) {
 }
 
 // SetupVMNetwork sets up the complete network configuration for a VM
-// This should be called when a VM is started
-func (m *Manager) SetupVMNetwork(vmID string, internalIP string, vlanID int, bandwidthMbps int, rules []models.FirewallRule, extraIPs ...string) error {
+// This should be called when a VM is started. ipv6 (may be nil) is the routed
+// prefix to forward to the guest; it is firewalled with the same rules.
+func (m *Manager) SetupVMNetwork(vmID string, internalIP string, vlanID int, bandwidthMbps int, rules []models.FirewallRule, ipv6 *IPv6Delegation, extraIPs ...string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -99,6 +102,11 @@ func (m *Manager) SetupVMNetwork(vmID string, internalIP string, vlanID int, ban
 		VLANID:       vlanID,
 		Bandwidth:    bandwidthMbps,
 		PortForwards: make(map[int]portForwardEntry),
+		IPv6:         ipv6,
+	}
+	var ipv6Prefix string
+	if ipv6 != nil {
+		ipv6Prefix = ipv6.Prefix
 	}
 
 	// 1. Setup NAT (MASQUERADE)
@@ -136,7 +144,7 @@ func (m *Manager) SetupVMNetwork(vmID string, internalIP string, vlanID int, ban
 			fwRules[i] = FromModelRule(rule)
 			state.FirewallRules = append(state.FirewallRules, rule.ID)
 		}
-		if err := m.firewall.ApplyFirewallRules(vmID, internalIP, fwRules, extraIPs...); err != nil {
+		if err := m.firewall.ApplyFirewallRules(vmID, internalIP, fwRules, ipv6Prefix, extraIPs...); err != nil {
 			// Cleanup on failure
 			_ = m.vlan.RemoveVLAN(vmID, vlanID)
 			_ = m.bandwidth.RemoveBandwidthLimit(vmID)
@@ -144,6 +152,20 @@ func (m *Manager) SetupVMNetwork(vmID string, internalIP string, vlanID int, ban
 			return fmt.Errorf("failed to apply firewall rules: %w", err)
 		}
 		log.Printf("[NetworkManager] %d firewall rules applied to VM %s", len(rules), vmID)
+	}
+
+	// 5. Route the delegated IPv6 prefix to the guest. Idempotent, so every
+	//    sync (including the one after a node reboot) restores it.
+	if ipv6 != nil {
+		ll, err := applyIPv6Route(*ipv6)
+		if err != nil {
+			_ = m.firewall.CleanupVM(vmID)
+			_ = m.vlan.RemoveVLAN(vmID, vlanID)
+			_ = m.bandwidth.RemoveBandwidthLimit(vmID)
+			_ = m.nat.RemoveNAT(vmID, internalIP)
+			return fmt.Errorf("failed to route IPv6 prefix: %w", err)
+		}
+		log.Printf("[NetworkManager] IPv6 %s routed via %s on %s for VM %s", ipv6.Prefix, ll, ipv6.Bridge, vmID)
 	}
 
 	// Store state
@@ -194,6 +216,15 @@ func (m *Manager) CleanupVMNetwork(vmID string) error {
 	if state != nil && state.InternalIP != "" {
 		if err := m.nat.CleanupVM(vmID, state.InternalIP); err != nil {
 			errs = append(errs, fmt.Errorf("NAT cleanup: %w", err))
+		}
+	}
+
+	// 6. Remove the IPv6 route + neighbour. ponytail: state-only — after an
+	//    agent restart a stale route lingers until the prefix is delegated
+	//    again, when `route replace` moves it to the new guest.
+	if state != nil && state.IPv6 != nil {
+		if err := removeIPv6Route(*state.IPv6); err != nil {
+			errs = append(errs, fmt.Errorf("IPv6 route cleanup: %w", err))
 		}
 	}
 
@@ -306,7 +337,11 @@ func (m *Manager) UpdateFirewallRules(vmID string, rules []models.FirewallRule) 
 		fwRules[i] = FromModelRule(rule)
 	}
 
-	if err := m.firewall.ApplyFirewallRules(vmID, state.InternalIP, fwRules, state.ExtraIPs...); err != nil {
+	var ipv6Prefix string
+	if state.IPv6 != nil {
+		ipv6Prefix = state.IPv6.Prefix
+	}
+	if err := m.firewall.ApplyFirewallRules(vmID, state.InternalIP, fwRules, ipv6Prefix, state.ExtraIPs...); err != nil {
 		return fmt.Errorf("failed to apply firewall rules: %w", err)
 	}
 
@@ -340,6 +375,7 @@ func (m *Manager) GetVMNetworkState(vmID string) (*VMNetworkState, bool) {
 		PortForwards:     make(map[int]portForwardEntry),
 		FirewallRules:    make([]string, len(state.FirewallRules)),
 		AntiSpoofEnabled: state.AntiSpoofEnabled,
+		IPv6:             state.IPv6,
 	}
 	for k, v := range state.PortForwards {
 		stateCopy.PortForwards[k] = v

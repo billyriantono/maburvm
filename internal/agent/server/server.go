@@ -368,6 +368,9 @@ func (s *Server) Start() error {
 	}
 	if err := libvirt.Initialize(libvirtCfg); err != nil {
 		log.Printf("[Server] Failed to initialize libvirt pool: %v (VM operations will be unavailable)", err)
+	} else if err := libvirt.EnsureIPv6NWFilters(); err != nil {
+		// Retried lazily by the first VM that needs the filter.
+		log.Printf("[Server] IPv6 nwfilters not defined yet: %v", err)
 	}
 	libvirtMgr := libvirt.NewVMManager()
 	var networkMgr *network.Manager

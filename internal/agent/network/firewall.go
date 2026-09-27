@@ -2,6 +2,7 @@ package network
 
 import (
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,7 +23,11 @@ const (
 // FirewallManager handles firewall rules for VMs
 type FirewallManager struct {
 	ipt *iptables.IPTables
-	mu  sync.RWMutex
+	// ipt6 mirrors the chain in ip6tables for VMs with a routed IPv6 prefix;
+	// nil when the host has no ip6tables, in which case v6 is simply not
+	// filtered (and no VM should be given a prefix on such a node).
+	ipt6 *iptables.IPTables
+	mu   sync.RWMutex
 	// rules tracks active rules per VM: map[vmID]map[ruleID][]ruleSpec
 	rules map[string]map[string][]string
 }
@@ -56,7 +61,64 @@ func NewFirewallManager() (*FirewallManager, error) {
 		return nil, err
 	}
 
+	// Same layout in ip6tables. Routed v6 crosses the host's FORWARD chain, so
+	// this needs no br_netfilter to bite. Best-effort: v4 filtering must not
+	// depend on the host having ip6tables.
+	if ipt6, err := iptables.New(iptables.IPFamily(iptables.ProtocolIPv6)); err == nil {
+		fm.ipt6 = ipt6
+		if err := fm.ensureChain6(); err != nil {
+			log.Printf("[Firewall] WARNING: ip6tables chain not set up (%v); IPv6 prefixes will not be firewalled", err)
+			fm.ipt6 = nil
+		}
+	}
+
 	return fm, nil
+}
+
+// ensureChain6 is ensureChain for ip6tables, plus a blanket ICMPv6 accept:
+// neighbour discovery and path MTU must never be caught by a VM's default
+// drop, or the routed prefix stops working the moment it is firewalled.
+func (fm *FirewallManager) ensureChain6() error {
+	chains, err := fm.ipt6.ListChains(FilterTable)
+	if err != nil {
+		return fmt.Errorf("failed to list chains: %w", err)
+	}
+	exists := false
+	for _, chain := range chains {
+		if chain == MaburVMFirewallChain {
+			exists = true
+			break
+		}
+	}
+	if !exists {
+		if err := fm.ipt6.NewChain(FilterTable, MaburVMFirewallChain); err != nil {
+			return fmt.Errorf("failed to create chain %s: %w", MaburVMFirewallChain, err)
+		}
+	}
+	for _, top := range [][]string{
+		{"-p", "icmpv6", "-j", "ACCEPT"},
+		{"-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"},
+	} {
+		if ok, err := fm.ipt6.Exists(FilterTable, MaburVMFirewallChain, top...); err != nil {
+			return fmt.Errorf("failed to check chain head: %w", err)
+		} else if !ok {
+			if err := fm.ipt6.Insert(FilterTable, MaburVMFirewallChain, 1, top...); err != nil {
+				return fmt.Errorf("failed to add chain head: %w", err)
+			}
+		}
+	}
+	for _, chain := range []string{InputChain, ForwardChain} {
+		exists, err := fm.ipt6.Exists(FilterTable, chain, "-j", MaburVMFirewallChain)
+		if err != nil {
+			return fmt.Errorf("failed to check %s jump: %w", chain, err)
+		}
+		if !exists {
+			if err := fm.ipt6.Insert(FilterTable, chain, 1, "-j", MaburVMFirewallChain); err != nil {
+				return fmt.Errorf("failed to add %s jump: %w", chain, err)
+			}
+		}
+	}
+	return nil
 }
 
 // ensureChain creates the custom MaburVM firewall chain if it doesn't exist
@@ -130,8 +192,10 @@ func FromModelRule(rule models.FirewallRule) FirewallRule {
 }
 
 // ApplyFirewallRules applies a set of firewall rules for a VM
-// This removes any existing rules for the VM and applies the new ones
-func (fm *FirewallManager) ApplyFirewallRules(vmID string, internalIP string, rules []FirewallRule, extraIPs ...string) error {
+// This removes any existing rules for the VM and applies the new ones.
+// ipv6Prefix, when set, gets the same policy in ip6tables (inbound = to the
+// prefix, outbound = from it); IPv4 handling is unchanged by it.
+func (fm *FirewallManager) ApplyFirewallRules(vmID string, internalIP string, rules []FirewallRule, ipv6Prefix string, extraIPs ...string) error {
 	if internalIP == "" {
 		return fmt.Errorf("internal IP cannot be empty")
 	}
@@ -179,6 +243,23 @@ func (fm *FirewallManager) ApplyFirewallRules(vmID string, internalIP string, ru
 	for _, ip := range ips {
 		if err := fm.appendDefaultDrop(vmID, ip); err != nil {
 			return err
+		}
+	}
+
+	if ipv6Prefix != "" && fm.ipt6 != nil {
+		specs, defaultDrop := ipv6FirewallSpecs(vmID, ipv6Prefix, sortedRules)
+		for _, spec := range specs {
+			if err := fm.ipt6.Insert(FilterTable, MaburVMFirewallChain, 1, spec...); err != nil {
+				_ = fm.removeVMRulesInternal(vmID)
+				return fmt.Errorf("failed to insert ip6tables rule: %w", err)
+			}
+		}
+		if ok, err := fm.ipt6.Exists(FilterTable, MaburVMFirewallChain, defaultDrop...); err != nil {
+			return fmt.Errorf("failed to check ip6tables default drop: %w", err)
+		} else if !ok {
+			if err := fm.ipt6.Append(FilterTable, MaburVMFirewallChain, defaultDrop...); err != nil {
+				return fmt.Errorf("failed to add ip6tables default drop: %w", err)
+			}
 		}
 	}
 	return nil
@@ -355,8 +436,26 @@ func (fm *FirewallManager) RemoveFirewallRules(vmID string) error {
 
 // removeVMRulesInternal removes all rules for a VM (assumes lock is held)
 func (fm *FirewallManager) removeVMRulesInternal(vmID string) error {
+	if err := removeVMRulesFrom(fm.ipt, vmID); err != nil {
+		return err
+	}
+	if fm.ipt6 != nil {
+		if err := removeVMRulesFrom(fm.ipt6, vmID); err != nil {
+			return err
+		}
+	}
+
+	// Clean up tracking
+	delete(fm.rules, vmID)
+
+	return nil
+}
+
+// removeVMRulesFrom deletes every rule tagged with the VM's comment from one
+// table family (iptables or ip6tables).
+func removeVMRulesFrom(ipt *iptables.IPTables, vmID string) error {
 	// Get current rules in the chain
-	rules, err := fm.ipt.List(FilterTable, MaburVMFirewallChain)
+	rules, err := ipt.List(FilterTable, MaburVMFirewallChain)
 	if err != nil {
 		return fmt.Errorf("failed to list rules: %w", err)
 	}
@@ -371,7 +470,7 @@ func (fm *FirewallManager) removeVMRulesInternal(vmID string) error {
 			if len(parts) >= 3 {
 				ruleSpec := strings.Fields(parts[2])
 				// Delete the rule
-				if err := fm.ipt.Delete(FilterTable, MaburVMFirewallChain, ruleSpec...); err != nil {
+				if err := ipt.Delete(FilterTable, MaburVMFirewallChain, ruleSpec...); err != nil {
 					// Ignore errors for non-existent rules
 					if !strings.Contains(err.Error(), "No chain/target/match by that name") {
 						return fmt.Errorf("failed to delete rule: %w", err)
@@ -380,10 +479,6 @@ func (fm *FirewallManager) removeVMRulesInternal(vmID string) error {
 			}
 		}
 	}
-
-	// Clean up tracking
-	delete(fm.rules, vmID)
-
 	return nil
 }
 

@@ -15,13 +15,18 @@ import (
 
 // Config describes the guest configuration to inject via cloud-init.
 type Config struct {
-	InstanceID   string   // unique per VM (the VM ID)
-	Hostname     string   // guest hostname
-	MACAddress   string   // NIC MAC to match the static config against
-	IPAddress    string   // static IPv4 (empty → DHCP)
-	Prefix       int      // CIDR prefix length for the static IP (e.g. 24)
-	Gateway      string   // default gateway
-	Nameservers  []string // DNS servers (defaults applied when empty)
+	InstanceID  string   // unique per VM (the VM ID)
+	Hostname    string   // guest hostname
+	MACAddress  string   // NIC MAC to match the static config against
+	IPAddress   string   // static IPv4 (empty → DHCP)
+	Prefix      int      // CIDR prefix length for the static IP (e.g. 24)
+	Gateway     string   // default gateway
+	Nameservers []string // DNS servers (defaults applied when empty)
+	// Routed IPv6 (all empty = none): the guest's address in CIDR form, its
+	// link-local gateway and v6 resolvers. Only rendered alongside a static IPv4.
+	IPv6Address  string
+	IPv6Gateway  string
+	IPv6DNS      []string
 	SSHPublicKey string   // optional authorized key(s); one per line for multiple
 	SSHKeys      []string // optional additional authorized keys
 	Password     string   // optional root password (plaintext) to set via chpasswd
@@ -207,16 +212,42 @@ func networkConfig(cfg Config) string {
 
 	if cfg.IPAddress != "" && cfg.Prefix > 0 {
 		b.WriteString("    dhcp4: false\n")
+		if cfg.IPv6Address != "" {
+			// No RA on a routed /64, and the host routes to the EUI-64 link-local.
+			b.WriteString("    accept-ra: false\n")
+			b.WriteString("    ipv6-address-generation: eui64\n")
+		}
 		b.WriteString("    addresses:\n")
 		b.WriteString(fmt.Sprintf("      - %s/%d\n", cfg.IPAddress, cfg.Prefix))
-		if cfg.Gateway != "" {
+		if cfg.IPv6Address != "" {
+			b.WriteString(fmt.Sprintf("      - %s\n", cfg.IPv6Address))
+		}
+		if cfg.Gateway != "" || cfg.IPv6Address != "" {
 			b.WriteString("    routes:\n")
+		}
+		if cfg.Gateway != "" {
 			b.WriteString("      - to: default\n")
 			b.WriteString(fmt.Sprintf("        via: %s\n", cfg.Gateway))
+		}
+		if cfg.IPv6Address != "" {
+			gw := cfg.IPv6Gateway
+			if gw == "" {
+				gw = "fe80::1"
+			}
+			b.WriteString("      - to: \"::/0\"\n")
+			b.WriteString(fmt.Sprintf("        via: %s\n", gw))
+			b.WriteString("        on-link: true\n")
 		}
 		ns := cfg.Nameservers
 		if len(ns) == 0 {
 			ns = []string{"1.1.1.1", "8.8.8.8"}
+		}
+		if cfg.IPv6Address != "" {
+			v6ns := cfg.IPv6DNS
+			if len(v6ns) == 0 {
+				v6ns = []string{"2606:4700:4700::1111", "2001:4860:4860::8888"}
+			}
+			ns = append(append([]string{}, ns...), v6ns...)
 		}
 		b.WriteString("    nameservers:\n")
 		b.WriteString(fmt.Sprintf("      addresses: [%s]\n", strings.Join(ns, ", ")))

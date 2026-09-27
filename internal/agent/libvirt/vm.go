@@ -50,6 +50,14 @@ type VMConfig struct {
 	BandwidthMbps int    // inbound/outbound rate cap in Mbps; 0 = unlimited
 	AntiSpoofing  bool   // enable anti-IP hijacking protection (nwfilter + iptables + ebtables)
 
+	// Routed IPv6 delegated to the VM: the prefix ("2001:db8:20:5::/64"), the
+	// guest's own address in CIDR form and its link-local gateway. All empty =
+	// no IPv6, and nothing below changes.
+	IPv6Prefix  string
+	IPv6Address string
+	IPv6Gateway string
+	IPv6DNS     []string
+
 	// CloudInitISOPath, when set, is attached as a read-only "cidata" cdrom so
 	// cloud-init configures the guest (static IP, hostname, SSH key) on boot.
 	CloudInitISOPath string
@@ -165,18 +173,10 @@ func generateDomainXML(config VMConfig) (string, error) {
 	}
 
 	// Add libvirt nwfilter for anti-spoofing (Layer 1 protection)
-	// Only applied when AntiSpoofing is enabled.
-	// This applies clean-traffic filter that prevents IP/MAC spoofing at the hypervisor level
-	// The filter uses $IP, $IP6, and $MAC variables that libvirt substitutes at runtime
-	if config.AntiSpoofing {
-		iface.FilterRef = &libvirtxml.DomainInterfaceFilterRef{
-			Filter: "clean-traffic",
-			Parameters: []libvirtxml.DomainInterfaceFilterParam{
-				{Name: "IP", Value: config.IPAddress},
-				{Name: "MAC", Value: config.MACAddress},
-			},
-		}
-	}
+	// Only applied when AntiSpoofing is enabled: clean-traffic (IP/MAC spoofing
+	// at the hypervisor level), or its IPv6-aware variant when the VM has a
+	// routed prefix (see nwfilter_ipv6.go).
+	iface.FilterRef = InterfaceFilterRef(config.AntiSpoofing, config.IPAddress, config.MACAddress, config.IPv6Prefix)
 
 	// Primary disk (the cloned template image).
 	disks := []libvirtxml.DomainDisk{
@@ -351,6 +351,12 @@ func CreateVM(config VMConfig) (string, error) {
 	xmlConfig, err := generateDomainXML(config)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate domain XML: %w", err)
+	}
+	// The IPv6 filter must exist before a domain referencing it is defined.
+	if config.AntiSpoofing && config.IPv6Prefix != "" {
+		if err := EnsureIPv6NWFilters(); err != nil {
+			return "", err
+		}
 	}
 
 	var domainUUID string
