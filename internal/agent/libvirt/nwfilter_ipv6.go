@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"sort"
+	"strings"
 	"sync/atomic"
 
 	"github.com/google/uuid"
@@ -101,7 +102,18 @@ func EnsureIPv6NWFilters() error {
 		return nil
 	}
 	err := WithConnection(func(conn *libvirt.Connect) error {
-		for _, def := range []string{ipv6ChainXML, ipv6CleanTrafficXML} {
+		for name, def := range map[string]string{ipv6ChainFilter: ipv6ChainXML, IPv6CleanTrafficFilter: ipv6CleanTrafficXML} {
+			// libvirt refuses to redefine a filter under a new UUID, and a definition
+			// without one gets a random UUID: reuse the existing filter's UUID so an
+			// agent restart (or a newer filter version) updates it in place.
+			if old, err := conn.LookupNWFilterByName(name); err == nil {
+				id, err := old.GetUUIDString()
+				old.Free()
+				if err != nil {
+					return fmt.Errorf("nwfilter %s uuid: %w", name, err)
+				}
+				def = withFilterUUID(def, id)
+			}
 			f, err := conn.NWFilterDefineXML(def)
 			if err != nil {
 				return fmt.Errorf("define nwfilter: %w", err)
@@ -259,4 +271,13 @@ func filterRefEqual(a, b *libvirtxml.DomainInterfaceFilterRef) bool {
 		}
 	}
 	return true
+}
+
+// withFilterUUID inserts <uuid> as the first child of a <filter> definition.
+func withFilterUUID(def, id string) string {
+	i := strings.Index(def, ">")
+	if i < 0 {
+		return def
+	}
+	return def[:i+1] + "\n  <uuid>" + id + "</uuid>" + def[i+1:]
 }

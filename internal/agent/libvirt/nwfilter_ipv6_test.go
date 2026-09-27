@@ -103,3 +103,14 @@ func TestIPv6FilterXMLWellFormed(t *testing.T) {
 		t.Error("root filter does not reference the ipv6 chain")
 	}
 }
+
+func TestWithFilterUUID(t *testing.T) {
+	got := withFilterUUID(ipv6ChainXML, "8f2b4c90-253d-49e5-94a8-9e5b8cbd1db3")
+	var f libvirtxml.NWFilter
+	if err := xml.Unmarshal([]byte(got), &f); err != nil {
+		t.Fatalf("does not parse: %v\n%s", err, got)
+	}
+	if f.UUID != "8f2b4c90-253d-49e5-94a8-9e5b8cbd1db3" || f.Name != ipv6ChainFilter {
+		t.Fatalf("uuid %q name %q", f.UUID, f.Name)
+	}
+}
