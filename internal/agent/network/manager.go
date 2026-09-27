@@ -19,6 +19,10 @@ type Manager struct {
 	mu        sync.RWMutex
 	// vmNetworks tracks network state per VM
 	vmNetworks map[string]*VMNetworkState
+	// ipv6 is every routed prefix this node forwards, by VM id, persisted in
+	// ipv6StatePath: an agent restart or node reboot restores the routes, and a
+	// released or moved prefix is torn down even across restarts.
+	ipv6 map[string]IPv6Delegation
 }
 
 // VMNetworkState holds the network configuration state for a VM
@@ -78,14 +82,23 @@ func NewManager() (*Manager, error) {
 			"a single compromised guest can exhaust this node's conntrack table", err)
 	}
 
-	return &Manager{
+	m := &Manager{
 		bandwidth:  bwManager,
 		nat:        natManager,
 		firewall:   fwManager,
 		vlan:       vlanManager,
 		antiSpoof:  asManager,
 		vmNetworks: make(map[string]*VMNetworkState),
-	}, nil
+		ipv6:       loadIPv6Delegations(ipv6StatePath()),
+	}
+	for vmID, d := range m.ipv6 { // node reboot: routes and neighbour entries are gone
+		if ll, err := applyIPv6Route(d); err != nil {
+			log.Printf("[NetworkManager] WARNING: restoring IPv6 %s for VM %s: %v", d.Prefix, vmID, err)
+		} else {
+			log.Printf("[NetworkManager] IPv6 %s restored via %s on %s for VM %s", d.Prefix, ll, d.Bridge, vmID)
+		}
+	}
+	return m, nil
 }
 
 // SetupVMNetwork sets up the complete network configuration for a VM
@@ -154,8 +167,15 @@ func (m *Manager) SetupVMNetwork(vmID string, internalIP string, vlanID int, ban
 		log.Printf("[NetworkManager] %d firewall rules applied to VM %s", len(rules), vmID)
 	}
 
-	// 5. Route the delegated IPv6 prefix to the guest. Idempotent, so every
-	//    sync (including the one after a node reboot) restores it.
+	// 5. Route the delegated IPv6 prefix to the guest. Idempotent. A prefix the VM
+	//    no longer has (released, or moved to another MAC/bridge) is removed first.
+	if prev, ok := m.ipv6[vmID]; ok && (ipv6 == nil || prev != *ipv6) {
+		if err := removeIPv6Route(prev); err != nil {
+			log.Printf("[NetworkManager] WARNING: removing old IPv6 %s for VM %s: %v", prev.Prefix, vmID, err)
+		}
+		delete(m.ipv6, vmID)
+		m.saveIPv6()
+	}
 	if ipv6 != nil {
 		ll, err := applyIPv6Route(*ipv6)
 		if err != nil {
@@ -166,6 +186,8 @@ func (m *Manager) SetupVMNetwork(vmID string, internalIP string, vlanID int, ban
 			return fmt.Errorf("failed to route IPv6 prefix: %w", err)
 		}
 		log.Printf("[NetworkManager] IPv6 %s routed via %s on %s for VM %s", ipv6.Prefix, ll, ipv6.Bridge, vmID)
+		m.ipv6[vmID] = *ipv6
+		m.saveIPv6()
 	}
 
 	// Store state
@@ -219,13 +241,13 @@ func (m *Manager) CleanupVMNetwork(vmID string) error {
 		}
 	}
 
-	// 6. Remove the IPv6 route + neighbour. ponytail: state-only — after an
-	//    agent restart a stale route lingers until the prefix is delegated
-	//    again, when `route replace` moves it to the new guest.
-	if state != nil && state.IPv6 != nil {
-		if err := removeIPv6Route(*state.IPv6); err != nil {
+	// 6. Remove the IPv6 route + neighbour (persisted, so this works after a restart).
+	if d, ok := m.ipv6[vmID]; ok {
+		if err := removeIPv6Route(d); err != nil {
 			errs = append(errs, fmt.Errorf("IPv6 route cleanup: %w", err))
 		}
+		delete(m.ipv6, vmID)
+		m.saveIPv6()
 	}
 
 	// Remove state
@@ -505,4 +527,12 @@ func (m *Manager) DetachFloatingIPVPC(vpcID, floatingIP string) error {
 	}
 	log.Printf("[NetworkManager] Floating IP %s detached from VPC %s", floatingIP, vpcID)
 	return nil
+}
+
+// saveIPv6 persists m.ipv6; callers hold m.mu. A failed write only costs the
+// restore-after-reboot, so it is logged, not returned.
+func (m *Manager) saveIPv6() {
+	if err := saveIPv6Delegations(ipv6StatePath(), m.ipv6); err != nil {
+		log.Printf("[NetworkManager] WARNING: saving IPv6 delegations: %v", err)
+	}
 }

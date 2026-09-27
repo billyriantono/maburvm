@@ -83,8 +83,7 @@ func TestIPv6PrefixNetwork(t *testing.T) {
 }
 
 // The filter XML is hand-written; make sure it is well-formed and references
-// the variable the interface binding supplies, with libvirt's ipv6-chain
-// element names.
+// the variable the interface binding supplies, with ebtables-level matches.
 func TestIPv6FilterXMLWellFormed(t *testing.T) {
 	for _, def := range []string{ipv6ChainXML, ipv6CleanTrafficXML} {
 		var f libvirtxml.NWFilter
@@ -92,7 +91,10 @@ func TestIPv6FilterXMLWellFormed(t *testing.T) {
 			t.Fatalf("filter XML does not parse: %v\n%s", err, def)
 		}
 	}
-	for _, want := range []string{"chain='ipv6'", "$IPV6_PREFIX", "<udp-ipv6 ", "<icmpv6 type='134'", "<icmpv6 type='136'"} {
+	// ebtables-level <ipv6> matches only: libvirt 6.0 (on the nodes) accepts
+	// protocol='icmpv6'/'udp' with type/port there; icmpv6/udp-ipv6 elements are
+	// ip6tables-level and would need br_netfilter.
+	for _, want := range []string{"chain='ipv6'", "$IPV6_PREFIX", "protocol='icmpv6' type='134'", "protocol='icmpv6' type='136'", "protocol='udp' srcportstart='547'"} {
 		if !strings.Contains(ipv6ChainXML, want) {
 			t.Errorf("ipv6 chain missing %q", want)
 		}

@@ -1,9 +1,13 @@
 package network
 
 import (
+	"encoding/json"
 	"fmt"
+	"log"
 	"net"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -148,4 +152,45 @@ func ipv6FirewallSpecs(vmID, prefix string, sorted []FirewallRule) (specs [][]st
 	}
 	defaultDrop = []string{"-d", prefix, "-j", "DROP", "-m", "comment", "--comment", fmt.Sprintf("maburvm-vm-%s-default-drop", vmID)}
 	return specs, defaultDrop
+}
+
+// ipv6StatePath is where routed prefixes are persisted (MABURVM_DATA_DIR, like the
+// agent's other state; default /var/lib/maburvm).
+func ipv6StatePath() string {
+	dir := os.Getenv("MABURVM_DATA_DIR")
+	if dir == "" {
+		dir = "/var/lib/maburvm"
+	}
+	return filepath.Join(dir, "ipv6-delegations.json")
+}
+
+// loadIPv6Delegations reads the persisted prefixes; a missing or unreadable file
+// is an empty map (logged when unreadable).
+func loadIPv6Delegations(path string) map[string]IPv6Delegation {
+	out := map[string]IPv6Delegation{}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return out
+	}
+	if err := json.Unmarshal(b, &out); err != nil {
+		log.Printf("[NetworkManager] WARNING: ignoring unreadable %s: %v", path, err)
+		return map[string]IPv6Delegation{}
+	}
+	return out
+}
+
+// saveIPv6Delegations writes the map atomically (temp file + rename).
+func saveIPv6Delegations(path string, d map[string]IPv6Delegation) error {
+	b, err := json.MarshalIndent(d, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }

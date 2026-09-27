@@ -1,6 +1,8 @@
 package network
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -66,5 +68,25 @@ func TestIPv6FirewallSpecs(t *testing.T) {
 	}
 	if strings.Join(drop, " ") != "-d 2001:db8:20:5::/64 -j DROP -m comment --comment maburvm-vm-vm1-default-drop" {
 		t.Errorf("default drop = %v", drop)
+	}
+}
+
+func TestIPv6DelegationsPersist(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sub", "ipv6-delegations.json")
+	if got := loadIPv6Delegations(path); len(got) != 0 {
+		t.Fatalf("missing file: %v", got)
+	}
+	want := map[string]IPv6Delegation{"vm-1": {Prefix: "2001:db8:20:1::/64", MAC: "52:54:00:12:34:56", Bridge: "viifbr0"}}
+	if err := saveIPv6Delegations(path, want); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadIPv6Delegations(path); len(got) != 1 || got["vm-1"] != want["vm-1"] {
+		t.Fatalf("round trip: %v", got)
+	}
+	if err := os.WriteFile(path, []byte("{broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadIPv6Delegations(path); len(got) != 0 {
+		t.Fatalf("unreadable file must load empty: %v", got)
 	}
 }
