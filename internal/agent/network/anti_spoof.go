@@ -470,6 +470,16 @@ func (asm *AntiSpoofManager) bestEffortCleanup(vmID string) error {
 
 // cleanupByComment removes iptables rules matching a VM ID comment
 func (asm *AntiSpoofManager) cleanupByComment(vmID string, ipt *iptables.IPTables) error {
+	exists, err := ipt.ChainExists(FilterTable, MaburVMAntiSpoofChain)
+	if err != nil {
+		return fmt.Errorf("failed to check chain: %w", err)
+	}
+	if !exists {
+		// Nothing of ours can be in a chain that was never created (the IPv6 one
+		// never is). Failing here used to abort ApplyAntiSpoofRules, so after
+		// every agent restart the IPv4 anti-spoof rules were silently skipped.
+		return nil
+	}
 	rules, err := ipt.List(FilterTable, MaburVMAntiSpoofChain)
 	if err != nil {
 		return fmt.Errorf("failed to list rules: %w", err)
