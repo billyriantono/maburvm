@@ -1,6 +1,8 @@
 package models
 
 import (
+	"fmt"
+	"net"
 	"time"
 
 	"github.com/google/uuid"
@@ -47,14 +49,72 @@ type IPPool struct {
 	Description string  `json:"description,omitempty" gorm:"type:text"`
 	// Orderable opts this pool into customer self-service. Off by default so a
 	// pool reserved for infrastructure is never handed out by accident.
-	Orderable bool           `json:"orderable" gorm:"not null;default:false"`
-	CreatedAt time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
-	UpdatedAt time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
-	DeletedAt gorm.DeletedAt `json:"-" gorm:"index"`
+	Orderable bool `json:"orderable" gorm:"not null;default:false"`
+	// DelegatedPrefixLen turns an IPv6 pool into a routed-prefix pool: every VM
+	// gets one /<n> out of the pool CIDR (a /64 per VM from a /48) instead of a
+	// single address. Nil = ordinary per-address pool.
+	DelegatedPrefixLen *int           `json:"delegated_prefix_len,omitempty" gorm:"type:smallint"`
+	CreatedAt          time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
+	UpdatedAt          time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
+	DeletedAt          gorm.DeletedAt `json:"-" gorm:"index"`
 
 	// Many-to-many: loaded separately via ip_pool_nodes junction table
 	// When junction table exists, this takes precedence over NodeID
 	NodeIDs []string `json:"node_ids" gorm:"-"`
+	// DelegatedCount is how many prefixes a delegated pool has handed out; a
+	// delegated pool has no address rows to count instead.
+	DelegatedCount int64 `json:"delegated_count,omitempty" gorm:"-"`
+}
+
+// IsDelegated reports whether the pool hands out routed prefixes per VM.
+func (p *IPPool) IsDelegated() bool { return p.DelegatedPrefixLen != nil && *p.DelegatedPrefixLen > 0 }
+
+const (
+	// IPv6LinkLocalGateway is the default route every VM with a delegated prefix
+	// uses: the node holds fe80::1 on the bridge, so it never changes per VM.
+	IPv6LinkLocalGateway = "fe80::1"
+)
+
+// DefaultIPv6DNS is what a guest with a delegated prefix gets as IPv6 resolvers.
+var DefaultIPv6DNS = []string{"2606:4700:4700::1111", "2001:4860:4860::8888"}
+
+// VMIPv6Prefix is the routed prefix delegated to one VM from a delegated pool.
+// Prefix is the network in CIDR form ("2001:db8:20:5::/64"); Idx is its
+// position inside the pool (prefix = pool + idx << (128 - len)), unique per pool.
+type VMIPv6Prefix struct {
+	ID        string    `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	PoolID    string    `json:"pool_id" gorm:"type:uuid;not null"`
+	VMID      string    `json:"vm_id" gorm:"type:uuid;not null;uniqueIndex"`
+	Prefix    string    `json:"prefix" gorm:"type:cidr;not null"`
+	Idx       int       `json:"idx" gorm:"not null"`
+	CreatedAt time.Time `json:"created_at" gorm:"not null;default:NOW()"`
+}
+
+func (VMIPv6Prefix) TableName() string { return "vm_ipv6_prefixes" }
+
+func (p *VMIPv6Prefix) BeforeCreate(tx *gorm.DB) error {
+	if p.ID == "" {
+		p.ID = uuid.New().String()
+	}
+	return nil
+}
+
+// Address is the guest's address inside its prefix: the network's ::1, in CIDR
+// form so it can be written straight into a network config.
+func (p *VMIPv6Prefix) Address() string { return IPv6PrefixAddress(p.Prefix) }
+
+// IPv6PrefixAddress returns "<network>1/<len>" for a prefix like
+// "2001:db8:20:5::/64" -> "2001:db8:20:5::1/64". Empty on a malformed input.
+func IPv6PrefixAddress(prefix string) string {
+	ip, n, err := net.ParseCIDR(prefix)
+	if err != nil || ip.To4() != nil {
+		return ""
+	}
+	addr := make(net.IP, len(n.IP))
+	copy(addr, n.IP)
+	addr[15] |= 1
+	ones, _ := n.Mask.Size()
+	return fmt.Sprintf("%s/%d", addr, ones)
 }
 
 func (IPPool) TableName() string { return "ip_pools" }

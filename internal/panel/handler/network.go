@@ -918,6 +918,9 @@ func RegisterNetworkRoutes(e *echo.Echo, handler *NetworkHandler, db *gorm.DB) {
 	// one from a pool the way VM creation does.
 	vms.POST("/:id/ip-addresses", handler.AssignIPAddress, middleware.RequirePermission("vm:update"))
 	vms.DELETE("/:id/ip-addresses/:network_id", handler.ReleaseIPAddress, middleware.RequirePermission("vm:update"))
+	// Routed IPv6: delegate / release the VM's /64.
+	vms.POST("/:id/ipv6", handler.AssignIPv6Prefix, middleware.RequirePermission("vm:update"))
+	vms.DELETE("/:id/ipv6", handler.ReleaseIPv6Prefix, middleware.RequirePermission("vm:update"))
 
 	// Bandwidth routes
 	vms.PUT("/:id/networks/:network_id/bandwidth", handler.SetBandwidthLimit, middleware.RequirePermission("vm:update"))
@@ -1009,6 +1012,64 @@ func (h *NetworkHandler) AssignIPAddress(c echo.Context) error {
 			"ip_address": network.IPAddress,
 		},
 	})
+}
+
+// AssignIPv6Prefix handles POST /api/v1/vms/:id/ipv6 {pool_id}: delegates the
+// next free prefix of a delegated IPv6 pool to the VM. Admin-only, like every
+// other pool choice.
+func (h *NetworkHandler) AssignIPv6Prefix(c echo.Context) error {
+	vmID := c.Param("id")
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
+	}
+	if isClientRole(c) {
+		return clientNetworkSelectionDenied(c)
+	}
+	var req struct {
+		PoolID string `json:"pool_id"`
+	}
+	if err := c.Bind(&req); err != nil || req.PoolID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error": "Bad Request", "message": "pool_id is required",
+		})
+	}
+	p, err := h.service.AssignIPv6Prefix(c.Request().Context(), vmID, req.PoolID)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrVMAlreadyHasIPv6Prefix), errors.Is(err, service.ErrNoAvailableIPv6Prefix):
+			return c.JSON(http.StatusConflict, map[string]interface{}{"error": "Conflict", "message": err.Error()})
+		case err.Error() == "VM not found":
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
+		default:
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
+		}
+	}
+	return c.JSON(http.StatusCreated, map[string]interface{}{
+		"message": "IPv6 prefix assigned",
+		"data": map[string]interface{}{
+			"ipv6_prefix":  p.Prefix,
+			"ipv6_address": p.Address(),
+			"ipv6_gateway": models.IPv6LinkLocalGateway,
+		},
+	})
+}
+
+// ReleaseIPv6Prefix handles DELETE /api/v1/vms/:id/ipv6.
+func (h *NetworkHandler) ReleaseIPv6Prefix(c echo.Context) error {
+	vmID := c.Param("id")
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
+	}
+	if isClientRole(c) {
+		return clientNetworkSelectionDenied(c)
+	}
+	if err := h.service.ReleaseIPv6Prefix(c.Request().Context(), vmID); err != nil {
+		if err.Error() == "VM not found" {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
+		}
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Internal Server Error", "message": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"message": "IPv6 prefix released"})
 }
 
 // ReleaseIPAddress handles DELETE /api/v1/vms/:id/ip-addresses/:network_id.

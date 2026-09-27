@@ -877,6 +877,14 @@ message NetworkInterface {
 
   // vlan_id is the 802.1Q VLAN tag for this interface (0 = untagged)
   int32 vlan_id = 10;
+
+  // ipv6_prefix is the prefix routed to this VM (e.g. "2001:db8:20:5::/64").
+  // Empty = no IPv6. The host routes it to the guest's EUI-64 link-local
+  // address and the guest binds ipv6_address with ipv6_gateway as its default.
+  string ipv6_prefix = 11;
+  string ipv6_address = 12;
+  string ipv6_gateway = 13;
+  repeated string ipv6_dns = 14;
 }
 
 // NetworkInterfaceType enumerates network interface types.

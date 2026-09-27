@@ -188,6 +188,9 @@ type CreateVMRequest struct {
 	NodeID       string           `json:"node_id,omitempty" validate:"omitempty,uuid"` // Optional: specific node
 	PlanID       string           `json:"plan_id,omitempty" validate:"omitempty,uuid"` // Optional: derive resources from a plan
 	IPPoolID     string           `json:"ip_pool_id,omitempty" validate:"omitempty,uuid"`
+	// IPv6PoolID, when set, delegates one routed prefix (a /64) from that pool
+	// to the VM alongside its IPv4 address. Requires an IPv4 pool.
+	IPv6PoolID string `json:"ipv6_pool_id,omitempty" validate:"omitempty,uuid"`
 	// VPCID places the VM inside a tenant VPC. It resolves to that VPC's private
 	// address pool, so a customer never has to know pool or bridge names — and
 	// cannot reach another tenant's.
@@ -467,7 +470,24 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		}
 	}
 
+	// A delegated IPv6 prefix travels on the IPv4 interface's config, so it
+	// needs one to travel on. Checked before the transaction so a bad pool id
+	// fails fast instead of after the VM row exists.
+	if req.IPv6PoolID != "" {
+		if len(poolCandidates) == 0 {
+			return nil, fmt.Errorf("ipv6_pool_id requires an IPv4 pool (ip_pool_id)")
+		}
+		v6pool, perr := s.ipamService.GetPool(ctx, req.IPv6PoolID)
+		if perr != nil {
+			return nil, fmt.Errorf("failed to load selected IPv6 pool: %w", perr)
+		}
+		if !v6pool.IsDelegated() || v6pool.Family != models.IPFamilyIPv6 {
+			return nil, ErrPoolNotDelegated
+		}
+	}
+
 	var allocatedIP *models.IPAddress
+	var allocatedV6 *models.VMIPv6Prefix
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Lane D admission: take the per-user lock and re-check quota against
 		// authoritative in-tx usage BEFORE inserting the VM row, so concurrent
@@ -534,6 +554,13 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 				return fmt.Errorf("failed to create network record: %w", err)
 			}
 		}
+		if req.IPv6PoolID != "" {
+			p, err := s.ipamService.AllocateIPv6PrefixInTx(ctx, tx, req.IPv6PoolID, vm.ID, nodeID)
+			if err != nil {
+				return err
+			}
+			allocatedV6 = p
+		}
 		return nil
 	}); err != nil {
 		return nil, err
@@ -576,6 +603,11 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 				params["bridge"] = pool.Bridge
 			}
 		}
+	}
+	if allocatedV6 != nil {
+		params["ipv6_prefix"] = allocatedV6.Prefix
+		params["ipv6_address"] = allocatedV6.Address()
+		params["ipv6_gateway"] = models.IPv6LinkLocalGateway
 	}
 
 	// VPC attach: put the NIC on a managed/private network's bridge. Overrides the
@@ -929,6 +961,9 @@ func (s *VMService) cleanupVMAllocation(ctx context.Context, vmID string, delete
 		if err := s.ipamService.ReleaseAddressesByVMIDInTx(ctx, tx, vmID); err != nil {
 			return err
 		}
+		if err := s.ipamService.ReleaseIPv6PrefixByVMInTx(ctx, tx, vmID); err != nil {
+			return err
+		}
 		if err := s.networkRepo.WithDB(tx).DeleteByVMID(ctx, vmID); err != nil {
 			return err
 		}
@@ -1021,6 +1056,8 @@ type GetVMResponse struct {
 	Template *models.OSTemplate   `json:"template,omitempty"`
 	Status   *pb.VMStatusResponse `json:"agent_status,omitempty"`
 	VNC      *VNCConfig           `json:"vnc,omitempty"`
+	// IPv6 is the VM's delegated routed prefix, nil when it has none.
+	IPv6 *models.VMIPv6Prefix `json:"ipv6,omitempty"`
 }
 
 // GetVM retrieves a VM by ID with details and status
@@ -1110,6 +1147,9 @@ func (s *VMService) GetVM(ctx context.Context, vmID string, includeAgentStatus b
 		response.VNC = &VNCConfig{
 			Port: *vm.VNCPort,
 		}
+	}
+	if s.ipamService != nil {
+		response.IPv6, _ = s.ipamService.GetVMIPv6Prefix(ctx, vm.ID)
 	}
 
 	// Get agent status if requested and the VM is in a stable state. Skip while
@@ -2239,6 +2279,11 @@ func (s *VMService) RebuildVM(ctx context.Context, req *RebuildVMRequest) (*Rebu
 		"netmask":        prefix,
 		"bridge":         bridge,
 		"vlan_id":        vlan,
+	}
+	if p, perr := vmIPv6Prefix(ctx, s.db, vm.ID); perr == nil && p != nil {
+		params["ipv6_prefix"] = p.Prefix
+		params["ipv6_address"] = p.Address()
+		params["ipv6_gateway"] = models.IPv6LinkLocalGateway
 	}
 	paramsJSON, _ := json.Marshal(params)
 

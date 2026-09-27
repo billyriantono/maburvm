@@ -210,6 +210,19 @@ func (r *IPAMRepository) ReleaseAddressesByVMID(ctx context.Context, vmID string
 		}).Error
 }
 
+// ReleaseIPv6PrefixesByVMID returns a VM's delegated IPv6 prefix to its pool.
+// Called from every delete path, because a soft-deleted VM row does not fire
+// the FK cascade.
+func (r *IPAMRepository) ReleaseIPv6PrefixesByVMID(ctx context.Context, vmID string) error {
+	return r.db.WithContext(ctx).Where("vm_id = ?", vmID).Delete(&models.VMIPv6Prefix{}).Error
+}
+
+// GetPoolNodeIDs exposes the junction-table lookup to callers that already
+// hold a pool row (e.g. one loaded FOR UPDATE inside a transaction).
+func (r *IPAMRepository) GetPoolNodeIDs(ctx context.Context, poolID string) ([]string, error) {
+	return r.getPoolNodeIDs(ctx, poolID)
+}
+
 func (r *IPAMRepository) UpdateAddress(ctx context.Context, address *models.IPAddress) error {
 	return r.db.WithContext(ctx).Save(address).Error
 }

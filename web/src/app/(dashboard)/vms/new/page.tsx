@@ -69,6 +69,7 @@ const step3Schema = z.object({
 
 const step4Schema = z.object({
   ipPoolId: z.string().optional(),
+  ipv6PoolId: z.string().optional(),
   ipAddress: z.string()
     .optional()
     .refine((val) => !val || /^(\d{1,3}\.){3}\d{1,3}$/.test(val), {
@@ -191,6 +192,7 @@ function NewVMForm() {
       cpuModel: "",
       userData: "",
       ipPoolId: "",
+      ipv6PoolId: "",
       managedNetworkId: "",
       ipAddress: "",
       bandwidthMbps: 100,
@@ -205,7 +207,7 @@ function NewVMForm() {
   // allocate a non-routable IP (the backend rejects it). A pool with no node
   // binding works on any node; a node-bound pool only shows once its node is
   // selected (node is picked in step 1, before this step 4).
-  const availablePools = useMemo(() => {
+  const nodePools = useMemo(() => {
     const nodeId = watchedValues.nodeId
     return pools.filter((p) => {
       const bound = p.node_ids && p.node_ids.length > 0 ? p.node_ids : p.node_id ? [p.node_id] : []
@@ -213,13 +215,20 @@ function NewVMForm() {
       return !!nodeId && bound.includes(nodeId) // node-bound → only when that node is selected
     })
   }, [pools, watchedValues.nodeId])
+  // Address pools give the VM its IPv4; delegating IPv6 pools give it a routed
+  // /64 on top, which rides on that IPv4 interface.
+  const availablePools = useMemo(() => nodePools.filter((p) => !p.delegated_prefix_len), [nodePools])
+  const availableV6Pools = useMemo(() => nodePools.filter((p) => p.family === "ipv6" && p.delegated_prefix_len), [nodePools])
 
   // Clear the IP pool if a node change made the current selection unavailable.
   useEffect(() => {
     if (watchedValues.ipPoolId && !availablePools.some((p) => p.id === watchedValues.ipPoolId)) {
       setValue("ipPoolId", "")
     }
-  }, [availablePools, watchedValues.ipPoolId, setValue])
+    if (watchedValues.ipv6PoolId && (!watchedValues.ipPoolId || !availableV6Pools.some((p) => p.id === watchedValues.ipv6PoolId))) {
+      setValue("ipv6PoolId", "")
+    }
+  }, [availablePools, availableV6Pools, watchedValues.ipPoolId, watchedValues.ipv6PoolId, setValue])
 
   const handleNext = async () => {
     let fieldsToValidate: (keyof FormData)[] = []
@@ -289,6 +298,7 @@ function NewVMForm() {
         // Network: allocate from a managed pool (a specific IP is only valid
         // alongside a pool selection).
         ip_pool_id: data.ipPoolId || undefined,
+        ipv6_pool_id: data.ipPoolId && data.ipv6PoolId ? data.ipv6PoolId : undefined,
         requested_ip: data.ipPoolId && data.ipAddress ? data.ipAddress : undefined,
         managed_network_id: data.managedNetworkId || undefined,
         bandwidth_mbps: data.bandwidthMbps,
@@ -1104,6 +1114,40 @@ function NewVMForm() {
                   Leave blank to auto-allocate the next free IP from the selected pool.
                 </p>
               </div>
+
+              {/* Routed IPv6 (optional): a /64 per VM from a delegating pool */}
+              {availableV6Pools.length > 0 && (
+                <div className="space-y-2">
+                  <label htmlFor="ipv6PoolId" className="text-sm font-medium">
+                    IPv6 Pool <span className="text-muted-foreground">(optional — routes a /64 to the VM)</span>
+                  </label>
+                  <Controller
+                    name="ipv6PoolId"
+                    control={control}
+                    render={({ field }) => (
+                      <Select onValueChange={field.onChange} value={field.value} disabled={!watchedValues.ipPoolId}>
+                        <SelectTrigger id="ipv6PoolId" className="h-12">
+                          <SelectValue placeholder={watchedValues.ipPoolId ? "No IPv6" : "Select an IP pool first"} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {availableV6Pools.map((pool) => (
+                            <SelectItem key={pool.id} value={pool.id}>
+                              <div className="flex items-center gap-2">
+                                <Network className="w-4 h-4" />
+                                <span>{pool.name}</span>
+                                <span className="text-muted-foreground text-sm">({pool.cidr} → /{pool.delegated_prefix_len} per VM)</span>
+                              </div>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    The guest gets the prefix&apos;s ::1 with fe80::1 as gateway; it needs an IPv4 pool to ride on.
+                  </p>
+                </div>
+              )}
 
               {/* Bandwidth */}
               <div className="space-y-3">

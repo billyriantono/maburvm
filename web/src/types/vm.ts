@@ -47,6 +47,11 @@ export interface VM {
   vnc_port?: number;
   rescue_mode?: boolean;
   console_enabled?: boolean;
+  /** Routed IPv6 delegated to the VM (a /64); absent when it has none. The
+   *  guest uses ipv6_address with ipv6_gateway (the node's fe80::1). */
+  ipv6_prefix?: string;
+  ipv6_address?: string;
+  ipv6_gateway?: string;
   created_at: string;
   updated_at: string;
 }
@@ -86,6 +91,7 @@ export interface CreateVMRequest {
   plan_id?: string;        // derive resources from a VPS plan (flavor)
   resources: Resources;
   ip_pool_id?: string;     // allocate an IP from this managed pool
+  ipv6_pool_id?: string;   // also delegate a /64 from this IPv6 pool (needs ip_pool_id)
   requested_ip?: string;   // specific IP within the pool (optional)
   bandwidth_mbps?: number; // network rate cap
   vlan_id?: number;        // 802.1Q VLAN tag

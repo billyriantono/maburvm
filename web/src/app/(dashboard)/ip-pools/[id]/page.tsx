@@ -257,7 +257,10 @@ export default function IPPoolDetailPage() {
               <Badge variant={pool.family === "ipv4" ? "secondary" : "warning"}>{pool.family}</Badge>
             </h1>
             <p className="text-sm text-muted-foreground mt-1">
-              {pool.cidr || "No CIDR"} • Gateway {pool.gateway || "-"} • Bridge {pool.bridge || "node default"} • Node {poolNodeLabel} • {addresses?.length ?? 0} addresses
+              {pool.cidr || "No CIDR"} • Gateway {pool.gateway || "-"} • Bridge {pool.bridge || "node default"} • Node {poolNodeLabel} •{" "}
+              {pool.delegated_prefix_len
+                ? `${pool.delegated_count ?? 0} /${pool.delegated_prefix_len} prefixes delegated`
+                : `${addresses?.length ?? 0} addresses`}
             </p>
           </div>
           <Button variant="secondary" size="sm" className="gap-1 shrink-0" onClick={openEdit}>
@@ -296,6 +299,18 @@ export default function IPPoolDetailPage() {
         )}
       </div>
 
+      {/* A delegated pool has no address rows: each VM holds a whole prefix,
+          computed on demand, so there is nothing to list, add or generate. */}
+      {pool.delegated_prefix_len ? (
+        <div className="rounded-lg border bg-card shadow-sm p-6">
+          <p className="text-sm font-medium">Routed IPv6 — one /{pool.delegated_prefix_len} per VM</p>
+          <p className="text-3xl font-semibold mt-2">{pool.delegated_count ?? 0}</p>
+          <p className="text-sm text-muted-foreground mt-1">
+            prefixes delegated out of {pool.cidr}. The first /{pool.delegated_prefix_len} is the router↔node link
+            network and is never handed out. Assign or release a prefix from a VM&apos;s Network tab.
+          </p>
+        </div>
+      ) : (<>
       {/* Actions — grouped + in their own section for clarity */}
       <div className="rounded-lg border bg-card shadow-sm mb-4 overflow-hidden">
         <div className="p-3 bg-muted text-muted-foreground font-medium text-xs">Actions</div>
@@ -411,6 +426,7 @@ export default function IPPoolDetailPage() {
           </div>
         )}
       </div>
+      </>)}
     </div>
   )
 }

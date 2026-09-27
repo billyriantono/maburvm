@@ -46,6 +46,9 @@ type CreateIPPoolRequest struct {
 	RangeEnd    string   `json:"range_end,omitempty"`
 	Description string   `json:"description,omitempty"`
 	Orderable   bool     `json:"orderable,omitempty"`
+	// DelegatedPrefixLen (IPv6 only) makes the pool hand out one /<n> per VM.
+	// The gateway defaults to fe80::1, which lives on the node, not in the CIDR.
+	DelegatedPrefixLen *int `json:"delegated_prefix_len,omitempty"`
 }
 
 // UpdateIPPoolRequest carries editable metadata for an existing pool. Every
@@ -60,6 +63,9 @@ type UpdateIPPoolRequest struct {
 	Description *string   `json:"description,omitempty"`
 	NodeIDs     *[]string `json:"node_ids,omitempty"`
 	Orderable   *bool     `json:"orderable,omitempty"`
+	// DelegatedPrefixLen may only change while the pool has delegated nothing:
+	// existing prefixes were computed from the old length.
+	DelegatedPrefixLen *int `json:"delegated_prefix_len,omitempty"`
 }
 
 type CreateIPAddressRequest struct {
@@ -88,23 +94,33 @@ func (s *IPAMService) CreatePool(ctx context.Context, req *CreateIPPoolRequest) 
 	if err := validateOptionalIPAMFields(family, req.CIDR, req.Gateway, req.RangeStart, req.RangeEnd); err != nil {
 		return nil, err
 	}
+	if req.DelegatedPrefixLen != nil {
+		if err := validateDelegatedPrefixLen(family, req.CIDR, *req.DelegatedPrefixLen); err != nil {
+			return nil, err
+		}
+		if req.Gateway == "" {
+			req.Gateway = models.IPv6LinkLocalGateway
+		}
+	}
 	pool := &models.IPPool{
-		Name:        req.Name,
-		NodeIDs:     req.NodeIDs,
-		Family:      family,
-		CIDR:        req.CIDR,
-		Gateway:     req.Gateway,
-		Bridge:      req.Bridge,
-		RangeStart:  req.RangeStart,
-		RangeEnd:    req.RangeEnd,
-		Description: req.Description,
-		Orderable:   req.Orderable,
+		Name:               req.Name,
+		NodeIDs:            req.NodeIDs,
+		Family:             family,
+		CIDR:               req.CIDR,
+		Gateway:            req.Gateway,
+		Bridge:             req.Bridge,
+		RangeStart:         req.RangeStart,
+		RangeEnd:           req.RangeEnd,
+		Description:        req.Description,
+		Orderable:          req.Orderable,
+		DelegatedPrefixLen: req.DelegatedPrefixLen,
 	}
 	if err := s.repo.CreatePool(ctx, pool); err != nil {
 		return nil, err
 	}
 
-	// Auto-generate IP addresses from range or CIDR
+	// Auto-generate IP addresses from range or CIDR (none for a delegated pool:
+	// its prefixes are computed on demand).
 	addresses := generatePoolAddresses(pool)
 	for i := range addresses {
 		addresses[i].PoolID = pool.ID
@@ -153,6 +169,19 @@ func (s *IPAMService) UpdatePool(ctx context.Context, id string, req *UpdateIPPo
 	if req.Orderable != nil {
 		pool.Orderable = *req.Orderable
 	}
+	if req.DelegatedPrefixLen != nil {
+		if err := validateDelegatedPrefixLen(pool.Family, pool.CIDR, *req.DelegatedPrefixLen); err != nil {
+			return nil, err
+		}
+		s.countDelegated(ctx, pool)
+		if pool.DelegatedCount > 0 && (pool.DelegatedPrefixLen == nil || *pool.DelegatedPrefixLen != *req.DelegatedPrefixLen) {
+			return nil, fmt.Errorf("cannot change the delegated prefix length while %d prefixes are assigned", pool.DelegatedCount)
+		}
+		pool.DelegatedPrefixLen = req.DelegatedPrefixLen
+		if pool.Gateway == "" {
+			pool.Gateway = models.IPv6LinkLocalGateway
+		}
+	}
 	if err := s.repo.UpdatePool(ctx, pool); err != nil {
 		return nil, err
 	}
@@ -198,6 +227,7 @@ func (s *IPAMService) GetPool(ctx context.Context, id string) (*models.IPPool, e
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrIPPoolNotFound
 	}
+	s.countDelegated(ctx, pool)
 	return pool, err
 }
 
@@ -214,6 +244,9 @@ func (s *IPAMService) GenerateAddresses(ctx context.Context, poolID string) (int
 		return 0, fmt.Errorf("pool not found: %w", err)
 	}
 
+	if pool.IsDelegated() {
+		return 0, ErrPoolNotDelegated
+	}
 	addresses := generatePoolAddresses(pool)
 	if len(addresses) == 0 {
 		return 0, fmt.Errorf("cannot generate addresses: pool has no CIDR or range defined")
@@ -287,6 +320,9 @@ func (s *IPAMService) AddAddress(ctx context.Context, poolID string, req *Create
 	}
 	if family != pool.Family {
 		return nil, ErrInvalidIPFamily
+	}
+	if pool.IsDelegated() {
+		return nil, ErrPoolNotDelegated
 	}
 	if net.ParseIP(req.Address) == nil {
 		return nil, ErrInvalidIPAddress
@@ -642,6 +678,11 @@ func ipFamily(ip net.IP) string {
 const maxAutoGenerateAddresses = 1024
 
 func generatePoolAddresses(pool *models.IPPool) []models.IPAddress {
+	// A delegated pool hands out whole prefixes, computed on demand; there are
+	// no per-address rows to generate (and a /48 would be 2^80 of them).
+	if pool.IsDelegated() {
+		return nil
+	}
 	var startIP, endIP net.IP
 
 	if pool.RangeStart != "" && pool.RangeEnd != "" {

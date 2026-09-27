@@ -406,6 +406,32 @@ export function useAssignVMIP(vmId: string) {
   })
 }
 
+// Routed IPv6: delegate the next free /64 of a delegated pool to the VM, or
+// hand it back. Both re-push the host config and rewrite the guest's network.
+export function useAssignVMIPv6(vmId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<void, Error, { pool_id: string }>({
+    mutationFn: async (body) => {
+      await api.post(`/api/v1/vms/${vmId}/ipv6`, body)
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['vms', 'detail', vmId] })
+    },
+  })
+}
+
+export function useReleaseVMIPv6(vmId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<void, Error, void>({
+    mutationFn: async () => {
+      await api.delete(`/api/v1/vms/${vmId}/ipv6`)
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['vms', 'detail', vmId] })
+    },
+  })
+}
+
 export function useReleaseVMIP(vmId: string) {
   const queryClient = useQueryClient()
   return useMutation<void, Error, string>({

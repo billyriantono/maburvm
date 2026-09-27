@@ -487,6 +487,9 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 			SSHPublicKey  string            `json:"ssh_public_key"`
 			UserData      string            `json:"user_data"`
 			Metadata      map[string]string `json:"metadata"`
+			IPv6Prefix    string            `json:"ipv6_prefix"`
+			IPv6Address   string            `json:"ipv6_address"`
+			IPv6Gateway   string            `json:"ipv6_gateway"`
 			// PoolPath is the storage pool the panel placed this VM in. Empty
 			// leaves the choice to the node, which defaults to its root
 			// filesystem — fine as a fallback, wrong as a destination.
@@ -543,14 +546,18 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 				NetworkConfig: &pb.VMNetworkConfig{
 					Interfaces: []*pb.NetworkInterface{
 						{
-							Name:       "eth0",
-							Type:       pb.NetworkInterfaceType_NETWORK_INTERFACE_TYPE_BRIDGE,
-							BridgeName: params.Bridge,
-							MacAddress: params.MACAddress,
-							IpAddress:  params.IPAddress,
-							Netmask:    int32(params.Netmask),
-							Gateway:    params.Gateway,
-							UseDhcp:    params.IPAddress == "",
+							Name:        "eth0",
+							Type:        pb.NetworkInterfaceType_NETWORK_INTERFACE_TYPE_BRIDGE,
+							BridgeName:  params.Bridge,
+							MacAddress:  params.MACAddress,
+							IpAddress:   params.IPAddress,
+							Netmask:     int32(params.Netmask),
+							Gateway:     params.Gateway,
+							UseDhcp:     params.IPAddress == "",
+							Ipv6Prefix:  params.IPv6Prefix,
+							Ipv6Address: params.IPv6Address,
+							Ipv6Gateway: params.IPv6Gateway,
+							Ipv6Dns:     ipv6DNSFor(params.IPv6Prefix),
 						},
 					},
 					BandwidthLimits: &pb.BandwidthLimit{
@@ -789,19 +796,26 @@ func (w *VMOperationWorker) applyPostCreateNetworkConfig(ctx context.Context, cl
 		w.logger.WarnContext(ctx, "post-create: failed to load firewall rules", "vm_id", vm.ID, "error", err)
 		return
 	}
-	if len(rules) == 0 {
-		// Nothing to enforce, and an empty ReplaceAll would still be a no-op
-		// firewall-wise — skip the round-trip.
-		return
-	}
-
-	params, err := json.Marshal(map[string]interface{}{
+	paramMap := map[string]interface{}{
 		"ip_address":      network.IPAddress,
 		"bandwidth_limit": network.BandwidthLimit,
 		"vlan_id":         network.VLANID,
 		"anti_spoofing":   network.AntiSpoofing,
 		"firewall_rules":  rules,
-	})
+	}
+	// The routed IPv6 prefix is host state too (neighbour + route + ip6tables),
+	// so it ships with the same post-create apply.
+	var v6 models.VMIPv6Prefix
+	if err := globalWorkerContext.DB.WithContext(ctx).Where("vm_id = ?", vm.ID).First(&v6).Error; err == nil {
+		paramMap["ipv6_prefix"] = v6.Prefix
+		paramMap["ipv6_address"] = v6.Address()
+		paramMap["ipv6_gateway"] = models.IPv6LinkLocalGateway
+	} else if len(rules) == 0 {
+		// Nothing to enforce, and an empty ReplaceAll would still be a no-op
+		// firewall-wise — skip the round-trip.
+		return
+	}
+	params, err := json.Marshal(paramMap)
 	if err != nil {
 		return
 	}
@@ -830,6 +844,9 @@ func (w *VMOperationWorker) cleanupDeletedVM(ctx context.Context, vmID string) e
 		if ipam := globalWorkerContext.IPAMRepo; ipam != nil {
 			if err := ipam.WithDB(tx).ReleaseAddressesByVMID(ctx, vmID); err != nil {
 				return fmt.Errorf("release IPs: %w", err)
+			}
+			if err := ipam.WithDB(tx).ReleaseIPv6PrefixesByVMID(ctx, vmID); err != nil {
+				return fmt.Errorf("release IPv6 prefix: %w", err)
 			}
 		}
 		if net := globalWorkerContext.NetworkRepo; net != nil {
@@ -874,6 +891,9 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 		Netmask        int      `json:"netmask"`
 		ConfigureGuest bool     `json:"configure_guest"`
 		ExtraIPs       []string `json:"extra_ips"`
+		IPv6Prefix     string   `json:"ipv6_prefix"`
+		IPv6Address    string   `json:"ipv6_address"`
+		IPv6Gateway    string   `json:"ipv6_gateway"`
 		FirewallRules  []struct {
 			Direction string `json:"direction"`
 			Action    string `json:"action"`
@@ -920,6 +940,10 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 		VlanId:       vlanID,
 		Netmask:      int32(params.Netmask),
 		Gateway:      params.Gateway,
+		Ipv6Prefix:   params.IPv6Prefix,
+		Ipv6Address:  params.IPv6Address,
+		Ipv6Gateway:  params.IPv6Gateway,
+		Ipv6Dns:      ipv6DNSFor(params.IPv6Prefix),
 	}
 	interfaces := []*pb.NetworkInterface{iface}
 	for i, ip := range params.ExtraIPs {
@@ -988,6 +1012,15 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 	}
 
 	return nil
+}
+
+// ipv6DNSFor returns the resolvers a guest with a delegated prefix gets; nil
+// when there is no prefix, so v4-only messages stay exactly as before.
+func ipv6DNSFor(prefix string) []string {
+	if prefix == "" {
+		return nil
+	}
+	return models.DefaultIPv6DNS
 }
 
 // modelDirectionToProto converts model direction string to proto enum

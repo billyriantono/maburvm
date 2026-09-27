@@ -92,6 +92,19 @@ func GetVMInterfaceMAC(uuidStr string) (string, error) {
 	return "", fmt.Errorf("no network interface with a MAC found for VM %s", uuidStr)
 }
 
+// GetVMInterfaceBridge returns the host bridge the VM's first bridged
+// interface is plugged into.
+func GetVMInterfaceBridge(uuidStr string) (string, error) {
+	domain, err := domainXML(uuidStr)
+	if err != nil {
+		return "", err
+	}
+	if iface := primaryBridgedInterface(domain); iface != nil {
+		return iface.Source.Bridge.Bridge, nil
+	}
+	return "", fmt.Errorf("no bridged interface found for VM %s", uuidStr)
+}
+
 // GetVMPrimaryDiskPath returns the backing file of the VM's first disk (not
 // cdrom) device — the root disk the guest OS lives on.
 func GetVMPrimaryDiskPath(uuidStr string) (string, error) {

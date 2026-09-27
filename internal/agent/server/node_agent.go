@@ -459,18 +459,56 @@ const (
 	guestAnnounceUnitPath = "/etc/systemd/system/maburvm-announce.service"
 )
 
+// guestIPv6 is the routed IPv6 a guest is given: its own address in CIDR form
+// ("2001:db8:20:5::1/64"), the link-local gateway and resolvers. A zero value
+// means no IPv6 and leaves the rendered config exactly as before.
+type guestIPv6 struct {
+	Address string
+	Gateway string
+	DNS     []string
+}
+
+func guestIPv6From(address, gateway string, dns []string) guestIPv6 {
+	if address == "" {
+		return guestIPv6{}
+	}
+	if gateway == "" {
+		gateway = models.IPv6LinkLocalGateway
+	}
+	if len(dns) == 0 {
+		dns = models.DefaultIPv6DNS
+	}
+	return guestIPv6{Address: address, Gateway: gateway, DNS: dns}
+}
+
 // guestNetworkFile is the systemd-networkd unit that gives the guest its static
 // address; it matches the NIC by MAC so interface naming never matters.
-func guestNetworkFile(mac, ip string, prefix int, gateway string) string {
+//
+// With IPv6 the guest also gets its ::1 and the fe80::1 gateway. RA is refused
+// (there is none to accept, and a rogue one must not win) and link-local
+// generation is pinned to EUI-64: the host's route points at the MAC-derived
+// fe80:: address, so a guest that picked a stable-privacy link-local would be
+// unreachable. Older networkd logs an unknown-key warning for that line and
+// carries on, which is fine since it already defaults to EUI-64.
+func guestNetworkFile(mac, ip string, prefix int, gateway string, v6 guestIPv6) string {
 	var b strings.Builder
 	b.WriteString("[Match]\n")
 	b.WriteString(fmt.Sprintf("MACAddress=%s\n\n", strings.ToLower(mac)))
+	if v6.Address != "" {
+		b.WriteString("[Link]\nIPv6LinkLocalAddressGenerationMode=eui64\n\n")
+	}
 	b.WriteString("[Network]\n")
 	b.WriteString(fmt.Sprintf("Address=%s/%d\n", ip, prefix))
 	if gateway != "" {
 		b.WriteString(fmt.Sprintf("Gateway=%s\n", gateway))
 	}
+	if v6.Address != "" {
+		b.WriteString(fmt.Sprintf("Address=%s\nGateway=%s\nIPv6AcceptRA=no\n", v6.Address, v6.Gateway))
+	}
 	b.WriteString("DNS=1.1.1.1\nDNS=8.8.8.8\n")
+	for _, d := range v6.DNS {
+		b.WriteString(fmt.Sprintf("DNS=%s\n", d))
+	}
 	return b.String()
 }
 
@@ -500,7 +538,7 @@ func guestAnnounceUnit(gateway string) string {
 // Calls for the same VM are serialized, and nothing is shut down once ctx is
 // done: a retry that arrives while an earlier call is still waiting on the
 // guest must not have that earlier call power-cycle a VM it already fixed.
-func (s *NodeAgentService) applyGuestNetwork(ctx context.Context, vmID, ip string, prefix int, gateway string) error {
+func (s *NodeAgentService) applyGuestNetwork(ctx context.Context, vmID, ip string, prefix int, gateway string, v6 guestIPv6) error {
 	lock, _ := guestNetworkLocks.LoadOrStore(vmID, &sync.Mutex{})
 	lock.(*sync.Mutex).Lock()
 	defer lock.(*sync.Mutex).Unlock()
@@ -516,7 +554,7 @@ func (s *NodeAgentService) applyGuestNetwork(ctx context.Context, vmID, ip strin
 	if err != nil {
 		return err
 	}
-	netFile := guestNetworkFile(mac, ip, prefix, gateway)
+	netFile := guestNetworkFile(mac, ip, prefix, gateway, v6)
 	unit := guestAnnounceUnit(gateway)
 
 	if info.Status == libvirt.VMStatusRunning {
@@ -717,7 +755,8 @@ func injectGuestConfig(diskPath, hostname string, vmCfg libvirt.VMConfig, rootPa
 			return fmt.Errorf("failed to stage network config: %w", err)
 		}
 		tmpNet = f.Name()
-		if _, err := f.WriteString(guestNetworkFile(vmCfg.MACAddress, vmCfg.IPAddress, vmCfg.Netmask, vmCfg.Gateway)); err != nil {
+		if _, err := f.WriteString(guestNetworkFile(vmCfg.MACAddress, vmCfg.IPAddress, vmCfg.Netmask, vmCfg.Gateway,
+			guestIPv6From(vmCfg.IPv6Address, vmCfg.IPv6Gateway, vmCfg.IPv6DNS))); err != nil {
 			f.Close()
 			os.Remove(tmpNet)
 			return fmt.Errorf("failed to write staged network config: %w", err)
@@ -1099,6 +1138,10 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 			vmCfg.Netmask = int(iface.Netmask)
 			vmCfg.Gateway = iface.Gateway
 			vmCfg.AntiSpoofing = iface.AntiSpoofing
+			vmCfg.IPv6Prefix = iface.Ipv6Prefix
+			vmCfg.IPv6Address = iface.Ipv6Address
+			vmCfg.IPv6Gateway = iface.Ipv6Gateway
+			vmCfg.IPv6DNS = iface.Ipv6Dns
 		}
 		if cfg.NetworkConfig.BandwidthLimits != nil {
 			vmCfg.BandwidthMbps = int(cfg.NetworkConfig.BandwidthLimits.EgressRateMbps)
@@ -1131,6 +1174,9 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 		IPAddress:    vmCfg.IPAddress,
 		Prefix:       vmCfg.Netmask,
 		Gateway:      vmCfg.Gateway,
+		IPv6Address:  vmCfg.IPv6Address,
+		IPv6Gateway:  vmCfg.IPv6Gateway,
+		IPv6DNS:      vmCfg.IPv6DNS,
 		SSHPublicKey: cfg.SshPublicKey,
 		Password:     cfg.RootPassword,
 		UserData:     cfg.UserData,
@@ -1274,6 +1320,7 @@ func (s *NodeAgentService) rebuildVM(req *pb.VMCommandRequest) error {
 	hostname := req.VmId
 	mac, ip, gateway := "", "", ""
 	prefix := 0
+	var v6 guestIPv6
 	if cfg.Metadata != nil {
 		if h := cfg.Metadata["hostname"]; h != "" {
 			hostname = h
@@ -1285,6 +1332,7 @@ func (s *NodeAgentService) rebuildVM(req *pb.VMCommandRequest) error {
 		ip = iface.IpAddress
 		prefix = int(iface.Netmask)
 		gateway = iface.Gateway
+		v6 = guestIPv6From(iface.Ipv6Address, iface.Ipv6Gateway, iface.Ipv6Dns)
 	}
 	// Match create-time behaviour: a deterministic MAC keyed on the VM ID so the
 	// regenerated network-config still matches the (unchanged) domain NIC.
@@ -1300,6 +1348,9 @@ func (s *NodeAgentService) rebuildVM(req *pb.VMCommandRequest) error {
 		IPAddress:    ip,
 		Prefix:       prefix,
 		Gateway:      gateway,
+		IPv6Address:  v6.Address,
+		IPv6Gateway:  v6.Gateway,
+		IPv6DNS:      v6.DNS,
 		SSHPublicKey: cfg.SshPublicKey,
 		Password:     cfg.RootPassword,
 		UserData:     cfg.UserData,
@@ -2229,13 +2280,39 @@ func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *pb.Netwo
 		})
 	}
 
+	// The primary interface (the one holding internalIP) also carries the VM's
+	// routed IPv6 prefix, if it has one. MAC and bridge come from the domain:
+	// the route's next hop is the guest's MAC-derived link-local, and an
+	// imported VM does not use the panel's deterministic MAC.
+	var primary *pb.NetworkInterface
+	for _, iface := range req.Config.Interfaces {
+		if iface.IpAddress != "" && iface.IpAddress == internalIP {
+			primary = iface
+			break
+		}
+	}
+	var ipv6 *network.IPv6Delegation
+	if primary != nil && primary.Ipv6Prefix != "" {
+		mac, merr := libvirt.GetVMInterfaceMAC(req.VmId)
+		if merr != nil {
+			if mac = primary.MacAddress; mac == "" {
+				mac = generateMAC(req.VmId)
+			}
+		}
+		bridge, berr := libvirt.GetVMInterfaceBridge(req.VmId)
+		if berr != nil {
+			bridge = primary.BridgeName
+		}
+		ipv6 = &network.IPv6Delegation{Prefix: primary.Ipv6Prefix, MAC: mac, Bridge: bridge}
+	}
+
 	// If replace_all, cleanup existing config first
 	if req.ReplaceAll {
 		_ = s.networkMgr.CleanupVMNetwork(req.VmId)
 	}
 
 	// Apply the full network configuration
-	if err := s.networkMgr.SetupVMNetwork(req.VmId, internalIP, vlanID, bandwidthMbps, fwRules, extraIPs...); err != nil {
+	if err := s.networkMgr.SetupVMNetwork(req.VmId, internalIP, vlanID, bandwidthMbps, fwRules, ipv6, extraIPs...); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to apply network config: %v", err)
 	}
 
@@ -2272,6 +2349,17 @@ func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *pb.Netwo
 						req.VmId, iface.IpAddress, mac, vnetIface)
 				}
 			}
+			// Layer 1 follows the addressing too: the IPv6-aware nwfilter when
+			// the VM has a prefix, stock clean-traffic when it lost one, and a
+			// refreshed IP parameter when the address changed. Domains this
+			// feature never touched are left alone (see SyncInterfaceFilter).
+			var v6Prefix string
+			if primary != nil {
+				v6Prefix = primary.Ipv6Prefix
+			}
+			if err := libvirt.SyncInterfaceFilter(req.VmId, iface.IpAddress, v6Prefix); err != nil {
+				log.Printf("[NodeAgent] WARNING: nwfilter not synced for VM %s: %v", req.VmId, err)
+			}
 			break // only apply for primary interface
 		}
 	}
@@ -2284,15 +2372,14 @@ func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *pb.Netwo
 	if req.ConfigureGuest && internalIP != "" {
 		var prefix int
 		var gateway string
-		for _, iface := range req.Config.Interfaces {
-			if iface.IpAddress == internalIP {
-				prefix, gateway = int(iface.Netmask), iface.Gateway
-				break
-			}
+		var v6 guestIPv6
+		if primary != nil {
+			prefix, gateway = int(primary.Netmask), primary.Gateway
+			v6 = guestIPv6From(primary.Ipv6Address, primary.Ipv6Gateway, primary.Ipv6Dns)
 		}
 		if prefix == 0 {
 			log.Printf("[NodeAgent] WARNING: guest reconfigure for VM %s skipped: no prefix for %s", req.VmId, internalIP)
-		} else if err := s.applyGuestNetwork(ctx, req.VmId, internalIP, prefix, gateway); err != nil {
+		} else if err := s.applyGuestNetwork(ctx, req.VmId, internalIP, prefix, gateway, v6); err != nil {
 			return nil, status.Errorf(codes.Internal, "host rules applied but guest reconfiguration failed: %v", err)
 		}
 	}

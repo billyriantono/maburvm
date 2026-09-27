@@ -42,6 +42,37 @@ func TestNetworkConfigDHCPWhenNoIP(t *testing.T) {
 	}
 }
 
+func TestNetworkConfigStaticWithIPv6(t *testing.T) {
+	got := networkConfig(Config{
+		InstanceID:  "vm-6",
+		MACAddress:  "52:54:00:12:34:56",
+		IPAddress:   "192.0.2.58",
+		Prefix:      25,
+		Gateway:     "192.0.2.1",
+		IPv6Address: "2001:db8:20:5::1/64",
+		IPv6Gateway: "fe80::1",
+	})
+	for _, want := range []string{
+		"accept-ra: false",
+		"ipv6-address-generation: eui64",
+		"- 192.0.2.58/25\n      - 2001:db8:20:5::1/64",
+		"- to: default\n        via: 192.0.2.1",
+		"- to: \"::/0\"\n        via: fe80::1\n        on-link: true",
+		"addresses: [1.1.1.1, 8.8.8.8, 2606:4700:4700::1111, 2001:4860:4860::8888]",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("v6 network-config missing %q in:\n%s", want, got)
+		}
+	}
+	// And a v4-only config is unchanged by the feature.
+	v4 := networkConfig(Config{InstanceID: "vm-7", MACAddress: "52:54:00:12:34:56", IPAddress: "192.0.2.58", Prefix: 25, Gateway: "192.0.2.1"})
+	for _, unwanted := range []string{"accept-ra", "::/0", "2606:"} {
+		if strings.Contains(v4, unwanted) {
+			t.Errorf("v4-only config must not contain %q:\n%s", unwanted, v4)
+		}
+	}
+}
+
 func TestMetaDataAndUserData(t *testing.T) {
 	cfg := Config{InstanceID: "vm-3", Hostname: "web01", SSHPublicKey: "ssh-ed25519 AAAA... user@host"}
 

@@ -19,6 +19,10 @@ type Manager struct {
 	mu        sync.RWMutex
 	// vmNetworks tracks network state per VM
 	vmNetworks map[string]*VMNetworkState
+	// ipv6 is every routed prefix this node forwards, by VM id, persisted in
+	// ipv6StatePath: an agent restart or node reboot restores the routes, and a
+	// released or moved prefix is torn down even across restarts.
+	ipv6 map[string]IPv6Delegation
 }
 
 // VMNetworkState holds the network configuration state for a VM
@@ -32,6 +36,8 @@ type VMNetworkState struct {
 	PortForwards     map[int]portForwardEntry
 	FirewallRules    []string // Rule IDs
 	AntiSpoofEnabled bool
+	// IPv6 is the routed prefix the host forwards to this VM, nil when none.
+	IPv6 *IPv6Delegation
 }
 
 // NewManager creates a new network manager with all sub-managers initialized
@@ -76,19 +82,29 @@ func NewManager() (*Manager, error) {
 			"a single compromised guest can exhaust this node's conntrack table", err)
 	}
 
-	return &Manager{
+	m := &Manager{
 		bandwidth:  bwManager,
 		nat:        natManager,
 		firewall:   fwManager,
 		vlan:       vlanManager,
 		antiSpoof:  asManager,
 		vmNetworks: make(map[string]*VMNetworkState),
-	}, nil
+		ipv6:       loadIPv6Delegations(ipv6StatePath()),
+	}
+	for vmID, d := range m.ipv6 { // node reboot: routes and neighbour entries are gone
+		if ll, err := applyIPv6Route(d); err != nil {
+			log.Printf("[NetworkManager] WARNING: restoring IPv6 %s for VM %s: %v", d.Prefix, vmID, err)
+		} else {
+			log.Printf("[NetworkManager] IPv6 %s restored via %s on %s for VM %s", d.Prefix, ll, d.Bridge, vmID)
+		}
+	}
+	return m, nil
 }
 
 // SetupVMNetwork sets up the complete network configuration for a VM
-// This should be called when a VM is started
-func (m *Manager) SetupVMNetwork(vmID string, internalIP string, vlanID int, bandwidthMbps int, rules []models.FirewallRule, extraIPs ...string) error {
+// This should be called when a VM is started. ipv6 (may be nil) is the routed
+// prefix to forward to the guest; it is firewalled with the same rules.
+func (m *Manager) SetupVMNetwork(vmID string, internalIP string, vlanID int, bandwidthMbps int, rules []models.FirewallRule, ipv6 *IPv6Delegation, extraIPs ...string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -99,6 +115,11 @@ func (m *Manager) SetupVMNetwork(vmID string, internalIP string, vlanID int, ban
 		VLANID:       vlanID,
 		Bandwidth:    bandwidthMbps,
 		PortForwards: make(map[int]portForwardEntry),
+		IPv6:         ipv6,
+	}
+	var ipv6Prefix string
+	if ipv6 != nil {
+		ipv6Prefix = ipv6.Prefix
 	}
 
 	// 1. Setup NAT (MASQUERADE)
@@ -136,7 +157,7 @@ func (m *Manager) SetupVMNetwork(vmID string, internalIP string, vlanID int, ban
 			fwRules[i] = FromModelRule(rule)
 			state.FirewallRules = append(state.FirewallRules, rule.ID)
 		}
-		if err := m.firewall.ApplyFirewallRules(vmID, internalIP, fwRules, extraIPs...); err != nil {
+		if err := m.firewall.ApplyFirewallRules(vmID, internalIP, fwRules, ipv6Prefix, extraIPs...); err != nil {
 			// Cleanup on failure
 			_ = m.vlan.RemoveVLAN(vmID, vlanID)
 			_ = m.bandwidth.RemoveBandwidthLimit(vmID)
@@ -144,6 +165,29 @@ func (m *Manager) SetupVMNetwork(vmID string, internalIP string, vlanID int, ban
 			return fmt.Errorf("failed to apply firewall rules: %w", err)
 		}
 		log.Printf("[NetworkManager] %d firewall rules applied to VM %s", len(rules), vmID)
+	}
+
+	// 5. Route the delegated IPv6 prefix to the guest. Idempotent. A prefix the VM
+	//    no longer has (released, or moved to another MAC/bridge) is removed first.
+	if prev, ok := m.ipv6[vmID]; ok && (ipv6 == nil || prev != *ipv6) {
+		if err := removeIPv6Route(prev); err != nil {
+			log.Printf("[NetworkManager] WARNING: removing old IPv6 %s for VM %s: %v", prev.Prefix, vmID, err)
+		}
+		delete(m.ipv6, vmID)
+		m.saveIPv6()
+	}
+	if ipv6 != nil {
+		ll, err := applyIPv6Route(*ipv6)
+		if err != nil {
+			_ = m.firewall.CleanupVM(vmID)
+			_ = m.vlan.RemoveVLAN(vmID, vlanID)
+			_ = m.bandwidth.RemoveBandwidthLimit(vmID)
+			_ = m.nat.RemoveNAT(vmID, internalIP)
+			return fmt.Errorf("failed to route IPv6 prefix: %w", err)
+		}
+		log.Printf("[NetworkManager] IPv6 %s routed via %s on %s for VM %s", ipv6.Prefix, ll, ipv6.Bridge, vmID)
+		m.ipv6[vmID] = *ipv6
+		m.saveIPv6()
 	}
 
 	// Store state
@@ -195,6 +239,15 @@ func (m *Manager) CleanupVMNetwork(vmID string) error {
 		if err := m.nat.CleanupVM(vmID, state.InternalIP); err != nil {
 			errs = append(errs, fmt.Errorf("NAT cleanup: %w", err))
 		}
+	}
+
+	// 6. Remove the IPv6 route + neighbour (persisted, so this works after a restart).
+	if d, ok := m.ipv6[vmID]; ok {
+		if err := removeIPv6Route(d); err != nil {
+			errs = append(errs, fmt.Errorf("IPv6 route cleanup: %w", err))
+		}
+		delete(m.ipv6, vmID)
+		m.saveIPv6()
 	}
 
 	// Remove state
@@ -306,7 +359,11 @@ func (m *Manager) UpdateFirewallRules(vmID string, rules []models.FirewallRule) 
 		fwRules[i] = FromModelRule(rule)
 	}
 
-	if err := m.firewall.ApplyFirewallRules(vmID, state.InternalIP, fwRules, state.ExtraIPs...); err != nil {
+	var ipv6Prefix string
+	if state.IPv6 != nil {
+		ipv6Prefix = state.IPv6.Prefix
+	}
+	if err := m.firewall.ApplyFirewallRules(vmID, state.InternalIP, fwRules, ipv6Prefix, state.ExtraIPs...); err != nil {
 		return fmt.Errorf("failed to apply firewall rules: %w", err)
 	}
 
@@ -340,6 +397,7 @@ func (m *Manager) GetVMNetworkState(vmID string) (*VMNetworkState, bool) {
 		PortForwards:     make(map[int]portForwardEntry),
 		FirewallRules:    make([]string, len(state.FirewallRules)),
 		AntiSpoofEnabled: state.AntiSpoofEnabled,
+		IPv6:             state.IPv6,
 	}
 	for k, v := range state.PortForwards {
 		stateCopy.PortForwards[k] = v
@@ -469,4 +527,12 @@ func (m *Manager) DetachFloatingIPVPC(vpcID, floatingIP string) error {
 	}
 	log.Printf("[NetworkManager] Floating IP %s detached from VPC %s", floatingIP, vpcID)
 	return nil
+}
+
+// saveIPv6 persists m.ipv6; callers hold m.mu. A failed write only costs the
+// restore-after-reboot, so it is logged, not returned.
+func (m *Manager) saveIPv6() {
+	if err := saveIPv6Delegations(ipv6StatePath(), m.ipv6); err != nil {
+		log.Printf("[NetworkManager] WARNING: saving IPv6 delegations: %v", err)
+	}
 }

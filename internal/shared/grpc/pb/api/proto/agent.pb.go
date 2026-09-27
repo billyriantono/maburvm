@@ -3122,7 +3122,14 @@ type NetworkInterface struct {
 	// anti_spoofing enables anti-IP hijacking protection (iptables + ebtables + nwfilter)
 	AntiSpoofing bool `protobuf:"varint,9,opt,name=anti_spoofing,json=antiSpoofing,proto3" json:"anti_spoofing,omitempty"`
 	// vlan_id is the 802.1Q VLAN tag for this interface (0 = untagged)
-	VlanId        int32 `protobuf:"varint,10,opt,name=vlan_id,json=vlanId,proto3" json:"vlan_id,omitempty"`
+	VlanId int32 `protobuf:"varint,10,opt,name=vlan_id,json=vlanId,proto3" json:"vlan_id,omitempty"`
+	// ipv6_prefix is the prefix routed to this VM (e.g. "2001:db8:20:5::/64").
+	// Empty = no IPv6. The host routes it to the guest's EUI-64 link-local
+	// address and the guest binds ipv6_address with ipv6_gateway as its default.
+	Ipv6Prefix    string   `protobuf:"bytes,11,opt,name=ipv6_prefix,json=ipv6Prefix,proto3" json:"ipv6_prefix,omitempty"`
+	Ipv6Address   string   `protobuf:"bytes,12,opt,name=ipv6_address,json=ipv6Address,proto3" json:"ipv6_address,omitempty"`
+	Ipv6Gateway   string   `protobuf:"bytes,13,opt,name=ipv6_gateway,json=ipv6Gateway,proto3" json:"ipv6_gateway,omitempty"`
+	Ipv6Dns       []string `protobuf:"bytes,14,rep,name=ipv6_dns,json=ipv6Dns,proto3" json:"ipv6_dns,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3225,6 +3232,34 @@ func (x *NetworkInterface) GetVlanId() int32 {
 		return x.VlanId
 	}
 	return 0
+}
+
+func (x *NetworkInterface) GetIpv6Prefix() string {
+	if x != nil {
+		return x.Ipv6Prefix
+	}
+	return ""
+}
+
+func (x *NetworkInterface) GetIpv6Address() string {
+	if x != nil {
+		return x.Ipv6Address
+	}
+	return ""
+}
+
+func (x *NetworkInterface) GetIpv6Gateway() string {
+	if x != nil {
+		return x.Ipv6Gateway
+	}
+	return ""
+}
+
+func (x *NetworkInterface) GetIpv6Dns() []string {
+	if x != nil {
+		return x.Ipv6Dns
+	}
+	return nil
 }
 
 // FirewallRule defines a single firewall rule.
@@ -8018,7 +8053,7 @@ const file_api_proto_agent_proto_rawDesc = "" +
 	"\rinternal_port\x18\x02 \x01(\x05R\finternalPort\x12\x1a\n" +
 	"\bprotocol\x18\x03 \x01(\tR\bprotocol\x12\x1f\n" +
 	"\vsource_cidr\x18\x04 \x01(\tR\n" +
-	"sourceCidr\"\xc5\x02\n" +
+	"sourceCidr\"\xc7\x03\n" +
 	"\x10NetworkInterface\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12/\n" +
 	"\x04type\x18\x02 \x01(\x0e2\x1b.agent.NetworkInterfaceTypeR\x04type\x12\x1f\n" +
@@ -8033,7 +8068,12 @@ const file_api_proto_agent_proto_rawDesc = "" +
 	"\buse_dhcp\x18\b \x01(\bR\auseDhcp\x12#\n" +
 	"\ranti_spoofing\x18\t \x01(\bR\fantiSpoofing\x12\x17\n" +
 	"\avlan_id\x18\n" +
-	" \x01(\x05R\x06vlanId\"\x8d\x02\n" +
+	" \x01(\x05R\x06vlanId\x12\x1f\n" +
+	"\vipv6_prefix\x18\v \x01(\tR\n" +
+	"ipv6Prefix\x12!\n" +
+	"\fipv6_address\x18\f \x01(\tR\vipv6Address\x12!\n" +
+	"\fipv6_gateway\x18\r \x01(\tR\vipv6Gateway\x12\x19\n" +
+	"\bipv6_dns\x18\x0e \x03(\tR\aipv6Dns\"\x8d\x02\n" +
 	"\fFirewallRule\x126\n" +
 	"\tdirection\x18\x01 \x01(\x0e2\x18.agent.FirewallDirectionR\tdirection\x12-\n" +
 	"\x06action\x18\x02 \x01(\x0e2\x15.agent.FirewallActionR\x06action\x12\x1a\n" +
