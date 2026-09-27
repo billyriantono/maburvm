@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { useVM, useVMMetrics, useVMMetricsHistory, useVMAction, useDeleteVM, useAttachISO, useDetachISO, useRescueVM, useUnrescueVM, useMigrateVM, useRegenerateVNCPassword, useSetConsoleEnabled, useRepairConsole, useRebuildVM, useResetPassword, useCloneVM, useUpdateVM, useAssignVMIP, useReleaseVMIP } from "@/lib/hooks/use-vms"
+import { useVM, useVMMetrics, useVMMetricsHistory, useVMAction, useDeleteVM, useAttachISO, useDetachISO, useRescueVM, useUnrescueVM, useMigrateVM, useRegenerateVNCPassword, useSetConsoleEnabled, useRepairConsole, useRebuildVM, useResetPassword, useCloneVM, useUpdateVM, useAssignVMIP, useReleaseVMIP, useAssignVMIPv6, useReleaseVMIPv6 } from "@/lib/hooks/use-vms"
 import { useIPPools } from "@/lib/hooks/use-ipam"
 import { DeleteProgressDialog } from "@/components/vm-delete-progress"
 import { VMNameEditor } from "@/components/vm-name-editor"
@@ -523,6 +523,11 @@ export default function VMDetailPage() {
   const assignIP = useAssignVMIP(vmId)
   const releaseIP = useReleaseVMIP(vmId)
   const [assignIPOpen, setAssignIPOpen] = useState(false)
+  // Routed IPv6 (/64 per VM) — only pools that delegate, on this VM's node.
+  const assignIPv6 = useAssignVMIPv6(vmId)
+  const releaseIPv6 = useReleaseVMIPv6(vmId)
+  const [assignIPv6Open, setAssignIPv6Open] = useState(false)
+  const [assignIPv6PoolID, setAssignIPv6PoolID] = useState("")
   // Set once a delete has been accepted; drives the progress dialog.
   const [deletingVM, setDeletingVM] = useState<{ id: string; hostname: string } | null>(null)
   const [assignPoolID, setAssignPoolID] = useState("")
@@ -1743,6 +1748,62 @@ export default function VMDetailPage() {
               )}
             </div>
 
+            {/* Routed IPv6 */}
+            <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
+                  <Network className="w-5 h-5" />IPv6
+                </h2>
+                {vm.ipv6_prefix ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="text-destructive"
+                    disabled={releaseIPv6.isPending}
+                    onClick={async () => {
+                      const ok = await confirm({
+                        title: `Release ${vm.ipv6_prefix}?`,
+                        description:
+                          "The prefix returns to its pool and the node stops routing it. The guest's IPv6 address is removed from its network configuration; a guest without a responsive guest agent is rebooted to apply that.",
+                        confirmLabel: "Release prefix",
+                        destructive: true,
+                        action: () => releaseIPv6.mutateAsync(),
+                      })
+                      if (!ok) return
+                      setToast({ message: "IPv6 prefix released", type: "success" })
+                    }}
+                  >
+                    <Trash2 className="w-4 h-4 mr-1" />Release
+                  </Button>
+                ) : (
+                  <Button type="button" size="sm" variant="outline" onClick={() => setAssignIPv6Open(true)}>
+                    <Plus className="w-4 h-4 mr-1" />Assign /64
+                  </Button>
+                )}
+              </div>
+              {vm.ipv6_prefix ? (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="p-4 border">
+                    <span className="text-xs font-medium text-muted-foreground block">Prefix</span>
+                    <span className="text-sm font-mono font-medium break-all">{vm.ipv6_prefix}</span>
+                  </div>
+                  <div className="p-4 border">
+                    <span className="text-xs font-medium text-muted-foreground block">Address</span>
+                    <span className="text-sm font-mono font-medium break-all">{vm.ipv6_address}</span>
+                  </div>
+                  <div className="p-4 border">
+                    <span className="text-xs font-medium text-muted-foreground block">Gateway</span>
+                    <span className="text-sm font-mono font-medium">{vm.ipv6_gateway}</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="border border-dashed border-gray-300 p-6 text-center text-sm font-medium text-muted-foreground">
+                  No IPv6 prefix delegated
+                </div>
+              )}
+            </div>
+
             {/* Data disks */}
             <DisksCard vmId={vmId} />
 
@@ -2116,6 +2177,65 @@ export default function VMDetailPage() {
               }}
             >
               {assignIP.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "Assign"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delegate a routed /64 to the VM. */}
+      <Dialog open={assignIPv6Open} onOpenChange={setAssignIPv6Open}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Assign an IPv6 /64 to {vm.hostname}</DialogTitle>
+            <DialogDescription>
+              The next free /64 of the pool is routed to this VM. The guest is given the prefix&apos;s ::1
+              with fe80::1 as its gateway, and the firewall rules that apply to its IPv4 address apply to
+              the whole prefix.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-2">
+            <label htmlFor="assign-v6-pool" className="text-sm font-medium">Pool</label>
+            <select
+              id="assign-v6-pool"
+              className="w-full border rounded-md px-3 py-2 text-sm bg-background"
+              value={assignIPv6PoolID}
+              onChange={(e) => setAssignIPv6PoolID(e.target.value)}
+            >
+              <option value="">Select a delegating IPv6 pool</option>
+              {(ipPools ?? [])
+                .filter((p) => p.family === "ipv6" && p.delegated_prefix_len)
+                .filter((p) => {
+                  const bound = p.node_ids && p.node_ids.length > 0 ? p.node_ids : p.node_id ? [p.node_id] : []
+                  return bound.length === 0 || bound.includes(vm.node_id)
+                })
+                .map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.cidr} → /{p.delegated_prefix_len} per VM)
+                  </option>
+                ))}
+            </select>
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setAssignIPv6Open(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              disabled={assignIPv6.isPending || !assignIPv6PoolID}
+              onClick={async () => {
+                try {
+                  await assignIPv6.mutateAsync({ pool_id: assignIPv6PoolID })
+                  setAssignIPv6Open(false)
+                  setAssignIPv6PoolID("")
+                  setToast({ message: "IPv6 prefix assigned", type: "success" })
+                } catch (err) {
+                  setToast({ message: (err as Error).message, type: "error" })
+                }
+              }}
+            >
+              {assignIPv6.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "Assign"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -144,10 +144,27 @@ export default function IPPoolsPage() {
           <h2 className="text-lg font-semibold mb-4">Create IP Pool</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             <Input placeholder="Pool name" value={poolForm.name} onChange={(e) => setPoolForm({ ...poolForm, name: e.target.value })} required />
-            <select value={poolForm.family} onChange={(e) => setPoolForm({ ...poolForm, family: e.target.value as IPFamily })} className="h-10 px-3 rounded-md border border-input bg-background text-sm">
+            <select value={poolForm.family} onChange={(e) => setPoolForm({ ...poolForm, family: e.target.value as IPFamily, delegated_prefix_len: undefined })} className="h-10 px-3 rounded-md border border-input bg-background text-sm">
               <option value="ipv4">IPv4</option>
               <option value="ipv6">IPv6</option>
             </select>
+            {poolForm.family === "ipv6" && (
+              <label className="flex items-center gap-2 px-3 h-10 rounded-md border border-input bg-background text-sm cursor-pointer" title="Each VM gets its own routed /64 out of this prefix; the gateway is the node's fe80::1">
+                <input
+                  type="checkbox"
+                  className="w-4 h-4"
+                  checked={!!poolForm.delegated_prefix_len}
+                  onChange={(e) =>
+                    setPoolForm({
+                      ...poolForm,
+                      delegated_prefix_len: e.target.checked ? 64 : undefined,
+                      gateway: e.target.checked && !poolForm.gateway ? "fe80::1" : poolForm.gateway,
+                    })
+                  }
+                />
+                Delegate a /64 per VM
+              </label>
+            )}
             <div className="rounded-md border border-input bg-background p-2 max-h-32 overflow-y-auto">
               <label className="flex items-center gap-2 px-2 py-1 cursor-pointer rounded-sm hover:bg-muted">
                 <input type="checkbox" checked={!poolForm.node_ids || poolForm.node_ids.length === 0} onChange={() => setPoolForm({ ...poolForm, node_ids: [] })} className="w-4 h-4" />
@@ -164,7 +181,7 @@ export default function IPPoolsPage() {
                 </label>
               ))}
             </div>
-            <Input placeholder="CIDR e.g. 203.0.113.0/24" value={poolForm.cidr ?? ""} onChange={(e) => setPoolForm({ ...poolForm, cidr: e.target.value })} />
+            <Input placeholder={poolForm.delegated_prefix_len ? "CIDR e.g. 2001:db8:20::/48 (split into /64s)" : "CIDR e.g. 203.0.113.0/24"} value={poolForm.cidr ?? ""} onChange={(e) => setPoolForm({ ...poolForm, cidr: e.target.value })} required={!!poolForm.delegated_prefix_len} />
             <Input placeholder="Gateway" value={poolForm.gateway ?? ""} onChange={(e) => setPoolForm({ ...poolForm, gateway: e.target.value })} />
             <Input placeholder="Bridge e.g. br0 (blank = node default)" value={poolForm.bridge ?? ""} onChange={(e) => setPoolForm({ ...poolForm, bridge: e.target.value })} />
             <Input placeholder="Range start" value={poolForm.range_start ?? ""} onChange={(e) => setPoolForm({ ...poolForm, range_start: e.target.value })} />

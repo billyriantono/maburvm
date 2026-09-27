@@ -16,6 +16,11 @@ export interface IPPool {
   description?: string
   /** Customers may order a floating IP from this pool. Off unless an operator opens it. */
   orderable?: boolean
+  /** IPv6 only: the pool hands out one routed /<n> per VM (64) instead of
+   *  single addresses; the gateway is then the node's fe80::1. */
+  delegated_prefix_len?: number
+  /** How many prefixes a delegated pool has handed out (detail view only). */
+  delegated_count?: number
   created_at: string
   updated_at: string
 }
@@ -67,6 +72,7 @@ export interface CreateIPPoolRequest {
   range_start?: string
   range_end?: string
   description?: string
+  delegated_prefix_len?: number
 }
 
 // UpdateIPPoolRequest patches an existing pool's editable metadata. Omitted
@@ -78,6 +84,7 @@ export interface UpdateIPPoolRequest {
   bridge?: string
   description?: string
   node_ids?: string[]
+  delegated_prefix_len?: number
 }
 
 export interface CreateIPAddressRequest {
