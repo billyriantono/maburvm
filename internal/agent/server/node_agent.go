@@ -496,7 +496,18 @@ func guestAnnounceUnit(gateway string) string {
 // edited, a running one is shut down (ACPI, then forced), edited and started.
 // ponytail: only systemd-networkd guests (everything this agent provisions);
 // imports on netplan/NetworkManager keep their address until edited by hand.
-func (s *NodeAgentService) applyGuestNetwork(vmID, ip string, prefix int, gateway string) error {
+//
+// Calls for the same VM are serialized, and nothing is shut down once ctx is
+// done: a retry that arrives while an earlier call is still waiting on the
+// guest must not have that earlier call power-cycle a VM it already fixed.
+func (s *NodeAgentService) applyGuestNetwork(ctx context.Context, vmID, ip string, prefix int, gateway string) error {
+	lock, _ := guestNetworkLocks.LoadOrStore(vmID, &sync.Mutex{})
+	lock.(*sync.Mutex).Lock()
+	defer lock.(*sync.Mutex).Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	mac, err := libvirt.GetVMInterfaceMAC(vmID)
 	if err != nil {
 		return err
@@ -518,15 +529,34 @@ func (s *NodeAgentService) applyGuestNetwork(vmID, ip string, prefix int, gatewa
 			"systemctl enable maburvm-announce.service >/dev/null 2>&1 || true\n" +
 			"systemctl restart systemd-networkd\n" +
 			"systemctl restart --no-block maburvm-announce.service >/dev/null 2>&1 || true\n"
-		if err := guestExec(info.Name, script, 30*time.Second); err == nil {
+		// A guest that booted moments ago has no guest agent answering yet;
+		// give it a minute before falling back to a reboot.
+		err := guestExec(info.Name, script, 30*time.Second)
+		for deadline := time.Now().Add(guestAgentWait); err != nil && time.Now().Before(deadline); {
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("guest agent unavailable and caller gave up; VM left running: %w", ctx.Err())
+			case <-time.After(5 * time.Second):
+			}
+			err = guestExec(info.Name, script, 30*time.Second)
+		}
+		if err == nil {
 			log.Printf("[NodeAgent] guest %s reconfigured live to %s/%d via guest agent", vmID, ip, prefix)
 			return nil
-		} else {
-			log.Printf("[NodeAgent] guest agent unavailable for VM %s (%v); reconfiguring via disk with a reboot", vmID, err)
 		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("guest agent unavailable and caller gave up; VM left running: %w", ctx.Err())
+		}
+		log.Printf("[NodeAgent] guest agent unavailable for VM %s (%v); reconfiguring via disk with a reboot", vmID, err)
 		if err := libvirt.StopVM(vmID, false); err != nil {
 			return fmt.Errorf("shutdown before guest reconfigure: %w", err)
 		}
+		// From here the VM is going down, so it must come back up whatever happens.
+		defer func() {
+			if err := libvirt.StartVM(vmID); err != nil {
+				log.Printf("[NodeAgent] WARNING: failed to start VM %s after guest reconfigure: %v", vmID, err)
+			}
+		}()
 		if !waitVMStatus(vmID, libvirt.VMStatusStopped, 90*time.Second) {
 			log.Printf("[NodeAgent] VM %s ignored ACPI shutdown; forcing off for guest reconfigure", vmID)
 			if err := libvirt.StopVM(vmID, true); err != nil {
@@ -534,11 +564,6 @@ func (s *NodeAgentService) applyGuestNetwork(vmID, ip string, prefix int, gatewa
 			}
 			waitVMStatus(vmID, libvirt.VMStatusStopped, 15*time.Second)
 		}
-		defer func() {
-			if err := libvirt.StartVM(vmID); err != nil {
-				log.Printf("[NodeAgent] WARNING: failed to start VM %s after guest reconfigure: %v", vmID, err)
-			}
-		}()
 	}
 
 	diskPath, err := libvirt.GetVMPrimaryDiskPath(vmID)
@@ -561,6 +586,13 @@ func (s *NodeAgentService) applyGuestNetwork(vmID, ip string, prefix int, gatewa
 	log.Printf("[NodeAgent] guest %s reconfigured on disk to %s/%d", vmID, ip, prefix)
 	return nil
 }
+
+// guestNetworkLocks holds one *sync.Mutex per VM ID for applyGuestNetwork.
+var guestNetworkLocks sync.Map
+
+// guestAgentWait is how long a running guest's qemu-guest-agent gets to answer
+// before an address change falls back to editing the disk with a reboot.
+const guestAgentWait = 60 * time.Second
 
 // waitVMStatus polls until the VM reports want or timeout elapses.
 func waitVMStatus(vmID string, want libvirt.VMStatus, timeout time.Duration) bool {
@@ -2260,7 +2292,7 @@ func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *pb.Netwo
 		}
 		if prefix == 0 {
 			log.Printf("[NodeAgent] WARNING: guest reconfigure for VM %s skipped: no prefix for %s", req.VmId, internalIP)
-		} else if err := s.applyGuestNetwork(req.VmId, internalIP, prefix, gateway); err != nil {
+		} else if err := s.applyGuestNetwork(ctx, req.VmId, internalIP, prefix, gateway); err != nil {
 			return nil, status.Errorf(codes.Internal, "host rules applied but guest reconfiguration failed: %v", err)
 		}
 	}
