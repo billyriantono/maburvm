@@ -3399,9 +3399,13 @@ type NetworkConfigRequest struct {
 	// config to apply
 	Config *VMNetworkConfig `protobuf:"bytes,2,opt,name=config,proto3" json:"config,omitempty"`
 	// replace_all if true, replaces entire config; if false, merges
-	ReplaceAll    bool `protobuf:"varint,3,opt,name=replace_all,json=replaceAll,proto3" json:"replace_all,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ReplaceAll bool `protobuf:"varint,3,opt,name=replace_all,json=replaceAll,proto3" json:"replace_all,omitempty"`
+	// configure_guest asks the agent to also rewrite the guest OS's network
+	// configuration (address/prefix/gateway of the primary interface). Set only
+	// when the address itself changed; host-side rule syncs leave it false.
+	ConfigureGuest bool `protobuf:"varint,4,opt,name=configure_guest,json=configureGuest,proto3" json:"configure_guest,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *NetworkConfigRequest) Reset() {
@@ -3451,6 +3455,13 @@ func (x *NetworkConfigRequest) GetConfig() *VMNetworkConfig {
 func (x *NetworkConfigRequest) GetReplaceAll() bool {
 	if x != nil {
 		return x.ReplaceAll
+	}
+	return false
+}
+
+func (x *NetworkConfigRequest) GetConfigureGuest() bool {
+	if x != nil {
+		return x.ConfigureGuest
 	}
 	return false
 }
@@ -8035,12 +8046,13 @@ const file_api_proto_agent_proto_rawDesc = "" +
 	"\x0eBandwidthLimit\x12*\n" +
 	"\x11ingress_rate_mbps\x18\x01 \x01(\x05R\x0fingressRateMbps\x12(\n" +
 	"\x10egress_rate_mbps\x18\x02 \x01(\x05R\x0eegressRateMbps\x12\"\n" +
-	"\rburst_size_mb\x18\x03 \x01(\x05R\vburstSizeMb\"|\n" +
+	"\rburst_size_mb\x18\x03 \x01(\x05R\vburstSizeMb\"\xa5\x01\n" +
 	"\x14NetworkConfigRequest\x12\x13\n" +
 	"\x05vm_id\x18\x01 \x01(\tR\x04vmId\x12.\n" +
 	"\x06config\x18\x02 \x01(\v2\x16.agent.VMNetworkConfigR\x06config\x12\x1f\n" +
 	"\vreplace_all\x18\x03 \x01(\bR\n" +
-	"replaceAll\"\xa5\x01\n" +
+	"replaceAll\x12'\n" +
+	"\x0fconfigure_guest\x18\x04 \x01(\bR\x0econfigureGuest\"\xa5\x01\n" +
 	"\x15NetworkConfigResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12F\n" +
 	"\x12applied_interfaces\x18\x02 \x03(\v2\x17.agent.NetworkInterfaceR\x11appliedInterfaces\x12*\n" +

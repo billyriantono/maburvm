@@ -66,9 +66,9 @@ func (s *NetworkService) AssignIPAddress(ctx context.Context, vmID, poolID, requ
 	}
 
 	var created *models.Network
+	var allocated *models.IPAddress
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		nodeID := vm.NodeID
-		var allocated *models.IPAddress
 		var lastErr error
 		for _, pid := range candidates {
 			a, aerr := s.ipamService.AllocateAddressInTx(ctx, tx, &AllocateIPAddressRequest{
@@ -112,7 +112,13 @@ func (s *NetworkService) AssignIPAddress(ctx context.Context, vmID, poolID, requ
 	// place on purpose: the address is genuinely reserved, and the agent
 	// re-applies full desired state when it next reconnects, so the right
 	// recovery is to retry rather than to hand the address back.
-	if cerr := s.enqueueNetworkConfigJob(ctx, vm, created); cerr != nil {
+	// The guest must learn the new address too, not just the host rules; the
+	// pool supplies the prefix/gateway it needs.
+	var pool models.IPPool
+	if err := s.db.WithContext(ctx).Where("id = ?", allocated.PoolID).First(&pool).Error; err != nil {
+		return created, fmt.Errorf("address assigned but its pool could not be loaded: %w", err)
+	}
+	if cerr := s.enqueueNetworkConfig(ctx, vm, created, &pool); cerr != nil {
 		return created, fmt.Errorf("address assigned but node configuration could not be queued: %w", cerr)
 	}
 	return created, nil

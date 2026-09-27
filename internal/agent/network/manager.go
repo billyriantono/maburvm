@@ -25,6 +25,7 @@ type Manager struct {
 type VMNetworkState struct {
 	VMID             string
 	InternalIP       string
+	ExtraIPs         []string // further addresses the VM holds; firewalled like InternalIP
 	MACAddress       string
 	VLANID           int
 	Bandwidth        int // Mbps, 0 = unlimited
@@ -87,13 +88,14 @@ func NewManager() (*Manager, error) {
 
 // SetupVMNetwork sets up the complete network configuration for a VM
 // This should be called when a VM is started
-func (m *Manager) SetupVMNetwork(vmID string, internalIP string, vlanID int, bandwidthMbps int, rules []models.FirewallRule) error {
+func (m *Manager) SetupVMNetwork(vmID string, internalIP string, vlanID int, bandwidthMbps int, rules []models.FirewallRule, extraIPs ...string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	state := &VMNetworkState{
 		VMID:         vmID,
 		InternalIP:   internalIP,
+		ExtraIPs:     extraIPs,
 		VLANID:       vlanID,
 		Bandwidth:    bandwidthMbps,
 		PortForwards: make(map[int]portForwardEntry),
@@ -134,7 +136,7 @@ func (m *Manager) SetupVMNetwork(vmID string, internalIP string, vlanID int, ban
 			fwRules[i] = FromModelRule(rule)
 			state.FirewallRules = append(state.FirewallRules, rule.ID)
 		}
-		if err := m.firewall.ApplyFirewallRules(vmID, internalIP, fwRules); err != nil {
+		if err := m.firewall.ApplyFirewallRules(vmID, internalIP, fwRules, extraIPs...); err != nil {
 			// Cleanup on failure
 			_ = m.vlan.RemoveVLAN(vmID, vlanID)
 			_ = m.bandwidth.RemoveBandwidthLimit(vmID)
@@ -304,7 +306,7 @@ func (m *Manager) UpdateFirewallRules(vmID string, rules []models.FirewallRule) 
 		fwRules[i] = FromModelRule(rule)
 	}
 
-	if err := m.firewall.ApplyFirewallRules(vmID, state.InternalIP, fwRules); err != nil {
+	if err := m.firewall.ApplyFirewallRules(vmID, state.InternalIP, fwRules, state.ExtraIPs...); err != nil {
 		return fmt.Errorf("failed to apply firewall rules: %w", err)
 	}
 

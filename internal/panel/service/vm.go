@@ -2852,6 +2852,20 @@ func (s *VMService) probeIPsOnNode(ctx context.Context, nodeID, bridge string, i
 // back to available. Only 'available' and self-reserved (externalIPNote) rows
 // are ever touched — assigned/disabled/admin-reserved addresses are left alone.
 func (s *VMService) ReconcileNodePoolIPs(ctx context.Context, nodeID string) {
+	// First make IPAM own what VMs already hold: an imported VM's address that
+	// IPAM still lists as 'available' would otherwise be handed to a new VM (and
+	// the ARP probe below can't be relied on to catch it — a probe that fails
+	// open, e.g. no arping on the node, reports every IP as free).
+	adopted, conflicts, err := s.ipamService.AdoptVMAddressesForNode(ctx, nodeID)
+	if err != nil {
+		s.logger.WarnContext(ctx, "IP reconcile: adopt VM addresses failed", "node_id", nodeID, "error", err)
+	}
+	if adopted > 0 {
+		s.logger.InfoContext(ctx, "IP reconcile: adopted VM addresses into IPAM", "node_id", nodeID, "count", adopted)
+	}
+	for _, c := range conflicts {
+		s.logger.WarnContext(ctx, "IP reconcile: address collision — two VMs claim one IP", "node_id", nodeID, "detail", c)
+	}
 	pools, err := s.ipamService.ListPoolsForNode(ctx, nodeID)
 	if err != nil {
 		s.logger.WarnContext(ctx, "IP reconcile: list pools failed", "node_id", nodeID, "error", err)

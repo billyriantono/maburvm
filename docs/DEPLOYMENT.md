@@ -212,6 +212,13 @@ docker run --privileged --network host \
   maburvm-agent:local
 ```
 
+**Node packages the agent shells out to:** install `iputils-arping` on every
+hypervisor. The panel's IP reconciler asks the agent to ARP-probe pool addresses
+before allocating them; without `arping` the agent falls back to `ping` + the
+neighbour cache, which is blind for any pool subnet the node itself has no
+address in (the ping is routed upstream instead of ARPed on the bridge), so
+addresses already in use by imported guests look free.
+
 > **Exception / future work:** Privileged-agent minimization is an explicit
 > exception that requires a dedicated minimization test before any change. Do not
 > attempt to remove `--privileged` without that test.

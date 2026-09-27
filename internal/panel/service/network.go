@@ -737,6 +737,12 @@ func (s *NetworkService) SyncNetworkConfig(ctx context.Context, vmID string) err
 // blocked ports. Rules are loaded here, at the single chokepoint, so no caller
 // can reintroduce that footgun by forgetting to pass them.
 func (s *NetworkService) enqueueNetworkConfigJob(ctx context.Context, vm *models.VM, network *models.Network) error {
+	return s.enqueueNetworkConfig(ctx, vm, network, nil)
+}
+
+// enqueueNetworkConfig is enqueueNetworkConfigJob plus, when pool is given, the
+// gateway/prefix the guest itself must be reconfigured with.
+func (s *NetworkService) enqueueNetworkConfig(ctx context.Context, vm *models.VM, network *models.Network, pool *models.IPPool) error {
 	if s.riverClient == nil {
 		return fmt.Errorf("river client not initialized")
 	}
@@ -756,6 +762,18 @@ func (s *NetworkService) enqueueNetworkConfigJob(ctx context.Context, vm *models
 		VLANID:         network.VLANID,
 		AntiSpoofing:   network.AntiSpoofing,
 		FirewallRules:  rules,
+	}
+	if pool != nil {
+		params.Gateway = pool.Gateway
+		params.Netmask = prefixFromCIDR(pool.CIDR)
+		params.ConfigureGuest = true
+	}
+	if others, err := s.networkRepo.ListByVMID(ctx, vm.ID); err == nil {
+		for _, o := range others {
+			if o.IPAddress != "" && o.IPAddress != network.IPAddress {
+				params.ExtraIPs = append(params.ExtraIPs, o.IPAddress)
+			}
+		}
 	}
 
 	// Ship the VM's port forwards as part of the desired state so a full
@@ -808,6 +826,15 @@ type NetworkConfigParams struct {
 	AntiSpoofing   bool                  `json:"anti_spoofing"`
 	FirewallRules  []models.FirewallRule `json:"firewall_rules,omitempty"`
 	PortForwards   []PortForwardParam    `json:"port_forwards,omitempty"`
+	// ExtraIPs are the VM's other interface addresses; the agent applies the
+	// same firewall policy to each of them.
+	ExtraIPs []string `json:"extra_ips,omitempty"`
+	// Set only when the address itself changed: the agent then also rewrites
+	// the guest's network config, which may mean a reboot for a guest without
+	// a responsive qemu-guest-agent. Rule/bandwidth syncs leave these empty.
+	Gateway        string `json:"gateway,omitempty"`
+	Netmask        int    `json:"netmask,omitempty"`
+	ConfigureGuest bool   `json:"configure_guest,omitempty"`
 }
 
 // PortForwardParam is a DNAT rule carried in a network-config job.

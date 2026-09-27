@@ -131,7 +131,7 @@ func FromModelRule(rule models.FirewallRule) FirewallRule {
 
 // ApplyFirewallRules applies a set of firewall rules for a VM
 // This removes any existing rules for the VM and applies the new ones
-func (fm *FirewallManager) ApplyFirewallRules(vmID string, internalIP string, rules []FirewallRule) error {
+func (fm *FirewallManager) ApplyFirewallRules(vmID string, internalIP string, rules []FirewallRule, extraIPs ...string) error {
 	if internalIP == "" {
 		return fmt.Errorf("internal IP cannot be empty")
 	}
@@ -158,19 +158,35 @@ func (fm *FirewallManager) ApplyFirewallRules(vmID string, internalIP string, ru
 		}
 	}
 
+	// A VM with several addresses gets the same policy on each of them; an
+	// address the rules don't mention would otherwise sit wide open beside a
+	// locked-down primary.
+	ips := append([]string{internalIP}, extraIPs...)
+
 	// Apply each rule
 	for _, rule := range sortedRules {
-		if err := fm.applyRuleInternal(vmID, internalIP, rule); err != nil {
-			// Attempt to cleanup on failure
-			_ = fm.removeVMRulesInternal(vmID)
-			return fmt.Errorf("failed to apply rule %s: %w", rule.ID, err)
+		for _, ip := range ips {
+			if err := fm.applyRuleInternal(vmID, ip, rule); err != nil {
+				// Attempt to cleanup on failure
+				_ = fm.removeVMRulesInternal(vmID)
+				return fmt.Errorf("failed to apply rule %s: %w", rule.ID, err)
+			}
 		}
 	}
 
 	// Add default drop rule at the end (if no explicit allow rules exist, traffic is dropped)
 	// This provides a default-deny policy
+	for _, ip := range ips {
+		if err := fm.appendDefaultDrop(vmID, ip); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (fm *FirewallManager) appendDefaultDrop(vmID, ip string) error {
 	defaultDropRule := []string{
-		"-d", internalIP,
+		"-d", ip,
 		"-j", "DROP",
 		"-m", "comment",
 		"--comment", fmt.Sprintf("maburvm-vm-%s-default-drop", vmID),
