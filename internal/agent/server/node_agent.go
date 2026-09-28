@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -558,7 +559,11 @@ func (s *NodeAgentService) applyGuestNetwork(ctx context.Context, vmID, ip strin
 	unit := guestAnnounceUnit(gateway)
 
 	if info.Status == libvirt.VMStatusRunning {
-		script := "set -e\n" +
+		// Only guests that run systemd-networkd are managed. Restarting networkd on
+		// an ifupdown/NetworkManager guest would start a second network manager on
+		// the same interface, so such guests are left to the operator.
+		script := "systemctl is-active -q systemd-networkd || { echo 'guest does not use systemd-networkd' >&2; exit " + strconv.Itoa(guestNotNetworkdExit) + "; }\n" +
+			"set -e\n" +
 			"mkdir -p /etc/systemd/network\n" +
 			"cat > " + guestNetworkFilePath + " <<'MABURVM_EOF'\n" + netFile + "MABURVM_EOF\n" +
 			"chmod 0644 " + guestNetworkFilePath + "\n" +
@@ -570,7 +575,7 @@ func (s *NodeAgentService) applyGuestNetwork(ctx context.Context, vmID, ip strin
 		// A guest that booted moments ago has no guest agent answering yet;
 		// give it a minute before falling back to a reboot.
 		err := guestExec(info.Name, script, 30*time.Second)
-		for deadline := time.Now().Add(guestAgentWait); err != nil && time.Now().Before(deadline); {
+		for deadline := time.Now().Add(guestAgentWait); err != nil && !errors.Is(err, errGuestNotNetworkd) && time.Now().Before(deadline); {
 			select {
 			case <-ctx.Done():
 				return fmt.Errorf("guest agent unavailable and caller gave up; VM left running: %w", ctx.Err())
@@ -580,6 +585,10 @@ func (s *NodeAgentService) applyGuestNetwork(ctx context.Context, vmID, ip strin
 		}
 		if err == nil {
 			log.Printf("[NodeAgent] guest %s reconfigured live to %s/%d via guest agent", vmID, ip, prefix)
+			return nil
+		}
+		if errors.Is(err, errGuestNotNetworkd) {
+			log.Printf("[NodeAgent] WARNING: guest %s does not use systemd-networkd; host side applied, configure %s/%d (and any IPv6) in the guest by hand", vmID, ip, prefix)
 			return nil
 		}
 		if ctx.Err() != nil {
@@ -647,6 +656,12 @@ func waitVMStatus(vmID string, want libvirt.VMStatus, timeout time.Duration) boo
 // guestExec runs script with /bin/sh inside the guest through qemu-guest-agent
 // and waits for it to exit. Any failure — no agent, agent not connected, a
 // non-zero exit — is an error so callers can fall back.
+// guestNotNetworkdExit is the exit code of the live reconfigure script when the
+// guest does not run systemd-networkd (errGuestNotNetworkd).
+const guestNotNetworkdExit = 42
+
+var errGuestNotNetworkd = errors.New("guest does not use systemd-networkd")
+
 func guestExec(domainName, script string, timeout time.Duration) error {
 	req, _ := json.Marshal(map[string]interface{}{
 		"execute": "guest-exec",
@@ -687,6 +702,9 @@ func guestExec(domainName, script string, timeout time.Duration) error {
 			return fmt.Errorf("guest-exec-status: unexpected reply %s", strings.TrimSpace(string(out)))
 		}
 		if st.Return.Exited {
+			if st.Return.ExitCode == guestNotNetworkdExit {
+				return errGuestNotNetworkd
+			}
 			if st.Return.ExitCode != 0 {
 				return fmt.Errorf("guest script exited %d: %s", st.Return.ExitCode, st.Return.ErrData)
 			}
