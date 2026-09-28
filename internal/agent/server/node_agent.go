@@ -2352,8 +2352,15 @@ func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *pb.Netwo
 		if iface.AntiSpoofing {
 			mac := iface.MacAddress
 			if mac == "" {
-				// Generate stable MAC from VM ID (same algorithm as createVM)
-				mac = generateMAC(req.VmId)
+				// The NIC's real MAC. generateMAC(vmID) only matches VMs this panel
+				// created; imported VMs keep their original MAC, and a wrong one here
+				// becomes an ebtables rule dropping every ARP the guest sends.
+				real, err := libvirt.GetVMInterfaceMAC(req.VmId)
+				if err != nil || real == "" {
+					log.Printf("[NodeAgent] WARNING: could not read the MAC of VM %s: %v (anti-spoof iptables/ebtables skipped)", req.VmId, err)
+					continue
+				}
+				mac = real
 			}
 			// Find the vnet interface for this VM
 			vnetIface, vnetErr := libvirt.GetVMInterfaceName(req.VmId)
