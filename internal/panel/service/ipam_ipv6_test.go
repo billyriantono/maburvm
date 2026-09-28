@@ -145,3 +145,27 @@ func TestIPv6PrefixAllocationRespectsNodeBinding(t *testing.T) {
 		return err
 	}))
 }
+
+func TestPrefixIdxAndLinkSkip(t *testing.T) {
+	idx, err := prefixIdx("2001:db8:21::/48", 64, "2001:db8:21:104::/64")
+	if err != nil || idx != 0x104 {
+		t.Fatalf("idx %d err %v", idx, err)
+	}
+	for _, bad := range []string{"2001:db8:22:104::/64", "2001:db8:21:104::/63", "2001:db8:21:104::1/64", "10.0.0.0/64"} {
+		if _, err := prefixIdx("2001:db8:21::/48", 64, bad); err == nil {
+			t.Errorf("%s must be rejected", bad)
+		}
+	}
+	got, _ := delegatedPrefix("2001:db8:21::/48", 64, idx)
+	if got != "2001:db8:21:104::/64" {
+		t.Fatalf("round trip %s", got)
+	}
+	// the link network is skipped like a taken prefix
+	used := insertSorted([]int{1, 2, 3}, 2)
+	if len(used) != 3 {
+		t.Fatalf("duplicate inserted: %v", used)
+	}
+	if n := lowestFreeIdx(insertSorted([]int{1, 2}, 3), 1<<16); n != 4 {
+		t.Fatalf("want 4, got %d", n)
+	}
+}

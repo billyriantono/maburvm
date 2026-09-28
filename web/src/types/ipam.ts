@@ -19,6 +19,8 @@ export interface IPPool {
   /** IPv6 only: the pool hands out one routed /<n> per VM (64) instead of
    *  single addresses; the gateway is then the node's fe80::1. */
   delegated_prefix_len?: number
+  /** Router<->node link /<n> inside a delegating pool; never handed to a VM. */
+  link_prefix?: string
   /** How many prefixes a delegated pool has handed out (detail view only). */
   delegated_count?: number
   created_at: string
@@ -73,6 +75,7 @@ export interface CreateIPPoolRequest {
   range_end?: string
   description?: string
   delegated_prefix_len?: number
+  link_prefix?: string
 }
 
 // UpdateIPPoolRequest patches an existing pool's editable metadata. Omitted
@@ -85,6 +88,8 @@ export interface UpdateIPPoolRequest {
   description?: string
   node_ids?: string[]
   delegated_prefix_len?: number
+  /** "" clears it. */
+  link_prefix?: string
 }
 
 export interface CreateIPAddressRequest {

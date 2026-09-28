@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"sort"
 	"time"
 
 	"github.com/maburvm/panel/internal/shared/models"
@@ -135,6 +136,13 @@ func (s *IPAMService) AllocateIPv6PrefixInTx(ctx context.Context, tx *gorm.DB, p
 		return nil, fmt.Errorf("pool %s has an invalid CIDR: %w", pool.Name, err)
 	}
 	poolLen, _ := ipNet.Mask.Size()
+	if pool.LinkPrefix != nil && *pool.LinkPrefix != "" {
+		li, err := prefixIdx(pool.CIDR, *pool.DelegatedPrefixLen, *pool.LinkPrefix)
+		if err != nil {
+			return nil, fmt.Errorf("pool %s link_prefix: %w", pool.Name, err)
+		}
+		used = insertSorted(used, li)
+	}
 	idx := lowestFreeIdx(used, delegatedPrefixCount(poolLen, *pool.DelegatedPrefixLen))
 	if idx < 0 {
 		return nil, ErrNoAvailableIPv6Prefix
@@ -215,4 +223,34 @@ func (s *IPAMService) ListDelegatedPrefixes(ctx context.Context, poolID string) 
 		Joins("LEFT JOIN vms v ON v.id = p.vm_id").
 		Where("p.pool_id = ?", poolID).Order("p.idx").Scan(&out).Error
 	return out, err
+}
+
+// prefixIdx is the inverse of delegatedPrefix: the index of prefix (which must be
+// exactly one aligned /<n> inside poolCIDR).
+func prefixIdx(poolCIDR string, n int, prefix string) (int, error) {
+	_, pool, err := net.ParseCIDR(poolCIDR)
+	if err != nil {
+		return 0, fmt.Errorf("invalid pool CIDR %q", poolCIDR)
+	}
+	ip, p, err := net.ParseCIDR(prefix)
+	if err != nil || ip.To4() != nil {
+		return 0, fmt.Errorf("%q is not an IPv6 prefix", prefix)
+	}
+	if l, _ := p.Mask.Size(); l != n || !ip.Equal(p.IP) || !pool.Contains(p.IP) {
+		return 0, fmt.Errorf("%q must be an aligned /%d inside %s", prefix, n, poolCIDR)
+	}
+	off := new(big.Int).Sub(new(big.Int).SetBytes(p.IP.To16()), new(big.Int).SetBytes(pool.IP.To16()))
+	return int(off.Rsh(off, uint(128-n)).Int64()), nil
+}
+
+// insertSorted adds v to an ascending slice (no-op when present).
+func insertSorted(s []int, v int) []int {
+	i := sort.SearchInts(s, v)
+	if i < len(s) && s[i] == v {
+		return s
+	}
+	s = append(s, 0)
+	copy(s[i+1:], s[i:])
+	s[i] = v
+	return s
 }

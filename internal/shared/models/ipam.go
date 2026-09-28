@@ -53,10 +53,13 @@ type IPPool struct {
 	// DelegatedPrefixLen turns an IPv6 pool into a routed-prefix pool: every VM
 	// gets one /<n> out of the pool CIDR (a /64 per VM from a /48) instead of a
 	// single address. Nil = ordinary per-address pool.
-	DelegatedPrefixLen *int           `json:"delegated_prefix_len,omitempty" gorm:"type:smallint"`
-	CreatedAt          time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
-	UpdatedAt          time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
-	DeletedAt          gorm.DeletedAt `json:"-" gorm:"index"`
+	DelegatedPrefixLen *int `json:"delegated_prefix_len,omitempty" gorm:"type:smallint"`
+	// LinkPrefix is the router<->node link network when it lies inside the pool
+	// (one /<DelegatedPrefixLen>); it is never delegated. Nil: idx 0 is the link.
+	LinkPrefix *string        `json:"link_prefix,omitempty" gorm:"type:cidr"`
+	CreatedAt  time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
+	UpdatedAt  time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
+	DeletedAt  gorm.DeletedAt `json:"-" gorm:"index"`
 
 	// Many-to-many: loaded separately via ip_pool_nodes junction table
 	// When junction table exists, this takes precedence over NodeID

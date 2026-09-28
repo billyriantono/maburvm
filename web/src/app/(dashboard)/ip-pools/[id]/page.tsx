@@ -308,8 +308,11 @@ export default function IPPoolDetailPage() {
           <p className="text-sm font-medium">Routed IPv6 — one /{pool.delegated_prefix_len} per VM</p>
           <p className="text-3xl font-semibold mt-2">{pool.delegated_count ?? 0}</p>
           <p className="text-sm text-muted-foreground mt-1">
-            prefixes delegated out of {pool.cidr}. The first /{pool.delegated_prefix_len} is the router↔node link
-            network and is never handed out. Assign or release a prefix from a VM&apos;s Network tab.
+            prefixes delegated out of {pool.cidr}.{" "}
+            {pool.link_prefix
+              ? <>The router↔node link network <span className="font-mono">{pool.link_prefix}</span> and the first /{pool.delegated_prefix_len} are never handed out.</>
+              : <>The first /{pool.delegated_prefix_len} is the router↔node link network and is never handed out.</>}{" "}
+            Assign or release a prefix from a VM&apos;s Network tab.
           </p>
           {prefixes && prefixes.length > 0 && (
             <div className="mt-4 overflow-hidden rounded-md border">

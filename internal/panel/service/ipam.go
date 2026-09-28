@@ -49,6 +49,9 @@ type CreateIPPoolRequest struct {
 	// DelegatedPrefixLen (IPv6 only) makes the pool hand out one /<n> per VM.
 	// The gateway defaults to fe80::1, which lives on the node, not in the CIDR.
 	DelegatedPrefixLen *int `json:"delegated_prefix_len,omitempty"`
+	// LinkPrefix (delegated pools) is the router<->node link /<n> when it lies
+	// inside the pool; it is never handed to a VM.
+	LinkPrefix string `json:"link_prefix,omitempty"`
 }
 
 // UpdateIPPoolRequest carries editable metadata for an existing pool. Every
@@ -65,7 +68,8 @@ type UpdateIPPoolRequest struct {
 	Orderable   *bool     `json:"orderable,omitempty"`
 	// DelegatedPrefixLen may only change while the pool has delegated nothing:
 	// existing prefixes were computed from the old length.
-	DelegatedPrefixLen *int `json:"delegated_prefix_len,omitempty"`
+	DelegatedPrefixLen *int    `json:"delegated_prefix_len,omitempty"`
+	LinkPrefix         *string `json:"link_prefix,omitempty"` // "" clears it
 }
 
 type CreateIPAddressRequest struct {
@@ -102,6 +106,16 @@ func (s *IPAMService) CreatePool(ctx context.Context, req *CreateIPPoolRequest) 
 			req.Gateway = models.IPv6LinkLocalGateway
 		}
 	}
+	var linkPrefix *string
+	if lp := strings.TrimSpace(req.LinkPrefix); lp != "" {
+		if req.DelegatedPrefixLen == nil {
+			return nil, fmt.Errorf("link_prefix is only valid for a pool that delegates prefixes")
+		}
+		if _, err := prefixIdx(req.CIDR, *req.DelegatedPrefixLen, lp); err != nil {
+			return nil, fmt.Errorf("link_prefix: %w", err)
+		}
+		linkPrefix = &lp
+	}
 	pool := &models.IPPool{
 		Name:               req.Name,
 		NodeIDs:            req.NodeIDs,
@@ -114,6 +128,7 @@ func (s *IPAMService) CreatePool(ctx context.Context, req *CreateIPPoolRequest) 
 		Description:        req.Description,
 		Orderable:          req.Orderable,
 		DelegatedPrefixLen: req.DelegatedPrefixLen,
+		LinkPrefix:         linkPrefix,
 	}
 	if err := s.repo.CreatePool(ctx, pool); err != nil {
 		return nil, err
@@ -180,6 +195,28 @@ func (s *IPAMService) UpdatePool(ctx context.Context, id string, req *UpdateIPPo
 		pool.DelegatedPrefixLen = req.DelegatedPrefixLen
 		if pool.Gateway == "" {
 			pool.Gateway = models.IPv6LinkLocalGateway
+		}
+	}
+	if req.LinkPrefix != nil {
+		lp := strings.TrimSpace(*req.LinkPrefix)
+		if lp == "" {
+			pool.LinkPrefix = nil
+		} else {
+			if !pool.IsDelegated() {
+				return nil, fmt.Errorf("link_prefix is only valid for a pool that delegates prefixes")
+			}
+			if _, err := prefixIdx(pool.CIDR, *pool.DelegatedPrefixLen, lp); err != nil {
+				return nil, fmt.Errorf("link_prefix: %w", err)
+			}
+			var held int64
+			if err := s.db.WithContext(ctx).Model(&models.VMIPv6Prefix{}).
+				Where("pool_id = ? AND prefix = ?", pool.ID, lp).Count(&held).Error; err != nil {
+				return nil, err
+			}
+			if held > 0 {
+				return nil, fmt.Errorf("link_prefix %s is already delegated to a VM; release it first", lp)
+			}
+			pool.LinkPrefix = &lp
 		}
 	}
 	if err := s.repo.UpdatePool(ctx, pool); err != nil {

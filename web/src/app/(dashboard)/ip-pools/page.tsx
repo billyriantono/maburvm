@@ -183,6 +183,14 @@ export default function IPPoolsPage() {
             </div>
             <Input placeholder={poolForm.delegated_prefix_len ? "CIDR e.g. 2001:db8:20::/48 (split into /64s)" : "CIDR e.g. 203.0.113.0/24"} value={poolForm.cidr ?? ""} onChange={(e) => setPoolForm({ ...poolForm, cidr: e.target.value })} required={!!poolForm.delegated_prefix_len} />
             <Input placeholder="Gateway" value={poolForm.gateway ?? ""} onChange={(e) => setPoolForm({ ...poolForm, gateway: e.target.value })} />
+            {poolForm.delegated_prefix_len ? (
+              <Input
+                placeholder="Link network inside the pool, never given to a VM (optional) e.g. 2001:db8:21:104::/64"
+                title="The /64 between the router and the node, when it lies inside this pool. Blank: the pool's first /64 is the link network."
+                value={poolForm.link_prefix ?? ""}
+                onChange={(e) => setPoolForm({ ...poolForm, link_prefix: e.target.value || undefined })}
+              />
+            ) : null}
             <Input placeholder="Bridge e.g. br0 (blank = node default)" value={poolForm.bridge ?? ""} onChange={(e) => setPoolForm({ ...poolForm, bridge: e.target.value })} />
             <Input placeholder="Range start" value={poolForm.range_start ?? ""} onChange={(e) => setPoolForm({ ...poolForm, range_start: e.target.value })} />
             <Input placeholder="Range end" value={poolForm.range_end ?? ""} onChange={(e) => setPoolForm({ ...poolForm, range_end: e.target.value })} />
