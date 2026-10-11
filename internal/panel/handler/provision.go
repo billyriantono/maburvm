@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
@@ -24,9 +26,10 @@ var agentBootstrapUnavailable = map[string]string{
 }
 
 // ProvisionHandler serves the node bootstrap installer script and the prebuilt
-// agent binary. Both endpoints are Phase 0-contained: they intentionally return
-// a JSON 503 instead of serving the installer/binary, because the agent artifact
-// is not present in the panel image and the agent startup contract is incomplete.
+// agent binary. All endpoints are Phase 0-contained: they intentionally return
+// a JSON 503 instead of serving the installer/binary/checksums, because the
+// agent artifact is not present in the panel image and the agent startup
+// contract is incomplete.
 //
 // The installer/binary serving logic is preserved but gated behind contained;
 // while containment is active it is never executed (the handler returns before
@@ -69,7 +72,31 @@ func (h *ProvisionHandler) baseURL(c echo.Context) string {
 	return fmt.Sprintf("%s://%s", scheme, c.Request().Host)
 }
 
+// binaryPath is where the prebuilt agent for arch lives under binaryDir.
+func binaryPath(binaryDir, arch string) string {
+	return filepath.Join(binaryDir, "agent-"+arch)
+}
+
+// binaryDigest returns the hex-encoded SHA-256 of the prebuilt agent binary
+// for arch, or "" when the binary is absent/unreadable. InstallScript bakes
+// both arch digests into the served installer, so an empty digest makes the
+// installer abort with a clear message instead of piping an unverified binary
+// into bash.
+func (h *ProvisionHandler) binaryDigest(arch string) string {
+	data, err := os.ReadFile(binaryPath(h.binaryDir, arch))
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
 // InstallScript serves the bootstrap installer with the panel URL templated in.
+//
+// The SHA-256 digest of each arch's agent binary is templated in alongside the
+// panel URL, so the installer verifies the downloaded binary against digests it
+// received before the download — a truncated or tampered binary aborts the
+// install instead of being executed as root.
 //
 // While Phase 0 containment is active it returns a JSON 503 diagnostic instead
 // and never reaches the embedded installer. The Next.js rewrite of
@@ -79,6 +106,8 @@ func (h *ProvisionHandler) InstallScript(c echo.Context) error {
 		return c.JSON(http.StatusServiceUnavailable, agentBootstrapUnavailable)
 	}
 	script := strings.ReplaceAll(installAgentScript, "__PANEL_URL__", h.baseURL(c))
+	script = strings.ReplaceAll(script, "__AGENT_SHA256_AMD64__", h.binaryDigest("amd64"))
+	script = strings.ReplaceAll(script, "__AGENT_SHA256_ARM64__", h.binaryDigest("arm64"))
 	return c.Blob(http.StatusOK, "text/x-shellscript; charset=utf-8", []byte(script))
 }
 
@@ -98,7 +127,7 @@ func (h *ProvisionHandler) AgentBinary(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "unsupported arch", "message": "arch must be amd64 or arm64"})
 	}
 
-	path := filepath.Join(h.binaryDir, "agent-"+arch)
+	path := binaryPath(h.binaryDir, arch)
 	if _, err := os.Stat(path); err != nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]interface{}{
 			"error": "agent binary not available",
@@ -106,8 +135,47 @@ func (h *ProvisionHandler) AgentBinary(c echo.Context) error {
 				"and place agent-%s there.", path, arch),
 		})
 	}
+	// Publish the digest with the binary so scripted consumers (self-update,
+	// mirrors) can verify without a second request. The installer additionally
+	// embeds both digests at script-serve time; this header covers whoever
+	// downloads the binary directly.
+	if digest := h.binaryDigest(arch); digest != "" {
+		c.Response().Header().Set("X-Checksum-Sha256", digest)
+	}
 	c.Response().Header().Set("Content-Disposition", "attachment; filename=maburvm-agent")
 	return c.Attachment(path, "maburvm-agent")
+}
+
+// AgentBinaryChecksum reports the SHA-256 of the prebuilt agent binary for the
+// requested arch as JSON ({arch, algorithm, digest}). Lets operators and
+// tooling pin a digest out-of-band and verify a downloaded binary before
+// running it. Same Phase 0 containment as the other provision endpoints.
+func (h *ProvisionHandler) AgentBinaryChecksum(c echo.Context) error {
+	if h.contained {
+		return c.JSON(http.StatusServiceUnavailable, agentBootstrapUnavailable)
+	}
+	arch := c.QueryParam("arch")
+	if arch == "" {
+		arch = "amd64"
+	}
+	if arch != "amd64" && arch != "arm64" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "unsupported arch", "message": "arch must be amd64 or arm64"})
+	}
+	digest := h.binaryDigest(arch)
+	if digest == "" {
+		path := binaryPath(h.binaryDir, arch)
+		return c.JSON(http.StatusServiceUnavailable, map[string]interface{}{
+			"error": "agent binary not available",
+			"message": fmt.Sprintf("expected %q. Build it with `make build-agent-linux` (or set AGENT_BINARY_DIR) "+
+				"and place agent-%s there.", path, arch),
+		})
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"success":   true,
+		"arch":      arch,
+		"algorithm": "sha256",
+		"digest":    digest,
+	})
 }
 
 // RegisterProvisionRoutes wires the public bootstrap endpoints and preserves
@@ -116,4 +184,5 @@ func (h *ProvisionHandler) AgentBinary(c echo.Context) error {
 func RegisterProvisionRoutes(e *echo.Echo, h *ProvisionHandler) {
 	e.GET("/install-agent.sh", h.InstallScript)
 	e.GET("/api/v1/nodes/agent-binary", h.AgentBinary)
+	e.GET("/api/v1/nodes/agent-binary/checksum", h.AgentBinaryChecksum)
 }

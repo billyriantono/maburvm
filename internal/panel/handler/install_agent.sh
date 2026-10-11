@@ -7,9 +7,16 @@
 # It installs the libvirt RUNTIME (no libvirt-dev), drops the prebuilt agent
 # binary + a systemd unit wired with the node token, and starts it. The agent
 # listens on this host; the panel connects to it using the node's IP + port.
+#
+# Integrity: the panel embeds the SHA-256 of each arch's agent binary in this
+# script (computed at serve time). The downloaded binary is verified against
+# the digest BEFORE it is executed — a truncated or tampered download aborts
+# the install instead of running as root.
 set -euo pipefail
 
 PANEL_URL="${PANEL_URL:-__PANEL_URL__}"
+AGENT_SHA256_AMD64="${AGENT_SHA256_AMD64:-__AGENT_SHA256_AMD64__}"
+AGENT_SHA256_ARM64="${AGENT_SHA256_ARM64:-__AGENT_SHA256_ARM64__}"
 GRPC_PORT="${AGENT_GRPC_PORT:-50051}"
 BIND="${AGENT_BIND_ADDRESS:-0.0.0.0}"
 INSTALL_DIR=/opt/maburvm
@@ -75,6 +82,29 @@ fi
 echo "==> Fetching agent binary from ${PANEL_URL} ..."
 install -d "$INSTALL_DIR"
 curl -fsSL "${PANEL_URL}/api/v1/nodes/agent-binary?arch=${GOARCH}" -o "${INSTALL_DIR}/agent.new"
+
+# Verify before chmod/exec: the digests came embedded in this script, received
+# BEFORE the binary download. An env override (AGENT_SHA256_*) lets an operator
+# pin a digest they verified out-of-band (air-gapped re-runs).
+case "$GOARCH" in
+  amd64) EXPECTED_SHA256="$AGENT_SHA256_AMD64" ;;
+  arm64) EXPECTED_SHA256="$AGENT_SHA256_ARM64" ;;
+esac
+if [ -z "$EXPECTED_SHA256" ]; then
+  echo "ERROR: no SHA-256 published for $GOARCH (agent-$GOARCH missing on the panel?)." >&2
+  echo "       Re-check the panel's AGENT_BINARY_DIR / build, or pin AGENT_SHA256_${GOARCH^^} explicitly." >&2
+  rm -f "${INSTALL_DIR}/agent.new"
+  exit 1
+fi
+ACTUAL_SHA256="$(sha256sum "${INSTALL_DIR}/agent.new" | awk '{print $1}')"
+if [ "$ACTUAL_SHA256" != "${EXPECTED_SHA256,,}" ]; then
+  echo "ERROR: agent binary checksum MISMATCH — refusing to install." >&2
+  echo "  expected: ${EXPECTED_SHA256,,}" >&2
+  echo "  actual:   $ACTUAL_SHA256" >&2
+  rm -f "${INSTALL_DIR}/agent.new"
+  exit 1
+fi
+echo "    Checksum OK ($ACTUAL_SHA256)"
 chmod +x "${INSTALL_DIR}/agent.new"
 mv -f "${INSTALL_DIR}/agent.new" "${INSTALL_DIR}/agent"
 
