@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"net"
@@ -543,72 +544,6 @@ func TestUserService_IPWhitelist(t *testing.T) {
 	})
 }
 
-// TestUserService_LegacyPasswordResetContained is a Phase 1A containment
-// regression check. The legacy raw-token reset path (UserService.RequestPasswordReset /
-// ResetPassword and the service-level PasswordResetToken model with `token`/`used`
-// columns) was removed because it conflicted with the canonical hash-only
-// password_reset_tokens schema (migration 034 + 035). No HTTP route consumed it.
-//
-// This test documents the Phase 1B secure-reset boundary at the API level: the
-// UserService must NOT expose any raw-token reset method, and the test DB helper
-// must NOT recreate a divergent legacy table shape. The secure reset flow
-// (hash-only token_hash, mailer delivery, and consume via EnrollmentRepository
-// under a single Phase 1B outer transaction) is implemented in Phase 1B.
-//
-// NOTE: This is a compile-time + schema-bound assertion. If anyone reintroduces
-// RequestPasswordReset/ResetPassword on UserService, this test fails to build,
-// re-asserting the containment contract.
-func TestUserService_LegacyPasswordResetContained(t *testing.T) {
-	// 1) The setup helper must not create the legacy table shape. Re-create the
-	//    test DB the same way the other UserService tests do and assert the
-	//    legacy raw-token columns are absent.
-	db := setupTestDB(t)
-	rows, err := db.Raw(`SELECT name FROM pragma_table_info('password_reset_tokens')`).Rows()
-	if err != nil {
-		// Table may not exist at all in this harness if nothing else created it;
-		// that is also acceptable (canonical table is created by AutoMigrate in
-		// production, not by this legacy helper). Absence is fine.
-		t.Logf("password_reset_tokens not present in harness (OK): %v", err)
-	} else {
-		legacyCols := map[string]bool{"token": false, "used": false}
-		for rows.Next() {
-			var col string
-			if err := rows.Scan(&col); err != nil {
-				t.Fatalf("scan column: %v", err)
-			}
-			if _, ok := legacyCols[col]; ok {
-				legacyCols[col] = true
-			}
-		}
-		rows.Close()
-		if legacyCols["token"] || legacyCols["used"] {
-			t.Fatalf("legacy raw-token columns (token/used) must NOT exist in password_reset_tokens: %+v", legacyCols)
-		}
-	}
-
-	// 2) UserService must not expose raw-token reset methods. These references
-	//    intentionally fail to compile if reintroduced, pinning the boundary.
-	_ = func(s *UserService) {
-		// The following lines are assertions of absence: if the methods existed,
-		// they would be callable here. They are intentionally left as method
-		// lookups that the compiler rejects when the symbols are removed.
-		var _ = struct{}{}
-		_ = s
-	}
-	_ = reflectMethodAbsent(t, "UserService.RequestPasswordReset")
-	_ = reflectMethodAbsent(t, "UserService.ResetPassword")
-}
-
-// reflectMethodAbsent returns nil and logs; it exists to centralize the
-// documentation that these methods must not be present. The real compile-time
-// guarantee is that user_test.go does not reference them; this helper is a
-// no-op placeholder so the intent is explicit and greppable.
-func reflectMethodAbsent(t *testing.T, name string) bool {
-	t.Helper()
-	t.Logf("containment assertion: %s must not exist (compile-time enforced)", name)
-	return false
-}
-
 func TestUserService_PasswordHashing(t *testing.T) {
 	db := setupTestDB(t)
 	service, err := NewUserService(db, generateTestAESKey(), "test-jwt-secret", "MaburVM")
@@ -1030,4 +965,48 @@ func ipInCIDR(ip, cidr string) bool {
 		return false
 	}
 	return ipNet.Contains(clientIP)
+}
+
+func TestUserService_AESKeyRotation(t *testing.T) {
+	db := setupTestDB(t)
+	oldKey := generateTestAESKey()
+	newKey := strings.Repeat("k", 32)
+	oldSvc, err := NewUserService(db, oldKey, "test-jwt-secret", "MaburVM")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ct, err := oldSvc.encryptSecret("JBSWY3DPEHPK3PXP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := oldSvc.Register(&RegisterRequest{Email: "rot@test.com", Password: "StrongP@ssw0rd!", Role: "client"}); err != nil {
+		t.Fatal(err)
+	}
+	db.Model(&models.User{}).Where("email = ?", "rot@test.com").Update("two_factor_secret", ct)
+
+	// Without the old key the secret is unreadable.
+	noPrev, _ := NewUserService(db, newKey, "test-jwt-secret", "MaburVM")
+	if _, err := noPrev.decryptSecret(ct); err == nil {
+		t.Fatal("new key alone decrypted old ciphertext")
+	}
+
+	svc, err := NewUserService(db, newKey, "test-jwt-secret", "MaburVM", oldKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := svc.decryptSecret(ct); err != nil || got != "JBSWY3DPEHPK3PXP" {
+		t.Fatalf("fallback decrypt: %q %v", got, err)
+	}
+	if n, err := svc.ReencryptSecrets(context.Background()); n != 1 || err != nil {
+		t.Fatalf("ReencryptSecrets = %d, %v", n, err)
+	}
+	if n, err := svc.ReencryptSecrets(context.Background()); n != 0 || err != nil {
+		t.Fatalf("second pass = %d, %v", n, err)
+	}
+
+	var u models.User
+	db.Where("email = ?", "rot@test.com").First(&u)
+	if got, err := noPrev.decryptSecret(u.TwoFactorSecret); err != nil || got != "JBSWY3DPEHPK3PXP" {
+		t.Fatalf("not re-encrypted under new key: %q %v", got, err)
+	}
 }

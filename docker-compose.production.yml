@@ -154,7 +154,10 @@ services:
     image: maburvm-panel:local
     container_name: maburvm-panel
     restart: unless-stopped
-    # Panel API is NOT published to the host — it stays internal (web proxies it).
+    # Panel API is NOT published publicly — web proxies it. The loopback port
+    # exists only so the host's reverse proxy can expose /metrics to a scraper.
+    ports:
+      - "127.0.0.1:${PANEL_METRICS_PORT:-8081}:8080"
     environment:
       DB_HOST: postgres
       DB_PORT: 5432
@@ -198,6 +201,8 @@ services:
       S3_SECRET_KEY_FILE: /run/secrets/s3_restricted_password
       S3_BUCKET: ${S3_BUCKET:-maburvm}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?set ALLOWED_ORIGINS in .env.production}
+      # Bearer token for GET /metrics (Prometheus); unset leaves the endpoint off.
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
     # Panel needs: `data` (postgres/minio/minio-init), `webpanel` (web), and a
     # NON-internal `agent-egress` to initiate outbound gRPC to agents. It does
     # NOT join `edge`. A Docker network is NOT a full host/firewall policy.

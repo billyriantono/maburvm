@@ -1,6 +1,7 @@
 package secret
 
 import (
+	"bytes"
 	"crypto/aes"
 	"encoding/base64"
 	"encoding/json"
@@ -685,5 +686,20 @@ func TestGeneratedAESKeyEntropy_Is256Bits(t *testing.T) {
 	// as a string length — raw 32-byte strings have len 32, valid for aes.NewCipher).
 	if _, err := aes.NewCipher([]byte(p1.AES)); err != nil {
 		t.Fatalf("generated key must be a valid 32-byte AES key: %v", err)
+	}
+}
+
+func TestParsePreviousAESKeys(t *testing.T) {
+	k1 := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
+	k2 := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32))
+	got, err := parsePreviousAESKeys(" " + k1 + ", ," + k2)
+	if err != nil || len(got) != 2 || got[0] != string(bytes.Repeat([]byte{1}, 32)) {
+		t.Fatalf("got %d keys, err %v", len(got), err)
+	}
+	if got, err := parsePreviousAESKeys(""); err != nil || got != nil {
+		t.Fatalf("empty: %v %v", got, err)
+	}
+	if _, err := parsePreviousAESKeys(k1 + ",short"); err == nil {
+		t.Fatal("invalid key accepted")
 	}
 }

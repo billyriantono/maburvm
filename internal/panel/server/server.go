@@ -91,6 +91,7 @@ func NewServer(db *gorm.DB, cfg *config.Config) *Server {
 	e.Use(middleware.Secure())
 	e.Use(middleware.BodyLimit("10M"))
 	e.Use(middleware.RequestID())
+	e.Use(metricsMiddleware)
 
 	return &Server{
 		echo:                  e,
@@ -242,6 +243,9 @@ func (s *Server) setupHealthRoutes() {
 
 	// /readyz performs dependency readiness checks.
 	s.echo.GET("/readyz", s.readinessHandler)
+
+	// Prometheus scrape endpoint; off unless METRICS_TOKEN is set.
+	s.echo.GET("/metrics", metricsHandler(s.cfg.Server.MetricsToken, s.db))
 }
 
 // livenessHandler reports that the process is up. It intentionally performs NO
@@ -351,10 +355,15 @@ func (s *Server) setupAuthRoutes(g *echo.Group) {
 		s.cfg.JWT.AESKey,
 		s.cfg.JWT.SecretKey,
 		"maburvm-panel",
+		s.cfg.JWT.AESPreviousKeys...,
 	)
 	if err != nil {
 		slog.Default().Error("failed to create user service", "error", err)
 		return
+	}
+	if len(s.cfg.JWT.AESPreviousKeys) > 0 {
+		n, err := userService.ReencryptSecrets(context.Background())
+		slog.Default().Info("AES key rotation: re-encrypted secrets under the current key", "count", n, "error", err)
 	}
 
 	authHandler := handler.NewAuthHandler(userService)
@@ -1259,7 +1268,7 @@ func (s *Server) setupBillingRoutes() {
 func (s *Server) setupSettingsRoutes(g *echo.Group) {
 	userRepo := repository.NewUserRepository(s.db)
 	// Real TOTP-backed 2FA service (encrypted secrets, QR, backup codes).
-	userService, userSvcErr := service.NewUserService(s.db, s.cfg.JWT.AESKey, s.cfg.JWT.SecretKey, "maburvm-panel")
+	userService, userSvcErr := service.NewUserService(s.db, s.cfg.JWT.AESKey, s.cfg.JWT.SecretKey, "maburvm-panel", s.cfg.JWT.AESPreviousKeys...)
 	if userSvcErr != nil {
 		slog.Default().Error("settings: failed to init user service for 2FA", "error", userSvcErr)
 	}

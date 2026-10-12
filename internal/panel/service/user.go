@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
@@ -78,20 +79,30 @@ func sendEmail(to, subject, body string) error {
 type UserService struct {
 	db        *gorm.DB
 	aesKey    []byte
+	prevKeys  [][]byte // retired AES keys, decrypt-only (rotation)
 	jwtSecret string
 	issuer    string
 }
 
-// NewUserService creates a new UserService
-func NewUserService(db *gorm.DB, aesKey, jwtSecret, issuer string) (*UserService, error) {
+// NewUserService creates a new UserService. previousAESKeys are retired keys
+// still accepted for decryption while a key rotation is in progress.
+func NewUserService(db *gorm.DB, aesKey, jwtSecret, issuer string, previousAESKeys ...string) (*UserService, error) {
 	key := []byte(aesKey)
 	if len(key) != 32 {
 		return nil, errors.New("AES key must be 32 bytes for AES-256")
+	}
+	var prev [][]byte
+	for _, k := range previousAESKeys {
+		if len(k) != 32 {
+			return nil, errors.New("previous AES key must be 32 bytes for AES-256")
+		}
+		prev = append(prev, []byte(k))
 	}
 
 	return &UserService{
 		db:        db,
 		aesKey:    key,
+		prevKeys:  prev,
 		jwtSecret: jwtSecret,
 		issuer:    issuer,
 	}, nil
@@ -519,14 +530,67 @@ func (s *UserService) encryptSecret(plainText string) (string, error) {
 	return base64.StdEncoding.EncodeToString(ciphertext), nil
 }
 
-// decryptSecret decrypts an encrypted TOTP secret
+// decryptSecret decrypts an encrypted TOTP secret, falling back to retired
+// keys so data stays readable mid-rotation.
 func (s *UserService) decryptSecret(cipherText string) (string, error) {
+	plain, err := decryptWithKey(s.aesKey, cipherText)
+	for _, k := range s.prevKeys {
+		if err == nil {
+			break
+		}
+		plain, err = decryptWithKey(k, cipherText)
+	}
+	return plain, err
+}
+
+// ReencryptSecrets rewrites 2FA secrets and backup codes that only decrypt
+// under a retired key so they use the current key. It returns how many values
+// were rewritten; values no key can decrypt are reported in err and left as-is.
+func (s *UserService) ReencryptSecrets(ctx context.Context) (int, error) {
+	if len(s.prevKeys) == 0 {
+		return 0, nil
+	}
+	var users []models.User
+	if err := s.db.WithContext(ctx).Select("id", "two_factor_secret", "two_factor_backup_codes").
+		Where("two_factor_secret <> '' OR two_factor_backup_codes <> ''").Find(&users).Error; err != nil {
+		return 0, err
+	}
+	n := 0
+	var errs []error
+	for _, u := range users {
+		for col, ct := range map[string]string{"two_factor_secret": u.TwoFactorSecret, "two_factor_backup_codes": u.TwoFactorBackupCodes} {
+			if ct == "" {
+				continue
+			}
+			if _, err := decryptWithKey(s.aesKey, ct); err == nil {
+				continue // already on the current key
+			}
+			plain, err := s.decryptSecret(ct)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("user %s %s: %w", u.ID, col, err))
+				continue
+			}
+			fresh, err := s.encryptSecret(plain)
+			if err == nil {
+				err = s.db.WithContext(ctx).Model(&models.User{}).Where("id = ?", u.ID).Update(col, fresh).Error
+			}
+			if err != nil {
+				errs = append(errs, fmt.Errorf("user %s %s: %w", u.ID, col, err))
+				continue
+			}
+			n++
+		}
+	}
+	return n, errors.Join(errs...)
+}
+
+func decryptWithKey(key []byte, cipherText string) (string, error) {
 	data, err := base64.StdEncoding.DecodeString(cipherText)
 	if err != nil {
 		return "", err
 	}
 
-	block, err := aes.NewCipher(s.aesKey)
+	block, err := aes.NewCipher(key)
 	if err != nil {
 		return "", err
 	}

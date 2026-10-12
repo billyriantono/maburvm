@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/maburvm/panel/internal/panel/repository"
 	"github.com/maburvm/panel/internal/shared/models"
 	"golang.org/x/crypto/bcrypt"
@@ -60,6 +61,7 @@ func (s *UserService) RequestPasswordReset(ctx context.Context, email, resetURLB
 
 	repo := repository.NewEnrollmentRepository(s.db)
 	tok := &models.PasswordResetToken{
+		ID:        uuid.New(),
 		UserID:    user.ID,
 		TokenHash: hashResetToken(raw),
 		ExpiresAt: time.Now().Add(resetTokenTTL),
@@ -68,18 +70,21 @@ func (s *UserService) RequestPasswordReset(ctx context.Context, email, resetURLB
 		return err
 	}
 
-	// Best-effort email — a send failure must not reveal that the account exists
-	// (nor should it fail the request differently from an unknown email).
-	if cfg, ok, cerr := LoadSMTPSettings(s.db); cerr == nil && ok {
-		resetURL := resetURLBase
-		sep := "?"
-		if strings.Contains(resetURLBase, "?") {
-			sep = "&"
-		}
-		resetURL = resetURLBase + sep + "token=" + raw
-		_ = SendPasswordResetEmail(cfg, user.Email, user.Name, resetURL)
+	sep := "?"
+	if strings.Contains(resetURLBase, "?") {
+		sep = "&"
 	}
+	deliverResetLink(s.db, user.Email, user.Name, resetURLBase+sep+"token="+raw)
 	return nil
+}
+
+// deliverResetLink emails the reset link. Best-effort — a send failure must not
+// reveal that the account exists (nor fail the request differently from an
+// unknown email). A var so tests can capture the link.
+var deliverResetLink = func(db *gorm.DB, to, name, resetURL string) {
+	if cfg, ok, err := LoadSMTPSettings(db); err == nil && ok {
+		_ = SendPasswordResetEmail(cfg, to, name, resetURL)
+	}
 }
 
 // ResetPassword consumes a raw reset token and sets a new password. The token is

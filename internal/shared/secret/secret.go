@@ -29,6 +29,12 @@
 // invalidates active sessions, and rotating the AES key makes previously
 // encrypted data (2FA secrets, stored credentials) unreadable — which is why the
 // AES key lives in a file next to the panel, not in the database it protects.
+//
+// AES key rotation: put the new key in aes_key / AES_KEY and the old one in
+// aes_key_previous / AES_KEY_PREVIOUS (comma-separated base64 for several),
+// then restart. Data still decrypts under a previous key, and the panel
+// re-encrypts it with the new key on boot; once the boot log reports nothing
+// left on old keys, remove the previous entry.
 package secret
 
 import (
@@ -41,6 +47,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -76,6 +83,9 @@ var (
 type Pair struct {
 	JWT string
 	AES string
+	// AESPrevious are retired AES keys (canonical raw form) still accepted for
+	// decryption during a rotation. Never used to encrypt.
+	AESPrevious []string
 }
 
 type resolver struct {
@@ -126,8 +136,12 @@ func resolveOnce() (*Pair, error) {
 		if err != nil {
 			return nil, fmt.Errorf("AES_KEY: %w: %v", ErrInvalidValue, err)
 		}
+		prev, err := parsePreviousAESKeys(os.Getenv("AES_KEY_PREVIOUS"))
+		if err != nil {
+			return nil, fmt.Errorf("AES_KEY_PREVIOUS: %w: %v", ErrInvalidValue, err)
+		}
 		// Env is the source of truth; do not touch the persisted file.
-		return &Pair{JWT: jwtEnv, AES: aes}, nil
+		return &Pair{JWT: jwtEnv, AES: aes, AESPrevious: prev}, nil
 	}
 
 	// Partial environment (exactly one set) is rejected: it cannot produce a
@@ -168,7 +182,29 @@ func resolveOnce() (*Pair, error) {
 	if err != nil {
 		return nil, fmt.Errorf("aes_key (%s): %w: %v", path, ErrInvalidValue, err)
 	}
-	return &Pair{JWT: jwt, AES: aesKey}, nil
+	prev, err := parsePreviousAESKeys(data["aes_key_previous"])
+	if err != nil {
+		return nil, fmt.Errorf("aes_key_previous (%s): %w: %v", path, ErrInvalidValue, err)
+	}
+	return &Pair{JWT: jwt, AES: aesKey, AESPrevious: prev}, nil
+}
+
+// parsePreviousAESKeys parses a comma-separated list of retired AES keys. Each
+// entry goes through normalizeAESKey, so base64 is the safe form (a raw key
+// could itself contain a comma). Empty input yields no keys.
+func parsePreviousAESKeys(v string) ([]string, error) {
+	var keys []string
+	for _, k := range strings.Split(v, ",") {
+		if k = strings.TrimSpace(k); k == "" {
+			continue
+		}
+		n, err := normalizeAESKey(k)
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, n)
+	}
+	return keys, nil
 }
 
 // loadFile reads the persisted secrets file. A missing file is reported as
@@ -344,6 +380,15 @@ func normalizeAESKey(v string) (string, error) {
 		return "", fmt.Errorf("must decode to %d bytes, got %d", aesKeyBytes, len(b))
 	}
 	return string(b), nil
+}
+
+// PreviousAESKeys returns retired AES keys still accepted for decryption.
+func PreviousAESKeys() ([]string, error) {
+	pair, err := Resolve()
+	if err != nil {
+		return nil, err
+	}
+	return pair.AESPrevious, nil
 }
 
 // JWTSecret returns the cached JWT signing key. It resolves the complete pair

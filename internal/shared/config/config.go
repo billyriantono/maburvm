@@ -32,6 +32,8 @@ type ServerConfig struct {
 	ReadTimeout    time.Duration `env:"SERVER_READ_TIMEOUT" envDefault:"30s"`
 	WriteTimeout   time.Duration `env:"SERVER_WRITE_TIMEOUT" envDefault:"30s"`
 	AllowedOrigins string        `env:"ALLOWED_ORIGINS" envDefault:"http://localhost:3000"`
+	// MetricsToken enables GET /metrics (Prometheus) for "Authorization: Bearer <token>".
+	MetricsToken string `env:"METRICS_TOKEN"`
 }
 
 // JWT settings
@@ -40,6 +42,9 @@ type JWTConfig struct {
 	AccessTokenTTL  time.Duration `env:"JWT_ACCESS_TOKEN_TTL" envDefault:"15m"`
 	RefreshTokenTTL time.Duration `env:"JWT_REFRESH_TOKEN_TTL" envDefault:"168h"`
 	AESKey          string        `env:"AES_KEY"` // 32-byte key for AES-256 encryption
+	// AESPreviousKeys are retired keys still accepted for decryption; set by
+	// applySecrets from AES_KEY_PREVIOUS / secrets.json aes_key_previous.
+	AESPreviousKeys []string
 }
 
 // Agent settings
@@ -194,6 +199,12 @@ func applySecrets(cfg *Config) error {
 		return fmt.Errorf("failed to resolve AES key: %w", err)
 	}
 	cfg.JWT.AESKey = aes
+
+	prev, err := secret.PreviousAESKeys()
+	if err != nil {
+		return fmt.Errorf("failed to resolve previous AES keys: %w", err)
+	}
+	cfg.JWT.AESPreviousKeys = prev
 	return nil
 }
 
