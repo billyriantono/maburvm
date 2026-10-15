@@ -1846,9 +1846,12 @@ type VMStatusResponse struct {
 	// last_state_change timestamp
 	LastStateChange *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=last_state_change,json=lastStateChange,proto3" json:"last_state_change,omitempty"`
 	// error_message if VM is in ERROR state
-	ErrorMessage  string `protobuf:"bytes,9,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ErrorMessage string `protobuf:"bytes,9,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	// configured_resources is the domain's real spec (vcpus, memory_mb, disk_gb)
+	// so the panel can catch out-of-band resizes; zero fields are unknown.
+	ConfiguredResources *VMResources `protobuf:"bytes,10,opt,name=configured_resources,json=configuredResources,proto3" json:"configured_resources,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *VMStatusResponse) Reset() {
@@ -1942,6 +1945,13 @@ func (x *VMStatusResponse) GetErrorMessage() string {
 		return x.ErrorMessage
 	}
 	return ""
+}
+
+func (x *VMStatusResponse) GetConfiguredResources() *VMResources {
+	if x != nil {
+		return x.ConfiguredResources
+	}
+	return nil
 }
 
 // VMResourceUsage contains actual resource consumption metrics.
@@ -7941,7 +7951,7 @@ const file_api_proto_agent_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"O\n" +
 	"\x0fVMStatusRequest\x12\x13\n" +
 	"\x05vm_id\x18\x01 \x01(\tR\x04vmId\x12'\n" +
-	"\x0finclude_metrics\x18\x02 \x01(\bR\x0eincludeMetrics\"\xf6\x02\n" +
+	"\x0finclude_metrics\x18\x02 \x01(\bR\x0eincludeMetrics\"\xbd\x03\n" +
 	"\x10VMStatusResponse\x12\x13\n" +
 	"\x05vm_id\x18\x01 \x01(\tR\x04vmId\x12$\n" +
 	"\x05state\x18\x02 \x01(\x0e2\x0e.agent.VMStateR\x05state\x12%\n" +
@@ -7951,7 +7961,9 @@ const file_api_proto_agent_proto_rawDesc = "" +
 	"\fip_addresses\x18\x06 \x03(\tR\vipAddresses\x12\x19\n" +
 	"\bvnc_port\x18\a \x01(\x05R\avncPort\x12F\n" +
 	"\x11last_state_change\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\x0flastStateChange\x12#\n" +
-	"\rerror_message\x18\t \x01(\tR\ferrorMessage\"\xf4\x02\n" +
+	"\rerror_message\x18\t \x01(\tR\ferrorMessage\x12E\n" +
+	"\x14configured_resources\x18\n" +
+	" \x01(\v2\x12.agent.VMResourcesR\x13configuredResources\"\xf4\x02\n" +
 	"\x0fVMResourceUsage\x12\x1f\n" +
 	"\vcpu_percent\x18\x01 \x01(\x01R\n" +
 	"cpuPercent\x12$\n" +
@@ -8711,136 +8723,137 @@ var file_api_proto_agent_proto_depIdxs = []int32{
 	2,   // 19: agent.VMStatusResponse.state:type_name -> agent.VMState
 	24,  // 20: agent.VMStatusResponse.current_resources:type_name -> agent.VMResourceUsage
 	103, // 21: agent.VMStatusResponse.last_state_change:type_name -> google.protobuf.Timestamp
-	3,   // 22: agent.VMMetricsRequest.metric_types:type_name -> agent.MetricType
-	103, // 23: agent.VMMetricsResponse.timestamp:type_name -> google.protobuf.Timestamp
-	27,  // 24: agent.VMMetricsResponse.cpu:type_name -> agent.CPUMetrics
-	28,  // 25: agent.VMMetricsResponse.memory:type_name -> agent.MemoryMetrics
-	29,  // 26: agent.VMMetricsResponse.disk:type_name -> agent.DiskMetrics
-	30,  // 27: agent.VMMetricsResponse.network:type_name -> agent.NetworkMetrics
-	31,  // 28: agent.VMMetricsResponse.process:type_name -> agent.ProcessMetrics
-	4,   // 29: agent.SnapshotRequest.operation:type_name -> agent.SnapshotOperationType
-	4,   // 30: agent.SnapshotResponse.operation:type_name -> agent.SnapshotOperationType
-	34,  // 31: agent.SnapshotResponse.snapshot:type_name -> agent.SnapshotInfo
-	34,  // 32: agent.SnapshotResponse.snapshots:type_name -> agent.SnapshotInfo
-	46,  // 33: agent.SnapshotResponse.error:type_name -> agent.ErrorResponse
-	103, // 34: agent.SnapshotInfo.created_at:type_name -> google.protobuf.Timestamp
-	2,   // 35: agent.SnapshotInfo.vm_state:type_name -> agent.VMState
-	37,  // 36: agent.VMNetworkConfig.interfaces:type_name -> agent.NetworkInterface
-	38,  // 37: agent.VMNetworkConfig.firewall_rules:type_name -> agent.FirewallRule
-	39,  // 38: agent.VMNetworkConfig.bandwidth_limits:type_name -> agent.BandwidthLimit
-	36,  // 39: agent.VMNetworkConfig.port_forwards:type_name -> agent.PortForward
-	5,   // 40: agent.NetworkInterface.type:type_name -> agent.NetworkInterfaceType
-	6,   // 41: agent.FirewallRule.direction:type_name -> agent.FirewallDirection
-	7,   // 42: agent.FirewallRule.action:type_name -> agent.FirewallAction
-	35,  // 43: agent.NetworkConfigRequest.config:type_name -> agent.VMNetworkConfig
-	37,  // 44: agent.NetworkConfigResponse.applied_interfaces:type_name -> agent.NetworkInterface
-	46,  // 45: agent.NetworkConfigResponse.error:type_name -> agent.ErrorResponse
-	43,  // 46: agent.StorageConfig.primary_disk:type_name -> agent.DiskConfig
-	43,  // 47: agent.StorageConfig.additional_volumes:type_name -> agent.DiskConfig
-	8,   // 48: agent.DiskConfig.format:type_name -> agent.DiskFormat
-	9,   // 49: agent.DiskConfig.backend:type_name -> agent.StorageBackend
-	103, // 50: agent.VNCProxyResponse.expires_at:type_name -> google.protobuf.Timestamp
-	46,  // 51: agent.VNCProxyResponse.error:type_name -> agent.ErrorResponse
-	10,  // 52: agent.ErrorResponse.code:type_name -> agent.ErrorCode
-	101, // 53: agent.ErrorResponse.details:type_name -> agent.ErrorResponse.DetailsEntry
-	49,  // 54: agent.GetNodeInfoResponse.os_info:type_name -> agent.OSInfo
-	50,  // 55: agent.GetNodeInfoResponse.cpu_info:type_name -> agent.CPUInfo
-	46,  // 56: agent.GetNodeInfoResponse.error:type_name -> agent.ErrorResponse
-	46,  // 57: agent.DiskImportResponse.error:type_name -> agent.ErrorResponse
-	46,  // 58: agent.BackupDiskResponse.error:type_name -> agent.ErrorResponse
-	46,  // 59: agent.RestoreDiskResponse.error:type_name -> agent.ErrorResponse
-	46,  // 60: agent.CreateStorageVolumeResponse.error:type_name -> agent.ErrorResponse
-	46,  // 61: agent.DeleteStorageVolumeResponse.error:type_name -> agent.ErrorResponse
-	46,  // 62: agent.AttachDiskResponse.error:type_name -> agent.ErrorResponse
-	1,   // 63: agent.AttachDiskResponse.storage_disposition:type_name -> agent.DiskStorageDisposition
-	46,  // 64: agent.DetachDiskResponse.error:type_name -> agent.ErrorResponse
-	1,   // 65: agent.DetachDiskResponse.storage_disposition:type_name -> agent.DiskStorageDisposition
-	46,  // 66: agent.DefineNetworkResponse.error:type_name -> agent.ErrorResponse
-	46,  // 67: agent.UndefineNetworkResponse.error:type_name -> agent.ErrorResponse
-	46,  // 68: agent.MigrateVMResponse.error:type_name -> agent.ErrorResponse
-	46,  // 69: agent.SyncTemplateResponse.error:type_name -> agent.ErrorResponse
-	74,  // 70: agent.GetStorageReportResponse.pools:type_name -> agent.PoolCapacity
-	75,  // 71: agent.GetStorageReportResponse.disk_locations:type_name -> agent.DiskLocation
-	46,  // 72: agent.GetStorageReportResponse.error:type_name -> agent.ErrorResponse
-	46,  // 73: agent.GetLiveMetricsResponse.error:type_name -> agent.ErrorResponse
-	14,  // 74: agent.GetGuestConnectionsResponse.guests:type_name -> agent.GuestConnectionReport
-	46,  // 75: agent.GetGuestConnectionsResponse.error:type_name -> agent.ErrorResponse
-	83,  // 76: agent.ScanVMsResponse.vms:type_name -> agent.ScannedVM
-	46,  // 77: agent.ScanVMsResponse.error:type_name -> agent.ErrorResponse
-	84,  // 78: agent.ScannedVM.disks:type_name -> agent.ScannedDisk
-	85,  // 79: agent.ScannedVM.networks:type_name -> agent.ScannedNetwork
-	46,  // 80: agent.FloatingIPResponse.error:type_name -> agent.ErrorResponse
-	46,  // 81: agent.VPCResponse.error:type_name -> agent.ErrorResponse
-	103, // 82: agent.ExportProgress.started_at:type_name -> google.protobuf.Timestamp
-	94,  // 83: agent.GetExportProgressResponse.exports:type_name -> agent.ExportProgress
-	46,  // 84: agent.GetExportProgressResponse.error:type_name -> agent.ErrorResponse
-	46,  // 85: agent.SetConsoleAccessResponse.error:type_name -> agent.ErrorResponse
-	46,  // 86: agent.SetQuarantineResponse.error:type_name -> agent.ErrorResponse
-	11,  // 87: agent.NodeAgent.RegisterNode:input_type -> agent.RegisterNodeRequest
-	13,  // 88: agent.NodeAgent.Heartbeat:input_type -> agent.HeartbeatRequest
-	19,  // 89: agent.NodeAgent.ExecuteVMCommand:input_type -> agent.VMCommandRequest
-	22,  // 90: agent.NodeAgent.GetVMStatus:input_type -> agent.VMStatusRequest
-	25,  // 91: agent.NodeAgent.StreamVMMetrics:input_type -> agent.VMMetricsRequest
-	32,  // 92: agent.NodeAgent.CreateSnapshot:input_type -> agent.SnapshotRequest
-	40,  // 93: agent.NodeAgent.ApplyNetworkConfig:input_type -> agent.NetworkConfigRequest
-	44,  // 94: agent.NodeAgent.StartVNCProxy:input_type -> agent.VNCProxyRequest
-	47,  // 95: agent.NodeAgent.GetNodeInfo:input_type -> agent.GetNodeInfoRequest
-	51,  // 96: agent.NodeAgent.ImportDisk:input_type -> agent.DiskImportRequest
-	53,  // 97: agent.NodeAgent.BackupDisk:input_type -> agent.BackupDiskRequest
-	55,  // 98: agent.NodeAgent.RestoreDisk:input_type -> agent.RestoreDiskRequest
-	77,  // 99: agent.NodeAgent.GetLiveMetrics:input_type -> agent.GetLiveMetricsRequest
-	81,  // 100: agent.NodeAgent.ScanVMs:input_type -> agent.ScanVMsRequest
-	57,  // 101: agent.NodeAgent.CreateStorageVolume:input_type -> agent.CreateStorageVolumeRequest
-	59,  // 102: agent.NodeAgent.DeleteStorageVolume:input_type -> agent.DeleteStorageVolumeRequest
-	73,  // 103: agent.NodeAgent.GetStorageReport:input_type -> agent.GetStorageReportRequest
-	69,  // 104: agent.NodeAgent.MigrateVM:input_type -> agent.MigrateVMRequest
-	71,  // 105: agent.NodeAgent.SyncTemplate:input_type -> agent.SyncTemplateRequest
-	61,  // 106: agent.NodeAgent.AttachDisk:input_type -> agent.AttachDiskRequest
-	63,  // 107: agent.NodeAgent.DetachDisk:input_type -> agent.DetachDiskRequest
-	65,  // 108: agent.NodeAgent.DefineNetwork:input_type -> agent.DefineNetworkRequest
-	67,  // 109: agent.NodeAgent.UndefineNetwork:input_type -> agent.UndefineNetworkRequest
-	86,  // 110: agent.NodeAgent.ProbeIPs:input_type -> agent.ProbeIPsRequest
-	88,  // 111: agent.NodeAgent.ConfigureFloatingIP:input_type -> agent.FloatingIPRequest
-	90,  // 112: agent.NodeAgent.ConfigureVPC:input_type -> agent.VPCRequest
-	92,  // 113: agent.NodeAgent.SetQuarantine:input_type -> agent.SetQuarantineRequest
-	96,  // 114: agent.NodeAgent.SetConsoleAccess:input_type -> agent.SetConsoleAccessRequest
-	93,  // 115: agent.NodeAgent.GetExportProgress:input_type -> agent.GetExportProgressRequest
-	79,  // 116: agent.NodeAgent.GetGuestConnections:input_type -> agent.GetGuestConnectionsRequest
-	12,  // 117: agent.NodeAgent.RegisterNode:output_type -> agent.RegisterNodeResponse
-	16,  // 118: agent.NodeAgent.Heartbeat:output_type -> agent.HeartbeatResponse
-	20,  // 119: agent.NodeAgent.ExecuteVMCommand:output_type -> agent.VMCommandResponse
-	23,  // 120: agent.NodeAgent.GetVMStatus:output_type -> agent.VMStatusResponse
-	26,  // 121: agent.NodeAgent.StreamVMMetrics:output_type -> agent.VMMetricsResponse
-	33,  // 122: agent.NodeAgent.CreateSnapshot:output_type -> agent.SnapshotResponse
-	41,  // 123: agent.NodeAgent.ApplyNetworkConfig:output_type -> agent.NetworkConfigResponse
-	45,  // 124: agent.NodeAgent.StartVNCProxy:output_type -> agent.VNCProxyResponse
-	48,  // 125: agent.NodeAgent.GetNodeInfo:output_type -> agent.GetNodeInfoResponse
-	52,  // 126: agent.NodeAgent.ImportDisk:output_type -> agent.DiskImportResponse
-	54,  // 127: agent.NodeAgent.BackupDisk:output_type -> agent.BackupDiskResponse
-	56,  // 128: agent.NodeAgent.RestoreDisk:output_type -> agent.RestoreDiskResponse
-	78,  // 129: agent.NodeAgent.GetLiveMetrics:output_type -> agent.GetLiveMetricsResponse
-	82,  // 130: agent.NodeAgent.ScanVMs:output_type -> agent.ScanVMsResponse
-	58,  // 131: agent.NodeAgent.CreateStorageVolume:output_type -> agent.CreateStorageVolumeResponse
-	60,  // 132: agent.NodeAgent.DeleteStorageVolume:output_type -> agent.DeleteStorageVolumeResponse
-	76,  // 133: agent.NodeAgent.GetStorageReport:output_type -> agent.GetStorageReportResponse
-	70,  // 134: agent.NodeAgent.MigrateVM:output_type -> agent.MigrateVMResponse
-	72,  // 135: agent.NodeAgent.SyncTemplate:output_type -> agent.SyncTemplateResponse
-	62,  // 136: agent.NodeAgent.AttachDisk:output_type -> agent.AttachDiskResponse
-	64,  // 137: agent.NodeAgent.DetachDisk:output_type -> agent.DetachDiskResponse
-	66,  // 138: agent.NodeAgent.DefineNetwork:output_type -> agent.DefineNetworkResponse
-	68,  // 139: agent.NodeAgent.UndefineNetwork:output_type -> agent.UndefineNetworkResponse
-	87,  // 140: agent.NodeAgent.ProbeIPs:output_type -> agent.ProbeIPsResponse
-	89,  // 141: agent.NodeAgent.ConfigureFloatingIP:output_type -> agent.FloatingIPResponse
-	91,  // 142: agent.NodeAgent.ConfigureVPC:output_type -> agent.VPCResponse
-	98,  // 143: agent.NodeAgent.SetQuarantine:output_type -> agent.SetQuarantineResponse
-	97,  // 144: agent.NodeAgent.SetConsoleAccess:output_type -> agent.SetConsoleAccessResponse
-	95,  // 145: agent.NodeAgent.GetExportProgress:output_type -> agent.GetExportProgressResponse
-	80,  // 146: agent.NodeAgent.GetGuestConnections:output_type -> agent.GetGuestConnectionsResponse
-	117, // [117:147] is the sub-list for method output_type
-	87,  // [87:117] is the sub-list for method input_type
-	87,  // [87:87] is the sub-list for extension type_name
-	87,  // [87:87] is the sub-list for extension extendee
-	0,   // [0:87] is the sub-list for field type_name
+	18,  // 22: agent.VMStatusResponse.configured_resources:type_name -> agent.VMResources
+	3,   // 23: agent.VMMetricsRequest.metric_types:type_name -> agent.MetricType
+	103, // 24: agent.VMMetricsResponse.timestamp:type_name -> google.protobuf.Timestamp
+	27,  // 25: agent.VMMetricsResponse.cpu:type_name -> agent.CPUMetrics
+	28,  // 26: agent.VMMetricsResponse.memory:type_name -> agent.MemoryMetrics
+	29,  // 27: agent.VMMetricsResponse.disk:type_name -> agent.DiskMetrics
+	30,  // 28: agent.VMMetricsResponse.network:type_name -> agent.NetworkMetrics
+	31,  // 29: agent.VMMetricsResponse.process:type_name -> agent.ProcessMetrics
+	4,   // 30: agent.SnapshotRequest.operation:type_name -> agent.SnapshotOperationType
+	4,   // 31: agent.SnapshotResponse.operation:type_name -> agent.SnapshotOperationType
+	34,  // 32: agent.SnapshotResponse.snapshot:type_name -> agent.SnapshotInfo
+	34,  // 33: agent.SnapshotResponse.snapshots:type_name -> agent.SnapshotInfo
+	46,  // 34: agent.SnapshotResponse.error:type_name -> agent.ErrorResponse
+	103, // 35: agent.SnapshotInfo.created_at:type_name -> google.protobuf.Timestamp
+	2,   // 36: agent.SnapshotInfo.vm_state:type_name -> agent.VMState
+	37,  // 37: agent.VMNetworkConfig.interfaces:type_name -> agent.NetworkInterface
+	38,  // 38: agent.VMNetworkConfig.firewall_rules:type_name -> agent.FirewallRule
+	39,  // 39: agent.VMNetworkConfig.bandwidth_limits:type_name -> agent.BandwidthLimit
+	36,  // 40: agent.VMNetworkConfig.port_forwards:type_name -> agent.PortForward
+	5,   // 41: agent.NetworkInterface.type:type_name -> agent.NetworkInterfaceType
+	6,   // 42: agent.FirewallRule.direction:type_name -> agent.FirewallDirection
+	7,   // 43: agent.FirewallRule.action:type_name -> agent.FirewallAction
+	35,  // 44: agent.NetworkConfigRequest.config:type_name -> agent.VMNetworkConfig
+	37,  // 45: agent.NetworkConfigResponse.applied_interfaces:type_name -> agent.NetworkInterface
+	46,  // 46: agent.NetworkConfigResponse.error:type_name -> agent.ErrorResponse
+	43,  // 47: agent.StorageConfig.primary_disk:type_name -> agent.DiskConfig
+	43,  // 48: agent.StorageConfig.additional_volumes:type_name -> agent.DiskConfig
+	8,   // 49: agent.DiskConfig.format:type_name -> agent.DiskFormat
+	9,   // 50: agent.DiskConfig.backend:type_name -> agent.StorageBackend
+	103, // 51: agent.VNCProxyResponse.expires_at:type_name -> google.protobuf.Timestamp
+	46,  // 52: agent.VNCProxyResponse.error:type_name -> agent.ErrorResponse
+	10,  // 53: agent.ErrorResponse.code:type_name -> agent.ErrorCode
+	101, // 54: agent.ErrorResponse.details:type_name -> agent.ErrorResponse.DetailsEntry
+	49,  // 55: agent.GetNodeInfoResponse.os_info:type_name -> agent.OSInfo
+	50,  // 56: agent.GetNodeInfoResponse.cpu_info:type_name -> agent.CPUInfo
+	46,  // 57: agent.GetNodeInfoResponse.error:type_name -> agent.ErrorResponse
+	46,  // 58: agent.DiskImportResponse.error:type_name -> agent.ErrorResponse
+	46,  // 59: agent.BackupDiskResponse.error:type_name -> agent.ErrorResponse
+	46,  // 60: agent.RestoreDiskResponse.error:type_name -> agent.ErrorResponse
+	46,  // 61: agent.CreateStorageVolumeResponse.error:type_name -> agent.ErrorResponse
+	46,  // 62: agent.DeleteStorageVolumeResponse.error:type_name -> agent.ErrorResponse
+	46,  // 63: agent.AttachDiskResponse.error:type_name -> agent.ErrorResponse
+	1,   // 64: agent.AttachDiskResponse.storage_disposition:type_name -> agent.DiskStorageDisposition
+	46,  // 65: agent.DetachDiskResponse.error:type_name -> agent.ErrorResponse
+	1,   // 66: agent.DetachDiskResponse.storage_disposition:type_name -> agent.DiskStorageDisposition
+	46,  // 67: agent.DefineNetworkResponse.error:type_name -> agent.ErrorResponse
+	46,  // 68: agent.UndefineNetworkResponse.error:type_name -> agent.ErrorResponse
+	46,  // 69: agent.MigrateVMResponse.error:type_name -> agent.ErrorResponse
+	46,  // 70: agent.SyncTemplateResponse.error:type_name -> agent.ErrorResponse
+	74,  // 71: agent.GetStorageReportResponse.pools:type_name -> agent.PoolCapacity
+	75,  // 72: agent.GetStorageReportResponse.disk_locations:type_name -> agent.DiskLocation
+	46,  // 73: agent.GetStorageReportResponse.error:type_name -> agent.ErrorResponse
+	46,  // 74: agent.GetLiveMetricsResponse.error:type_name -> agent.ErrorResponse
+	14,  // 75: agent.GetGuestConnectionsResponse.guests:type_name -> agent.GuestConnectionReport
+	46,  // 76: agent.GetGuestConnectionsResponse.error:type_name -> agent.ErrorResponse
+	83,  // 77: agent.ScanVMsResponse.vms:type_name -> agent.ScannedVM
+	46,  // 78: agent.ScanVMsResponse.error:type_name -> agent.ErrorResponse
+	84,  // 79: agent.ScannedVM.disks:type_name -> agent.ScannedDisk
+	85,  // 80: agent.ScannedVM.networks:type_name -> agent.ScannedNetwork
+	46,  // 81: agent.FloatingIPResponse.error:type_name -> agent.ErrorResponse
+	46,  // 82: agent.VPCResponse.error:type_name -> agent.ErrorResponse
+	103, // 83: agent.ExportProgress.started_at:type_name -> google.protobuf.Timestamp
+	94,  // 84: agent.GetExportProgressResponse.exports:type_name -> agent.ExportProgress
+	46,  // 85: agent.GetExportProgressResponse.error:type_name -> agent.ErrorResponse
+	46,  // 86: agent.SetConsoleAccessResponse.error:type_name -> agent.ErrorResponse
+	46,  // 87: agent.SetQuarantineResponse.error:type_name -> agent.ErrorResponse
+	11,  // 88: agent.NodeAgent.RegisterNode:input_type -> agent.RegisterNodeRequest
+	13,  // 89: agent.NodeAgent.Heartbeat:input_type -> agent.HeartbeatRequest
+	19,  // 90: agent.NodeAgent.ExecuteVMCommand:input_type -> agent.VMCommandRequest
+	22,  // 91: agent.NodeAgent.GetVMStatus:input_type -> agent.VMStatusRequest
+	25,  // 92: agent.NodeAgent.StreamVMMetrics:input_type -> agent.VMMetricsRequest
+	32,  // 93: agent.NodeAgent.CreateSnapshot:input_type -> agent.SnapshotRequest
+	40,  // 94: agent.NodeAgent.ApplyNetworkConfig:input_type -> agent.NetworkConfigRequest
+	44,  // 95: agent.NodeAgent.StartVNCProxy:input_type -> agent.VNCProxyRequest
+	47,  // 96: agent.NodeAgent.GetNodeInfo:input_type -> agent.GetNodeInfoRequest
+	51,  // 97: agent.NodeAgent.ImportDisk:input_type -> agent.DiskImportRequest
+	53,  // 98: agent.NodeAgent.BackupDisk:input_type -> agent.BackupDiskRequest
+	55,  // 99: agent.NodeAgent.RestoreDisk:input_type -> agent.RestoreDiskRequest
+	77,  // 100: agent.NodeAgent.GetLiveMetrics:input_type -> agent.GetLiveMetricsRequest
+	81,  // 101: agent.NodeAgent.ScanVMs:input_type -> agent.ScanVMsRequest
+	57,  // 102: agent.NodeAgent.CreateStorageVolume:input_type -> agent.CreateStorageVolumeRequest
+	59,  // 103: agent.NodeAgent.DeleteStorageVolume:input_type -> agent.DeleteStorageVolumeRequest
+	73,  // 104: agent.NodeAgent.GetStorageReport:input_type -> agent.GetStorageReportRequest
+	69,  // 105: agent.NodeAgent.MigrateVM:input_type -> agent.MigrateVMRequest
+	71,  // 106: agent.NodeAgent.SyncTemplate:input_type -> agent.SyncTemplateRequest
+	61,  // 107: agent.NodeAgent.AttachDisk:input_type -> agent.AttachDiskRequest
+	63,  // 108: agent.NodeAgent.DetachDisk:input_type -> agent.DetachDiskRequest
+	65,  // 109: agent.NodeAgent.DefineNetwork:input_type -> agent.DefineNetworkRequest
+	67,  // 110: agent.NodeAgent.UndefineNetwork:input_type -> agent.UndefineNetworkRequest
+	86,  // 111: agent.NodeAgent.ProbeIPs:input_type -> agent.ProbeIPsRequest
+	88,  // 112: agent.NodeAgent.ConfigureFloatingIP:input_type -> agent.FloatingIPRequest
+	90,  // 113: agent.NodeAgent.ConfigureVPC:input_type -> agent.VPCRequest
+	92,  // 114: agent.NodeAgent.SetQuarantine:input_type -> agent.SetQuarantineRequest
+	96,  // 115: agent.NodeAgent.SetConsoleAccess:input_type -> agent.SetConsoleAccessRequest
+	93,  // 116: agent.NodeAgent.GetExportProgress:input_type -> agent.GetExportProgressRequest
+	79,  // 117: agent.NodeAgent.GetGuestConnections:input_type -> agent.GetGuestConnectionsRequest
+	12,  // 118: agent.NodeAgent.RegisterNode:output_type -> agent.RegisterNodeResponse
+	16,  // 119: agent.NodeAgent.Heartbeat:output_type -> agent.HeartbeatResponse
+	20,  // 120: agent.NodeAgent.ExecuteVMCommand:output_type -> agent.VMCommandResponse
+	23,  // 121: agent.NodeAgent.GetVMStatus:output_type -> agent.VMStatusResponse
+	26,  // 122: agent.NodeAgent.StreamVMMetrics:output_type -> agent.VMMetricsResponse
+	33,  // 123: agent.NodeAgent.CreateSnapshot:output_type -> agent.SnapshotResponse
+	41,  // 124: agent.NodeAgent.ApplyNetworkConfig:output_type -> agent.NetworkConfigResponse
+	45,  // 125: agent.NodeAgent.StartVNCProxy:output_type -> agent.VNCProxyResponse
+	48,  // 126: agent.NodeAgent.GetNodeInfo:output_type -> agent.GetNodeInfoResponse
+	52,  // 127: agent.NodeAgent.ImportDisk:output_type -> agent.DiskImportResponse
+	54,  // 128: agent.NodeAgent.BackupDisk:output_type -> agent.BackupDiskResponse
+	56,  // 129: agent.NodeAgent.RestoreDisk:output_type -> agent.RestoreDiskResponse
+	78,  // 130: agent.NodeAgent.GetLiveMetrics:output_type -> agent.GetLiveMetricsResponse
+	82,  // 131: agent.NodeAgent.ScanVMs:output_type -> agent.ScanVMsResponse
+	58,  // 132: agent.NodeAgent.CreateStorageVolume:output_type -> agent.CreateStorageVolumeResponse
+	60,  // 133: agent.NodeAgent.DeleteStorageVolume:output_type -> agent.DeleteStorageVolumeResponse
+	76,  // 134: agent.NodeAgent.GetStorageReport:output_type -> agent.GetStorageReportResponse
+	70,  // 135: agent.NodeAgent.MigrateVM:output_type -> agent.MigrateVMResponse
+	72,  // 136: agent.NodeAgent.SyncTemplate:output_type -> agent.SyncTemplateResponse
+	62,  // 137: agent.NodeAgent.AttachDisk:output_type -> agent.AttachDiskResponse
+	64,  // 138: agent.NodeAgent.DetachDisk:output_type -> agent.DetachDiskResponse
+	66,  // 139: agent.NodeAgent.DefineNetwork:output_type -> agent.DefineNetworkResponse
+	68,  // 140: agent.NodeAgent.UndefineNetwork:output_type -> agent.UndefineNetworkResponse
+	87,  // 141: agent.NodeAgent.ProbeIPs:output_type -> agent.ProbeIPsResponse
+	89,  // 142: agent.NodeAgent.ConfigureFloatingIP:output_type -> agent.FloatingIPResponse
+	91,  // 143: agent.NodeAgent.ConfigureVPC:output_type -> agent.VPCResponse
+	98,  // 144: agent.NodeAgent.SetQuarantine:output_type -> agent.SetQuarantineResponse
+	97,  // 145: agent.NodeAgent.SetConsoleAccess:output_type -> agent.SetConsoleAccessResponse
+	95,  // 146: agent.NodeAgent.GetExportProgress:output_type -> agent.GetExportProgressResponse
+	80,  // 147: agent.NodeAgent.GetGuestConnections:output_type -> agent.GetGuestConnectionsResponse
+	118, // [118:148] is the sub-list for method output_type
+	88,  // [88:118] is the sub-list for method input_type
+	88,  // [88:88] is the sub-list for extension type_name
+	88,  // [88:88] is the sub-list for extension extendee
+	0,   // [0:88] is the sub-list for field type_name
 }
 
 func init() { file_api_proto_agent_proto_init() }

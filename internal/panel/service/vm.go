@@ -2786,6 +2786,17 @@ func (s *VMService) ReconcileNodeVMStatuses(ctx context.Context, nodeID string) 
 			continue
 		}
 		s.syncVMStatus(ctx, &vms[i], resp.GetState())
+		// Adopt out-of-band resizes (virsh setvcpus, qemu-img resize...) so the
+		// panel shows what the domain really has. A panel resize briefly reads
+		// back the old spec until its job applies, then converges.
+		if res, changed := configuredResources(vms[i].Resources, resp.GetConfiguredResources()); changed {
+			if uerr := s.vmRepo.UpdateResources(ctx, vms[i].ID, res); uerr != nil {
+				s.logger.WarnContext(ctx, "status reconcile: persist resources failed", "vm_id", vms[i].ID, "error", uerr)
+			} else {
+				s.logger.InfoContext(ctx, "status reconcile: adopted real VM spec", "vm_id", vms[i].ID,
+					"cpu", res.CPU, "ram", res.RAM, "disk", res.Disk)
+			}
+		}
 		// Keep the stored VNC port in sync with libvirt's auto-assigned one so the
 		// console connects to the right port (and the UI shows it) without waiting
 		// for someone to open the console.
@@ -2795,6 +2806,26 @@ func (s *VMService) ReconcileNodeVMStatuses(ctx context.Context, nodeID string) 
 			}
 		}
 	}
+}
+
+// configuredResources overlays the agent-reported spec onto the stored one.
+// Zero fields mean the agent couldn't measure them (or is too old to send
+// them) and keep the stored value.
+func configuredResources(stored models.Resources, real *pb.VMResources) (models.Resources, bool) {
+	out := stored
+	if real == nil {
+		return out, false
+	}
+	if c := int(real.GetVcpus()); c > 0 {
+		out.CPU = c
+	}
+	if m := int(real.GetMemoryMb()); m > 0 {
+		out.RAM = m
+	}
+	if d := int(real.GetDiskGb()); d > 0 {
+		out.Disk = d
+	}
+	return out, out.CPU != stored.CPU || out.RAM != stored.RAM || out.Disk != stored.Disk
 }
 
 // stuckVMDeadline is how long a VM may sit in a transient creating/deleting

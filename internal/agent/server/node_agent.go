@@ -1943,6 +1943,11 @@ func (s *NodeAgentService) GetVMStatus(ctx context.Context, req *pb.VMStatusRequ
 		IpAddresses:     []string{},
 		VncPort:         int32(vmInfo.VNCPort),
 		LastStateChange: timestamppb.Now(),
+		ConfiguredResources: &pb.VMResources{
+			Vcpus:    int32(vmInfo.CPU),
+			MemoryMb: int64(vmInfo.MaxMemory / (1024 * 1024)),
+			DiskGb:   int64(vmInfo.DiskBytes / (1024 * 1024 * 1024)),
+		},
 	}
 
 	// Resolve IP addresses if VM is running. Prefer libvirt's interface-address

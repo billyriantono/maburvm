@@ -548,6 +548,10 @@ message VMStatusResponse {
 
   // error_message if VM is in ERROR state
   string error_message = 9;
+
+  // configured_resources is the domain's real spec (vcpus, memory_mb, disk_gb)
+  // so the panel can catch out-of-band resizes; zero fields are unknown.
+  VMResources configured_resources = 10;
 }
 
 // VMResourceUsage contains actual resource consumption metrics.

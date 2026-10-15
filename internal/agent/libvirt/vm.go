@@ -72,6 +72,7 @@ type VMInfo struct {
 	CPU       int
 	Memory    uint64
 	MaxMemory uint64
+	DiskBytes uint64 // primary disk virtual size; 0 if unknown
 	VNCPort   int
 	Autostart bool
 	CreatedAt time.Time
@@ -1244,6 +1245,11 @@ func GetVMInfo(uuidStr string) (*VMInfo, error) {
 		xmlDesc, err := dom.GetXMLDesc(0)
 		if err == nil {
 			info.VNCPort = extractVNCPort(xmlDesc)
+			if p := primaryDiskFromXML(xmlDesc); p != "" {
+				if bi, berr := dom.GetBlockInfo(p, 0); berr == nil {
+					info.DiskBytes = bi.Capacity
+				}
+			}
 		}
 
 		return nil
@@ -1254,6 +1260,20 @@ func GetVMInfo(uuidStr string) (*VMInfo, error) {
 	}
 
 	return &info, nil
+}
+
+// primaryDiskFromXML returns the source file of the first device='disk' entry.
+func primaryDiskFromXML(xmlDesc string) string {
+	var domain libvirtxml.Domain
+	if err := xml.Unmarshal([]byte(xmlDesc), &domain); err != nil || domain.Devices == nil {
+		return ""
+	}
+	for _, d := range domain.Devices.Disks {
+		if d.Device == "disk" && d.Source != nil && d.Source.File != nil && d.Source.File.File != "" {
+			return d.Source.File.File
+		}
+	}
+	return ""
 }
 
 // extractVNCPort extracts VNC port from domain XML
