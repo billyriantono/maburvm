@@ -278,7 +278,8 @@ func (q *QCOW2Manager) ImageInfo(path string) (*ImageInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, q.qemuImgPath, "info", "--output=json", path)
+	// -U (force-share): read-only probe, works while a running VM holds the write lock.
+	cmd := exec.CommandContext(ctx, q.qemuImgPath, "info", "-U", "--output=json", path)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get image info: %w (output: %s)", err, string(output))

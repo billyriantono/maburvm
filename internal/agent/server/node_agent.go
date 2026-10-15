@@ -3066,12 +3066,20 @@ func getVMXMLDetails(uuidStr string) (*vmXMLDetails, error) {
 		// Extract disks
 		for _, d := range domain.Devices.Disks {
 			if d.Source.File != "" {
+				// Without a size the panel falls back to a 20GB placeholder.
+				var size int64
+				if d.Device == "disk" {
+					if info, err := storage.NewQCOW2Manager().ImageInfo(d.Source.File); err == nil {
+						size = info.VirtualSize
+					}
+				}
 				details.disks = append(details.disks, &pb.ScannedDisk{
 					SourceFile: d.Source.File,
 					Format:     d.Driver.Type,
 					Device:     d.Device,
 					Bus:        d.Target.Bus,
 					TargetDev:  d.Target.Dev,
+					SizeBytes:  size,
 				})
 			}
 		}
