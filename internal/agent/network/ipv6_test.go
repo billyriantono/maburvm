@@ -34,12 +34,13 @@ func TestIPv6RouteCommands(t *testing.T) {
 	want := [][]string{
 		{"ip", "-6", "neigh", "replace", "fe80::5054:ff:fe12:3456", "lladdr", "52:54:00:12:34:56", "dev", "viifbr0", "nud", "permanent"},
 		{"ip", "-6", "route", "replace", "2001:db8:20:5::/64", "via", "fe80::5054:ff:fe12:3456", "dev", "viifbr0"},
+		{"ip", "-6", "neigh", "replace", "proxy", "2001:db8:20:5::1", "dev", "viifbr0"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("commands = %v\nwant %v", got, want)
 	}
 	del := ipv6RouteDeleteCommands(d, ll)
-	if len(del) != 2 || del[0][3] != "del" || del[1][3] != "del" {
+	if len(del) != 3 || del[0][3] != "del" || del[1][3] != "del" || del[2][3] != "del" {
 		t.Errorf("delete commands = %v", del)
 	}
 	if _, err := (IPv6Delegation{Prefix: "2001:db8:20:5::/64", MAC: d.MAC}).validate(); err == nil {
