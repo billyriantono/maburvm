@@ -182,6 +182,16 @@ func (c *MetricsCollector) collectOnce(ctx context.Context) {
 		}
 		if m.Status == "online" {
 			online[nodeID] = true
+			// A node marked offline stays offline, and every job for it fails with
+			// "node is not active", until something marks it active again; without
+			// this that was only the Nodes page (GetNodesWithHealth).
+			if nodes[i].Status == models.NodeStatusOffline {
+				if err := c.nodeRepo.UpdateStatus(ctx, nodeID, models.NodeStatusActive); err != nil {
+					c.logger.Warn("metrics collector: mark node active failed", "node_id", nodeID, "error", err)
+				} else {
+					c.logger.Info("metrics collector: node back online, marked active", "node_id", nodeID)
+				}
+			}
 			// Guest connection rates: the only view that catches a compromised
 			// guest, and the only one that sees guests the panel does not manage.
 			actx, acancel := context.WithTimeout(ctx, 20*time.Second)
