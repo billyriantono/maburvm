@@ -367,7 +367,11 @@ func (s *Server) Start() error {
 		PoolMaxSize: 10,
 	}
 	if err := libvirt.Initialize(libvirtCfg); err != nil {
-		log.Printf("[Server] Failed to initialize libvirt pool: %v (VM operations will be unavailable)", err)
+		// The pool is created once and never retried, so carrying on would leave
+		// the agent answering every VM call with an error until someone restarts
+		// it (libvirtd is often still starting at boot). Exit and let systemd's
+		// Restart=always try again.
+		log.Fatalf("[Server] Failed to initialize libvirt pool: %v", err)
 	} else if err := libvirt.EnsureIPv6NWFilters(); err != nil {
 		// Retried lazily by the first VM that needs the filter.
 		log.Printf("[Server] IPv6 nwfilters not defined yet: %v", err)
