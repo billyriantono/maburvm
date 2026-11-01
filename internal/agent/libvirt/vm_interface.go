@@ -2,12 +2,17 @@ package libvirt
 
 import (
 	"encoding/xml"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
 	"libvirt.org/go/libvirt"
 	"libvirt.org/go/libvirtxml"
 )
+
+// ErrNoTapDevice means the domain exists but has no tap device, which is the
+// case for a stopped VM (libvirt names taps only while it runs).
+var ErrNoTapDevice = errors.New("no network interface found")
 
 // GetVMInterfaceName returns the network interface name (vnetX) for a VM
 // by querying libvirt domain XML
@@ -43,7 +48,7 @@ func GetVMInterfaceName(uuidStr string) (string, error) {
 			}
 		}
 
-		return fmt.Errorf("no network interface found for VM %s", uuidStr)
+		return fmt.Errorf("%w for VM %s", ErrNoTapDevice, uuidStr)
 	})
 
 	if err != nil {

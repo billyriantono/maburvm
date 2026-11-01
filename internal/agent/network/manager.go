@@ -1,9 +1,11 @@
 package network
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/maburvm/panel/internal/agent/libvirt"
 	"github.com/maburvm/panel/internal/shared/models"
@@ -91,6 +93,12 @@ func NewManager() (*Manager, error) {
 		vmNetworks: make(map[string]*VMNetworkState),
 		ipv6:       loadIPv6Delegations(ipv6StatePath()),
 	}
+	asManager.AdoptExisting(libvirt.GetVMInterfaceMAC, vmTapDevice)
+	go func() {
+		for range time.Tick(30 * time.Second) {
+			asManager.RebindInterfaces(vmTapDevice)
+		}
+	}()
 	for vmID, d := range m.ipv6 { // node reboot: routes and neighbour entries are gone
 		if ll, err := applyIPv6Route(d); err != nil {
 			log.Printf("[NetworkManager] WARNING: restoring IPv6 %s for VM %s: %v", d.Prefix, vmID, err)
@@ -535,4 +543,14 @@ func (m *Manager) saveIPv6() {
 	if err := saveIPv6Delegations(ipv6StatePath(), m.ipv6); err != nil {
 		log.Printf("[NetworkManager] WARNING: saving IPv6 delegations: %v", err)
 	}
+}
+
+// vmTapDevice is the anti-spoof rebind lookup: the VM's current tap, or "" when
+// it is not running.
+func vmTapDevice(vmID string) (string, error) {
+	iface, err := libvirt.GetVMInterfaceName(vmID)
+	if errors.Is(err, libvirt.ErrNoTapDevice) {
+		return "", nil
+	}
+	return iface, err
 }

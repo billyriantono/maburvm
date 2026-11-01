@@ -2,6 +2,7 @@ package network
 
 import (
 	"fmt"
+	"log"
 	"os/exec"
 	"strings"
 	"sync"
@@ -101,8 +102,9 @@ func (asm *AntiSpoofManager) ensureChain() error {
 	return nil
 }
 
-// ApplyAntiSpoofRules applies anti-spoofing rules for a VM
-// This should be called when a VM is started
+// ApplyAntiSpoofRules applies anti-spoofing rules for a VM. An empty
+// vnetInterface (VM not running) only records the rules; RebindInterfaces
+// applies them once the VM has a tap.
 func (asm *AntiSpoofManager) ApplyAntiSpoofRules(vmID, ip, ipv6, mac, vnetInterface string) error {
 	if vmID == "" {
 		return fmt.Errorf("VM ID cannot be empty")
@@ -112,9 +114,6 @@ func (asm *AntiSpoofManager) ApplyAntiSpoofRules(vmID, ip, ipv6, mac, vnetInterf
 	}
 	if mac == "" {
 		return fmt.Errorf("MAC address cannot be empty")
-	}
-	if vnetInterface == "" {
-		return fmt.Errorf("vnet interface cannot be empty")
 	}
 
 	asm.mu.Lock()
@@ -131,6 +130,10 @@ func (asm *AntiSpoofManager) ApplyAntiSpoofRules(vmID, ip, ipv6, mac, vnetInterf
 		IPv6:      ipv6,
 		MAC:       mac,
 		Interface: vnetInterface,
+	}
+	if vnetInterface == "" {
+		asm.vmRules[vmID] = rules
+		return nil
 	}
 
 	// Layer 2: iptables FORWARD chain rules (L3 filtering)
@@ -219,6 +222,25 @@ func (asm *AntiSpoofManager) applyIPTablesRules(rules *spoofRules) error {
 	return nil
 }
 
+// ebChain names the per-VM ebtables chain holding a VM's ARP rules. ebtables
+// rules carry no comments, so a chain named after the VM is the only way to
+// find them again once the agent's memory of them is gone (restart, hand
+// edits). Chain names are capped at 31 chars, hence the truncated id.
+func ebChain(vmID string) string {
+	id := strings.ReplaceAll(vmID, "-", "")
+	if len(id) > 20 {
+		id = id[:20]
+	}
+	return "MAS-" + id
+}
+
+func ebtables(args ...string) error {
+	if output, err := exec.Command("ebtables", args...).CombinedOutput(); err != nil {
+		return fmt.Errorf("ebtables %s: %v, output: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
 // applyEBTablesRules applies ebtables rules for ARP spoofing prevention
 // ebtables filters at Layer 2 to prevent ARP poisoning attacks
 func (asm *AntiSpoofManager) applyEBTablesRules(rules *spoofRules) error {
@@ -229,42 +251,45 @@ func (asm *AntiSpoofManager) applyEBTablesRules(rules *spoofRules) error {
 		return nil
 	}
 
-	// Drop ARP with spoofed source IP from this VM's tap
-	// ebtables -A FORWARD -p ARP --arp-ip-src ! $VM_IP -i vnetX -j DROP
+	chain := ebChain(rules.VMID)
+	// A new ebtables chain defaults to ACCEPT, which would end FORWARD
+	// processing and skip every VM chain after this one.
+	cmds := [][]string{{"-N", chain}, {"-P", chain, "RETURN"}}
 	if rules.IP != "" {
-		cmd := exec.Command("ebtables", "-A", "FORWARD",
-			"-p", "ARP",
-			"--arp-ip-src", "!", rules.IP,
-			"-i", rules.Interface,
-			"-j", "DROP")
-		if output, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("ebtables ARP IP src rule failed: %v, output: %s", err, string(output))
-		}
-
-		// Drop ARP destined for wrong IP going to this VM
-		// ebtables -A FORWARD -p ARP --arp-ip-dst ! $VM_IP -o vnetX -j DROP
-		cmd = exec.Command("ebtables", "-A", "FORWARD",
-			"-p", "ARP",
-			"--arp-ip-dst", "!", rules.IP,
-			"-o", rules.Interface,
-			"-j", "DROP")
-		if output, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("ebtables ARP IP dst rule failed: %v, output: %s", err, string(output))
+		cmds = append(cmds,
+			// Drop ARP with spoofed source IP from this VM's tap
+			[]string{"-A", chain, "-p", "ARP", "--arp-ip-src", "!", rules.IP, "-i", rules.Interface, "-j", "DROP"},
+			// Drop ARP destined for wrong IP going to this VM
+			[]string{"-A", chain, "-p", "ARP", "--arp-ip-dst", "!", rules.IP, "-o", rules.Interface, "-j", "DROP"})
+	}
+	cmds = append(cmds,
+		// Drop ARP with spoofed source MAC from this VM's tap
+		[]string{"-A", chain, "-p", "ARP", "--arp-mac-src", "!", rules.MAC, "-i", rules.Interface, "-j", "DROP"},
+		[]string{"-A", "FORWARD", "-j", chain})
+	for _, c := range cmds {
+		if err := ebtables(c...); err != nil {
+			return err
 		}
 	}
-
-	// Drop ARP with spoofed source MAC from this VM's tap
-	// ebtables -A FORWARD -p ARP --arp-mac-src ! $VM_MAC -i vnetX -j DROP
-	cmd := exec.Command("ebtables", "-A", "FORWARD",
-		"-p", "ARP",
-		"--arp-mac-src", "!", rules.MAC,
-		"-i", rules.Interface,
-		"-j", "DROP")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("ebtables ARP MAC src rule failed: %v, output: %s", err, string(output))
-	}
-
 	return nil
+}
+
+// removeEBTablesRules removes a VM's ebtables chain and the FORWARD jump to it.
+// It needs only the VM id, so it also works for rules the agent no longer tracks.
+func removeEBTablesRules(vmID string) error {
+	if _, err := exec.LookPath("ebtables"); err != nil {
+		return nil // ebtables not installed, nothing to remove
+	}
+	chain := ebChain(vmID)
+	if ebtables("-L", chain) != nil {
+		return nil // no chain, nothing to remove
+	}
+	for i := 0; i < 10 && ebtables("-D", "FORWARD", "-j", chain) == nil; i++ {
+	}
+	if err := ebtables("-F", chain); err != nil {
+		return err
+	}
+	return ebtables("-X", chain)
 }
 
 // RemoveAntiSpoofRules removes all anti-spoofing rules for a VM
@@ -278,175 +303,142 @@ func (asm *AntiSpoofManager) RemoveAntiSpoofRules(vmID string) error {
 
 // removeRulesInternal removes rules for a VM (assumes lock is held)
 func (asm *AntiSpoofManager) removeRulesInternal(vmID string) error {
-	rules, exists := asm.vmRules[vmID]
-	if !exists {
-		// No rules to remove, try best-effort cleanup anyway
-		return asm.bestEffortCleanup(vmID)
-	}
-
-	var errs []string
-
-	// Remove iptables rules
-	if err := asm.removeIPTablesRules(rules); err != nil {
-		errs = append(errs, fmt.Sprintf("iptables: %v", err))
-	}
-
-	// Remove ebtables rules
-	if err := asm.removeEBTablesRules(rules); err != nil {
-		errs = append(errs, fmt.Sprintf("ebtables: %v", err))
-	}
-
-	// Remove from tracking
 	delete(asm.vmRules, vmID)
-
-	if len(errs) > 0 {
-		return fmt.Errorf("cleanup errors: %s", strings.Join(errs, "; "))
-	}
-
-	return nil
+	return asm.removeFromHost(vmID)
 }
 
-// removeIPTablesRules removes iptables rules for a VM
-func (asm *AntiSpoofManager) removeIPTablesRules(rules *spoofRules) error {
-	var errs []string
+// RebindInterfaces re-applies a VM's rules when its tap device changed. A VM
+// restart gives it a new vnetX, and rules left on the old name protect nothing
+// while dropping all ARP of whichever VM gets that name next. lookup returns ""
+// for a VM with no tap (stopped): its rules are lifted until it runs again.
+// Lookup errors leave the VM alone.
+func (asm *AntiSpoofManager) RebindInterfaces(lookup func(vmID string) (string, error)) {
+	asm.mu.Lock()
+	defer asm.mu.Unlock()
 
-	// Remove IPv4 rules
-	if rules.IP != "" {
-		// Outbound rule
-		outRule := []string{
-			"-m", "physdev",
-			"--physdev-is-bridged",
-			"--physdev-in", rules.Interface,
-			"!", "-s", rules.IP,
-			"-j", "DROP",
-			"-m", "comment",
-			"--comment", fmt.Sprintf("maburvm-antispoof-%s-out", rules.VMID),
+	for vmID, rules := range asm.vmRules {
+		iface, err := lookup(vmID)
+		if err != nil || iface == rules.Interface {
+			continue
 		}
-		if err := asm.ipt.Delete(FilterTable, MaburVMAntiSpoofChain, outRule...); err != nil {
-			if !strings.Contains(err.Error(), "No chain/target/match by that name") &&
-				!strings.Contains(err.Error(), "Bad rule") {
-				errs = append(errs, fmt.Sprintf("IPv4 out: %v", err))
-			}
+		if err := asm.removeFromHost(vmID); err != nil {
+			log.Printf("[AntiSpoof] VM %s: could not remove rules for %q: %v", vmID, rules.Interface, err)
+			continue
 		}
-
-		// Inbound rule
-		inRule := []string{
-			"-m", "physdev",
-			"--physdev-is-bridged",
-			"--physdev-out", rules.Interface,
-			"!", "-d", rules.IP,
-			"-j", "DROP",
-			"-m", "comment",
-			"--comment", fmt.Sprintf("maburvm-antispoof-%s-in", rules.VMID),
+		rules.Interface = iface
+		if iface == "" {
+			log.Printf("[AntiSpoof] VM %s has no tap device, rules lifted until it runs", vmID)
+			continue
 		}
-		if err := asm.ipt.Delete(FilterTable, MaburVMAntiSpoofChain, inRule...); err != nil {
-			if !strings.Contains(err.Error(), "No chain/target/match by that name") &&
-				!strings.Contains(err.Error(), "Bad rule") {
-				errs = append(errs, fmt.Sprintf("IPv4 in: %v", err))
-			}
+		err = asm.applyIPTablesRules(rules)
+		if err == nil {
+			err = asm.applyEBTablesRules(rules)
 		}
+		if err != nil {
+			_ = asm.removeFromHost(vmID)
+			rules.Interface = "" // retried on the next pass
+			log.Printf("[AntiSpoof] VM %s: could not rebind rules to %s: %v", vmID, iface, err)
+			continue
+		}
+		log.Printf("[AntiSpoof] VM %s rules rebound to %s", vmID, iface)
 	}
-
-	// Remove IPv6 rules
-	if rules.IPv6 != "" && asm.ipt6 != nil {
-		// Outbound rule
-		outRule6 := []string{
-			"-m", "physdev",
-			"--physdev-is-bridged",
-			"--physdev-in", rules.Interface,
-			"!", "-s", rules.IPv6,
-			"-j", "DROP",
-			"-m", "comment",
-			"--comment", fmt.Sprintf("maburvm-antispoof-%s-out6", rules.VMID),
-		}
-		if err := asm.ipt6.Delete(FilterTable, MaburVMAntiSpoofChain, outRule6...); err != nil {
-			if !strings.Contains(err.Error(), "No chain/target/match by that name") &&
-				!strings.Contains(err.Error(), "Bad rule") {
-				errs = append(errs, fmt.Sprintf("IPv6 out: %v", err))
-			}
-		}
-
-		// Inbound rule
-		inRule6 := []string{
-			"-m", "physdev",
-			"--physdev-is-bridged",
-			"--physdev-out", rules.Interface,
-			"!", "-d", rules.IPv6,
-			"-j", "DROP",
-			"-m", "comment",
-			"--comment", fmt.Sprintf("maburvm-antispoof-%s-in6", rules.VMID),
-		}
-		if err := asm.ipt6.Delete(FilterTable, MaburVMAntiSpoofChain, inRule6...); err != nil {
-			if !strings.Contains(err.Error(), "No chain/target/match by that name") &&
-				!strings.Contains(err.Error(), "Bad rule") {
-				errs = append(errs, fmt.Sprintf("IPv6 in: %v", err))
-			}
-		}
-	}
-
-	if len(errs) > 0 {
-		return fmt.Errorf("%s", strings.Join(errs, "; "))
-	}
-
-	return nil
 }
 
-// removeEBTablesRules removes ebtables rules for a VM
-func (asm *AntiSpoofManager) removeEBTablesRules(rules *spoofRules) error {
-	// Check if ebtables is available
-	if _, err := exec.LookPath("ebtables"); err != nil {
-		return nil // ebtables not installed, nothing to remove
-	}
+// AdoptExisting rebuilds the tracked state from the anti-spoof rules already on
+// the host (comment → VM id, -s/-d → address), so a restarted agent keeps
+// following VMs onto new taps; nothing re-sends the config after a restart.
+// Each VM is re-applied on its current tap, which also moves it off the old
+// layout of ARP DROPs straight in FORWARD; any of those left are stale and
+// removed. Rules of VMs libvirt no longer knows are removed too.
+func (asm *AntiSpoofManager) AdoptExisting(macOf, tapOf func(vmID string) (string, error)) {
+	asm.mu.Lock()
+	defer asm.mu.Unlock()
 
-	var errs []string
-
-	// Remove ARP IP source rule
-	if rules.IP != "" {
-		cmd := exec.Command("ebtables", "-D", "FORWARD",
-			"-p", "ARP",
-			"--arp-ip-src", "!", rules.IP,
-			"-i", rules.Interface,
-			"-j", "DROP")
-		if output, err := cmd.CombinedOutput(); err != nil {
-			if !strings.Contains(string(output), "rule not found") {
-				errs = append(errs, fmt.Sprintf("ARP IP src: %v", err))
+	found := map[string]*spoofRules{}
+	for _, ipt := range []*iptables.IPTables{asm.ipt, asm.ipt6} {
+		if ipt == nil {
+			continue
+		}
+		lines, err := ipt.List(FilterTable, MaburVMAntiSpoofChain)
+		if err != nil {
+			continue
+		}
+		for _, line := range lines {
+			vmID, addr := parseAntiSpoofRule(line)
+			if vmID == "" || addr == "" {
+				continue
+			}
+			r := found[vmID]
+			if r == nil {
+				r = &spoofRules{VMID: vmID}
+				found[vmID] = r
+			}
+			if ipt == asm.ipt {
+				r.IP = addr
+			} else {
+				r.IPv6 = addr
 			}
 		}
+	}
 
-		// Remove ARP IP destination rule
-		cmd = exec.Command("ebtables", "-D", "FORWARD",
-			"-p", "ARP",
-			"--arp-ip-dst", "!", rules.IP,
-			"-o", rules.Interface,
-			"-j", "DROP")
-		if output, err := cmd.CombinedOutput(); err != nil {
-			if !strings.Contains(string(output), "rule not found") {
-				errs = append(errs, fmt.Sprintf("ARP IP dst: %v", err))
+	if _, err := exec.LookPath("ebtables"); err == nil {
+		if out, err := exec.Command("ebtables", "-L", "FORWARD").Output(); err == nil {
+			for _, line := range strings.Split(string(out), "\n") {
+				if strings.HasPrefix(line, "-p ARP ") && strings.HasSuffix(line, "-j DROP") {
+					_ = ebtables(append([]string{"-D", "FORWARD"}, strings.Fields(line)...)...)
+				}
 			}
 		}
 	}
 
-	// Remove ARP MAC source rule
-	cmd := exec.Command("ebtables", "-D", "FORWARD",
-		"-p", "ARP",
-		"--arp-mac-src", "!", rules.MAC,
-		"-i", rules.Interface,
-		"-j", "DROP")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		if !strings.Contains(string(output), "rule not found") {
-			errs = append(errs, fmt.Sprintf("ARP MAC src: %v", err))
+	for vmID, r := range found {
+		_ = asm.removeFromHost(vmID)
+		mac, err := macOf(vmID)
+		if err != nil || mac == "" {
+			log.Printf("[AntiSpoof] VM %s: dropped rules, no MAC from libvirt: %v", vmID, err)
+			continue
 		}
+		r.MAC = mac
+		if r.Interface, err = tapOf(vmID); err != nil {
+			r.Interface = ""
+		}
+		if r.Interface != "" {
+			err = asm.applyIPTablesRules(r)
+			if err == nil {
+				err = asm.applyEBTablesRules(r)
+			}
+			if err != nil {
+				_ = asm.removeFromHost(vmID)
+				r.Interface = "" // retried by RebindInterfaces
+				log.Printf("[AntiSpoof] VM %s: could not re-apply rules: %v", vmID, err)
+			}
+		}
+		asm.vmRules[vmID] = r
 	}
-
-	if len(errs) > 0 {
-		return fmt.Errorf("%s", strings.Join(errs, "; "))
-	}
-
-	return nil
+	log.Printf("[AntiSpoof] adopted rules of %d VMs", len(asm.vmRules))
 }
 
-// bestEffortCleanup attempts to remove rules by scanning iptables/ebtables for matching comments
-func (asm *AntiSpoofManager) bestEffortCleanup(vmID string) error {
+// parseAntiSpoofRule extracts the VM id and the protected address from a rule
+// written by applyIPTablesRules.
+func parseAntiSpoofRule(line string) (vmID, addr string) {
+	f := strings.Fields(line)
+	for i := 0; i+1 < len(f); i++ {
+		switch f[i] {
+		case "-s", "-d":
+			addr = f[i+1] // iptables prints a host as /32, which re-applies the same
+		case "--comment":
+			c := strings.Trim(f[i+1], `"`)
+			if id, ok := strings.CutPrefix(c, "maburvm-antispoof-"); ok && len(id) > 36 {
+				vmID = id[:36]
+			}
+		}
+	}
+	return vmID, addr
+}
+
+// removeFromHost removes a VM's iptables and ebtables rules by comment and
+// chain name, without consulting the tracked state.
+func (asm *AntiSpoofManager) removeFromHost(vmID string) error {
 	var errs []string
 
 	// Scan iptables for rules with our comment
@@ -459,6 +451,10 @@ func (asm *AntiSpoofManager) bestEffortCleanup(vmID string) error {
 		if err := asm.cleanupByComment(vmID, asm.ipt6); err != nil {
 			errs = append(errs, fmt.Sprintf("ip6tables: %v", err))
 		}
+	}
+
+	if err := removeEBTablesRules(vmID); err != nil {
+		errs = append(errs, fmt.Sprintf("ebtables: %v", err))
 	}
 
 	if len(errs) > 0 {

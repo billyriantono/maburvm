@@ -2369,6 +2369,9 @@ func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *pb.Netwo
 			}
 			// Find the vnet interface for this VM
 			vnetIface, vnetErr := libvirt.GetVMInterfaceName(req.VmId)
+			if errors.Is(vnetErr, libvirt.ErrNoTapDevice) {
+				vnetIface, vnetErr = "", nil // not running: recorded, applied once it starts
+			}
 			if vnetErr != nil {
 				log.Printf("[NodeAgent] WARNING: could not determine vnet interface for VM %s: %v (anti-spoof iptables/ebtables skipped)", req.VmId, vnetErr)
 			} else {
