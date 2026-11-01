@@ -1927,7 +1927,7 @@ func (s *NodeAgentService) GetVMStatus(ctx context.Context, req *pb.VMStatusRequ
 
 	vmStatus, err := libvirt.GetVMStatus(req.VmId)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "VM not found: %v", err)
+		return nil, vmLookupError(err)
 	}
 
 	vmInfo, err := libvirt.GetVMInfo(req.VmId)
@@ -2257,7 +2257,7 @@ func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *pb.Netwo
 	// Get VM info to verify VM exists
 	_, err := libvirt.GetVMInfo(req.VmId)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "VM not found: %v", err)
+		return nil, vmLookupError(err)
 	}
 
 	// Determine the primary IP from the first interface with an IP; any further
@@ -2482,7 +2482,7 @@ func (s *NodeAgentService) StartVNCProxy(ctx context.Context, req *pb.VNCProxyRe
 
 	vmInfo, err := libvirt.GetVMInfo(req.VmId)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "VM not found: %v", err)
+		return nil, vmLookupError(err)
 	}
 
 	vncPort := vmInfo.VNCPort
@@ -3355,4 +3355,15 @@ func (s *NodeAgentService) ConfigureVPC(ctx context.Context, req *pb.VPCRequest)
 		return nil, status.Errorf(codes.InvalidArgument, "create VPC: %v", err)
 	}
 	return &pb.VPCResponse{Success: true, Bridge: bridge, RouterNetns: network.VPCNetnsName(vpcID)}, nil
+}
+
+// vmLookupError maps a failed libvirt domain lookup to a gRPC status. Only a
+// domain libvirt says does not exist is NotFound (the panel then marks the VM
+// stopped); libvirt being unreachable is Unavailable, so a libvirtd outage
+// doesn't flip every running VM to stopped.
+func vmLookupError(err error) error {
+	if libvirt.IsNoDomain(err) {
+		return status.Errorf(codes.NotFound, "VM not found: %v", err)
+	}
+	return status.Errorf(codes.Unavailable, "libvirt unavailable: %v", err)
 }

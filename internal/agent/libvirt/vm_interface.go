@@ -14,6 +14,14 @@ import (
 // case for a stopped VM (libvirt names taps only while it runs).
 var ErrNoTapDevice = errors.New("no network interface found")
 
+// IsNoDomain reports whether err is libvirt saying the domain does not exist,
+// as opposed to libvirt itself being unreachable (libvirtd down, socket gone).
+// The panel marks a VM stopped on NotFound, so only this case may map to it.
+func IsNoDomain(err error) bool {
+	var lerr libvirt.Error
+	return errors.As(err, &lerr) && lerr.Code == libvirt.ERR_NO_DOMAIN
+}
+
 // GetVMInterfaceName returns the network interface name (vnetX) for a VM
 // by querying libvirt domain XML
 func GetVMInterfaceName(uuidStr string) (string, error) {
