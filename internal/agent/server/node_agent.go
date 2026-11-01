@@ -2422,6 +2422,8 @@ func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *pb.Netwo
 		appliedInterfaces = append(appliedInterfaces, iface)
 	}
 
+	saveNetworkConfig(req) // replayed after a node reboot
+
 	return &pb.NetworkConfigResponse{
 		Success:           true,
 		AppliedInterfaces: appliedInterfaces,

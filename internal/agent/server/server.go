@@ -393,6 +393,9 @@ func (s *Server) Start() error {
 
 	// Register NodeAgent service with dependencies
 	nodeAgentSvc := NewNodeAgentService(libvirtMgr, networkMgr, healthColl, vncProx)
+	if networkMgr != nil {
+		restoreNetworkConfigs(nodeAgentSvc)
+	}
 	pb.RegisterNodeAgentServer(s.grpcServer, nodeAgentSvc)
 
 	s.started = true
