@@ -187,7 +187,7 @@ func SyncInterfaceFilter(uuidStr, ip, ipv6Prefix string) error {
 		if err != nil {
 			return fmt.Errorf("failed to marshal domain XML: %w", err)
 		}
-		newDom, err := conn.DomainDefineXML(string(out))
+		newDom, err := redefineDomain(conn, string(out))
 		if err != nil {
 			return fmt.Errorf("failed to redefine domain with filter: %w", err)
 		}

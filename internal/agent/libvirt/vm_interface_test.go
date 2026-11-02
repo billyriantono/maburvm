@@ -18,3 +18,16 @@ func TestIsNoDomain(t *testing.T) {
 		t.Error("non-NO_DOMAIN error treated as a missing domain")
 	}
 }
+
+func TestClampCPUShares(t *testing.T) {
+	for in, want := range map[string]string{
+		"<cputune><shares>1</shares></cputune>":       "<cputune><shares>2</shares></cputune>",
+		"<cputune><shares>1024</shares></cputune>":    "<cputune><shares>1024</shares></cputune>",
+		"<cputune><shares>9999999</shares></cputune>": "<cputune><shares>262144</shares></cputune>",
+		"<domain/>": "<domain/>",
+	} {
+		if got := clampCPUShares(in); got != want {
+			t.Errorf("clampCPUShares(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

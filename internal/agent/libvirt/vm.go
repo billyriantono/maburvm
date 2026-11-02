@@ -444,6 +444,24 @@ func StartVM(uuidStr string) error {
 	})
 }
 
+// cpuSharesRe matches a domain's <cputune><shares>. Domains written by other
+// tools carry <shares>1</shares>, which libvirt still runs but refuses to
+// define again ("must be in range [2, 262144]"), so every redefine of such a
+// VM failed until the value is clamped.
+var cpuSharesRe = regexp.MustCompile(`<shares>(\d+)</shares>`)
+
+func clampCPUShares(domXML string) string {
+	return cpuSharesRe.ReplaceAllStringFunc(domXML, func(m string) string {
+		n, _ := strconv.Atoi(cpuSharesRe.FindStringSubmatch(m)[1])
+		return "<shares>" + strconv.Itoa(min(max(n, 2), 262144)) + "</shares>"
+	})
+}
+
+// redefineDomain persists an edited definition of an existing domain.
+func redefineDomain(conn *libvirt.Connect, domXML string) (*libvirt.Domain, error) {
+	return conn.DomainDefineXML(clampCPUShares(domXML))
+}
+
 // SyncInterfaceBridge rewrites the host bridge of the VM's primary (first)
 // bridged interface to `bridge` and persists it via DomainDefineXML. It is
 // idempotent — a no-op (changed=false) when the bridge already matches or when
@@ -491,7 +509,7 @@ func SyncInterfaceBridge(uuidStr, bridge string) (bool, error) {
 			if err != nil {
 				return fmt.Errorf("failed to marshal domain XML: %w", err)
 			}
-			newDom, err := conn.DomainDefineXML(string(out))
+			newDom, err := redefineDomain(conn, string(out))
 			if err != nil {
 				return fmt.Errorf("failed to redefine domain with bridge %q: %w", bridge, err)
 			}
@@ -645,7 +663,7 @@ func AttachISO(uuidStr, isoPath string) error {
 		if err != nil {
 			return fmt.Errorf("failed to marshal domain XML: %w", err)
 		}
-		newDom, err := conn.DomainDefineXML(string(out))
+		newDom, err := redefineDomain(conn, string(out))
 		if err != nil {
 			return fmt.Errorf("failed to redefine domain with ISO: %w", err)
 		}
@@ -688,7 +706,7 @@ func DetachISO(uuidStr string) error {
 		if err != nil {
 			return fmt.Errorf("failed to marshal domain XML: %w", err)
 		}
-		newDom, err := conn.DomainDefineXML(string(out))
+		newDom, err := redefineDomain(conn, string(out))
 		if err != nil {
 			return fmt.Errorf("failed to redefine domain: %w", err)
 		}
@@ -1425,7 +1443,7 @@ func EnsureVNCGraphics(uuidStr string) (restarted bool, vncPort int, err error) 
 		}
 
 		// Redefine the persistent domain with the added graphics.
-		if _, derr = conn.DomainDefineXML(newXML); derr != nil {
+		if _, derr = redefineDomain(conn, newXML); derr != nil {
 			return fmt.Errorf("failed to redefine domain with VNC: %w", derr)
 		}
 
@@ -2126,7 +2144,7 @@ func SetConsoleAccess(uuidStr string, enabled bool, vncPassword string) (vncPort
 		if merr != nil {
 			return fmt.Errorf("failed to marshal domain XML: %w", merr)
 		}
-		newDom, rerr := conn.DomainDefineXML(string(out))
+		newDom, rerr := redefineDomain(conn, string(out))
 		if rerr != nil {
 			return fmt.Errorf("failed to redefine domain: %w", rerr)
 		}
