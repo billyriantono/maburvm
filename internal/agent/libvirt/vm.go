@@ -464,8 +464,8 @@ func redefineDomain(conn *libvirt.Connect, domXML string) (*libvirt.Domain, erro
 
 // SyncInterfaceBridge rewrites the host bridge of the VM's primary (first)
 // bridged interface to `bridge` and persists it via DomainDefineXML. It is
-// idempotent — a no-op (changed=false) when the bridge already matches or when
-// `bridge` is empty — and surgical: only <source bridge> is touched, so the
+// idempotent — a no-op (changed=false) when the bridge already matches, when
+// the current bridge still exists on the host, or when `bridge` is empty — and surgical: only <source bridge> is touched, so the
 // interface's MAC, VLAN tag, bandwidth QoS and nwfilter (anti-spoofing) are
 // preserved. This lets a VM defined against a now-missing bridge (e.g. virbr0)
 // boot once its pool's bridge is corrected, without a full rebuild.
@@ -503,6 +503,12 @@ func SyncInterfaceBridge(uuidStr, bridge string) (bool, error) {
 			}
 			if src.Bridge.Bridge == bridge {
 				return nil // already correct — nothing to redefine
+			}
+			// Only repair a bridge that's gone. A pool's bridge isn't
+			// authoritative for imported VMs (one pool's addresses can sit on
+			// several VLAN bridges), and overwriting a working one cut them off.
+			if _, err := os.Stat("/sys/class/net/" + src.Bridge.Bridge); err == nil {
+				return nil
 			}
 			src.Bridge.Bridge = bridge
 			out, err := xml.Marshal(&domain)
