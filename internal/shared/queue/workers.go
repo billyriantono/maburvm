@@ -883,17 +883,18 @@ func (w *VMOperationWorker) Timeout(job *river.Job[VMOperationJob]) time.Duratio
 // via the ApplyNetworkConfig gRPC method.
 func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client pb.NodeAgentClient, node *models.Node, vm *models.VM, job *river.Job[VMOperationJob]) error {
 	var params struct {
-		IPAddress      string   `json:"ip_address"`
-		BandwidthLimit int64    `json:"bandwidth_limit"`
-		VLANID         *int     `json:"vlan_id,omitempty"`
-		AntiSpoofing   bool     `json:"anti_spoofing"`
-		Gateway        string   `json:"gateway"`
-		Netmask        int      `json:"netmask"`
-		ConfigureGuest bool     `json:"configure_guest"`
-		ExtraIPs       []string `json:"extra_ips"`
-		IPv6Prefix     string   `json:"ipv6_prefix"`
-		IPv6Address    string   `json:"ipv6_address"`
-		IPv6Gateway    string   `json:"ipv6_gateway"`
+		IPAddress      string            `json:"ip_address"`
+		BandwidthLimit int64             `json:"bandwidth_limit"`
+		VLANID         *int              `json:"vlan_id,omitempty"`
+		AntiSpoofing   bool              `json:"anti_spoofing"`
+		Gateway        string            `json:"gateway"`
+		Netmask        int               `json:"netmask"`
+		ConfigureGuest bool              `json:"configure_guest"`
+		ExtraIPs       []string          `json:"extra_ips"`
+		IPBridges      map[string]string `json:"ip_bridges"`
+		IPv6Prefix     string            `json:"ipv6_prefix"`
+		IPv6Address    string            `json:"ipv6_address"`
+		IPv6Gateway    string            `json:"ipv6_gateway"`
 		FirewallRules  []struct {
 			Direction string `json:"direction"`
 			Action    string `json:"action"`
@@ -940,6 +941,7 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 		VlanId:       vlanID,
 		Netmask:      int32(params.Netmask),
 		Gateway:      params.Gateway,
+		BridgeName:   params.IPBridges[params.IPAddress],
 		Ipv6Prefix:   params.IPv6Prefix,
 		Ipv6Address:  params.IPv6Address,
 		Ipv6Gateway:  params.IPv6Gateway,
@@ -948,9 +950,10 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 	interfaces := []*pb.NetworkInterface{iface}
 	for i, ip := range params.ExtraIPs {
 		interfaces = append(interfaces, &pb.NetworkInterface{
-			Name:      fmt.Sprintf("eth0:%d", i+1),
-			Type:      pb.NetworkInterfaceType_NETWORK_INTERFACE_TYPE_BRIDGE,
-			IpAddress: ip,
+			Name:       fmt.Sprintf("eth0:%d", i+1),
+			Type:       pb.NetworkInterfaceType_NETWORK_INTERFACE_TYPE_BRIDGE,
+			IpAddress:  ip,
+			BridgeName: params.IPBridges[ip],
 		})
 	}
 

@@ -2352,48 +2352,35 @@ func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *pb.Netwo
 		}
 	}
 
-	// Apply anti-spoofing rules if any interface has it enabled
+	// Anti-spoofing is per VM: on when any interface asks for it, covering
+	// every address the request carries. Each address is pinned to the NIC on
+	// its pool's bridge (BridgeName), so a VM with several NICs keeps them all.
+	antiSpoof := false
+	var spoofAddrs []network.SpoofAddr
+	seen := map[string]bool{}
 	for _, iface := range req.Config.Interfaces {
-		if iface.AntiSpoofing {
-			mac := iface.MacAddress
-			if mac == "" {
-				// The NIC's real MAC. generateMAC(vmID) only matches VMs this panel
-				// created; imported VMs keep their original MAC, and a wrong one here
-				// becomes an ebtables rule dropping every ARP the guest sends.
-				real, err := libvirt.GetVMInterfaceMAC(req.VmId)
-				if err != nil || real == "" {
-					log.Printf("[NodeAgent] WARNING: could not read the MAC of VM %s: %v (anti-spoof iptables/ebtables skipped)", req.VmId, err)
-					continue
-				}
-				mac = real
-			}
-			// Find the vnet interface for this VM
-			vnetIface, vnetErr := libvirt.GetVMInterfaceName(req.VmId)
-			if errors.Is(vnetErr, libvirt.ErrNoTapDevice) {
-				vnetIface, vnetErr = "", nil // not running: recorded, applied once it starts
-			}
-			if vnetErr != nil {
-				log.Printf("[NodeAgent] WARNING: could not determine vnet interface for VM %s: %v (anti-spoof iptables/ebtables skipped)", req.VmId, vnetErr)
-			} else {
-				if err := s.networkMgr.EnableAntiSpoofing(req.VmId, iface.IpAddress, "", mac, vnetIface); err != nil {
-					log.Printf("[NodeAgent] WARNING: failed to apply anti-spoof rules for VM %s: %v", req.VmId, err)
-				} else {
-					log.Printf("[NodeAgent] Anti-spoof rules applied for VM %s (IP: %s, MAC: %s, Interface: %s)",
-						req.VmId, iface.IpAddress, mac, vnetIface)
-				}
-			}
-			// Layer 1 follows the addressing too: the IPv6-aware nwfilter when
-			// the VM has a prefix, stock clean-traffic when it lost one, and a
-			// refreshed IP parameter when the address changed. Domains this
-			// feature never touched are left alone (see SyncInterfaceFilter).
-			var v6Prefix string
-			if primary != nil {
-				v6Prefix = primary.Ipv6Prefix
-			}
-			if err := libvirt.SyncInterfaceFilter(req.VmId, iface.IpAddress, v6Prefix); err != nil {
-				log.Printf("[NodeAgent] WARNING: nwfilter not synced for VM %s: %v", req.VmId, err)
-			}
-			break // only apply for primary interface
+		antiSpoof = antiSpoof || iface.AntiSpoofing
+		if iface.IpAddress != "" && !seen[iface.IpAddress] {
+			seen[iface.IpAddress] = true
+			spoofAddrs = append(spoofAddrs, network.SpoofAddr{IP: iface.IpAddress, Bridge: iface.BridgeName})
+		}
+	}
+	if antiSpoof && len(spoofAddrs) > 0 {
+		if err := s.networkMgr.EnableAntiSpoofing(req.VmId, spoofAddrs); err != nil {
+			log.Printf("[NodeAgent] WARNING: failed to apply anti-spoof rules for VM %s: %v", req.VmId, err)
+		} else {
+			log.Printf("[NodeAgent] Anti-spoof rules applied for VM %s (%v)", req.VmId, spoofAddrs)
+		}
+		// Layer 1 follows the addressing too: the IPv6-aware nwfilter when
+		// the VM has a prefix, stock clean-traffic when it lost one, and a
+		// refreshed IP parameter when the address changed. Domains this
+		// feature never touched are left alone (see SyncInterfaceFilter).
+		var v6Prefix string
+		if primary != nil {
+			v6Prefix = primary.Ipv6Prefix
+		}
+		if err := libvirt.SyncInterfaceFilter(req.VmId, internalIP, v6Prefix); err != nil {
+			log.Printf("[NodeAgent] WARNING: nwfilter not synced for VM %s: %v", req.VmId, err)
 		}
 	}
 

@@ -1,9 +1,11 @@
 package network
 
 import (
-	"errors"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -93,10 +95,10 @@ func NewManager() (*Manager, error) {
 		vmNetworks: make(map[string]*VMNetworkState),
 		ipv6:       loadIPv6Delegations(ipv6StatePath()),
 	}
-	asManager.AdoptExisting(libvirt.GetVMInterfaceMAC, vmTapDevice)
+	asManager.AdoptExisting(runningVMIDs(), vmNICs)
 	go func() {
 		for range time.Tick(30 * time.Second) {
-			asManager.RebindInterfaces(vmTapDevice)
+			asManager.RebindInterfaces(vmNICs)
 		}
 	}()
 	for vmID, d := range m.ipv6 { // node reboot: routes and neighbour entries are gone
@@ -415,10 +417,9 @@ func (m *Manager) GetVMNetworkState(vmID string) (*VMNetworkState, bool) {
 	return stateCopy, true
 }
 
-// EnableAntiSpoofing applies anti-spoofing rules for a VM.
-// This should be called after VM start, once the vnet interface is known.
-// mac: VM's MAC address, vnetInterface: the tap device name (e.g. vnet0)
-func (m *Manager) EnableAntiSpoofing(vmID, ip, ipv6, mac, vnetInterface string) error {
+// EnableAntiSpoofing pins the VM's NICs to addrs (see assignAddrs). A VM that
+// isn't running only has them recorded until it gets taps.
+func (m *Manager) EnableAntiSpoofing(vmID string, addrs []SpoofAddr) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -426,16 +427,18 @@ func (m *Manager) EnableAntiSpoofing(vmID, ip, ipv6, mac, vnetInterface string) 
 	if !exists {
 		return fmt.Errorf("VM %s not found in network state", vmID)
 	}
-
-	if err := m.antiSpoof.ApplyAntiSpoofRules(vmID, ip, ipv6, mac, vnetInterface); err != nil {
+	nics, err := vmNICs(vmID)
+	if err != nil {
+		return fmt.Errorf("failed to read the NICs of VM %s: %w", vmID, err)
+	}
+	if err := m.antiSpoof.ApplyAntiSpoofRules(vmID, addrs, nics); err != nil {
 		return fmt.Errorf("failed to apply anti-spoof rules: %w", err)
 	}
 
 	state.AntiSpoofEnabled = true
-	state.MACAddress = mac
-
-	log.Printf("[NetworkManager] Anti-spoof rules applied for VM %s (IP: %s, MAC: %s, Interface: %s)",
-		vmID, ip, mac, vnetInterface)
+	if len(nics) > 0 {
+		state.MACAddress = nics[0].MAC
+	}
 	return nil
 }
 
@@ -545,12 +548,38 @@ func (m *Manager) saveIPv6() {
 	}
 }
 
-// vmTapDevice is the anti-spoof rebind lookup: the VM's current tap, or "" when
-// it is not running.
-func vmTapDevice(vmID string) (string, error) {
-	iface, err := libvirt.GetVMInterfaceName(vmID)
-	if errors.Is(err, libvirt.ErrNoTapDevice) {
-		return "", nil
+// vmNICs is the anti-spoof lookup: the VM's NICs with the bridge each tap is
+// on now, read from the kernel since a hand-moved tap leaves the live XML stale.
+func vmNICs(vmID string) ([]NIC, error) {
+	lnics, err := libvirt.GetVMNICs(vmID)
+	if err != nil {
+		return nil, err
 	}
-	return iface, err
+	nics := make([]NIC, len(lnics))
+	for i, n := range lnics {
+		nics[i] = NIC{MAC: strings.ToLower(n.MAC), Tap: n.Tap}
+		if n.Tap != "" {
+			if link, err := os.Readlink("/sys/class/net/" + n.Tap + "/master"); err == nil {
+				nics[i].Bridge = filepath.Base(link)
+			}
+		}
+	}
+	return nics, nil
+}
+
+// runningVMIDs lists the VMs that have taps, for anti-spoof adoption.
+func runningVMIDs() []string {
+	ifaces, err := libvirt.ListGuestInterfaces()
+	if err != nil {
+		log.Printf("[NetworkManager] WARNING: listing guest interfaces: %v", err)
+	}
+	var ids []string
+	seen := map[string]bool{}
+	for _, gi := range ifaces {
+		if !seen[gi.VMID] {
+			seen[gi.VMID] = true
+			ids = append(ids, gi.VMID)
+		}
+	}
+	return ids
 }

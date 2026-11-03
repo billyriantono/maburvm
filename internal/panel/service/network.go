@@ -781,8 +781,13 @@ func (s *NetworkService) enqueueNetworkConfig(ctx context.Context, vm *models.VM
 			if o.IPAddress != "" && o.IPAddress != network.IPAddress {
 				params.ExtraIPs = append(params.ExtraIPs, o.IPAddress)
 			}
+			// The agent enforces anti-spoofing per VM, over all of its
+			// addresses, so it is on when any of the VM's networks has it.
+			// Taking only this network's flag made the last job sent win.
+			params.AntiSpoofing = params.AntiSpoofing || o.AntiSpoofing
 		}
 	}
+	params.IPBridges = s.vmIPBridges(ctx, vm.ID)
 
 	// Ship the VM's port forwards as part of the desired state so a full
 	// ReplaceAll re-apply (which wipes MABURVM-NAT) re-creates them instead of
@@ -826,6 +831,22 @@ func (s *NetworkService) enqueueNetworkResync(ctx context.Context, vm *models.VM
 	return s.enqueueNetworkConfigJob(ctx, vm, network)
 }
 
+// vmIPBridges maps each IPAM address of a VM to its pool's bridge.
+func (s *NetworkService) vmIPBridges(ctx context.Context, vmID string) map[string]string {
+	var addrs []models.IPAddress
+	if err := s.db.WithContext(ctx).Where("vm_id = ?", vmID).Find(&addrs).Error; err != nil {
+		return nil
+	}
+	out := map[string]string{}
+	for _, a := range addrs {
+		var pool models.IPPool
+		if err := s.db.WithContext(ctx).Where("id = ?", a.PoolID).First(&pool).Error; err == nil && pool.Bridge != "" {
+			out[hostOnlyIP(a.Address)] = pool.Bridge
+		}
+	}
+	return out
+}
+
 // NetworkConfigParams contains network configuration parameters
 type NetworkConfigParams struct {
 	IPAddress      string                `json:"ip_address"`
@@ -837,6 +858,9 @@ type NetworkConfigParams struct {
 	// ExtraIPs are the VM's other interface addresses; the agent applies the
 	// same firewall policy to each of them.
 	ExtraIPs []string `json:"extra_ips,omitempty"`
+	// IPBridges maps each address to its pool's bridge, so the agent pins it
+	// to the NIC on that bridge rather than to the VM's first NIC.
+	IPBridges map[string]string `json:"ip_bridges,omitempty"`
 	// Set only when the address itself changed: the agent then also rewrites
 	// the guest's network config, which may mean a reboot for a guest without
 	// a responsive qemu-guest-agent. Rule/bandwidth syncs leave these empty.

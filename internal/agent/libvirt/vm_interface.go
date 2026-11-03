@@ -90,6 +90,35 @@ func domainXML(uuidStr string) (*libvirtxml.Domain, error) {
 	return &domain, nil
 }
 
+// VMNIC is one of a domain's network interfaces; Tap is empty while it isn't running.
+type VMNIC struct {
+	MAC string
+	Tap string
+}
+
+// GetVMNICs returns every network interface of the VM that has a MAC.
+func GetVMNICs(uuidStr string) ([]VMNIC, error) {
+	domain, err := domainXML(uuidStr)
+	if err != nil {
+		return nil, err
+	}
+	var nics []VMNIC
+	if domain.Devices == nil {
+		return nil, nil
+	}
+	for _, iface := range domain.Devices.Interfaces {
+		if iface.MAC == nil || iface.MAC.Address == "" {
+			continue
+		}
+		n := VMNIC{MAC: iface.MAC.Address}
+		if iface.Target != nil {
+			n.Tap = iface.Target.Dev
+		}
+		nics = append(nics, n)
+	}
+	return nics, nil
+}
+
 // GetVMInterfaceMAC returns the MAC of the VM's first network interface — the
 // one the guest's network config matches on.
 func GetVMInterfaceMAC(uuidStr string) (string, error) {
