@@ -140,12 +140,21 @@ func ebRuleCommands(vmID string, nics []spoofNIC) [][]string {
 		}
 		add("-p", proto, dir, tap, "-j", "DROP")
 	}
+	// ARP is pinned to each NIC's own addresses, but IPv4 may carry any of the
+	// VM's addresses: a multi-homed guest answers on one address out of the
+	// NIC its route to the client points at.
+	var all []string
+	for _, n := range nics {
+		for _, ip := range n.IPs {
+			all = appendNew(all, ip)
+		}
+	}
 	for _, n := range nics {
 		add("-p", "ARP", "-i", n.Tap, "--arp-mac-src", "!", n.MAC, "-j", "DROP")
 		allow("ARP", "-i", n.Tap, "--arp-ip-src", n.IPs)
 		allow("ARP", "-o", n.Tap, "--arp-ip-dst", n.IPs)
-		allow("IPv4", "-i", n.Tap, "--ip-src", n.IPs)
-		allow("IPv4", "-o", n.Tap, "--ip-dst", n.IPs)
+		allow("IPv4", "-i", n.Tap, "--ip-src", all)
+		allow("IPv4", "-o", n.Tap, "--ip-dst", all)
 	}
 	return append(cmds, []string{"-A", "FORWARD", "-j", chain})
 }
@@ -362,15 +371,15 @@ func chainAddrs(vmID string, nics []NIC) []SpoofAddr {
 	return addrs
 }
 
-// parseChainRule extracts the tap and address of an outbound IPv4 allow rule
-// written by ebRuleCommands.
+// parseChainRule extracts the tap and address of an outbound ARP allow rule
+// written by ebRuleCommands; ARP rules carry only the NIC's own addresses.
 func parseChainRule(line string) (tap, ip string) {
 	f := strings.Fields(line)
 	for i := 0; i+1 < len(f); i++ {
 		switch f[i] {
 		case "-i":
 			tap = f[i+1]
-		case "--ip-src":
+		case "--arp-ip-src":
 			ip = f[i+1]
 		}
 	}

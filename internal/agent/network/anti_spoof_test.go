@@ -47,18 +47,28 @@ func TestAssignAddrs(t *testing.T) {
 
 func TestEbRuleCommandsRoundTrip(t *testing.T) {
 	const id = "0c788d51-cbb4-4757-8fdd-001bc5241adb"
-	cmds := ebRuleCommands(id, []spoofNIC{{NIC: NIC{MAC: "52:54:00:00:00:01", Tap: "vnet1"}, IPs: []string{"198.51.100.54", "100.64.0.9"}}})
+	cmds := ebRuleCommands(id, []spoofNIC{
+		{NIC: NIC{MAC: "52:54:00:00:00:01", Tap: "vnet1"}, IPs: []string{"198.51.100.54", "100.64.0.9"}},
+		{NIC: NIC{MAC: "52:54:00:00:00:02", Tap: "vnet2"}, IPs: []string{"203.0.113.33"}},
+	})
 	var allowed []string
+	ipv4 := map[string]bool{}
 	for _, c := range cmds {
 		// ebtables -L prints a rule as its -A arguments without "-A <chain>".
 		if c[0] == "-A" && c[1] == ebChain(id) {
-			if tap, ip := parseChainRule(strings.Join(c[2:], " ")); ip != "" {
+			rule := strings.Join(c[2:], " ")
+			if tap, ip := parseChainRule(rule); ip != "" {
 				allowed = append(allowed, tap+"/"+ip)
 			}
+			ipv4[rule] = true
 		}
 	}
-	if fmt.Sprint(allowed) != "[vnet1/198.51.100.54 vnet1/100.64.0.9]" {
+	if fmt.Sprint(allowed) != "[vnet1/198.51.100.54 vnet1/100.64.0.9 vnet2/203.0.113.33]" {
 		t.Errorf("addresses read back from the chain = %v", allowed)
+	}
+	// A multi-homed guest replies from one address out of another NIC.
+	if !ipv4["-p IPv4 -i vnet1 --ip-src 203.0.113.33 -j RETURN"] || !ipv4["-p IPv4 -o vnet2 --ip-dst 198.51.100.54 -j RETURN"] {
+		t.Error("IPv4 is not allowed for the VM's other addresses on each NIC")
 	}
 	if last := cmds[len(cmds)-1]; strings.Join(last, " ") != "-A FORWARD -j "+ebChain(id) {
 		t.Errorf("last command = %v, want the FORWARD jump", last)
