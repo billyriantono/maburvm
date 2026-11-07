@@ -65,27 +65,18 @@ export default function LoginPage() {
       const result = await response.json()
 
       if (!response.ok) {
-        // Handle IP whitelist error (403)
-        if (response.status === 403 && result.code === "IP_NOT_WHITELISTED") {
-          setIpWarning({
-            message: result.message || "Your IP address is not whitelisted",
-            code: result.code,
-            userIP: result.userIP,
-          })
+        // The panel answers 403 only when the IP isn't whitelisted.
+        if (response.status === 403) {
+          setIpWarning({ message: result.error || "Your IP address is not whitelisted" })
           return
         }
+        setError({ message: result.error || "Login failed. Please try again." })
+        return
+      }
 
-        // Handle 2FA requirement
-        if (response.status === 200 && result.requires2FA) {
-          setRequires2FA(true)
-          return
-        }
-
-        // Handle other errors
-        setError({
-          message: result.message || "Login failed. Please try again.",
-          code: result.code,
-        })
+      // 2FA users get a 200 without a token; ask for the code next.
+      if (result.requires2fa) {
+        setRequires2FA(true)
         return
       }
 
@@ -123,10 +114,7 @@ export default function LoginPage() {
       const result = await response.json()
 
       if (!response.ok) {
-        setError({
-          message: result.message || "Invalid verification code",
-          code: result.code,
-        })
+        setError({ message: result.error || "Invalid verification code" })
         return
       }
 
