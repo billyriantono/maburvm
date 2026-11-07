@@ -47,6 +47,24 @@ type JWTConfig struct {
 	AESPreviousKeys []string
 }
 
+// OIDCConfig enables "Sign in with SSO" against any OpenID Connect provider.
+// It stays off unless issuer, client id and client secret are all set. People
+// are matched to existing panel users by verified email; nobody is created.
+type OIDCConfig struct {
+	Issuer       string `env:"OIDC_ISSUER"`
+	ClientID     string `env:"OIDC_CLIENT_ID"`
+	ClientSecret string `env:"OIDC_CLIENT_SECRET"`
+	// RedirectURL defaults to PANEL_PUBLIC_URL + /api/v1/auth/oidc/callback.
+	RedirectURL string `env:"OIDC_REDIRECT_URL"`
+	ButtonLabel string `env:"OIDC_BUTTON_LABEL" envDefault:"Sign in with SSO"`
+	Scopes      string `env:"OIDC_SCOPES" envDefault:"openid email profile"`
+}
+
+// Enabled reports whether SSO is fully configured.
+func (o OIDCConfig) Enabled() bool {
+	return o.Issuer != "" && o.ClientID != "" && o.ClientSecret != ""
+}
+
 // Agent settings
 type AgentConfig struct {
 	GRPCPort          int           `env:"AGENT_GRPC_PORT" envDefault:"50051"`
@@ -106,6 +124,7 @@ type Config struct {
 	VNC      VNCConfig
 	Libvirt  LibvirtConfig
 	AI       AIConfig
+	OIDC     OIDCConfig
 }
 
 // fileBackedSecrets maps each ordinary env var to its *_FILE companion. These are
@@ -120,6 +139,7 @@ var fileBackedSecrets = []struct {
 	{"S3_SECRET_KEY", "S3_SECRET_KEY_FILE"},
 	{"JWT_SECRET_KEY", "JWT_SECRET_KEY_FILE"},
 	{"AES_KEY", "AES_KEY_FILE"},
+	{"OIDC_CLIENT_SECRET", "OIDC_CLIENT_SECRET_FILE"},
 }
 
 // resolveFileSecrets reads the *_FILE companions into their ordinary env vars

@@ -376,6 +376,15 @@ func (s *Server) setupAuthRoutes(g *echo.Group) {
 	auth.POST("/logout", authHandler.Logout, panelMiddleware.RequireAuth(s.db))
 	auth.GET("/me", authHandler.Me, panelMiddleware.RequireAuth(s.db))
 	auth.GET("/client-ip", authHandler.ClientIP)
+
+	// Optional "Sign in with SSO" (OIDC_* settings); nil when not configured.
+	oidc := handler.NewOIDCHandler(s.cfg.OIDC, userService)
+	auth.GET("/oidc/config", oidc.Config)
+	if oidc != nil {
+		auth.GET("/oidc/login", oidc.Login, panelMiddleware.LoginRateLimiter())
+		auth.GET("/oidc/callback", oidc.Callback, panelMiddleware.LoginRateLimiter())
+		auth.POST("/oidc/2fa", oidc.Verify2FA, panelMiddleware.LoginRateLimiter())
+	}
 }
 
 // setupNodeRoutes configures node-related routes

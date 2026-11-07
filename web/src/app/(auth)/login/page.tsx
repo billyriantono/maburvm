@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { z } from "zod"
@@ -17,6 +17,18 @@ const loginSchema = z.object({
 
 type LoginFormData = z.infer<typeof loginSchema>
 
+// Messages for /login?sso=… after an SSO round trip (see handler/oidc.go).
+const SSO_MESSAGES: Record<string, string> = {
+  noaccount: "You signed in with SSO, but no panel account uses that email. Ask an administrator to add you.",
+  ip: "Your IP address is not whitelisted for this account.",
+  expired: "The SSO sign-in expired or was opened in another browser. Please try again.",
+  error: "SSO sign-in failed. Please try again or sign in with your password.",
+}
+
+function storeSession(token: string) {
+  document.cookie = `accessToken=${token}; path=/; max-age=${24 * 60 * 60}; SameSite=Lax`
+}
+
 interface LoginError {
   message: string
   code?: string
@@ -31,6 +43,53 @@ export default function LoginPage() {
   const [requires2FA, setRequires2FA] = useState(false)
   const [error, setError] = useState<LoginError | null>(null)
   const [ipWarning, setIpWarning] = useState<LoginError | null>(null)
+  const [ssoLabel, setSsoLabel] = useState<string | null>(null)
+  const [ssoTicket, setSsoTicket] = useState<string | null>(null)
+  const [ssoCode, setSsoCode] = useState("")
+
+  useEffect(() => {
+    fetch("/api/v1/auth/oidc/config")
+      .then((r) => r.json())
+      .then((c) => setSsoLabel(c.enabled ? c.label : null))
+      .catch(() => setSsoLabel(null))
+
+    const sso = new URLSearchParams(window.location.search).get("sso")
+    if (!sso) return
+    if (sso === "2fa") {
+      // The ticket rides in the fragment so it never reaches a server log.
+      const ticket = new URLSearchParams(window.location.hash.slice(1)).get("ticket")
+      if (ticket) setSsoTicket(ticket)
+    } else if (sso === "ip") {
+      setIpWarning({ message: SSO_MESSAGES.ip })
+    } else {
+      setError({ message: SSO_MESSAGES[sso] || SSO_MESSAGES.error })
+    }
+    window.history.replaceState(null, "", window.location.pathname)
+  }, [])
+
+  const handleSso2FA = async (ev: React.FormEvent) => {
+    ev.preventDefault()
+    setIsLoading(true)
+    setError(null)
+    try {
+      const response = await fetch("/api/v1/auth/oidc/2fa", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket: ssoTicket, totpCode: ssoCode }),
+      })
+      const result = await response.json()
+      if (!response.ok) {
+        setError({ message: result.error || "Invalid verification code" })
+        return
+      }
+      storeSession(result.token)
+      router.push("/dashboard")
+    } catch {
+      setError({ message: "An unexpected error occurred. Please try again." })
+    } finally {
+      setIsLoading(false)
+    }
+  }
 
   const {
     register,
@@ -81,7 +140,7 @@ export default function LoginPage() {
       }
 
       // Success - store token and redirect to dashboard
-      document.cookie = `accessToken=${result.token}; path=/; max-age=${24 * 60 * 60}; SameSite=Lax`
+      storeSession(result.token)
       router.push("/dashboard")
     } catch (err) {
       setError({
@@ -119,7 +178,7 @@ export default function LoginPage() {
       }
 
       // Success - store token and redirect to dashboard
-      document.cookie = `accessToken=${result.token}; path=/; max-age=${24 * 60 * 60}; SameSite=Lax`
+      storeSession(result.token)
       router.push("/dashboard")
     } catch (err) {
       setError({
@@ -167,6 +226,52 @@ export default function LoginPage() {
           <div className="flex items-start gap-3">
             <AlertTriangle className="w-5 h-5 text-destructive shrink-0 mt-0.5" />
             <p className="font-medium text-destructive text-sm">{error.message}</p>
+          </div>
+        </div>
+      )}
+
+      {/* SSO sign-in that stopped at the panel's own two-factor step */}
+      {ssoTicket ? (
+        <form onSubmit={handleSso2FA} className="space-y-5">
+          <div>
+            <div className="flex items-center gap-2 mb-2">
+              <ShieldCheck className="w-4 h-4 text-muted-foreground" />
+              <label htmlFor="ssoCode" className="block text-sm font-medium text-foreground">
+                Two-Factor Code
+              </label>
+            </div>
+            <Input
+              id="ssoCode"
+              type="text"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={8}
+              placeholder="123456"
+              className="tracking-widest text-center"
+              value={ssoCode}
+              onChange={(e) => setSsoCode(e.target.value.trim())}
+              disabled={isLoading}
+              autoFocus
+            />
+            <p className="mt-2 text-xs text-muted-foreground">
+              You signed in with SSO. Enter the 6-digit code from your authenticator app, or a backup code.
+            </p>
+          </div>
+          <Button type="submit" size="xl" className="w-full text-base font-medium" disabled={isLoading || !ssoCode}>
+            {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : "Verify"}
+          </Button>
+        </form>
+      ) : (
+      <>
+      {ssoLabel && !requires2FA && (
+        <div className="mb-6 space-y-6">
+          <Button asChild variant="outline" size="xl" className="w-full text-base font-medium">
+            <a href="/api/v1/auth/oidc/login">{ssoLabel}</a>
+          </Button>
+          <div className="flex items-center gap-3 text-xs text-muted-foreground">
+            <span className="h-px flex-1 bg-border" />
+            or sign in with your password
+            <span className="h-px flex-1 bg-border" />
           </div>
         </div>
       )}
@@ -287,6 +392,8 @@ export default function LoginPage() {
           )}
         </Button>
       </form>
+      </>
+      )}
 
       {/* Footer Links */}
       <div className="mt-6 text-center">

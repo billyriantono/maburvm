@@ -189,6 +189,25 @@ resolves `DB_PASSWORD`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `JWT_SECRET_KEY`,
 `AES_KEY` when their `*_FILE` vars are set), but multi-instance pinning or custom
 secret mounting requires a separately designed topology, not this file.
 
+### Optional: Sign in with SSO
+
+The login page can offer a "Sign in with SSO" button for any OpenID Connect
+provider. Register the panel there as a confidential web client with the
+redirect URI `<PANEL_PUBLIC_URL>/api/v1/auth/oidc/callback`, then set in
+`.env.production`:
+
+| Variable | |
+|---|---|
+| `OIDC_ISSUER` | the provider's issuer URL (its `/.well-known/openid-configuration` must be reachable from the panel) |
+| `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` | the client's credentials (`OIDC_CLIENT_SECRET_FILE` also works) |
+| `OIDC_BUTTON_LABEL` | optional, defaults to "Sign in with SSO" |
+
+SSO stays off unless all three of issuer, client id and secret are set. The
+panel uses the authorization code flow with PKCE and reads the email from the
+provider's userinfo endpoint; it must be verified. That email is matched to an
+existing panel user, and nobody is created automatically. A user's IP whitelist
+and panel two-factor still apply to SSO sign-ins.
+
 ## 6. Agent deployment (separate, privileged)
 
 Architecture: the panel **initiates outbound gRPC** to a **separately deployed**
