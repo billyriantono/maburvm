@@ -164,6 +164,13 @@ service NodeAgent {
   // stay flat while the node's conntrack table fills and every tenant on it
   // loses connectivity.
   rpc GetGuestConnections(GetGuestConnectionsRequest) returns (GetGuestConnectionsResponse);
+
+  // UpdateAgent replaces this agent's binary with one streamed from the panel.
+  // The first chunk carries the metadata; the agent verifies the digest, makes
+  // sure the new binary runs, then hands the swap to a detached systemd job that
+  // restarts the service and rolls back if it does not come up. The response is
+  // sent before the restart, so success means "scheduled", not "running".
+  rpc UpdateAgent(stream AgentUpdateChunk) returns (AgentUpdateResponse);
 }
 
 // ============================================================================
@@ -1836,5 +1843,24 @@ message SetQuarantineResponse {
   // also be edited by hand on the node.
   repeated string quarantined_macs = 2;
 
+  ErrorResponse error = 3;
+}
+
+// ============================================================================
+// Agent self-update
+// ============================================================================
+
+message AgentUpdateChunk {
+  // Set on the first chunk only.
+  string sha256 = 1;
+  string arch = 2;
+  string commit = 3;
+  int64 size = 4;
+  bytes data = 5;
+}
+
+message AgentUpdateResponse {
+  bool success = 1;
+  string message = 2;
   ErrorResponse error = 3;
 }

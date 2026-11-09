@@ -50,6 +50,10 @@ type Info struct {
 // but it means a locally built binary is still identifiable.
 func Get() Info {
 	commit := strings.TrimSpace(Commit)
+	if commit == "unknown" {
+		// What `git rev-parse HEAD || echo unknown` stamps on a host with no .git.
+		commit = ""
+	}
 	buildTime := strings.TrimSpace(BuildTime)
 	goVersion := ""
 	dirty := false

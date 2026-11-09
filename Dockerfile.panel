@@ -32,6 +32,30 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
               -X github.com/maburvm/panel/internal/shared/buildinfo.Version=${APP_VERSION}" \
     -o /app/bin/panel ./cmd/panel
 
+# Node agent, built from the same source and stamp as the panel so the panel can
+# push it to nodes (System settings -> Update). The agent links libvirt via cgo,
+# so it needs glibc + libvirt headers; bookworm (glibc 2.36, libvirt 9.0) is older
+# than every node's userland, so the binary runs on all of them. Do not move this
+# to a newer base without checking the oldest node's glibc (`ldd --version`).
+FROM golang:1.25-bookworm AS agent-builder
+RUN apt-get update && apt-get install -y --no-install-recommends libvirt-dev pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+COPY api/ ./api/
+COPY integrations/ ./integrations/
+ARG GIT_COMMIT=""
+ARG BUILD_TIME=""
+ARG APP_VERSION=""
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
+    -ldflags "-X github.com/maburvm/panel/internal/shared/buildinfo.Commit=${GIT_COMMIT} \
+              -X github.com/maburvm/panel/internal/shared/buildinfo.BuildTime=${BUILD_TIME} \
+              -X github.com/maburvm/panel/internal/shared/buildinfo.Version=${APP_VERSION}" \
+    -o /app/bin/linux/agent-amd64 ./cmd/agent
+
 # Runtime stage
 FROM alpine:3.24
 
@@ -48,6 +72,8 @@ WORKDIR /app
 
 # Copy binary from builder
 COPY --from=builder /app/bin/panel ./panel
+# Default AGENT_BINARY_DIR (bin/linux, relative to WORKDIR).
+COPY --from=agent-builder /app/bin/linux/agent-amd64 ./bin/linux/agent-amd64
 
 # Copy migrations (panel reads these at runtime)
 COPY internal/shared/db/migrations ./migrations

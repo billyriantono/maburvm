@@ -3,6 +3,8 @@ package handler
 import (
 	"context"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -23,10 +25,19 @@ import (
 // older build until it finishes.
 type VersionHandler struct {
 	nodeService *service.NodeService
+	// agentDir holds agent-<arch> binaries built into the panel image from the
+	// panel's own commit (Dockerfile.panel), shared with the bootstrap installer.
+	agentDir string
+	// updating stops two clicks from scheduling two swaps on the same node.
+	updating sync.Map
 }
 
 func NewVersionHandler(nodeService *service.NodeService) *VersionHandler {
-	return &VersionHandler{nodeService: nodeService}
+	dir := os.Getenv("AGENT_BINARY_DIR")
+	if dir == "" {
+		dir = "bin/linux"
+	}
+	return &VersionHandler{nodeService: nodeService, agentDir: dir}
 }
 
 // RegisterVersionRoutes mounts the endpoint. Authenticated but not admin-only: a
@@ -36,6 +47,54 @@ func RegisterVersionRoutes(e *echo.Echo, h *VersionHandler, db *gorm.DB) {
 	g := e.Group("/api/v1/system")
 	g.Use(middleware.RequireAuth(db))
 	g.GET("/version", h.Version)
+	// Pushes code that runs as root on the node: admins only.
+	g.POST("/nodes/:id/update-agent", h.UpdateAgent, middleware.RequirePermission("admin:access"))
+}
+
+// UpdateAgent pushes the agent binary bundled with this panel to one node.
+//
+// The bundled binary was built from the panel's own commit, so after the node
+// restarts it reports "same as panel". The node verifies and test-runs the
+// binary before swapping, and rolls itself back if the new agent does not stay
+// up — see internal/agent/server/self_update.go.
+func (h *VersionHandler) UpdateAgent(c echo.Context) error {
+	nodeID := c.Param("id")
+	fail := func(code int, msg string) error {
+		return c.JSON(code, map[string]any{"success": false, "error": msg, "message": msg})
+	}
+	if h.nodeService == nil {
+		return fail(http.StatusServiceUnavailable, "node service unavailable")
+	}
+	if _, busy := h.updating.LoadOrStore(nodeID, true); busy {
+		return fail(http.StatusConflict, "an update for this node is already in progress")
+	}
+	defer h.updating.Delete(nodeID)
+
+	ctx, cancel := context.WithTimeout(c.Request().Context(), 3*time.Minute)
+	defer cancel()
+	if err := h.nodeService.EnsureAgentRegistered(ctx, nodeID); err != nil {
+		return fail(http.StatusBadGateway, "node unreachable: "+err.Error())
+	}
+	info, err := h.nodeService.AgentClient().GetNodeInfo(ctx, nodeID)
+	if err != nil {
+		return fail(http.StatusBadGateway, "node unreachable: "+err.Error())
+	}
+	arch := map[string]string{"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}[info.Architecture]
+	if arch == "" {
+		return fail(http.StatusBadRequest, "unsupported node architecture: "+info.Architecture)
+	}
+	path := filepath.Join(h.agentDir, "agent-"+arch)
+	binary, err := os.ReadFile(path)
+	if err != nil {
+		return fail(http.StatusServiceUnavailable, "this panel image has no "+arch+" agent bundled ("+path+")")
+	}
+
+	panelCommit := buildinfo.Get().Commit
+	msg, err := h.nodeService.AgentClient().UpdateAgent(ctx, nodeID, arch, panelCommit, binary)
+	if err != nil {
+		return fail(http.StatusBadGateway, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"success": true, "message": msg})
 }
 
 // nodeBuild is one node's agent build, or why it could not be read.

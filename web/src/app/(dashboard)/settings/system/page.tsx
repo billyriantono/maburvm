@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { useSystemVersion } from "@/lib/hooks/use-version"
+import { useSystemVersion, useUpdateAgent } from "@/lib/hooks/use-version"
 import { useSystemSettings, useSaveSystemSettings, useTestEmail } from "@/lib/hooks/use-settings"
 import { toast } from "sonner"
 import { zodResolver } from "@hookform/resolvers/zod"
@@ -177,6 +177,21 @@ const schedulePresets = [
 // would hide exactly the difference an operator is checking for.
 function BuildPanel() {
   const { data, isLoading } = useSystemVersion()
+  const updateAgent = useUpdateAgent()
+  const [pending, setPending] = useState<string | null>(null)
+
+  const runUpdate = (nodeId: string, nodeName: string) => {
+    setPending(nodeId)
+    updateAgent.mutate(nodeId, {
+      onSuccess: (r) => toast.success(`${nodeName}: ${r.message}`),
+      onError: (e) => {
+        setPending(null)
+        toast.error(`${nodeName}: ${e.message}`)
+      },
+      // Keep the row in "updating" until the version is re-read after the restart.
+      onSettled: () => setTimeout(() => setPending(null), 25_000),
+    })
+  }
 
   if (isLoading) {
     return (
@@ -200,7 +215,7 @@ function BuildPanel() {
           <p className="text-xs text-muted-foreground mt-1 font-mono break-all">
             {panel.stamped ? (
               <>
-                {panel.short_sha} · {panel.version}
+                {panel.version} · {panel.short_sha}
                 {panel.build_time ? ` · built ${panel.build_time}` : ""}
               </>
             ) : (
@@ -226,11 +241,32 @@ function BuildPanel() {
                 </span>
               ) : (
                 <span className="font-mono flex items-center gap-2">
-                  <span>{n.short_sha || "not stamped"}</span>
-                  {n.commit && panel.stamped && (
-                    <span className={n.matches_panel ? "text-emerald-600" : "text-amber-600"}>
-                      {n.matches_panel ? "same as panel" : "older build"}
-                    </span>
+                  <span>
+                    {n.version && n.version !== "dev" ? `${n.version} · ` : ""}
+                    {n.short_sha || "not stamped"}
+                  </span>
+                  {n.commit && panel.stamped && n.matches_panel && (
+                    <span className="text-emerald-600">same as panel</span>
+                  )}
+                  {panel.stamped && !n.matches_panel && (
+                    <>
+                      <span className="text-amber-600">differs from panel</span>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-6 px-2 text-xs"
+                        disabled={pending === n.node_id}
+                        onClick={() => runUpdate(n.node_id, n.node_name)}
+                      >
+                        {pending === n.node_id ? (
+                          <>
+                            <Loader2 className="w-3 h-3 animate-spin mr-1" /> Updating
+                          </>
+                        ) : (
+                          `Update to ${panel.short_sha}`
+                        )}
+                      </Button>
+                    </>
                   )}
                 </span>
               )}

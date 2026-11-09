@@ -299,7 +299,17 @@ GTS — just drop the `tls` block. Either way, set `PANEL_PUBLIC_URL` and
 ### 7.2 Building & shipping on the host
 
 The reference host keeps the repo source under `/root/maburvm` and builds the
-images **on the host** (no registry), then restarts only the changed services:
+images **on the host** (no registry), then restarts only the changed services.
+
+`scripts/deploy-panel.sh root@HOST` does all of the below **and stamps the build**
+(`git describe --tags` version + commit). The host has no `.git`, so a build run
+there by hand reports itself as unstamped unless you export `GIT_COMMIT`,
+`APP_VERSION` and `BUILD_TIME` yourself. The panel image also bundles the node
+agent built from the same commit; *Settings → System → Update* pushes it to a
+node (verified, test-run, auto-rollback). Nodes must already run an agent with
+the `UpdateAgent` RPC — the first upgrade goes through `deploy-agent.sh`.
+
+Manual equivalent:
 
 ```bash
 # From your workstation: sync source to the host (per-tree; NEVER lump multiple

@@ -49,6 +49,7 @@ const (
 	NodeAgent_SetConsoleAccess_FullMethodName    = "/agent.NodeAgent/SetConsoleAccess"
 	NodeAgent_GetExportProgress_FullMethodName   = "/agent.NodeAgent/GetExportProgress"
 	NodeAgent_GetGuestConnections_FullMethodName = "/agent.NodeAgent/GetGuestConnections"
+	NodeAgent_UpdateAgent_FullMethodName         = "/agent.NodeAgent/UpdateAgent"
 )
 
 // NodeAgentClient is the client API for NodeAgent service.
@@ -181,6 +182,12 @@ type NodeAgentClient interface {
 	// stay flat while the node's conntrack table fills and every tenant on it
 	// loses connectivity.
 	GetGuestConnections(ctx context.Context, in *GetGuestConnectionsRequest, opts ...grpc.CallOption) (*GetGuestConnectionsResponse, error)
+	// UpdateAgent replaces this agent's binary with one streamed from the panel.
+	// The first chunk carries the metadata; the agent verifies the digest, makes
+	// sure the new binary runs, then hands the swap to a detached systemd job that
+	// restarts the service and rolls back if it does not come up. The response is
+	// sent before the restart, so success means "scheduled", not "running".
+	UpdateAgent(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[AgentUpdateChunk, AgentUpdateResponse], error)
 }
 
 type nodeAgentClient struct {
@@ -503,6 +510,19 @@ func (c *nodeAgentClient) GetGuestConnections(ctx context.Context, in *GetGuestC
 	return out, nil
 }
 
+func (c *nodeAgentClient) UpdateAgent(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[AgentUpdateChunk, AgentUpdateResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &NodeAgent_ServiceDesc.Streams[2], NodeAgent_UpdateAgent_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[AgentUpdateChunk, AgentUpdateResponse]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type NodeAgent_UpdateAgentClient = grpc.ClientStreamingClient[AgentUpdateChunk, AgentUpdateResponse]
+
 // NodeAgentServer is the server API for NodeAgent service.
 // All implementations must embed UnimplementedNodeAgentServer
 // for forward compatibility.
@@ -633,6 +653,12 @@ type NodeAgentServer interface {
 	// stay flat while the node's conntrack table fills and every tenant on it
 	// loses connectivity.
 	GetGuestConnections(context.Context, *GetGuestConnectionsRequest) (*GetGuestConnectionsResponse, error)
+	// UpdateAgent replaces this agent's binary with one streamed from the panel.
+	// The first chunk carries the metadata; the agent verifies the digest, makes
+	// sure the new binary runs, then hands the swap to a detached systemd job that
+	// restarts the service and rolls back if it does not come up. The response is
+	// sent before the restart, so success means "scheduled", not "running".
+	UpdateAgent(grpc.ClientStreamingServer[AgentUpdateChunk, AgentUpdateResponse]) error
 	mustEmbedUnimplementedNodeAgentServer()
 }
 
@@ -732,6 +758,9 @@ func (UnimplementedNodeAgentServer) GetExportProgress(context.Context, *GetExpor
 }
 func (UnimplementedNodeAgentServer) GetGuestConnections(context.Context, *GetGuestConnectionsRequest) (*GetGuestConnectionsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetGuestConnections not implemented")
+}
+func (UnimplementedNodeAgentServer) UpdateAgent(grpc.ClientStreamingServer[AgentUpdateChunk, AgentUpdateResponse]) error {
+	return status.Error(codes.Unimplemented, "method UpdateAgent not implemented")
 }
 func (UnimplementedNodeAgentServer) mustEmbedUnimplementedNodeAgentServer() {}
 func (UnimplementedNodeAgentServer) testEmbeddedByValue()                   {}
@@ -1276,6 +1305,13 @@ func _NodeAgent_GetGuestConnections_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NodeAgent_UpdateAgent_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(NodeAgentServer).UpdateAgent(&grpc.GenericServerStream[AgentUpdateChunk, AgentUpdateResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type NodeAgent_UpdateAgentServer = grpc.ClientStreamingServer[AgentUpdateChunk, AgentUpdateResponse]
+
 // NodeAgent_ServiceDesc is the grpc.ServiceDesc for NodeAgent service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1407,6 +1443,11 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 			StreamName:    "StreamVMMetrics",
 			Handler:       _NodeAgent_StreamVMMetrics_Handler,
 			ServerStreams: true,
+		},
+		{
+			StreamName:    "UpdateAgent",
+			Handler:       _NodeAgent_UpdateAgent_Handler,
+			ClientStreams: true,
 		},
 	},
 	Metadata: "api/proto/agent.proto",
