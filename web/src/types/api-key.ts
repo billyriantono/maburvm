@@ -8,6 +8,9 @@ export interface APIKey {
   last_used_at?: string
   expires_at?: string
   is_active: boolean
+  // "client" = narrowed to the owner's own resources; absent = owner's role.
+  role?: "admin" | "client"
+  read_only: boolean
   created_at: string
   updated_at: string
 }
@@ -15,6 +18,8 @@ export interface APIKey {
 export interface CreateAPIKeyRequest {
   name: string
   expires_at?: string
+  role?: "client"
+  read_only?: boolean
 }
 
 // CreatedAPIKey is the one-time creation response that carries the plaintext token.

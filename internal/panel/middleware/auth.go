@@ -47,6 +47,11 @@ type UserContext struct {
 	Role        models.UserRole
 	Permissions []string
 	SessionID   string
+	// APIKeyReadOnly / APIKeyRestricted describe the API key the request was
+	// made with (both false for session logins). Restricted = narrower than the
+	// owner (read-only or downgraded role); such keys can't manage credentials.
+	APIKeyReadOnly   bool
+	APIKeyRestricted bool
 }
 
 // GetJWTSecret returns the JWT signing key. It resolves via secret.JWTSecret:
@@ -207,12 +212,48 @@ func authenticateAPIKey(db *gorm.DB, token string, clientIP string) (*UserContex
 	// Best-effort last-used bookkeeping; never blocks auth.
 	db.Model(&models.APIKey{}).Where("id = ?", key.ID).Update("last_used_at", time.Now())
 
+	role := key.EffectiveRole(user.Role)
 	return &UserContext{
-		ID:          user.ID,
-		Email:       user.Email,
-		Role:        user.Role,
-		Permissions: GetPermissionsForRole(user.Role),
+		ID:               user.ID,
+		Email:            user.Email,
+		Role:             role,
+		Permissions:      GetPermissionsForRole(role),
+		APIKeyReadOnly:   key.ReadOnly,
+		APIKeyRestricted: key.ReadOnly || role != user.Role,
 	}, true
+}
+
+// allowReadOnlyKeyCtx marks a route whose unsafe method is only a transport
+// (the MCP endpoint), so a read-only key may reach it; what it does inside is
+// re-checked per call.
+const allowReadOnlyKeyCtx = "api_key_read_only_ok"
+
+// AllowReadOnlyKey lets read-only API keys reach the route below it even with
+// POST. Use only on endpoints that re-enter RequireAuth for their real work.
+func AllowReadOnlyKey(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		c.Set(allowReadOnlyKeyCtx, true)
+		return next(c)
+	}
+}
+
+// apiKeyScopeError returns why a scoped key may not make this request, or "".
+func apiKeyScopeError(c echo.Context, u *UserContext) string {
+	req := c.Request()
+	if u.APIKeyReadOnly && c.Get(allowReadOnlyKeyCtx) == nil &&
+		req.Method != http.MethodGet && req.Method != http.MethodHead && req.Method != http.MethodOptions {
+		return "This API key is read-only"
+	}
+	// A restricted key must not be able to mint a broader key or take over
+	// the account (password, 2FA, profile).
+	if u.APIKeyRestricted {
+		for _, p := range []string{"/api/v1/api-keys", "/api/v1/settings"} {
+			if req.URL.Path == p || strings.HasPrefix(req.URL.Path, p+"/") {
+				return "This API key may not manage account settings or API keys"
+			}
+		}
+	}
+	return ""
 }
 
 // RequireAuth middleware validates the access token and extracts user claims
@@ -227,6 +268,12 @@ func RequireAuth(db *gorm.DB) echo.MiddlewareFunc {
 					return c.JSON(http.StatusUnauthorized, map[string]interface{}{
 						"error":   "Unauthorized",
 						"message": "Invalid or expired API key",
+					})
+				}
+				if msg := apiKeyScopeError(c, userCtx); msg != "" {
+					return c.JSON(http.StatusForbidden, map[string]interface{}{
+						"error":   "Forbidden",
+						"message": msg,
 					})
 				}
 				c.Set(UserContextKey, userCtx)

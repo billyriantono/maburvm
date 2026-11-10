@@ -23,7 +23,7 @@ func setupAPIKeyTestDB(t *testing.T) *gorm.DB {
 		id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL,
 		key_hash TEXT NOT NULL, prefix TEXT NOT NULL,
 		last_used_at DATETIME, expires_at DATETIME,
-		is_active BOOLEAN DEFAULT 1, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		is_active BOOLEAN DEFAULT 1, role TEXT, read_only BOOLEAN NOT NULL DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, deleted_at DATETIME
 	)`).Error)
 	return db
@@ -36,7 +36,7 @@ func TestAPIKeyServiceLifecycle(t *testing.T) {
 	const userID = "11111111-1111-1111-1111-111111111111"
 
 	// Create returns a plaintext token exactly once.
-	key, token, err := svc.CreateAPIKey(ctx, userID, CreateAPIKeyRequest{Name: "ci-bot"})
+	key, token, err := svc.CreateAPIKey(ctx, userID, models.RoleClient, CreateAPIKeyRequest{Name: "ci-bot"})
 	require.NoError(t, err)
 	require.True(t, strings.HasPrefix(token, models.APITokenPrefix), "token must carry mvk_ prefix")
 	require.Equal(t, token[:12], key.Prefix, "display prefix is the token head")
@@ -44,7 +44,7 @@ func TestAPIKeyServiceLifecycle(t *testing.T) {
 	require.NotEqual(t, token, key.KeyHash, "plaintext token is never persisted")
 
 	// Empty name rejected.
-	_, _, err = svc.CreateAPIKey(ctx, userID, CreateAPIKeyRequest{Name: "   "})
+	_, _, err = svc.CreateAPIKey(ctx, userID, models.RoleClient, CreateAPIKeyRequest{Name: "   "})
 	require.Error(t, err)
 
 	// Authenticate accepts the real token and records last-used.
@@ -83,9 +83,31 @@ func TestAPIKeyServiceExpiry(t *testing.T) {
 	const userID = "33333333-3333-3333-3333-333333333333"
 
 	past := time.Now().Add(-time.Hour)
-	_, token, err := svc.CreateAPIKey(ctx, userID, CreateAPIKeyRequest{Name: "expired", ExpiresAt: &past})
+	_, token, err := svc.CreateAPIKey(ctx, userID, models.RoleClient, CreateAPIKeyRequest{Name: "expired", ExpiresAt: &past})
 	require.NoError(t, err)
 
 	_, err = svc.Authenticate(ctx, token)
 	require.ErrorIs(t, err, ErrAPIKeyInvalid, "expired key must not authenticate")
+}
+
+func TestAPIKeyServiceRoleCap(t *testing.T) {
+	db := setupAPIKeyTestDB(t)
+	svc := NewAPIKeyService(db)
+	ctx := context.Background()
+	const userID = "44444444-4444-4444-4444-444444444444"
+
+	// A client can't grant a key the admin role.
+	_, _, err := svc.CreateAPIKey(ctx, userID, models.RoleClient, CreateAPIKeyRequest{Name: "x", Role: models.RoleAdmin})
+	require.Error(t, err)
+
+	// An admin can narrow a key to client; asking for its own role stores "inherit".
+	k, _, err := svc.CreateAPIKey(ctx, userID, models.RoleAdmin, CreateAPIKeyRequest{Name: "c", Role: models.RoleClient, ReadOnly: true})
+	require.NoError(t, err)
+	require.Equal(t, models.RoleClient, k.EffectiveRole(models.RoleAdmin))
+	require.True(t, k.ReadOnly)
+	k, _, err = svc.CreateAPIKey(ctx, userID, models.RoleAdmin, CreateAPIKeyRequest{Name: "a", Role: models.RoleAdmin})
+	require.NoError(t, err)
+	require.Empty(t, k.Role)
+	// If the owner is later demoted, an inheriting key follows.
+	require.Equal(t, models.RoleClient, k.EffectiveRole(models.RoleClient))
 }

@@ -17,6 +17,9 @@ import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Label } from "@/components/ui/label"
+import { useCurrentUser } from "@/lib/hooks/use-auth"
 import {
   Dialog,
   DialogContent,
@@ -42,10 +45,14 @@ export default function APIKeysSettingsPage() {
   const { data: keys, isLoading, error } = useAPIKeys()
   const createKey = useCreateAPIKey()
   const revokeKey = useRevokeAPIKey()
+  const { data: currentUser } = useCurrentUser()
+  const isAdmin = currentUser?.role === "admin"
 
   const [showCreate, setShowCreate] = useState(false)
   const [name, setName] = useState("")
   const [expiresAt, setExpiresAt] = useState("")
+  const [readOnly, setReadOnly] = useState(false)
+  const [asClient, setAsClient] = useState(false)
   const [newToken, setNewToken] = useState<string | null>(null)
   const [revokeTarget, setRevokeTarget] = useState<APIKey | null>(null)
 
@@ -60,11 +67,15 @@ export default function APIKeysSettingsPage() {
         name: trimmed,
         // Datetime-local has no timezone; treat as local and send ISO.
         expires_at: expiresAt ? new Date(expiresAt).toISOString() : undefined,
+        read_only: readOnly,
+        role: asClient ? "client" : undefined,
       })
       setNewToken(created.token)
       setShowCreate(false)
       setName("")
       setExpiresAt("")
+      setReadOnly(false)
+      setAsClient(false)
     } catch (err) {
       toast.error("Failed to create API key", { description: (err as Error).message })
     }
@@ -172,6 +183,8 @@ export default function APIKeysSettingsPage() {
                         ) : (
                           <Badge variant="secondary" className="text-[10px]">Revoked</Badge>
                         )}
+                        {key.read_only && <Badge variant="outline" className="text-[10px]">Read-only</Badge>}
+                        {key.role === "client" && <Badge variant="outline" className="text-[10px]">Own resources only</Badge>}
                       </div>
                       <code className="text-xs font-mono text-muted-foreground">{key.prefix}••••••••</code>
                       <p className="text-xs text-muted-foreground mt-1">
@@ -229,6 +242,22 @@ export default function APIKeysSettingsPage() {
                 onChange={(e) => setExpiresAt(e.target.value)}
               />
             </div>
+            <div className="flex items-start gap-2">
+              <Checkbox id="key-read-only" checked={readOnly} onCheckedChange={(v) => setReadOnly(v === true)} />
+              <div className="grid gap-1">
+                <Label htmlFor="key-read-only">Read-only</Label>
+                <p className="text-xs text-muted-foreground">Can view and monitor, but not change anything. Good for AI agents that only watch.</p>
+              </div>
+            </div>
+            {isAdmin && (
+              <div className="flex items-start gap-2">
+                <Checkbox id="key-as-client" checked={asClient} onCheckedChange={(v) => setAsClient(v === true)} />
+                <div className="grid gap-1">
+                  <Label htmlFor="key-as-client">Own resources only</Label>
+                  <p className="text-xs text-muted-foreground">The key acts as a regular user: only your own VMs, no admin pages.</p>
+                </div>
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setShowCreate(false)}>

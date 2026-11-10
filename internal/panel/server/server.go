@@ -640,6 +640,8 @@ func (s *Server) setupAPIKeyRoutes() {
 	apiKeyService := service.NewAPIKeyService(s.db)
 	apiKeyHandler := handler.NewAPIKeyHandler(apiKeyService)
 	handler.RegisterAPIKeyRoutes(s.echo, apiKeyHandler, s.db)
+	// MCP endpoint for AI agents; authenticates with the same API keys.
+	handler.RegisterMCPRoutes(s.echo, s.db)
 }
 
 // setupSSHKeyRoutes configures per-user SSH public key routes for VM provisioning.

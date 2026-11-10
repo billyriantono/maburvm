@@ -237,6 +237,26 @@ All routes are under `/api/v1/`:
 | **Abuse** | Guest connection rates + quarantine (admin only) |
 | **Audit Logs** | Action history (admin only) |
 | **Dashboard** | Statistics overview |
+| **MCP** | `POST /api/v1/mcp`: Model Context Protocol endpoint for AI agents (see below) |
+
+### MCP (AI agents)
+
+The panel speaks [MCP](https://modelcontextprotocol.io) over Streamable HTTP, so
+an AI agent can list and inspect VMs and nodes, read metrics, run power actions,
+create/resize/rebuild/delete VMs, and take or restore snapshots. Each tool runs
+through the matching REST route as the key's owner, so RBAC, tenant isolation
+and the audit log apply. Only API keys are accepted (create one under
+*Settings → API keys*).
+
+A key can be narrowed when created: **Read-only** (GET only; MCP then lists
+only the monitoring tools) and, for admins, **Own resources only** (the key
+acts as a regular user). A key never gets more than its owner's role, and a
+narrowed key can't create API keys or change account settings.
+
+```bash
+claude mcp add --transport http maburvm https://panel.example.com/api/v1/mcp \
+  --header "Authorization: Bearer mvk_..."
+```
 
 ## Development
 

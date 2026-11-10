@@ -1,0 +1,2 @@
+ALTER TABLE api_keys DROP COLUMN IF EXISTS read_only;
+ALTER TABLE api_keys DROP COLUMN IF EXISTS role;

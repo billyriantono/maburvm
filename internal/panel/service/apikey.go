@@ -34,14 +34,26 @@ func NewAPIKeyService(db *gorm.DB) *APIKeyService {
 type CreateAPIKeyRequest struct {
 	Name      string     `json:"name" validate:"required,max=100"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// Role narrows what the key may do: "" (act as the owner) or "client".
+	Role models.UserRole `json:"role,omitempty"`
+	// ReadOnly limits the key to GET requests.
+	ReadOnly bool `json:"read_only,omitempty"`
 }
 
 // CreateAPIKey generates a new token, stores only its hash, and returns the
 // plaintext token exactly once (callers must surface it to the user immediately).
-func (s *APIKeyService) CreateAPIKey(ctx context.Context, userID string, req CreateAPIKeyRequest) (*models.APIKey, string, error) {
+// ownerRole is the caller's role; a key may never be granted more than that.
+func (s *APIKeyService) CreateAPIKey(ctx context.Context, userID string, ownerRole models.UserRole, req CreateAPIKeyRequest) (*models.APIKey, string, error) {
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		return nil, "", errors.New("name is required")
+	}
+	switch req.Role {
+	case "", ownerRole:
+		req.Role = "" // same as the owner: store as inherit
+	case models.RoleClient:
+	default:
+		return nil, "", errors.New("role must be empty or a role no higher than your own")
 	}
 
 	token, err := generateAPIToken()
@@ -56,6 +68,8 @@ func (s *APIKeyService) CreateAPIKey(ctx context.Context, userID string, req Cre
 		Prefix:    token[:12],
 		ExpiresAt: req.ExpiresAt,
 		IsActive:  true,
+		Role:      req.Role,
+		ReadOnly:  req.ReadOnly,
 	}
 	if err := s.repo.Create(ctx, key); err != nil {
 		return nil, "", err
