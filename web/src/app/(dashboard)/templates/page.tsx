@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo, useEffect, useCallback } from "react"
+import { useState, useMemo, useCallback } from "react"
 import Link from "next/link"
 import {
   Plus,
@@ -13,6 +13,7 @@ import {
   AlertCircle,
   X
 } from "lucide-react"
+import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -24,25 +25,10 @@ function formatDate(dateString: string): string {
   return new Date(dateString).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })
 }
 
-function Toast({ message, type, onClose }: { message: string; type: "success" | "error"; onClose: () => void }) {
-  useEffect(() => {
-    const timer = setTimeout(onClose, 3000)
-    return () => clearTimeout(timer)
-  }, [onClose])
-
-  return (
-    <div className={`fixed bottom-4 right-4 z-50 rounded-md border px-6 py-4 shadow-md ${
-      type === "success" ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900" : "bg-destructive text-destructive-foreground border-destructive"
-    }`}>
-      <p className="text-sm font-medium">{message}</p>
-    </div>
-  )
-}
 export default function TemplateListPage() {
   const confirm = useConfirm()
   const [searchQuery, setSearchQuery] = useState("")
   const [activeFilter, setActiveFilter] = useState<string>("")
-  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
 
   // Data hooks
   const { data: templates, isLoading, error, refetch } = useTemplates()
@@ -81,7 +67,7 @@ export default function TemplateListPage() {
       action: () => deleteTemplate.mutateAsync(template.id),
     })
     if (!ok) return
-    setToast({ message: `Template "${template.name}" deleted`, type: "success" })
+    toast.success(`Template "${template.name}" deleted`)
     refetch()
   }, [confirm, deleteTemplate, refetch])
 
@@ -234,7 +220,6 @@ export default function TemplateListPage() {
       </div>
 
 
-      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
     </div>
   )
 }

@@ -15,7 +15,7 @@ interface TemplateListParams {
   type?: string
 }
 
-export function useTemplates(params: TemplateListParams = {}) {
+export function useTemplates(params: TemplateListParams = {}, enabled = true) {
   const { type } = params
 
   return useQuery<OSTemplate[]>({
@@ -26,6 +26,7 @@ export function useTemplates(params: TemplateListParams = {}) {
       })
       return response.data.data
     },
+    enabled,
   })
 }
 

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useRef } from "react"
 import {
   Database,
   Plus,
@@ -17,6 +17,7 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import {
   useStoragePools,
   useCreateStoragePool,
@@ -52,8 +53,12 @@ function formatDate(dateString: string): string {
 const GIB = 1024 * 1024 * 1024
 
 // VolumesDialog lists, provisions, and deletes real disk volumes in a pool.
-function VolumesDialog({ pool, onClose }: { pool: StoragePool | null; onClose: () => void }) {
+function VolumesDialog({ pool: openPool, onClose }: { pool: StoragePool | null; onClose: () => void }) {
   const confirm = useConfirm()
+  // Keep the last pool while the dialog fades out.
+  const lastPool = useRef(openPool)
+  if (openPool) lastPool.current = openPool
+  const pool = openPool ?? lastPool.current
   const poolId = pool?.id ?? ""
   const { data: volumes, isLoading } = useStorageVolumes(poolId)
   const createVolume = useCreateStorageVolume(poolId)
@@ -91,17 +96,18 @@ function VolumesDialog({ pool, onClose }: { pool: StoragePool | null; onClose: (
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-label="Manage volumes">
-      <button type="button" className="absolute inset-0 bg-black/50 cursor-default focus:outline-none" onClick={onClose} aria-label="Close dialog" />
-      <div className="relative bg-background border rounded-lg p-6 shadow-lg max-w-2xl w-full mx-4 max-h-[85vh] overflow-y-auto">
-        <h3 className="text-lg font-semibold mb-1 flex items-center gap-2"><HardDrive className="w-5 h-5" />Volumes — {pool.name}</h3>
-        <p className="text-muted-foreground text-sm mb-5">{pool.path}</p>
+    <Dialog open={!!openPool} onOpenChange={(open) => { if (!open) onClose() }}>
+      <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2"><HardDrive className="w-5 h-5" aria-hidden="true" />Volumes: {pool.name}</DialogTitle>
+          <DialogDescription>{pool.path}</DialogDescription>
+        </DialogHeader>
 
         {/* Create form */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-5">
-          <Input placeholder="Volume name" value={name} onChange={(e) => setName(e.target.value)} className="md:col-span-2" />
-          <Input type="number" min={1} value={sizeGB} onChange={(e) => setSizeGB(Number(e.target.value))} title="Size (GB)" />
-          <select value={format} onChange={(e) => setFormat(e.target.value)} className="h-10 px-3 rounded-md border border-input bg-background text-sm">
+          <Input aria-label="Volume name" placeholder="Volume name" value={name} onChange={(e) => setName(e.target.value)} className="md:col-span-2" />
+          <Input aria-label="Size (GB)" type="number" min={1} value={sizeGB} onChange={(e) => setSizeGB(Number(e.target.value))} title="Size (GB)" />
+          <select aria-label="Format" value={format} onChange={(e) => setFormat(e.target.value)} className="h-10 px-3 rounded-md border border-input bg-background text-sm">
             <option value="qcow2">qcow2</option>
             <option value="raw">raw</option>
           </select>
@@ -141,11 +147,11 @@ function VolumesDialog({ pool, onClose }: { pool: StoragePool | null; onClose: (
           )}
         </div>
 
-        <div className="flex justify-end mt-6">
+        <DialogFooter>
           <Button variant="outline" onClick={onClose}>Close</Button>
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -157,8 +163,8 @@ function StatusBadge({ status }: { status: string }) {
   }
   const labels: Record<string, string> = { online: "Online", offline: "Offline", degraded: "Degraded" }
 
-  const cls = config[status] || config.online
-  const label = labels[status] || labels.online
+  const cls = config[status] || "bg-muted text-muted-foreground border-border"
+  const label = labels[status] || "Unknown"
 
   return (
     <span className={`inline-flex items-center px-2 py-0.5 text-[10px] font-medium border rounded-full ${cls}`}>
@@ -248,7 +254,7 @@ function StorageBar({
 
 export default function StorageListPage() {
   const confirm = useConfirm()
-  const { data: pools, isLoading, error } = useStoragePools()
+  const { data: pools, isLoading, error, refetch } = useStoragePools()
   const { data: nodes, isLoading: isLoadingNodes } = useNodes()
   const nodeNames = useMemo(
     () => new Map((nodes ?? []).map((n) => [n.id, n.name])),
@@ -264,6 +270,10 @@ export default function StorageListPage() {
   const [resizeTarget, setResizeTarget] = useState<NonNullable<typeof pools>[number] | null>(null)
   const [newPool, setNewPool] = useState({ name: "", path: "", type: "dir", node_id: "", total_space: 107374182400, file_format: "raw", alert_threshold: 90, overcommit: 0, is_primary: false })
   const [resizeBytes, setResizeBytes] = useState(0)
+  // Keep the last target while the dialog fades out.
+  const lastResize = useRef(resizeTarget)
+  if (resizeTarget) lastResize.current = resizeTarget
+  const resizeShown = resizeTarget ?? lastResize.current
   const [volumesPool, setVolumesPool] = useState<StoragePool | null>(null)
 
   const filteredPools = pools?.filter(pool =>
@@ -304,7 +314,11 @@ export default function StorageListPage() {
     toast.success(`Storage pool "${pool.name}" deleted`)
   }
 
+  const poolSizeOk = Number.isFinite(newPool.total_space) && newPool.total_space > 0
+  const resizeSizeOk = Number.isFinite(resizeBytes) && resizeBytes > 0
+
   const handleAddPool = () => {
+    if (!poolSizeOk) return
     createPool.mutate(newPool, {
       onSuccess: () => {
         toast.success(`Storage pool "${newPool.name}" created`)
@@ -316,7 +330,7 @@ export default function StorageListPage() {
   }
 
   const handleResize = () => {
-    if (!resizeTarget) return
+    if (!resizeTarget || !resizeSizeOk) return
     resizePool.mutate({ id: resizeTarget.id, total_space: resizeBytes }, {
       onSuccess: () => {
         toast.success(`Storage pool "${resizeTarget.name}" resized`)
@@ -363,6 +377,7 @@ export default function StorageListPage() {
               <p className="font-semibold text-red-700 dark:text-red-300">Error loading storage pools</p>
               <p className="text-sm text-muted-foreground">{error.message}</p>
             </div>
+            <Button variant="outline" size="sm" className="ml-auto" onClick={() => refetch()}>Retry</Button>
           </div>
         </div>
       </div>
@@ -595,23 +610,24 @@ export default function StorageListPage() {
 
 
       {/* Add Pool Dialog */}
-      {showAddPool && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
-          <button type="button" className="absolute inset-0 bg-black/50 cursor-default focus:outline-none" onClick={() => setShowAddPool(false)} aria-label="Close" />
-          <div className="relative bg-background border rounded-lg p-6 shadow-lg max-w-md w-full mx-4">
-            <h3 className="text-lg font-semibold mb-4">Add Storage Pool</h3>
+      <Dialog open={showAddPool} onOpenChange={setShowAddPool}>
+        <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Add Storage Pool</DialogTitle>
+            <DialogDescription>Register a storage pool on a node.</DialogDescription>
+          </DialogHeader>
             <div className="space-y-4">
               <div>
-                <label className="text-xs font-medium text-muted-foreground">Name</label>
-                <Input value={newPool.name} onChange={(e) => setNewPool({...newPool, name: e.target.value})} placeholder="e.g., local-lvm" />
+                <label htmlFor="pool-name" className="text-xs font-medium text-muted-foreground">Name</label>
+                <Input id="pool-name" value={newPool.name} onChange={(e) => setNewPool({...newPool, name: e.target.value})} placeholder="e.g., local-lvm" />
               </div>
               <div>
-                <label className="text-xs font-medium text-muted-foreground">Path</label>
-                <Input value={newPool.path} onChange={(e) => setNewPool({...newPool, path: e.target.value})} placeholder="e.g., /var/lib/vz" />
+                <label htmlFor="pool-path" className="text-xs font-medium text-muted-foreground">Path</label>
+                <Input id="pool-path" value={newPool.path} onChange={(e) => setNewPool({...newPool, path: e.target.value})} placeholder="e.g., /var/lib/vz" />
               </div>
               <div>
-                <label className="text-xs font-medium text-muted-foreground">Type</label>
-                <select value={newPool.type} onChange={(e) => setNewPool({...newPool, type: e.target.value})} className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm">
+                <label htmlFor="pool-type" className="text-xs font-medium text-muted-foreground">Type</label>
+                <select id="pool-type" value={newPool.type} onChange={(e) => setNewPool({...newPool, type: e.target.value})} className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm">
                   <option value="dir">Directory (File)</option>
                   <option value="lvm">LVM</option>
                   <option value="lvmthin">Thin LVM</option>
@@ -623,8 +639,8 @@ export default function StorageListPage() {
                 </select>
               </div>
               <div>
-                <label className="text-xs font-medium text-muted-foreground">Node</label>
-                <select value={newPool.node_id} onChange={(e) => setNewPool({...newPool, node_id: e.target.value})} className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm">
+                <label htmlFor="pool-node" className="text-xs font-medium text-muted-foreground">Node</label>
+                <select id="pool-node" value={newPool.node_id} onChange={(e) => setNewPool({...newPool, node_id: e.target.value})} className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm">
                   <option value="">Select a node</option>
                   {nodes?.map((node) => (
                     <option key={node.id} value={node.id}>{node.name}</option>
@@ -632,64 +648,65 @@ export default function StorageListPage() {
                 </select>
               </div>
               <div>
-                <label className="text-xs font-medium text-muted-foreground">Size (GB)</label>
-                <Input type="number" value={Math.round(newPool.total_space / 1073741824)} onChange={(e) => setNewPool({...newPool, total_space: parseInt(e.target.value) * 1073741824})} />
+                <label htmlFor="pool-size" className="text-xs font-medium text-muted-foreground">Size (GB)</label>
+                <Input id="pool-size" type="number" min={1} value={Number.isFinite(newPool.total_space) ? Math.round(newPool.total_space / 1073741824) : ""} onChange={(e) => setNewPool({...newPool, total_space: parseInt(e.target.value) * 1073741824})} aria-invalid={!poolSizeOk} />
+                {!poolSizeOk && <p className="text-xs text-destructive mt-1">Enter a size greater than 0 GB.</p>}
               </div>
               <div>
-                <label className="text-xs font-medium text-muted-foreground">File Format</label>
-                <select value={newPool.file_format} onChange={(e) => setNewPool({...newPool, file_format: e.target.value})} className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm">
+                <label htmlFor="pool-format" className="text-xs font-medium text-muted-foreground">File Format</label>
+                <select id="pool-format" value={newPool.file_format} onChange={(e) => setNewPool({...newPool, file_format: e.target.value})} className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm">
                   <option value="raw">RAW</option>
                   <option value="qcow2">QCOW2</option>
                 </select>
               </div>
               <div>
-                <label className="text-xs font-medium text-muted-foreground">Alert Threshold (%)</label>
-                <Input type="number" min={0} max={100} value={newPool.alert_threshold} onChange={(e) => setNewPool({...newPool, alert_threshold: parseInt(e.target.value) || 0})} />
+                <label htmlFor="pool-alert" className="text-xs font-medium text-muted-foreground">Alert Threshold (%)</label>
+                <Input id="pool-alert" type="number" min={0} max={100} value={newPool.alert_threshold} onChange={(e) => setNewPool({...newPool, alert_threshold: parseInt(e.target.value) || 0})} />
               </div>
               <div>
-                <label className="text-xs font-medium text-muted-foreground">Overcommit (GB, 0 = disabled)</label>
-                <Input type="number" min={0} value={Math.round(newPool.overcommit / 1073741824)} onChange={(e) => setNewPool({...newPool, overcommit: parseInt(e.target.value) * 1073741824})} />
+                <label htmlFor="pool-overcommit" className="text-xs font-medium text-muted-foreground">Overcommit (GB, 0 = disabled)</label>
+                <Input id="pool-overcommit" type="number" min={0} value={Math.round(newPool.overcommit / 1073741824)} onChange={(e) => setNewPool({...newPool, overcommit: (parseInt(e.target.value) || 0) * 1073741824})} />
               </div>
               <div className="flex items-center gap-3">
                 <input type="checkbox" id="is_primary" checked={newPool.is_primary} onChange={(e) => setNewPool({...newPool, is_primary: e.target.checked})} className="w-4 h-4 rounded border-input" />
                 <label htmlFor="is_primary" className="text-xs font-medium text-muted-foreground">Primary Storage</label>
               </div>
             </div>
-            <div className="flex gap-3 justify-end mt-6">
+            <DialogFooter className="gap-3 sm:gap-0">
               <Button variant="outline" onClick={() => setShowAddPool(false)}>Cancel</Button>
-              <Button onClick={handleAddPool} disabled={!newPool.name || !newPool.path || !newPool.node_id || isLoadingNodes || createPool.isPending}>
+              <Button onClick={handleAddPool} disabled={!newPool.name || !newPool.path || !newPool.node_id || !poolSizeOk || isLoadingNodes || createPool.isPending}>
                 {createPool.isPending ? "Creating..." : "Create Pool"}
               </Button>
-            </div>
-          </div>
-        </div>
-      )}
+            </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Resize Dialog */}
-      {resizeTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
-          <button type="button" className="absolute inset-0 bg-black/50 cursor-default focus:outline-none" onClick={() => setResizeTarget(null)} aria-label="Close" />
-          <div className="relative bg-background border rounded-lg p-6 shadow-lg max-w-md w-full mx-4">
-            <h3 className="text-lg font-semibold mb-4">Resize Pool: {resizeTarget.name}</h3>
-            <div className="space-y-4">
-              <div>
-                <label className="text-xs font-medium text-muted-foreground">Current Size</label>
-                <p className="font-semibold">{formatBytes(resizeTarget.total_space ?? 0)}</p>
-              </div>
-              <div>
-                <label className="text-xs font-medium text-muted-foreground">New Size (GB)</label>
-                <Input type="number" value={Math.round(resizeBytes / 1073741824)} onChange={(e) => setResizeBytes(parseInt(e.target.value) * 1073741824)} />
-              </div>
+      <Dialog open={!!resizeTarget} onOpenChange={(open) => { if (!open) setResizeTarget(null) }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Resize Pool: {resizeShown?.name}</DialogTitle>
+            <DialogDescription>Set a new total size for this pool.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <span className="block text-xs font-medium text-muted-foreground">Current Size</span>
+              <p className="font-semibold">{formatBytes(resizeShown?.total_space ?? 0)}</p>
             </div>
-            <div className="flex gap-3 justify-end mt-6">
-              <Button variant="outline" onClick={() => setResizeTarget(null)}>Cancel</Button>
-              <Button onClick={handleResize} disabled={resizePool.isPending}>
-                {resizePool.isPending ? "Resizing..." : "Resize"}
-              </Button>
+            <div>
+              <label htmlFor="resize-size" className="text-xs font-medium text-muted-foreground">New Size (GB)</label>
+              <Input id="resize-size" type="number" min={1} value={Number.isFinite(resizeBytes) ? Math.round(resizeBytes / 1073741824) : ""} onChange={(e) => setResizeBytes(parseInt(e.target.value) * 1073741824)} aria-invalid={!resizeSizeOk} />
+              {!resizeSizeOk && <p className="text-xs text-destructive mt-1">Enter a size greater than 0 GB.</p>}
             </div>
           </div>
-        </div>
-      )}
+          <DialogFooter className="gap-3 sm:gap-0">
+            <Button variant="outline" onClick={() => setResizeTarget(null)}>Cancel</Button>
+            <Button onClick={handleResize} disabled={resizePool.isPending || !resizeSizeOk}>
+              {resizePool.isPending ? "Resizing..." : "Resize"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <VolumesDialog pool={volumesPool} onClose={() => setVolumesPool(null)} />
     </div>

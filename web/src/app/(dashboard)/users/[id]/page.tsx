@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback, useEffect } from "react"
+import { useState, useCallback } from "react"
 import Link from "next/link"
 import { useParams, useRouter } from "next/navigation"
 import { 
@@ -19,6 +19,7 @@ import {
   Users,
   Server,
 } from "lucide-react"
+import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -26,40 +27,12 @@ import { Badge } from "@/components/ui/badge"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { useUser, useUpdateUser, useDeleteUser } from "@/lib/hooks/use-users"
 import { useVMs } from "@/lib/hooks/use-vms"
-import type { VM, VMStatus } from "@/types"
+import type { VM } from "@/types"
+import { StatusBadge } from "@/components/status-badge"
 import { useConfirm } from "@/components/confirm-provider"
 
 function formatDate(dateString: string): string {
   return new Date(dateString).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
-}
-
-function Toast({ message, type, onClose }: { message: string; type: "success" | "error"; onClose: () => void }) {
-  useEffect(() => {
-    const timer = setTimeout(onClose, 3000)
-    return () => clearTimeout(timer)
-  }, [onClose])
-  return (
-    <div className={`fixed bottom-4 right-4 z-50 px-5 py-3 rounded-lg border shadow-md ${type === "success" ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900" : "bg-destructive text-destructive-foreground border-destructive"}`}>
-      <p className="font-medium text-sm">{message}</p>
-    </div>
-  )
-}
-
-function VMStatusBadge({ status }: { status: VMStatus }) {
-  const colors: Record<string, string> = {
-    running: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900",
-    stopped: "bg-muted text-muted-foreground border-border",
-    suspended: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900",
-    creating: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950 dark:text-blue-300 dark:border-blue-900",
-    deleting: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900",
-    error: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-900",
-  }
-  return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium border ${colors[status] || colors.stopped}`}>
-      <span className={`w-1.5 h-1.5 mr-1.5 rounded-full ${status === "running" ? "bg-current animate-pulse" : "bg-current"}`} />
-      {status}
-    </span>
-  )
 }
 
 export default function UserDetailPage() {
@@ -68,7 +41,6 @@ export default function UserDetailPage() {
   const router = useRouter()
   const userId = params.id as string
 
-  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
   const [editOpen, setEditOpen] = useState(false)
   const [editEmail, setEditEmail] = useState("")
   const [editRole, setEditRole] = useState<string>("")
@@ -97,7 +69,7 @@ export default function UserDetailPage() {
       action: () => deleteUser.mutateAsync(userId),
     })
     if (!ok) return
-    setToast({ message: "User deleted", type: "success" })
+    toast.success("User deleted")
     setTimeout(() => router.push("/users"), 1000)
   }, [confirm, user, userVMs.length, deleteUser, userId, router])
 
@@ -108,11 +80,11 @@ export default function UserDetailPage() {
         email: editEmail || undefined,
         role: (editRole as "admin" | "client") || undefined,
       })
-      setToast({ message: "User updated", type: "success" })
+      toast.success("User updated")
       setEditOpen(false)
       refetch()
     } catch (err) {
-      setToast({ message: `Failed to update: ${(err as Error).message}`, type: "error" })
+      toast.error(`Failed to update: ${(err as Error).message}`)
     }
   }, [updateUser, editEmail, editRole, refetch])
 
@@ -285,7 +257,7 @@ export default function UserDetailPage() {
                     <p className="font-medium text-sm">{vm.hostname}</p>
                     <p className="text-xs text-muted-foreground">{vm.resources.cpu} vCPU • {Math.round(vm.resources.ram / 1024)} GB RAM • {vm.resources.disk} GB Disk</p>
                   </div>
-                  <VMStatusBadge status={vm.status} />
+                  <StatusBadge status={vm.status} />
                 </Link>
               ))}
             </div>
@@ -294,7 +266,6 @@ export default function UserDetailPage() {
       </div>
 
 
-      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
     </div>
   )
 }

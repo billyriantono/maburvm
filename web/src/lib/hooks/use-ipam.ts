@@ -9,13 +9,14 @@ import type {
   UpdateIPPoolRequest,
 } from '@/types'
 
-export function useIPPools() {
+export function useIPPools(enabled = true) {
   return useQuery<IPPool[]>({
     queryKey: ['ipam', 'pools'],
     queryFn: async () => {
       const response = await api.get<IPPool[]>('/api/v1/ip-pools')
       return response.data.data
     },
+    enabled,
   })
 }
 

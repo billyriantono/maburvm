@@ -92,6 +92,22 @@
   }
   body {
     @apply bg-background text-foreground;
+    /* Fixed-width digits everywhere: metrics, counters and timers refresh on a
+       poll, and proportional digits make the whole row shift when they do. */
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Honour the OS "reduce motion" setting for every animation and transition
+     in the app, including ones added later. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 }
 

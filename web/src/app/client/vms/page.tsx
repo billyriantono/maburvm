@@ -1,34 +1,69 @@
 "use client"
 
 import Link from "next/link"
-import { Monitor, PlusCircle, Play, Square, RotateCw } from "lucide-react"
+import { useState } from "react"
+import { toast } from "sonner"
+import { Monitor, PlusCircle, Play, Square, RotateCw, Loader2 } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { StatusBadge, useVMTransitions } from "@/components/status-badge"
 import { useVMs, useVMStatusStream, useVMActions } from "@/lib/hooks/use-vms"
 import { CountryFlag } from "@/components/country-flag"
 import type { VM } from "@/types"
 
-function StatusBadge({ status }: { status: string }) {
-  const colors: Record<string, string> = {
-    running: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-400 dark:border-emerald-900",
-    stopped: "bg-muted text-muted-foreground border-border",
-    suspended: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-400 dark:border-amber-900",
-    creating: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950 dark:text-blue-400 dark:border-blue-900",
-    deleting: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-400 dark:border-amber-900",
-    error: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-400 dark:border-red-900",
-  }
-  return (
-    <span className={`inline-flex items-center px-2 py-0.5 text-xs font-medium capitalize rounded-md border ${colors[status] || "bg-muted text-muted-foreground border-border"}`}>
-      {status}
-    </span>
-  )
-}
-
 export default function ClientVMsPage() {
   useVMStatusStream()
-  const { data, isLoading } = useVMs({ pageSize: 100 })
+  const { data, isLoading, error, refetch } = useVMs({ pageSize: 100 })
   const action = useVMActions()
   const vms: VM[] = data?.data ?? []
+  const { transitionOf, begin } = useVMTransitions(vms)
+  // Which VM is waiting on which request, so only that row is disabled.
+  const [inFlight, setInFlight] = useState<Record<string, string>>({})
 
   const busy = (status: string) => status === "creating" || status === "deleting"
+
+  const run = (vm: VM, act: string, label: string) => {
+    setInFlight((p) => ({ ...p, [vm.id]: act }))
+    const done = () =>
+      setInFlight((p) => {
+        const n = { ...p }
+        delete n[vm.id]
+        return n
+      })
+    action.mutate(
+      { vmId: vm.id, action: act },
+      {
+        onSuccess: () => {
+          done()
+          begin(vm.id, act, vm.status)
+          toast.success(`${label} requested for ${vm.hostname}`)
+        },
+        onError: (err) => {
+          done()
+          toast.error(err.message || `Could not complete the request for ${vm.hostname}`)
+        },
+      }
+    )
+  }
+
+  const powerButton = ({ vm, act, label, doing, icon: Icon, variant, className }: {
+    vm: VM; act: string; label: string; doing: string; icon: React.ElementType
+    variant: "outline" | "success"; className?: string
+  }) => {
+    const mine = inFlight[vm.id] === act
+    return (
+      <Button
+        key={act}
+        size="sm"
+        variant={variant}
+        className={className}
+        onClick={() => run(vm, act, label)}
+        disabled={!!inFlight[vm.id] || !!transitionOf(vm.id) || busy(vm.status)}
+      >
+        {mine ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Icon aria-hidden="true" />}
+        {mine ? doing : label}
+      </Button>
+    )
+  }
 
   return (
     <div className="space-y-6">
@@ -48,6 +83,12 @@ export default function ClientVMsPage() {
       <div className="rounded-lg border bg-card text-card-foreground shadow-sm">
         {isLoading ? (
           <div className="p-8 text-center text-muted-foreground">Loading…</div>
+        ) : error && !data ? (
+          <div className="p-10 text-center">
+            <p className="font-medium text-muted-foreground">Could not load your VMs.</p>
+            <p className="text-sm text-muted-foreground mt-1">{(error as Error).message}</p>
+            <Button className="mt-4" variant="outline" onClick={() => refetch()}>Retry</Button>
+          </div>
         ) : vms.length === 0 ? (
           <div className="p-10 text-center">
             <p className="font-medium text-muted-foreground">You don&apos;t have any VMs yet.</p>
@@ -75,32 +116,13 @@ export default function ClientVMsPage() {
                   </div>
                 </Link>
                 <div className="flex items-center gap-2">
-                  <StatusBadge status={vm.status} />
-                  {vm.status === "stopped" && (
-                    <button
-                      onClick={() => action.mutate({ vmId: vm.id, action: "start" })}
-                      disabled={action.isPending || busy(vm.status)}
-                      className="inline-flex items-center gap-1 h-9 px-3 rounded-md bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-700 transition-colors disabled:opacity-50"
-                    >
-                      <Play className="w-4 h-4" /> Start
-                    </button>
-                  )}
+                  <StatusBadge status={vm.status} transition={transitionOf(vm.id)} />
+                  {vm.status === "stopped" &&
+                    powerButton({ vm, act: "start", label: "Start", doing: "Starting", icon: Play, variant: "success" })}
                   {vm.status === "running" && (
                     <>
-                      <button
-                        onClick={() => action.mutate({ vmId: vm.id, action: "restart" })}
-                        disabled={action.isPending}
-                        className="inline-flex items-center gap-1 h-9 px-3 rounded-md border border-input bg-background text-xs font-medium hover:bg-muted transition-colors disabled:opacity-50"
-                      >
-                        <RotateCw className="w-4 h-4" /> Reboot
-                      </button>
-                      <button
-                        onClick={() => action.mutate({ vmId: vm.id, action: "stop" })}
-                        disabled={action.isPending}
-                        className="inline-flex items-center gap-1 h-9 px-3 rounded-md border border-input bg-background text-destructive text-xs font-medium hover:bg-destructive/10 transition-colors disabled:opacity-50"
-                      >
-                        <Square className="w-4 h-4" /> Stop
-                      </button>
+                      {powerButton({ vm, act: "restart", label: "Reboot", doing: "Rebooting", icon: RotateCw, variant: "outline" })}
+                      {powerButton({ vm, act: "stop", label: "Stop", doing: "Stopping", icon: Square, variant: "outline", className: "text-destructive hover:bg-destructive/10 hover:text-destructive" })}
                     </>
                   )}
                 </div>

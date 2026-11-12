@@ -5,6 +5,7 @@ import Link from "next/link"
 import { useParams, useRouter } from "next/navigation"
 import {
   ArrowLeft,
+  Check,
   CheckCircle2,
   CircleSlash,
   DownloadCloud,
@@ -19,6 +20,7 @@ import {
   Zap,
 } from "lucide-react"
 import { toast } from "sonner"
+import { useFlash } from "@/lib/use-feedback"
 import { api } from "@/lib/api-client"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -55,13 +57,17 @@ function statusVariant(status: IPAddressStatus): "success" | "warning" | "destru
 function RDNSCell({ address, poolId }: { address: IPAddress; poolId: string }) {
   const setRDNS = useSetRDNS(poolId)
   const [value, setValue] = useState(address.rdns ?? "")
+  const saved = useFlash(1500)
 
   const commit = () => {
     if (value === (address.rdns ?? "")) return
     setRDNS.mutate(
       { addressId: address.id, rdns: value.trim() },
       {
-        onSuccess: () => toast.success(`rDNS updated for ${address.address}`),
+        onSuccess: () => {
+          toast.success(`rDNS updated for ${address.address}`)
+          saved.trigger()
+        },
         onError: (err) => {
           toast.error(`rDNS: ${(err as Error).message}`)
           setValue(address.rdns ?? "")
@@ -78,10 +84,14 @@ function RDNSCell({ address, poolId }: { address: IPAddress; poolId: string }) {
         onBlur={commit}
         onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur() }}
         placeholder="set PTR hostname…"
-        title="Reverse DNS (PTR) hostname — type a hostname and press Enter"
+        title="Reverse DNS (PTR) hostname: type a hostname and press Enter"
         className="w-full rounded-md border border-input bg-background text-xs font-mono px-2 py-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 placeholder:text-muted-foreground"
       />
-      {setRDNS.isPending && <Loader2 className="w-3 h-3 animate-spin shrink-0" />}
+      {setRDNS.isPending ? (
+        <Loader2 className="w-3 h-3 animate-spin shrink-0" aria-hidden="true" />
+      ) : saved.active() ? (
+        <Check className="w-3 h-3 shrink-0 text-emerald-600" aria-label="Saved" role="img" />
+      ) : null}
     </div>
   )
 }
@@ -92,7 +102,7 @@ export default function IPPoolDetailPage() {
   const poolId = (params?.id as string) || ""
 
   const { data: prefixes } = useDelegatedPrefixes(poolId, true)
-  const { data: pool, isLoading: poolLoading, error: poolError } = useIPPool(poolId)
+  const { data: pool, isLoading: poolLoading, error: poolError, refetch: refetchPool } = useIPPool(poolId)
   const { data: addresses, isLoading, refetch } = useIPAddresses(poolId)
   const { data: nodes } = useNodes()
   const { data: vmsResp } = useVMs({ pageSize: 1000 })
@@ -236,10 +246,19 @@ export default function IPPoolDetailPage() {
     return <div className="max-w-7xl mx-auto flex items-center justify-center py-20"><Loader2 className="w-8 h-8 animate-spin" /></div>
   }
   if (poolError || !pool) {
+    const poolNotFound = (poolError as { response?: { status?: number } } | null)?.response?.status === 404
     return (
       <div className="max-w-7xl mx-auto">
         <Button variant="outline" onClick={() => router.push("/ip-pools")} className="gap-1 mb-4"><ArrowLeft className="w-4 h-4" />Back</Button>
-        <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-6"><p className="font-semibold">Pool not found</p></div>
+        <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-6">
+          <p className="font-semibold">{poolNotFound ? "Pool not found" : "Could not load this pool"}</p>
+          {!poolNotFound && (
+            <>
+              {poolError && <p className="text-sm text-muted-foreground mt-1">{(poolError as Error).message}</p>}
+              <Button variant="outline" size="sm" className="mt-3" onClick={() => refetchPool()}>Retry</Button>
+            </>
+          )}
+        </div>
       </div>
     )
   }

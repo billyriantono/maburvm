@@ -3,6 +3,8 @@
 import Link from "next/link"
 import { Monitor, PlusCircle, Play, Square, AlertTriangle } from "lucide-react"
 import { useVMs, useVMStatusStream } from "@/lib/hooks/use-vms"
+import { Button } from "@/components/ui/button"
+import { StatusBadge } from "@/components/status-badge"
 import type { VM } from "@/types"
 
 function StatCard({ label, value, icon: Icon }: { label: string; value: number | string; icon: React.ElementType }) {
@@ -23,8 +25,9 @@ function StatCard({ label, value, icon: Icon }: { label: string; value: number |
 
 export default function ClientDashboardPage() {
   useVMStatusStream()
-  const { data, isLoading } = useVMs({ pageSize: 100 })
+  const { data, isLoading, error, refetch } = useVMs({ pageSize: 100 })
   const vms: VM[] = data?.data ?? []
+  const failed = !!error && !data
 
   const running = vms.filter((v) => v.status === "running").length
   const stopped = vms.filter((v) => v.status === "stopped").length
@@ -46,10 +49,10 @@ export default function ClientDashboardPage() {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard label="Total VMs" value={isLoading ? "—" : vms.length} icon={Monitor} />
-        <StatCard label="Running" value={isLoading ? "—" : running} icon={Play} />
-        <StatCard label="Stopped" value={isLoading ? "—" : stopped} icon={Square} />
-        <StatCard label="Problems" value={isLoading ? "—" : problems} icon={AlertTriangle} />
+        <StatCard label="Total VMs" value={isLoading || failed ? "-" : vms.length} icon={Monitor} />
+        <StatCard label="Running" value={isLoading || failed ? "-" : running} icon={Play} />
+        <StatCard label="Stopped" value={isLoading || failed ? "-" : stopped} icon={Square} />
+        <StatCard label="Problems" value={isLoading || failed ? "-" : problems} icon={AlertTriangle} />
       </div>
 
       <div className="rounded-lg border bg-card text-card-foreground shadow-sm">
@@ -61,6 +64,12 @@ export default function ClientDashboardPage() {
         </div>
         {isLoading ? (
           <div className="p-8 text-center text-muted-foreground">Loading…</div>
+        ) : failed ? (
+          <div className="p-10 text-center">
+            <p className="font-medium text-muted-foreground">Could not load your VMs.</p>
+            <p className="text-sm text-muted-foreground mt-1">{(error as Error).message}</p>
+            <Button className="mt-4" variant="outline" onClick={() => refetch()}>Retry</Button>
+          </div>
         ) : vms.length === 0 ? (
           <div className="p-10 text-center">
             <p className="font-medium text-muted-foreground">You don&apos;t have any VMs yet.</p>
@@ -82,9 +91,7 @@ export default function ClientDashboardPage() {
                       </p>
                     </div>
                   </div>
-                  <span className="text-xs font-medium px-2 py-0.5 rounded-md border bg-muted text-muted-foreground">
-                    {vm.status}
-                  </span>
+                  <StatusBadge status={vm.status} />
                 </Link>
               </li>
             ))}

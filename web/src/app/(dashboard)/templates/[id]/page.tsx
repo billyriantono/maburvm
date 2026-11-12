@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback, useEffect } from "react"
+import { useState, useCallback } from "react"
 import Link from "next/link"
 import { useParams, useRouter } from "next/navigation"
 import { 
@@ -18,6 +18,7 @@ import {
   Calendar,
   Edit2,
 } from "lucide-react"
+import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -32,25 +33,12 @@ function formatDate(dateString: string): string {
   return new Date(dateString).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
 }
 
-function Toast({ message, type, onClose }: { message: string; type: "success" | "error"; onClose: () => void }) {
-  useEffect(() => {
-    const timer = setTimeout(onClose, 3000)
-    return () => clearTimeout(timer)
-  }, [onClose])
-  return (
-    <div className={`fixed bottom-4 right-4 z-50 rounded-md border px-6 py-4 shadow-md ${type === "success" ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900" : "bg-destructive text-destructive-foreground border-destructive"}`}>
-      <p className="text-sm font-medium">{message}</p>
-    </div>
-  )
-}
-
 export default function TemplateDetailPage() {
   const confirm = useConfirm()
   const params = useParams()
   const router = useRouter()
   const templateId = params.id as string
 
-  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
   const [editOpen, setEditOpen] = useState(false)
   const [editName, setEditName] = useState("")
   const [editVersion, setEditVersion] = useState("")
@@ -79,7 +67,7 @@ export default function TemplateDetailPage() {
       action: () => deleteTemplate.mutateAsync(templateId),
     })
     if (!ok) return
-    setToast({ message: "Template deleted", type: "success" })
+    toast.success("Template deleted")
     setTimeout(() => router.push("/templates"), 1000)
   }, [confirm, template, templateVMs.length, deleteTemplate, templateId, router])
 
@@ -91,11 +79,11 @@ export default function TemplateDetailPage() {
         version: editVersion,
         description: editDescription || undefined,
       })
-      setToast({ message: "Template updated", type: "success" })
+      toast.success("Template updated")
       setEditOpen(false)
       refetch()
     } catch (err) {
-      setToast({ message: `Failed to update: ${(err as Error).message}`, type: "error" })
+      toast.error(`Failed to update: ${(err as Error).message}`)
     }
   }, [updateTemplate, editName, editVersion, editDescription, refetch])
 
@@ -262,7 +250,6 @@ export default function TemplateDetailPage() {
       </div>
 
 
-      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
     </div>
   )
 }

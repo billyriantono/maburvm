@@ -78,8 +78,13 @@ const config: Config = {
           from: { height: "var(--radix-accordion-content-height)" },
           to: { height: "0" },
         },
+        "progress-slide": {
+          from: { transform: "translateX(-100%)" },
+          to: { transform: "translateX(250%)" },
+        },
       },
       animation: {
+        "progress-slide": "progress-slide 1.4s ease-in-out infinite",
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
       },

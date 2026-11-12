@@ -3,6 +3,7 @@
 import { useState } from "react"
 import Link from "next/link"
 import { AlertCircle, Layers, Loader2, Plus, RefreshCw, Trash2 } from "lucide-react"
+import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { useDeleteImage, useImages } from "@/lib/hooks/use-images"
@@ -39,6 +40,7 @@ export default function ClientImagesPage() {
     })
     if (!ok) return
     setActionError("")
+    toast.success(`Image "${image.name}" deleted`)
   }
 
   return (
@@ -116,11 +118,16 @@ export default function ClientImagesPage() {
                   variant="ghost"
                   size="sm"
                   onClick={() => handleDelete(image)}
-                  disabled={deleteImage.isPending}
+                  disabled={deleteImage.isPending && deleteImage.variables === image.id}
                   className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
                   title="Delete image"
+                  aria-label={`Delete image ${image.name}`}
                 >
-                  <Trash2 className="w-4 h-4" />
+                  {deleteImage.isPending && deleteImage.variables === image.id ? (
+                    <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <Trash2 className="w-4 h-4" aria-hidden="true" />
+                  )}
                 </Button>
               </div>
              </div>

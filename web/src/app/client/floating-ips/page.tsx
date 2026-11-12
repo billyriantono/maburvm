@@ -191,10 +191,15 @@ export default function ClientFloatingIPsPage() {
                     size="sm"
                     className="h-8 w-8 p-0"
                     title="Detach"
-                    disabled={detach.isPending}
+                    aria-label={`Detach ${fip.address}`}
+                    disabled={detach.isPending && detach.variables === fip.id}
                     onClick={() => handleDetach(fip)}
                   >
-                    <Link2Off className="w-4 h-4" />
+                    {detach.isPending && detach.variables === fip.id ? (
+                      <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                    ) : (
+                      <Link2Off className="w-4 h-4" aria-hidden="true" />
+                    )}
                   </Button>
                 )}
                 <Button
@@ -203,10 +208,15 @@ export default function ClientFloatingIPsPage() {
                   size="sm"
                   className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
                   title={fip.vm_id ? "Detach it before releasing" : "Release — stops the charge"}
-                  disabled={!!fip.vm_id || release.isPending}
+                  aria-label={`Release ${fip.address}`}
+                  disabled={!!fip.vm_id || (release.isPending && release.variables === fip.id)}
                   onClick={() => handleRelease(fip)}
                 >
-                  <Trash2 className="w-4 h-4" />
+                  {release.isPending && release.variables === fip.id ? (
+                    <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <Trash2 className="w-4 h-4" aria-hidden="true" />
+                  )}
                 </Button>
               </div>
             </div>

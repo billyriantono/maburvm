@@ -13,13 +13,14 @@ import type {
   UpdateNodeRequest,
 } from '@/types'
 
-export function useNodes() {
+export function useNodes(enabled = true) {
   return useQuery<Node[]>({
     queryKey: ['nodes', 'list'],
     queryFn: async () => {
       const response = await api.get<Node[]>('/api/v1/nodes')
       return response.data.data
     },
+    enabled,
   })
 }
 

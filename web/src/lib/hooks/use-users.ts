@@ -1,5 +1,6 @@
 import {
   useQuery,
+  keepPreviousData,
   useMutation,
   useQueryClient,
   UseQueryOptions,
@@ -15,20 +16,22 @@ import type {
 interface UserListParams {
   page?: number
   pageSize?: number
-  role?: string;
+  role?: string
+  search?: string
 }
 
 export function useUsers(params: UserListParams = {}) {
-  const { page = 1, pageSize = 20, role } = params
+  const { page = 1, pageSize = 20, role, search } = params
 
   return useQuery<PaginatedResponse<User>>({
-    queryKey: ['users', 'list', { page, pageSize, role }],
+    queryKey: ['users', 'list', { page, pageSize, role, search }],
     queryFn: async () => {
       const response = await api.get<PaginatedResponse<User>>('/api/v1/users', {
         params: {
           page,
           page_size: pageSize,
           role,
+          search: search || undefined,
         },
       })
       // Unlike most endpoints, /users returns the paginated payload at the top
@@ -36,6 +39,7 @@ export function useUsers(params: UserListParams = {}) {
       // envelope, so the response body itself is the PaginatedResponse.
       return response.data as unknown as PaginatedResponse<User>
     },
+    placeholderData: keepPreviousData,
   })
 }
 

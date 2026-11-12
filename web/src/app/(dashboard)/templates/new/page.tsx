@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
@@ -12,6 +12,7 @@ import {
   Cloud,
   Info,
 } from "lucide-react"
+import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useCreateTemplate } from "@/lib/hooks/use-templates"
@@ -20,20 +21,6 @@ interface FormErrors {
   name?: string
   version?: string
   url?: string
-}
-
-function Toast({ message, type, onClose }: { message: string; type: "success" | "error"; onClose: () => void }) {
-  useEffect(() => {
-    const timer = setTimeout(onClose, 3000)
-    return () => clearTimeout(timer)
-  }, [onClose])
-  return (
-    <div className={`fixed bottom-4 right-4 z-50 rounded-md border px-6 py-4 shadow-md ${
-      type === "success" ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900" : "bg-destructive text-destructive-foreground border-destructive"
-    }`}>
-      <p className="text-sm font-medium">{message}</p>
-    </div>
-  )
 }
 
 export default function NewTemplatePage() {
@@ -45,7 +32,6 @@ export default function NewTemplatePage() {
   const [description, setDescription] = useState("")
   const [url, setUrl] = useState("")
   const [errors, setErrors] = useState<FormErrors>({})
-  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
 
   const validateForm = (): boolean => {
     const next: FormErrors = {}
@@ -69,14 +55,14 @@ export default function NewTemplatePage() {
         file_url: url.trim(),
         description: description.trim() || undefined,
       })
-      setToast({ message: `Template "${name}" added`, type: "success" })
+      toast.success(`Template "${name}" added`)
       setTimeout(() => router.push("/templates"), 1200)
     } catch (err) {
       const message = (err as Error).message || "Failed to create template"
       if (/exist/i.test(message)) {
-        setToast({ message: "A template with this name and version already exists", type: "error" })
+        toast.error("A template with this name and version already exists")
       } else {
-        setToast({ message, type: "error" })
+        toast.error(message)
       }
     }
   }
@@ -210,7 +196,6 @@ export default function NewTemplatePage() {
         </div>
       </form>
 
-      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
     </div>
   )
 }

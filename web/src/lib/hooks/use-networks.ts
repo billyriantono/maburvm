@@ -57,6 +57,30 @@ export function useVMNetworks(vmId: string) {
   })
 }
 
+// useSetVMRDNS sets or clears the reverse DNS (PTR) of an address the VM holds.
+// The VM's owner may call it; for them the server first checks that the
+// hostname already resolves to that address.
+export function useSetVMRDNS(vmId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<{ ip_address: string; rdns: string }, Error, { ipAddress: string; rdns: string }>({
+    mutationFn: async ({ ipAddress, rdns }) => {
+      try {
+        const response = await api.put<{ ip_address: string; rdns: string }>(`/api/v1/vms/${vmId}/rdns`, {
+          ip_address: ipAddress,
+          rdns,
+        })
+        return response.data.data
+      } catch (err) {
+        // Surface the server's sentence ("x must have a DNS record pointing to
+        // y first") rather than "Request failed with status code 422".
+        const message = (err as { response?: { data?: { message?: string } } }).response?.data?.message
+        throw new Error(message || (err as Error).message)
+      }
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['networks', 'vm', vmId] }),
+  })
+}
+
 // useSetVMBandwidth sets the speed limit (Mbps) of a single VM network interface.
 // 0 = unlimited, max 10000 (10 Gbps). Backed by PUT
 // /api/v1/vms/:id/networks/:network_id/bandwidth, which re-applies the tc limit

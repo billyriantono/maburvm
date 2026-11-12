@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 import { useDashboardStats } from '@/lib/hooks/use-dashboard'
 import { useNodes, useNodeMetricsHistory } from '@/lib/hooks/use-nodes'
+import { Button } from '@/components/ui/button'
 import { BandwidthChart } from '@/components/ui/bandwidth-chart'
 
 function formatTimeAgo(dateStr: string): string {
@@ -128,7 +129,15 @@ function NodeBandwidthCard({ nodeId, name }: { nodeId: string; name: string }) {
 
 // NodeBandwidthSection shows every node side by side.
 function NodeBandwidthSection() {
-  const { data: nodes } = useNodes()
+  const { data: nodes, error, refetch } = useNodes()
+  if (error) {
+    return (
+      <div className="mb-6 flex items-center gap-3 text-sm text-destructive">
+        <span>Could not load node bandwidth: {(error as Error).message}</span>
+        <Button variant="outline" size="sm" onClick={() => refetch()}>Retry</Button>
+      </div>
+    )
+  }
   const list = nodes ?? []
   if (list.length === 0) return null
 
@@ -145,7 +154,7 @@ function NodeBandwidthSection() {
 }
 
 export default function DashboardPage() {
-  const { data: stats, isLoading, error } = useDashboardStats()
+  const { data: stats, isLoading, error, refetch } = useDashboardStats()
 
   if (isLoading) {
     return (
@@ -167,8 +176,9 @@ export default function DashboardPage() {
           Dashboard
         </h1>
         <p className="text-destructive text-sm mb-8">
-          Failed to load dashboard data. Please try again.
+          Failed to load dashboard data.
         </p>
+        <Button variant="outline" onClick={() => refetch()}>Retry</Button>
       </div>
     )
   }

@@ -2,7 +2,8 @@
 
 import { useState } from "react"
 import Link from "next/link"
-import { ArrowLeft, KeyRound, Trash2, Plus } from "lucide-react"
+import { toast } from "sonner"
+import { ArrowLeft, KeyRound, Trash2, Plus, Loader2 } from "lucide-react"
 import { useSSHKeys, useCreateSSHKey, useDeleteSSHKey } from "@/lib/hooks/use-ssh-keys"
 
 // Client SSH key management: customers add/remove the public keys that get
@@ -26,8 +27,11 @@ export default function ClientSSHKeysPage() {
     createKey.mutate(
       { name: name.trim() || undefined, public_key: publicKey.trim() },
       {
-        onSuccess: () => { setName(""); setPublicKey("") },
-        onError: (e: Error) => setError(e.message || "Failed to add key"),
+        onSuccess: () => { setName(""); setPublicKey(""); toast.success("SSH key added") },
+        onError: (e: Error) => {
+          setError(e.message || "Failed to add key")
+          toast.error(e.message || "Failed to add key")
+        },
       },
     )
   }
@@ -68,7 +72,7 @@ export default function ClientSSHKeysPage() {
             disabled={createKey.isPending}
             className="inline-flex items-center gap-2 h-10 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium shadow-sm hover:bg-primary/90 transition-colors disabled:opacity-50"
           >
-            <Plus className="w-4 h-4" /> {createKey.isPending ? "Adding…" : "Add key"}
+            {createKey.isPending ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" /> : <Plus className="w-4 h-4" aria-hidden="true" />} {createKey.isPending ? "Adding…" : "Add key"}
           </button>
         </div>
       </section>
@@ -92,11 +96,21 @@ export default function ClientSSHKeysPage() {
                     <div className="text-xs font-mono text-muted-foreground truncate">{k.fingerprint}</div>
                   </div>
                   <button
-                    onClick={() => deleteKey.mutate(k.id)}
-                    disabled={deleteKey.isPending}
+                    onClick={() =>
+                      deleteKey.mutate(k.id, {
+                        onSuccess: () => toast.success(`Key "${k.name}" deleted`),
+                        onError: (e: Error) => toast.error(e.message || "Could not delete the key"),
+                      })
+                    }
+                    disabled={deleteKey.isPending && deleteKey.variables === k.id}
                     className="inline-flex items-center gap-1 h-9 px-3 rounded-md border border-input bg-background text-destructive text-xs font-medium hover:bg-destructive/10 transition-colors disabled:opacity-50"
                   >
-                    <Trash2 className="w-4 h-4" /> Delete
+                    {deleteKey.isPending && deleteKey.variables === k.id ? (
+                      <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                    ) : (
+                      <Trash2 className="w-4 h-4" aria-hidden="true" />
+                    )}{" "}
+                    Delete
                   </button>
                 </div>
               ))}

@@ -30,7 +30,7 @@ import {
   useReleaseFloatingIP,
 } from "@/lib/hooks/use-floating-ips"
 import { useIPPools } from "@/lib/hooks/use-ipam"
-import { useUsers } from "@/lib/hooks/use-users"
+import { UserPicker } from "@/components/user-picker"
 import { useVMs } from "@/lib/hooks/use-vms"
 import type { IPAddress, NATMode } from "@/types"
 import { useConfirm } from "@/components/confirm-provider"
@@ -40,7 +40,6 @@ export default function FloatingIPsPage() {
   const { data: floatingIPs, isLoading, error, refetch } = useFloatingIPs()
   const { data: pools } = useIPPools()
   const { data: vmsData } = useVMs({ pageSize: 100 })
-  const { data: usersData } = useUsers({ pageSize: 100 })
   const allocate = useAllocateFloatingIP()
   const attach = useAttachFloatingIP()
   const detach = useDetachFloatingIP()
@@ -262,18 +261,7 @@ export default function FloatingIPsPage() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="fip-owner">Owner</Label>
-              <Select value={ownerId} onValueChange={setOwnerId}>
-                <SelectTrigger id="fip-owner">
-                  <SelectValue placeholder="Yourself" />
-                </SelectTrigger>
-                <SelectContent>
-                  {(usersData?.data ?? []).map((u) => (
-                    <SelectItem key={u.id} value={u.id}>
-                      {u.email}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <UserPicker id="fip-owner" value={ownerId} onChange={(id) => setOwnerId(id)} allowNone noneLabel="Yourself" />
               <p className="text-xs text-muted-foreground">
                 The customer this address belongs to. They can then move it between their own VMs
                 from their portal; only you can allocate or release it.

@@ -73,6 +73,21 @@ apiClient.interceptors.response.use(
   async (error) => {
     const originalRequest = error.config;
 
+    // Give every failure a sentence worth showing. Pages put error.message
+    // straight into a toast, and axios's own "Request failed with status code
+    // 502" tells the person nothing about what happened or what to do.
+    const status: number | undefined = error.response?.status;
+    const body = error.response?.data;
+    const fromServer =
+      (typeof body?.message === 'string' && body.message) ||
+      (typeof body?.error === 'string' && body.error) ||
+      '';
+    if (!error.response || status === 502 || status === 503 || status === 504) {
+      error.message = 'The panel did not answer. It may be restarting. Try again in a moment.';
+    } else if (fromServer) {
+      error.message = fromServer;
+    }
+
     if (error.response?.status === 401 && !originalRequest._retry) {
       // Don't retry refresh token requests
       if (originalRequest.url?.includes('/auth/refresh')) {

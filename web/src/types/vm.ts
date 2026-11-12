@@ -46,6 +46,9 @@ export interface VM {
   source_migration?: string;
   vnc_port?: number;
   rescue_mode?: boolean;
+  /** ISO in the VM's drive as last confirmed by the node: null/absent = not
+   *  known, "" = none, otherwise the image URL or path. Detail response only. */
+  attached_iso?: string | null;
   console_enabled?: boolean;
   /** Routed IPv6 delegated to the VM (a /64); absent when it has none. The
    *  guest uses ipv6_address with ipv6_gateway (the node's fe80::1). */

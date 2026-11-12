@@ -12,6 +12,7 @@ import {
   HardDrive,
   Info,
 } from "lucide-react"
+import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { OSIcon } from "@/components/os-icon"
 import { useCreateTemplate } from "@/lib/hooks/use-templates"
@@ -137,24 +138,10 @@ const OS_CATALOG: CatalogEntry[] = [
 
 type AddState = "idle" | "adding" | "added" | "error"
 
-function Toast({ message, type, onClose }: { message: string; type: "success" | "error"; onClose: () => void }) {
-  return (
-    <div className={`fixed bottom-4 right-4 z-50 rounded-md border px-6 py-4 shadow-md ${
-      type === "success" ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900" : "bg-destructive text-destructive-foreground border-destructive"
-    }`}>
-      <div className="flex items-center gap-3">
-        <p className="text-sm font-medium">{message}</p>
-        <button onClick={onClose} className="font-medium">✕</button>
-      </div>
-    </div>
-  )
-}
-
 export default function TemplateCatalogPage() {
   const router = useRouter()
   const createTemplate = useCreateTemplate()
   const [states, setStates] = useState<Record<string, AddState>>({})
-  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
 
   const handleAdd = async (entry: CatalogEntry) => {
     setStates((s) => ({ ...s, [entry.id]: "adding" }))
@@ -166,16 +153,16 @@ export default function TemplateCatalogPage() {
         description: `${entry.description} • ${entry.arch}`,
       })
       setStates((s) => ({ ...s, [entry.id]: "added" }))
-      setToast({ message: `${entry.name} ${entry.version} added to library`, type: "success" })
+      toast.success(`${entry.name} ${entry.version} added to library`)
     } catch (err) {
       const message = (err as Error).message || "Failed to add template"
       // Treat an existing template as a soft success so re-adding is harmless.
       if (/exist/i.test(message)) {
         setStates((s) => ({ ...s, [entry.id]: "added" }))
-        setToast({ message: `${entry.name} ${entry.version} is already in your library`, type: "success" })
+        toast.info(`${entry.name} ${entry.version} is already in your library`)
       } else {
         setStates((s) => ({ ...s, [entry.id]: "error" }))
-        setToast({ message, type: "error" })
+        toast.error(message)
       }
     }
   }
@@ -257,7 +244,6 @@ export default function TemplateCatalogPage() {
         </Button>
       </div>
 
-      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
     </div>
   )
 }

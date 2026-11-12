@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { toast } from "sonner"
 import { useCurrentUser } from "@/lib/hooks/use-auth"
 import { useChangePassword } from "@/lib/hooks/use-settings"
 import { useMyQuota } from "@/lib/hooks/use-quota"
@@ -34,6 +35,7 @@ export default function ClientProfilePage() {
       {
         onSuccess: () => {
           setMsg({ ok: true, text: "Password changed." })
+          toast.success("Password changed")
           setCurrent("")
           setNext("")
           setConfirm("")

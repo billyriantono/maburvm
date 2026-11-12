@@ -6,6 +6,7 @@ import {
   KeyRound,
   Plus,
   Copy,
+  Check,
   Trash2,
   AlertTriangle,
   AlertCircle,
@@ -20,6 +21,7 @@ import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import { useCurrentUser } from "@/lib/hooks/use-auth"
+import { useCopy } from "@/lib/use-feedback"
 import {
   Dialog,
   DialogContent,
@@ -42,7 +44,7 @@ function isExpired(key: APIKey): boolean {
 }
 
 export default function APIKeysSettingsPage() {
-  const { data: keys, isLoading, error } = useAPIKeys()
+  const { data: keys, isLoading, error, refetch } = useAPIKeys()
   const createKey = useCreateAPIKey()
   const revokeKey = useRevokeAPIKey()
   const { data: currentUser } = useCurrentUser()
@@ -92,10 +94,10 @@ export default function APIKeysSettingsPage() {
     }
   }
 
+  const { copy, copied } = useCopy()
   const handleCopyToken = () => {
     if (!newToken) return
-    navigator.clipboard.writeText(newToken)
-    toast.success("API key copied to clipboard")
+    copy(newToken, "api-key")
   }
 
   return (
@@ -153,7 +155,8 @@ export default function APIKeysSettingsPage() {
             <div className="p-12 text-center">
               <AlertCircle className="w-12 h-12 text-destructive mx-auto mb-3" />
               <p className="font-medium">Failed to load API keys</p>
-              <p className="text-sm text-muted-foreground mt-1">{(error as Error).message}</p>
+              <p className="text-sm text-muted-foreground mt-1 mb-4">{(error as Error).message}</p>
+              <Button variant="outline" onClick={() => refetch()}>Retry</Button>
             </div>
           ) : !keys || keys.length === 0 ? (
             <div className="p-12 text-center">
@@ -303,8 +306,8 @@ export default function APIKeysSettingsPage() {
           </div>
           <DialogFooter>
             <Button variant="secondary" onClick={handleCopyToken}>
-              <Copy className="w-4 h-4 mr-2" />
-              Copy Key
+              {copied("api-key") ? <Check className="w-4 h-4 mr-2" aria-hidden="true" /> : <Copy className="w-4 h-4 mr-2" aria-hidden="true" />}
+              {copied("api-key") ? "Copied" : "Copy Key"}
             </Button>
             <Button onClick={() => setNewToken(null)}>Done</Button>
           </DialogFooter>

@@ -16,8 +16,9 @@ import {
   Loader2,
   CheckCircle2,
   AlertCircle,
-  User,
-  Layers
+  Layers,
+  ArrowRight,
+  RotateCcw
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -29,7 +30,8 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
-import { useUsers } from "@/lib/hooks/use-users"
+import { UserPicker } from "@/components/user-picker"
+import type { User } from "@/types"
 import { useTemplates } from "@/lib/hooks/use-templates"
 import { useNodes } from "@/lib/hooks/use-nodes"
 import { useIPPools } from "@/lib/hooks/use-ipam"
@@ -40,6 +42,10 @@ import { useRecipes } from "@/lib/hooks/use-recipes"
 import { useCreateVM, useVM } from "@/lib/hooks/use-vms"
 import { useImages } from "@/lib/hooks/use-images"
 import { OSIcon } from "@/components/os-icon"
+import { OperationProgress, vmProvisionSteps } from "@/components/operation-progress"
+import { useCopy } from "@/lib/use-feedback"
+import { toast } from "sonner"
+import { api } from "@/lib/api-client"
 
 // Validation schemas for each step
 const step1Schema = z.object({
@@ -81,7 +87,11 @@ const step4Schema = z.object({
       return parts.every((p) => p >= 0 && p <= 255)
     }, { message: "IP address octets must be 0-255" }),
   bandwidthMbps: z.number().min(1, "Minimum 1 Mbps").max(10000, "Maximum 10 Gbps"),
-  vlanId: z.string().optional(),
+  // Kept as a string (number input); empty means no VLAN, otherwise 1-4094.
+  vlanId: z.string().optional().refine(
+    (v) => !v || (/^\d+$/.test(v) && Number(v) >= 1 && Number(v) <= 4094),
+    { message: "VLAN ID must be a whole number from 1 to 4094" }
+  ),
   managedNetworkId: z.string().optional(),
 })
 
@@ -91,6 +101,15 @@ type FormData = z.infer<typeof fullSchema>
 
 // Steps configuration
 // useSearchParams requires a Suspense boundary in Next 15 client pages.
+const BANDWIDTH_PRESETS = [
+  { mbps: 10, label: "10 Mbps" },
+  { mbps: 100, label: "100 Mbps" },
+  { mbps: 250, label: "250 Mbps" },
+  { mbps: 500, label: "500 Mbps" },
+  { mbps: 1000, label: "1 Gbps" },
+  { mbps: 10000, label: "10 Gbps" },
+]
+
 export default function NewVMPage() {
   return (
     <Suspense fallback={null}>
@@ -107,6 +126,21 @@ const steps = [
   { id: 5, title: "Review", description: "Confirm & Create", icon: CheckCircle2 },
 ]
 
+function LoadError({ what, onRetry }: { what: string; onRetry: () => void }) {
+  return (
+    <div role="alert" className="p-4 border rounded-md bg-muted text-sm flex items-center justify-between gap-3">
+      <span className="flex items-center gap-2 font-medium text-destructive">
+        <AlertCircle className="w-4 h-4 shrink-0" aria-hidden="true" />
+        Could not load {what}.
+      </span>
+      <Button type="button" variant="ghost" size="sm" onClick={onRetry} className="border gap-2">
+        <RotateCcw className="w-4 h-4" aria-hidden="true" />
+        Retry
+      </Button>
+    </div>
+  )
+}
+
 function NewVMForm() {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -116,6 +150,9 @@ function NewVMForm() {
   const { data: imagesData } = useImages()
   const sourceImage = sourceImageId ? imagesData?.find((img) => img.id === sourceImageId) : undefined
   const [currentStep, setCurrentStep] = useState(1)
+  // Which way the last step change went, so Previous slides content in from the left.
+  const [stepDir, setStepDir] = useState<"forward" | "back">("forward")
+  const slideIn = stepDir === "back" ? "slide-in-from-left-4" : "slide-in-from-right-4"
   // SSH keys are opt-out: every saved key is injected unless unchecked. These are
   // the current admin's keys (the create endpoint resolves keys against the caller).
   const { data: sshKeys } = useSSHKeys()
@@ -127,15 +164,14 @@ function NewVMForm() {
   const [submitError, setSubmitError] = useState<string | null>(null)
   
   // API hooks
-  const { data: usersData, isLoading: usersLoading } = useUsers({ pageSize: 100 })
-  const { data: templatesData, isLoading: templatesLoading } = useTemplates()
-  const { data: nodesData, isLoading: nodesLoading } = useNodes()
-  const { data: poolsData, isLoading: poolsLoading } = useIPPools()
+  const [selectedUser, setSelectedUser] = useState<User | undefined>()
+  const { data: templatesData, isLoading: templatesLoading, isError: templatesError, refetch: refetchTemplates } = useTemplates()
+  const { data: nodesData, isLoading: nodesLoading, isError: nodesError, refetch: refetchNodes } = useNodes()
+  const { data: poolsData, isLoading: poolsLoading, isError: poolsError, refetch: refetchPools } = useIPPools()
   const { data: managedNets } = useNetworks()
-  const { data: plansData } = usePlans(true)
+  const { data: plansData, isError: plansError, refetch: refetchPlans } = usePlans(true)
   const createVM = useCreateVM()
 
-  const users = useMemo(() => usersData?.data || [], [usersData?.data])
   const templates = useMemo(() => templatesData || [], [templatesData])
   // Only templates with a real base image can provision a new VM. Imported
   // templates carry the "/imported" placeholder (their VMs already have disks),
@@ -159,7 +195,7 @@ function NewVMForm() {
   // one-time root password (if the server generated one — never retrievable
   // later) and polls the new VM's status until it's running.
   const [provisioning, setProvisioning] = useState<{ id: string; password?: string } | null>(null)
-  const [pwCopied, setPwCopied] = useState(false)
+  const { copy, copied } = useCopy()
   const provisioningVM = useVM(provisioning?.id ?? "", {
     enabled: !!provisioning,
     // Poll every 3s while provisioning; stop once the VM is running/stopped.
@@ -235,6 +271,7 @@ function NewVMForm() {
     
     switch (currentStep) {
       case 1:
+        if (nodesError) return // node list failed to load: do not proceed on a guess
         fieldsToValidate = ["hostname"]
         break
       case 2:
@@ -243,24 +280,45 @@ function NewVMForm() {
       case 3:
         // Schema-level templateId is optional (image path); enforce it manually
         // for fresh installs.
+        if (!sourceImageId && templatesError) return
         if (!sourceImageId && !watchedValues.templateId) {
           setError("templateId", { message: "Please select an OS template" })
           return
         }
         break
       case 4:
-        fieldsToValidate = ["bandwidthMbps"]
+        if (poolsError) return // pool list failed to load: do not silently fall back to DHCP
+        fieldsToValidate = ["ipPoolId", "ipv6PoolId", "ipAddress", "bandwidthMbps", "vlanId", "managedNetworkId"]
         break
     }
 
     const isValid = await trigger(fieldsToValidate)
     if (isValid && currentStep < 5) {
+      setStepDir("forward")
       setCurrentStep(currentStep + 1)
     }
   }
 
+  // Fields grouped by wizard step, in step order, so a failed final submit can
+  // jump to the first step that actually holds an invalid field.
+  const fieldStep: Record<string, number> = {
+    hostname: 1, userId: 1,
+    planId: 2, cpuCores: 2, ramGB: 2, diskGB: 2, nodeId: 2, cpuModel: 2, userData: 2,
+    templateId: 3,
+  }
+  const onInvalid = (errs: typeof errors) => {
+    const bad = Object.entries(errs)
+      .map(([name, e]) => ({ name, step: fieldStep[name] ?? 4, message: (e as { message?: string })?.message }))
+      .sort((a, b) => a.step - b.step)[0]
+    if (!bad) return
+    setStepDir(bad.step < currentStep ? "back" : "forward")
+    setCurrentStep(bad.step)
+    toast.error(bad.message || "Some fields are invalid. Please review them.")
+  }
+
   const handleBack = () => {
     if (currentStep > 1) {
+      setStepDir("back")
       setCurrentStep(currentStep - 1)
     }
   }
@@ -276,9 +334,8 @@ function NewVMForm() {
     setSubmitError(null)
 
     try {
-      // VLAN is collected as free text; only forward a valid numeric tag.
-      const vlanParsed = data.vlanId ? Number(data.vlanId) : NaN
-      const vlanId = Number.isInteger(vlanParsed) && vlanParsed > 0 ? vlanParsed : undefined
+      // The schema guarantees vlanId is empty or an integer 1-4094.
+      const vlanId = data.vlanId ? Number(data.vlanId) : undefined
 
       const result = await createVM.mutateAsync({
         hostname: data.hostname,
@@ -287,8 +344,8 @@ function NewVMForm() {
         os_template_id: sourceImageId ? undefined : data.templateId,
         source_image_id: sourceImageId || undefined,
         node_id: data.nodeId || undefined,
-        // When a plan is selected the backend derives resources from it; we still
-        // send the (plan-synced) sliders for display consistency.
+        // With a plan the backend overwrites resources from the plan. Moving a
+        // slider clears planId, so hand-edited resources are sent as custom.
         plan_id: data.planId || undefined,
         resources: {
           cpu: data.cpuCores,
@@ -308,6 +365,16 @@ function NewVMForm() {
         ssh_key_ids: selectedKeyIds,
         ssh_public_keys: pastedKeyList,
       })
+      // The create endpoint always makes the caller the owner, so "Assign to
+      // User" is applied as a reassignment right after. A failure here must not
+      // hide the fact that the VM (and its one-time password) now exists.
+      if (data.userId) {
+        try {
+          await api.put(`/api/v1/vms/${result.id}`, { user_id: data.userId })
+        } catch (err) {
+          toast.error(`VM created, but assigning it to the chosen user failed: ${(err as Error).message}. Reassign it from the VM's Settings tab.`)
+        }
+      }
       // Switch to the inline provisioning view (progress + one-time password)
       // instead of jumping straight to the VM detail page.
       setProvisioning({ id: result.id, password: result.root_password })
@@ -324,10 +391,6 @@ function NewVMForm() {
     return templates.find(t => t.id === watchedValues.templateId)
   }
 
-  const getSelectedUser = () => {
-    return users.find(u => u.id === watchedValues.userId)
-  }
-
   const getSelectedNode = () => {
     return nodes.find(n => n.id === watchedValues.nodeId)
   }
@@ -336,58 +399,34 @@ function NewVMForm() {
     return pools.find(p => p.id === watchedValues.ipPoolId)
   }
 
-  // Inline provisioning view — shown after Create instead of jumping straight to
+  // Inline provisioning view: shown after Create instead of jumping straight to
   // the VM detail page. Displays live progress + the one-time root password.
   if (provisioning) {
     const status = provisioningVM.data?.status ?? "creating"
     const isRunning = status === "running"
     const failed = status === "error"
-    const steps: { key: string; label: string; done: boolean; active: boolean }[] = [
-      { key: "submitted", label: "Request submitted", done: true, active: false },
-      {
-        key: "provisioning",
-        label: "Provisioning disk & installing OS",
-        done: isRunning || status === "stopped",
-        active: !isRunning && !failed && status !== "stopped",
-      },
-      { key: "running", label: "Running", done: isRunning, active: false },
-    ]
+    const name = provisioningVM.data?.hostname || "new virtual machine"
+    const osName = getSelectedTemplate()?.name || sourceImage?.name
+    const title = failed ? `Could not create ${name}` : isRunning ? `${name} is ready` : `Creating ${name}`
     return (
       <div className="max-w-2xl mx-auto">
-        <div className="mb-8">
-          <h1 className="text-2xl font-semibold text-foreground mb-2">
-            {failed ? "Provisioning failed" : isRunning ? "Your VM is ready" : "Creating your VM…"}
-          </h1>
-          <p className="text-muted-foreground text-sm">
-            {provisioningVM.data?.hostname || "new virtual machine"}
-          </p>
-        </div>
-
-        {/* Progress steps */}
-        <div className="border rounded-lg bg-card text-card-foreground p-6 shadow-sm mb-6">
-          <ul className="space-y-4">
-            {steps.map((s) => (
-              <li key={s.key} className="flex items-center gap-3">
-                <span
-                  className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-xs font-semibold ${
-                    s.done ? "bg-emerald-500 text-white border-emerald-500" : s.active ? "bg-amber-100 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900" : "bg-muted text-muted-foreground"
-                  }`}
-                >
-                  {s.done ? "✓" : s.active ? "…" : "○"}
-                </span>
-                <span className={`font-medium ${s.done ? "text-foreground" : s.active ? "text-foreground" : "text-muted-foreground"}`}>
-                  {s.label}
-                  {s.active && <span className="ml-2 animate-pulse text-muted-foreground">in progress</span>}
-                </span>
-              </li>
-            ))}
-          </ul>
+        <OperationProgress
+          className="mb-6"
+          title={title}
+          steps={vmProvisionSteps(status, osName)}
+          startedAt={provisioningVM.data?.created_at}
+        >
           {failed && (
-            <p className="mt-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-700 dark:bg-red-950 dark:text-red-300 dark:border-red-900">
-              Provisioning failed. Check the VM’s events on its detail page.
+            <p className="rounded-md border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-700 dark:bg-red-950 dark:text-red-300 dark:border-red-900">
+              Provisioning failed. Check the VM&apos;s events on its detail page.
             </p>
           )}
-        </div>
+          {!isRunning && !failed && (
+            <p className="text-xs font-medium text-muted-foreground">
+              This can take a minute or two. The page updates automatically.
+            </p>
+          )}
+        </OperationProgress>
 
         {/* One-time root password */}
         {provisioning.password && (
@@ -396,38 +435,38 @@ function NewVMForm() {
               Root password
             </h2>
             <p className="mb-3 text-sm text-muted-foreground">
-              Shown <strong>once</strong> — save it now. Log in as <code className="font-mono">root</code> with this password.
+              Shown <strong>once</strong>. Save it now. Log in as <code className="font-mono">root</code> with this password, on the console or when the SSH key is not at hand.
             </p>
             <div className="flex items-center gap-2 rounded-md border bg-background p-3">
               <code className="flex-1 break-all font-mono text-sm text-foreground">{provisioning.password}</code>
-              <button
+              <Button
                 type="button"
-                onClick={() => {
-                  navigator.clipboard?.writeText(provisioning.password || "")
-                  setPwCopied(true)
-                }}
-                className="rounded-md border px-3 py-1 text-xs font-medium bg-background hover:bg-muted"
+                variant="ghost"
+                size="sm"
+                onClick={() => copy(provisioning.password || "", "root-password")}
+                className="border gap-1"
               >
-                {pwCopied ? "Copied ✓" : "Copy"}
-              </button>
+                {copied("root-password") ? (
+                  <>
+                    <Check className="w-3.5 h-3.5" aria-hidden="true" />
+                    Copied
+                  </>
+                ) : (
+                  "Copy"
+                )}
+              </Button>
             </div>
           </div>
         )}
 
-        <div className="flex gap-3">
-          <button
-            type="button"
-            onClick={() => router.push(`/vms/${provisioning.id}`)}
-            className="flex-1 rounded-md bg-primary px-4 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-          >
-            {isRunning ? "Open VM →" : "Go to VM (still provisioning)"}
-          </button>
-        </div>
-        {!isRunning && !failed && (
-          <p className="mt-3 text-center text-xs font-medium text-muted-foreground">
-            This can take a minute or two — the page updates automatically.
-          </p>
-        )}
+        <Button
+          type="button"
+          onClick={() => router.push(`/vms/${provisioning.id}`)}
+          className="w-full gap-2"
+        >
+          {isRunning ? "Open VM" : failed ? "View failed VM" : "Go to VM page"}
+          <ArrowRight className="w-4 h-4" aria-hidden="true" />
+        </Button>
       </div>
     )
   }
@@ -517,7 +556,7 @@ function NewVMForm() {
 
           {/* Step 1: Basic Info */}
           {currentStep === 1 && (
-            <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
+            <div className={`space-y-6 animate-in fade-in ${slideIn} duration-300`}>
               <div className="flex items-center gap-3 mb-6">
                 <div className="w-10 h-10 bg-muted text-foreground flex items-center justify-center rounded-md border">
                   <Server className="w-5 h-5" />
@@ -555,32 +594,19 @@ function NewVMForm() {
                 <label htmlFor="userId" className="text-sm font-medium">
                   Assign to User <span className="text-muted-foreground">(optional)</span>
                 </label>
-                {usersLoading ? (
-                  <Skeleton className="h-12 w-full" />
-                ) : (
-                  <Controller
-                    name="userId"
-                    control={control}
-                    render={({ field }) => (
-                      <Select onValueChange={field.onChange} value={field.value}>
-                        <SelectTrigger id="userId" className="h-12">
-                          <SelectValue placeholder="Select a user (optional)" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {users.map((user) => (
-                            <SelectItem key={user.id} value={user.id}>
-                              <div className="flex items-center gap-2">
-                                <User className="w-4 h-4" />
-                                <span>{user.email}</span>
-                                <span className="text-muted-foreground text-sm">({user.role})</span>
-                              </div>
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    )}
-                  />
-                )}
+                <Controller
+                  name="userId"
+                  control={control}
+                  render={({ field }) => (
+                    <UserPicker
+                      id="userId"
+                      value={field.value ?? ""}
+                      onChange={(id, u) => { field.onChange(id); setSelectedUser(u) }}
+                      allowNone
+                      noneLabel="Me (the creator)"
+                    />
+                  )}
+                />
               </div>
 
               {/* Node Selection (optional) */}
@@ -590,6 +616,8 @@ function NewVMForm() {
                 </label>
                 {nodesLoading ? (
                   <Skeleton className="h-12 w-full" />
+                ) : nodesError ? (
+                  <LoadError what="nodes" onRetry={() => refetchNodes()} />
                 ) : (
                   <Controller
                     name="nodeId"
@@ -620,7 +648,7 @@ function NewVMForm() {
 
           {/* Step 2: Resources */}
           {currentStep === 2 && (
-            <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
+            <div className={`space-y-6 animate-in fade-in ${slideIn} duration-300`}>
               <div className="flex items-center gap-3 mb-6">
                 <div className="w-10 h-10 bg-muted text-foreground flex items-center justify-center rounded-md border">
                   <Cpu className="w-5 h-5" />
@@ -668,9 +696,10 @@ function NewVMForm() {
                       ))}
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-muted-foreground">Pick a plan to auto-fill resources, or choose Custom.</p>
+                  <p className="text-xs text-muted-foreground">Pick a plan to auto-fill resources, or choose Custom. Changing a slider switches back to Custom.</p>
                 </div>
               )}
+              {plansError && <LoadError what="plans" onRetry={() => refetchPlans()} />}
 
               {/* CPU Cores */}
               <div className="space-y-3">
@@ -689,7 +718,10 @@ function NewVMForm() {
                         min={1}
                         max={64}
                         value={value}
-                        onChange={(e) => onChange(Number(e.target.value))}
+                        onChange={(e) => {
+                          onChange(Number(e.target.value))
+                          if (watchedValues.planId) setValue("planId", "")
+                        }}
                         className="w-full h-2 appearance-none rounded-full bg-muted cursor-pointer"
                         style={{
                           background: `linear-gradient(to right, hsl(var(--primary)) 0%, hsl(var(--primary)) ${(value / 64) * 100}%, hsl(var(--muted)) ${(value / 64) * 100}%, hsl(var(--muted)) 100%)`
@@ -742,7 +774,10 @@ function NewVMForm() {
                         min={1}
                         max={512}
                         value={value}
-                        onChange={(e) => onChange(Number(e.target.value))}
+                        onChange={(e) => {
+                          onChange(Number(e.target.value))
+                          if (watchedValues.planId) setValue("planId", "")
+                        }}
                         className="w-full h-2 appearance-none rounded-full bg-muted cursor-pointer"
                         style={{
                           background: `linear-gradient(to right, hsl(var(--primary)) 0%, hsl(var(--primary)) ${(value / 512) * 100}%, hsl(var(--muted)) ${(value / 512) * 100}%, hsl(var(--muted)) 100%)`
@@ -775,7 +810,10 @@ function NewVMForm() {
                         max={2000}
                         step={10}
                         value={value}
-                        onChange={(e) => onChange(Number(e.target.value))}
+                        onChange={(e) => {
+                          onChange(Number(e.target.value))
+                          if (watchedValues.planId) setValue("planId", "")
+                        }}
                         className="w-full h-2 appearance-none rounded-full bg-muted cursor-pointer"
                         style={{
                           background: `linear-gradient(to right, hsl(var(--primary)) 0%, hsl(var(--primary)) ${(value / 2000) * 100}%, hsl(var(--muted)) ${(value / 2000) * 100}%, hsl(var(--muted)) 100%)`
@@ -874,7 +912,7 @@ function NewVMForm() {
 
           {/* Step 3: OS Template */}
           {currentStep === 3 && (
-            <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
+            <div className={`space-y-6 animate-in fade-in ${slideIn} duration-300`}>
               <div className="flex items-center gap-3 mb-6">
                 <div className="w-10 h-10 bg-muted text-foreground flex items-center justify-center rounded-md border">
                   <HardDrive className="w-5 h-5" />
@@ -905,6 +943,8 @@ function NewVMForm() {
                     <Skeleton key={i} className="h-28 w-full" />
                   ))}
                 </div>
+              ) : templatesError ? (
+                <LoadError what="templates" onRetry={() => refetchTemplates()} />
               ) : installableTemplates.length === 0 ? (
                 <div className="p-8 text-center border">
                   <HardDrive className="w-10 h-10 mx-auto text-muted-foreground mb-3" />
@@ -925,8 +965,9 @@ function NewVMForm() {
                         key={template.id}
                         type="button"
                         onClick={() => setValue("templateId", template.id, { shouldValidate: true })}
+                        aria-pressed={isSelected}
                         className={`
-                          relative p-4 rounded-lg border text-left transition-all duration-200
+                          relative p-4 rounded-lg border text-left transition-all duration-200 active:scale-[0.98]
                           ${isSelected
                             ? "border-primary ring-1 ring-primary bg-primary/5"
                             : "bg-card hover:bg-muted/50 hover:border-foreground/20"
@@ -935,7 +976,7 @@ function NewVMForm() {
                       >
                         {isSelected && (
                           <div className="absolute top-2 right-2 w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center">
-                            <Check className="w-4 h-4" />
+                            <Check className="w-4 h-4" aria-hidden="true" />
                           </div>
                         )}
                         
@@ -998,7 +1039,7 @@ function NewVMForm() {
                   className="w-full px-3 py-2 rounded-md border border-input bg-background font-mono text-sm placeholder:text-muted-foreground"
                 />
                 {!sshKeys?.length && !pastedKeyList.length && (
-                  <p className="text-xs text-muted-foreground mt-1">No key selected — the VM will use root-password login only.</p>
+                  <p className="text-xs text-muted-foreground mt-1">No key selected. The VM is reached with its root password, which is shown once after creation.</p>
                 )}
               </div>
             </div>
@@ -1006,7 +1047,7 @@ function NewVMForm() {
 
           {/* Step 4: Network */}
           {currentStep === 4 && (
-            <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
+            <div className={`space-y-6 animate-in fade-in ${slideIn} duration-300`}>
               <div className="flex items-center gap-3 mb-6">
                 <div className="w-10 h-10 bg-muted text-foreground flex items-center justify-center rounded-md border">
                   <Network className="w-5 h-5" />
@@ -1055,6 +1096,8 @@ function NewVMForm() {
                 </label>
                 {poolsLoading ? (
                   <Skeleton className="h-12 w-full" />
+                ) : poolsError ? (
+                  <LoadError what="IP pools" onRetry={() => refetchPools()} />
                 ) : availablePools.length === 0 ? (
                   <div className="p-4 border rounded-md bg-muted text-sm text-muted-foreground font-medium">
                     {pools.length === 0
@@ -1151,34 +1194,57 @@ function NewVMForm() {
 
               {/* Bandwidth */}
               <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <label htmlFor="bandwidthMbps" className="text-sm font-medium">Bandwidth Limit</label>
-                  <span className="text-2xl font-semibold">{watchedValues.bandwidthMbps} Mbps</span>
-                </div>
+                <label htmlFor="bandwidthMbps" className="text-sm font-medium">Bandwidth limit</label>
+                {/* Common speeds as one-click choices plus an exact box. A slider
+                    over 1 to 10000 could not land on 100 or 1000 by mouse. */}
                 <Controller
                   name="bandwidthMbps"
                   control={control}
                   render={({ field: { onChange, value } }) => (
-                    <div className="relative">
-                      <input
-                        id="bandwidthMbps"
-                        type="range"
-                        min={1}
-                        max={10000}
-                        value={value}
-                        onChange={(e) => onChange(Number(e.target.value))}
-                        className="w-full h-2 appearance-none rounded-full bg-muted cursor-pointer"
-                        style={{
-                          background: `linear-gradient(to right, hsl(var(--primary)) 0%, hsl(var(--primary)) ${(value / 10000) * 100}%, hsl(var(--muted)) ${(value / 10000) * 100}%, hsl(var(--muted)) 100%)`
-                        }}
-                      />
+                    <div className="flex flex-wrap items-center gap-2">
+                      {BANDWIDTH_PRESETS.map((p) => (
+                        <button
+                          key={p.mbps}
+                          type="button"
+                          aria-pressed={value === p.mbps}
+                          onClick={() => onChange(p.mbps)}
+                          className={`h-10 rounded-md border px-3 text-sm font-medium transition-[color,background-color,border-color,transform] duration-150 active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
+                            value === p.mbps
+                              ? "border-primary bg-primary text-primary-foreground"
+                              : "bg-background hover:bg-muted"
+                          }`}
+                        >
+                          {p.label}
+                        </button>
+                      ))}
+                      <div className="relative ml-auto w-40">
+                        <Input
+                          id="bandwidthMbps"
+                          type="number"
+                          inputMode="numeric"
+                          min={1}
+                          max={10000}
+                          step={1}
+                          value={Number.isFinite(value) ? value : ""}
+                          onChange={(e) => onChange(e.target.value === "" ? NaN : Number(e.target.value))}
+                          aria-invalid={!!errors.bandwidthMbps}
+                          aria-describedby="bandwidthMbps-help"
+                          className="h-10 pr-14"
+                        />
+                        <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">Mbps</span>
+                      </div>
                     </div>
                   )}
                 />
-                <div className="flex justify-between text-xs text-muted-foreground">
-                  <span>1 Mbps</span>
-                  <span>10 Gbps</span>
-                </div>
+                {errors.bandwidthMbps ? (
+                  <p id="bandwidthMbps-help" role="alert" className="text-xs font-medium text-destructive">
+                    {errors.bandwidthMbps.message || "Enter a speed from 1 to 10000 Mbps"}
+                  </p>
+                ) : (
+                  <p id="bandwidthMbps-help" className="text-xs text-muted-foreground">
+                    Pick a common speed or type an exact value from 1 to 10000 Mbps.
+                  </p>
+                )}
               </div>
 
               {/* VLAN ID (optional text input) */}
@@ -1188,10 +1254,21 @@ function NewVMForm() {
                 </label>
                 <Input
                   id="vlanId"
+                  type="number"
+                  min={1}
+                  max={4094}
+                  step={1}
+                  inputMode="numeric"
                   {...register("vlanId")}
-                  placeholder="e.g., 10, 20, 100"
-                  className="h-12"
+                  placeholder="1 to 4094"
+                  className={`h-12 ${errors.vlanId ? "border-danger ring-2 ring-danger/30" : ""}`}
                 />
+                {errors.vlanId && (
+                  <p className="text-sm font-medium text-destructive flex items-center gap-1">
+                    <AlertCircle className="w-4 h-4" aria-hidden="true" />
+                    {errors.vlanId.message}
+                  </p>
+                )}
                 <p className="text-xs text-muted-foreground">
                   Enter a VLAN ID to assign this VM to a specific network segment
                 </p>
@@ -1231,7 +1308,7 @@ function NewVMForm() {
 
           {/* Step 5: Review */}
           {currentStep === 5 && (
-            <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
+            <div className={`space-y-6 animate-in fade-in ${slideIn} duration-300`}>
               <div className="flex items-center gap-3 mb-6">
                 <div className="w-10 h-10 bg-muted text-foreground flex items-center justify-center rounded-md border">
                   <CheckCircle2 className="w-5 h-5" />
@@ -1254,10 +1331,10 @@ function NewVMForm() {
                       <span className="text-muted-foreground">Hostname:</span>
                       <span className="font-medium">{watchedValues.hostname}</span>
                     </div>
-                    {getSelectedUser() && (
+                    {watchedValues.userId && selectedUser && (
                       <div className="flex justify-between">
                         <span className="text-muted-foreground">Assigned To:</span>
-                        <span className="font-medium">{getSelectedUser()?.email}</span>
+                        <span className="font-medium">{selectedUser.email}</span>
                       </div>
                     )}
                     <div className="flex justify-between">
@@ -1380,7 +1457,7 @@ function NewVMForm() {
               <Button
                 type="button"
                 variant="success"
-                onClick={handleSubmit(onSubmit)}
+                onClick={handleSubmit(onSubmit, onInvalid)}
                 disabled={createVM.isPending}
                 className="gap-2"
               >

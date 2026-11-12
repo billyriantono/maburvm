@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useCallback } from "react"
 import Link from "next/link"
 import { useParams } from "next/navigation"
 import {
@@ -33,46 +33,11 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { useNode, useUpdateNode, useNodeMetrics, useNodeToken, useRegenerateNodeToken, useScanVMs, useSyncNodeVMs, useImportVMs } from "@/lib/hooks/use-nodes"
 import { useVMs } from "@/lib/hooks/use-vms"
 import { useVMActions } from "@/lib/hooks/use-vms"
-import { useUsers } from "@/lib/hooks/use-users"
+import { UserPicker } from "@/components/user-picker"
 import { useTemplates } from "@/lib/hooks/use-templates"
-import type { NodeStatus, VMStatus } from "@/types"
-
-// Status indicator component
-function StatusIndicator({ status }: { status: NodeStatus }) {
-  const config: Record<string, { bg: string; text: string; label: string }> = {
-    active: { bg: "bg-emerald-500", text: "text-emerald-600", label: "Active" },
-    offline: { bg: "bg-red-500", text: "text-red-600", label: "Offline" },
-    maintenance: { bg: "bg-amber-500", text: "text-amber-600", label: "Maintenance" },
-  }
-
-  const { bg, text, label } = config[status] || config.offline
-
-  return (
-    <div className="flex items-center gap-2">
-      <span className={`w-2.5 h-2.5 rounded-full ${bg} ${status === "active" ? "animate-pulse" : ""}`} />
-      <span className={`text-sm font-medium ${text}`}>{label}</span>
-    </div>
-  )
-}
-
-// VM Status badge
-function VMStatusBadge({ status }: { status: VMStatus }) {
-  const colors: Record<string, string> = {
-    running: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900",
-    stopped: "bg-muted text-muted-foreground",
-    suspended: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900",
-    creating: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950 dark:text-blue-300 dark:border-blue-900",
-    deleting: "bg-orange-50 text-orange-700 border-orange-200 dark:bg-orange-950 dark:text-orange-300 dark:border-orange-900",
-    error: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-900",
-  }
-
-  return (
-    <span className={`inline-flex items-center px-2 py-0.5 text-[10px] font-medium rounded-full border ${colors[status] || colors.stopped}`}>
-      <span className={`w-1.5 h-1.5 mr-1.5 rounded-full ${status === "running" ? "bg-emerald-500 animate-pulse" : "bg-current"}`} />
-      {status}
-    </span>
-  )
-}
+import { toast } from "sonner"
+import { StatusBadge, useVMTransitions } from "@/components/status-badge"
+import { useCopy } from "@/lib/use-feedback"
 
 // Resource gauge component
 function ResourceGauge({ value, label, detail, icon: Icon, color }: { value: number; label: string; detail?: string; icon: React.ElementType; color: string }) {
@@ -122,24 +87,6 @@ function formatBytesPerSec(bytes: number): string {
   return `${formatBytes(bytes)}/s`
 }
 
-// Toast notification
-function Toast({ message, type, onClose }: { message: string, type: "success" | "error", onClose: () => void }) {
-  useEffect(() => {
-    const timer = setTimeout(onClose, 3000)
-    return () => clearTimeout(timer)
-  }, [onClose])
-
-  return (
-    <div className={`fixed bottom-4 right-4 z-50 px-4 py-3 rounded-lg border shadow-md ${
-      type === "success"
-        ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900"
-        : "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-900"
-    }`}>
-      <p className="font-medium text-sm">{message}</p>
-    </div>
-  )
-}
-
 // conntrackTone colours the connection-tracking bar. The thresholds are low on
 // purpose: unlike CPU, a full table is not slow — it is an outage for every
 // tenant on the node, so the warning has to arrive with room to act.
@@ -154,13 +101,12 @@ export default function NodeDetailPage() {
   const params = useParams()
   const nodeId = params.id as string
 
-  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
-  const [copied, setCopied] = useState(false)
-  const [copiedToken, setCopiedToken] = useState(false)
+  const { copy, copied } = useCopy()
   const [showToken, setShowToken] = useState(false)
   const [editDialogOpen, setEditDialogOpen] = useState(false)
   const [editName, setEditName] = useState("")
-  const [actionLoading, setActionLoading] = useState<string | null>(null)
+  // vmId -> action in flight, so only the acted-on row is disabled.
+  const [pendingVMs, setPendingVMs] = useState<Record<string, string>>({})
   const [importDialogOpen, setImportDialogOpen] = useState(false)
   const [importVMUUID, setImportVMUUID] = useState<string>("")
   const [importUserId, setImportUserId] = useState("")
@@ -175,53 +121,47 @@ export default function NodeDetailPage() {
   const syncVMs = useSyncNodeVMs(nodeId)
   const importVMs = useImportVMs(nodeId)
   const { data: vmsData, isLoading: vmsLoading, refetch: refetchVMs } = useVMs({ nodeId, pageSize: 100 })
-  const { data: usersData, error: usersError } = useUsers()
   const { data: templatesData, error: templatesError } = useTemplates()
   const updateNode = useUpdateNode(nodeId)
   const vmActions = useVMActions()
 
   const vms = vmsData?.data || []
-  const users: any[] = Array.isArray(usersData) ? usersData : (usersData as any)?.data || []
+  const transitions = useVMTransitions(vms)
   const templates: any[] = Array.isArray(templatesData) ? templatesData : (templatesData as any)?.data || []
 
   // VM action handler
-  const handleVMAction = useCallback(async (vmId: string, action: string) => {
-    setActionLoading(`${vmId}-${action}`)
+  const handleVMAction = useCallback(async (vmId: string, action: string, fromStatus: string) => {
+    setPendingVMs((p) => ({ ...p, [vmId]: action }))
+    transitions.begin(vmId, action, fromStatus)
     try {
       await vmActions.mutateAsync({ vmId, action })
-      setToast({ message: `VM ${action} successful`, type: "success" })
+      toast.success(`VM ${action} successful`)
       refetchVMs()
     } catch (err) {
-      setToast({ message: `Failed to ${action} VM: ${(err as Error).message}`, type: "error" })
+      transitions.cancel(vmId)
+      toast.error(`Failed to ${action} VM: ${(err as Error).message}`)
     } finally {
-      setActionLoading(null)
+      setPendingVMs((p) => {
+        const next = { ...p }
+        delete next[vmId]
+        return next
+      })
     }
-  }, [vmActions, refetchVMs])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vmActions, refetchVMs, transitions.begin, transitions.cancel])
 
   // Edit handler
   const handleEdit = useCallback(async () => {
     if (!editName.trim()) return
     try {
       await updateNode.mutateAsync({ name: editName })
-      setToast({ message: "Node updated successfully", type: "success" })
+      toast.success("Node updated successfully")
       setEditDialogOpen(false)
       refetch()
     } catch (err) {
-      setToast({ message: `Failed to update node: ${(err as Error).message}`, type: "error" })
+      toast.error(`Failed to update node: ${(err as Error).message}`)
     }
   }, [updateNode, editName, refetch])
-
-  // Copy to clipboard
-  const copyToClipboard = async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text)
-      setCopied(true)
-      setToast({ message: "Copied to clipboard", type: "success" })
-      setTimeout(() => setCopied(false), 2000)
-    } catch {
-      setCopied(false)
-    }
-  }
 
   // Loading state
   if (isLoading) {
@@ -284,7 +224,7 @@ export default function NodeDetailPage() {
             <h1 className="text-2xl font-semibold text-foreground">
               {node.name}
             </h1>
-            <StatusIndicator status={node.status} />
+            <StatusBadge status={node.status} />
           </div>
           <p className="text-muted-foreground text-sm">
             {node.ip_address} • Created {formatDate(node.created_at)}
@@ -341,7 +281,7 @@ export default function NodeDetailPage() {
             <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-medium text-muted-foreground">Running</span>
-                <span className="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-pulse" />
+                <span className="w-2.5 h-2.5 bg-emerald-500 rounded-full" aria-hidden="true" />
               </div>
               <p className="text-2xl font-semibold text-emerald-600">{runningVMs}</p>
             </div>
@@ -359,7 +299,7 @@ export default function NodeDetailPage() {
                 <span className="text-xs font-medium text-muted-foreground">Status</span>
                 <Clock className="w-4 h-4 text-muted-foreground" />
               </div>
-              <StatusIndicator status={node.status} />
+              <StatusBadge status={node.status} />
             </div>
           </div>
 
@@ -429,7 +369,7 @@ export default function NodeDetailPage() {
                     </div>
                     <div className="h-2 rounded-full bg-muted overflow-hidden">
                       <div
-                        className={`h-full rounded-full ${conntrackTone(metrics.conntrack_count, metrics.conntrack_max)}`}
+                        className={`h-full rounded-full transition-[width] duration-500 ease-out ${conntrackTone(metrics.conntrack_count, metrics.conntrack_max)}`}
                         style={{ width: `${Math.min(100, (metrics.conntrack_count / metrics.conntrack_max) * 100)}%` }}
                       />
                     </div>
@@ -493,8 +433,8 @@ export default function NodeDetailPage() {
                 <span className="text-xs font-medium text-muted-foreground block">Node ID</span>
                 <div className="flex items-center gap-2">
                   <span className="font-mono text-sm font-medium">{node.id.slice(0, 16)}...</span>
-                  <button onClick={() => copyToClipboard(node.id)} className="p-1 rounded hover:bg-muted" aria-label="Copy node ID">
-                    {copied ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                  <button onClick={() => copy(node.id, "node-id")} className="p-1 rounded hover:bg-muted" aria-label={copied("node-id") ? "Node ID copied" : "Copy node ID"}>
+                    {copied("node-id") ? <Check className="w-3 h-3 text-emerald-600" aria-hidden="true" /> : <Copy className="w-3 h-3" aria-hidden="true" />}
                   </button>
                 </div>
               </div>
@@ -546,22 +486,14 @@ export default function NodeDetailPage() {
                 onClick={async () => {
                   if (!tokenData?.token) {
                     const result = await refetchToken()
-                    if (result.data?.token) {
-                      await navigator.clipboard.writeText(result.data.token)
-                      setCopiedToken(true)
-                      setToast({ message: "Token copied to clipboard", type: "success" })
-                      setTimeout(() => setCopiedToken(false), 2000)
-                    }
+                    if (result.data?.token) await copy(result.data.token, "token")
                   } else {
-                    await navigator.clipboard.writeText(tokenData.token)
-                    setCopiedToken(true)
-                    setToast({ message: "Token copied to clipboard", type: "success" })
-                    setTimeout(() => setCopiedToken(false), 2000)
+                    await copy(tokenData.token, "token")
                   }
                 }}
               >
-                {copiedToken ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                {copiedToken ? 'Copied' : 'Copy'}
+                {copied("token") ? <Check className="w-4 h-4" aria-hidden="true" /> : <Copy className="w-4 h-4" aria-hidden="true" />}
+                {copied("token") ? 'Copied' : 'Copy'}
               </Button>
               <Button
                 variant="destructive"
@@ -572,9 +504,9 @@ export default function NodeDetailPage() {
                     await regenerateToken.mutateAsync()
                     setShowToken(true)
                     refetchToken()
-                    setToast({ message: "Token regenerated. Update the agent config.", type: "success" })
+                    toast.success("Token regenerated. Update the agent config.")
                   } catch (err) {
-                    setToast({ message: `Failed to regenerate token: ${(err as Error).message}`, type: "error" })
+                    toast.error(`Failed to regenerate token: ${(err as Error).message}`)
                   }
                 }}
                 disabled={regenerateToken.isPending}
@@ -666,52 +598,55 @@ export default function NodeDetailPage() {
                       </div>
 
                       {/* Status */}
-                      <VMStatusBadge status={vm.status} />
+                      <StatusBadge status={vm.status} transition={transitions.transitionOf(vm.id)} />
 
                       {/* Actions */}
                       <div className="flex items-center gap-1">
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => handleVMAction(vm.id, "start")}
-                          disabled={vm.status === "running" || node.status !== "active" || !!actionLoading}
+                          onClick={() => handleVMAction(vm.id, "start", vm.status)}
+                          disabled={vm.status === "running" || node.status !== "active" || !!pendingVMs[vm.id]}
                           className="h-8 w-8 p-0"
                           title="Start"
+                          aria-label="Start {vm.hostname}"
                         >
-                          {actionLoading === `${vm.id}-start` ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
+                          {pendingVMs[vm.id] === "start" ? (
+                            <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
                           ) : (
-                            <Play className="w-4 h-4" />
+                            <Play className="w-4 h-4" aria-hidden="true" />
                           )}
                         </Button>
 
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => handleVMAction(vm.id, "stop")}
-                          disabled={vm.status === "stopped" || node.status !== "active" || !!actionLoading}
+                          onClick={() => handleVMAction(vm.id, "stop", vm.status)}
+                          disabled={vm.status === "stopped" || node.status !== "active" || !!pendingVMs[vm.id]}
                           className="h-8 w-8 p-0 text-red-600 hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950"
                           title="Stop"
+                          aria-label="Stop {vm.hostname}"
                         >
-                          {actionLoading === `${vm.id}-stop` ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
+                          {pendingVMs[vm.id] === "stop" ? (
+                            <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
                           ) : (
-                            <Square className="w-4 h-4" />
+                            <Square className="w-4 h-4" aria-hidden="true" />
                           )}
                         </Button>
 
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => handleVMAction(vm.id, "restart")}
-                          disabled={vm.status !== "running" || node.status !== "active" || !!actionLoading}
+                          onClick={() => handleVMAction(vm.id, "restart", vm.status)}
+                          disabled={vm.status !== "running" || node.status !== "active" || !!pendingVMs[vm.id]}
                           className="h-8 w-8 p-0"
                           title="Restart"
+                          aria-label="Restart {vm.hostname}"
                         >
-                          {actionLoading === `${vm.id}-restart` ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
+                          {pendingVMs[vm.id] === "restart" ? (
+                            <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
                           ) : (
-                            <RotateCcw className="w-4 h-4" />
+                            <RotateCcw className="w-4 h-4" aria-hidden="true" />
                           )}
                         </Button>
 
@@ -856,15 +791,6 @@ export default function NodeDetailPage() {
         </TabsContent>
       </Tabs>
 
-      {/* Toast */}
-      {toast && (
-        <Toast
-          message={toast.message}
-          type={toast.type}
-          onClose={() => setToast(null)}
-        />
-      )}
-
       {/* Import VM Dialog */}
       <Dialog open={importDialogOpen} onOpenChange={setImportDialogOpen}>
         <DialogContent>
@@ -876,18 +802,8 @@ export default function NodeDetailPage() {
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div>
-              <label className="text-sm font-medium block mb-1">Owner</label>
-              {usersError && <p className="text-xs text-red-500 mb-1">Error: {(usersError as Error).message}</p>}
-              <select
-                className="w-full rounded-md border border-input bg-background p-2 text-sm"
-                value={importUserId}
-                onChange={(e) => setImportUserId(e.target.value)}
-              >
-                <option value="">Select user...</option>
-                {users.map((user: any) => (
-                  <option key={user.id} value={user.id}>{user.email}</option>
-                ))}
-              </select>
+              <label htmlFor="import-owner" className="text-sm font-medium block mb-1">Owner</label>
+              <UserPicker id="import-owner" value={importUserId} onChange={(id) => setImportUserId(id)} />
             </div>
             <div>
               <label className="text-sm font-medium block mb-1">OS Template</label>
@@ -916,12 +832,12 @@ export default function NodeDetailPage() {
                   {
                     onSuccess: (data) => {
                       setImportDialogOpen(false)
-                      setToast({ message: `Import successful: ${data.success_count} imported`, type: "success" })
+                      toast.success(`Import successful: ${data.success_count} imported`)
                       refetchScan()
                       refetchVMs()
                     },
                     onError: (err) => {
-                      setToast({ message: `Import failed: ${err.message}`, type: "error" })
+                      toast.error(`Import failed: ${err.message}`)
                     },
                   }
                 )

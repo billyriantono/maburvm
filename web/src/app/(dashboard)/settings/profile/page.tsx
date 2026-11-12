@@ -8,16 +8,15 @@ import { useForm } from "react-hook-form"
 import { z } from "zod"
 import {
   User as UserIcon,
-  Mail,
   Lock,
   Shield,
   ShieldCheck,
   ShieldOff,
   Key,
   Copy,
+  Check,
   Eye,
   EyeOff,
-  CheckCircle,
   AlertTriangle,
   AlertCircle,
   Save,
@@ -32,7 +31,6 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
 import {
   Dialog,
   DialogContent,
@@ -42,6 +40,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { useCurrentUser } from "@/lib/hooks/use-auth"
+import { useCopy } from "@/lib/use-feedback"
 import { useChangePassword, useSetup2FA, useVerify2FA, useDisable2FA } from "@/lib/hooks/use-settings"
 import { useMyQuota } from "@/lib/hooks/use-quota"
 
@@ -100,7 +99,7 @@ function QuotaMeter({
       </div>
       <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
         <div
-          className={over ? "h-full bg-destructive" : "h-full bg-emerald-600"}
+          className={over ? "h-full bg-destructive transition-[width] duration-500 ease-out" : "h-full bg-emerald-600 transition-[width] duration-500 ease-out"}
           style={{ width: `${pct}%` }}
         />
       </div>
@@ -110,7 +109,7 @@ function QuotaMeter({
 
 export default function ProfileSettingsPage() {
   // Data hook
-  const { data: user, isLoading: userLoading, error: userError } = useCurrentUser()
+  const { data: user, isLoading: userLoading, error: userError, refetch: refetchUser } = useCurrentUser()
   const { data: quota } = useMyQuota()
 
   // Real settings mutations (backend-backed)
@@ -231,11 +230,13 @@ export default function ProfileSettingsPage() {
     }
   }
 
-  const handleCopyBackupCodes = () => {
-    navigator.clipboard.writeText(backupCodes.join("\n"))
-    toast.success("Backup codes copied!", {
-      description: "Save them in a secure location.",
-    })
+  const { copy, copied } = useCopy()
+  const handleCopyBackupCodes = async (key: string) => {
+    if (await copy(backupCodes.join("\n"), key)) {
+      toast.success("Backup codes copied!", {
+        description: "Save them in a secure location.",
+      })
+    }
   }
 
   const handleDisable2FA = async () => {
@@ -291,6 +292,7 @@ export default function ProfileSettingsPage() {
           <AlertCircle className="w-16 h-16 text-destructive mx-auto mb-4" />
           <h2 className="text-xl font-semibold mb-2">Failed to load profile</h2>
           <p className="text-muted-foreground mb-6">{(userError as Error)?.message || "Could not load user profile."}</p>
+          <Button onClick={() => refetchUser()}>Retry</Button>
         </div>
       </div>
     )
@@ -332,12 +334,6 @@ export default function ProfileSettingsPage() {
                     className="bg-muted pr-10"
                     disabled
                   />
-                  <div className="absolute right-3 top-1/2 -translate-y-1/2">
-                    <Badge variant="secondary" className="text-[10px]">
-                      <Mail className="w-3 h-3 mr-1" />
-                      Verified
-                    </Badge>
-                  </div>
                 </div>
               </div>
 
@@ -353,25 +349,12 @@ export default function ProfileSettingsPage() {
                   disabled
                 />
               </div>
-
-              {/* Account Status */}
-              <div>
-                <span className="block text-sm font-medium text-muted-foreground mb-2">
-                  Account Status
-                </span>
-                <div className="flex items-center gap-2">
-                  <Badge variant="success" className="text-sm">
-                    <CheckCircle className="w-3 h-3 mr-1" />
-                    Active
-                  </Badge>
-                </div>
-              </div>
             </div>
           </CardContent>
         </Card>
 
         {/* Resource Quota Card */}
-        {quota && (
+        {quota?.usage && quota?.quota && (
           <Card>
             <CardHeader className="border-b">
               <CardTitle className="flex items-center gap-2">
@@ -404,9 +387,6 @@ export default function ProfileSettingsPage() {
                 <div>
                   <p className="font-medium text-foreground">
                     Keep your account secure with a strong password
-                  </p>
-                  <p className="text-sm text-muted-foreground mt-1">
-                    Last changed: Never (demo account)
                   </p>
                 </div>
                 <Button onClick={() => setShowPasswordForm(true)}>
@@ -720,9 +700,9 @@ export default function ProfileSettingsPage() {
                 </p>
               </div>
               <div className="flex gap-2">
-                <Button variant="secondary" onClick={handleCopyBackupCodes} className="flex-1">
-                  <Copy className="w-4 h-4 mr-2" />
-                  Copy Codes
+                <Button variant="secondary" onClick={() => handleCopyBackupCodes("backup-setup")} className="flex-1">
+                  {copied("backup-setup") ? <Check className="w-4 h-4 mr-2" aria-hidden="true" /> : <Copy className="w-4 h-4 mr-2" aria-hidden="true" />}
+                  {copied("backup-setup") ? "Copied" : "Copy Codes"}
                 </Button>
               </div>
               <Button onClick={handleCloseSetupDialog} className="w-full">
@@ -776,9 +756,9 @@ export default function ProfileSettingsPage() {
               Close
             </Button>
             {backupCodes.length > 0 && (
-              <Button variant="secondary" onClick={handleCopyBackupCodes}>
-                <Copy className="w-4 h-4 mr-2" />
-                Copy All
+              <Button variant="secondary" onClick={() => handleCopyBackupCodes("backup-all")}>
+                {copied("backup-all") ? <Check className="w-4 h-4 mr-2" aria-hidden="true" /> : <Copy className="w-4 h-4 mr-2" aria-hidden="true" />}
+                {copied("backup-all") ? "Copied" : "Copy All"}
               </Button>
             )}
           </DialogFooter>

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import Link from "next/link"
 import { 
   UserPlus,
@@ -15,7 +15,9 @@ import {
   X,
   Gauge
 } from "lucide-react"
+import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -32,31 +34,22 @@ import type { SetQuotaRequest } from "@/types/quota"
 import type { User } from "@/types"
 import { useConfirm } from "@/components/confirm-provider"
 
-function Toast({ message, type, onClose }: { message: string; type: "success" | "error"; onClose: () => void }) {
-  useEffect(() => {
-    const timer = setTimeout(onClose, 3000)
-    return () => clearTimeout(timer)
-  }, [onClose])
+const PAGE_SIZE = 20
 
-  return (
-    <div className={`fixed bottom-4 right-4 z-50 px-5 py-3 rounded-lg border shadow-md ${
-      type === "success" ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900" : "bg-destructive text-destructive-foreground border-destructive"
-    }`}>
-      <p className="font-medium text-sm">{message}</p>
-    </div>
-  )
-}
 function formatDate(dateString: string): string {
   return new Date(dateString).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })
 }
 
 // QuotaDialog lets an admin view a user's current usage and set their resource
 // limits (0 = unlimited). Fetches per-user quota lazily when opened.
-function QuotaDialog({ user, onClose, onNotify }: {
+function QuotaDialog({ user: openUser, onClose }: {
   user: User | null
   onClose: () => void
-  onNotify: (message: string, type: "success" | "error") => void
 }) {
+  // Keep the last user while the dialog fades out so the content does not vanish first.
+  const lastUser = useRef(openUser)
+  if (openUser) lastUser.current = openUser
+  const user = openUser ?? lastUser.current
   const { data: status, isLoading } = useUserQuota(user?.id ?? "")
   const setQuota = useSetUserQuota()
   const [form, setForm] = useState<SetQuotaRequest>({ max_vms: 0, max_vcpu: 0, max_ram_mb: 0, max_disk_gb: 0 })
@@ -75,36 +68,38 @@ function QuotaDialog({ user, onClose, onNotify }: {
   if (!user) return null
 
   const fields: { key: keyof SetQuotaRequest; label: string; used?: number }[] = [
-    { key: "max_vms", label: "Max VMs", used: status?.usage.vms },
-    { key: "max_vcpu", label: "Max vCPU", used: status?.usage.vcpu },
-    { key: "max_ram_mb", label: "Max RAM (MB)", used: status?.usage.ram_mb },
-    { key: "max_disk_gb", label: "Max Disk (GB)", used: status?.usage.disk_gb },
+    { key: "max_vms", label: "Max VMs", used: status?.usage?.vms },
+    { key: "max_vcpu", label: "Max vCPU", used: status?.usage?.vcpu },
+    { key: "max_ram_mb", label: "Max RAM (MB)", used: status?.usage?.ram_mb },
+    { key: "max_disk_gb", label: "Max Disk (GB)", used: status?.usage?.disk_gb },
   ]
 
   const handleSave = async () => {
     try {
       await setQuota.mutateAsync({ userId: user.id, data: form })
-      onNotify(`Quota updated for ${user.email}`, "success")
+      toast.success(`Quota updated for ${user.email}`)
       onClose()
     } catch (err) {
-      onNotify(`Failed to update quota: ${(err as Error).message}`, "error")
+      toast.error(`Failed to update quota: ${(err as Error).message}`)
     }
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-label="Edit quota">
-      <button type="button" className="absolute inset-0 bg-black/50 cursor-default focus:outline-none" onClick={onClose} aria-label="Close dialog" />
-      <div className="relative bg-background border rounded-lg p-6 shadow-lg max-w-lg w-full mx-4">
-        <h3 className="text-lg font-semibold mb-1 flex items-center gap-2"><Gauge className="w-5 h-5" />Resource Quota</h3>
-        <p className="text-muted-foreground text-sm mb-5 truncate">{user.email} — 0 = unlimited</p>
+    <Dialog open={!!openUser} onOpenChange={(open) => { if (!open) onClose() }}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2"><Gauge className="w-5 h-5" aria-hidden="true" />Resource Quota</DialogTitle>
+          <DialogDescription className="truncate">{user.email}, 0 = unlimited</DialogDescription>
+        </DialogHeader>
         {isLoading ? (
           <div className="flex items-center justify-center py-10"><Loader2 className="w-6 h-6 animate-spin" /></div>
         ) : (
           <div className="space-y-4">
             {fields.map((f) => (
               <div key={f.key} className="grid grid-cols-3 items-center gap-3">
-                <label className="col-span-1 text-xs font-medium text-muted-foreground">{f.label}</label>
+                <label htmlFor={`quota-${f.key}`} className="col-span-1 text-xs font-medium text-muted-foreground">{f.label}</label>
                 <Input
+                  id={`quota-${f.key}`}
                   type="number"
                   min={0}
                   value={form[f.key]}
@@ -116,15 +111,15 @@ function QuotaDialog({ user, onClose, onNotify }: {
             ))}
           </div>
         )}
-        <div className="flex gap-3 justify-end mt-6">
+        <DialogFooter className="gap-3 sm:gap-0 mt-2">
           <Button variant="outline" onClick={onClose} disabled={setQuota.isPending}>Cancel</Button>
           <Button onClick={handleSave} disabled={setQuota.isPending || isLoading}>
             {setQuota.isPending && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
             Save Quota
           </Button>
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -133,32 +128,26 @@ export default function UsersPage() {
   const [searchQuery, setSearchQuery] = useState("")
   const [roleFilter, setRoleFilter] = useState<string>("")
   const [quotaUser, setQuotaUser] = useState<User | null>(null)
-  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
 
   // Data hooks
-  const { data: usersData, isLoading, error, refetch } = useUsers({ pageSize: 100 })
+  const [page, setPage] = useState(1)
+  const [debouncedSearch, setDebouncedSearch] = useState("")
+  useEffect(() => {
+    const t = setTimeout(() => { setDebouncedSearch(searchQuery.trim()); setPage(1) }, 250)
+    return () => clearTimeout(t)
+  }, [searchQuery])
+
+  const { data: usersData, isLoading, isFetching, error, refetch } = useUsers({
+    page,
+    pageSize: PAGE_SIZE,
+    search: debouncedSearch,
+    role: roleFilter || undefined,
+  })
   const deleteUser = useDeleteUser()
 
-  const users = useMemo(() => usersData?.data || [], [usersData?.data])
-
-  // Filter users
-  const filteredUsers = useMemo(() => {
-    let result = [...users]
-
-    if (searchQuery) {
-      const query = searchQuery.toLowerCase()
-      result = result.filter(u =>
-        u.email.toLowerCase().includes(query) ||
-        u.id.toLowerCase().includes(query)
-      )
-    }
-
-    if (roleFilter) {
-      result = result.filter(u => u.role === roleFilter)
-    }
-
-    return result
-  }, [users, searchQuery, roleFilter])
+  const filteredUsers = usersData?.data ?? []
+  const total = usersData?.total ?? 0
+  const totalPages = Math.max(1, usersData?.totalPages ?? Math.ceil(total / PAGE_SIZE))
 
   // Delete handler
   const handleDelete = useCallback(async (user: { id: string; email: string }) => {
@@ -171,11 +160,11 @@ export default function UsersPage() {
       action: () => deleteUser.mutateAsync(user.id),
     })
     if (!ok) return
-    setToast({ message: `User "${user.email}" deleted`, type: "success" })
+    toast.success(`User "${user.email}" deleted`)
     refetch()
   }, [confirm, deleteUser, refetch])
 
-  const clearFilters = () => { setSearchQuery(""); setRoleFilter("") }
+  const clearFilters = () => { setSearchQuery(""); setRoleFilter(""); setPage(1) }
   const hasFilters = searchQuery || roleFilter
 
   // Loading
@@ -210,9 +199,6 @@ export default function UsersPage() {
     )
   }
 
-  const adminCount = users.filter(u => u.role === "admin").length
-  const clientCount = users.filter(u => u.role === "client").length
-
   return (
     <div className="max-w-7xl mx-auto">
       {/* Header */}
@@ -222,7 +208,7 @@ export default function UsersPage() {
             Users
           </h1>
           <p className="text-muted-foreground text-sm mt-1">
-            {users.length} users • {adminCount} admins • {clientCount} clients
+            {total} {total === 1 ? "user" : "users"}
           </p>
         </div>
         <Link href="/users/new">
@@ -239,7 +225,9 @@ export default function UsersPage() {
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <Input
-              placeholder="Search users by email..."
+              placeholder="Search users by email or name"
+              aria-label="Search users"
+              type="search"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-10"
@@ -247,7 +235,8 @@ export default function UsersPage() {
           </div>
           <select
             value={roleFilter}
-            onChange={(e) => setRoleFilter(e.target.value)}
+            onChange={(e) => { setRoleFilter(e.target.value); setPage(1) }}
+            aria-label="Filter by role"
             className="h-10 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           >
             <option value="">All Roles</option>
@@ -261,7 +250,7 @@ export default function UsersPage() {
       </div>
 
       {/* Users Table */}
-      <div className="rounded-lg border bg-card text-card-foreground shadow-sm overflow-hidden">
+      <div className={`rounded-lg border bg-card text-card-foreground shadow-sm overflow-hidden transition-opacity ${isFetching ? "opacity-60" : ""}`}>
         <div className="grid grid-cols-12 gap-4 p-4 bg-muted text-muted-foreground font-medium text-xs">
           <div className="col-span-4">User</div>
           <div className="col-span-2">Role</div>
@@ -359,14 +348,18 @@ export default function UsersPage() {
         )}
       </div>
 
+      <div className="mt-4 flex items-center justify-between text-sm text-muted-foreground">
+        <span>Page {page} of {totalPages}, {total} {total === 1 ? "user" : "users"}</span>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Previous</Button>
+          <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>Next</Button>
+        </div>
+      </div>
 
       <QuotaDialog
         user={quotaUser}
         onClose={() => setQuotaUser(null)}
-        onNotify={(message, type) => setToast({ message, type })}
       />
-
-      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
     </div>
   )
 }

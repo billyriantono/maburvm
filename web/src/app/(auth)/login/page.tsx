@@ -232,7 +232,7 @@ export default function LoginPage() {
 
       {/* SSO sign-in that stopped at the panel's own two-factor step */}
       {ssoTicket ? (
-        <form onSubmit={handleSso2FA} className="space-y-5">
+        <form onSubmit={handleSso2FA} className="space-y-5 animate-in fade-in duration-200">
           <div>
             <div className="flex items-center gap-2 mb-2">
               <ShieldCheck className="w-4 h-4 text-muted-foreground" />
@@ -291,6 +291,7 @@ export default function LoginPage() {
           <Input
             id="email"
             type="email"
+            autoComplete="username"
             placeholder="you@company.com"
             {...register("email")}
             disabled={isLoading}
@@ -314,6 +315,7 @@ export default function LoginPage() {
             <Input
               id="password"
               type={showPassword ? "text" : "password"}
+              autoComplete="current-password"
               placeholder="Enter your password"
               className="pr-12"
               {...register("password")}
@@ -323,12 +325,12 @@ export default function LoginPage() {
               type="button"
               onClick={() => setShowPassword(!showPassword)}
               className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-              tabIndex={-1}
+              aria-label={showPassword ? "Hide password" : "Show password"}
             >
               {showPassword ? (
-                <EyeOff className="w-5 h-5" />
+                <EyeOff className="w-5 h-5" aria-hidden="true" />
               ) : (
-                <Eye className="w-5 h-5" />
+                <Eye className="w-5 h-5" aria-hidden="true" />
               )}
             </button>
           </div>
@@ -356,6 +358,8 @@ export default function LoginPage() {
               type="text"
               inputMode="numeric"
               pattern="[0-9]*"
+              autoComplete="one-time-code"
+              autoFocus
               maxLength={6}
               placeholder="123456"
               className="tracking-widest text-center"

@@ -4,6 +4,7 @@ import { useState, useEffect } from "react"
 import { useSystemVersion, useUpdateAgent } from "@/lib/hooks/use-version"
 import { useSystemSettings, useSaveSystemSettings, useTestEmail } from "@/lib/hooks/use-settings"
 import { toast } from "sonner"
+import { useFlash } from "@/lib/use-feedback"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
 import { z } from "zod"
@@ -15,6 +16,7 @@ import {
   Mail,
   Users,
   Save,
+  Check,
   Loader2,
   Eye,
   EyeOff,
@@ -32,6 +34,7 @@ import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { DNSProviderSettings } from "@/components/dns-provider-settings"
 
 // General settings schema
 const generalSchema = z.object({
@@ -120,7 +123,7 @@ const defaultBackupSettings = {
 
 const defaultApiSettings = {
   webhookUrl: "",
-  hmacSecret: "your-hmac-secret-key-here-min-32-chars",
+  hmacSecret: "",
   enableApi: true,
   rateLimit: 100,
   abuseipdbToken: "",
@@ -137,12 +140,12 @@ const defaultQuotaSettings = {
 }
 
 const defaultEmailSettings = {
-  smtpHost: "smtp.example.com",
+  smtpHost: "",
   smtpPort: 587,
-  smtpUser: "notifications@maburvm.local",
-  smtpPassword: "********",
-  smtpFrom: "notifications@maburvm.local",
-  smtpFromName: "MaburVM Notifications",
+  smtpUser: "",
+  smtpPassword: "",
+  smtpFrom: "",
+  smtpFromName: "",
   enableTls: true,
 }
 
@@ -281,7 +284,7 @@ function BuildPanel() {
 export default function SystemSettingsPage() {
   const [isSaving, setIsSaving] = useState<string | null>(null)
   const [showHmacSecret, setShowHmacSecret] = useState(false)
-  const { data: sysSettings } = useSystemSettings()
+  const { data: sysSettings, isLoading: settingsLoading, error: settingsError, refetch: refetchSettings } = useSystemSettings()
   const saveSettings = useSaveSystemSettings()
   const testEmail = useTestEmail()
 
@@ -332,11 +335,14 @@ export default function SystemSettingsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sysSettings])
 
+  const saved = useFlash(1500)
+
   const saveSection = async (section: string, data: unknown, label: string, description: string) => {
     setIsSaving(section)
     try {
       await saveSettings.mutateAsync({ [section]: data })
       toast.success(`${label} saved!`, { description })
+      saved.trigger(section)
     } catch (err) {
       toast.error(`Failed to save ${label.toLowerCase()}`, { description: (err as Error).message })
     } finally {
@@ -400,6 +406,27 @@ export default function SystemSettingsPage() {
     })
   }
 
+  if (settingsLoading) {
+    return (
+      <div className="max-w-4xl mx-auto flex items-center gap-3 p-4" role="status">
+        <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+        <span className="text-sm text-muted-foreground">Loading system settings...</span>
+      </div>
+    )
+  }
+
+  if (settingsError) {
+    return (
+      <div className="max-w-4xl mx-auto">
+        <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-12 text-center">
+          <h2 className="text-xl font-semibold mb-2">Failed to load system settings</h2>
+          <p className="text-muted-foreground mb-6">{(settingsError as Error).message}</p>
+          <Button onClick={() => refetchSettings()}>Retry</Button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="max-w-4xl mx-auto">
       {/* Header */}
@@ -422,7 +449,7 @@ export default function SystemSettingsPage() {
 
       {/* Settings Tabs */}
       <Tabs defaultValue="general" className="space-y-6">
-        <TabsList className="grid w-full grid-cols-2 md:grid-cols-6 gap-2 bg-transparent p-0 border-none">
+        <TabsList>
           <TabsTrigger value="general" className="text-xs">
             <Globe className="w-4 h-4 mr-2" />
             General
@@ -525,8 +552,8 @@ export default function SystemSettingsPage() {
                       </>
                     ) : (
                       <>
-                        <Save className="w-4 h-4 mr-2" />
-                        Save Settings
+                        {saved.active("general") ? <Check className="w-4 h-4 mr-2" aria-hidden="true" /> : <Save className="w-4 h-4 mr-2" aria-hidden="true" />}
+                        {saved.active("general") ? "Saved" : "Save Settings"}
                       </>
                     )}
                   </Button>
@@ -668,8 +695,8 @@ export default function SystemSettingsPage() {
                       </>
                     ) : (
                       <>
-                        <Save className="w-4 h-4 mr-2" />
-                        Save Settings
+                        {saved.active("security") ? <Check className="w-4 h-4 mr-2" aria-hidden="true" /> : <Save className="w-4 h-4 mr-2" aria-hidden="true" />}
+                        {saved.active("security") ? "Saved" : "Save Settings"}
                       </>
                     )}
                   </Button>
@@ -766,8 +793,8 @@ export default function SystemSettingsPage() {
                       </>
                     ) : (
                       <>
-                        <Save className="w-4 h-4 mr-2" />
-                        Save Settings
+                        {saved.active("backup") ? <Check className="w-4 h-4 mr-2" aria-hidden="true" /> : <Save className="w-4 h-4 mr-2" aria-hidden="true" />}
+                        {saved.active("backup") ? "Saved" : "Save Settings"}
                       </>
                     )}
                   </Button>
@@ -894,7 +921,12 @@ export default function SystemSettingsPage() {
 
                 <div className="flex justify-end">
                   <Button type="submit" disabled={isSaving === "quotas"}>
-                    {isSaving === "quotas" ? "Saving..." : "Save limits"}
+                    {isSaving === "quotas" ? "Saving..." : saved.active("quotas") ? (
+                      <>
+                        <Check className="w-4 h-4 mr-2" aria-hidden="true" />
+                        Saved
+                      </>
+                    ) : "Save limits"}
                   </Button>
                 </div>
               </form>
@@ -1035,8 +1067,8 @@ export default function SystemSettingsPage() {
                       </>
                     ) : (
                       <>
-                        <Save className="w-4 h-4 mr-2" />
-                        Save Settings
+                        {saved.active("api") ? <Check className="w-4 h-4 mr-2" aria-hidden="true" /> : <Save className="w-4 h-4 mr-2" aria-hidden="true" />}
+                        {saved.active("api") ? "Saved" : "Save Settings"}
                       </>
                     )}
                   </Button>
@@ -1044,6 +1076,7 @@ export default function SystemSettingsPage() {
               </form>
             </CardContent>
           </Card>
+          <DNSProviderSettings />
         </TabsContent>
 
         {/* Email Settings */}
@@ -1202,8 +1235,8 @@ export default function SystemSettingsPage() {
                       </>
                     ) : (
                       <>
-                        <Save className="w-4 h-4 mr-2" />
-                        Save Settings
+                        {saved.active("email") ? <Check className="w-4 h-4 mr-2" aria-hidden="true" /> : <Save className="w-4 h-4 mr-2" aria-hidden="true" />}
+                        {saved.active("email") ? "Saved" : "Save Settings"}
                       </>
                     )}
                   </Button>

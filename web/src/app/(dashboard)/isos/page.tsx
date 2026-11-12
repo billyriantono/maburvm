@@ -1,24 +1,23 @@
 "use client"
 
-import { useState, useCallback, useRef } from "react"
+import { useState, useCallback } from "react"
 import {
   Plus, 
   Search,
-  Download,
   Trash2,
   Loader2,
   Folder,
   Disc,
   HardDrive,
-  Play,
   Upload,
-  Globe
+  AlertCircle
 } from "lucide-react"
+import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { useTemplates, useDeleteTemplate } from "@/lib/hooks/use-templates"
 import { api } from "@/lib/api-client"
-import { cn } from "@/lib/utils"
 import { useConfirm } from "@/components/confirm-provider"
 
 function formatBytes(bytes: number): string {
@@ -31,33 +30,15 @@ function formatBytes(bytes: number): string {
 function UploadDialog({
   open,
   onClose,
-  onUpload,
   onRemoteUpload
 }: {
   open: boolean
   onClose: () => void
-  onUpload: (file: File) => void
   onRemoteUpload: (url: string, filename: string) => void
 }) {
-  const [activeTab, setActiveTab] = useState<"local" | "remote">("local")
-  const [file, setFile] = useState<File | null>(null)
   const [remoteUrl, setRemoteUrl] = useState("")
   const [remoteFilename, setRemoteFilename] = useState("")
-  const fileInputRef = useRef<HTMLInputElement>(null)
   
-  if (!open) return null
-
-  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault()
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      setFile(e.dataTransfer.files[0])
-    }
-  }
-
-  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault()
-  }
-
   const handleRemoteSubmit = () => {
     if (remoteUrl) {
       let finalName = remoteFilename.trim()
@@ -80,87 +61,23 @@ function UploadDialog({
   }
 
   const resetState = () => {
-    setFile(null)
     setRemoteUrl("")
     setRemoteFilename("")
     onClose()
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-label="Upload dialog">
-      <button type="button" className="absolute inset-0 bg-black/50 cursor-default focus:outline-none" onClick={resetState} aria-label="Close dialog" />
-      <div className="relative bg-background border rounded-lg p-6 shadow-lg max-w-md w-full mx-4">
-        <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-          <Upload className="w-6 h-6" />
-          Add ISO Image
-        </h3>
+    <Dialog open={open} onOpenChange={(o) => { if (!o) resetState() }}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Upload className="w-6 h-6" aria-hidden="true" />
+            Add ISO Image
+          </DialogTitle>
+          <DialogDescription className="sr-only">Download an ISO from a remote URL.</DialogDescription>
+        </DialogHeader>
 
-        <div className="flex rounded-md border overflow-hidden mb-6">
-          <button
-            type="button"
-            className={cn(
-              "flex-1 py-2 font-medium text-sm border-r flex items-center justify-center gap-2 transition-colors",
-              activeTab === "local" ? "bg-muted text-foreground" : "bg-background text-muted-foreground hover:bg-muted/50"
-            )}
-            onClick={() => setActiveTab("local")}
-          >
-            <HardDrive className="w-4 h-4" />
-            Local Upload
-          </button>
-          <button
-            type="button"
-            className={cn(
-              "flex-1 py-2 font-medium text-sm flex items-center justify-center gap-2 transition-colors",
-              activeTab === "remote" ? "bg-muted text-foreground" : "bg-background text-muted-foreground hover:bg-muted/50"
-            )}
-            onClick={() => setActiveTab("remote")}
-          >
-            <Globe className="w-4 h-4" />
-            Remote URL
-          </button>
-        </div>
-
-        {activeTab === "local" ? (
-          <div
-            className="rounded-md border-2 border-dashed p-8 text-center mb-6 cursor-pointer hover:bg-muted/50 transition-colors"
-            onDrop={handleDrop}
-            onDragOver={handleDragOver}
-            onClick={() => fileInputRef.current?.click()}
-            role="button"
-            tabIndex={0}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                fileInputRef.current?.click()
-              }
-            }}
-          >
-            <input 
-              type="file" 
-              ref={fileInputRef}
-              className="hidden" 
-              accept=".iso"
-              onChange={(e) => {
-                if (e.target.files && e.target.files.length > 0) {
-                  setFile(e.target.files[0])
-                }
-              }}
-            />
-            {file ? (
-              <div className="flex flex-col items-center gap-2">
-                <Disc className="w-12 h-12 text-foreground" />
-                <p className="font-medium truncate max-w-full">{file.name}</p>
-                <p className="text-sm text-muted-foreground">{formatBytes(file.size)}</p>
-              </div>
-            ) : (
-              <div className="flex flex-col items-center gap-2">
-                <Upload className="w-12 h-12 text-muted-foreground" />
-                <p className="font-medium">Click or drag ISO file</p>
-                <p className="text-sm text-muted-foreground">Only .iso files are supported</p>
-              </div>
-            )}
-          </div>
-        ) : (
-          <div className="space-y-4 mb-6">
+        <div className="space-y-4 mb-6">
             <div>
               <label htmlFor="remote-url" className="block text-sm font-medium mb-1">Direct URL</label>
               <Input
@@ -180,48 +97,23 @@ function UploadDialog({
               />
             </div>
           </div>
-        )}
         
-        <div className="flex gap-3 justify-end">
+        <DialogFooter className="gap-3 sm:gap-0">
           <Button variant="outline" onClick={resetState}>
             Cancel
           </Button>
-          {activeTab === "local" ? (
-            <Button 
-              disabled={!file} 
-              onClick={() => {
-                if (file) {
-                  onUpload(file)
-                  resetState()
-                }
-              }}
-            >
-              Upload
-            </Button>
-          ) : (
-            <Button 
-              disabled={!remoteUrl} 
-              onClick={() => {
-                handleRemoteSubmit()
-                resetState()
-              }}
-            >
-              Download
-            </Button>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function Toast({ message, type }: { message: string, type: "success" | "error", onClose: () => void }) {
-  return (
-    <div className={`fixed bottom-4 right-4 z-50 rounded-md border px-6 py-4 shadow-md ${
-      type === "success" ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900" : "bg-destructive text-destructive-foreground border-destructive"
-    }`}>
-      <p className="text-sm font-medium">{message}</p>
-    </div>
+          <Button
+            disabled={!remoteUrl}
+            onClick={() => {
+              handleRemoteSubmit()
+              resetState()
+            }}
+          >
+            Download
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -231,7 +123,6 @@ export default function ISOListPage() {
   const deleteTemplate = useDeleteTemplate()
   const [searchQuery, setSearchQuery] = useState("")
   const [osFilter, setOsFilter] = useState("")
-  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false)
   
   const osTypes = Array.from(new Set(templates?.map(t => t.name.split('-')[0].charAt(0).toUpperCase() + t.name.split('-')[0].slice(1)) || []))
@@ -260,24 +151,19 @@ export default function ISOListPage() {
       action: () => deleteTemplate.mutateAsync(iso.id),
     })
     if (!ok) return
-    setToast({ message: `ISO "${iso.name}" deleted`, type: "success" })
+    toast.success(`ISO "${iso.name}" deleted`)
     refetch()
   }, [confirm, deleteTemplate, refetch])
-
-  const handleUpload = useCallback(() => {
-    setUploadDialogOpen(false)
-    // Direct file upload isn't supported (the node fetches images by URL).
-    setToast({ message: "Local upload isn't supported — use Remote URL so the node can fetch the ISO.", type: "error" })
-  }, [])
 
   const handleRemoteUpload = useCallback((url: string, filename: string) => {
     setUploadDialogOpen(false)
     api.post('/api/v1/templates/download-url', { url, filename }).then(() => {
-      setToast({ message: `Downloading ${filename} from remote URL...`, type: "success" })
+      toast.success(`Downloading ${filename} from remote URL...`)
+      refetch()
     }).catch((err: any) => {
-      setToast({ message: `Download failed: ${err?.message || 'Unknown error'}`, type: "error" })
+      toast.error(`Download failed: ${err?.message || 'Unknown error'}`)
     })
-  }, [])
+  }, [refetch])
 
   if (isLoading) {
     return (
@@ -300,7 +186,11 @@ export default function ISOListPage() {
     return (
       <div className="max-w-7xl mx-auto">
         <div className="rounded-lg border border-destructive bg-destructive/10 text-destructive p-6">
-          <p className="font-medium">Error loading ISOs: {error.message}</p>
+          <div className="flex items-center gap-3">
+            <AlertCircle className="w-5 h-5" aria-hidden="true" />
+            <p className="font-medium flex-1">Error loading ISOs: {error.message}</p>
+            <Button variant="outline" size="sm" onClick={() => refetch()}>Retry</Button>
+          </div>
         </div>
       </div>
     )
@@ -320,7 +210,7 @@ export default function ISOListPage() {
         </div>
         <Button className="gap-2" onClick={() => setUploadDialogOpen(true)}>
           <Plus className="w-4 h-4" />
-          Upload ISO
+          Add ISO
         </Button>
       </div>
       
@@ -397,34 +287,14 @@ export default function ISOListPage() {
               </div>
 
               <div className="col-span-2">
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-md border bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900">
-                  Available
+                <span className={iso.is_active
+                  ? "inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-md border bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900"
+                  : "inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-md border bg-muted text-muted-foreground"}>
+                  {iso.is_active ? "Active" : "Inactive"}
                 </span>
               </div>
 
               <div className="col-span-2 flex items-center justify-end gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled
-                  className="gap-1"
-                  title="Download"
-                >
-                  <Download className="w-4 h-4" />
-                  <span className="hidden sm:inline">Download</span>
-                </Button>
-
-                <Button
-                  variant="success"
-                  size="sm"
-                  disabled
-                  className="gap-1"
-                  title="Mount to VM"
-                >
-                  <Play className="w-4 h-4" />
-                  <span className="hidden sm:inline">Mount</span>
-                </Button>
-
                 <Button
                   variant="ghost"
                   size="sm"
@@ -444,17 +314,8 @@ export default function ISOListPage() {
       <UploadDialog
         open={uploadDialogOpen}
         onClose={() => setUploadDialogOpen(false)}
-        onUpload={handleUpload}
         onRemoteUpload={handleRemoteUpload}
       />
-      
-      {toast && (
-        <Toast 
-          message={toast.message} 
-          type={toast.type} 
-          onClose={() => setToast(null)} 
-        />
-      )}
     </div>
   )
 }

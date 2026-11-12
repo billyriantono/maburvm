@@ -18,8 +18,24 @@ export function VNCConsole({ vmId, className, onConnect, onDisconnect, onError }
   const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>('connecting');
   const [errorMessage, setErrorMessage] = useState('');
 
+  // The callbacks are read through a ref so that `connect` depends on the VM
+  // alone. Pages pass them as inline arrows, which are new on every render; as
+  // dependencies they made every re-render of the page (a metrics poll, a
+  // status update) tear the session down and open a new one, each needing a
+  // fresh console token until the per-minute token limit refused it.
+  const callbacks = useRef({ onConnect, onDisconnect, onError });
+  callbacks.current = { onConnect, onDisconnect, onError };
+  // Bumped on every connect and on unmount, so a connect that is still waiting
+  // on the network cannot open a session nobody is going to close.
+  const attempt = useRef(0);
+
   const connect = useCallback(async () => {
     if (!containerRef.current) return;
+    const mine = ++attempt.current;
+    if (rfbRef.current) {
+      rfbRef.current.disconnect();
+      rfbRef.current = null;
+    }
 
     setStatus('connecting');
     setErrorMessage('');
@@ -75,6 +91,9 @@ export function VNCConsole({ vmId, className, onConnect, onDisconnect, onError }
       // @ts-expect-error noVNC is served from /public at runtime, outside TS module resolution.
       const { default: RFB } = await import(/* webpackIgnore: true */ '/novnc/core/rfb.js');
 
+      // Superseded or unmounted while waiting: do not open a session.
+      if (mine !== attempt.current || !containerRef.current) return;
+
       // Clear container
       containerRef.current.innerHTML = '';
 
@@ -91,19 +110,23 @@ export function VNCConsole({ vmId, className, onConnect, onDisconnect, onError }
       rfb.clipViewport = true;
 
       rfb.addEventListener('connect', () => {
+        if (mine !== attempt.current) return;
         setStatus('connected');
-        onConnect?.();
+        callbacks.current.onConnect?.();
       });
 
       rfb.addEventListener('disconnect', (e: any) => {
+        // Our own teardown (retry, unmount) is not a dropped session.
+        if (mine !== attempt.current) return;
         setStatus('disconnected');
-        onDisconnect?.(e.detail.clean);
+        callbacks.current.onDisconnect?.(e.detail.clean);
       });
 
       rfb.addEventListener('securityfailure', (e: any) => {
+        if (mine !== attempt.current) return;
         setStatus('error');
         setErrorMessage(e.detail.reason || 'Authentication failed');
-        onError?.(e.detail.reason);
+        callbacks.current.onError?.(e.detail.reason);
       });
 
       // Handle clipboard from remote VM → browser
@@ -117,11 +140,12 @@ export function VNCConsole({ vmId, className, onConnect, onDisconnect, onError }
 
       rfbRef.current = rfb;
     } catch (err: any) {
+      if (mine !== attempt.current) return;
       setStatus('error');
       setErrorMessage(err.message);
-      onError?.(err.message);
+      callbacks.current.onError?.(err.message);
     }
-  }, [vmId, onConnect, onDisconnect, onError]);
+  }, [vmId]);
 
   // Handle paste from browser → remote VM
   useEffect(() => {
@@ -161,6 +185,9 @@ export function VNCConsole({ vmId, className, onConnect, onDisconnect, onError }
     connect();
 
     return () => {
+      // A counter, not a DOM node: reading its latest value here is the point.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      attempt.current++;
       if (rfbRef.current) {
         rfbRef.current.disconnect();
         rfbRef.current = null;

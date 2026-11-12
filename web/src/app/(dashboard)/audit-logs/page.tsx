@@ -1,6 +1,7 @@
 "use client"
 
-import { useState, useEffect, useMemo, useCallback } from "react"
+import { useState, useEffect, useMemo, useCallback, useRef } from "react"
+import { cn } from "@/lib/utils"
 import { 
   Search, 
   Filter, 
@@ -214,14 +215,22 @@ export default function AuditLogsPage() {
   const itemsPerPage = 20
   
   // Data hook
-  const { data: logsData, isLoading, error, refetch } = useAuditLogs({
+  const { data: freshData, isLoading: isInitialQuery, isFetching, error, refetch } = useAuditLogs({
     action: selectedAction || undefined,
     resource_type: selectedResourceType || undefined,
-    start_date: dateFrom || undefined,
-    end_date: dateTo || undefined,
+    // The table shows times in the browser's zone, so a picked day must mean
+    // that zone's day: send its local midnights as instants (end exclusive).
+    start_date: dateFrom ? new Date(`${dateFrom}T00:00:00`).toISOString() : undefined,
+    end_date: dateTo ? new Date(new Date(`${dateTo}T00:00:00`).getTime() + 86_400_000).toISOString() : undefined,
     page: currentPage,
     pageSize: itemsPerPage,
   })
+  // The hook drops its data when the query key changes, so remember the last
+  // page: the skeleton is for the first load only, later fetches dim the table.
+  const lastData = useRef(freshData)
+  if (freshData) lastData.current = freshData
+  const logsData = freshData ?? lastData.current
+  const isLoading = isInitialQuery && !logsData
 
   const logs = useMemo(() => logsData?.data || [], [logsData?.data])
   const totalPages = logsData?.totalPages || 1
@@ -328,7 +337,7 @@ export default function AuditLogsPage() {
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <Input
               type="text"
-              placeholder="Search resource, user..."
+              placeholder="Filter this page..." aria-label="Filter this page"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="pl-10"
@@ -342,13 +351,16 @@ export default function AuditLogsPage() {
             className="h-10 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           >
             <option value="">All Actions</option>
-            <option value="CREATE_VM">Create VM</option>
-            <option value="DELETE_VM">Delete VM</option>
-            <option value="START_VM">Start VM</option>
-            <option value="STOP_VM">Stop VM</option>
-            <option value="LOGIN">Login</option>
-            <option value="LOGOUT">Logout</option>
-            <option value="NETWORK_CHANGE">Network Change</option>
+            <option value="vm.create">Create VM</option>
+            <option value="vm.delete">Delete VM</option>
+            <option value="vm.start">Start VM</option>
+            <option value="vm.stop">Stop VM</option>
+            <option value="vm.force_stop">Force stop VM</option>
+            <option value="vm.restart">Restart VM</option>
+            <option value="vm.suspend">Suspend VM</option>
+            <option value="vm.unsuspend">Unsuspend VM</option>
+            <option value="vm.rebuild">Rebuild VM</option>
+            <option value="vm.resize">Resize VM</option>
           </select>
           
           {/* Resource Type Filter */}
@@ -359,10 +371,15 @@ export default function AuditLogsPage() {
           >
             <option value="">All Resources</option>
             <option value="VM">VM</option>
-            <option value="Network">Network</option>
-            <option value="Session">Session</option>
-            <option value="User">User</option>
-            <option value="Node">Node</option>
+            <option value="USER">User</option>
+            <option value="NODE">Node</option>
+            <option value="NETWORK">Network</option>
+            <option value="FIREWALL_RULE">Firewall rule</option>
+            <option value="SNAPSHOT">Snapshot</option>
+            <option value="BACKUP">Backup</option>
+            <option value="OS_TEMPLATE">OS template</option>
+            <option value="IP_ADDRESS">IP address</option>
+            <option value="SESSION">Session</option>
           </select>
           
           {/* Date From */}
@@ -384,14 +401,16 @@ export default function AuditLogsPage() {
 
         {/* Results count */}
         <div className="mt-4 text-sm font-medium text-muted-foreground">
-          Showing {filteredLogs.length} of {totalLogs} logs
+          {searchTerm
+            ? `Showing ${filteredLogs.length} of ${logs.length} entries on this page (${totalLogs} total)`
+            : `Showing ${logs.length} of ${totalLogs} logs`}
         </div>
       </div>
 
       {/* Table */}
       <div className="rounded-lg border bg-card text-card-foreground shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full">
+          <table className="w-full" aria-busy={isFetching}>
             <thead className="bg-muted/50 border-b">
               <tr>
                 <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground">Timestamp</th>
@@ -402,7 +421,7 @@ export default function AuditLogsPage() {
                 <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground">Actions</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className={cn("transition-opacity", isFetching && "opacity-60")}>
               {filteredLogs.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="px-4 py-12 text-center">
@@ -465,7 +484,7 @@ export default function AuditLogsPage() {
         
         {/* Export Buttons */}
         <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-muted-foreground mr-2">Export:</span>
+          <span className="text-sm font-medium text-muted-foreground mr-2">Export this page:</span>
           <Button
             variant="outline"
             onClick={() => exportToCSV(filteredLogs)}

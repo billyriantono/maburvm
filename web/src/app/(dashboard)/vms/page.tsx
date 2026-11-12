@@ -21,29 +21,12 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
-import { useVMs, useDeleteVM, useVMActions, useVMStatusStream, useVMOperation } from "@/lib/hooks/use-vms"
+import { useVMs, useDeleteVM, useVMActions, useVMStatusStream } from "@/lib/hooks/use-vms"
 import { useNodes } from "@/lib/hooks/use-nodes"
-import type { VM, VMNodeStatus, VMStatus } from "@/types"
+import type { VM, VMNodeStatus } from "@/types"
 import { useConfirm } from "@/components/confirm-provider"
-
-// Status badge component
-function StatusBadge({ status }: { status: VMStatus }) {
-  const colors: Record<string, string> = {
-    running: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900",
-    stopped: "bg-muted text-muted-foreground border",
-    suspended: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900",
-    creating: "bg-sky-50 text-sky-700 border-sky-200 dark:bg-sky-950 dark:text-sky-300 dark:border-sky-900",
-    deleting: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900",
-    error: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-900",
-  }
-
-  return (
-    <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium border capitalize ${colors[status] || "bg-muted text-muted-foreground border"}`}>
-      <span className={`w-1.5 h-1.5 mr-1.5 rounded-full ${status === "running" ? "bg-emerald-500 animate-pulse" : "bg-current"}`} />
-      {status}
-    </span>
-  )
-}
+import { StatusBadge, useVMTransitions } from "@/components/status-badge"
+import { toast } from "sonner"
 
 function NodeBadge({ name, status, fallback }: { name?: string; status?: VMNodeStatus; fallback?: string }) {
   const label = name || fallback || "Unknown"
@@ -179,21 +162,6 @@ function SkeletonRow() {
   )
 }
 
-function Toast({ message, type, onClose }: { message: string, type: "success" | "error", onClose: () => void }) {
-  useEffect(() => {
-    const timer = setTimeout(onClose, 3000)
-    return () => clearTimeout(timer)
-  }, [onClose])
-  
-  return (
-    <div className={`fixed bottom-4 right-4 z-50 px-4 py-3 border rounded-lg shadow-md bg-background ${
-      type === "success" ? "text-emerald-700 dark:text-emerald-300" : "text-destructive"
-    }`}>
-      <p className="font-medium text-sm">{message}</p>
-    </div>
-  )
-}
-
 // Error state component
 function ErrorState({ message, onRetry }: { message: string, onRetry: () => void }) {
   return (
@@ -202,7 +170,7 @@ function ErrorState({ message, onRetry }: { message: string, onRetry: () => void
       <p className="text-foreground font-semibold mb-2">Failed to load VMs</p>
       <p className="text-muted-foreground text-sm mb-4">{message}</p>
       <Button onClick={onRetry} className="gap-2">
-        <RotateCcw className="w-4 h-4" />
+        <RotateCcw className="w-4 h-4" aria-hidden="true" />
         Retry
       </Button>
     </div>
@@ -245,8 +213,8 @@ export default function VMListPage() {
   const [debouncedSearch, setDebouncedSearch] = useState("")
   // VM whose deletion is in progress — drives the step-by-step progress dialog.
   const [deletingVM, setDeletingVM] = useState<{ id: string; hostname: string } | null>(null)
-  const [actionLoading, setActionLoading] = useState<string | null>(null)
-  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
+  // vm id -> the action currently in flight for that VM
+  const [inFlight, setInFlight] = useState<Record<string, string>>({})
   
   const itemsPerPage = 10
 
@@ -292,6 +260,7 @@ export default function VMListPage() {
   // the ten rows this page happens to hold, so a VM on any other page reads as
   // "No VMs found" — beside a total that still says 65.
   const filteredVMs = data?.data ?? []
+  const { transitionOf, begin, cancel } = useVMTransitions(filteredVMs)
   
   // Calculate total pages
   const totalPages = data?.totalPages || 1
@@ -315,18 +284,24 @@ export default function VMListPage() {
       return
     }
     
-    setActionLoading(`${vm.id}-${action}`)
+    setInFlight((p) => ({ ...p, [vm.id]: action }))
     
     try {
       await vmActions.mutateAsync({ vmId: vm.id, action })
-      setToast({ message: `VM ${vm.hostname} ${action} successful`, type: "success" })
+      begin(vm.id, action, vm.status)
+      toast.success(`${action[0].toUpperCase()}${action.slice(1)} requested for ${vm.hostname}`)
       refetch()
     } catch (err) {
-      setToast({ message: `Failed to ${action} VM: ${(err as Error).message}`, type: "error" })
+      cancel(vm.id)
+      toast.error(`Failed to ${action} ${vm.hostname}: ${(err as Error).message}`)
     } finally {
-      setActionLoading(null)
+      setInFlight((p) => {
+        const next = { ...p }
+        delete next[vm.id]
+        return next
+      })
     }
-  }, [vmActions, refetch])
+  }, [vmActions, refetch, begin, cancel])
   
   const handleDelete = useCallback(async (vm: VM) => {
     const ok = await confirm({
@@ -449,6 +424,12 @@ export default function VMListPage() {
           filteredVMs.map((vm) => {
             const effectiveNodeStatus = vm.node_status || nodeStatusByID.get(vm.node_id) || ""
             const nodeUnavailable = Boolean(effectiveNodeStatus && effectiveNodeStatus !== "active")
+            const transition = transitionOf(vm.id)
+            const rowBusy = !!inFlight[vm.id] || !!transition
+            // Start: stopped/error only (a paused domain needs resume, not start).
+            // Stop: running/error only. creating/deleting/suspended offer neither.
+            const canStart = vm.status === "stopped" || vm.status === "error"
+            const canStop = vm.status === "running" || vm.status === "error"
 
             return (
             <div 
@@ -467,7 +448,7 @@ export default function VMListPage() {
                 <NodeBadge name={vm.node_name} status={effectiveNodeStatus} fallback={vm.node_id?.slice(0, 8)} />
               </div>
               <div className="col-span-2">
-                <StatusBadge status={vm.status} />
+                <StatusBadge status={vm.status} transition={transition} />
               </div>
               <div className="col-span-2">
                 <div className="flex items-center gap-3">
@@ -491,14 +472,15 @@ export default function VMListPage() {
                   variant="success"
                   size="sm"
                   onClick={() => handleAction(vm, "start")}
-                  disabled={nodeUnavailable || vm.status === "running" || !!actionLoading}
+                  disabled={nodeUnavailable || !canStart || rowBusy}
                   className="h-8 w-8 p-0"
                   title={nodeUnavailable ? "Node is not active" : "Start"}
+                  aria-label={`Start ${vm.hostname}`}
                 >
-                  {actionLoading === `${vm.id}-start` ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
+                  {inFlight[vm.id] === "start" ? (
+                    <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
                   ) : (
-                    <Play className="w-4 h-4" />
+                    <Play className="w-4 h-4" aria-hidden="true" />
                   )}
                 </Button>
                 
@@ -507,14 +489,15 @@ export default function VMListPage() {
                   variant="destructive"
                   size="sm"
                   onClick={() => handleAction(vm, "stop")}
-                  disabled={nodeUnavailable || vm.status === "stopped" || !!actionLoading}
+                  disabled={nodeUnavailable || !canStop || rowBusy}
                   className="h-8 w-8 p-0"
                   title={nodeUnavailable ? "Node is not active" : "Stop"}
+                  aria-label={`Stop ${vm.hostname}`}
                 >
-                  {actionLoading === `${vm.id}-stop` ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
+                  {inFlight[vm.id] === "stop" ? (
+                    <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
                   ) : (
-                    <Square className="w-4 h-4" />
+                    <Square className="w-4 h-4" aria-hidden="true" />
                   )}
                 </Button>
                 
@@ -523,14 +506,15 @@ export default function VMListPage() {
                   variant="warning"
                   size="sm"
                   onClick={() => handleAction(vm, "restart")}
-                  disabled={nodeUnavailable || vm.status !== "running" || !!actionLoading}
+                  disabled={nodeUnavailable || vm.status !== "running" || rowBusy}
                   className="h-8 w-8 p-0"
                   title={nodeUnavailable ? "Node is not active" : "Restart"}
+                  aria-label={`Restart ${vm.hostname}`}
                 >
-                  {actionLoading === `${vm.id}-restart` ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
+                  {inFlight[vm.id] === "restart" ? (
+                    <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
                   ) : (
-                    <RotateCcw className="w-4 h-4" />
+                    <RotateCcw className="w-4 h-4" aria-hidden="true" />
                   )}
                 </Button>
                 
@@ -539,11 +523,12 @@ export default function VMListPage() {
                   variant="secondary"
                   size="sm"
                   onClick={() => handleAction(vm, "console")}
-                  disabled={nodeUnavailable || vm.status !== "running" || !!actionLoading}
+                  disabled={nodeUnavailable || vm.status !== "running" || rowBusy}
                   className="h-8 w-8 p-0"
                   title={nodeUnavailable ? "Node is not active" : "Console"}
+                  aria-label={`Console ${vm.hostname}`}
                 >
-                  <Terminal className="w-4 h-4" />
+                  <Terminal className="w-4 h-4" aria-hidden="true" />
                 </Button>
                 
                 {/* Delete */}
@@ -551,11 +536,12 @@ export default function VMListPage() {
                   variant="ghost"
                   size="sm"
                   onClick={() => handleDelete(vm)}
-                  disabled={!!actionLoading}
+                  disabled={rowBusy}
                   className="h-8 w-8 p-0 border hover:bg-destructive hover:text-destructive-foreground"
                   title="Delete"
+                  aria-label={`Delete ${vm.hostname}`}
                 >
-                  <Trash2 className="w-4 h-4" />
+                  <Trash2 className="w-4 h-4" aria-hidden="true" />
                 </Button>
               </div>
             </div>
@@ -585,15 +571,6 @@ export default function VMListPage() {
         vm={deletingVM}
         onClose={() => { setDeletingVM(null); refetch() }}
       />
-
-      {/* Toast */}
-      {toast && (
-        <Toast 
-          message={toast.message} 
-          type={toast.type} 
-          onClose={() => setToast(null)} 
-        />
-      )}
     </div>
   )
 }

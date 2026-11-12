@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo, useEffect, useCallback } from "react"
+import { useState, useMemo, useCallback } from "react"
 import Link from "next/link"
 import {
   Server,
@@ -16,43 +16,9 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useNodes, useDeleteNode } from "@/lib/hooks/use-nodes"
-import type { NodeStatus } from "@/types"
+import { toast } from "sonner"
+import { StatusBadge } from "@/components/status-badge"
 import { useConfirm } from "@/components/confirm-provider"
-
-// Status indicator component
-function StatusIndicator({ status }: { status: NodeStatus }) {
-  const config: Record<string, { bg: string; text: string; label: string }> = {
-    active: { bg: "bg-emerald-500", text: "text-emerald-600", label: "Active" },
-    offline: { bg: "bg-red-500", text: "text-red-600", label: "Offline" },
-    maintenance: { bg: "bg-amber-500", text: "text-amber-600", label: "Maintenance" },
-  }
-
-  const { bg, text, label } = config[status] || config.offline
-
-  return (
-    <div className="flex items-center gap-2">
-      <span className={`w-2.5 h-2.5 rounded-full ${bg} ${status === "active" ? "animate-pulse" : ""}`} />
-      <span className={`text-xs font-medium ${text}`}>{label}</span>
-    </div>
-  )
-}
-
-function Toast({ message, type, onClose }: { message: string, type: "success" | "error", onClose: () => void }) {
-  useEffect(() => {
-    const timer = setTimeout(onClose, 3000)
-    return () => clearTimeout(timer)
-  }, [onClose])
-
-  return (
-    <div className={`fixed bottom-4 right-4 z-50 px-4 py-3 rounded-lg border shadow-md ${
-      type === "success"
-        ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900"
-        : "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-900"
-    }`}>
-      <p className="font-medium text-sm">{message}</p>
-    </div>
-  )
-}
 
 function formatDate(dateString: string) {
   return new Date(dateString).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
@@ -63,7 +29,6 @@ export default function NodesListPage() {
   // State
   const [searchQuery, setSearchQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState<string>("")
-  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
 
   // Data hooks
   const { data: nodes, isLoading, error, refetch } = useNodes()
@@ -100,7 +65,7 @@ export default function NodesListPage() {
       action: () => deleteNode.mutateAsync(node.id),
     })
     if (!ok) return
-    setToast({ message: `Node ${node.name} deleted`, type: "success" })
+    toast.success(`Node ${node.name} deleted`)
     refetch()
   }, [confirm, deleteNode, refetch])
 
@@ -189,7 +154,7 @@ export default function NodesListPage() {
         <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-medium text-muted-foreground">Active</span>
-            <span className="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-pulse" />
+            <span className="w-2.5 h-2.5 bg-emerald-500 rounded-full" aria-hidden="true" />
           </div>
           <p className="text-2xl font-semibold text-emerald-600">{stats.active}</p>
         </div>
@@ -197,7 +162,7 @@ export default function NodesListPage() {
         <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-medium text-muted-foreground">Offline</span>
-            <span className="w-2.5 h-2.5 bg-red-500 rounded-full" />
+            <span className="w-2.5 h-2.5 bg-red-500 rounded-full" aria-hidden="true" />
           </div>
           <p className="text-2xl font-semibold text-red-600">{stats.offline}</p>
         </div>
@@ -272,7 +237,7 @@ export default function NodesListPage() {
                     </Link>
                     <p className="text-sm font-mono text-muted-foreground">{node.ip_address}</p>
                   </div>
-                  <StatusIndicator status={node.status} />
+                  <StatusBadge status={node.status} />
                 </div>
               </div>
 
@@ -310,7 +275,7 @@ export default function NodesListPage() {
 
                 {node.status === "active" && (
                   <div className="bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md p-3 mb-4 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900">
-                    <p className="text-xs font-medium">Node is active — view details for metrics</p>
+                    <p className="text-xs font-medium">Node is active: view details for metrics</p>
                   </div>
                 )}
 
@@ -339,17 +304,6 @@ export default function NodesListPage() {
           ))
         )}
       </div>
-
-      {/* Delete Confirmation Dialog */}
-
-      {/* Toast */}
-      {toast && (
-        <Toast
-          message={toast.message}
-          type={toast.type}
-          onClose={() => setToast(null)}
-        />
-      )}
     </div>
   )
 }

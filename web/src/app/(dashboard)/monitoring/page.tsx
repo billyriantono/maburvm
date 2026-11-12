@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo } from "react"
+import { useState, useMemo, useEffect, useCallback } from "react"
 import {
   Activity,
   AlertTriangle,
@@ -12,6 +12,7 @@ import {
   Zap,
   AlertCircle
 } from "lucide-react"
+import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { cn } from "@/lib/utils"
@@ -28,8 +29,6 @@ interface DerivedAlert {
   severity: AlertSeverity
   message: string
   node: string
-  timestamp: string
-  acknowledged: boolean
 }
 
 // Helper functions
@@ -88,11 +87,15 @@ function ResourceBar({ value, label }: { value: number; label: string }) {
 }
 
 // Node metrics card — fetches its own metrics
-function NodeMetricsCard({ node }: { node: Node }) {
+function NodeMetricsCard({ node, onMetrics }: { node: Node; onMetrics: (id: string, m: NodeMetricsType | undefined) => void }) {
   const displayStatus = getNodeDisplayStatus(node)
   const isOnline = displayStatus !== "offline"
   const { data: metrics } = useNodeMetrics(isOnline ? node.id : "")
   const { data: history } = useNodeMetricsHistory(isOnline ? node.id : "", 60)
+
+  useEffect(() => {
+    onMetrics(node.id, metrics)
+  }, [node.id, metrics, onMetrics])
 
   const cpuUsage = metrics?.cpu_percent ?? 0
   const memUsage = metrics?.memory_used_percent ?? 0
@@ -195,8 +198,6 @@ function deriveAlerts(nodes: Node[], metricsMap: Map<string, NodeMetricsType>): 
         severity: "critical",
         message: `${node.name} is offline`,
         node: node.name,
-        timestamp: "now",
-        acknowledged: false,
       })
     }
     
@@ -206,12 +207,10 @@ function deriveAlerts(nodes: Node[], metricsMap: Map<string, NodeMetricsType>): 
         severity: "info",
         message: `${node.name} is in maintenance mode`,
         node: node.name,
-        timestamp: "now",
-        acknowledged: false,
       })
     }
     
-    const metrics = metricsMap.get(node.id)
+    const metrics = node.status === "offline" ? undefined : metricsMap.get(node.id)
     if (metrics) {
       if (metrics.cpu_percent >= 90) {
         alerts.push({
@@ -219,18 +218,14 @@ function deriveAlerts(nodes: Node[], metricsMap: Map<string, NodeMetricsType>): 
           severity: "critical",
           message: `High CPU usage on ${node.name} (${Math.round(metrics.cpu_percent)}%)`,
           node: node.name,
-          timestamp: "now",
-          acknowledged: false,
-        })
+            })
       } else if (metrics.cpu_percent >= 80) {
         alerts.push({
           id: `cpu-warn-${node.id}`,
           severity: "warning",
           message: `CPU usage above 80% on ${node.name} (${Math.round(metrics.cpu_percent)}%)`,
           node: node.name,
-          timestamp: "now",
-          acknowledged: false,
-        })
+            })
       }
       
       if (metrics.memory_used_percent >= 90) {
@@ -239,18 +234,14 @@ function deriveAlerts(nodes: Node[], metricsMap: Map<string, NodeMetricsType>): 
           severity: "critical",
           message: `High memory usage on ${node.name} (${Math.round(metrics.memory_used_percent)}%)`,
           node: node.name,
-          timestamp: "now",
-          acknowledged: false,
-        })
+            })
       } else if (metrics.memory_used_percent >= 80) {
         alerts.push({
           id: `mem-warn-${node.id}`,
           severity: "warning",
           message: `Memory usage above 80% on ${node.name} (${Math.round(metrics.memory_used_percent)}%)`,
           node: node.name,
-          timestamp: "now",
-          acknowledged: false,
-        })
+            })
       }
       
       if (metrics.disk_used_percent >= 90) {
@@ -259,18 +250,14 @@ function deriveAlerts(nodes: Node[], metricsMap: Map<string, NodeMetricsType>): 
           severity: "critical",
           message: `Disk usage critical on ${node.name} (${Math.round(metrics.disk_used_percent)}%)`,
           node: node.name,
-          timestamp: "now",
-          acknowledged: false,
-        })
+            })
       } else if (metrics.disk_used_percent >= 70) {
         alerts.push({
           id: `disk-warn-${node.id}`,
           severity: "warning",
           message: `Disk usage approaching threshold on ${node.name} (${Math.round(metrics.disk_used_percent)}%)`,
           node: node.name,
-          timestamp: "now",
-          acknowledged: false,
-        })
+            })
       }
     }
   }
@@ -282,63 +269,51 @@ function deriveAlerts(nodes: Node[], metricsMap: Map<string, NodeMetricsType>): 
   return alerts
 }
 
-// Toast component
-function Toast({ message, type, onClose }: { message: string; type: "success" | "error" | "info"; onClose: () => void }) {
-  useEffect(() => {
-    const timer = setTimeout(onClose, 3000)
-    return () => clearTimeout(timer)
-  }, [onClose])
-  
-  return (
-    <div className={cn(
-      "fixed bottom-4 right-4 z-50 px-6 py-4 rounded-lg border bg-card text-card-foreground shadow-md",
-      type === "success" && "border-emerald-200 dark:border-emerald-900",
-      type === "error" && "border-red-200 dark:border-red-900",
-      type === "info" && "border-border"
-    )}>
-      <p className="font-medium text-sm">{message}</p>
-    </div>
-  )
-}
-
 export default function MonitoringPage() {
   const { data: nodes, isLoading, error, refetch } = useNodes()
   const { data: vmsData } = useVMs({ pageSize: 1 }) // Just to get total count
   const [severityFilter, setSeverityFilter] = useState<string>("all")
-  const [acknowledgedIds, setAcknowledgedIds] = useState<Set<string>>(new Set())
-  const [toast, setToast] = useState<{ message: string; type: "success" | "error" | "info" } | null>(null)
+  const [hiddenIds, setHiddenIds] = useState<Set<string>>(new Set())
   
-  // Build alerts from node statuses (metrics-based alerts are generated per-node inside cards)
+  // Metrics are reported up by the node cards (same query cache as their own hook)
+  const [metricsMap, setMetricsMap] = useState<Map<string, NodeMetricsType>>(new Map())
+  const handleMetrics = useCallback((id: string, m: NodeMetricsType | undefined) => {
+    setMetricsMap(prev => {
+      if (prev.get(id) === m) return prev
+      const next = new Map(prev)
+      if (m) next.set(id, m)
+      else next.delete(id)
+      return next
+    })
+  }, [])
+
   const alerts = useMemo(() => {
     if (!nodes) return []
-    return deriveAlerts(nodes, new Map())
-  }, [nodes])
+    return deriveAlerts(nodes, metricsMap)
+  }, [nodes, metricsMap])
   
   // Filter alerts
   const filteredAlerts = useMemo(() => {
-    let result = alerts.map(a => ({
-      ...a,
-      acknowledged: acknowledgedIds.has(a.id) || a.acknowledged,
-    }))
+    let result = alerts.filter(a => !hiddenIds.has(a.id))
     if (severityFilter !== "all") {
       result = result.filter(a => a.severity === severityFilter)
     }
     return result
-  }, [alerts, severityFilter, acknowledgedIds])
+  }, [alerts, severityFilter, hiddenIds])
   
   // Calculate stats from nodes
   const onlineNodes = nodes?.filter(n => n.status !== "offline") || []
   const totalNodes = nodes?.length ?? 0
   const totalVMs = vmsData?.total ?? 0
   
-  // Handle acknowledge
-  const handleAcknowledge = (alertId: string) => {
-    setAcknowledgedIds(prev => {
+  // Hide an alert for this session only
+  const handleHide = (alertId: string) => {
+    setHiddenIds(prev => {
       const next = new Set(prev)
       next.add(alertId)
       return next
     })
-    setToast({ message: "Alert acknowledged", type: "success" })
+    toast.success("Alert hidden for this session")
   }
   
   // Get severity icon and color
@@ -439,7 +414,7 @@ export default function MonitoringPage() {
             <span className="text-xs font-medium text-muted-foreground">Active Alerts</span>
             <Zap className="w-4 h-4 text-amber-500" />
           </div>
-          <p className="text-3xl font-bold text-amber-600">{alerts.filter(a => !acknowledgedIds.has(a.id)).length}</p>
+          <p className="text-3xl font-bold text-amber-600">{alerts.filter(a => !hiddenIds.has(a.id)).length}</p>
         </div>
       </div>
       
@@ -447,7 +422,7 @@ export default function MonitoringPage() {
       {nodes && nodes.length > 0 ? (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
           {nodes.map((node) => (
-            <NodeMetricsCard key={node.id} node={node} />
+            <NodeMetricsCard key={node.id} node={node} onMetrics={handleMetrics} />
           ))}
         </div>
       ) : (
@@ -463,7 +438,7 @@ export default function MonitoringPage() {
         <div className="border-b bg-muted/50 font-semibold p-4 flex items-center justify-between rounded-t-lg">
           <div className="flex items-center gap-2">
             <Zap className="w-5 h-5" />
-            Alerts ({alerts.length})
+            Alerts ({alerts.filter(a => !hiddenIds.has(a.id)).length})
           </div>
 
           {/* Filter Buttons */}
@@ -503,8 +478,7 @@ export default function MonitoringPage() {
                 <div
                   key={alert.id}
                   className={cn(
-                    "p-4 flex items-center gap-4",
-                    alert.acknowledged && "opacity-50"
+                    "p-4 flex items-center gap-4"
                   )}
                 >
                   {/* Severity Icon */}
@@ -518,39 +492,27 @@ export default function MonitoringPage() {
                       <span className={cn("text-[10px] font-medium capitalize rounded-full px-2 py-0.5 border", config.bg, config.text, config.border)}>
                         {alert.severity}
                       </span>
-                      <span className="text-xs font-medium text-muted-foreground">{alert.timestamp}</span>
                     </div>
                     <p className="font-medium truncate">{alert.message}</p>
                     <p className="text-xs font-medium text-muted-foreground">Node: {alert.node}</p>
                   </div>
 
-                  {/* Acknowledge Button */}
-                  {!alert.acknowledged && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleAcknowledge(alert.id)}
-                      className="gap-1 shrink-0"
-                    >
-                      <CheckCircle className="w-3 h-3" />
-                      ACK
-                    </Button>
-                  )}
+                  {/* Hide (local to this session) */}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleHide(alert.id)}
+                    className="gap-1 shrink-0"
+                  >
+                    <CheckCircle className="w-3 h-3" aria-hidden="true" />
+                    Hide
+                  </Button>
                 </div>
               )
             })
           )}
         </div>
       </div>
-      
-      {/* Toast */}
-      {toast && (
-        <Toast 
-          message={toast.message} 
-          type={toast.type} 
-          onClose={() => setToast(null)} 
-        />
-      )}
     </div>
   )
 }

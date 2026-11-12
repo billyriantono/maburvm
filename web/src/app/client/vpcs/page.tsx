@@ -121,10 +121,15 @@ export default function ClientVPCsPage() {
                   size="sm"
                   className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
                   title="Delete (only when no VMs are in it)"
-                  disabled={deleteVPC.isPending}
+                  aria-label={`Delete ${vpc.name}`}
+                  disabled={deleteVPC.isPending && deleteVPC.variables === vpc.id}
                   onClick={() => handleDelete(vpc)}
                 >
-                  <Trash2 className="w-4 h-4" />
+                  {deleteVPC.isPending && deleteVPC.variables === vpc.id ? (
+                    <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <Trash2 className="w-4 h-4" aria-hidden="true" />
+                  )}
                 </Button>
               </div>
             </div>

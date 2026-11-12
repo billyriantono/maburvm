@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import Link from "next/link"
 import {
   ArrowLeft,
@@ -13,27 +13,11 @@ import {
   Terminal,
   AlertTriangle
 } from "lucide-react"
+import { toast } from "sonner"
+import { useCopy } from "@/lib/use-feedback"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useCreateNode } from "@/lib/hooks/use-nodes"
-
-// Toast notification
-function Toast({ message, type, onClose }: { message: string, type: "success" | "error", onClose: () => void }) {
-  useEffect(() => {
-    const timer = setTimeout(onClose, 3000)
-    return () => clearTimeout(timer)
-  }, [onClose])
-
-  return (
-    <div className={`fixed bottom-4 right-4 z-50 px-4 py-3 rounded-lg border shadow-md ${
-      type === "success"
-        ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900"
-        : "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-900"
-    }`}>
-      <p className="font-medium text-sm">{message}</p>
-    </div>
-  )
-}
 
 
 
@@ -46,8 +30,7 @@ export default function AddNodePage() {
   const [token, setToken] = useState("")
   const [loading, setLoading] = useState(false)
   const [errors, setErrors] = useState<{ name?: string; ip?: string }>({})
-  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null)
-  const [copied, setCopied] = useState(false)
+  const { copy, copied } = useCopy()
   const [showToken, setShowToken] = useState(false)
 
   // Validate form
@@ -90,21 +73,13 @@ export default function AddNodePage() {
         setShowToken(true)
       }
 
-      setToast({ message: `Node ${name} created`, type: "success" })
+      toast.success(`Node ${name} created`)
     } catch (error: any) {
       const message = error?.response?.data?.message || error?.message || "Failed to create node"
-      setToast({ message, type: "error" })
+      toast.error(message)
     } finally {
       setLoading(false)
     }
-  }
-
-  // Copy token to clipboard
-  const copyToken = () => {
-    navigator.clipboard.writeText(token)
-    setCopied(true)
-    setToast({ message: "Token copied to clipboard", type: "success" })
-    setTimeout(() => setCopied(false), 2000)
   }
 
   return (
@@ -211,9 +186,9 @@ export default function AddNodePage() {
           </div>
 
           <div className="flex items-center gap-3 mt-4">
-            <Button type="button" variant="outline" onClick={copyToken} className="gap-2">
-              {copied ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
-              {copied ? "Copied!" : "Copy"}
+            <Button type="button" variant="outline" onClick={() => copy(token, "token")} className="gap-2">
+              {copied("token") ? <Check className="w-4 h-4 text-emerald-600" aria-hidden="true" /> : <Copy className="w-4 h-4" aria-hidden="true" />}
+              {copied("token") ? "Copied" : "Copy"}
             </Button>
           </div>
 
@@ -283,14 +258,6 @@ export default function AddNodePage() {
         </div>
       </form>
 
-      {/* Toast */}
-      {toast && (
-        <Toast
-          message={toast.message}
-          type={toast.type}
-          onClose={() => setToast(null)}
-        />
-      )}
     </div>
   )
 }

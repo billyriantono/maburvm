@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { AlertTriangle, Loader2, ShieldAlert, ShieldCheck } from "lucide-react"
+import { AlertCircle, AlertTriangle, Loader2, ShieldAlert, ShieldCheck } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -32,7 +32,7 @@ function guestLabel(g: GuestConnection): string {
 
 export default function AbusePage() {
   const [showAll, setShowAll] = useState(false)
-  const { data, isLoading } = useAbuseGuests(showAll)
+  const { data, isLoading, error, refetch } = useAbuseGuests(showAll)
   const setQuarantine = useSetQuarantine()
 
   // One dialog for both directions. Cutting a guest off and putting it back are
@@ -90,6 +90,13 @@ export default function AbusePage() {
       {isLoading ? (
         <div className="flex items-center justify-center py-20">
           <Loader2 className="w-8 h-8 animate-spin" />
+        </div>
+      ) : error ? (
+        <div className="rounded-lg border bg-card p-12 text-center">
+          <AlertCircle className="w-16 h-16 text-destructive mx-auto mb-4" aria-hidden="true" />
+          <h2 className="text-xl font-semibold mb-2">Failed to load abuse data</h2>
+          <p className="text-muted-foreground mb-6">{(error as Error).message}</p>
+          <Button onClick={() => refetch()}>Retry</Button>
         </div>
       ) : !guests.length ? (
         <div className="rounded-lg border bg-card p-12 text-center">
