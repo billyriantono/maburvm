@@ -26,6 +26,7 @@ func TestVMDTOsExposeModelFields(t *testing.T) {
 	detailOnly := map[string]bool{
 		"console_enabled": true,
 		"rescue_mode":     true,
+		"attached_iso":    true,
 	}
 
 	modelKeys := jsonFieldNames(models.VM{})

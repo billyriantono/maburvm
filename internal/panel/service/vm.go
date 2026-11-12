@@ -1113,6 +1113,18 @@ func (s *VMService) GetVMOwner(ctx context.Context, vmID string) (string, error)
 	return vm.UserID, nil
 }
 
+// GetVMStatus returns a VM's stored status.
+func (s *VMService) GetVMStatus(ctx context.Context, vmID string) (models.VMStatus, error) {
+	vm, err := s.vmRepo.GetByID(ctx, vmID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", ErrVMNotFound
+		}
+		return "", fmt.Errorf("failed to get VM: %w", err)
+	}
+	return vm.Status, nil
+}
+
 func (s *VMService) GetVM(ctx context.Context, vmID string, includeAgentStatus bool) (*GetVMResponse, error) {
 	vm, err := s.vmRepo.GetByIDWithRelations(ctx, vmID)
 	if err != nil {

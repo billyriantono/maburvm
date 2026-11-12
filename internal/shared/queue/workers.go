@@ -753,6 +753,32 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 		newStatus = models.VMStatusRunning
 	}
 
+	// Record what the agent just confirmed about the VM's ISO drive, so the
+	// panel can say whether there is anything to unmount. Written here, after
+	// the command succeeded, rather than when the job was queued: a failed
+	// detach must not make the panel claim the drive is empty.
+	if opDB != nil {
+		var iso *string
+		switch job.Args.Operation {
+		case VMOpAttachISO:
+			var p struct {
+				ImagePath string `json:"image_path"`
+			}
+			_ = json.Unmarshal(job.Args.Params, &p)
+			iso = &p.ImagePath
+		case VMOpDetachISO, VMOpCreate:
+			empty := ""
+			iso = &empty
+		}
+		if iso != nil {
+			// Table() rather than Model(): the field is read-only on the model
+			// (see models.VM.AttachedISO), so a model update would skip it.
+			if err := opDB.WithContext(ctx).Table("vms").Where("id = ?", vm.ID).Update("attached_iso", *iso).Error; err != nil {
+				w.logger.ErrorContext(ctx, "failed to record attached ISO", "error", err, "vm_id", vm.ID)
+			}
+		}
+	}
+
 	if newStatus != "" {
 		if err := vmRepo.UpdateStatus(ctx, vm.ID, newStatus); err != nil {
 			w.logger.ErrorContext(ctx, "failed to update VM status",

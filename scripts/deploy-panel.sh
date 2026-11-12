@@ -26,6 +26,10 @@ for d in cmd internal api integrations web/src; do
   rsync -az --delete "$d/" "$HOST:$DEST/$d/"
 done
 rsync -az go.mod go.sum Dockerfile.panel "$HOST:$DEST/"
+# The web build also reads these from web/, outside web/src. Left unsynced, a
+# Tailwind or dependency change builds against the host's stale copy.
+rsync -az web/package.json web/package-lock.json web/tailwind.config.ts \
+  web/next.config.js web/postcss.config.js web/postcss.config.mjs web/tsconfig.json "$HOST:$DEST/web/"
 
 ssh "$HOST" "cd $DEST && export GIT_COMMIT='$GIT_COMMIT' APP_VERSION='$APP_VERSION' BUILD_TIME='$BUILD_TIME' \
   && docker compose -f docker-compose.production.yml --env-file .env.production build $SERVICES \

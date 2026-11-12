@@ -139,7 +139,7 @@ func (h *SnapshotHandler) CreateSnapshot(c echo.Context) error {
 			Status:    string(resp.Snapshot.Status),
 			DiskPath:  resp.Snapshot.DiskPath,
 			JobID:     resp.JobID,
-			CreatedAt: resp.Snapshot.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			CreatedAt: resp.Snapshot.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		},
 	})
 }
@@ -236,8 +236,8 @@ func (h *SnapshotHandler) ListSnapshots(c echo.Context) error {
 			Name:      snapshot.Name,
 			Status:    string(snapshot.Status),
 			DiskPath:  snapshot.DiskPath,
-			CreatedAt: snapshot.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			UpdatedAt: snapshot.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			CreatedAt: snapshot.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			UpdatedAt: snapshot.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		}
 	}
 
@@ -315,8 +315,8 @@ func (h *SnapshotHandler) GetSnapshot(c echo.Context) error {
 			Name:      snapshot.Name,
 			Status:    string(snapshot.Status),
 			DiskPath:  snapshot.DiskPath,
-			CreatedAt: snapshot.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			UpdatedAt: snapshot.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			CreatedAt: snapshot.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			UpdatedAt: snapshot.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		},
 	})
 }

@@ -144,7 +144,7 @@ func (h *ImportHandler) ImportVirtualizor(c echo.Context) error {
 			SkippedCount: result.SkippedCount,
 			ErrorCount:   result.ErrorCount,
 			Results:      result.Results,
-			CompletedAt:  result.CompletedAt.Format("2006-01-02T15:04:05Z"),
+			CompletedAt:  result.CompletedAt.UTC().Format("2006-01-02T15:04:05Z"),
 			DurationMs:   result.DurationMs,
 		},
 	})

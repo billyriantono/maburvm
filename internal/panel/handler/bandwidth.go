@@ -79,7 +79,7 @@ func (h *BandwidthHandler) GetVMBandwidth(c echo.Context) error {
 	}
 
 	if usage.BlockedAt != nil {
-		t := usage.BlockedAt.Format("2006-01-02T15:04:05Z")
+		t := usage.BlockedAt.UTC().Format("2006-01-02T15:04:05Z")
 		resp.BlockedAt = &t
 	}
 
@@ -126,7 +126,7 @@ func (h *BandwidthHandler) GetVMBandwidthHistory(c echo.Context) error {
 			Exceeded:     usage.Exceeded,
 		}
 		if usage.BlockedAt != nil {
-			t := usage.BlockedAt.Format("2006-01-02T15:04:05Z")
+			t := usage.BlockedAt.UTC().Format("2006-01-02T15:04:05Z")
 			item.BlockedAt = &t
 		}
 		resp = append(resp, item)

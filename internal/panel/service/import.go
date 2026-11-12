@@ -903,6 +903,86 @@ func (s *ImportService) createAuthContext(ctx context.Context, token string) con
 	return metadata.NewOutgoingContext(ctx, md)
 }
 
+// isoFromScan returns the ISO in a scanned VM's CD drive, or "" when there is
+// none. The cloud-init seed is a CD image too, but it is the panel's own
+// plumbing, not something anyone mounted.
+func isoFromScan(vm *pb.ScannedVM) string {
+	for _, d := range vm.Disks {
+		if d.Device != "cdrom" || d.SourceFile == "" || strings.HasSuffix(d.SourceFile, "-seed.iso") {
+			continue
+		}
+		return d.SourceFile
+	}
+	return ""
+}
+
+// recordAttachedISO stores what the node reports is in a VM's CD drive. The
+// node is the authority: the stored value otherwise only changes when an
+// attach or detach job succeeds, so it starts unknown for every VM that
+// predates the tracking and drifts if a drive is changed outside the panel.
+func (s *ImportService) recordAttachedISO(ctx context.Context, vm *models.VM, scanned *pb.ScannedVM) {
+	iso := isoFromScan(scanned)
+	if vm.AttachedISO != nil && *vm.AttachedISO == iso {
+		return
+	}
+	// Table(), not Model(): the field is read-only on the model.
+	if err := s.db.WithContext(ctx).Table("vms").Where("id = ?", vm.ID).Update("attached_iso", iso).Error; err != nil {
+		s.logger.Warn("could not record attached ISO", "vm_id", vm.ID, "error", err)
+	}
+}
+
+// BackfillAttachedISO asks each node that still has VMs with an unknown CD
+// drive what is really in them. It changes nothing else about those VMs, and
+// does nothing once every VM is known, so it is safe to run on every start.
+func (s *ImportService) BackfillAttachedISO(ctx context.Context) {
+	var nodeIDs []string
+	if err := s.db.WithContext(ctx).Table("vms").
+		Where("attached_iso IS NULL AND deleted_at IS NULL").
+		Distinct().Pluck("node_id", &nodeIDs).Error; err != nil || len(nodeIDs) == 0 {
+		return
+	}
+	for _, nodeID := range nodeIDs {
+		nodeCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		n, err := s.syncAttachedISO(nodeCtx, nodeID)
+		cancel()
+		if err != nil {
+			// The VMs stay unknown, which the UI treats as "may have an ISO".
+			s.logger.Warn("attached ISO backfill: node scan failed", "node_id", nodeID, "error", err)
+			continue
+		}
+		s.logger.Info("attached ISO backfill: node scanned", "node_id", nodeID, "vms_recorded", n)
+	}
+}
+
+// syncAttachedISO scans one node and records only the CD drive state.
+func (s *ImportService) syncAttachedISO(ctx context.Context, nodeID string) (int, error) {
+	node, err := s.nodeRepo.GetByID(ctx, nodeID)
+	if err != nil {
+		return 0, err
+	}
+	client, err := s.getAgentClient(ctx, node.ID, node.IPAddress)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := client.ScanVMs(s.createAuthContext(ctx, node.Token), &pb.ScanVMsRequest{})
+	if err != nil {
+		return 0, err
+	}
+	if !resp.Success {
+		return 0, fmt.Errorf("agent scan failed")
+	}
+	recorded := 0
+	for _, scanned := range resp.Vms {
+		vm, err := s.vmRepo.GetByID(ctx, scanned.Uuid)
+		if err != nil || vm.NodeID != nodeID {
+			continue
+		}
+		s.recordAttachedISO(ctx, vm, scanned)
+		recorded++
+	}
+	return recorded, nil
+}
+
 // SyncNodeVMs syncs VM info (hostname + IP) from agent for all VMs on a node
 // This updates existing VMs that were imported before guest-agent enrichment was added
 func (s *ImportService) SyncNodeVMs(ctx context.Context, nodeID string) ([]SyncResult, error) {
@@ -954,6 +1034,8 @@ func (s *ImportService) SyncNodeVMs(ctx context.Context, nodeID string) ([]SyncR
 			results = append(results, result)
 			continue
 		}
+
+		s.recordAttachedISO(ctx, existingVM, scannedVM)
 
 		updated := false
 

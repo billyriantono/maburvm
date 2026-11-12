@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/maburvm/panel/internal/shared/models"
@@ -46,6 +48,16 @@ type ReputationService struct {
 	resolver   *net.Resolver
 	httpClient *http.Client
 	logger     *slog.Logger
+
+	// Each blocklist's own nameservers, looked up once and reused; see zoneServers.
+	zoneMu      sync.Mutex
+	zoneServers map[string]zoneServerEntry
+	zoneNext    uint32
+}
+
+type zoneServerEntry struct {
+	servers []string // host:port
+	expires time.Time
 }
 
 func NewReputationService(db *gorm.DB, logger *slog.Logger) *ReputationService {
@@ -54,13 +66,79 @@ func NewReputationService(db *gorm.DB, logger *slog.Logger) *ReputationService {
 	}
 	return &ReputationService{
 		db: db,
-		// The system resolver, deliberately. Blocklists refuse queries arriving
-		// via large public resolvers, so a hardcoded 8.8.8.8 would return
-		// "refused" for every address and look like a clean fleet.
-		resolver:   net.DefaultResolver,
-		httpClient: &http.Client{Timeout: 10 * time.Second},
-		logger:     logger,
+		// The system resolver, used only to find each blocklist's nameservers.
+		// The lookups themselves go to those nameservers directly (zoneServers).
+		resolver:    net.DefaultResolver,
+		httpClient:  &http.Client{Timeout: 10 * time.Second},
+		logger:      logger,
+		zoneServers: map[string]zoneServerEntry{},
 	}
+}
+
+// zoneNameservers finds the nameservers that answer for a blocklist zone.
+//
+// Blocklists refuse queries that arrive through large public resolvers, and a
+// host's "system resolver" is very often exactly that: the production panel
+// forwards to 1.1.1.1 and 8.8.8.8, so every Spamhaus lookup came back
+// 127.255.255.254 (refused) and no address was ever actually checked. Asking
+// the list's nameservers directly makes the query come from this host's own
+// address, which is the case the lists answer.
+//
+// Returns nil when they cannot be found; the caller then falls back to the
+// system resolver, so a list that only works that way keeps working.
+func (s *ReputationService) zoneNameservers(ctx context.Context, zone string) []string {
+	s.zoneMu.Lock()
+	defer s.zoneMu.Unlock()
+	if e, ok := s.zoneServers[zone]; ok && time.Now().Before(e.expires) {
+		return e.servers
+	}
+
+	var servers []string
+	// A list is not always its own zone (bl.spamcop.net lives inside
+	// spamcop.net), so walk up until some level has NS records. Stop before the
+	// TLD: its servers know nothing about the list.
+	for name := zone; strings.Count(name, ".") >= 1 && len(servers) == 0; {
+		// Each level gets its own short budget, so a slow "no NS here" answer
+		// for the list's own name cannot use up the time for its parent.
+		lookupCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		if nss, err := s.resolver.LookupNS(lookupCtx, name); err == nil {
+			for _, ns := range nss {
+				ips, err := s.resolver.LookupIP(lookupCtx, "ip4", ns.Host)
+				if err != nil {
+					continue
+				}
+				for _, ip := range ips {
+					servers = append(servers, net.JoinHostPort(ip.String(), "53"))
+				}
+			}
+		}
+		cancel()
+		_, parent, ok := strings.Cut(name, ".")
+		if !ok {
+			break
+		}
+		name = parent
+	}
+	// ponytail: fixed cache times instead of honouring the NS record TTL. A
+	// failed discovery is remembered briefly too: paying for it on every one of
+	// a batch's lookups would turn a 50-address check into minutes.
+	ttl := 6 * time.Hour
+	if len(servers) == 0 {
+		ttl = 15 * time.Minute
+	}
+	s.zoneServers[zone] = zoneServerEntry{servers: servers, expires: time.Now().Add(ttl)}
+	return servers
+}
+
+// lookupAt asks one specific nameserver.
+func lookupAt(ctx context.Context, server, name string) ([]net.IP, error) {
+	r := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, server)
+		},
+	}
+	return r.LookupIP(ctx, "ip4", name)
 }
 
 // reverseIPv4 renders an address in the in-addr form blocklists expect:
@@ -82,10 +160,30 @@ func reverseIPv4(ip net.IP) (string, bool) {
 // produce, because it tells a provider their space is fine precisely when they
 // have lost the ability to find out.
 func (s *ReputationService) checkBlocklist(ctx context.Context, reversed, zone string) (listed bool, err error) {
-	lookupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
+	// The trailing dot keeps the resolver from appending the host's search domains.
+	name := reversed + "." + zone + "."
 
-	addrs, lookupErr := s.resolver.LookupHost(lookupCtx, reversed+"."+zone)
+	var ips []net.IP
+	var lookupErr error
+	if servers := s.zoneNameservers(ctx, zone); len(servers) > 0 {
+		// Up to three nameservers, two seconds each: any one of them can be
+		// unreachable from a given network, and the resolver's own per-server
+		// timeout is long enough for a single dead one to fail the whole check.
+		start := int(atomic.AddUint32(&s.zoneNext, 1))
+		for i := 0; i < 3 && i < len(servers); i++ {
+			attemptCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			ips, lookupErr = lookupAt(attemptCtx, servers[(start+i)%len(servers)], name)
+			cancel()
+			var dnsErr *net.DNSError
+			if lookupErr == nil || (asDNSError(lookupErr, &dnsErr) && dnsErr.IsNotFound) {
+				break // a real answer, listed or not
+			}
+		}
+	} else {
+		lookupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		ips, lookupErr = s.resolver.LookupIP(lookupCtx, "ip4", name)
+		cancel()
+	}
 	if lookupErr != nil {
 		var dnsErr *net.DNSError
 		if ok := asDNSError(lookupErr, &dnsErr); ok && dnsErr.IsNotFound {
@@ -95,17 +193,13 @@ func (s *ReputationService) checkBlocklist(ctx context.Context, reversed, zone s
 		return false, fmt.Errorf("%s: %w", zone, lookupErr)
 	}
 
-	for _, a := range addrs {
-		ip := net.ParseIP(a)
-		if ip == nil {
-			continue
-		}
+	for _, ip := range ips {
 		refusal := &net.IPNet{IP: net.IPv4(127, 255, 255, 0), Mask: net.CIDRMask(24, 32)}
 		if refusal.Contains(ip) {
-			return false, fmt.Errorf("%s refused the query (%s) — a key or datafeed is needed to check from this host", zone, a)
+			return false, fmt.Errorf("%s refused the query (%s): a key or datafeed is needed to check from this host", zone, ip)
 		}
 	}
-	return len(addrs) > 0, nil
+	return len(ips) > 0, nil
 }
 
 func asDNSError(err error, target **net.DNSError) bool {
@@ -264,6 +358,9 @@ func (s *ReputationService) CheckDueAddresses(ctx context.Context, staleAfter ti
 	}
 	var rows []row
 	cutoff := time.Now().Add(-staleAfter)
+	// A check that could not be completed is retried within the hour rather
+	// than a day later: until then nothing is known about that address.
+	retryCutoff := time.Now().Add(-min(staleAfter, time.Hour))
 
 	if err := s.db.WithContext(ctx).Raw(`
 		-- host() rather than a plain cast: casting an inet yields "1.2.3.4/32",
@@ -278,9 +375,10 @@ func (s *ReputationService) CheckDueAddresses(ctx context.Context, staleAfter ti
 		        OR a.address << '172.16.0.0/12'
 		        OR a.address << '192.168.0.0/16'
 		        OR a.address << '100.64.0.0/10')
-		  AND (r.checked_at IS NULL OR r.checked_at < ?)
+		  AND (r.checked_at IS NULL OR r.checked_at < ?
+		       OR (r.check_error <> '' AND r.checked_at < ?))
 		ORDER BY (a.status = 'assigned') DESC, r.checked_at ASC NULLS FIRST
-		LIMIT ?`, cutoff, limit).Scan(&rows).Error; err != nil {
+		LIMIT ?`, cutoff, retryCutoff, limit).Scan(&rows).Error; err != nil {
 		s.logger.Error("reputation: could not list addresses due for a check", "error", err)
 		return 0
 	}

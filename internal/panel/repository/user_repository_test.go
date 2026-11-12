@@ -323,3 +323,35 @@ func (suite *UserRepositoryTestSuite) TestUserRepository_UpdateIPWhitelist() {
 	assert.NoError(suite.T(), err)
 	assert.Equal(suite.T(), whitelist, found.IPWhitelist)
 }
+
+// Paging was accepted and ignored; search did not exist. Both are what let a
+// picker reach a user beyond the first page.
+func (suite *UserRepositoryTestSuite) TestUserRepository_ListFiltered() {
+	ctx := context.Background()
+	for _, u := range []models.User{
+		{Email: "zq-alice@example.com", Name: "Alice", PasswordHash: "x", Role: models.RoleClient},
+		{Email: "zq-bob@example.com", Name: "Bob ZQ_Admin", PasswordHash: "x", Role: models.RoleAdmin},
+		{Email: "zq-carol@example.com", Name: "Carol", PasswordHash: "x", Role: models.RoleClient},
+	} {
+		u := u
+		suite.Require().NoError(suite.DB.Create(&u).Error)
+	}
+
+	n, err := suite.userRepo.CountFiltered(ctx, "ZQ-", "")
+	suite.Require().NoError(err)
+	assert.EqualValues(suite.T(), 3, n, "email match, case-insensitive")
+
+	n, _ = suite.userRepo.CountFiltered(ctx, "zq-", models.RoleClient)
+	assert.EqualValues(suite.T(), 2, n, "role combines with search")
+
+	n, _ = suite.userRepo.CountFiltered(ctx, "zq_admin", "")
+	assert.EqualValues(suite.T(), 1, n, "name match; _ is literal, not a wildcard")
+
+	n, _ = suite.userRepo.CountFiltered(ctx, "zq%admin", "")
+	assert.EqualValues(suite.T(), 0, n, "%% is literal, not a wildcard")
+
+	page2, err := suite.userRepo.ListFiltered(ctx, "zq-", "", 2, 2)
+	suite.Require().NoError(err)
+	suite.Require().Len(page2, 1)
+	assert.Equal(suite.T(), "zq-carol@example.com", page2[0].Email, "second page, ordered by email")
+}

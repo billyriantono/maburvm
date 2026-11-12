@@ -90,3 +90,6 @@ deploy/secrets/
 .obsidian/
 
 .rhea/
+
+# Local UI audit notes (planning, not published)
+anti-slop/

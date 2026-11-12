@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -177,4 +178,41 @@ func (suite *AuditRepositoryTestSuite) TestAuditRepository_CountByUser() {
 	count, err := suite.auditRepo.CountByUser(ctx, userID)
 	assert.NoError(suite.T(), err)
 	assert.Equal(suite.T(), int64(5), count)
+}
+
+// The listing endpoint used to honour only action OR user_id and silently drop
+// resource type and dates, so the UI's filters did nothing.
+func (suite *AuditRepositoryTestSuite) TestAuditRepository_ListFiltered() {
+	ctx := context.Background()
+	day := func(d int) time.Time { return time.Date(2031, 3, d, 12, 0, 0, 0, time.UTC) }
+	for _, l := range []models.AuditLog{
+		{Action: "filt.create", ResourceType: "VM", CreatedAt: day(1)},
+		{Action: "filt.create", ResourceType: "vm", CreatedAt: day(2)},
+		{Action: "filt.delete", ResourceType: "NODE", CreatedAt: day(3)},
+	} {
+		l := l
+		suite.Require().NoError(suite.DB.Create(&l).Error)
+	}
+	from, to := day(1).Add(-time.Hour), day(3).Add(time.Hour)
+	window := AuditFilter{From: &from, To: &to}
+
+	count := func(f AuditFilter) int64 {
+		n, err := suite.auditRepo.CountFiltered(ctx, f)
+		suite.Require().NoError(err)
+		return n
+	}
+	assert.EqualValues(suite.T(), 3, count(window))
+
+	f := window
+	f.ResourceType = "Vm" // case must not matter
+	assert.EqualValues(suite.T(), 2, count(f))
+
+	f.Action = "filt.delete" // filters combine: no VM delete exists
+	assert.EqualValues(suite.T(), 0, count(f))
+
+	lateFrom := day(2).Add(-time.Hour)
+	logs, err := suite.auditRepo.ListFiltered(ctx, AuditFilter{From: &lateFrom, To: &to}, 10, 0)
+	suite.Require().NoError(err)
+	suite.Require().Len(logs, 2)
+	assert.Equal(suite.T(), "filt.delete", logs[0].Action, "newest first")
 }

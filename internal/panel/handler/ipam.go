@@ -7,8 +7,10 @@ import (
 	"strconv"
 
 	"github.com/labstack/echo/v4"
+	"github.com/maburvm/panel/internal/panel/authz"
 	panelMiddleware "github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/panel/service"
+	"github.com/maburvm/panel/internal/shared/models"
 	"gorm.io/gorm"
 )
 
@@ -69,6 +71,44 @@ func (h *IPAMHandler) SetRDNS(c echo.Context) error {
 		return badRequest(c, err.Error())
 	}
 	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": address})
+}
+
+// RegisterVMRDNSRoute mounts the owner-facing reverse-DNS endpoint. It lives
+// under /vms/:id rather than /ip-pools so it needs no IPAM permission: the VM's
+// owner may set the PTR of an address their VM holds and sees nothing else.
+func RegisterVMRDNSRoute(e *echo.Echo, h *IPAMHandler, authorizer *authz.Authorizer, db *gorm.DB) {
+	e.PUT("/api/v1/vms/:id/rdns", func(c echo.Context) error {
+		vmID := c.Param("id")
+		if !authorizer.AuthorizeVM(c, vmID) {
+			return nil
+		}
+		var req struct {
+			IPAddress string `json:"ip_address"`
+			RDNS      string `json:"rdns"`
+		}
+		if err := c.Bind(&req); err != nil || req.IPAddress == "" {
+			return badRequest(c, "ip_address is required")
+		}
+		// An administrator may set any PTR (for example before the customer's
+		// DNS exists). Everyone else must prove the hostname is theirs.
+		user, ok := panelMiddleware.GetUserContext(c)
+		verify := !ok || user.Role != models.RoleAdmin
+
+		address, err := h.service.SetVMRDNS(c.Request().Context(), vmID, req.IPAddress, req.RDNS, verify)
+		if err != nil {
+			switch {
+			case errors.Is(err, service.ErrIPAddressNotFound):
+				return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "This VM does not hold that address"})
+			case errors.Is(err, service.ErrRDNSForwardMismatch):
+				return c.JSON(http.StatusUnprocessableEntity, map[string]interface{}{"error": "Unprocessable Entity", "message": err.Error()})
+			}
+			return badRequest(c, err.Error())
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"success": true,
+			"data":    map[string]interface{}{"ip_address": req.IPAddress, "rdns": address.RDNS},
+		})
+	}, panelMiddleware.RequireAuth(db), panelMiddleware.RequirePermission("vm:update"))
 }
 
 // GetReverseZone returns a BIND-style PTR zone fragment for a pool's addresses

@@ -96,6 +96,36 @@ func (h *VMHandler) authorizeVM(c echo.Context, vmID string) bool {
 	return true
 }
 
+// authorizeVMChange is authorizeVM for actions that change a VM's power state
+// or contents, with one more rule: a customer may not act on a suspended VM.
+//
+// Suspension is the provider withholding service. Without this, the owner of a
+// suspended VM could simply call unsuspend, or force-stop then start, or
+// reinstall, and be running again, because every one of those is an action
+// they are otherwise entitled to on their own machine. Deleting the VM stays
+// allowed (it goes through authorizeVM): walking away is always permitted.
+func (h *VMHandler) authorizeVMChange(c echo.Context, vmID string) bool {
+	if !h.authorizeVM(c, vmID) {
+		return false
+	}
+	if !isClientRole(c) {
+		return true
+	}
+	status, err := h.service.GetVMStatus(c.Request().Context(), vmID)
+	if err != nil {
+		_ = c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
+		return false
+	}
+	if status == models.VMStatusSuspended {
+		_ = c.JSON(http.StatusForbidden, map[string]interface{}{
+			"error":   "Forbidden",
+			"message": "This VM is suspended. Contact support to restore service.",
+		})
+		return false
+	}
+	return true
+}
+
 // clientNetworkSelectionDenied writes a generic, non-topology-leaking 4xx
 // response when a RoleClient attempts a prohibited infrastructure/network
 // selection (node, IP pool, requested IP, managed network, CPU model, nonzero
@@ -292,10 +322,11 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 		SSHPublicKeys:      sshPublicKeys,
 	}
 
-	// Production-grade default: a VM with neither a password nor an SSH key can't
-	// be logged into. If the caller supplied neither, generate a root password and
-	// return it once (what commercial VM panels do) so the VM is always usable.
-	if req.Password == "" && len(sshPublicKeys) == 0 {
+	// Every VM gets a root password, returned once, unless the caller set one.
+	// That includes VMs created with SSH keys: a key lives on one device, and
+	// the owner who is away from it still needs a way in (the console asks for
+	// a password, never a key).
+	if req.Password == "" {
 		createReq.RegeneratePassword = true
 	}
 
@@ -429,7 +460,7 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 		Status:       string(resp.VM.Status),
 		NodeID:       resp.VM.NodeID,
 		JobID:        resp.JobID,
-		CreatedAt:    resp.VM.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		CreatedAt:    resp.VM.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		RootPassword: resp.RootPassword,
 	}
 
@@ -577,8 +608,8 @@ func (h *VMHandler) ListVMs(c echo.Context) error {
 				RAM:  vm.Resources.RAM,
 				Disk: vm.Resources.Disk,
 			},
-			CreatedAt: vm.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			UpdatedAt: vm.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			CreatedAt: vm.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			UpdatedAt: vm.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		}
 		if vm.VNCPort != nil {
 			items[i].VNCPort = *vm.VNCPort
@@ -622,13 +653,15 @@ type VMDetailResponse struct {
 	OSTemplateID string           `json:"os_template_id"`
 	Resources    models.Resources `json:"resources"`
 	// Where the VM physically runs. Customers reason in regions, never in nodes.
-	RegionID       string                 `json:"region_id,omitempty"`
-	RegionName     string                 `json:"region_name,omitempty"`
-	RegionCountry  string                 `json:"region_country,omitempty"`
-	VNCPort        int                    `json:"vnc_port,omitempty"`
-	ConsoleEnabled bool                   `json:"console_enabled"`
-	RescueMode     bool                   `json:"rescue_mode"`
-	AgentStatus    map[string]interface{} `json:"agent_status,omitempty"`
+	RegionID       string `json:"region_id,omitempty"`
+	RegionName     string `json:"region_name,omitempty"`
+	RegionCountry  string `json:"region_country,omitempty"`
+	VNCPort        int    `json:"vnc_port,omitempty"`
+	ConsoleEnabled bool   `json:"console_enabled"`
+	RescueMode     bool   `json:"rescue_mode"`
+	// null = not known, "" = no ISO in the drive, otherwise the attached image.
+	AttachedISO *string                `json:"attached_iso"`
+	AgentStatus map[string]interface{} `json:"agent_status,omitempty"`
 	// Routed IPv6 delegated to the VM; all empty when it has none.
 	IPv6Prefix  string `json:"ipv6_prefix,omitempty"`
 	IPv6Address string `json:"ipv6_address,omitempty"`
@@ -684,8 +717,9 @@ func (h *VMHandler) GetVM(c echo.Context) error {
 		Resources:      vm.VM.Resources,
 		ConsoleEnabled: vm.VM.ConsoleEnabled,
 		RescueMode:     vm.VM.RescueMode,
-		CreatedAt:      vm.VM.CreatedAt.Format("2006-01-02T15:04:05Z"),
-		UpdatedAt:      vm.VM.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+		AttachedISO:    vm.VM.AttachedISO,
+		CreatedAt:      vm.VM.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		UpdatedAt:      vm.VM.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 	}
 
 	if vm.VM.VNCPort != nil {
@@ -859,7 +893,7 @@ func (h *VMHandler) UpdateVM(c echo.Context) error {
 			"hostname":   vm.Hostname,
 			"status":     string(vm.Status),
 			"resources":  vm.Resources,
-			"updated_at": vm.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			"updated_at": vm.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		},
 	})
 }
@@ -987,8 +1021,16 @@ func (h *VMHandler) handleLifecycleCommand(c echo.Context, command service.Lifec
 		})
 	}
 
-	if !h.authorizeVM(c, id) {
+	if !h.authorizeVMChange(c, id) {
 		return nil
+	}
+	// Pausing and resuming are how the provider suspends service (billing, an
+	// exhausted quota, abuse). A customer has no use for either.
+	if isClientRole(c) && (command == service.LifecycleSuspend || command == service.LifecycleUnsuspend) {
+		return c.JSON(http.StatusForbidden, map[string]interface{}{
+			"error":   "Forbidden",
+			"message": "Only an administrator can suspend or unsuspend a VM",
+		})
 	}
 
 	var req LifecycleRequest
@@ -1078,7 +1120,7 @@ func (h *VMHandler) RebuildVM(c echo.Context) error {
 		})
 	}
 
-	if !h.authorizeVM(c, id) {
+	if !h.authorizeVMChange(c, id) {
 		return nil
 	}
 
@@ -1113,6 +1155,11 @@ func (h *VMHandler) RebuildVM(c echo.Context) error {
 		Password:           req.Password,
 		RegeneratePassword: req.RegeneratePassword,
 		SSHPublicKeys:      sshPublicKeys,
+	}
+	// Same rule as create: a reinstalled VM always has a root password its
+	// owner has been shown, with or without SSH keys.
+	if req.Password == "" {
+		rebuildReq.RegeneratePassword = true
 	}
 
 	resp, err := h.service.RebuildVM(c.Request().Context(), rebuildReq)
@@ -1507,7 +1554,7 @@ func (h *VMHandler) ResetPasswordVM(c echo.Context) error {
 	if id == "" {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "VM ID is required"})
 	}
-	if !h.authorizeVM(c, id) {
+	if !h.authorizeVMChange(c, id) {
 		return nil
 	}
 	var req struct {
@@ -1529,7 +1576,7 @@ func (h *VMHandler) ResetPasswordVM(c echo.Context) error {
 // AttachISOVM handles POST /api/vms/:id/iso/attach - Attach a bootable ISO
 func (h *VMHandler) AttachISOVM(c echo.Context) error {
 	id := c.Param("id")
-	if !h.authorizeVM(c, id) {
+	if !h.authorizeVMChange(c, id) {
 		return nil
 	}
 	var req struct {
@@ -1551,7 +1598,7 @@ func (h *VMHandler) AttachISOVM(c echo.Context) error {
 // DetachISOVM handles POST /api/vms/:id/iso/detach - Detach the install/rescue ISO
 func (h *VMHandler) DetachISOVM(c echo.Context) error {
 	id := c.Param("id")
-	if !h.authorizeVM(c, id) {
+	if !h.authorizeVMChange(c, id) {
 		return nil
 	}
 	jobID, err := h.service.DetachISO(c.Request().Context(), id)
@@ -1568,7 +1615,7 @@ func (h *VMHandler) DetachISOVM(c echo.Context) error {
 // Body: optional {iso_url}; falls back to the RESCUE_ISO_URL env var.
 func (h *VMHandler) RescueVM(c echo.Context) error {
 	id := c.Param("id")
-	if !h.authorizeVM(c, id) {
+	if !h.authorizeVMChange(c, id) {
 		return nil
 	}
 	var req struct {
@@ -1591,7 +1638,7 @@ func (h *VMHandler) RescueVM(c echo.Context) error {
 // UnrescueVM handles POST /api/vms/:id/unrescue - Detach the rescue ISO.
 func (h *VMHandler) UnrescueVM(c echo.Context) error {
 	id := c.Param("id")
-	if !h.authorizeVM(c, id) {
+	if !h.authorizeVMChange(c, id) {
 		return nil
 	}
 	jobID, err := h.service.UnrescueVM(c.Request().Context(), id)

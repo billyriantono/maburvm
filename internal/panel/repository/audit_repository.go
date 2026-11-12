@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"github.com/maburvm/panel/internal/shared/models"
 	"gorm.io/gorm"
@@ -132,4 +133,59 @@ func (r *AuditRepository) CountByAction(ctx context.Context, action string) (int
 		return 0, err
 	}
 	return count, nil
+}
+
+// AuditFilter narrows an audit-log listing. Every set field must match; zero
+// values are ignored, so the empty filter lists everything.
+type AuditFilter struct {
+	Action       string
+	UserID       string
+	ResourceType string
+	From         *time.Time // inclusive
+	To           *time.Time // exclusive
+}
+
+func (r *AuditRepository) filtered(ctx context.Context, f AuditFilter) *gorm.DB {
+	q := r.db.WithContext(ctx).Model(&models.AuditLog{})
+	if f.Action != "" {
+		q = q.Where("action = ?", f.Action)
+	}
+	if f.UserID != "" {
+		q = q.Where("user_id = ?", f.UserID)
+	}
+	if f.ResourceType != "" {
+		// Two writers disagree on case ("VM" from the request middleware, "vm"
+		// from VM activity), so the filter must not care.
+		q = q.Where("LOWER(resource_type) = LOWER(?)", f.ResourceType)
+	}
+	if f.From != nil {
+		q = q.Where("created_at >= ?", *f.From)
+	}
+	if f.To != nil {
+		q = q.Where("created_at < ?", *f.To)
+	}
+	return q
+}
+
+// ListFiltered returns the newest matching entries first.
+func (r *AuditRepository) ListFiltered(ctx context.Context, f AuditFilter, limit, offset int) ([]models.AuditLog, error) {
+	var logs []models.AuditLog
+	q := r.filtered(ctx, f).Order("created_at DESC")
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	if offset > 0 {
+		q = q.Offset(offset)
+	}
+	if err := q.Find(&logs).Error; err != nil {
+		return nil, err
+	}
+	return logs, nil
+}
+
+// CountFiltered counts every entry the filter matches, ignoring paging.
+func (r *AuditRepository) CountFiltered(ctx context.Context, f AuditFilter) (int64, error) {
+	var count int64
+	err := r.filtered(ctx, f).Count(&count).Error
+	return count, err
 }

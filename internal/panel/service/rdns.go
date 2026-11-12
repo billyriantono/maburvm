@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/maburvm/panel/internal/shared/models"
 	"gorm.io/gorm"
@@ -132,6 +133,75 @@ func (s *IPAMService) SetRDNS(ctx context.Context, addressID, ptr string) (*mode
 		return nil, err
 	}
 	return address, nil
+}
+
+// ErrRDNSForwardMismatch means the requested PTR hostname does not resolve back
+// to the address it is being set on.
+var ErrRDNSForwardMismatch = errors.New("hostname does not resolve to this address")
+
+// rdnsForwardMismatch carries the sentence shown to the customer, and still
+// answers errors.Is(err, ErrRDNSForwardMismatch).
+type rdnsForwardMismatch struct{ host, ip string }
+
+func (e rdnsForwardMismatch) Error() string {
+	return fmt.Sprintf("%s does not point to %s yet. Add a DNS record for it, then save again.", e.host, e.ip)
+}
+func (e rdnsForwardMismatch) Is(target error) bool { return target == ErrRDNSForwardMismatch }
+
+// rdnsLookupHost resolves a hostname for the forward check. A variable so tests
+// can answer without the network.
+var rdnsLookupHost = func(ctx context.Context, host string) ([]string, error) {
+	return net.DefaultResolver.LookupHost(ctx, host)
+}
+
+// SetVMRDNS sets or clears the PTR for an address a VM holds, which is how a
+// VM's owner manages their own reverse DNS without any view of the pools.
+//
+// With verifyForward, the hostname must already resolve to the address. That
+// is what makes a self-service PTR safe to offer: without it a customer could
+// label their address as somebody else's mail server. It is also what mail
+// receivers check, so a PTR that fails it would not help the customer anyway.
+func (s *IPAMService) SetVMRDNS(ctx context.Context, vmID, ip, ptr string, verifyForward bool) (*models.IPAddress, error) {
+	want := net.ParseIP(strings.TrimSpace(ip))
+	if want == nil {
+		return nil, fmt.Errorf("%q is not an IP address", ip)
+	}
+	addrs, err := s.repo.ListAddressesByVMID(ctx, vmID)
+	if err != nil {
+		return nil, err
+	}
+	var held *models.IPAddress
+	for i := range addrs {
+		// An inet column may come back with a /32 suffix.
+		if got := net.ParseIP(strings.SplitN(addrs[i].Address, "/", 2)[0]); got != nil && got.Equal(want) {
+			held = &addrs[i]
+			break
+		}
+	}
+	if held == nil {
+		return nil, ErrIPAddressNotFound
+	}
+
+	ptr = strings.TrimSuffix(strings.TrimSpace(ptr), ".")
+	if ptr != "" && verifyForward {
+		if !isValidRDNSHostname(ptr) {
+			return nil, fmt.Errorf("invalid rDNS hostname: %q", ptr)
+		}
+		lookupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		resolved, lerr := rdnsLookupHost(lookupCtx, ptr)
+		cancel()
+		matches := false
+		for _, r := range resolved {
+			if got := net.ParseIP(r); got != nil && got.Equal(want) {
+				matches = true
+				break
+			}
+		}
+		if lerr != nil || !matches {
+			return nil, rdnsForwardMismatch{host: ptr, ip: want.String()}
+		}
+	}
+	return s.SetRDNS(ctx, held.ID, ptr)
 }
 
 // ImportRDNS pulls existing PTR records from the live nameserver into MaburVM's

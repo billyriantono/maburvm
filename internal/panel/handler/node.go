@@ -93,7 +93,7 @@ func (h *NodeHandler) RegisterNode(c echo.Context) error {
 			IPAddress: resp.Node.IPAddress,
 			Status:    string(resp.Node.Status),
 			Token:     resp.Token,
-			CreatedAt: resp.Node.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			CreatedAt: resp.Node.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		},
 	})
 }
@@ -161,8 +161,8 @@ func (h *NodeHandler) ListNodes(c echo.Context) error {
 			IPAddress: node.Node.IPAddress,
 			Status:    string(node.Node.Status),
 			Online:    node.Online,
-			CreatedAt: node.Node.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			UpdatedAt: node.Node.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			CreatedAt: node.Node.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			UpdatedAt: node.Node.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		}
 	}
 
@@ -229,8 +229,8 @@ func (h *NodeHandler) GetNode(c echo.Context) error {
 		IPAddress: node.IPAddress,
 		Status:    string(node.Status),
 		Online:    online,
-		CreatedAt: node.CreatedAt.Format("2006-01-02T15:04:05Z"),
-		UpdatedAt: node.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+		CreatedAt: node.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		UpdatedAt: node.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 	}
 
 	if metrics != nil {
@@ -320,7 +320,7 @@ func (h *NodeHandler) UpdateNode(c echo.Context) error {
 			"name":       node.Name,
 			"ip_address": node.IPAddress,
 			"status":     string(node.Status),
-			"updated_at": node.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			"updated_at": node.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		},
 	})
 }

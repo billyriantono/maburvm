@@ -3,11 +3,13 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -40,6 +42,10 @@ type Server struct {
 	queueClient   *queue.Client
 	riverClient   *river.Client[pgx.Tx]
 	backupService *service.BackupService
+
+	// dnsProvider is the one nameserver connection shared by reverse DNS and
+	// forward zones; see dnsProviderInstance.
+	dnsProvider *service.SettingsDNSProvider
 
 	// readinessCheckTimeout bounds each dependency ping during /readyz.
 	readinessCheckTimeout time.Duration
@@ -622,9 +628,10 @@ func (s *Server) setupIPAMRoutes() {
 	ipamRepo := repository.NewIPAMRepository(s.db)
 	ipamService := service.NewIPAMService(s.db, ipamRepo)
 	// Live PTR push (PowerDNS) when configured — rDNS works without a forward zone.
-	ipamService.SetDNSProvider(service.NewDNSProviderFromEnv())
+	ipamService.SetDNSProvider(s.dnsProviderInstance())
 	ipamHandler := handler.NewIPAMHandler(ipamService)
 	handler.RegisterIPAMRoutes(s.echo, ipamHandler, s.db)
+	handler.RegisterVMRDNSRoute(s.echo, ipamHandler, authz.NewAuthorizer(s.db), s.db)
 }
 
 // setupPlanRoutes configures VPS plan (flavor) routes.
@@ -681,10 +688,20 @@ func (s *Server) setupMetricsRoutes() {
 	handler.RegisterMetricsRoutes(s.echo, metricsHandler, s.db)
 }
 
+// dnsProviderInstance returns the nameserver connection, configured from the
+// admin settings page (encrypted at rest) or, when nothing is saved there, from
+// the PDNS_* environment variables.
+func (s *Server) dnsProviderInstance() *service.SettingsDNSProvider {
+	if s.dnsProvider == nil {
+		s.dnsProvider = service.NewSettingsDNSProvider(s.db, s.cfg.JWT.AESKey, s.cfg.JWT.AESPreviousKeys...)
+	}
+	return s.dnsProvider
+}
+
 // setupDNSRoutes configures forward DNS zone/record routes. A live nameserver
 // provider (PowerDNS) is wired from env when configured; otherwise export-only.
 func (s *Server) setupDNSRoutes() {
-	dnsService := service.NewDNSServiceWithProvider(s.db, service.NewDNSProviderFromEnv(), slog.Default())
+	dnsService := service.NewDNSServiceWithProvider(s.db, s.dnsProviderInstance(), slog.Default())
 	dnsHandler := handler.NewDNSHandler(dnsService)
 	handler.RegisterDNSRoutes(s.echo, dnsHandler, s.db)
 }
@@ -723,6 +740,12 @@ func (s *Server) setupImportRoutes() {
 	templateRepo := repository.NewTemplateRepository(s.db)
 	networkRepo := repository.NewNetworkRepository(s.db)
 	importService := service.NewImportService(s.db, vmRepo, nodeRepo, templateRepo, networkRepo, s.riverClient, logger)
+	// One-time catch-up for VMs whose CD drive state predates its tracking. A
+	// short delay lets the node connections settle after a restart.
+	go func() {
+		time.Sleep(30 * time.Second)
+		importService.BackfillAttachedISO(context.Background())
+	}()
 	importHandler := handler.NewImportHandler(importService)
 	handler.RegisterImportRoutes(s.echo, importHandler, s.db)
 }
@@ -736,17 +759,34 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 	users.Use(panelMiddleware.RequirePermission("user:read"))
 
 	users.GET("", func(c echo.Context) error {
-		limit := 100
-		offset := 0
-		userList, err := userRepo.List(c.Request().Context(), limit, offset)
+		// page/page_size were once accepted and ignored: every request got the
+		// first 100 users, so on a larger install some could never be listed or
+		// picked. search (email or name) is what makes a picker usable there.
+		limit, page := 20, 1
+		if n, err := strconv.Atoi(c.QueryParam("page_size")); err == nil && n > 0 {
+			limit = n
+		}
+		if limit > 200 {
+			limit = 200
+		}
+		if n, err := strconv.Atoi(c.QueryParam("page")); err == nil && n > 0 {
+			page = n
+		}
+		search := c.QueryParam("search")
+		role := models.UserRole(c.QueryParam("role"))
+
+		userList, err := userRepo.ListFiltered(c.Request().Context(), search, role, limit, (page-1)*limit)
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to list users"})
 		}
-		total, _ := userRepo.Count(c.Request().Context())
+		total, err := userRepo.CountFiltered(c.Request().Context(), search, role)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to count users"})
+		}
 		return c.JSON(http.StatusOK, map[string]interface{}{
 			"data":       userList,
 			"total":      total,
-			"page":       1,
+			"page":       page,
 			"page_size":  limit,
 			"totalPages": (int(total) + limit - 1) / limit,
 		})
@@ -1205,26 +1245,44 @@ func (s *Server) setupAuditLogRoutes(g *echo.Group) {
 		}
 		offset := (page - 1) * limit
 
-		action := c.QueryParam("action")
-		userID := c.QueryParam("user_id")
-
-		var logs []models.AuditLog
-		var total int64
-		var err error
-
-		if action != "" {
-			logs, err = auditRepo.ListByAction(c.Request().Context(), action, limit, offset)
-			total, _ = auditRepo.CountByAction(c.Request().Context(), action)
-		} else if userID != "" {
-			logs, err = auditRepo.ListByUser(c.Request().Context(), userID, limit, offset)
-			total, _ = auditRepo.CountByUser(c.Request().Context(), userID)
-		} else {
-			logs, err = auditRepo.List(c.Request().Context(), limit, offset)
-			total, _ = auditRepo.Count(c.Request().Context())
+		// Every filter combines with the others. start_date/end_date are whole
+		// days as the browser's date input sends them (YYYY-MM-DD), or RFC 3339
+		// instants; the end day is included in full.
+		filter := repository.AuditFilter{
+			Action:       c.QueryParam("action"),
+			UserID:       c.QueryParam("user_id"),
+			ResourceType: c.QueryParam("resource_type"),
+		}
+		if filter.UserID != "" {
+			if _, err := uuid.Parse(filter.UserID); err != nil {
+				return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "user_id must be a UUID"})
+			}
+		}
+		if raw := c.QueryParam("start_date"); raw != "" {
+			t, _, err := parseAuditDate(raw)
+			if err != nil {
+				return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "start_date must be YYYY-MM-DD or RFC 3339"})
+			}
+			filter.From = &t
+		}
+		if raw := c.QueryParam("end_date"); raw != "" {
+			t, wholeDay, err := parseAuditDate(raw)
+			if err != nil {
+				return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "end_date must be YYYY-MM-DD or RFC 3339"})
+			}
+			if wholeDay {
+				t = t.AddDate(0, 0, 1)
+			}
+			filter.To = &t
 		}
 
+		logs, err := auditRepo.ListFiltered(c.Request().Context(), filter, limit, offset)
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to list audit logs"})
+		}
+		total, err := auditRepo.CountFiltered(c.Request().Context(), filter)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to count audit logs"})
 		}
 
 		totalPages := (int(total) + limit - 1) / limit
@@ -1242,6 +1300,17 @@ func (s *Server) setupAuditLogRoutes(g *echo.Group) {
 			"totalPages": totalPages,
 		})
 	})
+}
+
+// parseAuditDate reads an audit-log date bound. wholeDay reports that only a
+// calendar day was given (interpreted in UTC), so an end bound should run to
+// the end of that day.
+func parseAuditDate(raw string) (t time.Time, wholeDay bool, err error) {
+	if t, err = time.Parse("2006-01-02", raw); err == nil {
+		return t, true, nil
+	}
+	t, err = time.Parse(time.RFC3339, raw)
+	return t, false, err
 }
 
 // parseUUID parses a UUID string
@@ -1430,7 +1499,9 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		}
 		var rows []settingRow
 		if err := s.db.WithContext(c.Request().Context()).
-			Raw("SELECT section, data::text AS data FROM system_settings").Scan(&rows).Error; err != nil {
+			// The nameserver connection holds a credential and has its own
+			// endpoints below that never return it.
+			Raw("SELECT section, data::text AS data FROM system_settings WHERE section <> ?", service.DNSProviderSection).Scan(&rows).Error; err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to load settings"})
 		}
 		out := map[string]json.RawMessage{}
@@ -1445,6 +1516,9 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request body"})
 		}
 		for section, data := range body {
+			if section == service.DNSProviderSection {
+				return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "The DNS provider is saved through its own form"})
+			}
 			if err := s.db.WithContext(c.Request().Context()).Exec(
 				"INSERT INTO system_settings (section, data, updated_at) VALUES (?, ?::jsonb, NOW()) "+
 					"ON CONFLICT (section) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()",
@@ -1454,6 +1528,62 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 			}
 		}
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "Settings saved"})
+	})
+
+	// Nameserver connection (admin-only). The API key goes in and never comes
+	// back out: responses say only whether one is stored.
+	dnsProv := s.dnsProviderInstance()
+	type dnsProviderRequest struct {
+		URL      string `json:"url"`
+		ServerID string `json:"server_id"`
+		APIKey   string `json:"api_key"`
+	}
+	dnsProviderError := func(c echo.Context, err error) error {
+		// 422, not 502, when the nameserver is the problem: a 502 from the panel
+		// means the panel itself is unreachable, and the web client says so.
+		status := http.StatusBadRequest
+		if !errors.Is(err, service.ErrDNSAPIKeyRequired) && !errors.Is(err, service.ErrDNSInvalidURL) {
+			status = http.StatusUnprocessableEntity
+		}
+		msg := err.Error()
+		if msg != "" {
+			msg = strings.ToUpper(msg[:1]) + msg[1:]
+		}
+		return c.JSON(status, map[string]interface{}{"error": http.StatusText(status), "message": msg})
+	}
+	sys.GET("/dns-provider", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": dnsProv.Status(c.Request().Context())})
+	})
+	sys.PUT("/dns-provider", func(c echo.Context) error {
+		var req dnsProviderRequest
+		if err := c.Bind(&req); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request body"})
+		}
+		if err := dnsProv.Save(c.Request().Context(), req.URL, req.ServerID, req.APIKey); err != nil {
+			if errors.Is(err, service.ErrDNSAPIKeyRequired) || errors.Is(err, service.ErrDNSInvalidURL) {
+				return dnsProviderError(c, err)
+			}
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to save the DNS provider"})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": dnsProv.Status(c.Request().Context())})
+	})
+	sys.DELETE("/dns-provider", func(c echo.Context) error {
+		if err := dnsProv.Clear(c.Request().Context()); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to remove the DNS provider"})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": dnsProv.Status(c.Request().Context())})
+	})
+	sys.POST("/dns-provider/test", func(c echo.Context) error {
+		var req dnsProviderRequest
+		if err := c.Bind(&req); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request body"})
+		}
+		ctx, cancel := context.WithTimeout(c.Request().Context(), 15*time.Second)
+		defer cancel()
+		if err := dnsProv.Test(ctx, req.URL, req.ServerID, req.APIKey); err != nil {
+			return dnsProviderError(c, err)
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "The nameserver answered"})
 	})
 
 	// POST /settings/system/email/test — send a test email with the given SMTP
@@ -1643,7 +1773,6 @@ func (s *Server) handleListManagedNetworks(repo *repository.ManagedNetworkReposi
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": nets})
 	}
 }
-
 
 // enrichAuditLogs fills in the names behind the identifiers.
 //

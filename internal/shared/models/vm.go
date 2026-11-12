@@ -36,21 +36,26 @@ type Resources struct {
 
 // VM represents a virtual machine in the system
 type VM struct {
-	ID              string         `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	UserID          string         `json:"user_id" gorm:"type:uuid;not null" validate:"required,uuid"`
-	NodeID          string         `json:"node_id" gorm:"type:uuid;not null" validate:"required,uuid"`
-	Hostname        string         `json:"hostname" gorm:"type:varchar(100);not null" validate:"required,max=100"`
-	OSTemplateID    string         `json:"os_template_id" gorm:"type:uuid;not null" validate:"required,uuid"`
-	Resources       Resources      `json:"resources" gorm:"type:jsonb;serializer:json" validate:"required"`
-	Status          VMStatus       `json:"status" gorm:"type:vm_status;default:stopped" validate:"required,oneof=running stopped suspended creating deleting error"`
-	SourceMigration string         `json:"source_migration,omitempty" gorm:"type:varchar(50);default:null"`
-	VNCPort         *int           `json:"vnc_port" gorm:"type:integer" validate:"omitempty,min=5900,max=5999"`
-	VNCPassword     string         `json:"-" gorm:"type:varchar(255)"` // Never exposed in JSON
-	ConsoleEnabled  bool           `json:"console_enabled" gorm:"column:console_enabled;not null;default:true"`
-	RescueMode      bool           `json:"rescue_mode" gorm:"column:rescue_mode;not null;default:false"`
-	CreatedAt       time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
-	UpdatedAt       time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
-	DeletedAt       gorm.DeletedAt `json:"-" gorm:"index"`
+	ID              string    `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	UserID          string    `json:"user_id" gorm:"type:uuid;not null" validate:"required,uuid"`
+	NodeID          string    `json:"node_id" gorm:"type:uuid;not null" validate:"required,uuid"`
+	Hostname        string    `json:"hostname" gorm:"type:varchar(100);not null" validate:"required,max=100"`
+	OSTemplateID    string    `json:"os_template_id" gorm:"type:uuid;not null" validate:"required,uuid"`
+	Resources       Resources `json:"resources" gorm:"type:jsonb;serializer:json" validate:"required"`
+	Status          VMStatus  `json:"status" gorm:"type:vm_status;default:stopped" validate:"required,oneof=running stopped suspended creating deleting error"`
+	SourceMigration string    `json:"source_migration,omitempty" gorm:"type:varchar(50);default:null"`
+	VNCPort         *int      `json:"vnc_port" gorm:"type:integer" validate:"omitempty,min=5900,max=5999"`
+	VNCPassword     string    `json:"-" gorm:"type:varchar(255)"` // Never exposed in JSON
+	ConsoleEnabled  bool      `json:"console_enabled" gorm:"column:console_enabled;not null;default:true"`
+	RescueMode      bool      `json:"rescue_mode" gorm:"column:rescue_mode;not null;default:false"`
+	// AttachedISO is the ISO in the VM's CD drive as last confirmed by the node:
+	// nil = not known (VMs from before this was tracked), "" = none, otherwise
+	// the image URL or path. Read-only here ("->") so ordinary saves never
+	// touch it; the operation worker writes it once the node confirms.
+	AttachedISO *string        `json:"attached_iso" gorm:"column:attached_iso;->"`
+	CreatedAt   time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
+	UpdatedAt   time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
+	DeletedAt   gorm.DeletedAt `json:"-" gorm:"index"`
 
 	// Region is where this VM physically runs, filled for responses from its
 	// node. Customers reason in regions, not nodes — node placement is

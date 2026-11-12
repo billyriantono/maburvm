@@ -33,6 +33,16 @@ func (r *BandwidthUsageRepository) GetCurrentPeriod(ctx context.Context, vmID, n
 		First(&usage).Error
 
 	if err == gorm.ErrRecordNotFound {
+		// A reader (the VM page) does not know the node, only the collector
+		// does. Opening the page for a VM the collector has not reached yet used
+		// to insert node_id "" and fail on the uuid column, so the usage card
+		// errored for every new VM. The VM row knows where it lives.
+		if nodeID == "" {
+			if err := r.db.WithContext(ctx).Table("vms").Select("node_id").Where("id = ?", vmID).Scan(&nodeID).Error; err != nil {
+				return nil, err
+			}
+		}
+
 		// Create new period record
 		usage = models.BandwidthUsage{
 			VMID:        vmID,

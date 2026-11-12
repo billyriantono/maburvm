@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"strings"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -114,4 +115,42 @@ func (r *UserRepository) ClearTwoFactorSecret(ctx context.Context, id uuid.UUID)
 // UpdateIPWhitelist updates a user's IP whitelist
 func (r *UserRepository) UpdateIPWhitelist(ctx context.Context, id uuid.UUID, whitelist []string) error {
 	return r.db.WithContext(ctx).Model(&models.User{}).Where("id = ?", id).Select("IPWhitelist").Updates(&models.User{IPWhitelist: whitelist}).Error
+}
+
+func (r *UserRepository) filtered(ctx context.Context, search string, role models.UserRole) *gorm.DB {
+	q := r.db.WithContext(ctx).Model(&models.User{})
+	if role != "" {
+		q = q.Where("role = ?", role)
+	}
+	if s := strings.ToLower(strings.TrimSpace(search)); s != "" {
+		// Escape LIKE wildcards so a search for "a_b" or "50%" means those characters.
+		s = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
+		like := "%" + s + "%"
+		q = q.Where(`LOWER(email) LIKE ? ESCAPE '\' OR LOWER(name) LIKE ? ESCAPE '\'`, like, like)
+	}
+	return q
+}
+
+// ListFiltered returns users matching an email/name substring and an optional
+// role, ordered by email so paging is stable from one request to the next.
+func (r *UserRepository) ListFiltered(ctx context.Context, search string, role models.UserRole, limit, offset int) ([]models.User, error) {
+	var users []models.User
+	q := r.filtered(ctx, search, role).Order("email ASC")
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	if offset > 0 {
+		q = q.Offset(offset)
+	}
+	if err := q.Find(&users).Error; err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
+// CountFiltered counts every user the same filters match, ignoring paging.
+func (r *UserRepository) CountFiltered(ctx context.Context, search string, role models.UserRole) (int64, error) {
+	var count int64
+	err := r.filtered(ctx, search, role).Count(&count).Error
+	return count, err
 }

@@ -143,8 +143,8 @@ func (h *NetworkHandler) AddNetworkInterface(c echo.Context) error {
 			IPAddress:      resp.Network.IPAddress,
 			BandwidthLimit: resp.Network.BandwidthLimit,
 			VLANID:         resp.Network.VLANID,
-			CreatedAt:      resp.Network.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			UpdatedAt:      resp.Network.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			CreatedAt:      resp.Network.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			UpdatedAt:      resp.Network.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		},
 	})
 }
@@ -318,7 +318,7 @@ func (h *NetworkHandler) AddPortForward(c echo.Context) error {
 			InternalPort: resp.PortForward.InternalPort,
 			Protocol:     resp.PortForward.Protocol,
 			SourceIP:     resp.PortForward.SourceIP,
-			CreatedAt:    resp.PortForward.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			CreatedAt:    resp.PortForward.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		},
 	})
 }
@@ -385,7 +385,7 @@ func portForwardToResponse(pf *models.PortForward) PortForwardResponse {
 		InternalPort: pf.InternalPort,
 		Protocol:     pf.Protocol,
 		SourceIP:     pf.SourceIP,
-		CreatedAt:    pf.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		CreatedAt:    pf.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 	}
 }
 
@@ -574,8 +574,8 @@ func (h *NetworkHandler) AddFirewallRule(c echo.Context) error {
 			Direction: resp.FirewallRule.Direction,
 			SourceIP:  resp.FirewallRule.SourceIP,
 			Priority:  resp.FirewallRule.Priority,
-			CreatedAt: resp.FirewallRule.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			UpdatedAt: resp.FirewallRule.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			CreatedAt: resp.FirewallRule.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			UpdatedAt: resp.FirewallRule.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		},
 	})
 }
@@ -734,8 +734,8 @@ func (h *NetworkHandler) ListNetworkInterfaces(c echo.Context) error {
 			Bridge:         net.Bridge,
 			RDNS:           net.RDNS,
 			PoolID:         net.PoolID,
-			CreatedAt:      net.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			UpdatedAt:      net.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			CreatedAt:      net.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			UpdatedAt:      net.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		}
 	}
 
@@ -784,7 +784,7 @@ func (h *NetworkHandler) ListPortForwards(c echo.Context) error {
 			InternalPort: pf.InternalPort,
 			Protocol:     pf.Protocol,
 			SourceIP:     pf.SourceIP,
-			CreatedAt:    pf.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			CreatedAt:    pf.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		}
 	}
 
@@ -828,8 +828,8 @@ func (h *NetworkHandler) ListFirewallRules(c echo.Context) error {
 			Direction: rule.Direction,
 			SourceIP:  rule.SourceIP,
 			Priority:  rule.Priority,
-			CreatedAt: rule.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			UpdatedAt: rule.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			CreatedAt: rule.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			UpdatedAt: rule.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		}
 	}
 
