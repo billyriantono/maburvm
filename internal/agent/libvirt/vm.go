@@ -1628,12 +1628,24 @@ func RebuildVM(uuidStr string, templatePath string) error {
 			return fmt.Errorf("failed to get domain XML: %w", err)
 		}
 
-		diskPaths := extractDiskPaths(xmlDesc)
-		if len(diskPaths) == 0 {
+		// The VM's own disk, never a mounted ISO or the cloud-init seed.
+		diskPath := ""
+		for _, p := range ownedDiskPaths(xmlDesc) {
+			if !strings.HasSuffix(p, "-seed.iso") {
+				diskPath = p
+				break
+			}
+		}
+		if diskPath == "" {
 			return fmt.Errorf("no disk found for domain")
 		}
 
-		diskPath := diskPaths[0]
+		// The template is only as large as its image; the VM keeps the size it
+		// had, or a reinstall would quietly shrink the customer's disk.
+		var oldSize int64
+		if info, ierr := storage.NewQCOW2Manager().ImageInfo(diskPath); ierr == nil {
+			oldSize = info.VirtualSize
+		}
 
 		// Backup old disk (optional - remove if not needed)
 		backupPath := diskPath + ".backup." + strconv.FormatInt(time.Now().Unix(), 10)
@@ -1646,6 +1658,14 @@ func RebuildVM(uuidStr string, templatePath string) error {
 			// Restore backup on failure
 			os.Rename(backupPath, diskPath)
 			return fmt.Errorf("failed to copy template: %w", err)
+		}
+
+		const gib = int64(1) << 30
+		if info, ierr := storage.NewQCOW2Manager().ImageInfo(diskPath); ierr == nil && oldSize > info.VirtualSize {
+			if err := storage.NewQCOW2Manager().ResizeImage(diskPath, int((oldSize+gib-1)/gib)); err != nil {
+				os.Rename(backupPath, diskPath)
+				return fmt.Errorf("failed to size rebuilt disk: %w", err)
+			}
 		}
 
 		// Remove backup on success

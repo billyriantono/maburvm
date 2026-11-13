@@ -905,6 +905,10 @@ func (w *VMOperationWorker) Timeout(job *river.Job[VMOperationJob]) time.Duratio
 	return 0 // River's default
 }
 
+// netConfigLocks serialises network applies per VM; netConfigDone holds the
+// highest job ID applied per VM.
+var netConfigLocks, netConfigDone sync.Map
+
 // handleConfigureNetwork dispatches a ConfigureNetwork operation to the agent
 // via the ApplyNetworkConfig gRPC method.
 func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client pb.NodeAgentClient, node *models.Node, vm *models.VM, job *river.Job[VMOperationJob]) error {
@@ -941,7 +945,21 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 		return fmt.Errorf("failed to parse network config params: %w", err)
 	}
 
-	// Build proto firewall rules
+	// One apply per VM at a time, and a job that a newer one has already
+	// overtaken is dropped: the agent replaces the whole config, so applying
+	// an older snapshot last would undo the newer change. A guest
+	// reconfiguration is never dropped; nothing later repeats it.
+	// ponytail: in-process lock, use a Postgres advisory lock if the panel
+	// ever runs more than one worker process.
+	lock, _ := netConfigLocks.LoadOrStore(vm.ID, &sync.Mutex{})
+	lock.(*sync.Mutex).Lock()
+	defer lock.(*sync.Mutex).Unlock()
+	if last, ok := netConfigDone.Load(vm.ID); ok && last.(int64) > job.ID && !params.ConfigureGuest {
+		return nil
+	}
+
+	// Rules and port forwards are read now, not taken from the job: the copy
+	// in the job is as old as the enqueue. The copy is the fallback only.
 	var fwRules []*pb.FirewallRule
 	for _, r := range params.FirewallRules {
 		fwRules = append(fwRules, &pb.FirewallRule{
@@ -952,6 +970,24 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 			DestPort:   r.PortRange,
 			Priority:   int32(r.Priority),
 		})
+	}
+	var freshPFs []models.PortForward
+	havePFs := false
+	if globalWorkerContext != nil && globalWorkerContext.DB != nil {
+		if rules, err := repository.NewFirewallRepository(globalWorkerContext.DB).ListByVMID(ctx, vm.ID, 0, 0); err == nil {
+			fwRules = fwRules[:0]
+			for _, r := range rules {
+				fwRules = append(fwRules, &pb.FirewallRule{
+					Direction:  modelDirectionToProto(r.Direction),
+					Action:     modelActionToProto(r.Action),
+					Protocol:   r.Protocol,
+					SourceCidr: r.SourceIP,
+					DestPort:   r.PortRange,
+					Priority:   int32(r.Priority),
+				})
+			}
+		}
+		havePFs = globalWorkerContext.DB.WithContext(ctx).Where("vm_id = ?", vm.ID).Find(&freshPFs).Error == nil
 	}
 
 	// Build network interface with anti-spoofing flag + VLAN tag.
@@ -984,13 +1020,24 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 	}
 
 	var pfRules []*pb.PortForward
-	for _, pf := range params.PortForwards {
-		pfRules = append(pfRules, &pb.PortForward{
-			ExternalPort: int32(pf.ExternalPort),
-			InternalPort: int32(pf.InternalPort),
-			Protocol:     pf.Protocol,
-			SourceCidr:   pf.SourceIP,
-		})
+	if havePFs {
+		for _, pf := range freshPFs {
+			pfRules = append(pfRules, &pb.PortForward{
+				ExternalPort: int32(pf.ExternalPort),
+				InternalPort: int32(pf.InternalPort),
+				Protocol:     pf.Protocol,
+				SourceCidr:   pf.SourceIP,
+			})
+		}
+	} else {
+		for _, pf := range params.PortForwards {
+			pfRules = append(pfRules, &pb.PortForward{
+				ExternalPort: int32(pf.ExternalPort),
+				InternalPort: int32(pf.InternalPort),
+				Protocol:     pf.Protocol,
+				SourceCidr:   pf.SourceIP,
+			})
+		}
 	}
 
 	req := &pb.NetworkConfigRequest{
@@ -1029,6 +1076,10 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 			w.metrics.RecordJobFailed()
 		}
 		return fmt.Errorf("network config failed: %s", errMsg)
+	}
+
+	if last, ok := netConfigDone.Load(vm.ID); !ok || last.(int64) < job.ID {
+		netConfigDone.Store(vm.ID, job.ID)
 	}
 
 	w.logger.InfoContext(ctx, "network config applied successfully",

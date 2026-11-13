@@ -62,6 +62,12 @@ func (j VMOperationJob) Kind() string {
 
 // InsertOpts returns insert options for VM operations (critical queue)
 func (j VMOperationJob) InsertOpts() *river.InsertOpts {
+	// Network config is never de-duplicated: each job means "the desired state
+	// changed", and skipping one behind a job that is already running loses
+	// that change. The worker serialises them per VM and reads current rules.
+	if j.Operation == VMOpConfigureNetwork {
+		return &river.InsertOpts{Queue: QueueCritical, Priority: PriorityCritical}
+	}
 	return &river.InsertOpts{
 		Queue:    QueueCritical,
 		Priority: PriorityCritical,

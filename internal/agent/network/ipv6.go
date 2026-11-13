@@ -118,7 +118,7 @@ func removeIPv6Route(d IPv6Delegation) error {
 	return nil
 }
 
-// ipv6FirewallSpecs mirrors applyRuleInternal for ip6tables, with the VM's
+// ipv6FirewallSpecs mirrors buildRuleSpec for ip6tables, with the VM's
 // delegated prefix in place of its address. sorted must already be in
 // priority order (the caller inserts each spec at position 1, exactly like
 // IPv4). Rules scoped to an IPv4 source can never match v6 traffic and are
@@ -140,7 +140,12 @@ func ipv6FirewallSpecs(vmID, prefix string, sorted []FirewallRule) (specs [][]st
 			} else if ip := net.ParseIP(src); ip != nil && ip.To4() != nil {
 				continue
 			}
-			spec = append(spec, "-s", src)
+			// The remote end: source of inbound traffic, destination of outbound.
+			if rule.Direction == "inbound" {
+				spec = append(spec, "-s", src)
+			} else {
+				spec = append(spec, "-d", src)
+			}
 		}
 		if rule.Direction == "inbound" {
 			spec = append(spec, "-d", prefix)

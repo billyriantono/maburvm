@@ -3,6 +3,7 @@ package network
 import (
 	"fmt"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -203,39 +204,48 @@ func (fm *FirewallManager) ApplyFirewallRules(vmID string, internalIP string, ru
 	fm.mu.Lock()
 	defer fm.mu.Unlock()
 
-	// First, remove existing rules for this VM
-	if err := fm.removeVMRulesInternal(vmID); err != nil {
-		return fmt.Errorf("failed to remove existing rules: %w", err)
-	}
-
-	// Initialize rules tracking for this VM
-	fm.rules[vmID] = make(map[string][]string)
-
 	// Sort rules by priority (lower number = higher priority)
 	sortedRules := make([]FirewallRule, len(rules))
 	copy(sortedRules, rules)
-	for i := 0; i < len(sortedRules)-1; i++ {
-		for j := i + 1; j < len(sortedRules); j++ {
-			if sortedRules[i].Priority > sortedRules[j].Priority {
-				sortedRules[i], sortedRules[j] = sortedRules[j], sortedRules[i]
-			}
-		}
-	}
+	sort.SliceStable(sortedRules, func(i, j int) bool { return sortedRules[i].Priority < sortedRules[j].Priority })
 
 	// A VM with several addresses gets the same policy on each of them; an
 	// address the rules don't mention would otherwise sit wide open beside a
 	// locked-down primary.
 	ips := append([]string{internalIP}, extraIPs...)
 
-	// Apply each rule
+	// Build every rule before touching iptables: one bad rule must leave the
+	// VM with the rules it had, not with none.
+	type builtRule struct {
+		id   string
+		spec []string
+	}
+	var built []builtRule
 	for _, rule := range sortedRules {
 		for _, ip := range ips {
-			if err := fm.applyRuleInternal(vmID, ip, rule); err != nil {
-				// Attempt to cleanup on failure
-				_ = fm.removeVMRulesInternal(vmID)
-				return fmt.Errorf("failed to apply rule %s: %w", rule.ID, err)
+			spec, err := buildRuleSpec(vmID, ip, rule)
+			if err != nil {
+				return fmt.Errorf("rule %s: %w", rule.ID, err)
+			}
+			if spec != nil {
+				built = append(built, builtRule{rule.ID, spec})
 			}
 		}
+	}
+
+	if err := fm.removeVMRulesInternal(vmID); err != nil {
+		return fmt.Errorf("failed to remove existing rules: %w", err)
+	}
+	fm.rules[vmID] = make(map[string][]string)
+
+	// Each rule goes in at the top of the chain, so the last one inserted is
+	// matched first: insert from lowest priority to highest.
+	for i := len(built) - 1; i >= 0; i-- {
+		if err := fm.ipt.Insert(FilterTable, MaburVMFirewallChain, 1, built[i].spec...); err != nil {
+			_ = fm.removeVMRulesInternal(vmID)
+			return fmt.Errorf("failed to insert rule %s: %w", built[i].id, err)
+		}
+		fm.rules[vmID][built[i].id] = built[i].spec
 	}
 
 	// Add default drop rule at the end (if no explicit allow rules exist, traffic is dropped)
@@ -248,7 +258,8 @@ func (fm *FirewallManager) ApplyFirewallRules(vmID string, internalIP string, ru
 
 	if ipv6Prefix != "" && fm.ipt6 != nil {
 		specs, defaultDrop := ipv6FirewallSpecs(vmID, ipv6Prefix, sortedRules)
-		for _, spec := range specs {
+		for i := len(specs) - 1; i >= 0; i-- { // same top-insert order as v4
+			spec := specs[i]
 			if err := fm.ipt6.Insert(FilterTable, MaburVMFirewallChain, 1, spec...); err != nil {
 				_ = fm.removeVMRulesInternal(vmID)
 				return fmt.Errorf("failed to insert ip6tables rule: %w", err)
@@ -330,38 +341,46 @@ func normalizePortSpec(portRange string) (string, bool, error) {
 	return spec, multi, nil
 }
 
-// applyRuleInternal applies a single firewall rule (assumes lock is held)
-func (fm *FirewallManager) applyRuleInternal(vmID string, internalIP string, rule FirewallRule) error {
-	// Validate rule
+// buildRuleSpec turns one rule into an iptables spec for one of the VM's
+// addresses. A nil spec with no error means the rule does not apply to IPv4
+// (its remote address is IPv6) and is left to the ip6tables pass.
+func buildRuleSpec(vmID string, internalIP string, rule FirewallRule) ([]string, error) {
 	if err := validateRule(rule); err != nil {
-		return err
+		return nil, err
+	}
+	if strings.Contains(rule.SourceIP, ":") {
+		return nil, nil
 	}
 
-	// Build the iptables rule
 	var ruleSpec []string
 
-	// Add protocol if specified and not "all"
 	if rule.Protocol != "" && rule.Protocol != "all" {
 		ruleSpec = append(ruleSpec, "-p", rule.Protocol)
 	}
 
-	// Add source IP/CIDR
+	// SourceIP is the remote end: where inbound traffic comes from, or where
+	// outbound traffic goes to. (Outbound used to emit two -s flags, which
+	// iptables refuses.)
+	remote := ""
 	if rule.SourceIP != "" && rule.SourceIP != "0.0.0.0/0" {
-		ruleSpec = append(ruleSpec, "-s", rule.SourceIP)
+		remote = rule.SourceIP
 	}
-
-	// Add destination (VM's IP)
 	if rule.Direction == "inbound" {
+		if remote != "" {
+			ruleSpec = append(ruleSpec, "-s", remote)
+		}
 		ruleSpec = append(ruleSpec, "-d", internalIP)
 	} else {
 		ruleSpec = append(ruleSpec, "-s", internalIP)
+		if remote != "" {
+			ruleSpec = append(ruleSpec, "-d", remote)
+		}
 	}
 
-	// Add port if specified (only for tcp/udp)
 	if rule.PortRange != "" && (rule.Protocol == "tcp" || rule.Protocol == "udp") {
 		spec, multi, err := normalizePortSpec(rule.PortRange)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if multi {
 			ruleSpec = append(ruleSpec, "-m", "multiport", "--dports", spec)
@@ -370,25 +389,13 @@ func (fm *FirewallManager) applyRuleInternal(vmID string, internalIP string, rul
 		}
 	}
 
-	// Add action
 	if rule.Action == "allow" {
 		ruleSpec = append(ruleSpec, "-j", "ACCEPT")
 	} else {
 		ruleSpec = append(ruleSpec, "-j", "DROP")
 	}
 
-	// Add comment for tracking
-	ruleSpec = append(ruleSpec, "-m", "comment", "--comment", fmt.Sprintf("maburvm-vm-%s-rule-%s", vmID, rule.ID))
-
-	// Insert the rule (using Insert to maintain priority order)
-	if err := fm.ipt.Insert(FilterTable, MaburVMFirewallChain, 1, ruleSpec...); err != nil {
-		return fmt.Errorf("failed to insert rule: %w", err)
-	}
-
-	// Track the rule
-	fm.rules[vmID][rule.ID] = ruleSpec
-
-	return nil
+	return append(ruleSpec, "-m", "comment", "--comment", fmt.Sprintf("maburvm-vm-%s-rule-%s", vmID, rule.ID)), nil
 }
 
 // validateRule validates a firewall rule
