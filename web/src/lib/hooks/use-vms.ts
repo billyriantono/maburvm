@@ -368,8 +368,9 @@ export function useVMMetricsHistory(id: string, minutes = 60) {
   return useQuery<VMMetricSample[]>({
     queryKey: ['vms', 'metrics-history', id, minutes],
     queryFn: async () => {
+      // 360 points fills a chart at any width; the server averages longer windows down to it.
       const response = await api.get<VMMetricSample[]>(`/api/v1/vms/${id}/metrics/history`, {
-        params: { minutes },
+        params: { minutes, limit: 360 },
       })
       return response.data.data
     },
