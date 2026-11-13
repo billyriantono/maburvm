@@ -43,7 +43,7 @@ export default async function RootLayout({
   return (
     // suppressHydrationWarning: the theme class is set on <html> before React
     // loads, so the server and first client render differ there by design.
-    <html lang="en" suppressHydrationWarning className={cn("font-sans", brandFont.variable, monoFont.variable)} style={themeVars(branding) as React.CSSProperties}>
+    <html lang="en" suppressHydrationWarning className={cn("font-sans", brandFont.variable, monoFont.variable)} data-brand={Object.keys(themeVars(branding)).length ? "" : undefined} style={themeVars(branding) as React.CSSProperties}>
       <body className="font-sans">
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
           <QueryProvider>

@@ -83,15 +83,45 @@ export function hsl(hex: string): string {
   return `${Math.round(h)} ${Math.round(s * 100)}% ${Math.round(l * 100)}%`
 }
 
-/** CSS variables that recolour the whole interface. Empty when the operator
- *  has not picked a colour, so the stylesheet's own light and dark values apply. */
+function hex(h: number, sPct: number, lPct: number): string {
+  const s = sPct / 100
+  const l = lPct / 100
+  const k = (n: number) => (n + h / 30) % 12
+  const a = s * Math.min(l, 1 - l)
+  const f = (n: number) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)))
+  return "#" + [f(0), f(8), f(4)].map((v) => Math.round(v * 255).toString(16).padStart(2, "0")).join("")
+}
+
+/** The dark theme's panel colour (--card under .dark in globals.css). */
+const DARK_PANEL = "#1a2128"
+
+/**
+ * The operator's colour, lightened only as far as it takes to read on the dark
+ * panel (4.5:1), hue and saturation kept. A deep navy or forest green would
+ * otherwise give the dark theme a button and links nobody can see.
+ */
+export function forDark(accent: string): string {
+  const [h, sPct, lPct] = hsl(accent).split(" ").map((v) => parseFloat(v))
+  let out = accent
+  for (let l = lPct; contrast(out, DARK_PANEL) < 4.5 && l < 96; l += 2) out = hex(h, sPct, l + 2)
+  return out
+}
+
+/**
+ * CSS variables carrying the operator's colour, one for each theme. Set them
+ * on an element that also has the data-brand attribute; globals.css maps them
+ * onto the interface there. Empty when no colour is picked, so the stylesheet's
+ * own values apply.
+ */
 export function themeVars(b: Pick<Branding, "accent">): Record<string, string> {
   if (!/^#[0-9a-f]{6}$/i.test(b.accent)) return {}
   const accent = accentOf(b)
+  const dark = forDark(accent)
   return {
-    "--primary": hsl(accent),
-    "--primary-foreground": hsl(onAccent(accent)),
-    "--ring": hsl(accent),
+    "--brand": hsl(accent),
+    "--brand-foreground": hsl(onAccent(accent)),
+    "--brand-dark": hsl(dark),
+    "--brand-dark-foreground": hsl(onAccent(dark)),
   }
 }
 

@@ -46,7 +46,7 @@ export default function ForgotPasswordPage() {
           If an account exists for <span className="font-medium text-foreground">{email}</span>, we&apos;ve
           sent a link to reset your password. The link is valid for 1 hour.
         </p>
-        <Link href="/login" className="inline-block text-sm font-medium text-primary hover:underline">
+        <Link href="/login" className="inline-block text-sm font-semibold text-foreground underline underline-offset-4">
           Back to sign in
         </Link>
       </div>
@@ -98,7 +98,7 @@ export default function ForgotPasswordPage() {
       </form>
 
       <div className="mt-6 text-center">
-        <Link href="/login" className="text-sm font-medium text-primary hover:underline">
+        <Link href="/login" className="text-sm font-semibold text-foreground underline underline-offset-4">
           Back to sign in
         </Link>
       </div>

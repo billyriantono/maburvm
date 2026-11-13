@@ -100,6 +100,21 @@
     --chart-2: #d95926;
   }
 
+  /* The operator's colour, where one is set (lib/branding sets --brand and
+     --brand-dark together with this attribute). The dark theme gets a version
+     lightened just enough to be read. */
+  [data-brand] {
+    --primary: var(--brand);
+    --primary-foreground: var(--brand-foreground);
+    --ring: var(--brand);
+  }
+  .dark[data-brand],
+  .dark [data-brand] {
+    --primary: var(--brand-dark);
+    --primary-foreground: var(--brand-dark-foreground);
+    --ring: var(--brand-dark);
+  }
+
   /* The faceplate: the dark strip that carries a machine's name, state and
      power controls. It is dark in both themes, so everything inside it reads
      its colours from here. */
@@ -243,13 +258,5 @@
 
   .neo-inset {
     @apply bg-muted;
-  }
-}
-
-/* Sign-in page: the operator's name rises into place once, on load. */
-@keyframes brand-rise {
-  from {
-    transform: translateY(24%);
-    opacity: 0;
   }
 }

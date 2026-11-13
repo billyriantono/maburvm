@@ -23,10 +23,11 @@ export function BrandingProvider({ initial, children }: { initial: Branding; chi
     const root = document.documentElement
     const vars = themeVars(branding)
     // Clearing the colour hands the theme back to the stylesheet.
-    for (const k of ["--primary", "--primary-foreground", "--ring"]) {
+    for (const k of ["--brand", "--brand-foreground", "--brand-dark", "--brand-dark-foreground"]) {
       if (k in vars) root.style.setProperty(k, vars[k])
       else root.style.removeProperty(k)
     }
+    root.toggleAttribute("data-brand", "--brand" in vars)
     document.title = branding.name
     let icon = document.querySelector<HTMLLinkElement>('link[rel="icon"]')
     if (!icon) {

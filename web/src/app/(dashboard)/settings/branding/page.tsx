@@ -389,6 +389,7 @@ export default function BrandStudioPage() {
             id="scene-panel"
             role="tabpanel"
             aria-labelledby={`scene-tab-${scene}`}
+            data-brand={Object.keys(themeVars(draft)).length ? "" : undefined}
             style={themeVars(draft) as React.CSSProperties}
             className="rounded-xl border bg-muted/40 shadow-sm overflow-hidden"
           >

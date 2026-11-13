@@ -55,7 +55,7 @@ function ResetPasswordForm() {
         <p className="text-sm text-muted-foreground">
           This link is missing its reset token. Please request a new password reset.
         </p>
-        <Link href="/forgot-password" className="inline-block text-sm font-medium text-primary hover:underline">
+        <Link href="/forgot-password" className="inline-block text-sm font-semibold text-foreground underline underline-offset-4">
           Request a new link
         </Link>
       </div>
@@ -148,7 +148,7 @@ function ResetPasswordForm() {
       </form>
 
       <div className="mt-6 text-center">
-        <Link href="/login" className="text-sm font-medium text-primary hover:underline">
+        <Link href="/login" className="text-sm font-semibold text-foreground underline underline-offset-4">
           Back to sign in
         </Link>
       </div>
