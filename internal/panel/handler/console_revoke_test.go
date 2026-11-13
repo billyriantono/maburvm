@@ -40,7 +40,7 @@ quota_mode TEXT NOT NULL DEFAULT 'legacy',
 			created_at DATETIME, updated_at DATETIME, token_revoked_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE IF NOT EXISTS vms (
 			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, node_id TEXT NOT NULL, hostname TEXT,
-			os_template_id TEXT, resources TEXT, status TEXT DEFAULT 'stopped',
+			os_template_id TEXT, resources TEXT, status TEXT DEFAULT 'stopped', suspended BOOLEAN NOT NULL DEFAULT 0,
 			source_migration TEXT, vnc_port INTEGER, vnc_password TEXT,
 			console_enabled BOOLEAN DEFAULT 1, rescue_mode BOOLEAN DEFAULT 0,
 			created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,

@@ -34,7 +34,7 @@ export default function ClientProfilePage() {
       { current_password: current, new_password: next },
       {
         onSuccess: () => {
-          setMsg({ ok: true, text: "Password changed." })
+          setMsg({ ok: true, text: "Password changed. Sign in again with the new password." })
           toast.success("Password changed")
           setCurrent("")
           setNext("")

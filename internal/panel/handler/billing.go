@@ -483,8 +483,11 @@ func (h *BillingHandler) HandleWebhook(c echo.Context) error {
 		return c.JSON(statusCode, response)
 	}
 
-	// Store idempotency record if key was provided
-	if idempotencyKey != "" {
+	// Store idempotency record if key was provided. Suspend and unsuspend are
+	// not cached: the billing module reuses one key per service and action, so a
+	// cached "suspended" would answer the next suspend after an unsuspend without
+	// doing anything. Both are safe to repeat.
+	if idempotencyKey != "" && payload.Event != EventVMSuspend && payload.Event != EventVMUnsuspend {
 		h.storeIdempotency(ctx, idempotencyKey, string(payload.Event), &IdempotencyRecord{
 			RequestID:   requestID,
 			Response:    response,
@@ -586,7 +589,7 @@ func (h *BillingHandler) handleVMCreate(
 	}, nil
 }
 
-// handleVMSuspend suspends a VM (pause + network block)
+// handleVMSuspend flags the VM suspended and powers it off.
 func (h *BillingHandler) handleVMSuspend(
 	ctx context.Context,
 	data *WebhookData,
@@ -603,24 +606,9 @@ func (h *BillingHandler) handleVMSuspend(
 		return WebhookResponse{}, err
 	}
 
-	// Execute suspend command (pause VM)
-	suspendReq := &service.LifecycleRequest{
-		VMID:    data.VMID,
-		Command: service.LifecycleStop, // Suspend by stopping the VM
-		Async:   false,                 // Synchronous for webhook
-	}
-
-	// Use force stop for suspend (equivalent to pausing)
-	suspendReq.Command = service.LifecycleForceStop
-
-	_, err = h.vmService.ExecuteLifecycleCommand(ctx, suspendReq)
-	if err != nil {
+	if err := h.vmService.SuspendVM(ctx, data.VMID); err != nil {
 		return WebhookResponse{}, fmt.Errorf("failed to suspend VM: %w", err)
 	}
-
-	// Block network by adding a deny-all firewall rule
-	// This is done through the VM service by updating VM status to suspended
-	// The actual network blocking would be handled by the agent
 
 	h.logger.Info("VM suspended successfully via webhook",
 		"vm_id", data.VMID,
@@ -629,14 +617,14 @@ func (h *BillingHandler) handleVMSuspend(
 
 	return WebhookResponse{
 		Success:     true,
-		Message:     "VM suspended successfully (VM paused, network blocked)",
+		Message:     "VM suspended (powered off, owner cannot start it)",
 		VMID:        data.VMID,
 		ExternalRef: data.ExternalRef,
 		Timestamp:   time.Now().UTC(),
 		RequestID:   requestID,
 		Metadata: map[string]string{
 			"previous_status": string(vm.VM.Status),
-			"action":          "paused_and_network_blocked",
+			"action":          "suspended_and_powered_off",
 		},
 	}, nil
 }
@@ -658,19 +646,11 @@ func (h *BillingHandler) handleVMUnsuspend(
 		return WebhookResponse{}, err
 	}
 
-	// Execute start command to resume
-	startReq := &service.LifecycleRequest{
-		VMID:    data.VMID,
-		Command: service.LifecycleStart,
-		Async:   false,
-	}
-
-	_, err = h.vmService.ExecuteLifecycleCommand(ctx, startReq)
-	if err != nil {
+	if _, err = h.vmService.ExecuteLifecycleCommand(ctx, &service.LifecycleRequest{
+		VMID: data.VMID, Command: service.LifecycleUnsuspend,
+	}); err != nil {
 		return WebhookResponse{}, fmt.Errorf("failed to unsuspend VM: %w", err)
 	}
-
-	// Network is automatically unblocked when VM starts
 
 	h.logger.Info("VM unsuspended successfully via webhook",
 		"vm_id", data.VMID,
@@ -679,14 +659,14 @@ func (h *BillingHandler) handleVMUnsuspend(
 
 	return WebhookResponse{
 		Success:     true,
-		Message:     "VM unsuspended successfully (VM resumed, network restored)",
+		Message:     "VM unsuspended and started",
 		VMID:        data.VMID,
 		ExternalRef: data.ExternalRef,
 		Timestamp:   time.Now().UTC(),
 		RequestID:   requestID,
 		Metadata: map[string]string{
 			"previous_status": string(vm.VM.Status),
-			"action":          "resumed_and_network_restored",
+			"action":          "unsuspended_and_started",
 		},
 	}, nil
 }

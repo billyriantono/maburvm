@@ -32,7 +32,7 @@ func testDB(t *testing.T) *gorm.DB {
 	ddl := []string{
 		`CREATE TABLE vms (
 			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, node_id TEXT NOT NULL, hostname TEXT,
-			os_template_id TEXT, resources TEXT, status TEXT DEFAULT 'stopped',
+			os_template_id TEXT, resources TEXT, status TEXT DEFAULT 'stopped', suspended BOOLEAN NOT NULL DEFAULT 0,
 			source_migration TEXT, vnc_port INTEGER, vnc_password TEXT,
 			console_enabled BOOLEAN DEFAULT 1, rescue_mode BOOLEAN DEFAULT 0,
 			created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
@@ -172,4 +172,25 @@ func TestAuthorizer_VMIDHelpers(t *testing.T) {
 	// Nonexistent resource -> ErrRecordNotFound.
 	_, err = a.NetworkVMID(ctx, uuid.New().String())
 	assert.ErrorIs(t, err, gorm.ErrRecordNotFound)
+}
+
+// A suspended VM stays visible to its owner and refuses everything else, even
+// when it is powered off (which is how a billing suspend leaves it).
+func TestAuthorizer_SuspendedVMIsReadOnlyToOwner(t *testing.T) {
+	db := testDB(t)
+	ownerID, vmID := uuid.New().String(), uuid.New().String()
+	require.NoError(t, db.Create(&models.VM{ID: vmID, UserID: ownerID, NodeID: uuid.New().String()}).Error)
+	require.NoError(t, db.Exec("UPDATE vms SET suspended = 1, status = 'stopped' WHERE id = ?", vmID).Error)
+	a := NewAuthorizer(db)
+
+	assert.True(t, a.AuthorizeVM(ctxWith(ownerID, models.RoleClient), vmID), "owner may still read")
+
+	post := ctxWith(ownerID, models.RoleClient)
+	post.Request().Method = http.MethodPost
+	assert.False(t, a.AuthorizeVM(post, vmID))
+	assert.Equal(t, http.StatusForbidden, post.Response().Status)
+
+	admin := ctxWith(uuid.New().String(), models.RoleAdmin)
+	admin.Request().Method = http.MethodPost
+	assert.True(t, a.AuthorizeVM(admin, vmID), "admins are not bound by suspension")
 }

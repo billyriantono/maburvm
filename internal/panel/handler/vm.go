@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -500,6 +501,7 @@ type VMListItem struct {
 	RegionName    string `json:"region_name,omitempty"`
 	RegionCountry string `json:"region_country,omitempty"`
 	VNCPort       int    `json:"vnc_port,omitempty"`
+	Suspended     bool   `json:"suspended"`
 	CreatedAt     string `json:"created_at"`
 	UpdatedAt     string `json:"updated_at"`
 }
@@ -592,6 +594,7 @@ func (h *VMHandler) ListVMs(c echo.Context) error {
 	for i, vm := range resp.VMs {
 		node := nodeSummaries[vm.NodeID]
 		items[i] = VMListItem{
+			Suspended:     vm.Suspended,
 			RegionID:      vm.RegionID,
 			RegionName:    vm.RegionName,
 			RegionCountry: vm.RegionCountry,
@@ -661,6 +664,7 @@ type VMDetailResponse struct {
 	RescueMode     bool   `json:"rescue_mode"`
 	// null = not known, "" = no ISO in the drive, otherwise the attached image.
 	AttachedISO *string                `json:"attached_iso"`
+	Suspended   bool                   `json:"suspended"`
 	AgentStatus map[string]interface{} `json:"agent_status,omitempty"`
 	// Routed IPv6 delegated to the VM; all empty when it has none.
 	IPv6Prefix  string `json:"ipv6_prefix,omitempty"`
@@ -718,6 +722,7 @@ func (h *VMHandler) GetVM(c echo.Context) error {
 		ConsoleEnabled: vm.VM.ConsoleEnabled,
 		RescueMode:     vm.VM.RescueMode,
 		AttachedISO:    vm.VM.AttachedISO,
+		Suspended:      vm.VM.Suspended,
 		CreatedAt:      vm.VM.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		UpdatedAt:      vm.VM.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 	}
@@ -1573,6 +1578,31 @@ func (h *VMHandler) ResetPasswordVM(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]interface{}{"message": "Password reset enqueued", "data": resp})
 }
 
+// checkISOSource limits what a non-admin may mount as an ISO. The node agent
+// treats anything that is not a URL as a path on the node, so a customer-supplied
+// path would mount (and, on VM delete, remove) any file there. Customers get
+// public http(s) URLs only; admins keep on-node paths.
+func checkISOSource(c echo.Context, ref string) error {
+	if !isClientRole(c) {
+		return nil
+	}
+	u, err := url.Parse(ref)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return errors.New("iso_url must be an http(s) URL")
+	}
+	host := u.Hostname()
+	// ponytail: literal-address check only; a hostname that resolves to an
+	// internal address still gets fetched. Resolve on the node if that matters.
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+			return errors.New("iso_url must point to a public address")
+		}
+	} else if strings.EqualFold(host, "localhost") {
+		return errors.New("iso_url must point to a public address")
+	}
+	return nil
+}
+
 // AttachISOVM handles POST /api/vms/:id/iso/attach - Attach a bootable ISO
 func (h *VMHandler) AttachISOVM(c echo.Context) error {
 	id := c.Param("id")
@@ -1584,6 +1614,9 @@ func (h *VMHandler) AttachISOVM(c echo.Context) error {
 	}
 	if err := c.Bind(&req); err != nil || req.ISOURL == "" {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "iso_url is required"})
+	}
+	if err := checkISOSource(c, req.ISOURL); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
 	}
 	jobID, err := h.service.AttachISO(c.Request().Context(), id, req.ISOURL)
 	if err != nil {
@@ -1622,6 +1655,11 @@ func (h *VMHandler) RescueVM(c echo.Context) error {
 		ISOURL string `json:"iso_url"`
 	}
 	_ = c.Bind(&req) // body is optional
+	if req.ISOURL != "" {
+		if err := checkISOSource(c, req.ISOURL); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
+		}
+	}
 	jobID, err := h.service.RescueVM(c.Request().Context(), id, req.ISOURL)
 	if err != nil {
 		if errors.Is(err, service.ErrVMNotFound) {

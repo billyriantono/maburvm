@@ -115,6 +115,15 @@ type nodeBuild struct {
 func (h *VersionHandler) Version(c echo.Context) error {
 	panelBuild := buildinfo.Get()
 
+	// Node names, states and agent errors are infrastructure; customers get the
+	// panel build only (and do not get to fan a request out to every node).
+	if isClientRole(c) {
+		return c.JSON(http.StatusOK, map[string]any{
+			"data":    map[string]any{"panel": panelBuild, "nodes": []nodeBuild{}},
+			"success": true,
+		})
+	}
+
 	return c.JSON(http.StatusOK, map[string]any{
 		"data": map[string]any{
 			"panel": panelBuild,

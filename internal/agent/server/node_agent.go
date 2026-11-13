@@ -1312,6 +1312,10 @@ func (s *NodeAgentService) attachISO(req *pb.VMCommandRequest) error {
 	if req.Config == nil || req.Config.ImageId == "" {
 		return fmt.Errorf("ISO image is required for ATTACH_ISO")
 	}
+	// vm:// and s3:// are disk sources for clone and image deploy, never ISOs.
+	if strings.HasPrefix(req.Config.ImageId, "vm://") || strings.HasPrefix(req.Config.ImageId, "s3://") {
+		return fmt.Errorf("unsupported ISO source")
+	}
 	isoPath, err := resolveTemplateImage(req.Config.ImageId)
 	if err != nil {
 		return err

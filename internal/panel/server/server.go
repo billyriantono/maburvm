@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/mail"
 	"os"
 	"os/signal"
 	"strconv"
@@ -819,6 +820,9 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 		if req.Email == "" || req.Password == "" {
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Email and password are required"})
 		}
+		if err := service.ValidatePasswordStrength(req.Password); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+		}
 		if req.Role == "" {
 			req.Role = models.RoleClient
 		}
@@ -1376,8 +1380,9 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 			return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Not authenticated"})
 		}
 		var req struct {
-			Email string `json:"email"`
-			Name  string `json:"name"`
+			Email           string `json:"email"`
+			Name            string `json:"name"`
+			CurrentPassword string `json:"current_password"`
 		}
 		if err := c.Bind(&req); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request"})
@@ -1386,8 +1391,19 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		if err != nil {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "User not found"})
 		}
-		if req.Email != "" {
-			user.Email = req.Email
+		// The email is where password resets go, so changing it is as good as
+		// changing the password: it needs the current one, not just a session.
+		if email := strings.ToLower(strings.TrimSpace(req.Email)); email != "" && email != user.Email {
+			if _, err := mail.ParseAddress(email); err != nil {
+				return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Enter a valid email address"})
+			}
+			if user.PasswordHash == "" || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.CurrentPassword)) != nil {
+				return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "Enter your current password to change the email address"})
+			}
+			if exists, err := userRepo.EmailExists(c.Request().Context(), email); err != nil || exists {
+				return c.JSON(http.StatusConflict, map[string]interface{}{"error": "That email address cannot be used"})
+			}
+			user.Email = email
 		}
 		if err := userRepo.Update(c.Request().Context(), user); err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to update profile"})
@@ -1416,6 +1432,9 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.CurrentPassword)); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Current password is incorrect"})
 		}
+		if err := service.ValidatePasswordStrength(req.NewPassword); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+		}
 		// Hash new password
 		hash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
 		if err != nil {
@@ -1424,7 +1443,12 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		if err := userRepo.UpdatePassword(c.Request().Context(), userCtx.ID, string(hash)); err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to update password"})
 		}
-		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "Password changed successfully"})
+		// Whoever else holds a session for this account loses it. That includes
+		// this one: the caller signs in again with the new password.
+		if userService != nil {
+			_ = userService.RevokeUserTokens(userCtx.ID)
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "Password changed. Sign in again."})
 	})
 
 	// POST /settings/2fa/setup
@@ -1483,6 +1507,15 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		if userService == nil {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "2FA service unavailable"})
 		}
+		// Turning 2FA off takes the second factor, or a backup code: a session
+		// alone must not be enough to remove the thing that protects the login.
+		var req struct {
+			Code string `json:"code"`
+		}
+		_ = c.Bind(&req)
+		if err := userService.Verify2FA(&service.Verify2FARequest{UserID: userCtx.ID, Code: strings.TrimSpace(req.Code)}); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Enter a current authenticator code or a backup code"})
+		}
 		if err := userService.Disable2FA(userCtx.ID); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 		}
@@ -1506,7 +1539,7 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		}
 		out := map[string]json.RawMessage{}
 		for _, r := range rows {
-			out[r.Section] = json.RawMessage(r.Data)
+			out[r.Section] = maskSettingSecrets(json.RawMessage(r.Data))
 		}
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": out})
 	})
@@ -1519,6 +1552,10 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 			if section == service.DNSProviderSection {
 				return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "The DNS provider is saved through its own form"})
 			}
+			var stored string
+			_ = s.db.WithContext(c.Request().Context()).
+				Raw("SELECT data::text FROM system_settings WHERE section = ?", section).Scan(&stored).Error
+			data = keepSettingSecrets(data, json.RawMessage(stored))
 			if err := s.db.WithContext(c.Request().Context()).Exec(
 				"INSERT INTO system_settings (section, data, updated_at) VALUES (?, ?::jsonb, NOW()) "+
 					"ON CONFLICT (section) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()",
@@ -1607,6 +1644,14 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 				to = u.Email
 			}
 		}
+		// The form never receives the stored password, so blank means "the one
+		// already saved".
+		if body.SMTPPassword == "" {
+			var stored string
+			_ = s.db.WithContext(c.Request().Context()).
+				Raw("SELECT data->>'smtpPassword' FROM system_settings WHERE section = 'email'").Scan(&stored).Error
+			body.SMTPPassword = stored
+		}
 		if err := service.SendTestEmail(service.SMTPSettings{
 			Host:     body.SMTPHost,
 			Port:     body.SMTPPort,
@@ -1621,6 +1666,53 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 	})
 }
 
+// settingSecretKeys are the system-settings fields that hold credentials. They
+// go in through the settings form and never come back out.
+var settingSecretKeys = []string{"smtpPassword", "hmacSecret", "abuseipdbToken"}
+
+// maskSettingSecrets blanks credential fields in one settings section and adds
+// "<key>Set": true so the form can say a value is stored.
+func maskSettingSecrets(data json.RawMessage) json.RawMessage {
+	var m map[string]interface{}
+	if json.Unmarshal(data, &m) != nil {
+		return data
+	}
+	for _, k := range settingSecretKeys {
+		if v, _ := m[k].(string); v != "" {
+			m[k] = ""
+			m[k+"Set"] = true
+		}
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return data
+	}
+	return out
+}
+
+// keepSettingSecrets carries stored credentials over a save that left them
+// blank, which is what the form sends for a field it was never given.
+// ponytail: a stored secret cannot be cleared from the UI, only replaced.
+func keepSettingSecrets(incoming, stored json.RawMessage) json.RawMessage {
+	var in, old map[string]interface{}
+	if json.Unmarshal(incoming, &in) != nil || json.Unmarshal(stored, &old) != nil {
+		return incoming
+	}
+	for _, k := range settingSecretKeys {
+		delete(in, k+"Set")
+		if v, _ := in[k].(string); v == "" {
+			if prev, _ := old[k].(string); prev != "" {
+				in[k] = prev
+			}
+		}
+	}
+	out, err := json.Marshal(in)
+	if err != nil {
+		return incoming
+	}
+	return out
+}
+
 // setupNotificationRoutes configures notification routes (uses audit_logs as source)
 func (s *Server) setupNotificationRoutes(g *echo.Group) {
 	auditRepo := repository.NewAuditRepository(s.db)
@@ -1631,7 +1723,18 @@ func (s *Server) setupNotificationRoutes(g *echo.Group) {
 	// GET /notifications
 	notifications.GET("", func(c echo.Context) error {
 		ctx := c.Request().Context()
-		logs, _ := auditRepo.List(ctx, 20, 0)
+		// Audit rows name users, addresses and resources across the whole
+		// fleet. Admins see all of it; everyone else sees their own.
+		userCtx, ok := panelMiddleware.GetUserContext(c)
+		if !ok {
+			return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Not authenticated"})
+		}
+		var logs []models.AuditLog
+		if userCtx.Role == models.RoleAdmin {
+			logs, _ = auditRepo.List(ctx, 20, 0)
+		} else {
+			logs, _ = auditRepo.ListByUser(ctx, userCtx.ID.String(), 20, 0)
+		}
 		return c.JSON(http.StatusOK, map[string]interface{}{
 			"success": true,
 			"data":    logs,
