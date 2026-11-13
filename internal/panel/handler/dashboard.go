@@ -132,9 +132,9 @@ func RegisterDashboardRoutes(e *echo.Echo, db *gorm.DB) {
 			LEFT JOIN (SELECT node_id, sum(total_space) AS total, sum(used_space) AS used
 				FROM storage_pools WHERE deleted_at IS NULL GROUP BY node_id) s ON s.node_id = n.id
 			-- The last time the node answered. The collector also stores a row of
-			-- zeros when it cannot reach a node; that is not a reading.
+			-- zeros, marked offline, when it cannot reach a node; that is not a reading.
 			LEFT JOIN LATERAL (SELECT cpu_usage, memory_usage, recorded_at, conntrack_count, conntrack_max
-				FROM node_metrics WHERE node_id = n.id AND status = 'active' ORDER BY recorded_at DESC LIMIT 1) m ON true
+				FROM node_metrics WHERE node_id = n.id AND status <> 'offline' ORDER BY recorded_at DESC LIMIT 1) m ON true
 			WHERE n.deleted_at IS NULL ORDER BY n.name`).Scan(&nodes).Error; err != nil {
 			return fail(c, err)
 		}
