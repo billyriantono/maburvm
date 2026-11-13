@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { useVM, useVMMetrics, useVMAction, useDeleteVM, useAttachISO, useDetachISO, useRescueVM, useUnrescueVM, useMigrateVM, useRegenerateVNCPassword, useSetConsoleEnabled, useRepairConsole, useRebuildVM, useResetPassword, useCloneVM, useUpdateVM, useAssignVMIP, useReleaseVMIP, useAssignVMIPv6, useReleaseVMIPv6 } from "@/lib/hooks/use-vms"
+import { useVM, useVMMetrics, useVMAction, useDeleteVM, useAttachISO, useDetachISO, useRescueVM, useUnrescueVM, useMigrateVM, useRegenerateVNCPassword, useSetConsoleEnabled, useRepairConsole, useRebuildVM, useResetPassword, useCloneVM, useUpdateVM, useAssignVMIP, useReleaseVMIP, useAssignVMIPv6, useReleaseVMIPv6, useInitialPassword, useRevealInitialPassword, useForgetInitialPassword } from "@/lib/hooks/use-vms"
 import { useIPPools } from "@/lib/hooks/use-ipam"
 import { DeleteProgressDialog } from "@/components/vm-delete-progress"
 import { VMNameEditor } from "@/components/vm-name-editor"
@@ -795,6 +795,75 @@ function BandwidthUsageCard({ vmId, canEditQuota }: { vmId: string; canEditQuota
       </div>
       )}
       <BandwidthHistory vmId={vmId} />
+    </div>
+  )
+}
+
+// InitialPassword lets the owner read the root password the panel generated,
+// while it is still kept. It is never emailed: the "server is ready" email
+// points here. Reading it needs a signed-in session and is recorded.
+function InitialPassword({ vmId }: { vmId: string }) {
+  const { data } = useInitialPassword(vmId)
+  const reveal = useRevealInitialPassword(vmId)
+  const forget = useForgetInitialPassword(vmId)
+  const confirm = useConfirm()
+  const { copy, copied } = useCopy()
+  const [shown, setShown] = useState<string | null>(null)
+  if (!data?.available) return null
+  const until = data.expires_at ? new Date(data.expires_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : ""
+  return (
+    <div className="mt-3 border-t border-hair pt-3">
+      <p className="text-xs font-medium text-muted-foreground">Root password</p>
+      {shown ? (
+        <p className="mt-1 font-medium">
+          <span className="font-mono break-all">{shown}</span>
+          <button type="button" onClick={() => copy(shown, "initial-pw")} className="ml-2 border-b border-border pb-px text-xs font-semibold hover:border-foreground active:translate-y-px">
+            {copied("initial-pw") ? "Copied" : "Copy"}
+          </button>
+          <button type="button" onClick={() => setShown(null)} className="ml-3 border-b border-border pb-px text-xs font-semibold hover:border-foreground active:translate-y-px">
+            Hide
+          </button>
+        </p>
+      ) : (
+        <Button
+          size="sm"
+          variant="outline"
+          className="mt-1.5"
+          disabled={reveal.isPending}
+          onClick={async () => {
+            try {
+              setShown((await reveal.mutateAsync()).password)
+            } catch (e) {
+              toast.error(`Could not show the password: ${(e as Error).message}`)
+            }
+          }}
+        >
+          {reveal.isPending && <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />}
+          Show the password
+        </Button>
+      )}
+      <p className="mt-2 text-xs text-muted-foreground">
+        Set when this VM was installed. Kept until {until}, then erased. Each time it is shown is recorded.{" "}
+        <button
+          type="button"
+          className="font-semibold text-foreground underline underline-offset-2"
+          onClick={async () => {
+            const ok = await confirm({
+              title: "Erase the stored password now?",
+              description: "Do this once you have saved it somewhere safe. It cannot be shown again; if you lose it, set a new one from the Console tab.",
+              confirmLabel: "Erase it",
+              destructive: true,
+              action: () => forget.mutateAsync(),
+            })
+            if (ok) {
+              setShown(null)
+              toast.success("Stored password erased")
+            }
+          }}
+        >
+          Erase it now
+        </button>
+      </p>
     </div>
   )
 }
@@ -1915,6 +1984,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                     ) : "Contact support to have one assigned."}
                   </p>
                 )}
+                <InitialPassword vmId={vmId} />
                 {vm.status === "running" && (
                   vm.vnc_port ? (
                     <div className="mt-3 flex flex-wrap gap-2">

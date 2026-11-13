@@ -310,6 +310,11 @@ func CalculateBackoff(attempt int, baseDelay, maxDelay time.Duration) time.Durat
 
 // VMOperationWorker handles VM lifecycle operations
 // Queue: critical (20 workers)
+// VMCreatedHook, when set, is called once a VM has been created and started.
+// The panel sets it at start-up to send the "server is ready" email; it is a
+// variable because this package cannot import the panel's services.
+var VMCreatedHook func(ctx context.Context, vmID string)
+
 type VMOperationWorker struct {
 	river.WorkerDefaults[VMOperationJob]
 	logger      *slog.Logger
@@ -817,6 +822,12 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 				"vm_id", vm.ID,
 			)
 		}
+	}
+
+	// A new VM is up: let whoever is listening tell its owner. Detached from
+	// the job, so a slow mail server cannot hold the queue or fail the create.
+	if job.Args.Operation == VMOpCreate && VMCreatedHook != nil {
+		go VMCreatedHook(context.WithoutCancel(ctx), vm.ID)
 	}
 
 	latency := time.Since(startTime)

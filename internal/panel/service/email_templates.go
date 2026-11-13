@@ -24,6 +24,9 @@ type EmailTemplate struct {
 	// Button is the label of the one action link (sign in, reset password).
 	// Where it points is fixed per template.
 	Button string `json:"button"`
+	// Off stops this email being sent. Only honoured for templates marked
+	// Optional: turning off a password reset would lock people out.
+	Off bool `json:"off,omitempty"`
 }
 
 // EmailTemplateDef describes one email the panel sends.
@@ -35,6 +38,9 @@ type EmailTemplateDef struct {
 	Sample      map[string]string `json:"sample"`
 	SampleLink  string            `json:"sample_link"`
 	LinkMeaning string            `json:"link_meaning"`
+	// Optional emails can be switched off by the operator, for example when
+	// their billing system already sends its own.
+	Optional bool `json:"optional"`
 }
 
 // EmailPlaceholders are the words an operator can drop into a subject or body.
@@ -46,11 +52,16 @@ var EmailPlaceholders = []struct {
 	{"{{name}}", "The person's name (may be empty)"},
 	{"{{email}}", "The address the email is sent to"},
 	{"{{brand}}", "Your panel name"},
+	{"{{server}}", "The server's name (server emails only)"},
+	{"{{address}}", "The server's IP address (server emails only)"},
+	{"{{system}}", "The operating system installed (server emails only)"},
+	{"{{access}}", "How to sign in to the server: where to read its password, or a reminder of what was chosen (server emails only)"},
 }
 
 const (
 	EmailWelcome       = "welcome"
 	EmailPasswordReset = "password_reset"
+	EmailVMReady       = "vm_ready"
 )
 
 var emailTemplateDefs = []EmailTemplateDef{
@@ -82,7 +93,34 @@ var emailTemplateDefs = []EmailTemplateDef{
 		SampleLink:  "https://panel.example.com/reset-password?token=example",
 		LinkMeaning: "The button opens the page where they choose a new password.",
 	},
+	{
+		Key:      EmailVMReady,
+		Name:     "Server ready",
+		SentWhen: "Sent to a server's owner when it has been created and started. The root password is never in the email: it is read on the server's page after signing in.",
+		Optional: true,
+		Default: EmailTemplate{
+			Subject: "Your server {{server}} is ready",
+			Body: "{{greeting}},\n\nYour server {{server}} has been created and is running.\n\n" +
+				"Address: {{address}}\nSystem: {{system}}\nUser: root\n\n{{access}}",
+			Button: "Open your server",
+		},
+		Sample: map[string]string{
+			"name": "Dewi", "email": "dewi@example.com", "server": "web-01", "address": "203.0.113.24", "system": "Ubuntu 24.04 LTS",
+			"access": AccessPasswordOnPage,
+		},
+		SampleLink:  "https://panel.example.com/client/vms/example",
+		LinkMeaning: "The button opens the server's page in your panel, where its root password can be read after signing in.",
+	},
 }
+
+// What {{access}} becomes in a server email, by how the server can be reached.
+const (
+	// The panel generated the password and is keeping it for the owner.
+	AccessPasswordOnPage = "For your safety the root password is not in this email. Open the server's page and sign in to read it. " +
+		"It can be read there for 72 hours, and every time it is read is recorded. After that it is erased, and you can set a new one from the same page."
+	// The owner chose the password themselves when ordering.
+	AccessOwnPassword = "Sign in with the root password you chose when you ordered it. If you have lost it, you can set a new one from the server's page."
+)
 
 // EmailTemplateDefs lists every email the panel sends.
 func EmailTemplateDefs() []EmailTemplateDef { return emailTemplateDefs }
@@ -171,6 +209,9 @@ type EmailData struct {
 	// LogoURL is an absolute address a mail client can fetch; empty shows the
 	// brand name as text instead.
 	LogoURL string
+	// Extra fills the placeholders only some emails have, such as {{server}}.
+	// A key without braces: "server" fills {{server}}.
+	Extra map[string]string
 }
 
 func fillPlaceholders(s string, b Branding, d EmailData) string {
@@ -178,12 +219,16 @@ func fillPlaceholders(s string, b Branding, d EmailData) string {
 	if n := strings.TrimSpace(d.Name); n != "" {
 		greeting = "Hello " + n
 	}
-	return strings.NewReplacer(
+	pairs := []string{
 		"{{greeting}}", greeting,
 		"{{name}}", strings.TrimSpace(d.Name),
 		"{{email}}", d.Email,
 		"{{brand}}", b.Name,
-	).Replace(s)
+	}
+	for k, v := range d.Extra {
+		pairs = append(pairs, "{{"+k+"}}", v)
+	}
+	return strings.NewReplacer(pairs...).Replace(s)
 }
 
 // oneLine keeps a value safe to put in a mail header: a name or a brand with

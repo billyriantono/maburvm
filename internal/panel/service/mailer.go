@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -68,6 +69,13 @@ func (c SMTPSettings) Template(key string) EmailTemplate {
 	}
 	def, _ := EmailTemplateDefFor(key)
 	return def.Default
+}
+
+// Enabled reports whether an email should be sent. Only optional emails can
+// be switched off.
+func (c SMTPSettings) Enabled(key string) bool {
+	def, ok := EmailTemplateDefFor(key)
+	return !ok || !def.Optional || !c.Templates[key].Off
 }
 
 // EmailLogoURL is the address a mail client fetches the logo from. Mail
@@ -160,4 +168,65 @@ func SendMail(cfg SMTPSettings, to string, msg RenderedEmail) error {
 		return fmt.Errorf("SMTP send failed: %w", err)
 	}
 	return nil
+}
+
+// NotifyVMReady emails a server's owner that it has been created and is
+// running. It carries no password: when the panel generated one and is keeping
+// it, the email says where to read it; otherwise it reminds the owner they
+// chose their own. Best-effort: with no mail server set up, or the email
+// switched off, it does nothing.
+func NotifyVMReady(ctx context.Context, db *gorm.DB, vmID string) error {
+	cfg, ok, err := LoadSMTPSettings(db)
+	if err != nil || !ok || !cfg.Enabled(EmailVMReady) {
+		return err
+	}
+	var rows []struct {
+		Hostname string
+		Email    string
+		Name     string
+		Role     string
+		System   string
+		Address  string
+	}
+	if err := db.WithContext(ctx).Raw(`SELECT v.hostname, u.email, coalesce(u.name, '') AS name, u.role::text AS role,
+			coalesce(t.name, '') AS system,
+			coalesce((SELECT host(n.ip_address) FROM networks n WHERE n.vm_id = v.id AND n.deleted_at IS NULL ORDER BY n.created_at LIMIT 1), '') AS address
+		FROM vms v JOIN users u ON u.id = v.user_id
+		LEFT JOIN os_templates t ON t.id = v.os_template_id
+		WHERE v.id = ? AND v.deleted_at IS NULL AND u.deleted_at IS NULL`, vmID).Scan(&rows).Error; err != nil {
+		return err
+	}
+	if len(rows) == 0 || rows[0].Email == "" {
+		return nil
+	}
+	r := rows[0]
+	access := AccessOwnPassword
+	if until, err := InitialPasswordExpiry(ctx, db, vmID); err == nil && until != nil {
+		access = AccessPasswordOnPage
+	}
+	publicURL := strings.TrimRight(strings.TrimSpace(os.Getenv("PANEL_PUBLIC_URL")), "/")
+	link := ""
+	if publicURL != "" {
+		// Staff manage their own VMs in the admin area; everyone else in the customer area.
+		if r.Role == "admin" {
+			link = publicURL + "/vms/" + vmID
+		} else {
+			link = publicURL + "/client/vms/" + vmID
+		}
+	}
+	fill := func(v, missing string) string {
+		if v == "" {
+			return missing
+		}
+		return v
+	}
+	return SendMail(cfg, r.Email, RenderEmail(cfg.Template(EmailVMReady), cfg.Brand, EmailData{
+		Name: r.Name, Email: r.Email, Link: link, LogoURL: EmailLogoURL(cfg.Brand, publicURL),
+		Extra: map[string]string{
+			"server":  r.Hostname,
+			"address": fill(r.Address, "not assigned yet"),
+			"system":  fill(r.System, "as ordered"),
+			"access":  access,
+		},
+	}))
 }

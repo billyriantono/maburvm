@@ -728,6 +728,14 @@ func (s *Server) setupMetricsRoutes() {
 	metricsService := service.NewMetricsService(s.db)
 	metricsHandler := handler.NewMetricsHandler(metricsService, authz.NewAuthorizer(s.db))
 	handler.RegisterMetricsRoutes(s.echo, metricsHandler, s.db)
+	handler.RegisterVMInitialPasswordRoutes(s.echo, s.db, authz.NewAuthorizer(s.db))
+	// Tell a server's owner by email when it is ready. The worker lives in a
+	// package that cannot reach the mailer, so it calls back here.
+	queue.VMCreatedHook = func(ctx context.Context, vmID string) {
+		if err := service.NotifyVMReady(ctx, s.db, vmID); err != nil {
+			slog.Default().Warn("could not send the server-ready email", "vm_id", vmID, "error", err)
+		}
+	}
 }
 
 // dnsProviderInstance returns the nameserver connection, configured from the
@@ -1678,7 +1686,7 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 			email = to
 		}
 		return service.RenderEmail(t, brand, service.EmailData{
-			Name: def.Sample["name"], Email: email, Link: def.SampleLink,
+			Name: def.Sample["name"], Email: email, Link: def.SampleLink, Extra: def.Sample,
 			LogoURL: service.EmailLogoURL(brand, os.Getenv("PANEL_PUBLIC_URL")),
 		})
 	}

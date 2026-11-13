@@ -13,6 +13,8 @@ export interface EmailTemplate {
   subject: string
   body: string
   button: string
+  /** Stops this email being sent. Only optional emails honour it. */
+  off?: boolean
 }
 
 export interface EmailTemplateItem {
@@ -23,6 +25,8 @@ export interface EmailTemplateItem {
   default: EmailTemplate
   current: EmailTemplate
   customised: boolean
+  /** The operator may switch this email off. */
+  optional: boolean
 }
 
 export interface EmailTemplatesResponse {

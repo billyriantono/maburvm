@@ -13,7 +13,7 @@ import {
   useEmailTemplates, useResetEmailTemplate, useSaveEmailTemplate, useSendTestEmail,
 } from "@/lib/hooks/use-branding"
 
-const same = (a: EmailTemplate, b: EmailTemplate) => a.subject === b.subject && a.body === b.body && a.button === b.button
+const same = (a: EmailTemplate, b: EmailTemplate) => a.subject === b.subject && a.body === b.body && a.button === b.button && !!a.off === !!b.off
 
 const fieldClass =
   "w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
@@ -189,7 +189,18 @@ export default function EmailsPage() {
         </nav>
 
         {/* Write */}
-        <section aria-label={`${active.name} email`} className="rounded-lg border bg-card p-5 sm:p-6 shadow-sm space-y-5">
+        <section aria-label={`${active.name} email`} className="rounded-lg border bg-card p-5 sm:p-6 space-y-5">
+          {active.optional && (
+            <label className="flex cursor-pointer items-start gap-3 rounded-md border px-3 py-2.5">
+              <input type="checkbox" className="mt-1 accent-[hsl(var(--primary))]" checked={!draft.off} onChange={(e) => setDraft({ off: !e.target.checked })} />
+              <span>
+                <span className="block text-sm font-medium">Send this email</span>
+                <span className="block text-xs text-muted-foreground">
+                  {draft.off ? "Switched off. Nobody is sent it until you switch it on and save." : "Switch it off if your billing system already sends its own."}
+                </span>
+              </span>
+            </label>
+          )}
           <div>
             <label htmlFor="email-subject" className="text-sm font-medium block mb-1.5">Subject</label>
             <Input
