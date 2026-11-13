@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { useSystemVersion, useUpdateAgent } from "@/lib/hooks/use-version"
 import { useSystemSettings, useSaveSystemSettings, useTestEmail } from "@/lib/hooks/use-settings"
 import { toast } from "sonner"
@@ -149,19 +149,44 @@ const defaultEmailSettings = {
   enableTls: true,
 }
 
-// Timezone options
-const timezones = [
-  { value: "UTC", label: "UTC" },
-  { value: "America/New_York", label: "Eastern Time (US)" },
-  { value: "America/Chicago", label: "Central Time (US)" },
-  { value: "America/Denver", label: "Mountain Time (US)" },
-  { value: "America/Los_Angeles", label: "Pacific Time (US)" },
-  { value: "Europe/London", label: "London" },
-  { value: "Europe/Paris", label: "Paris" },
-  { value: "Asia/Tokyo", label: "Tokyo" },
-  { value: "Asia/Shanghai", label: "Shanghai" },
-  { value: "Australia/Sydney", label: "Sydney" },
-]
+// Every timezone the browser knows (the IANA list, about 400), grouped by
+// region and labelled with the city and its current UTC offset. The short
+// list is only the fallback for a browser too old to enumerate them.
+const FALLBACK_ZONES = ["UTC", "Asia/Jakarta", "Asia/Singapore", "Asia/Tokyo", "Europe/London", "Europe/Paris", "America/New_York", "America/Los_Angeles", "Australia/Sydney"]
+
+function utcOffset(zone: string): { minutes: number; text: string } {
+  try {
+    const part = new Intl.DateTimeFormat("en-US", { timeZone: zone, timeZoneName: "longOffset" })
+      .formatToParts(new Date()).find((p) => p.type === "timeZoneName")?.value ?? "GMT"
+    const m = part.match(/GMT([+-])(\d{2}):?(\d{2})?/)
+    if (!m) return { minutes: 0, text: "UTC+00:00" }
+    const minutes = (m[1] === "-" ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3] ?? 0))
+    return { minutes, text: `UTC${m[1]}${m[2]}:${m[3] ?? "00"}` }
+  } catch {
+    return { minutes: 0, text: "UTC+00:00" }
+  }
+}
+
+function timezoneGroups(): { region: string; zones: { value: string; label: string }[] }[] {
+  const supported = (Intl as unknown as { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf
+  const all = supported ? supported("timeZone") : FALLBACK_ZONES
+  const groups = new Map<string, { value: string; label: string; minutes: number }[]>()
+  for (const zone of all) {
+    if (zone === "UTC") continue
+    const slash = zone.indexOf("/")
+    const region = slash > 0 ? zone.slice(0, slash) : "Other"
+    const city = (slash > 0 ? zone.slice(slash + 1) : zone).replace(/_/g, " ").replace(/\//g, ", ")
+    const off = utcOffset(zone)
+    if (!groups.has(region)) groups.set(region, [])
+    groups.get(region)!.push({ value: zone, label: `${city} (${off.text})`, minutes: off.minutes })
+  }
+  return [...groups.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([region, zones]) => ({
+      region,
+      zones: zones.sort((a, b) => a.minutes - b.minutes || a.label.localeCompare(b.label)),
+    }))
+}
 
 // Backup schedule presets
 const schedulePresets = [
@@ -289,6 +314,11 @@ export default function SystemSettingsPage() {
   const testEmail = useTestEmail()
 
   // General form
+  // Built in the browser: the zone list and "this computer's zone" depend on it.
+  const zoneGroups = useMemo(() => timezoneGroups(), [])
+  const [browserZone, setBrowserZone] = useState("")
+  useEffect(() => { setBrowserZone(Intl.DateTimeFormat().resolvedOptions().timeZone || "") }, [])
+
   const generalForm = useForm<GeneralFormData>({
     resolver: zodResolver(generalSchema),
     defaultValues: defaultGeneralSettings,
@@ -516,12 +546,32 @@ export default function SystemSettingsPage() {
                       {...generalForm.register("timezone")}
                       className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                     >
-                      {timezones.map((tz) => (
-                        <option key={tz.value} value={tz.value}>
-                          {tz.label}
-                        </option>
+                      <option value="UTC">UTC (UTC+00:00)</option>
+                      {zoneGroups.map((g) => (
+                        <optgroup key={g.region} label={g.region}>
+                          {g.zones.map((tz) => (
+                            <option key={tz.value} value={tz.value}>
+                              {tz.label}
+                            </option>
+                          ))}
+                        </optgroup>
                       ))}
                     </select>
+                    <p className="text-xs text-muted-foreground mt-1.5">
+                      Type a city name with the list open to jump to it.
+                      {browserZone && browserZone !== generalForm.watch("timezone") && (
+                        <>
+                          {" "}
+                          <button
+                            type="button"
+                            onClick={() => generalForm.setValue("timezone", browserZone, { shouldDirty: true })}
+                            className="underline underline-offset-2 text-foreground cursor-pointer"
+                          >
+                            Use this computer&apos;s zone ({browserZone.replace(/_/g, " ")})
+                          </button>
+                        </>
+                      )}
+                    </p>
                     {generalForm.formState.errors.timezone && (
                       <p className="text-destructive text-sm mt-1">
                         {generalForm.formState.errors.timezone.message}
