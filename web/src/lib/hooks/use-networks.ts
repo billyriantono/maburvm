@@ -100,6 +100,16 @@ export function useSetVMBandwidth(vmId: string) {
   })
 }
 
+export function useSetAntiSpoofing(vmId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<void, Error, { networkId: string; enabled: boolean }>({
+    mutationFn: async ({ networkId, enabled }) => {
+      await api.put(`/api/v1/vms/${vmId}/networks/${networkId}/anti-spoofing`, { enabled })
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['networks'] }),
+  })
+}
+
 export function usePortForwards(vmId: string) {
   return useQuery<PortForward[]>({
     queryKey: ['networks', 'port-forwards', vmId],

@@ -203,6 +203,8 @@ type UpdateNodeRequest struct {
 	Name      string             `json:"name,omitempty" validate:"omitempty,max=100"`
 	IPAddress string             `json:"ip_address,omitempty" validate:"omitempty,ip"`
 	Status    *models.NodeStatus `json:"status,omitempty" validate:"omitempty,oneof=active maintenance offline"`
+	// CreationPaused, when set, stops or resumes placing new VMs on the node.
+	CreationPaused *bool `json:"creation_paused,omitempty"`
 }
 
 // UpdateNode updates an existing node's information
@@ -254,6 +256,15 @@ func (s *NodeService) UpdateNode(ctx context.Context, id string, req *UpdateNode
 	// Save changes
 	if err := s.repo.Update(ctx, node); err != nil {
 		return nil, fmt.Errorf("failed to update node: %w", err)
+	}
+
+	if req.CreationPaused != nil {
+		// By table name: the model field is read-only (see models.Node).
+		if err := s.db.WithContext(ctx).Table("nodes").Where("id = ?", node.ID).
+			Update("creation_paused", *req.CreationPaused).Error; err != nil {
+			return nil, fmt.Errorf("failed to update node: %w", err)
+		}
+		node.CreationPaused = *req.CreationPaused
 	}
 
 	return node, nil

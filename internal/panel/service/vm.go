@@ -392,6 +392,9 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		if node.Status != models.NodeStatusActive {
 			return nil, fmt.Errorf("selected node is not active")
 		}
+		if node.CreationPaused {
+			return nil, fmt.Errorf("selected node is not taking new VMs (creation is paused on it)")
+		}
 	}
 
 	// Generate VNC credentials
@@ -831,6 +834,7 @@ func (s *VMService) selectNodeInRegion(ctx context.Context, regionID string, dis
 		Find(&nodes).Error; err != nil {
 		return "", err
 	}
+	nodes = nodesTakingVMs(nodes)
 	if len(nodes) == 0 {
 		return "", ErrRegionNoCapacity
 	}
@@ -875,12 +879,25 @@ func (s *VMService) nodesWithRoom(ctx context.Context, nodes []models.Node, disk
 // SetRegionService wires region resolution for order placement.
 func (s *VMService) SetRegionService(r *RegionService) { s.regionService = r }
 
+// nodesTakingVMs drops nodes where an operator has paused VM creation.
+// Filtered here rather than in SQL so every placement path shares one rule.
+func nodesTakingVMs(nodes []models.Node) []models.Node {
+	out := nodes[:0:0]
+	for _, n := range nodes {
+		if !n.CreationPaused {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // selectNode selects an available node for VM placement
 func (s *VMService) selectNode(ctx context.Context) (string, error) {
 	nodes, err := s.nodeRepo.ListActive(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to list active nodes: %w", err)
 	}
+	nodes = nodesTakingVMs(nodes)
 	if len(nodes) == 0 {
 		return "", ErrNoAvailableNodes
 	}

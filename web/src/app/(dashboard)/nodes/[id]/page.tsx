@@ -225,12 +225,29 @@ export default function NodeDetailPage() {
               {node.name}
             </h1>
             <StatusBadge status={node.status} />
+            {node.creation_paused && (<span className="inline-flex items-center rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">New VMs paused</span>)}
           </div>
           <p className="text-muted-foreground text-sm">
             {node.ip_address} • Created {formatDate(node.created_at)}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            disabled={updateNode.isPending}
+            title="Stops new VMs being placed on this node. VMs already here keep running and can still be managed."
+            onClick={async () => {
+              const pausing = !node.creation_paused
+              try {
+                await updateNode.mutateAsync({ creation_paused: pausing })
+                toast.success(pausing ? "New VMs are paused on this node. Existing VMs are not affected." : "This node takes new VMs again")
+              } catch (err) {
+                toast.error(`Could not change VM creation: ${(err as Error).message}`)
+              }
+            }}
+          >
+            {node.creation_paused ? "Resume new VMs" : "Pause new VMs"}
+          </Button>
           <Button
             variant="outline"
             disabled={updateNode.isPending}

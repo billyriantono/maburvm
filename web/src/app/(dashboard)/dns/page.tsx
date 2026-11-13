@@ -1,7 +1,7 @@
 "use client"
 
 import { FormEvent, useMemo, useState } from "react"
-import { Globe, Plus, Trash2, Loader2, Download, Server, CircleSlash, RefreshCw, CheckCircle2 } from "lucide-react"
+import { Globe, Plus, Trash2, Loader2, Download, Server, CircleSlash, RefreshCw, CheckCircle2, Pencil, Check } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -12,7 +12,7 @@ import {
   useDeleteDNSZone,
   useDNSRecords,
   useCreateDNSRecord,
-  useDeleteDNSRecord,
+  useDeleteDNSRecord, useUpdateDNSRecord,
   useDNSProvider,
   useSyncDNSZone,
   downloadZoneFile,
@@ -42,7 +42,9 @@ export default function DNSPage() {
   const { data: records, isLoading: recordsLoading } = useDNSRecords(selectedZoneId)
   const createRecord = useCreateDNSRecord(selectedZoneId)
   const deleteRecord = useDeleteDNSRecord(selectedZoneId)
+  const updateRecord = useUpdateDNSRecord(selectedZoneId)
   const [recordForm, setRecordForm] = useState<CreateRecordRequest>(emptyRecord)
+  const [editingId, setEditingId] = useState<string>()
 
   const handleCreateZone = async (e: FormEvent) => {
     e.preventDefault()
@@ -75,11 +77,17 @@ export default function DNSPage() {
     e.preventDefault()
     if (!selectedZoneId) return
     try {
-      await createRecord.mutateAsync(recordForm)
-      toast.success("Record added")
+      if (editingId) {
+        await updateRecord.mutateAsync({ recordId: editingId, data: recordForm })
+        toast.success("Record saved")
+        setEditingId(undefined)
+      } else {
+        await createRecord.mutateAsync(recordForm)
+        toast.success("Record added")
+      }
       setRecordForm({ ...emptyRecord, type: recordForm.type })
     } catch (err) {
-      toast.error(`Failed to add record: ${(err as Error).message}`)
+      toast.error(`Failed to save record: ${(err as Error).message}`)
     }
   }
 
@@ -248,10 +256,16 @@ export default function DNSPage() {
                   <Input type="number" min={0} placeholder="prio" value={recordForm.priority} onChange={(e) => setRecordForm({ ...recordForm, priority: Number(e.target.value) })} className="md:col-span-2" title="Priority" />
                 )}
                 <Input type="number" min={60} placeholder="TTL" value={recordForm.ttl} onChange={(e) => setRecordForm({ ...recordForm, ttl: Number(e.target.value) })} className="md:col-span-1" title="TTL" />
-                <Button type="submit" disabled={createRecord.isPending} className="md:col-span-2">
-                  {createRecord.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-                  Add
+                <Button type="submit" disabled={createRecord.isPending || updateRecord.isPending} className="md:col-span-2">
+                  {createRecord.isPending || updateRecord.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : editingId ? <Check className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+                  {editingId ? "Save" : "Add"}
                 </Button>
+                {editingId && (
+                  <div className="md:col-span-12 flex items-center gap-3 text-xs text-muted-foreground">
+                    Editing an existing record.
+                    <Button type="button" variant="ghost" size="sm" onClick={() => { setEditingId(undefined); setRecordForm(emptyRecord) }}>Cancel edit</Button>
+                  </div>
+                )}
               </form>
 
               {/* Records table */}
@@ -279,6 +293,10 @@ export default function DNSPage() {
                     <div className="col-span-1 font-mono text-xs">{r.ttl}</div>
                     <div className="col-span-1 font-mono text-xs">{r.type === "MX" || r.type === "SRV" ? r.priority : "—"}</div>
                     <div className="col-span-1 flex justify-end">
+                      <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground" aria-label={`Edit ${r.type} record ${r.name}`} title="Edit record"
+                        onClick={() => { setEditingId(r.id); setRecordForm({ name: r.name, type: r.type, content: r.content, ttl: r.ttl, priority: r.priority }) }}>
+                        <Pencil className="w-3 h-3" />
+                      </Button>
                       <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive" onClick={() => handleDeleteRecord(r.id)} title="Delete record">
                         <Trash2 className="w-3 h-3" />
                       </Button>

@@ -27,10 +27,10 @@ import { Sparkline } from "@/components/ui/sparkline"
 import { useSnapshots, useCreateSnapshot, useRestoreSnapshot, useDeleteSnapshot } from "@/lib/hooks/use-snapshots"
 import { useCreateImage } from "@/lib/hooks/use-images"
 import { useBackups, useCreateBackup, useDeleteBackup, useRestoreBackup, useBackupSchedules, useCreateBackupSchedule, useDeleteBackupSchedule } from "@/lib/hooks/use-backups"
-import { useFirewallRules, useDeleteFirewallRule, useCreateFirewallRule, useVMNetworks, useSetVMBandwidth, useSetVMRDNS, usePortForwards, useCreatePortForward, useDeletePortForward } from "@/lib/hooks/use-networks"
+import { useFirewallRules, useDeleteFirewallRule, useCreateFirewallRule, useVMNetworks, useSetVMBandwidth, useSetVMRDNS, usePortForwards, useCreatePortForward, useDeletePortForward, useSetAntiSpoofing } from "@/lib/hooks/use-networks"
 import type { Network as NetworkIface } from "@/types"
 import { useTemplates } from "@/lib/hooks/use-templates"
-import { useVMBandwidth, useSetBandwidthQuota } from "@/lib/hooks/use-bandwidth"
+import { useVMBandwidth, useVMBandwidthHistory, useSetBandwidthQuota } from "@/lib/hooks/use-bandwidth"
 import { useVMDisks, useAttachDisk, useDetachDisk } from "@/lib/hooks/use-disks"
 import { useVMActivity } from "@/lib/hooks/use-audit-logs"
 import { VNCConsole } from "@/components/vnc-console"
@@ -64,6 +64,77 @@ function formatMbps(mbps: number): string {
 // BandwidthCell renders a VM interface's speed limit with inline editing.
 // Admins pick a preset tier (up to 10 Gbps) or enter a custom value; saving
 // re-applies the tc limit on the hypervisor via the bandwidth endpoint.
+// A real switch, not a label: the state is on the control itself.
+function AntiSpoofCell({ vmId, iface }: { vmId: string; iface: NetworkIface }) {
+  const set = useSetAntiSpoofing(vmId)
+  const on = iface.anti_spoofing !== false
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={`Anti-spoofing for ${iface.ip_address}`}
+      title="Drops traffic from this VM that claims an address it was not given"
+      disabled={set.isPending}
+      onClick={() => set.mutate(
+        { networkId: iface.id, enabled: !on },
+        { onError: (e) => toast.error(`Could not change anti-spoofing: ${e.message}`) },
+      )}
+      className={`inline-flex items-center gap-2 text-xs font-medium cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring rounded-full`}
+    >
+      <span className={`relative inline-block h-5 w-9 rounded-full border transition-colors ${on ? "bg-primary border-primary" : "bg-muted border-input"}`}>
+        <span className={`absolute top-0.5 h-3.5 w-3.5 rounded-full bg-background border transition-all ${on ? "left-[18px]" : "left-0.5"}`} />
+      </span>
+      {on ? "On" : "Off"}
+    </button>
+  )
+}
+
+function BandwidthHistory({ vmId }: { vmId: string }) {
+  const [open, setOpen] = useState(false)
+  const { data, isLoading, error } = useVMBandwidthHistory(open ? vmId : "")
+  const month = (d: string) => new Date(d).toLocaleDateString("en-US", { year: "numeric", month: "long" })
+  return (
+    <div className="mt-6 pt-4 border-t">
+      <Button variant="ghost" size="sm" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        {open ? "Hide previous months" : "Show previous months"}
+      </Button>
+      {open && (isLoading ? (
+        <Skeleton className="h-5 w-64 mt-3" />
+      ) : error ? (
+        <p role="alert" className="text-sm text-destructive mt-3">Could not load history: {(error as Error).message}</p>
+      ) : !data?.history?.length ? (
+        <p className="text-sm text-muted-foreground mt-3">No earlier months recorded yet.</p>
+      ) : (
+        <div className="border overflow-x-auto mt-3">
+          <table className="w-full text-sm">
+            <thead className="bg-muted text-xs text-muted-foreground">
+              <tr>
+                <th className="text-left p-3">Month</th>
+                <th className="text-right p-3">Received</th>
+                <th className="text-right p-3">Sent</th>
+                <th className="text-right p-3">Total</th>
+                <th className="text-right p-3">Quota</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.history.map((h) => (
+                <tr key={h.period_start} className="border-t">
+                  <td className="p-3">{month(h.period_start)}</td>
+                  <td className="p-3 text-right font-mono">{formatBytes(h.rx_bytes)}</td>
+                  <td className="p-3 text-right font-mono">{formatBytes(h.tx_bytes)}</td>
+                  <td className="p-3 text-right font-mono">{formatBytes(h.total_bytes)}</td>
+                  <td className="p-3 text-right font-mono">{h.quota_gb > 0 ? `${h.quota_gb} GB${h.exceeded ? " (exceeded)" : ""}` : "Unlimited"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function BandwidthCell({ vmId, iface }: { vmId: string; iface: NetworkIface }) {
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState<number>(iface.bandwidth_limit)
@@ -743,6 +814,7 @@ function BandwidthUsageCard({ vmId, canEditQuota }: { vmId: string; canEditQuota
         )}
       </div>
       )}
+      <BandwidthHistory vmId={vmId} />
     </div>
   )
 }
@@ -2194,6 +2266,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                         <th className="text-left p-3">Gateway</th>
                         <th className="text-left p-3">Netmask</th>
                         {isAdmin && <th className="text-left p-3">VLAN</th>}
+                        {isAdmin && <th className="text-left p-3">Anti-spoofing</th>}
                         <th className="text-left p-3">{isAdmin ? "Bandwidth" : "Speed limit"}</th>
                         <th className="text-left p-3">rDNS</th>
                         {isAdmin && <th className="text-right p-3"></th>}
@@ -2210,6 +2283,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                           <td className="p-3 font-mono">{iface.gateway || "—"}</td>
                           <td className="p-3 font-mono">{iface.netmask || "—"}</td>
                           {isAdmin && <td className="p-3 font-mono">{iface.vlan_id ?? "—"}</td>}
+                          {isAdmin && <td className="p-3"><AntiSpoofCell vmId={vmId} iface={iface} /></td>}
                           <td className="p-3">
                             {isAdmin ? <BandwidthCell vmId={vmId} iface={iface} /> : <span className="font-mono">{formatMbps(iface.bandwidth_limit)}</span>}
                           </td>

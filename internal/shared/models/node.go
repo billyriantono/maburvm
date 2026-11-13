@@ -23,6 +23,10 @@ type Node struct {
 	IPAddress string     `json:"ip_address" gorm:"type:inet;not null" validate:"required,ip"`
 	Status    NodeStatus `json:"status" gorm:"type:node_status;default:offline" validate:"required,oneof=active maintenance offline"`
 	Token     string     `json:"-" gorm:"type:varchar(255);uniqueIndex;not null"` // Never exposed in JSON
+	// CreationPaused keeps new VMs off the node; the VMs already on it are not
+	// affected. Read-only here so a full-row save cannot overwrite it; it is
+	// written by table name in NodeService.UpdateNode.
+	CreationPaused bool `json:"creation_paused" gorm:"column:creation_paused;->"`
 	// CertFingerprint is the pinned SHA-256 fingerprint of the agent's TLS cert,
 	// recorded on first connection (trust on first use) and verified thereafter.
 	// Empty = not yet pinned. Never exposed in JSON.
@@ -42,8 +46,8 @@ type Node struct {
 	// yet keeps provisioning rather than failing closed.
 	MemoryTotalBytes int64          `json:"memory_total_bytes" gorm:"not null;default:0"`
 	CreatedAt        time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
-	UpdatedAt time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
-	DeletedAt gorm.DeletedAt `json:"-" gorm:"index"`
+	UpdatedAt        time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
+	DeletedAt        gorm.DeletedAt `json:"-" gorm:"index"`
 }
 
 // TableName specifies the table name for Node

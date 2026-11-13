@@ -17,7 +17,7 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
-import { useTemplates, useDeleteTemplate } from "@/lib/hooks/use-templates"
+import { useTemplates, useDeleteTemplate, useSyncTemplate } from "@/lib/hooks/use-templates"
 import { OSIcon } from "@/components/os-icon"
 import { useConfirm } from "@/components/confirm-provider"
 
@@ -33,6 +33,7 @@ export default function TemplateListPage() {
   // Data hooks
   const { data: templates, isLoading, error, refetch } = useTemplates()
   const deleteTemplate = useDeleteTemplate()
+  const syncTemplate = useSyncTemplate()
 
   // Filter templates
   const filteredTemplates = useMemo(() => {
@@ -147,11 +148,11 @@ export default function TemplateListPage() {
       {/* Data Table */}
       <div className="bg-card text-card-foreground border rounded-lg shadow-sm overflow-hidden">
         <div className="grid grid-cols-12 gap-4 p-4 bg-muted text-muted-foreground font-medium text-xs">
-          <div className="col-span-4">Template</div>
+          <div className="col-span-3">Template</div>
           <div className="col-span-2">Version</div>
           <div className="col-span-2">Status</div>
           <div className="col-span-2">Created</div>
-          <div className="col-span-2 text-right">Actions</div>
+          <div className="col-span-3 text-right">Actions</div>
         </div>
 
         {filteredTemplates.length === 0 ? (
@@ -166,7 +167,7 @@ export default function TemplateListPage() {
           filteredTemplates.map((template) => (
             <div key={template.id} className="grid grid-cols-12 gap-4 p-4 items-center border-b last:border-0 hover:bg-muted/50 transition-colors">
               {/* Template Info */}
-              <div className="col-span-4">
+              <div className="col-span-3">
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 bg-muted rounded-md flex items-center justify-center border">
                     <OSIcon name={template.name} className="w-6 h-6" />
@@ -206,7 +207,20 @@ export default function TemplateListPage() {
               </div>
 
               {/* Actions */}
-              <div className="col-span-2 flex items-center justify-end gap-2">
+              <div className="col-span-3 flex items-center justify-end gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8"
+                  title="Download this image to every active node now, so the first VM does not wait for it"
+                  disabled={syncTemplate.isPending && syncTemplate.variables === template.id}
+                  onClick={() => syncTemplate.mutate(template.id, {
+                    onSuccess: () => toast.success(`Sending "${template.name}" to all active nodes`),
+                    onError: (e) => toast.error(`Could not sync "${template.name}": ${e.message}`),
+                  })}
+                >
+                  Sync
+                </Button>
                 <Link href={`/templates/${template.id}`}>
                   <Button variant="outline" size="sm" className="h-8">Details</Button>
                 </Link>

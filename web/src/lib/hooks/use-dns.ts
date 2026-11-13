@@ -60,6 +60,14 @@ export function useCreateDNSRecord(zoneId?: string) {
   })
 }
 
+export function useUpdateDNSRecord(zoneId?: string) {
+  const queryClient = useQueryClient()
+  return useMutation<DNSRecord, Error, { recordId: string; data: CreateRecordRequest }>({
+    mutationFn: async ({ recordId, data }) => (await api.put<DNSRecord>(`/api/v1/dns/records/${recordId}`, data)).data.data,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['dns', 'records', zoneId] }),
+  })
+}
+
 export function useDeleteDNSRecord(zoneId?: string) {
   const queryClient = useQueryClient()
   return useMutation<void, Error, string>({

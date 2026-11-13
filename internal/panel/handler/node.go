@@ -105,8 +105,10 @@ type NodeListItem struct {
 	IPAddress string `json:"ip_address"`
 	Status    string `json:"status"`
 	Online    bool   `json:"online"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	// CreationPaused: no new VMs are placed here; existing ones are unaffected.
+	CreationPaused bool   `json:"creation_paused"`
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
 }
 
 // ListNodes handles GET /api/nodes - List all nodes with health status
@@ -156,13 +158,14 @@ func (h *NodeHandler) ListNodes(c echo.Context) error {
 	items := make([]NodeListItem, len(nodes))
 	for i, node := range nodes {
 		items[i] = NodeListItem{
-			ID:        node.Node.ID,
-			Name:      node.Node.Name,
-			IPAddress: node.Node.IPAddress,
-			Status:    string(node.Node.Status),
-			Online:    node.Online,
-			CreatedAt: node.Node.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
-			UpdatedAt: node.Node.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			ID:             node.Node.ID,
+			Name:           node.Node.Name,
+			IPAddress:      node.Node.IPAddress,
+			Status:         string(node.Node.Status),
+			Online:         node.Online,
+			CreationPaused: node.Node.CreationPaused,
+			CreatedAt:      node.Node.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			UpdatedAt:      node.Node.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		}
 	}
 
@@ -174,14 +177,15 @@ func (h *NodeHandler) ListNodes(c echo.Context) error {
 
 // NodeDetailResponse represents detailed node information
 type NodeDetailResponse struct {
-	ID        string       `json:"id"`
-	Name      string       `json:"name"`
-	IPAddress string       `json:"ip_address"`
-	Status    string       `json:"status"`
-	Online    bool         `json:"online"`
-	Metrics   *NodeMetrics `json:"metrics,omitempty"`
-	CreatedAt string       `json:"created_at"`
-	UpdatedAt string       `json:"updated_at"`
+	ID             string       `json:"id"`
+	Name           string       `json:"name"`
+	IPAddress      string       `json:"ip_address"`
+	Status         string       `json:"status"`
+	Online         bool         `json:"online"`
+	CreationPaused bool         `json:"creation_paused"`
+	Metrics        *NodeMetrics `json:"metrics,omitempty"`
+	CreatedAt      string       `json:"created_at"`
+	UpdatedAt      string       `json:"updated_at"`
 }
 
 // NodeMetrics represents node performance metrics in the response
@@ -224,13 +228,14 @@ func (h *NodeHandler) GetNode(c echo.Context) error {
 	metrics, _ := h.service.GetNodeMetrics(c.Request().Context(), id)
 
 	resp := NodeDetailResponse{
-		ID:        node.ID,
-		Name:      node.Name,
-		IPAddress: node.IPAddress,
-		Status:    string(node.Status),
-		Online:    online,
-		CreatedAt: node.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
-		UpdatedAt: node.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		ID:             node.ID,
+		Name:           node.Name,
+		IPAddress:      node.IPAddress,
+		Status:         string(node.Status),
+		Online:         online,
+		CreationPaused: node.CreationPaused,
+		CreatedAt:      node.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		UpdatedAt:      node.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 	}
 
 	if metrics != nil {
@@ -250,9 +255,10 @@ func (h *NodeHandler) GetNode(c echo.Context) error {
 
 // UpdateNodeRequest represents a request to update a node
 type UpdateNodeRequest struct {
-	Name      string `json:"name,omitempty"`
-	IPAddress string `json:"ip_address,omitempty"`
-	Status    string `json:"status,omitempty"`
+	Name           string `json:"name,omitempty"`
+	IPAddress      string `json:"ip_address,omitempty"`
+	Status         string `json:"status,omitempty"`
+	CreationPaused *bool  `json:"creation_paused,omitempty"`
 }
 
 // UpdateNode handles PUT /api/nodes/:id - Update node information
@@ -285,6 +291,7 @@ func (h *NodeHandler) UpdateNode(c echo.Context) error {
 		status := models.NodeStatus(req.Status)
 		updateReq.Status = &status
 	}
+	updateReq.CreationPaused = req.CreationPaused
 
 	// Update node
 	node, err := h.service.UpdateNode(c.Request().Context(), id, updateReq)

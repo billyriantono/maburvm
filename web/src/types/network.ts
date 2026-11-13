@@ -7,6 +7,8 @@ export interface Network {
   ip_address: string;
   bandwidth_limit: number;
   vlan_id?: number;
+  /** Drop traffic from this VM that claims an address it was not given. */
+  anti_spoofing?: boolean;
   gateway?: string;
   netmask?: string;
   bridge?: string;
