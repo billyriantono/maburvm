@@ -1,13 +1,15 @@
 package network
 
 import (
+	"encoding/json"
 	"fmt"
+	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
-
-	"github.com/maburvm/panel/internal/agent/libvirt"
 )
 
 const (
@@ -17,337 +19,253 @@ const (
 	BridgePath = "/sbin/bridge"
 	// VLANMaxID is the maximum valid VLAN ID (12 bits = 4094, 0 and 4095 are reserved)
 	VLANMaxID = 4094
+
+	// VLANBridgesEnv lists the bridges on this node that may carry per-VM
+	// VLANs, each with its uplink port: "br1:bond0,br2:eth3".
+	VLANBridgesEnv = "MABURVM_VLAN_BRIDGES"
 )
 
-// VLANManager handles VLAN tagging and assignment for VMs
+// VLANs on a Linux bridge work through the bridge's own VLAN table: the VM's
+// tap becomes an untagged member of its VLAN, the uplink carries that VLAN
+// tagged, and the bridge has VLAN filtering switched on so the table is
+// actually enforced. (libvirt's <vlan> element is for Open vSwitch; on a Linux
+// bridge it stops the VM from starting.)
+//
+// Switching filtering on changes how the whole bridge forwards: untagged
+// traffic carries on, but tagged frames that used to pass straight through are
+// dropped until their VLAN is added. So it is never done implicitly. An
+// operator names the bridges in MABURVM_VLAN_BRIDGES; on any other bridge a
+// VLAN request is refused with a message that says why.
+
+// VLANManager assigns VLANs to VM taps and keeps them assigned.
 type VLANManager struct {
-	ipPath     string
-	bridgePath string
-	mu         sync.RWMutex
-	// vlanAssignments tracks VLAN assignments: map[vmID]vlanID
-	vlanAssignments map[string]int
-	// vlanInterfaces tracks created VLAN interfaces: map[vlanID]interfaceName
-	vlanInterfaces map[int]string
+	mu sync.Mutex
+	// bridges maps an opted-in bridge to its uplink port.
+	bridges map[string]string
+	// assignments is vmID -> VLAN ID, saved to statePath so it survives an
+	// agent restart; a tap is recreated plain whenever its VM restarts.
+	assignments map[string]int
+	statePath   string
+	// lastErr remembers the last failure per VM so the reconciler logs a
+	// problem once, not every 30 seconds.
+	lastErr map[string]string
+
+	run  func(name string, args ...string) error
+	nics func(vmID string) ([]NIC, error)
+	// filtering reports whether a bridge has VLAN filtering on.
+	filtering func(bridge string) bool
 }
 
-// VLANConfig represents VLAN configuration for a VM
-type VLANConfig struct {
-	VLANID          int    // 1-4094
-	ParentInterface string // e.g., "eth0", "br0"
+// parseVLANBridges reads "br1:bond0,br2:eth3" into bridge -> uplink. Entries
+// without an uplink are dropped: without it a VLAN could never leave the node.
+func parseVLANBridges(spec string) map[string]string {
+	out := map[string]string{}
+	for _, entry := range strings.Split(spec, ",") {
+		bridge, uplink, ok := strings.Cut(strings.TrimSpace(entry), ":")
+		bridge, uplink = strings.TrimSpace(bridge), strings.TrimSpace(uplink)
+		if !ok || bridge == "" || uplink == "" {
+			if strings.TrimSpace(entry) != "" {
+				log.Printf("[VLAN] ignoring %q in %s: write it as bridge:uplink", entry, VLANBridgesEnv)
+			}
+			continue
+		}
+		out[bridge] = uplink
+	}
+	return out
 }
 
-// NewVLANManager creates a new VLANManager instance
-func NewVLANManager() *VLANManager {
-	return &VLANManager{
-		ipPath:          IPPath,
-		bridgePath:      BridgePath,
-		vlanAssignments: make(map[string]int),
-		vlanInterfaces:  make(map[int]string),
+func vlanStatePath() string { return "/var/lib/maburvm/vlan-assignments.json" }
+
+// NewVLANManager creates a VLANManager from the node's environment and the
+// saved assignments.
+func NewVLANManager() *VLANManager { return NewVLANManagerAt(vlanStatePath()) }
+
+// NewVLANManagerAt is NewVLANManager with the state file named by the caller.
+func NewVLANManagerAt(statePath string) *VLANManager {
+	m := &VLANManager{
+		bridges:     parseVLANBridges(os.Getenv(VLANBridgesEnv)),
+		assignments: map[string]int{},
+		statePath:   statePath,
+		lastErr:     map[string]string{},
+		run: func(name string, args ...string) error {
+			if out, err := exec.Command(name, args...).CombinedOutput(); err != nil {
+				return fmt.Errorf("%s %s: %v: %s", filepath.Base(name), strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+			}
+			return nil
+		},
+		nics: vmNICs,
+		filtering: func(bridge string) bool {
+			b, err := os.ReadFile("/sys/class/net/" + bridge + "/bridge/vlan_filtering")
+			return err == nil && strings.TrimSpace(string(b)) == "1"
+		},
+	}
+	if b, err := os.ReadFile(m.statePath); err == nil {
+		if err := json.Unmarshal(b, &m.assignments); err != nil {
+			log.Printf("[VLAN] WARNING: ignoring unreadable %s: %v", m.statePath, err)
+			m.assignments = map[string]int{}
+		}
+	}
+	return m
+}
+
+func (m *VLANManager) save() {
+	b, err := json.MarshalIndent(m.assignments, "", "  ")
+	if err == nil {
+		if err = os.MkdirAll(filepath.Dir(m.statePath), 0o700); err == nil {
+			tmp := m.statePath + ".tmp"
+			if err = os.WriteFile(tmp, b, 0o600); err == nil {
+				err = os.Rename(tmp, m.statePath)
+			}
+		}
+	}
+	if err != nil {
+		log.Printf("[VLAN] WARNING: could not save assignments: %v", err)
 	}
 }
 
-// validateVLANID checks if a VLAN ID is valid
-func (vm *VLANManager) validateVLANID(vlanID int) error {
+// primaryPort returns the tap and bridge of the VM's first bridged NIC.
+func (m *VLANManager) primaryPort(vmID string) (tap, bridge string, err error) {
+	nics, err := m.nics(vmID)
+	if err != nil {
+		return "", "", err
+	}
+	for _, n := range nics {
+		if n.Tap != "" && n.Bridge != "" {
+			return n.Tap, n.Bridge, nil
+		}
+	}
+	return "", "", fmt.Errorf("VM %s has no network port right now (it is probably stopped)", vmID)
+}
+
+// vlanCommands is what puts tap into VLAN vid on its bridge. The order
+// matters: the tap joins its VLAN before it leaves the native one, so it is
+// never in neither.
+func vlanCommands(tap, uplink string, vid int) [][]string {
+	v := strconv.Itoa(vid)
+	return [][]string{
+		{"vlan", "add", "dev", tap, "vid", v, "pvid", "untagged"},
+		{"vlan", "del", "dev", tap, "vid", "1"},
+		{"vlan", "add", "dev", uplink, "vid", v},
+	}
+}
+
+// apply puts the VM's current tap into its VLAN. Safe to repeat.
+func (m *VLANManager) apply(vmID string, vid int) error {
+	tap, bridge, err := m.primaryPort(vmID)
+	if err != nil {
+		return err
+	}
+	uplink, ok := m.bridges[bridge]
+	if !ok {
+		return fmt.Errorf("VLANs are not enabled on bridge %s on this node; add %s:<uplink> to %s in the agent's environment", bridge, bridge, VLANBridgesEnv)
+	}
+	if !m.filtering(bridge) {
+		log.Printf("[VLAN] enabling VLAN filtering on %s (listed in %s). Untagged traffic is unaffected; tagged frames now need their VLAN added to pass.", bridge, VLANBridgesEnv)
+		if err := m.run(IPPath, "link", "set", "dev", bridge, "type", "bridge", "vlan_filtering", "1"); err != nil {
+			return err
+		}
+	}
+	for i, args := range vlanCommands(tap, uplink, vid) {
+		if err := m.run(BridgePath, args...); err != nil {
+			if i == 1 {
+				continue // the tap was already out of the native VLAN
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// AssignVLAN records the VM's VLAN and applies it to its tap. The record is
+// kept even when applying fails (a stopped VM has no tap), so Reconcile
+// applies it as soon as it can.
+func (m *VLANManager) AssignVLAN(vmID string, vlanID int) error {
 	if vlanID < 1 || vlanID > VLANMaxID {
 		return fmt.Errorf("invalid VLAN ID: %d (must be 1-%d)", vlanID, VLANMaxID)
 	}
-	return nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.assignments[vmID] != vlanID {
+		m.assignments[vmID] = vlanID
+		m.save()
+	}
+	delete(m.lastErr, vmID)
+	return m.apply(vmID, vlanID)
 }
 
-// getVNetInterface returns the vnet interface name for a VM
-func (vm *VLANManager) getVNetInterface(vmID string) (string, error) {
-	return libvirt.GetVMInterfaceName(vmID)
-}
-
-// AssignVLAN assigns a VLAN ID to a VM's vnet interface
-// This uses bridge VLAN filtering to tag traffic from the VM
-func (vm *VLANManager) AssignVLAN(vmID string, vlanID int) error {
-	if err := vm.validateVLANID(vlanID); err != nil {
-		return err
-	}
-
-	vm.mu.Lock()
-	defer vm.mu.Unlock()
-
-	iface, err := vm.getVNetInterface(vmID)
-		if err != nil {
-			return err
-		}
-
-	// Method 1: Using bridge vlan commands (requires bridge-utils)
-	// This adds the vnet interface to a VLAN on the bridge
-	if err := vm.assignBridgeVLAN(iface, vlanID); err != nil {
-		// Fallback to ip link method
-		if err := vm.assignIPLinkVLAN(iface, vlanID); err != nil {
-			return fmt.Errorf("failed to assign VLAN %d to %s: %w", vlanID, iface, err)
-		}
-	}
-
-	// Track the assignment
-	vm.vlanAssignments[vmID] = vlanID
-
-	return nil
-}
-
-// assignBridgeVLAN uses bridge vlan commands to assign VLAN
-func (vm *VLANManager) assignBridgeVLAN(iface string, vlanID int) error {
-	// Check if bridge vlan is supported
-	cmd := exec.Command(vm.bridgePath, "vlan", "show")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("bridge vlan not supported: %w", err)
-	}
-
-	// Add VLAN to the interface
-	// Format: bridge vlan add dev <iface> vid <vlanID> [pvid] [untagged]
-	cmd = exec.Command(vm.bridgePath, "vlan", "add", "dev", iface, "vid", strconv.Itoa(vlanID), "pvid", "untagged")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("bridge vlan add failed: %w, output: %s", err, string(output))
-	}
-
-	return nil
-}
-
-// assignIPLinkVLAN uses ip link to create VLAN interfaces as fallback
-func (vm *VLANManager) assignIPLinkVLAN(iface string, vlanID int) error {
-	// This creates a separate VLAN interface
-	// Format: ip link add link <parent> name <parent.vlanID> type vlan id <vlanID>
-	vlanIface := fmt.Sprintf("%s.%d", iface, vlanID)
-
-	// Check if interface already exists
-	cmd := exec.Command(vm.ipPath, "link", "show", vlanIface)
-	if err := cmd.Run(); err == nil {
-		// Interface already exists
+// RemoveVLAN takes the VM out of its VLAN and back onto the native network.
+// The vlanID argument is the one to remove; 0 means "whatever it has".
+func (m *VLANManager) RemoveVLAN(vmID string, vlanID int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	had, ok := m.assignments[vmID]
+	if !ok {
 		return nil
 	}
-
-	// Create VLAN interface
-	cmd = exec.Command(vm.ipPath, "link", "add", "link", iface, "name", vlanIface, "type", "vlan", "id", strconv.Itoa(vlanID))
-	if output, err := cmd.CombinedOutput(); err != nil {
-		// Ignore "already exists" errors
-		if !strings.Contains(string(output), "already exists") {
-			return fmt.Errorf("ip link add failed: %w, output: %s", err, string(output))
-		}
+	if vlanID == 0 {
+		vlanID = had
 	}
+	delete(m.assignments, vmID)
+	delete(m.lastErr, vmID)
+	m.save()
 
-	// Bring up the VLAN interface
-	cmd = exec.Command(vm.ipPath, "link", "set", "dev", vlanIface, "up")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("ip link set up failed: %w, output: %s", err, string(output))
+	tap, bridge, err := m.primaryPort(vmID)
+	if err != nil {
+		return nil // no tap: nothing on the bridge to undo
 	}
-
-	// Track the interface
-	vm.vlanInterfaces[vlanID] = vlanIface
-
-	return nil
-}
-
-// RemoveVLAN removes VLAN assignment from a VM's vnet interface
-func (vm *VLANManager) RemoveVLAN(vmID string, vlanID int) error {
-	if err := vm.validateVLANID(vlanID); err != nil {
+	if _, enabled := m.bridges[bridge]; !enabled {
+		return nil
+	}
+	// Back into the native VLAN first, then out of the old one.
+	if err := m.run(BridgePath, "vlan", "add", "dev", tap, "vid", "1", "pvid", "untagged"); err != nil {
 		return err
 	}
+	_ = m.run(BridgePath, "vlan", "del", "dev", tap, "vid", strconv.Itoa(vlanID))
+	return nil
+}
 
-	vm.mu.Lock()
-	defer vm.mu.Unlock()
+// CleanupVM forgets the VM's VLAN. It does not touch the tap: this runs at the
+// start of every full network re-apply, and pulling the tap back onto the
+// native network for a moment would leak the VM's traffic there. A VM that is
+// being deleted takes its tap with it.
+func (m *VLANManager) CleanupVM(vmID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.assignments[vmID]; ok {
+		delete(m.assignments, vmID)
+		delete(m.lastErr, vmID)
+		m.save()
+	}
+	return nil
+}
 
-	iface, err := vm.getVNetInterface(vmID)
+// Has reports whether the VM has a VLAN on record.
+func (m *VLANManager) Has(vmID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.assignments[vmID]
+	return ok
+}
+
+// Reconcile re-applies every recorded VLAN. A tap is created fresh, in the
+// native VLAN, each time its VM starts, and the bridge can lose its filtering
+// flag when the host's network config is re-applied; both are put right here.
+func (m *VLANManager) Reconcile() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for vmID, vid := range m.assignments {
+		err := m.apply(vmID, vid)
+		msg := ""
 		if err != nil {
-			return err
+			msg = err.Error()
 		}
-
-	// Try bridge vlan first
-	if err := vm.removeBridgeVLAN(iface, vlanID); err != nil {
-		// Fallback to ip link
-		if err := vm.removeIPLinkVLAN(vlanID); err != nil {
-			return fmt.Errorf("failed to remove VLAN %d from %s: %w", vlanID, iface, err)
-		}
-	}
-
-	// Remove from tracking
-	delete(vm.vlanAssignments, vmID)
-
-	return nil
-}
-
-// removeBridgeVLAN removes VLAN assignment using bridge commands
-func (vm *VLANManager) removeBridgeVLAN(iface string, vlanID int) error {
-	// Remove VLAN from the interface
-	// Format: bridge vlan del dev <iface> vid <vlanID>
-	cmd := exec.Command(vm.bridgePath, "vlan", "del", "dev", iface, "vid", strconv.Itoa(vlanID))
-	if output, err := cmd.CombinedOutput(); err != nil {
-		// Ignore "does not exist" errors
-		if strings.Contains(string(output), "does not exist") ||
-			strings.Contains(string(output), "No such device") {
-			return nil
-		}
-		return fmt.Errorf("bridge vlan del failed: %w, output: %s", err, string(output))
-	}
-
-	return nil
-}
-
-// removeIPLinkVLAN removes VLAN interface using ip link
-func (vm *VLANManager) removeIPLinkVLAN(vlanID int) error {
-	vlanIface, exists := vm.vlanInterfaces[vlanID]
-	if !exists {
-		return nil // Nothing to remove
-	}
-
-	// Delete the VLAN interface
-	// Format: ip link del <vlanIface>
-	cmd := exec.Command(vm.ipPath, "link", "del", vlanIface)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		// Ignore "does not exist" errors
-		if strings.Contains(string(output), "does not exist") ||
-			strings.Contains(string(output), "No such device") {
-			delete(vm.vlanInterfaces, vlanID)
-			return nil
-		}
-		return fmt.Errorf("ip link del failed: %w, output: %s", err, string(output))
-	}
-
-	delete(vm.vlanInterfaces, vlanID)
-	return nil
-}
-
-// GetVLANAssignment returns the current VLAN assignment for a VM
-func (vm *VLANManager) GetVLANAssignment(vmID string) (int, bool) {
-	vm.mu.RLock()
-	defer vm.mu.RUnlock()
-
-	vlanID, exists := vm.vlanAssignments[vmID]
-	return vlanID, exists
-}
-
-// ListVLANAssignments returns all VLAN assignments
-func (vm *VLANManager) ListVLANAssignments() map[string]int {
-	vm.mu.RLock()
-	defer vm.mu.RUnlock()
-
-	result := make(map[string]int)
-	for vmID, vlanID := range vm.vlanAssignments {
-		result[vmID] = vlanID
-	}
-	return result
-}
-
-// SetupBridgeVLAN enables VLAN filtering on a bridge interface
-// This must be called before VLAN assignments will work on a bridge
-func (vm *VLANManager) SetupBridgeVLAN(bridgeName string) error {
-	// Enable VLAN filtering on the bridge
-	// Format: ip link set dev <bridge> type bridge vlan_filtering 1
-	cmd := exec.Command(vm.ipPath, "link", "set", "dev", bridgeName, "type", "bridge", "vlan_filtering", "1")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to enable VLAN filtering on %s: %w, output: %s", bridgeName, err, string(output))
-	}
-
-	return nil
-}
-
-// GetVLANStats returns statistics for a VLAN interface
-func (vm *VLANManager) GetVLANStats(vlanID int) (map[string]string, error) {
-	vlanIface, exists := vm.vlanInterfaces[vlanID]
-	if !exists {
-		return nil, fmt.Errorf("no interface found for VLAN %d", vlanID)
-	}
-
-	// Get interface statistics using ip -s link show
-	cmd := exec.Command(vm.ipPath, "-s", "link", "show", vlanIface)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get stats: %w", err)
-	}
-
-	// Parse the output
-	stats := make(map[string]string)
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		if strings.Contains(line, "RX:") || strings.Contains(line, "TX:") {
-			// Next lines contain the stats
-			continue
-		}
-		// Try to extract RX/TX bytes, packets, errors, dropped
-		fields := strings.Fields(line)
-		if len(fields) >= 4 {
-			stats["bytes"] = fields[0]
-			stats["packets"] = fields[1]
-			stats["errors"] = fields[2]
-			stats["dropped"] = fields[3]
+		if msg != m.lastErr[vmID] {
+			if err != nil {
+				log.Printf("[VLAN] VM %s is not in VLAN %d yet: %v", vmID, vid, err)
+			} else {
+				log.Printf("[VLAN] VM %s is in VLAN %d", vmID, vid)
+			}
+			m.lastErr[vmID] = msg
 		}
 	}
-
-	return stats, nil
-}
-
-// CleanupVM removes all VLAN assignments for a VM
-// This should be called when a VM is deleted
-func (vm *VLANManager) CleanupVM(vmID string) error {
-	vm.mu.Lock()
-	defer vm.mu.Unlock()
-
-	vlanID, exists := vm.vlanAssignments[vmID]
-	if !exists {
-		return nil // Nothing to cleanup
-	}
-
-	iface, err := vm.getVNetInterface(vmID)
-		if err != nil {
-			return err
-		}
-
-	// Try to remove bridge VLAN (ignore errors)
-	_ = vm.removeBridgeVLAN(iface, vlanID)
-
-	// Remove from tracking
-	delete(vm.vlanAssignments, vmID)
-
-	return nil
-}
-
-// CreateVLANInterface creates a new VLAN interface on a parent interface
-// This is useful for creating trunk interfaces or tagged interfaces for specific VLANs
-func (vm *VLANManager) CreateVLANInterface(parentIface string, vlanID int) (string, error) {
-	if err := vm.validateVLANID(vlanID); err != nil {
-		return "", err
-	}
-
-	vm.mu.Lock()
-	defer vm.mu.Unlock()
-
-	vlanIface := fmt.Sprintf("%s.%d", parentIface, vlanID)
-
-	// Check if already exists
-	cmd := exec.Command(vm.ipPath, "link", "show", vlanIface)
-	if err := cmd.Run(); err == nil {
-		// Interface already exists, ensure it's up
-		cmd = exec.Command(vm.ipPath, "link", "set", "dev", vlanIface, "up")
-		_ = cmd.Run()
-		vm.vlanInterfaces[vlanID] = vlanIface
-		return vlanIface, nil
-	}
-
-	// Create the VLAN interface
-	cmd = exec.Command(vm.ipPath, "link", "add", "link", parentIface, "name", vlanIface, "type", "vlan", "id", strconv.Itoa(vlanID))
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("failed to create VLAN interface: %w, output: %s", err, string(output))
-	}
-
-	// Bring it up
-	cmd = exec.Command(vm.ipPath, "link", "set", "dev", vlanIface, "up")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		// Attempt to clean up
-		_ = exec.Command(vm.ipPath, "link", "del", vlanIface).Run()
-		return "", fmt.Errorf("failed to bring up VLAN interface: %w, output: %s", err, string(output))
-	}
-
-	vm.vlanInterfaces[vlanID] = vlanIface
-	return vlanIface, nil
-}
-
-// DeleteVLANInterface deletes a VLAN interface
-func (vm *VLANManager) DeleteVLANInterface(vlanID int) error {
-	vm.mu.Lock()
-	defer vm.mu.Unlock()
-
-	return vm.removeIPLinkVLAN(vlanID)
 }

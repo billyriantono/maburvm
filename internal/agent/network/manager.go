@@ -96,9 +96,13 @@ func NewManager() (*Manager, error) {
 		ipv6:       loadIPv6Delegations(ipv6StatePath()),
 	}
 	asManager.AdoptExisting(runningVMIDs(), vmNICs)
+	// VLANs on record are put back at start (agent restart, node reboot) and
+	// kept in place: a VM that restarts gets a fresh tap in the native VLAN.
+	m.vlan.Reconcile()
 	go func() {
 		for range time.Tick(30 * time.Second) {
 			asManager.RebindInterfaces(vmNICs)
+			m.vlan.Reconcile()
 		}
 	}()
 	for vmID, d := range m.ipv6 { // node reboot: routes and neighbour entries are gone
@@ -150,14 +154,19 @@ func (m *Manager) SetupVMNetwork(vmID string, internalIP string, vlanID int, ban
 	}
 
 	// 3. Assign VLAN if specified
+	//    A VLAN that cannot be applied right now (the VM is stopped, or its
+	//    bridge is not enabled for VLANs) must not stop the firewall and the
+	//    rest from being applied: it is logged, kept on record, and retried by
+	//    the reconciler. No VLAN means the native network, so a VM that had
+	//    one is moved back.
 	if vlanID > 0 {
 		if err := m.vlan.AssignVLAN(vmID, vlanID); err != nil {
-			// Cleanup on failure
-			_ = m.bandwidth.RemoveBandwidthLimit(vmID)
-			_ = m.nat.RemoveNAT(vmID, internalIP)
-			return fmt.Errorf("failed to assign VLAN: %w", err)
+			log.Printf("[NetworkManager] WARNING: VLAN %d not applied to VM %s yet: %v", vlanID, vmID, err)
+		} else {
+			log.Printf("[NetworkManager] VLAN %d assigned to VM %s", vlanID, vmID)
 		}
-		log.Printf("[NetworkManager] VLAN %d assigned to VM %s", vlanID, vmID)
+	} else if err := m.vlan.RemoveVLAN(vmID, 0); err != nil {
+		log.Printf("[NetworkManager] WARNING: moving VM %s back to the native network: %v", vmID, err)
 	}
 
 	// 4. Apply firewall rules
@@ -169,7 +178,6 @@ func (m *Manager) SetupVMNetwork(vmID string, internalIP string, vlanID int, ban
 		}
 		if err := m.firewall.ApplyFirewallRules(vmID, internalIP, fwRules, ipv6Prefix, extraIPs...); err != nil {
 			// Cleanup on failure
-			_ = m.vlan.RemoveVLAN(vmID, vlanID)
 			_ = m.bandwidth.RemoveBandwidthLimit(vmID)
 			_ = m.nat.RemoveNAT(vmID, internalIP)
 			return fmt.Errorf("failed to apply firewall rules: %w", err)
@@ -190,7 +198,6 @@ func (m *Manager) SetupVMNetwork(vmID string, internalIP string, vlanID int, ban
 		ll, err := applyIPv6Route(*ipv6)
 		if err != nil {
 			_ = m.firewall.CleanupVM(vmID)
-			_ = m.vlan.RemoveVLAN(vmID, vlanID)
 			_ = m.bandwidth.RemoveBandwidthLimit(vmID)
 			_ = m.nat.RemoveNAT(vmID, internalIP)
 			return fmt.Errorf("failed to route IPv6 prefix: %w", err)
@@ -208,6 +215,12 @@ func (m *Manager) SetupVMNetwork(vmID string, internalIP string, vlanID int, ban
 
 // CleanupVMNetwork removes all network configuration for a VM
 // This should be called when a VM is deleted or stopped
+// ForgetVM drops what the manager remembers about a VM that no longer exists,
+// beyond the rules CleanupVMNetwork removes.
+func (m *Manager) ForgetVM(vmID string) {
+	_ = m.vlan.CleanupVM(vmID)
+}
+
 func (m *Manager) CleanupVMNetwork(vmID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -232,12 +245,11 @@ func (m *Manager) CleanupVMNetwork(vmID string) error {
 		errs = append(errs, fmt.Errorf("firewall cleanup: %w", err))
 	}
 
-	// 3. Remove VLAN assignment
-	if state != nil && state.VLANID > 0 {
-		if err := m.vlan.CleanupVM(vmID); err != nil {
-			errs = append(errs, fmt.Errorf("VLAN cleanup: %w", err))
-		}
-	}
+	// 3. The VLAN is left alone here. This cleanup runs before every full
+	//    re-apply, and SetupVMNetwork then either re-asserts the VLAN or moves
+	//    the VM back to the native network; taking the tap out of its VLAN in
+	//    between would put the VM's traffic on the wrong network for a moment.
+	//    A VM that is being deleted loses its tap, and ForgetVM drops the record.
 
 	// 4. Remove bandwidth limit
 	if err := m.bandwidth.CleanupVM(vmID); err != nil {

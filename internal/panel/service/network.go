@@ -463,14 +463,21 @@ func (s *NetworkService) SetVLAN(ctx context.Context, vmID string, networkID str
 		return ErrNetworkNotFound
 	}
 
-	// Update VLAN ID
-	vlanID := req.VLANID
-	if err := s.networkRepo.UpdateVLANID(ctx, networkID, &vlanID); err != nil {
+	if req.VLANID < 0 || req.VLANID > 4094 {
+		return fmt.Errorf("VLAN ID must be between 1 and 4094, or 0 for none")
+	}
+	// Update VLAN ID. 0 clears it: the VM goes back to the untagged network.
+	var vlan *int
+	if req.VLANID > 0 {
+		v := req.VLANID
+		vlan = &v
+	}
+	if err := s.networkRepo.UpdateVLANID(ctx, networkID, vlan); err != nil {
 		return fmt.Errorf("failed to update VLAN ID: %w", err)
 	}
 
 	// Enqueue VLAN config job to agent
-	network.VLANID = &vlanID
+	network.VLANID = vlan
 	if err := s.enqueueNetworkConfigJob(ctx, vm, network); err != nil {
 		fmt.Printf("failed to enqueue VLAN config job: %v\n", err)
 	}

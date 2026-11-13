@@ -277,6 +277,7 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 			if cerr := s.networkMgr.CleanupVMNetwork(req.VmId); cerr != nil {
 				log.Printf("[NodeAgent] WARNING: network cleanup after destroy of %s: %v", req.VmId, cerr)
 			}
+			s.networkMgr.ForgetVM(req.VmId)
 		}
 	case pb.VMCommandType_VM_COMMAND_TYPE_PAUSE:
 		err = libvirt.SuspendVM(req.VmId)

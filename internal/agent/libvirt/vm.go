@@ -158,11 +158,9 @@ func generateDomainXML(config VMConfig) (string, error) {
 	if config.MACAddress != "" {
 		iface.MAC = &libvirtxml.DomainInterfaceMAC{Address: config.MACAddress}
 	}
-	if config.VLANID > 0 {
-		iface.VLan = &libvirtxml.DomainInterfaceVLan{
-			Tags: []libvirtxml.DomainInterfaceVLanTag{{ID: uint(config.VLANID)}},
-		}
-	}
+	// No <vlan> element: libvirt only accepts it on Open vSwitch and refuses to
+	// start a VM that has one on a Linux bridge. The VLAN is applied to the tap
+	// by the network manager once the VM is up.
 	if config.BandwidthMbps > 0 {
 		// libvirt expresses bandwidth average in kilobytes/sec: Mbps * 1000 / 8.
 		avgIn := config.BandwidthMbps * 125
