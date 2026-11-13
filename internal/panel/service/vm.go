@@ -1467,6 +1467,9 @@ type UpdateVMRequest struct {
 	// UserID, when set, reassigns VM ownership to another user (admin-only;
 	// enforced at the handler). Empty leaves ownership unchanged.
 	UserID string `json:"user_id,omitempty" validate:"omitempty,uuid"`
+	// StartAfter boots the VM once the resize has been applied. Set by callers
+	// that stopped a running VM to resize it; never read from a request body.
+	StartAfter bool `json:"-"`
 }
 
 // UpdateVM updates VM hostname and/or resources
@@ -1549,7 +1552,7 @@ func (s *VMService) UpdateVM(ctx context.Context, req *UpdateVMRequest) (*models
 		}
 
 		// Enqueue the resize job only after the new resources are committed.
-		paramsJSON, _ := json.Marshal(map[string]interface{}{"resources": *req.Resources})
+		paramsJSON, _ := json.Marshal(map[string]interface{}{"resources": *req.Resources, "start_after": req.StartAfter})
 		job := queue.VMOperationJob{VMID: vm.ID, Operation: queue.VMOpResize, NodeID: vm.NodeID, Params: paramsJSON}
 		if _, err := s.riverClient.Insert(ctx, job, nil); err != nil {
 			return nil, fmt.Errorf("failed to enqueue VM resize job: %w", err)

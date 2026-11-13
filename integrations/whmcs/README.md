@@ -9,6 +9,16 @@ module calls the panel's signed **billing webhook** (`POST /webhooks/billing`):
 | Suspend             | `vm.suspend`   |
 | Unsuspend           | `vm.unsuspend` |
 | Terminate           | `vm.destroy`   |
+| Upgrade/Downgrade   | `vm.resize`    |
+| Change Password     | `vm.reset_password` |
+| Usage update (cron) | `vm.usage`     |
+| Start / Stop / Reboot buttons | `vm.start` / `vm.stop` / `vm.restart` |
+
+Suspend powers the VM off and the customer cannot start it until it is
+unsuspended. An upgrade shuts a running VM down, applies the new CPU and memory,
+and boots it again; the disk only ever grows. Change Password needs a running
+VM with the guest agent. The usage update fills bandwidth used and allowed and
+the disk allowance; disk used is not reported.
 
 Requests are authenticated with a shared **API key** (`X-API-Key`) and an
 **HMAC-SHA256 signature** (`X-Webhook-Signature: sha256=<hex>`) over the raw JSON
@@ -61,10 +71,10 @@ portal rather than being duplicated in WHMCS.
 
 ## Notes / limitations
 
-- **Idempotency is persisted** on the panel (Postgres `billing_idempotency`
-  table), so a retried webhook returns the original response even across panel
-  restarts. Always send a stable `X-Idempotency-Key` (this module does) to get
-  exactly-once provisioning.
+- **Create and terminate are idempotent**: the panel stores their result
+  (Postgres `billing_idempotency` table) for 24 hours, so a retried webhook
+  returns the original response even across panel restarts. Every other event
+  runs each time it is sent.
 - The module targets WHMCS 7.7+ (uses `serviceProperties`). `logModuleCall` and
   `serviceProperties` are WHMCS runtime globals — static PHP linters flag them as
   undefined; that is expected.

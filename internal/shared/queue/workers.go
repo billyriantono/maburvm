@@ -751,6 +751,37 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 		newStatus = models.VMStatusSuspended
 	case VMOpUnsuspend:
 		newStatus = models.VMStatusRunning
+	case VMOpResize:
+		// A billing package change stops a running VM to resize it; boot it
+		// again here, after the resize, so the start cannot overtake it.
+		var p struct {
+			StartAfter bool `json:"start_after"`
+		}
+		_ = json.Unmarshal(job.Args.Params, &p)
+		if p.StartAfter {
+			// The stop was a guest shutdown request, which returns at once.
+			// The new CPU and memory apply only from a cold boot, so wait for
+			// the guest to power off (90s), cut power if it has not, then boot.
+			for i := 0; i < 30; i++ {
+				st, err := client.GetVMStatus(agentAuthContext(cmdCtx, node), &pb.VMStatusRequest{VmId: vm.ID})
+				if err == nil && st.GetState() != pb.VMState_VM_STATE_RUNNING {
+					break
+				}
+				time.Sleep(3 * time.Second)
+			}
+			_, _ = client.ExecuteVMCommand(agentAuthContext(cmdCtx, node), &pb.VMCommandRequest{
+				VmId: vm.ID, Command: pb.VMCommandType_VM_COMMAND_TYPE_FORCE_STOP,
+			})
+			sresp, serr := client.ExecuteVMCommand(agentAuthContext(cmdCtx, node), &pb.VMCommandRequest{
+				VmId: vm.ID, Command: pb.VMCommandType_VM_COMMAND_TYPE_START,
+			})
+			if serr != nil || !sresp.GetSuccess() {
+				w.logger.ErrorContext(ctx, "resize done but the VM did not start again",
+					"vm_id", vm.ID, "error", serr, "detail", sresp.GetMessage())
+			} else {
+				newStatus = models.VMStatusRunning
+			}
+		}
 	}
 
 	// Record what the agent just confirmed about the VM's ISO drive, so the
@@ -899,10 +930,14 @@ func (w *VMOperationWorker) cleanupDeletedVM(ctx context.Context, vmID string) e
 // boot; a shorter deadline made River retry while the agent was still working,
 // and the two calls fought over the VM.
 func (w *VMOperationWorker) Timeout(job *river.Job[VMOperationJob]) time.Duration {
-	if job.Args.Operation == VMOpConfigureNetwork {
-		return 5 * time.Minute
+	// Every operation gets slightly more than the deadline its agent call
+	// runs under (an hour for create, five minutes otherwise). River's own
+	// default is one minute, which cancelled the panel side of a long create
+	// or rebuild while the agent carried on.
+	if job.Args.Operation == VMOpCreate {
+		return 65 * time.Minute
 	}
-	return 0 // River's default
+	return 6 * time.Minute
 }
 
 // netConfigLocks serialises network applies per VM; netConfigDone holds the
