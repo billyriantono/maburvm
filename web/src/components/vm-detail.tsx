@@ -2360,7 +2360,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                   </Button>
                 ) : (
                   <Button type="button" size="sm" variant="outline" onClick={() => setAssignIPv6Open(true)}>
-                    <Plus className="w-4 h-4 mr-1" />Assign /64
+                    <Plus className="w-4 h-4 mr-1" />Assign a prefix
                   </Button>
                 ))}
               </div>
@@ -2852,9 +2852,9 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
       <Dialog open={assignIPv6Open} onOpenChange={setAssignIPv6Open}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Assign an IPv6 /64 to {vm.hostname}</DialogTitle>
+            <DialogTitle>Assign an IPv6 prefix to {vm.hostname}</DialogTitle>
             <DialogDescription>
-              The next free /64 of the pool is routed to this VM. The guest is given the prefix&apos;s ::1
+              The next free prefix of the pool is routed to this VM. Its size is set on the pool. The guest is given the prefix&apos;s ::1
               with fe80::1 as its gateway, and the firewall rules that apply to its IPv4 address apply to
               the whole prefix.
             </DialogDescription>

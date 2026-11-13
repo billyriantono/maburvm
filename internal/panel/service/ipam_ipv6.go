@@ -18,14 +18,22 @@ var (
 	ErrPoolNotDelegated          = errors.New("ip pool does not delegate prefixes per VM")
 	ErrVMAlreadyHasIPv6Prefix    = errors.New("VM already has an IPv6 prefix")
 	ErrNoAvailableIPv6Prefix     = errors.New("no free IPv6 prefix left in pool")
-	ErrInvalidDelegatedPrefixLen = errors.New("delegated_prefix_len must be an IPv6 length longer than the pool CIDR and at most 64")
+	ErrInvalidDelegatedPrefixLen = errors.New("the per-VM prefix must be smaller than the pool and one of /48, /52, /56, /60, /64, /80, /96 or /112")
 )
 
+// DelegatedPrefixLens are the per-VM prefix sizes a pool may hand out: nibble
+// boundaries up to /64 (they read cleanly in hex and delegate reverse DNS
+// cleanly), and three smaller sizes for operators short on address space.
+var DelegatedPrefixLens = []int{48, 52, 56, 60, 64, 80, 96, 112}
+
 // validateDelegatedPrefixLen checks a pool's per-VM prefix length against its
-// family and CIDR: IPv6 only, strictly inside the pool, and no longer than /64
-// so every guest gets a SLAAC-sized network.
+// family and CIDR: IPv6 only, one of the offered sizes, strictly inside the pool.
 func validateDelegatedPrefixLen(family, cidr string, n int) error {
-	if family != models.IPFamilyIPv6 || cidr == "" || n > 64 {
+	offered := false
+	for _, l := range DelegatedPrefixLens {
+		offered = offered || l == n
+	}
+	if family != models.IPFamilyIPv6 || cidr == "" || !offered {
 		return ErrInvalidDelegatedPrefixLen
 	}
 	_, ipNet, err := net.ParseCIDR(cidr)
@@ -136,14 +144,16 @@ func (s *IPAMService) AllocateIPv6PrefixInTx(ctx context.Context, tx *gorm.DB, p
 		return nil, fmt.Errorf("pool %s has an invalid CIDR: %w", pool.Name, err)
 	}
 	poolLen, _ := ipNet.Mask.Size()
+	// The router link is held back whatever size the pool is split into: a
+	// link /64 sits inside one /56, and covers a whole run of /80s.
+	linkLo, linkHi := -1, -1
 	if pool.LinkPrefix != nil && *pool.LinkPrefix != "" {
-		li, err := prefixIdx(pool.CIDR, *pool.DelegatedPrefixLen, *pool.LinkPrefix)
+		linkLo, linkHi, err = linkPrefixRange(pool.CIDR, *pool.DelegatedPrefixLen, *pool.LinkPrefix)
 		if err != nil {
 			return nil, fmt.Errorf("pool %s link_prefix: %w", pool.Name, err)
 		}
-		used = insertSorted(used, li)
 	}
-	idx := lowestFreeIdx(used, delegatedPrefixCount(poolLen, *pool.DelegatedPrefixLen))
+	idx := lowestFreeIdxOutside(used, delegatedPrefixCount(poolLen, *pool.DelegatedPrefixLen), linkLo, linkHi)
 	if idx < 0 {
 		return nil, ErrNoAvailableIPv6Prefix
 	}
@@ -241,6 +251,64 @@ func prefixIdx(poolCIDR string, n int, prefix string) (int, error) {
 	}
 	off := new(big.Int).Sub(new(big.Int).SetBytes(p.IP.To16()), new(big.Int).SetBytes(pool.IP.To16()))
 	return int(off.Rsh(off, uint(128-n)).Int64()), nil
+}
+
+// linkPrefixRange returns the first and last per-VM index that overlap the
+// router link prefix. The link only has to sit inside the pool; it need not be
+// the same size as the per-VM prefixes.
+func linkPrefixRange(poolCIDR string, n int, link string) (lo, hi int, err error) {
+	_, pool, err := net.ParseCIDR(poolCIDR)
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid pool CIDR %q", poolCIDR)
+	}
+	ip, l, err := net.ParseCIDR(link)
+	if err != nil || ip.To4() != nil {
+		return 0, 0, fmt.Errorf("%q is not an IPv6 prefix", link)
+	}
+	linkLen, _ := l.Mask.Size()
+	poolLen, _ := pool.Mask.Size()
+	if !ip.Equal(l.IP) || !pool.Contains(l.IP) || linkLen < poolLen {
+		return 0, 0, fmt.Errorf("%q must be a network address inside %s", link, poolCIDR)
+	}
+	base := new(big.Int).SetBytes(pool.IP.To16())
+	first := new(big.Int).Sub(new(big.Int).SetBytes(l.IP.To16()), base)
+	last := new(big.Int).Add(first, new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), uint(128-linkLen)), big.NewInt(1)))
+	shift := uint(128 - n)
+	lo64, hi64 := first.Rsh(first, shift), last.Rsh(last, shift)
+	// Indexes are capped far below this; anything larger cannot be allocated anyway.
+	const cap64 = int64(1) << 40
+	if !lo64.IsInt64() || lo64.Int64() > cap64 {
+		return int(cap64), int(cap64), nil
+	}
+	hi = int(cap64)
+	if hi64.IsInt64() && hi64.Int64() < cap64 {
+		hi = int(hi64.Int64())
+	}
+	return int(lo64.Int64()), hi, nil
+}
+
+// lowestFreeIdxOutside is lowestFreeIdx that also steps over the reserved run
+// lo..hi (pass -1, -1 for none).
+func lowestFreeIdxOutside(used []int, max, lo, hi int) int {
+	next := 1
+	i := 0
+	for {
+		if lo >= 0 && next >= lo && next <= hi {
+			next = hi + 1
+		}
+		for i < len(used) && used[i] < next {
+			i++
+		}
+		if i < len(used) && used[i] == next {
+			next++
+			continue
+		}
+		break
+	}
+	if next >= max {
+		return -1
+	}
+	return next
 }
 
 // insertSorted adds v to an ascending slice (no-op when present).

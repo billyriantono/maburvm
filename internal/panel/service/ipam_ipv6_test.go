@@ -58,7 +58,8 @@ func TestValidateDelegatedPrefixLen(t *testing.T) {
 	require.Error(t, validateDelegatedPrefixLen(models.IPFamilyIPv4, "203.0.113.0/24", 64))
 	require.Error(t, validateDelegatedPrefixLen(models.IPFamilyIPv6, "", 64))
 	require.Error(t, validateDelegatedPrefixLen(models.IPFamilyIPv6, "2001:db8:20::/64", 64))
-	require.Error(t, validateDelegatedPrefixLen(models.IPFamilyIPv6, "2001:db8:20::/48", 80))
+	require.NoError(t, validateDelegatedPrefixLen(models.IPFamilyIPv6, "2001:db8:20::/48", 80)) // sizes beyond /64 are offered now
+	require.Error(t, validateDelegatedPrefixLen(models.IPFamilyIPv6, "2001:db8:20::/48", 72))
 }
 
 func TestIPv6PrefixAllocationLowestFreeWithGaps(t *testing.T) {
@@ -167,5 +168,54 @@ func TestPrefixIdxAndLinkSkip(t *testing.T) {
 	}
 	if n := lowestFreeIdx(insertSorted([]int{1, 2}, 3), 1<<16); n != 4 {
 		t.Fatalf("want 4, got %d", n)
+	}
+}
+
+func TestLinkPrefixIsReservedAtAnySplitSize(t *testing.T) {
+	const pool = "2001:db8:21::/48"
+	const link = "2001:db8:21:104::/64"
+
+	// Same size as the split: exactly the index the old code reserved.
+	lo, hi, err := linkPrefixRange(pool, 64, link)
+	require.NoError(t, err)
+	old, err := prefixIdx(pool, 64, link)
+	require.NoError(t, err)
+	require.Equal(t, [2]int{old, old}, [2]int{lo, hi})
+
+	// Split into /56s: the link sits inside one of them (0x104 >> 8 = 1).
+	lo, hi, err = linkPrefixRange(pool, 56, link)
+	require.NoError(t, err)
+	require.Equal(t, [2]int{1, 1}, [2]int{lo, hi})
+	require.Equal(t, 2, lowestFreeIdxOutside(nil, 256, lo, hi))
+
+	// Split into /80s: the link covers a run of 65536 of them.
+	lo, hi, err = linkPrefixRange(pool, 80, link)
+	require.NoError(t, err)
+	require.Equal(t, 0x104<<16, lo)
+	require.Equal(t, 0x104<<16+0xffff, hi)
+	// Allocation steps over the whole reserved run.
+	require.Equal(t, 11, lowestFreeIdxOutside([]int{1, 2}, 100, 3, 10))
+	require.Equal(t, 12, lowestFreeIdxOutside([]int{1, 2, 11}, 100, 3, 10))
+	require.Equal(t, -1, lowestFreeIdxOutside([]int{1, 2}, 11, 3, 10))
+
+	// Outside the pool, or not a network address, is refused.
+	for _, bad := range []string{"2001:db8:99::/64", "2001:db8:21:104::1/64", "192.0.2.0/24"} {
+		_, _, err := linkPrefixRange(pool, 64, bad)
+		require.Error(t, err, bad)
+	}
+
+	// Without a reservation it behaves exactly like lowestFreeIdx.
+	for _, used := range [][]int{nil, {1, 2}, {1, 3, 4}, {2, 3}} {
+		require.Equal(t, lowestFreeIdx(used, 65536), lowestFreeIdxOutside(used, 65536, -1, -1))
+	}
+	require.Equal(t, -1, lowestFreeIdxOutside([]int{1, 2, 3}, 4, -1, -1))
+}
+
+func TestDelegatedPrefixLenChoices(t *testing.T) {
+	for _, n := range []int{56, 60, 64, 80, 112} {
+		require.NoError(t, validateDelegatedPrefixLen(models.IPFamilyIPv6, "2001:db8:21::/48", n), n)
+	}
+	for _, n := range []int{48, 63, 72, 128} { // not smaller than the pool, or not an offered size
+		require.Error(t, validateDelegatedPrefixLen(models.IPFamilyIPv6, "2001:db8:21::/48", n), n)
 	}
 }

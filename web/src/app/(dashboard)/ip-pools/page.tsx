@@ -149,21 +149,25 @@ export default function IPPoolsPage() {
               <option value="ipv6">IPv6</option>
             </select>
             {poolForm.family === "ipv6" && (
-              <label className="flex items-center gap-2 px-3 h-10 rounded-md border border-input bg-background text-sm cursor-pointer" title="Each VM gets its own routed /64 out of this prefix; the gateway is the node's fe80::1">
-                <input
-                  type="checkbox"
-                  className="w-4 h-4"
-                  checked={!!poolForm.delegated_prefix_len}
-                  onChange={(e) =>
-                    setPoolForm({
-                      ...poolForm,
-                      delegated_prefix_len: e.target.checked ? 64 : undefined,
-                      gateway: e.target.checked && !poolForm.gateway ? "fe80::1" : poolForm.gateway,
-                    })
-                  }
-                />
-                Delegate a /64 per VM
-              </label>
+              <select
+                aria-label="How VMs get IPv6 from this pool"
+                title="Single addresses: each VM takes one or more addresses from this subnet, like IPv4. Routed prefix: each VM gets a whole network of its own."
+                value={poolForm.delegated_prefix_len ?? ""}
+                onChange={(e) => {
+                  const len = e.target.value ? Number(e.target.value) : undefined
+                  setPoolForm({
+                    ...poolForm,
+                    delegated_prefix_len: len,
+                    gateway: len && !poolForm.gateway ? "fe80::1" : poolForm.gateway,
+                  })
+                }}
+                className="h-10 px-3 rounded-md border border-input bg-background text-sm cursor-pointer"
+              >
+                <option value="">Single addresses from this subnet</option>
+                {[48, 52, 56, 60, 64, 80, 96, 112].map((len) => (
+                  <option key={len} value={len}>A routed /{len} per VM{len === 64 ? " (usual)" : ""}</option>
+                ))}
+              </select>
             )}
             <div className="rounded-md border border-input bg-background p-2 max-h-32 overflow-y-auto">
               <label className="flex items-center gap-2 px-2 py-1 cursor-pointer rounded-sm hover:bg-muted">
@@ -181,12 +185,12 @@ export default function IPPoolsPage() {
                 </label>
               ))}
             </div>
-            <Input placeholder={poolForm.delegated_prefix_len ? "CIDR e.g. 2001:db8:20::/48 (split into /64s)" : "CIDR e.g. 203.0.113.0/24"} value={poolForm.cidr ?? ""} onChange={(e) => setPoolForm({ ...poolForm, cidr: e.target.value })} required={!!poolForm.delegated_prefix_len} />
+            <Input placeholder={poolForm.delegated_prefix_len ? `CIDR e.g. 2001:db8:20::/48 (split into /${poolForm.delegated_prefix_len}s)` : poolForm.family === "ipv6" ? "CIDR e.g. 2001:db8:30::/64" : "CIDR e.g. 203.0.113.0/24"} value={poolForm.cidr ?? ""} onChange={(e) => setPoolForm({ ...poolForm, cidr: e.target.value })} required={!!poolForm.delegated_prefix_len} />
             <Input placeholder="Gateway" value={poolForm.gateway ?? ""} onChange={(e) => setPoolForm({ ...poolForm, gateway: e.target.value })} />
             {poolForm.delegated_prefix_len ? (
               <Input
                 placeholder="Link network inside the pool, never given to a VM (optional) e.g. 2001:db8:21:104::/64"
-                title="The /64 between the router and the node, when it lies inside this pool. Blank: the pool's first /64 is the link network."
+                title="The network between the router and the node, when it lies inside this pool. It is never given to a VM. Blank: the pool's first per-VM prefix is held back instead."
                 value={poolForm.link_prefix ?? ""}
                 onChange={(e) => setPoolForm({ ...poolForm, link_prefix: e.target.value || undefined })}
               />
