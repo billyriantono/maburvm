@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { Loader2, Pencil } from "lucide-react"
+import { Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 
@@ -32,22 +32,22 @@ export function VMNameEditor({
 
   if (!editing) {
     return (
-      <button
-        type="button"
-        onClick={() => {
-          setValue(hostname)
-          setError("")
-          setEditing(true)
-        }}
-        className="group flex items-center gap-2 text-left"
-        title="Rename"
-      >
+      // The name and a worded button beside it. It used to be a pencil that
+      // only appeared on hover, which nobody found, and never on a touch screen.
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <h1 className={headingClassName}>{hostname}</h1>
-        <Pencil
-          className="w-4 h-4 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition-opacity"
-          aria-hidden="true"
-        />
-      </button>
+        <button
+          type="button"
+          onClick={() => {
+            setValue(hostname)
+            setError("")
+            setEditing(true)
+          }}
+          className="border-b border-border pb-px text-xs font-semibold hover:border-foreground active:translate-y-px"
+        >
+          Rename
+        </button>
+      </div>
     )
   }
 
@@ -80,6 +80,7 @@ export function VMNameEditor({
           maxLength={100}
           onChange={(e) => setValue(e.target.value)}
           aria-invalid={error ? true : undefined}
+          aria-label="VM name"
           aria-describedby={error ? "vm-name-error" : undefined}
           onKeyDown={(e) => {
             if (e.key === "Enter") commit()
@@ -97,6 +98,9 @@ export function VMNameEditor({
       {error && (
         <p id="vm-name-error" role="alert" className="mt-1 text-xs font-medium text-destructive">{error}</p>
       )}
+      <p className="mt-1 text-xs text-muted-foreground">
+        This changes the name shown in the panel. The hostname set inside the VM stays as it is.
+      </p>
     </div>
   )
 }
