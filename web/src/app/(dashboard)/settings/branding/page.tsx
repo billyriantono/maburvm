@@ -26,11 +26,10 @@ const PRESETS: { name: string; hex: string }[] = [
   { name: "Plum", hex: "#7e22ce" },
 ]
 
-type Scene = "signin" | "dashboard" | "email"
+type Scene = "signin" | "dashboard"
 const SCENES: { id: Scene; label: string }[] = [
   { id: "signin", label: "Sign-in page" },
   { id: "dashboard", label: "Dashboard" },
-  { id: "email", label: "Welcome email" },
 ]
 
 const fieldClass =
@@ -129,7 +128,7 @@ export default function BrandStudioPage() {
   const [busy, setBusy] = useState<"logo" | "favicon" | null>(null)
   const [fromLogo, setFromLogo] = useState<string[]>([])
   const [hexText, setHexText] = useState(accentOf(saved))
-  const tabRefs = useRef<Record<Scene, HTMLButtonElement | null>>({ signin: null, dashboard: null, email: null })
+  const tabRefs = useRef<Record<Scene, HTMLButtonElement | null>>({ signin: null, dashboard: null })
 
   const set = <K extends keyof Branding>(key: K, value: Branding[K]) => setDraft((d) => ({ ...d, [key]: value }))
   const dirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(saved), [draft, saved])
@@ -230,7 +229,7 @@ export default function BrandStudioPage() {
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] items-start">
         {/* Controls */}
         <div className="space-y-6">
-          <Section title="Name" lead="Shown in the sidebar, the browser tab, the sign-in page and every email.">
+          <Section title="Name" lead="Shown in the sidebar, the browser tab, the sign-in page and every email. The wording of the emails is on the Emails page.">
             <Field label="Panel name" error={errors.name} count={`${draft.name.length}/60`}>
               {(id, desc) => <Input id={id} aria-describedby={desc} aria-invalid={!!errors.name} maxLength={60} value={draft.name} onChange={(e) => set("name", e.target.value)} />}
             </Field>
@@ -477,26 +476,6 @@ export default function BrandStudioPage() {
                     ))}
                     <div className="mt-4 rounded-md border border-primary px-3 py-2 text-[11px] text-primary font-medium inline-block">Outlined button</div>
                   </div>
-                </div>
-              )}
-
-              {scene === "email" && (
-                <div className="p-5 min-h-[420px]">
-                  <div className="rounded-md border bg-card">
-                    <div className="border-b px-4 py-3 text-[11px] space-y-1">
-                      <p><span className="text-muted-foreground">Subject </span><span className="font-medium">Welcome to {draft.name.trim() || "Your panel"}</span></p>
-                      <p><span className="text-muted-foreground">To </span>customer@example.com</p>
-                    </div>
-                    <pre className="px-4 py-4 text-[11px] leading-relaxed whitespace-pre-wrap font-mono text-foreground">{`Hello Dewi,
-
-Your ${draft.name.trim() || "Your panel"} account has been created.
-
-Sign in: https://panel.example.com
-Username: customer@example.com
-
-For security, the password was set by your administrator — please change it after your first sign-in.`}</pre>
-                  </div>
-                  <p className="text-[11px] text-muted-foreground mt-3">Emails are plain text, so they carry your name but not your logo or colour.</p>
                 </div>
               )}
             </div>

@@ -25,6 +25,7 @@ import {
   ShieldAlert,
   ShieldX,
   Palette,
+  Mail,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { BrandMark, useBranding } from "@/lib/branding/provider"
@@ -57,6 +58,7 @@ const settingsNav = [
   { href: "/settings/ssh-keys", label: "SSH Keys", icon: KeySquare },
   { href: "/settings/recipes", label: "Recipes", icon: ScrollText },
   { href: "/settings/branding", label: "Branding", icon: Palette },
+  { href: "/settings/emails", label: "Emails", icon: Mail },
   { href: "/settings/system", label: "System", icon: Shield },
 ]
 

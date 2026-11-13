@@ -173,7 +173,7 @@ export default function ProfileSettingsPage() {
         color: { dark: "#000000", light: "#FFFFFF" },
       }).then(setQrCodeImage).catch(console.error)
     }
-  }, [showSetupDialog, setupStep, user, setupSecret])
+  }, [showSetupDialog, setupStep, user, setupSecret, branding.name])
 
   const handlePasswordChange = async (data: PasswordFormData) => {
     setIsLoading(true)

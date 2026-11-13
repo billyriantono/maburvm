@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -166,6 +167,22 @@ func (s *Server) SetupRoutes() {
 
 	// Public: the sign-in page needs the operator's name, logo and colour
 	// before anyone is logged in. Holds nothing secret.
+	// The logo as a file, for mail clients: they will not show an image that
+	// is embedded in the message. Scripts are forbidden outright in case the
+	// file is opened directly in a browser.
+	v1.GET("/branding/logo", func(c echo.Context) error {
+		logo := service.LoadBranding(s.db.WithContext(c.Request().Context())).Logo
+		meta, data, ok := strings.Cut(strings.TrimPrefix(logo, "data:"), ";base64,")
+		raw, err := base64.StdEncoding.DecodeString(data)
+		if !ok || err != nil || len(raw) == 0 {
+			return c.NoContent(http.StatusNotFound)
+		}
+		h := c.Response().Header()
+		h.Set("Cache-Control", "public, max-age=300")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox")
+		return c.Blob(http.StatusOK, meta, raw)
+	})
 	v1.GET("/branding", func(c echo.Context) error {
 		c.Response().Header().Set("Cache-Control", "public, max-age=60")
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": service.LoadBranding(s.db.WithContext(c.Request().Context()))})
@@ -1541,7 +1558,7 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		if err := s.db.WithContext(c.Request().Context()).
 			// The nameserver connection holds a credential and has its own
 			// endpoints below that never return it.
-			Raw("SELECT section, data::text AS data FROM system_settings WHERE section NOT IN (?, ?)", service.DNSProviderSection, service.BrandingSection).Scan(&rows).Error; err != nil {
+			Raw("SELECT section, data::text AS data FROM system_settings WHERE section NOT IN (?, ?, ?)", service.DNSProviderSection, service.BrandingSection, service.EmailTemplatesSection).Scan(&rows).Error; err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to load settings"})
 		}
 		out := map[string]json.RawMessage{}
@@ -1561,6 +1578,9 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 			}
 			if section == service.BrandingSection {
 				return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Branding is saved through its own form"})
+			}
+			if section == service.EmailTemplatesSection {
+				return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Emails are saved through their own page"})
 			}
 			var stored string
 			_ = s.db.WithContext(c.Request().Context()).
@@ -1590,6 +1610,117 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to save branding"})
 		}
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": service.LoadBranding(s.db.WithContext(c.Request().Context()))})
+	})
+
+	// Email templates (admin-only): the wording of each email the panel sends.
+	emailTpl := sys.Group("/email-templates")
+	emailTpl.GET("", func(c echo.Context) error {
+		saved := service.LoadEmailTemplates(s.db.WithContext(c.Request().Context()))
+		type item struct {
+			service.EmailTemplateDef
+			Current    service.EmailTemplate `json:"current"`
+			Customised bool                  `json:"customised"`
+		}
+		items := []item{}
+		for _, def := range service.EmailTemplateDefs() {
+			cur, ok := saved[def.Key]
+			if !ok {
+				cur = def.Default
+			}
+			items = append(items, item{EmailTemplateDef: def, Current: cur, Customised: ok})
+		}
+		// Why the logo is or is not in the emails, so the page can say so.
+		brand := service.LoadBranding(s.db.WithContext(c.Request().Context()))
+		logo := "shown"
+		switch {
+		case brand.Logo == "":
+			logo = "no_logo"
+		case strings.HasPrefix(brand.Logo, "data:image/svg"):
+			logo = "svg"
+		case os.Getenv("PANEL_PUBLIC_URL") == "":
+			logo = "no_public_url"
+		}
+		_, smtpReady, _ := service.LoadSMTPSettings(s.db.WithContext(c.Request().Context()))
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{
+			"templates": items, "placeholders": service.EmailPlaceholders, "logo": logo, "smtp_ready": smtpReady,
+		}})
+	})
+	// renderSample draws a template with made-up recipient details, for the
+	// preview and for test sends.
+	renderSample := func(c echo.Context, def service.EmailTemplateDef, t service.EmailTemplate, to string) service.RenderedEmail {
+		brand := service.LoadBranding(s.db.WithContext(c.Request().Context()))
+		email := def.Sample["email"]
+		if to != "" {
+			email = to
+		}
+		return service.RenderEmail(t, brand, service.EmailData{
+			Name: def.Sample["name"], Email: email, Link: def.SampleLink,
+			LogoURL: service.EmailLogoURL(brand, os.Getenv("PANEL_PUBLIC_URL")),
+		})
+	}
+	emailTpl.PUT("/:key", func(c echo.Context) error {
+		var t service.EmailTemplate
+		if err := c.Bind(&t); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Invalid request body"})
+		}
+		if _, ok := service.EmailTemplateDefFor(c.Param("key")); !ok {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "No such email"})
+		}
+		if err := t.Normalize(); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
+		}
+		if err := service.SaveEmailTemplate(s.db.WithContext(c.Request().Context()), c.Param("key"), &t); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to save the email"})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": t})
+	})
+	emailTpl.DELETE("/:key", func(c echo.Context) error {
+		if _, ok := service.EmailTemplateDefFor(c.Param("key")); !ok {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "No such email"})
+		}
+		if err := service.SaveEmailTemplate(s.db.WithContext(c.Request().Context()), c.Param("key"), nil); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to reset the email"})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true})
+	})
+	emailTpl.POST("/:key/preview", func(c echo.Context) error {
+		def, ok := service.EmailTemplateDefFor(c.Param("key"))
+		if !ok {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "No such email"})
+		}
+		var t service.EmailTemplate
+		if err := c.Bind(&t); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Invalid request body"})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": renderSample(c, def, t, "")})
+	})
+	emailTpl.POST("/:key/test", func(c echo.Context) error {
+		def, ok := service.EmailTemplateDefFor(c.Param("key"))
+		if !ok {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "No such email"})
+		}
+		var req struct {
+			To       string                `json:"to"`
+			Template service.EmailTemplate `json:"template"`
+		}
+		if err := c.Bind(&req); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Invalid request body"})
+		}
+		if a, err := mail.ParseAddress(strings.TrimSpace(req.To)); err != nil || a.Address != strings.TrimSpace(req.To) {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Enter the address to send the test to"})
+		}
+		if err := req.Template.Normalize(); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
+		}
+		cfg, ok, err := service.LoadSMTPSettings(s.db.WithContext(c.Request().Context()))
+		if err != nil || !ok {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Outgoing mail is not set up yet. Add your SMTP server under System settings, Email."})
+		}
+		to := strings.TrimSpace(req.To)
+		if err := service.SendMail(cfg, to, renderSample(c, def, req.Template, to)); err != nil {
+			return c.JSON(http.StatusBadGateway, map[string]interface{}{"error": "Bad Gateway", "message": err.Error()})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "Test sent to " + to})
 	})
 
 	// Nameserver connection (admin-only). The API key goes in and never comes
@@ -1684,6 +1815,7 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 			Password: body.SMTPPassword,
 			From:     body.SMTPFrom,
 			FromName: body.SMTPFromName,
+			Brand:    service.LoadBranding(s.db.WithContext(c.Request().Context())),
 		}, to); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 		}
