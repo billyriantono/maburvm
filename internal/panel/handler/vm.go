@@ -1038,6 +1038,24 @@ func (h *VMHandler) handleLifecycleCommand(c echo.Context, command service.Lifec
 		})
 	}
 
+	// Suspension is a service state, not a pause: the VM is powered off and
+	// flagged, and it works on a VM that is already off.
+	if command == service.LifecycleSuspend || command == service.LifecycleUnsuspend {
+		var err error
+		if command == service.LifecycleSuspend {
+			err = h.service.SuspendVM(c.Request().Context(), id)
+		} else {
+			err = h.service.UnsuspendVM(c.Request().Context(), id)
+		}
+		if errors.Is(err, service.ErrVMNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
+		}
+		if err != nil {
+			return c.JSON(http.StatusBadGateway, map[string]interface{}{"error": "Bad Gateway", "message": err.Error()})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"message": "VM " + string(command) + "ed"})
+	}
+
 	var req LifecycleRequest
 	if err := c.Bind(&req); err != nil {
 		// Body is optional, ignore errors

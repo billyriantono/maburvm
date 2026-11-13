@@ -81,8 +81,8 @@ export interface CreateNetworkRequest {
 
 // CreatePortForwardRequest for creating port forwards
 export interface CreatePortForwardRequest {
-  vm_id: string;
-  network_id: string;
+  vm_id?: string;
+  network_id?: string;
   external_port: number;
   internal_port: number;
   protocol?: 'tcp' | 'udp';

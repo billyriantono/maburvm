@@ -678,9 +678,7 @@ func (h *BillingHandler) handleVMUnsuspend(
 		return WebhookResponse{}, err
 	}
 
-	if _, err = h.vmService.ExecuteLifecycleCommand(ctx, &service.LifecycleRequest{
-		VMID: data.VMID, Command: service.LifecycleUnsuspend,
-	}); err != nil {
+	if err = h.vmService.UnsuspendVM(ctx, data.VMID); err != nil {
 		return WebhookResponse{}, fmt.Errorf("failed to unsuspend VM: %w", err)
 	}
 

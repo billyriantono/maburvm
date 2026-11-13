@@ -231,6 +231,21 @@ export default function NodeDetailPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            disabled={updateNode.isPending}
+            onClick={async () => {
+              const entering = node.status !== "maintenance"
+              try {
+                await updateNode.mutateAsync({ status: entering ? "maintenance" : "active" })
+                toast.success(entering ? "Node is in maintenance. New VMs go elsewhere and VM actions are refused." : "Node is back in service")
+              } catch (err) {
+                toast.error(`Could not change maintenance mode: ${(err as Error).message}`)
+              }
+            }}
+          >
+            {node.status === "maintenance" ? "End maintenance" : "Start maintenance"}
+          </Button>
           <Dialog open={editDialogOpen} onOpenChange={(open) => { setEditDialogOpen(open); if (open) setEditName(node.name) }}>
             <DialogTrigger asChild>
               <Button variant="outline" className="gap-2">

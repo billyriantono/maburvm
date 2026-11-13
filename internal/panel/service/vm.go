@@ -1130,7 +1130,10 @@ func (s *VMService) GetVMStatus(ctx context.Context, vmID string) (models.VMStat
 
 // setSuspended writes the suspension flag. It is the only writer.
 func (s *VMService) setSuspended(ctx context.Context, vm *models.VM, on bool) error {
-	if err := s.db.WithContext(ctx).Model(&models.VM{}).Where("id = ?", vm.ID).Update("suspended", on).Error; err != nil {
+	// By table name, not by model: the field is read-only on the model (so a
+	// full-row save cannot overwrite it), and an update through the model is
+	// silently dropped for a read-only field.
+	if err := s.db.WithContext(ctx).Table("vms").Where("id = ?", vm.ID).Update("suspended", on).Error; err != nil {
 		return fmt.Errorf("failed to update suspension: %w", err)
 	}
 	vm.Suspended = on
@@ -1157,6 +1160,31 @@ func (s *VMService) SuspendVM(ctx context.Context, vmID string) error {
 		}
 	}
 	return s.vmRepo.UpdateStatus(ctx, vmID, models.VMStatusSuspended)
+}
+
+// UnsuspendVM lifts a suspension and boots the VM. The flag is cleared first:
+// if the node cannot start the VM right now, the owner still gets it back and
+// can start it themselves.
+func (s *VMService) UnsuspendVM(ctx context.Context, vmID string) error {
+	vm, err := s.vmRepo.GetByID(ctx, vmID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrVMNotFound
+		}
+		return fmt.Errorf("failed to get VM: %w", err)
+	}
+	if err := s.setSuspended(ctx, vm, false); err != nil {
+		return err
+	}
+	if vm.Status == models.VMStatusSuspended {
+		if err := s.vmRepo.UpdateStatus(ctx, vmID, models.VMStatusStopped); err != nil {
+			return err
+		}
+	}
+	if _, err := s.ExecuteLifecycleCommand(ctx, &LifecycleRequest{VMID: vmID, Command: LifecycleStart}); err != nil {
+		return fmt.Errorf("suspension lifted, but the VM did not start: %w", err)
+	}
+	return nil
 }
 
 func (s *VMService) GetVM(ctx context.Context, vmID string, includeAgentStatus bool) (*GetVMResponse, error) {
