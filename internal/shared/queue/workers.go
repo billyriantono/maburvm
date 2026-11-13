@@ -989,7 +989,13 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 	lock, _ := netConfigLocks.LoadOrStore(vm.ID, &sync.Mutex{})
 	lock.(*sync.Mutex).Lock()
 	defer lock.(*sync.Mutex).Unlock()
-	if last, ok := netConfigDone.Load(vm.ID); ok && last.(int64) > job.ID && !params.ConfigureGuest {
+	// The post-create step calls this with a job built by hand, which has no
+	// row behind it (and so no ID): it is never skipped and never recorded.
+	var jobID int64
+	if job.JobRow != nil {
+		jobID = job.ID
+	}
+	if last, ok := netConfigDone.Load(vm.ID); ok && jobID != 0 && last.(int64) > jobID && !params.ConfigureGuest {
 		return nil
 	}
 
@@ -1113,8 +1119,8 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 		return fmt.Errorf("network config failed: %s", errMsg)
 	}
 
-	if last, ok := netConfigDone.Load(vm.ID); !ok || last.(int64) < job.ID {
-		netConfigDone.Store(vm.ID, job.ID)
+	if last, ok := netConfigDone.Load(vm.ID); jobID != 0 && (!ok || last.(int64) < jobID) {
+		netConfigDone.Store(vm.ID, jobID)
 	}
 
 	w.logger.InfoContext(ctx, "network config applied successfully",
