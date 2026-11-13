@@ -59,7 +59,8 @@ One family: **Archivo**, with its width axis doing the work of a second face.
 - Radius is small and consistent: 6px panels, 4px controls. No pills.
 - Panels are flat with a 1px rule. Shadow is reserved for things that float
   above the page (menus, dialogs, popovers).
-- No gradients, glows, glass or background patterns.
+- No gradients, glows, glass or background patterns. The sign-in artwork is the
+  one stated exception (see below).
 
 ## The faceplate
 
@@ -68,6 +69,26 @@ its power controls, and the identifiers people copy. It is dark in both themes
 (class `faceplate`), which makes it the one thing on the page that looks like
 the machine itself. Use it for a single machine or node, never as a generic
 page header.
+
+## The sign-in page
+
+Two zones: a picture side and a form side with room around it. The picture
+side is dark in both themes and carries the operator's name and a lamp that
+times a real request to the panel.
+
+The operator chooses the picture (Branding, Sign-in page):
+
+- **Traces** (the default): the product's own stacked reading traces, drawn
+  large in the operator's hue and worked out from their name, so every panel
+  has its own picture without shipping stock imagery. This is the one place a
+  gradient and glow are used: here they are the subject, light arriving at
+  "now", not a finish applied to a surface. It is artwork and carries no
+  figures, so it cannot be mistaken for a measurement.
+- **Logo**: their logo, large, on a flat ground of their colour.
+- **Picture**: a photograph or artwork of their own, shaded only under the
+  two lines of text.
+
+The brand studio previews the real page, scaled, never a redrawing of it.
 
 ## Readings
 

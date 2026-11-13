@@ -185,9 +185,24 @@ func (s *Server) SetupRoutes() {
 		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox")
 		return c.Blob(http.StatusOK, meta, raw)
 	})
+	// The operator's own sign-in picture. Its address carries a fingerprint of
+	// the picture, so it can be cached for good.
+	v1.GET("/branding/login-image", func(c echo.Context) error {
+		img := service.LoadBranding(s.db.WithContext(c.Request().Context())).LoginImage
+		meta, data, ok := strings.Cut(strings.TrimPrefix(img, "data:"), ";base64,")
+		raw, err := base64.StdEncoding.DecodeString(data)
+		if !ok || err != nil || len(raw) == 0 {
+			return c.NoContent(http.StatusNotFound)
+		}
+		h := c.Response().Header()
+		h.Set("Cache-Control", "public, max-age=31536000, immutable")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Content-Security-Policy", "default-src 'none'; sandbox")
+		return c.Blob(http.StatusOK, meta, raw)
+	})
 	v1.GET("/branding", func(c echo.Context) error {
 		c.Response().Header().Set("Cache-Control", "public, max-age=60")
-		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": service.LoadBranding(s.db.WithContext(c.Request().Context()))})
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": service.LoadBranding(s.db.WithContext(c.Request().Context())).Public()})
 	})
 
 	// Auth routes (no auth required)
@@ -1612,9 +1627,13 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
 		}
 		if err := service.SaveBranding(s.db.WithContext(c.Request().Context()), &b); err != nil {
+			var refused *service.BrandingRefusal
+			if errors.As(err, &refused) {
+				return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": refused.Reason})
+			}
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to save branding"})
 		}
-		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": service.LoadBranding(s.db.WithContext(c.Request().Context()))})
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": service.LoadBranding(s.db.WithContext(c.Request().Context())).Public()})
 	})
 
 	// Email templates (admin-only): the wording of each email the panel sends.

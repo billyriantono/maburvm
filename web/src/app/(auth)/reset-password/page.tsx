@@ -51,7 +51,7 @@ function ResetPasswordForm() {
     return (
       <div className="w-full text-center space-y-4">
         <AlertTriangle className="w-10 h-10 text-destructive mx-auto" />
-        <h2 className="text-2xl font-semibold tracking-tight text-foreground">Invalid reset link</h2>
+        <h1 className="text-[2rem] font-semibold leading-tight tracking-[-0.01em] text-balance text-foreground">Invalid reset link</h1>
         <p className="text-sm text-muted-foreground">
           This link is missing its reset token. Please request a new password reset.
         </p>
@@ -66,7 +66,7 @@ function ResetPasswordForm() {
     return (
       <div className="w-full text-center space-y-4">
         <CheckCircle2 className="w-10 h-10 text-primary mx-auto" />
-        <h2 className="text-2xl font-semibold tracking-tight text-foreground">Password reset</h2>
+        <h1 className="text-[2rem] font-semibold leading-tight tracking-[-0.01em] text-balance text-foreground">Password reset</h1>
         <p className="text-sm text-muted-foreground">Redirecting you to sign in…</p>
       </div>
     )
@@ -74,7 +74,7 @@ function ResetPasswordForm() {
 
   return (
     <div className="w-full">
-      <h2 className="text-2xl font-semibold tracking-tight mb-2 text-foreground">Set a new password</h2>
+      <h1 className="text-[2rem] font-semibold leading-tight tracking-[-0.01em] text-balance mb-2 text-foreground">Set a new password</h1>
       <p className="text-sm text-muted-foreground mb-6">
         Choose a strong password — at least 12 characters with upper, lower, a digit and a symbol.
       </p>

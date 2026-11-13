@@ -12,6 +12,12 @@ export interface Branding {
   support_url: string
   support_email: string
   footer_text: string
+  /** The picture side of the sign-in page: "" or "traces", "logo", or "image". */
+  login_art: string
+  /** A newly chosen picture (data URL) on its way to be saved, or "none" to remove
+   *  the stored one. Empty otherwise: the stored picture is at login_image_url. */
+  login_image: string
+  login_image_url?: string
 }
 
 export const DEFAULT_BRANDING: Branding = {
@@ -25,6 +31,8 @@ export const DEFAULT_BRANDING: Branding = {
   support_url: "",
   support_email: "",
   footer_text: "",
+  login_art: "",
+  login_image: "",
 }
 
 /** The built-in colour used when the operator has not picked one. Matches

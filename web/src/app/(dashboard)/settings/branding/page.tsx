@@ -11,8 +11,8 @@ import { useSaveBranding } from "@/lib/hooks/use-branding"
 import {
   type Branding, DEFAULT_BRANDING, NEUTRAL_ACCENT, accentOf, contrast, faviconOf, markOf, onAccent, themeVars,
 } from "@/lib/branding/core"
-import { ACCEPT_ATTR, logoColours, prepareImage } from "@/lib/branding/images"
-import { brandFont } from "@/lib/branding/font"
+import { ACCEPT_ATTR, logoColours, prepareImage, preparePhoto } from "@/lib/branding/images"
+import { SignInFrame, usePanelStatus } from "@/components/sign-in-frame"
 
 // Colours that hold white or dark text at AA and look like somebody chose them.
 const PRESETS: { name: string; hex: string }[] = [
@@ -66,8 +66,8 @@ function Section({ title, lead, children }: { title: string; lead: string; child
 
 // A drop target that is also a normal file button: click, keyboard and drag
 // all end in the same handler.
-function ImageDrop({ label, current, onPick, onClear, busy }: {
-  label: string; current: string; onPick: (file: File) => void; onClear?: () => void; busy: boolean
+function ImageDrop({ label, current, onPick, onClear, busy, hint = "PNG, JPEG, WebP, SVG or ICO.", accept = ACCEPT_ATTR }: {
+  label: string; current: string; onPick: (file: File) => void; onClear?: () => void; busy: boolean; hint?: string; accept?: string
 }) {
   const id = useId()
   const [over, setOver] = useState(false)
@@ -75,7 +75,7 @@ function ImageDrop({ label, current, onPick, onClear, busy }: {
     <div className="flex items-center gap-4">
       <div className="h-16 w-16 shrink-0 rounded-lg border bg-[repeating-conic-gradient(hsl(var(--muted))_0%_25%,transparent_0%_50%)] bg-[length:12px_12px] flex items-center justify-center overflow-hidden">
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={current} alt="" className="max-h-full max-w-full object-contain" />
+        {current && <img src={current} alt="" className="max-h-full max-w-full object-contain" />}
       </div>
       <label
         htmlFor={id}
@@ -88,11 +88,11 @@ function ImageDrop({ label, current, onPick, onClear, busy }: {
           {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <ImagePlus className="h-4 w-4" aria-hidden="true" />}
           {label}
         </span>
-        <span className="block text-xs text-muted-foreground mt-0.5">Drop a file here or choose one. PNG, JPEG, WebP, SVG or ICO.</span>
+        <span className="block text-xs text-muted-foreground mt-0.5">Drop a file here or choose one. {hint}</span>
         <input
           id={id}
           type="file"
-          accept={ACCEPT_ATTR}
+          accept={accept}
           className="sr-only"
           onChange={(e) => { const f = e.target.files?.[0]; if (f) onPick(f); e.target.value = "" }}
         />
@@ -102,6 +102,29 @@ function ImageDrop({ label, current, onPick, onClear, busy }: {
           <Trash2 className="h-4 w-4" aria-hidden="true" />Remove
         </Button>
       )}
+    </div>
+  )
+}
+
+// Shows its children as a 1280 by 720 screen shrunk to the width available, so
+// the sign-in preview is the real page and not a redrawing of it.
+// ponytail: the page's own breakpoints follow the window, not this box, so on
+// a narrow window the preview shows the stacked phone layout.
+function ScaledPreview({ children }: { children: React.ReactNode }) {
+  const box = useRef<HTMLDivElement>(null)
+  const [k, setK] = useState(0.5)
+  useEffect(() => {
+    const el = box.current
+    if (!el) return
+    const fit = () => setK(el.clientWidth / 1280)
+    fit()
+    const ro = new ResizeObserver(fit)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  return (
+    <div ref={box} className="w-full overflow-hidden" style={{ height: 720 * k }}>
+      <div style={{ width: 1280, height: 720, transform: `scale(${k})`, transformOrigin: "top left" }}>{children}</div>
     </div>
   )
 }
@@ -125,7 +148,8 @@ export default function BrandStudioPage() {
   const save = useSaveBranding()
   const [draft, setDraft] = useState<Branding>(saved)
   const [scene, setScene] = useState<Scene>("signin")
-  const [busy, setBusy] = useState<"logo" | "favicon" | null>(null)
+  const [busy, setBusy] = useState<"logo" | "favicon" | "photo" | null>(null)
+  const [panelStatus] = usePanelStatus()
   const [fromLogo, setFromLogo] = useState<string[]>([])
   const [hexText, setHexText] = useState(accentOf(saved))
   const tabRefs = useRef<Record<Scene, HTMLButtonElement | null>>({ signin: null, dashboard: null })
@@ -154,6 +178,7 @@ export default function BrandStudioPage() {
     hex: /^#[0-9a-fA-F]{6}$/.test(hexText) ? "" : "Use six hex digits, like #1d4ed8.",
     support_url: !draft.support_url || /^https?:\/\/\S+\.\S+/.test(draft.support_url) ? "" : "Start with https://",
     support_email: !draft.support_email || /^\S+@\S+\.\S+$/.test(draft.support_email) ? "" : "That does not look like an email address.",
+    picture: draft.login_art !== "image" || (draft.login_image && draft.login_image !== "none") || (draft.login_image !== "none" && draft.login_image_url) ? "" : "Choose a picture, or pick another style.",
   }
   const invalid = Object.values(errors).some(Boolean)
 
@@ -163,6 +188,19 @@ export default function BrandStudioPage() {
     setBusy(kind)
     try {
       set(kind, await prepareImage(file, kind === "logo" ? 512 : 64))
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const art = draft.login_art === "logo" || draft.login_art === "image" ? draft.login_art : "traces"
+  const picture = draft.login_image && draft.login_image !== "none" ? draft.login_image : draft.login_image === "none" ? "" : draft.login_image_url ?? ""
+  const pickPhoto = async (file: File) => {
+    setBusy("photo")
+    try {
+      set("login_image", await preparePhoto(file))
     } catch (e) {
       toast.error((e as Error).message)
     } finally {
@@ -190,7 +228,7 @@ export default function BrandStudioPage() {
     })
     if (!ok) return
     try {
-      const stored = await save.mutateAsync(DEFAULT_BRANDING)
+      const stored = await save.mutateAsync({ ...DEFAULT_BRANDING, login_image: "none" })
       setBranding(stored)
       setDraft(stored)
       setHexText(accentOf(stored))
@@ -341,7 +379,39 @@ export default function BrandStudioPage() {
             )}
           </Section>
 
-          <Section title="Sign-in page" lead="The headline sits above the sign-in form. The message appears beside it as a notice from you.">
+          <Section title="Sign-in page" lead="The sign-in page has a picture side and a form side. Choose the picture, and the words above the form.">
+            <fieldset>
+              <legend className="text-sm font-medium">Picture side</legend>
+              <div className="mt-2 grid gap-2">
+                {([
+                  ["traces", "Traces in your colour", "The built-in artwork, drawn from your name and colour. No file needed."],
+                  ["logo", "Your logo on your colour", "Your logo, large, on a flat ground of your colour. Without a logo, your name is set there."],
+                  ["image", "Your own picture", "A photograph or artwork of yours fills the side."],
+                ] as const).map(([id, label, hint]) => (
+                  <label key={id} className={`flex cursor-pointer items-start gap-3 rounded-md border px-3 py-2.5 transition-colors ${art === id ? "border-foreground bg-muted/50" : "hover:bg-muted/50"}`}>
+                    <input type="radio" name="login_art" className="mt-1 accent-[hsl(var(--primary))]" checked={art === id} onChange={() => set("login_art", id === "traces" ? "" : id)} />
+                    <span>
+                      <span className="block text-sm font-medium">{label}</span>
+                      <span className="block text-xs text-muted-foreground">{hint}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+            {art === "image" && (
+              <div>
+                <ImageDrop
+                  label={picture ? "Replace the picture" : "Choose a picture"}
+                  current={picture}
+                  onPick={pickPhoto}
+                  onClear={picture ? () => set("login_image", "none") : undefined}
+                  busy={busy === "photo"}
+                  hint="PNG, JPEG or WebP. It is shrunk to fit and cropped to fill the side."
+                  accept="image/png,image/jpeg,image/webp"
+                />
+                {errors.picture && <p role="alert" className="mt-2 text-xs font-medium text-destructive">{errors.picture}</p>}
+              </div>
+            )}
             <Field label="Headline" hint="Empty uses your tagline." count={`${draft.login_headline.length}/80`}>
               {(id, desc) => <Input id={id} aria-describedby={desc} maxLength={80} value={draft.login_headline} onChange={(e) => set("login_headline", e.target.value)} placeholder="Sign in to manage your servers" />}
             </Field>
@@ -409,43 +479,17 @@ export default function BrandStudioPage() {
 
             <div aria-hidden="true" className="bg-background select-none pointer-events-none">
               {scene === "signin" && (
-                <div className={`${brandFont.className} flex min-h-[420px] flex-col overflow-hidden bg-[color-mix(in_oklab,hsl(var(--primary))_5%,hsl(var(--card)))]`}>
-                  <div className="flex items-center justify-between gap-4 px-6 pt-5">
-                    <div className="flex items-center gap-2 min-w-0">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={markOf(draft)} alt="" className="h-6 w-6 rounded object-contain" />
-                      <span className="truncate text-xs font-semibold tracking-tight">{draft.name.trim() || "Your panel"}</span>
-                    </div>
-                    <div className="flex gap-3 text-[10px] underline decoration-foreground/30 underline-offset-2">
-                      {draft.support_url && <span>Get help</span>}
-                      {draft.support_email && <span className="truncate max-w-[140px]">{draft.support_email}</span>}
-                    </div>
-                  </div>
-                  <div className="flex-1 px-6 pt-5">
-                    <p className="max-w-[18ch] text-[26px] font-semibold leading-[0.98] tracking-[-0.02em] text-balance" style={{ fontStretch: "84%" }}>
-                      {draft.login_headline || draft.tagline || "Sign in to manage your servers"}
-                    </p>
-                    <div className="mt-4 grid grid-cols-[150px_1fr] items-start gap-5">
-                      <div className="space-y-2">
-                        <p className="text-xs font-semibold">Sign in</p>
-                        <div className="h-6 rounded border bg-background px-2 flex items-center text-[10px] text-muted-foreground">you@company.com</div>
-                        <div className="h-6 rounded border bg-background px-2 flex items-center text-[10px] text-muted-foreground">••••••••</div>
-                        <div className="h-7 rounded bg-primary text-primary-foreground flex items-center justify-center text-[10px] font-medium">Sign in</div>
-                        <p className="text-[9px] text-primary">Reset password</p>
-                      </div>
-                      {draft.login_message && (
-                        <div className="rounded-md border border-[color-mix(in_oklab,hsl(var(--primary))_30%,transparent)] bg-background/70 px-3 py-2">
-                          <p className="text-[10px] font-semibold">Notice from {draft.name.trim() || "Your panel"}</p>
-                          <p className="mt-1 text-[10px] leading-relaxed text-foreground/80">{draft.login_message}</p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  <p className="px-6 pb-1 text-[9px] text-foreground/60">{draft.footer_text || `© ${year} ${draft.name.trim() || "Your panel"}`}</p>
-                  <div className="whitespace-nowrap pl-[22px] -mb-[0.2em] text-[84px] font-extrabold leading-[0.78] tracking-[-0.045em] text-primary" style={{ fontStretch: "125%" }}>
-                    {draft.name.trim() || "Your panel"}
-                  </div>
-                </div>
+                <ScaledPreview>
+                  <SignInFrame b={draft} status={panelStatus} className="h-[720px]">
+                    <p className="text-[2rem] font-semibold leading-tight tracking-[-0.01em] text-balance">{draft.login_headline || "Sign in to manage your servers"}</p>
+                    <p className="mt-2 mb-8 text-base text-muted-foreground">{draft.tagline || `Use your ${draft.name.trim() || "panel"} account.`}</p>
+                    <p className="mb-2 text-sm font-medium">Email address</p>
+                    <div className="mb-5 flex h-12 items-center rounded-md border border-input px-3 text-muted-foreground">you@company.com</div>
+                    <p className="mb-2 text-sm font-medium">Password</p>
+                    <div className="mb-5 h-12 rounded-md border border-input" />
+                    <div className="flex h-12 items-center justify-center rounded-md bg-primary font-medium text-primary-foreground">Sign in</div>
+                  </SignInFrame>
+                </ScaledPreview>
               )}
 
               {scene === "dashboard" && (

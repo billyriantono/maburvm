@@ -6,6 +6,7 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { z } from "zod"
 import { Eye, EyeOff, Loader2, ShieldCheck } from "lucide-react"
 import { useRouter } from "next/navigation"
+import { useBranding } from "@/lib/branding/provider"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 
@@ -37,6 +38,7 @@ interface LoginError {
 }
 
 export default function LoginPage() {
+  const { branding } = useBranding()
   const router = useRouter()
   const [showPassword, setShowPassword] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
@@ -191,9 +193,12 @@ export default function LoginPage() {
 
   return (
     <div className="w-full">
-      <h2 className="text-xl font-semibold mb-6 text-foreground">
-        Sign in
-      </h2>
+      <h1 className="text-[2rem] font-semibold leading-tight tracking-[-0.01em] text-balance text-foreground">
+        {branding.login_headline || "Sign in to manage your servers"}
+      </h1>
+      <p className="mt-2 mb-8 text-base text-muted-foreground">
+        {branding.tagline || `Use your ${branding.name} account.`}
+      </p>
 
       {/* IP Whitelist Warning */}
       {ipWarning && (
