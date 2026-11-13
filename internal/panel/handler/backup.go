@@ -159,6 +159,9 @@ type BackupListItem struct {
 	StartedAt       time.Time `json:"started_at,omitempty"`
 	CompletedAt     time.Time `json:"completed_at,omitempty"`
 	CreatedAt       time.Time `json:"created_at"`
+	// Why a failed backup failed. Staff only: the text can name storage
+	// endpoints and paths on the node.
+	ErrorMessage string `json:"error_message,omitempty"`
 }
 
 // ListBackups handles GET /api/vms/:id/backups - List backups
@@ -207,6 +210,9 @@ func (h *BackupHandler) ListBackups(c echo.Context) error {
 		})
 	}
 
+	userCtx, _ := middleware.GetUserContext(c)
+	staff := userCtx != nil && userCtx.Role == models.RoleAdmin
+
 	// Map to response format
 	items := make([]BackupListItem, len(resp.Backups))
 	for i, backup := range resp.Backups {
@@ -221,6 +227,9 @@ func (h *BackupHandler) ListBackups(c echo.Context) error {
 			Compression:     backup.Compression,
 			Checksum:        backup.Checksum,
 			CreatedAt:       backup.CreatedAt,
+		}
+		if staff {
+			items[i].ErrorMessage = backup.ErrorMessage
 		}
 		if backup.StartedAt != nil {
 			items[i].StartedAt = *backup.StartedAt

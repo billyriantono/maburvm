@@ -6,7 +6,7 @@ import Link from "next/link"
 import { 
   Square, RotateCcw, Trash2, RefreshCw, ArrowLeft,
   Copy, Check, HardDrive,
-  Monitor, MonitorOff, KeyRound, Server, Network, Database, Shield, FileText, Terminal, Activity, ExternalLink,
+  Monitor, MonitorOff, KeyRound, Server, Database, Shield, FileText, Terminal, Activity, ExternalLink,
   Loader2, AlertCircle, Plus, Disc, CircleSlash, LifeBuoy, ArrowRightLeft, User,
   Pencil, Cpu, X
 } from "lucide-react"
@@ -145,7 +145,7 @@ function BandwidthCell({ vmId, iface }: { vmId: string; iface: NetworkIface }) {
     return (
       <div className="flex items-center gap-2">
         <span className="font-mono">{formatMbps(iface.bandwidth_limit)}</span>
-        {saved.active() && <Check className="w-3 h-3 text-emerald-600" aria-label="Saved" />}
+        {saved.active() && <Check className="w-3 h-3 text-success" aria-label="Saved" />}
         <button
           type="button"
           onClick={() => { setValue(iface.bandwidth_limit); setEditing(true) }}
@@ -237,7 +237,7 @@ function RDNSCell({ vmId, ipAddress, rdns, verified }: { vmId: string; ipAddress
     return (
       <div className="flex items-center gap-2">
         <span className={`font-mono text-xs break-all ${rdns ? "" : "text-muted-foreground"}`}>{rdns || "Not set"}</span>
-        {saved.active() && <Check className="w-3 h-3 shrink-0 text-emerald-600" aria-label="Saved" />}
+        {saved.active() && <Check className="w-3 h-3 shrink-0 text-success" aria-label="Saved" />}
         <button
           type="button"
           onClick={() => { setValue(rdns); setError(null); setEditing(true) }}
@@ -351,12 +351,12 @@ function PortForwardsCard({ vmId }: { vmId: string }) {
   }
 
   return (
-    <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
+    <div className="bg-card text-card-foreground border rounded-lg p-6">
       <div className="flex items-center justify-between mb-2">
         <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
-          <ArrowRightLeft className="w-5 h-5" aria-hidden="true" />Port Forwards
+          Port Forwards
         </h2>
-        <Button size="sm" onClick={() => setAdding((v) => !v)}><Plus className="w-4 h-4" aria-hidden="true" />Add Forward</Button>
+        <Button size="sm" variant="outline" onClick={() => setAdding((v) => !v)}><Plus className="w-4 h-4" aria-hidden="true" />Add Forward</Button>
       </div>
       <p className="text-sm text-muted-foreground mb-4">Sends a port on the host&apos;s public address to a port on this VM. Useful when the VM has a private address only.</p>
 
@@ -489,7 +489,7 @@ function BackupScheduleCard({ vmId }: { vmId: string }) {
   }
 
   return (
-    <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm mb-6">
+    <div className="bg-card text-card-foreground border rounded-lg p-6 mb-6">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-lg font-semibold text-foreground">Automatic backups</h2>
         {!editing && !isLoading && !error && (
@@ -632,12 +632,12 @@ function DisksCard({ vmId }: { vmId: string }) {
   }
 
   return (
-    <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
-      <div className="flex items-center justify-between mb-6">
+    <div className="bg-card text-card-foreground border rounded-lg p-6">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
         <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
-          <HardDrive className="w-5 h-5" />Data Disks
+          Data Disks
         </h2>
-        <Button size="sm" onClick={() => setAdding((v) => !v)}><Plus className="w-4 h-4" />Add Disk</Button>
+        <Button size="sm" variant="outline" onClick={() => setAdding((v) => !v)}><Plus className="w-4 h-4" />Add Disk</Button>
       </div>
 
       {adding && (
@@ -705,7 +705,7 @@ function BandwidthUsageCard({ vmId, canEditQuota }: { vmId: string; canEditQuota
   if (isLoading) return <SectionSkeleton />
   if (error) {
     return (
-      <div className="bg-card text-card-foreground border rounded-lg shadow-sm">
+      <div className="bg-card text-card-foreground border rounded-lg">
         <SectionError message={(error as Error).message} onRetry={() => refetch()} />
       </div>
     )
@@ -729,10 +729,10 @@ function BandwidthUsageCard({ vmId, canEditQuota }: { vmId: string; canEditQuota
   const isDanger = bandwidth.exceeded
 
   return (
-    <div className={`bg-card text-card-foreground border rounded-lg p-6 shadow-sm ${isDanger ? 'border-red-300 dark:border-red-900' : ''}`}>
+    <div className={`bg-card text-card-foreground border rounded-lg p-6 ${isDanger ? 'border-destructive' : ''}`}>
       <h2 className="text-lg font-semibold text-foreground mb-6 flex items-center gap-2">
-        <Activity className="w-5 h-5" />Bandwidth Usage
-        {isDanger && <span className="text-xs rounded-md bg-red-50 text-red-700 border border-red-200 px-2 py-0.5 dark:bg-red-950 dark:text-red-300 dark:border-red-900">Exceeded</span>}
+        Bandwidth Usage
+        {isDanger && <span className="text-xs font-semibold text-destructive">Over the limit</span>}
       </h2>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
@@ -762,7 +762,7 @@ function BandwidthUsageCard({ vmId, canEditQuota }: { vmId: string; canEditQuota
           </div>
           <div className="h-2 rounded-full bg-muted overflow-hidden relative">
             <div
-              className={`h-full transition-all duration-300 ${isDanger ? 'bg-destructive' : isWarning ? 'bg-amber-500' : 'bg-emerald-500'}`}
+              className={`h-full transition-all duration-300 ${isDanger ? 'bg-destructive' : isWarning ? 'bg-warning' : 'bg-foreground'}`}
               style={{ width: `${usagePercent}%` }}
             />
           </div>
@@ -1288,7 +1288,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
             <ArrowLeft className="w-4 h-4" aria-hidden="true" />{backLabel}
           </Link>
         </nav>
-        <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm mb-6">
+        <div className="bg-card text-card-foreground border rounded-lg p-6 mb-6">
           <div className="flex items-center gap-4">
             <Skeleton className="w-16 h-16" />
             <div>
@@ -1345,7 +1345,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
       </nav>
 
       {locked && (
-        <div role="status" className="mb-6 flex items-center gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm font-medium text-amber-800 dark:text-amber-300">
+        <div role="status" className="mb-6 flex items-center gap-3 rounded-lg border border-warning/50 bg-warning/10 p-4 text-sm font-medium text-foreground">
           <AlertCircle className="w-5 h-5 shrink-0" aria-hidden="true" />
           This VM is suspended. Contact support to restore service.
         </div>
@@ -1587,7 +1587,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                     )}
                   </div>
 
-                  <div className="rounded-md border border-red-200 bg-red-50 p-4 dark:bg-red-950 dark:border-red-900">
+                  <div className="rounded-md border border-destructive/40 bg-destructive/10 p-4">
                     <p className="text-xs font-medium text-destructive mb-2">Warning: Data Loss</p>
                     <p className="text-xs text-foreground">All data on this VM will be permanently deleted.</p>
                   </div>
@@ -1980,10 +1980,10 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
 
         {/* Console Tab */}
         <TabsContent value="console" className="space-y-6">
-          <div className="bg-card text-card-foreground border rounded-lg shadow-sm">
+          <div className="bg-card text-card-foreground border rounded-lg">
             <div className="flex items-center justify-between p-4 border-b">
               <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
-                <Terminal className="w-5 h-5" />Console
+                Console
               </h2>
               <div className="flex items-center gap-2">
                 {isAdmin && (
@@ -2014,7 +2014,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                 )}
                 {vm.status === "running" && vm.console_enabled !== false && (
                   <Button
-                    variant={consoleActive ? "destructive" : "default"}
+                    variant="outline"
                     size="sm"
                     onClick={() => setConsoleActive(!consoleActive)}
                   >
@@ -2035,9 +2035,8 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
               </div>
             </div>
             {vm.console_enabled === false ? (
-              <div className="bg-muted p-12 flex items-center justify-center h-[500px]">
+              <div className="bg-muted p-10 flex items-center justify-center min-h-[14rem]">
                 <div className="text-center">
-                  <MonitorOff className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
                   <p className="text-muted-foreground font-medium mb-2">Console disabled</p>
                   <p className="text-muted-foreground text-sm mb-4">Nobody can open this VM&apos;s screen until it is enabled again.</p>
                   <Button variant="default" size="sm" onClick={() => handleToggleConsole(true)} disabled={setConsole.isPending}>
@@ -2054,10 +2053,9 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                   onDisconnect={() => setConsoleActive(false)}
                 />
               ) : (
-                <div className="bg-muted p-12 flex items-center justify-center h-[500px]">
+                <div className="bg-muted p-10 flex items-center justify-center min-h-[14rem]">
                   <div className="text-center">
-                    <Terminal className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-                    <p className="text-muted-foreground font-mono text-sm mb-4">Console available</p>
+                    <p className="text-muted-foreground text-sm mb-4">The screen is not connected.</p>
                     <Button variant="default" onClick={() => setConsoleActive(true)} className="gap-2">
                       <Terminal className="w-4 h-4" />
                       Connect to Console
@@ -2066,9 +2064,8 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                 </div>
               )
             ) : (
-              <div className="bg-muted p-12 flex items-center justify-center h-[500px]">
+              <div className="bg-muted p-10 flex items-center justify-center min-h-[14rem]">
                 <div className="text-center">
-                  <Terminal className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
                   <p className="text-muted-foreground font-medium text-sm">VM is not running</p>
                   <p className="text-muted-foreground text-xs mt-1">Start the VM to access the console</p>
                 </div>
@@ -2076,9 +2073,9 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
             )}
           </div>
 
-          <section className="bg-card text-card-foreground border rounded-lg shadow-sm divide-y">
+          <section className="bg-card text-card-foreground border rounded-lg divide-y">
             <h2 className="px-6 py-4 text-base font-semibold flex items-center gap-2">
-              <KeyRound className="w-4 h-4" />Access
+              Access
             </h2>
             <ActionRow title="Root password" description={isAdmin ? "Set a new root password inside the VM through the guest agent." : "Set a new root password inside the running VM."}>
               <Button variant="outline" size="sm" onClick={() => setResetPwOpen(true)} disabled={locked}>
@@ -2109,9 +2106,9 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
             </ActionRow>
           </section>
 
-          <section className="bg-card text-card-foreground border rounded-lg shadow-sm divide-y">
+          <section className="bg-card text-card-foreground border rounded-lg divide-y">
             <h2 className="px-6 py-4 text-base font-semibold flex items-center gap-2">
-              <Disc className="w-4 h-4" />Boot media
+              Boot media
             </h2>
             <ActionRow
               title="ISO image"
@@ -2164,38 +2161,14 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
         {/* Network Tab */}
         <TabsContent value="network">
           <div className="space-y-6">
-            <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
+            <div className="bg-card text-card-foreground border rounded-lg p-6">
               <h2 className="text-lg font-semibold text-foreground mb-6 flex items-center gap-2">
-                <Network className="w-5 h-5" />Network Configuration
+                IPv4 addresses
               </h2>
-
-              {/* Placement & console */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-                {isAdmin && (
-                  <div className="p-4 border">
-                    <span className="text-xs font-medium text-muted-foreground block">Node</span>
-                    <Link href={`/nodes/${vm.node_id}`} className="text-sm font-medium underline hover:text-primary break-all">
-                      {allNodes?.find((n) => n.id === vm.node_id)?.name || vm.node_id}
-                    </Link>
-                  </div>
-                )}
-                <div className="p-4 border">
-                  <span className="text-xs font-medium text-muted-foreground block">VNC Port</span>
-                  <span className="text-sm font-mono font-medium">{vm.vnc_port || "N/A"}</span>
-                </div>
-                <div className="p-4 border">
-                  <span className="text-xs font-medium text-muted-foreground block">Status</span>
-                  <span className="text-sm font-medium">{vm.status}</span>
-                </div>
-                <div className="p-4 border">
-                  <span className="text-xs font-medium text-muted-foreground block">Resources</span>
-                  <span className="text-sm font-medium">{vm.resources.cpu}C / {ramGB}GB</span>
-                </div>
-              </div>
 
               {/* Interfaces (per-IP detail) */}
               <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-semibold text-muted-foreground">Network Interfaces</h3>
+                <h3 className="sr-only">Addresses on this VM</h3>
                 {isAdmin && (
                   <Button type="button" size="sm" variant="outline" onClick={() => setAssignIPOpen(true)}>
                     <Plus className="w-4 h-4 mr-1" />
@@ -2281,10 +2254,10 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
 
             {/* Routed IPv6. Customers see it only when they have a prefix. */}
             {(isAdmin || vm.ipv6_address) && (
-            <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
+            <div className="bg-card text-card-foreground border rounded-lg p-6">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
-                  <Network className="w-5 h-5" />IPv6
+                  IPv6
                 </h2>
                 {isAdmin && (vm.ipv6_address ? (
                   <Button
@@ -2349,10 +2322,10 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
 
         {/* Snapshots Tab */}
         <TabsContent value="snapshots">
-          <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
-            <div className="flex items-center justify-between mb-6">
+          <div className="bg-card text-card-foreground border rounded-lg p-6">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
               <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
-                <Database className="w-5 h-5" />Snapshots
+                Snapshots
               </h2>
               <div className="flex items-center gap-2">
               <Dialog
@@ -2387,7 +2360,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
               </Dialog>
               <Dialog open={createSnapshotOpen} onOpenChange={setCreateSnapshotOpen}>
                 <DialogTrigger asChild>
-                  <Button variant="default" size="sm"><Plus className="w-4 h-4 mr-2" />Create Snapshot</Button>
+                  <Button variant="outline" size="sm"><Plus className="w-4 h-4 mr-2" />Create Snapshot</Button>
                 </DialogTrigger>
                 <DialogContent className="max-w-sm border shadow-lg">
                   <DialogHeader>
@@ -2416,22 +2389,17 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
             ) : !snapshots?.length ? (
               <SectionEmpty icon={Database} message="No snapshots yet. Create one to save the current VM state." />
             ) : (
-              <div className="space-y-3">
+              <div>
                 {snapshots.map((snap: Snapshot) => (
-                  <div key={snap.id} className="flex items-center justify-between p-4 border hover:bg-muted/50">
-                    <div className="flex items-center gap-4">
-                      <Database className="w-5 h-5" />
+                  <div key={snap.id} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-hair py-3 first:border-t-0 first:pt-0">
+                    <div className="min-w-0">
                       <div>
                         <span className="font-semibold">{snap.name}</span>
                         <span className="text-xs text-muted-foreground ml-2">{formatDate(snap.created_at)}</span>
                       </div>
                     </div>
-                    <div className="flex items-center gap-3">
-                      <span className={`text-xs font-medium px-2 py-1 border ${
-                        snap.status === "completed" ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900" : snap.status === "failed" ? "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-900" : "bg-muted text-muted-foreground"
-                      }`}>
-                        {snap.status}
-                      </span>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <StatusBadge variant="lamp" className="text-xs" status={snap.status} />
                       <Button variant="ghost" size="sm" onClick={() => handleRestoreSnapshot(snap.id)} disabled={restoreSnapshot.isPending && restoreSnapshot.variables === snap.id}>
                         {restoreSnapshot.isPending && restoreSnapshot.variables === snap.id && <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />}
                         Restore
@@ -2451,12 +2419,12 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
         {/* Backups Tab */}
         <TabsContent value="backups">
           <BackupScheduleCard vmId={vmId} />
-          <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
-            <div className="flex items-center justify-between mb-6">
+          <div className="bg-card text-card-foreground border rounded-lg p-6">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
               <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
-                <HardDrive className="w-5 h-5" />Backups
+                Backups
               </h2>
-              <Button variant="default" size="sm" onClick={handleCreateBackup} disabled={createBackup.isPending}>
+              <Button variant="outline" size="sm" onClick={handleCreateBackup} disabled={createBackup.isPending}>
                 {createBackup.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Plus className="w-4 h-4 mr-2" />}
                 Create Backup
               </Button>
@@ -2469,23 +2437,21 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
             ) : !backups?.length ? (
               <SectionEmpty icon={HardDrive} message="No backups yet. Create one to backup this VM." />
             ) : (
-              <div className="space-y-3">
+              <div>
                 {backups.map((backup: Backup) => (
-                  <div key={backup.id} className="flex items-center justify-between p-4 border hover:bg-muted/50">
-                    <div className="flex items-center gap-4">
-                      <HardDrive className="w-5 h-5" />
+                  <div key={backup.id} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-hair py-3 first:border-t-0 first:pt-0">
+                    <div className="min-w-0">
                       <div>
-                        <span className="font-semibold">{backup.backup_type} backup</span>
+                        <span className="font-semibold">{backup.backup_type === "scheduled" ? "Scheduled backup" : "Manual backup"}</span>
                         <span className="text-xs text-muted-foreground ml-2">{formatDate(backup.created_at)}</span>
                       </div>
+                      {backup.status === "failed" && backup.error_message && (
+                        <p className="mt-0.5 text-xs text-destructive break-words">{backup.error_message}</p>
+                      )}
                     </div>
-                    <div className="flex items-center gap-3">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                       <span className="text-xs font-medium">{formatBytes(backup.size)}</span>
-                      <span className={`text-xs font-medium px-2 py-1 border ${
-                        backup.status === "completed" ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900" : backup.status === "failed" ? "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-900" : backup.status === "in_progress" ? "bg-sky-50 text-sky-700 border-sky-200 dark:bg-sky-950 dark:text-sky-300 dark:border-sky-900" : "bg-muted text-muted-foreground"
-                      }`}>
-                        {backup.status}
-                      </span>
+                      <StatusBadge variant="lamp" className="text-xs" status={backup.status} />
                       {backup.status === "completed" && (
                         <Button
                           variant="outline"
@@ -2527,14 +2493,14 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
 
         {/* Firewall Tab */}
         <TabsContent value="firewall">
-          <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
-            <div className="flex items-center justify-between mb-6">
+          <div className="bg-card text-card-foreground border rounded-lg p-6">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
               <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
-                <Shield className="w-5 h-5" />Firewall Rules
+                Firewall Rules
               </h2>
               <Dialog open={fwOpen} onOpenChange={setFwOpen}>
                 <DialogTrigger asChild>
-                  <Button size="sm"><Plus className="w-4 h-4 mr-1" />Add Rule</Button>
+                  <Button size="sm" variant="outline"><Plus className="w-4 h-4 mr-1" />Add Rule</Button>
                 </DialogTrigger>
                 <DialogContent className="max-w-md">
                   <DialogHeader>
@@ -2616,11 +2582,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                         <td className="py-3 px-4 text-xs font-medium">{rule.direction}</td>
                         <td className="py-3 px-4 font-mono text-sm">{rule.source_ip || "Any"}</td>
                         <td className="py-3 px-4">
-                          <span className={`text-xs font-medium px-2 py-1 border ${
-                            rule.action === "allow" ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900" : "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-900"
-                          }`}>
-                            {rule.action}
-                          </span>
+                          <StatusBadge variant="lamp" className="text-xs" status={rule.action} />
                         </td>
                         <td className="py-3 px-4 font-mono text-sm">{rule.priority}</td>
                         <td className="py-3 px-4">
@@ -2640,9 +2602,9 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
 
         {/* Logs Tab */}
         <TabsContent value="logs">
-          <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
+          <div className="bg-card text-card-foreground border rounded-lg p-6">
             <h2 className="text-lg font-semibold text-foreground mb-6 flex items-center gap-2">
-              <FileText className="w-5 h-5" />{isAdmin ? "Activity Logs" : "Activity"}
+              {isAdmin ? "Activity Logs" : "Activity"}
             </h2>
             {activityLoading ? (
               <SectionSkeleton />
@@ -2690,16 +2652,16 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
             that destroy data, kept apart from everything routine. */}
         <TabsContent value="settings" className="space-y-6">
           {isAdmin && (
-          <section className="bg-card text-card-foreground border rounded-lg shadow-sm divide-y">
+          <section className="bg-card text-card-foreground border rounded-lg divide-y">
             <h2 className="px-6 py-4 text-base font-semibold flex items-center gap-2">
-              <Server className="w-4 h-4" />Ownership and placement
+              Ownership and placement
             </h2>
             <ActionRow title="Owner" description="Hand this VM to a different user account.">
               <Button variant="outline" size="sm" onClick={() => setReassignOpen(true)}>
                 <User className="w-4 h-4" />Reassign
               </Button>
             </ActionRow>
-            <ActionRow title="Node" description={<>Runs on <span className="font-medium text-foreground">{vm.node_name || vm.node_id}</span>. Move it to another node while it keeps running.</>}>
+            <ActionRow title="Node" description={<>Runs on <span className="font-medium text-foreground">{allNodes?.find((n) => n.id === vm.node_id)?.name || vm.node_name || "an unnamed node"}</span>. Move it to another node while it keeps running.</>}>
               <Button variant="outline" size="sm" onClick={() => setMigrateOpen(true)}>
                 <ArrowRightLeft className="w-4 h-4" />Migrate
               </Button>
@@ -2712,9 +2674,9 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
           </section>
           )}
 
-          <section className="bg-card text-card-foreground border border-destructive/40 rounded-lg shadow-sm divide-y divide-destructive/20">
+          <section className="bg-card text-card-foreground border border-destructive/40 rounded-lg divide-y divide-destructive/20">
             <h2 className="px-6 py-4 text-base font-semibold text-destructive flex items-center gap-2">
-              <AlertCircle className="w-4 h-4" />Danger zone
+              Danger zone
             </h2>
             <ActionRow title={rebuildWord} description="Reinstall the operating system. Everything on the disk is erased; the VM keeps its addresses.">
               <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => setRebuildDialogOpen(true)} disabled={locked}>
@@ -2768,7 +2730,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
               address, seeing it listed, and wondering why the VM is unreachable.
               Only a rebuild regenerates cloud-init, so an imported machine has
               to be configured from inside. */}
-          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
+          <div className="rounded-md border border-warning/50 bg-warning/10 p-3 text-xs text-foreground">
             The address is not written into the guest. Unless this VM is rebuilt, you must configure
             it inside the operating system — the panel reserves it and prepares the host, nothing
             more.
