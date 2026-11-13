@@ -1,518 +1,184 @@
-'use client'
+"use client"
 
-import { useState, useMemo, useEffect, useCallback } from "react"
-import {
-  Activity,
-  AlertTriangle,
-  CheckCircle,
-  Info,
-  Server,
-  Network,
-  Database,
-  Zap,
-  AlertCircle
-} from "lucide-react"
-import { toast } from "sonner"
+import { useMemo, useState } from "react"
+import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
-import { cn } from "@/lib/utils"
-import { useNodes, useNodeMetrics, useNodeMetricsHistory } from "@/lib/hooks/use-nodes"
-import { useVMs } from "@/lib/hooks/use-vms"
-import { Sparkline } from "@/components/ui/sparkline"
-import type { Node, NodeMetrics as NodeMetricsType } from "@/types"
+import { StatusBadge } from "@/components/status-badge"
+import { CHART_1, CHART_2, RANGES, ReadingStrips, minutesOf, rateScale, type RangeId, type ReadingStrip } from "@/components/reading-strips"
+import { attentionList, silentFor } from "@/lib/attention"
+import { useDashboardOverview, type DashboardNode } from "@/lib/hooks/use-dashboard"
+import { useNodeMetricsHistory } from "@/lib/hooks/use-nodes"
 
-// Types
-type AlertSeverity = "critical" | "warning" | "info"
+// Monitoring is the fleet on one time axis. Every node gets the same four
+// strips, one under the other and all on the range chosen at the top, so a
+// spike on one node can be compared with the others at the same moment. Above
+// them, anything that needs someone to act.
 
-interface DerivedAlert {
-  id: string
-  severity: AlertSeverity
-  message: string
-  node: string
-}
+const GIB = 1024 ** 3
 
-// Helper functions
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return "0 B"
-  const k = 1024
-  const sizes = ["B", "KB", "MB", "GB", "TB"]
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i]
-}
+function NodeReadings({ n, range }: { n: DashboardNode; range: RangeId }) {
+  const { data, isLoading, error, refetch } = useNodeMetricsHistory(n.id, minutesOf(range))
+  const silent = silentFor(n)
+  const up = n.status === "active" && !silent
 
-function getNodeDisplayStatus(node: Node): "online" | "offline" | "warning" {
-  if (node.status === "offline") return "offline"
-  if (node.status === "maintenance") return "warning"
-  return "online"
-}
+  const { times, strips } = useMemo(() => {
+    const samples = (data ?? []).filter((s) => s.status !== "offline")
+    const rx = samples.map((s) => s.network_rx_bytes_per_sec)
+    const tx = samples.map((s) => s.network_tx_bytes_per_sec)
+    const net = rateScale([rx, tx])
+    const conn = samples.map((s) => s.conntrack_count)
+    const connMax = samples.reduce((m, s) => Math.max(m, s.conntrack_max), 0)
+    // Scaled to what was seen, not to the table size: the table holds millions
+    // and a normal day would be a flat line at the bottom.
+    const connTop = [1000, 2000, 5000, 10_000, 20_000, 50_000, 100_000, 200_000, 500_000, 1_000_000, 2_000_000, 5_000_000].find((v) => v >= Math.max(...conn, 1)) ?? Math.max(...conn, 1)
+    const count = (v: number) => Math.round(v).toLocaleString()
+    const pct = (v: number) => `${Math.round(v)}%`
+    const strips: ReadingStrip[] = [
+      { id: "cpu", name: "CPU", top: 100, axis: "100%", series: [{ key: "cpu", color: CHART_1, values: samples.map((s) => s.cpu_usage), fmt: pct }] },
+      { id: "mem", name: "Memory in use", top: 100, axis: "100%", series: [{ key: "mem", color: CHART_1, values: samples.map((s) => s.memory_usage), fmt: pct }] },
+      {
+        id: "net",
+        name: "Network",
+        top: net.top,
+        axis: net.axis,
+        series: [
+          { key: "rx", label: "In", color: CHART_1, values: rx, fmt: net.fmt },
+          { key: "tx", label: "Out", color: CHART_2, values: tx, fmt: net.fmt },
+        ],
+      },
+      {
+        id: "conn",
+        name: connMax > 0 ? `Connections tracked, of ${connMax.toLocaleString()}` : "Connections tracked",
+        top: connTop,
+        axis: connTop.toLocaleString(),
+        // A node that predates this reading sends zeros for it.
+        note: connMax === 0 && conn.every((v) => v === 0) ? "This node's agent does not report its connection table." : undefined,
+        series: [{ key: "conn", color: CHART_1, values: conn, fmt: count }],
+      },
+    ]
+    return { times: samples.map((s) => new Date(s.recorded_at).getTime()), strips }
+  }, [data])
 
-// Status badge component
-function StatusBadge({ status }: { status: "online" | "offline" | "warning" }) {
-  const config = {
-    online: { bg: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-400 dark:border-emerald-900", label: "Online" },
-    offline: { bg: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-400 dark:border-red-900", label: "Offline" },
-    warning: { bg: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-400 dark:border-amber-900", label: "Warning" }
-  }
-
-  const { bg, label } = config[status]
+  const ramRatio = n.memory_total_bytes > 0 ? n.ram_allocated_mb / 1024 / (n.memory_total_bytes / GIB) : null
+  const diskShare = n.disk_total_bytes > 0 ? (n.disk_used_bytes / n.disk_total_bytes) * 100 : null
 
   return (
-    <span className={cn("inline-flex items-center px-2 py-0.5 text-[10px] font-medium rounded-full border", bg)}>
-      {label}
-    </span>
+    <ReadingStrips
+      title={n.name}
+      heading="h2"
+      range={range}
+      times={times}
+      strips={strips}
+      loading={isLoading}
+      error={error as Error | null}
+      onRetry={() => refetch()}
+      running={up}
+      offWord="Down"
+      emptyHint={up ? "One is recorded every minute, so the first will appear shortly." : "Readings are recorded only while the node answers the panel."}
+    >
+      <StatusBadge status={n.status} />
+      {silent && <span className="text-xs font-medium text-destructive">This node {silent}</span>}
+      <span className="text-xs text-muted-foreground">
+        {[
+          n.region,
+          `${n.running} of ${n.vm_count} VMs running`,
+          ramRatio !== null ? `memory promised ${ramRatio.toFixed(1)} times installed` : "",
+          diskShare !== null ? `storage ${Math.round(diskShare)}% full` : "",
+        ]
+          .filter(Boolean)
+          .join(", ")}
+      </span>
+      <Link href={`/nodes/${n.id}`} className="text-xs font-semibold underline underline-offset-4">
+        Open node
+      </Link>
+    </ReadingStrips>
   )
-}
-
-// Resource bar component
-function ResourceBar({ value, label }: { value: number; label: string }) {
-  const getColorClass = () => {
-    if (value >= 90) return "bg-red-500"
-    if (value >= 70) return "bg-amber-500"
-    if (value === 0) return "bg-muted-foreground/30"
-    return "bg-emerald-500"
-  }
-
-  return (
-    <div className="flex items-center gap-2">
-      <span className="text-xs font-medium text-muted-foreground w-16">{label}</span>
-      <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
-        <div
-          className={cn("h-full rounded-full transition-all duration-500", getColorClass())}
-          style={{ width: `${Math.min(value, 100)}%` }}
-        />
-      </div>
-      <span className="text-xs font-semibold w-10 text-right">{Math.round(value)}%</span>
-    </div>
-  )
-}
-
-// Node metrics card — fetches its own metrics
-function NodeMetricsCard({ node, onMetrics }: { node: Node; onMetrics: (id: string, m: NodeMetricsType | undefined) => void }) {
-  const displayStatus = getNodeDisplayStatus(node)
-  const isOnline = displayStatus !== "offline"
-  const { data: metrics } = useNodeMetrics(isOnline ? node.id : "")
-  const { data: history } = useNodeMetricsHistory(isOnline ? node.id : "", 60)
-
-  useEffect(() => {
-    onMetrics(node.id, metrics)
-  }, [node.id, metrics, onMetrics])
-
-  const cpuUsage = metrics?.cpu_percent ?? 0
-  const memUsage = metrics?.memory_used_percent ?? 0
-  const diskUsage = metrics?.disk_used_percent ?? 0
-  const networkIn = metrics?.network_rx_bytes_per_sec ?? 0
-  const networkOut = metrics?.network_tx_bytes_per_sec ?? 0
-  const vmCount = metrics?.running_vm_count ?? 0
-  const cpuTrend = (history ?? []).map((s) => s.cpu_usage)
-  const memTrend = (history ?? []).map((s) => s.memory_usage)
-  
-  return (
-    <div className="rounded-lg border bg-card text-card-foreground shadow-sm">
-      {/* Card Header */}
-      <div className="border-b bg-muted/50 p-4 flex items-center justify-between rounded-t-lg">
-        <div className="flex items-center gap-3">
-          <Server className="w-5 h-5 text-muted-foreground" />
-          <span className="text-lg font-semibold">{node.name}</span>
-        </div>
-        <StatusBadge status={displayStatus} />
-      </div>
-
-      {/* Card Body */}
-      <div className="p-4">
-        {!isOnline ? (
-          <div className="py-6 text-center">
-            <AlertCircle className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
-            <p className="text-sm text-muted-foreground font-medium">Node offline</p>
-          </div>
-        ) : !metrics ? (
-          <div className="space-y-3 mb-4">
-            <Skeleton className="h-3 w-full" />
-            <Skeleton className="h-3 w-full" />
-            <Skeleton className="h-3 w-full" />
-          </div>
-        ) : (
-          <>
-            {/* Resource Bars */}
-            <div className="space-y-3 mb-4">
-              <ResourceBar value={cpuUsage} label="CPU" />
-              <ResourceBar value={memUsage} label="Memory" />
-              <ResourceBar value={diskUsage} label="Disk" />
-            </div>
-            
-            {/* Trend (last 60m) */}
-            <div className="mb-4 pb-4 border-b">
-              <p className="text-[10px] font-medium text-muted-foreground mb-2">Trend · last 60m</p>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="rounded-md border p-2">
-                  <span className="text-[10px] font-medium text-muted-foreground">CPU</span>
-                  <Sparkline data={cpuTrend} colorClass="text-primary" height={32} />
-                </div>
-                <div className="rounded-md border p-2">
-                  <span className="text-[10px] font-medium text-muted-foreground">Memory</span>
-                  <Sparkline data={memTrend} colorClass="text-primary" height={32} />
-                </div>
-              </div>
-            </div>
-
-            {/* Network I/O */}
-            <div className="flex items-center gap-6 mb-4 pb-4 border-b">
-              <div className="flex items-center gap-2">
-                <Network className="w-4 h-4 text-emerald-600" />
-                <span className="text-xs font-medium text-muted-foreground">IN</span>
-                <span className="text-sm font-semibold">{formatBytes(networkIn)}/s</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Network className="w-4 h-4 text-primary rotate-180" />
-                <span className="text-xs font-medium text-muted-foreground">OUT</span>
-                <span className="text-sm font-semibold">{formatBytes(networkOut)}/s</span>
-              </div>
-            </div>
-
-            {/* VM Count & IP */}
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Database className="w-4 h-4 text-muted-foreground" />
-                <span className="text-sm font-medium text-muted-foreground">VMs:</span>
-                <span className="text-sm font-semibold">{vmCount}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Network className="w-4 h-4 text-muted-foreground" />
-                <span className="text-sm font-mono text-muted-foreground">{node.ip_address}</span>
-              </div>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  )
-}
-
-// Derive alerts from node states
-function deriveAlerts(nodes: Node[], metricsMap: Map<string, NodeMetricsType>): DerivedAlert[] {
-  const alerts: DerivedAlert[] = []
-
-  for (const node of nodes) {
-    if (node.status === "offline") {
-      alerts.push({
-        id: `offline-${node.id}`,
-        severity: "critical",
-        message: `${node.name} is offline`,
-        node: node.name,
-      })
-    }
-    
-    if (node.status === "maintenance") {
-      alerts.push({
-        id: `maint-${node.id}`,
-        severity: "info",
-        message: `${node.name} is in maintenance mode`,
-        node: node.name,
-      })
-    }
-    
-    const metrics = node.status === "offline" ? undefined : metricsMap.get(node.id)
-    if (metrics) {
-      if (metrics.cpu_percent >= 90) {
-        alerts.push({
-          id: `cpu-crit-${node.id}`,
-          severity: "critical",
-          message: `High CPU usage on ${node.name} (${Math.round(metrics.cpu_percent)}%)`,
-          node: node.name,
-            })
-      } else if (metrics.cpu_percent >= 80) {
-        alerts.push({
-          id: `cpu-warn-${node.id}`,
-          severity: "warning",
-          message: `CPU usage above 80% on ${node.name} (${Math.round(metrics.cpu_percent)}%)`,
-          node: node.name,
-            })
-      }
-      
-      if (metrics.memory_used_percent >= 90) {
-        alerts.push({
-          id: `mem-crit-${node.id}`,
-          severity: "critical",
-          message: `High memory usage on ${node.name} (${Math.round(metrics.memory_used_percent)}%)`,
-          node: node.name,
-            })
-      } else if (metrics.memory_used_percent >= 80) {
-        alerts.push({
-          id: `mem-warn-${node.id}`,
-          severity: "warning",
-          message: `Memory usage above 80% on ${node.name} (${Math.round(metrics.memory_used_percent)}%)`,
-          node: node.name,
-            })
-      }
-      
-      if (metrics.disk_used_percent >= 90) {
-        alerts.push({
-          id: `disk-crit-${node.id}`,
-          severity: "critical",
-          message: `Disk usage critical on ${node.name} (${Math.round(metrics.disk_used_percent)}%)`,
-          node: node.name,
-            })
-      } else if (metrics.disk_used_percent >= 70) {
-        alerts.push({
-          id: `disk-warn-${node.id}`,
-          severity: "warning",
-          message: `Disk usage approaching threshold on ${node.name} (${Math.round(metrics.disk_used_percent)}%)`,
-          node: node.name,
-            })
-      }
-    }
-  }
-  
-  // Sort: critical first, then warning, then info
-  const severityOrder: Record<string, number> = { critical: 0, warning: 1, info: 2 }
-  alerts.sort((a, b) => severityOrder[a.severity] - severityOrder[b.severity])
-  
-  return alerts
 }
 
 export default function MonitoringPage() {
-  const { data: nodes, isLoading, error, refetch } = useNodes()
-  const { data: vmsData } = useVMs({ pageSize: 1 }) // Just to get total count
-  const [severityFilter, setSeverityFilter] = useState<string>("all")
-  const [hiddenIds, setHiddenIds] = useState<Set<string>>(new Set())
-  
-  // Metrics are reported up by the node cards (same query cache as their own hook)
-  const [metricsMap, setMetricsMap] = useState<Map<string, NodeMetricsType>>(new Map())
-  const handleMetrics = useCallback((id: string, m: NodeMetricsType | undefined) => {
-    setMetricsMap(prev => {
-      if (prev.get(id) === m) return prev
-      const next = new Map(prev)
-      if (m) next.set(id, m)
-      else next.delete(id)
-      return next
-    })
-  }, [])
+  const { data: o, isLoading, error, refetch } = useDashboardOverview()
+  const [range, setRange] = useState<RangeId>("1h")
+  const nodes = o?.nodes ?? []
+  const needs = o ? attentionList(o) : []
+  const answering = nodes.filter((n) => n.status === "active" && !silentFor(n)).length
 
-  const alerts = useMemo(() => {
-    if (!nodes) return []
-    return deriveAlerts(nodes, metricsMap)
-  }, [nodes, metricsMap])
-  
-  // Filter alerts
-  const filteredAlerts = useMemo(() => {
-    let result = alerts.filter(a => !hiddenIds.has(a.id))
-    if (severityFilter !== "all") {
-      result = result.filter(a => a.severity === severityFilter)
-    }
-    return result
-  }, [alerts, severityFilter, hiddenIds])
-  
-  // Calculate stats from nodes
-  const onlineNodes = nodes?.filter(n => n.status !== "offline") || []
-  const totalNodes = nodes?.length ?? 0
-  const totalVMs = vmsData?.total ?? 0
-  
-  // Hide an alert for this session only
-  const handleHide = (alertId: string) => {
-    setHiddenIds(prev => {
-      const next = new Set(prev)
-      next.add(alertId)
-      return next
-    })
-    toast.success("Alert hidden for this session")
-  }
-  
-  // Get severity icon and color
-  const getSeverityConfig = (severity: AlertSeverity) => {
-    switch (severity) {
-      case "critical":
-        return { icon: AlertTriangle, bg: "bg-red-50 dark:bg-red-950", border: "border-red-200 dark:border-red-900", text: "text-red-700 dark:text-red-400", iconBg: "bg-red-50 dark:bg-red-950" }
-      case "warning":
-        return { icon: AlertTriangle, bg: "bg-amber-50 dark:bg-amber-950", border: "border-amber-200 dark:border-amber-900", text: "text-amber-700 dark:text-amber-400", iconBg: "bg-amber-50 dark:bg-amber-950" }
-      case "info":
-        return { icon: Info, bg: "bg-muted", border: "border-border", text: "text-muted-foreground", iconBg: "bg-muted" }
-    }
-  }
-  
-  // Loading
-  if (isLoading) {
-    return (
-      <div className="max-w-7xl mx-auto">
-        <div className="mb-6">
-          <h1 className="text-3xl font-bold tracking-tight flex items-center gap-3">
-            <Activity className="w-8 h-8" />
-            Monitoring
-          </h1>
-          <Skeleton className="h-5 w-48 mt-1" />
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-          {[1,2,3,4].map(i => <Skeleton key={i} className="h-24 rounded-lg" />)}
-        </div>
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-          {[1,2].map(i => <Skeleton key={i} className="h-48 rounded-lg" />)}
-        </div>
-      </div>
-    )
-  }
-  
-  // Error
-  if (error) {
-    return (
-      <div className="max-w-7xl mx-auto">
-        <div className="mb-6">
-          <h1 className="text-3xl font-bold tracking-tight flex items-center gap-3">
-            <Activity className="w-8 h-8" />
-            Monitoring
-          </h1>
-        </div>
-        <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-12 text-center">
-          <AlertCircle className="w-16 h-16 text-destructive mx-auto mb-4" />
-          <h2 className="text-xl font-semibold mb-2">Failed to load monitoring data</h2>
-          <p className="text-muted-foreground mb-6">{(error as Error).message}</p>
-          <Button onClick={() => refetch()}>Retry</Button>
-        </div>
-      </div>
-    )
-  }
-  
   return (
-    <div className="max-w-7xl mx-auto">
-      {/* Header */}
-      <div className="mb-6">
-        <h1 className="text-3xl font-bold tracking-tight flex items-center gap-3">
-          <Activity className="w-8 h-8" />
-          Monitoring
-        </h1>
-        <p className="text-muted-foreground text-sm mt-1">
-          Real-time cluster overview and alerts
-        </p>
-      </div>
-
-      {/* Cluster Overview Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-        <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-4">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-medium text-muted-foreground">Total Nodes</span>
-            <Server className="w-4 h-4 text-muted-foreground" />
-          </div>
-          <p className="text-3xl font-bold">{totalNodes}</p>
-          <p className="text-xs text-muted-foreground font-medium mt-1">{onlineNodes.length} online</p>
+    <div className="mx-auto max-w-7xl">
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold">Monitoring</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {isLoading
+              ? "Loading the fleet"
+              : error || !o
+                ? "The fleet could not be loaded."
+                : `${answering} of ${nodes.length} ${nodes.length === 1 ? "node" : "nodes"} answering, ${o.totals.running} of ${o.totals.vms} VMs running. ` +
+                  (needs.length ? `${needs.length} ${needs.length === 1 ? "thing needs" : "things need"} attention.` : "Nothing needs attention.")}
+          </p>
         </div>
-
-        <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-4">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-medium text-muted-foreground">Total VMs</span>
-            <Database className="w-4 h-4 text-muted-foreground" />
-          </div>
-          <p className="text-3xl font-bold">{totalVMs}</p>
-        </div>
-
-        <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-4">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-medium text-muted-foreground">Online</span>
-            <CheckCircle className="w-4 h-4 text-emerald-600" />
-          </div>
-          <p className="text-3xl font-bold text-emerald-600">{onlineNodes.length}</p>
-        </div>
-
-        <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-4">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-medium text-muted-foreground">Active Alerts</span>
-            <Zap className="w-4 h-4 text-amber-500" />
-          </div>
-          <p className="text-3xl font-bold text-amber-600">{alerts.filter(a => !hiddenIds.has(a.id)).length}</p>
-        </div>
-      </div>
-      
-      {/* Node Metrics Cards */}
-      {nodes && nodes.length > 0 ? (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-          {nodes.map((node) => (
-            <NodeMetricsCard key={node.id} node={node} onMetrics={handleMetrics} />
+        <div role="group" aria-label="Time range for every node" className="flex gap-1.5">
+          {RANGES.map((r) => (
+            <Button key={r.id} type="button" size="sm" variant={r.id === range ? "default" : "outline"} aria-pressed={r.id === range} onClick={() => setRange(r.id)}>
+              {r.label}
+            </Button>
           ))}
         </div>
+      </div>
+
+      {isLoading ? (
+        <div className="space-y-4" aria-busy="true">
+          {[0, 1].map((i) => (
+            <Skeleton key={i} className="h-72 w-full" />
+          ))}
+        </div>
+      ) : error || !o ? (
+        <div className="rounded-lg border bg-card p-8" role="alert">
+          <p className="font-medium">The fleet could not be loaded.</p>
+          <p className="mt-1 text-sm text-muted-foreground">{(error as Error)?.message}</p>
+          <Button className="mt-4" variant="outline" onClick={() => refetch()}>
+            Try again
+          </Button>
+        </div>
       ) : (
-        <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-12 text-center mb-6">
-          <Server className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
-          <p className="text-muted-foreground font-medium">No nodes registered</p>
-        </div>
-      )}
+        <div className="space-y-5">
+          <section aria-labelledby="needs-attention" className="rounded-lg border bg-card text-card-foreground">
+            <h2 id="needs-attention" className="border-b border-hair px-5 py-3 text-sm font-semibold">
+              {needs.length ? `Needs attention (${needs.length})` : "Needs attention"}
+            </h2>
+            {needs.length === 0 ? (
+              <p className="px-5 py-4 text-sm text-muted-foreground">
+                Nothing right now. Every node is answering with memory and CPU below 90%, no VM has failed or stalled, no backup or job failed in the last 24 hours, and no
+                storage or address range is nearly full.
+              </p>
+            ) : (
+              <ul className="divide-y divide-hair">
+                {needs.map((n) => (
+                  <li key={n.key} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-5 py-3 text-sm">
+                    <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${n.bad ? "bg-destructive" : "bg-warning"}`} aria-hidden="true" />
+                    <span className="min-w-0 flex-1 basis-64">{n.text}</span>
+                    <Link href={n.href} className="font-semibold underline underline-offset-4">
+                      {n.go}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
 
-      {/* Alerts Section */}
-      <div className="rounded-lg border bg-card text-card-foreground shadow-sm">
-        {/* Alerts Header */}
-        <div className="border-b bg-muted/50 font-semibold p-4 flex items-center justify-between rounded-t-lg">
-          <div className="flex items-center gap-2">
-            <Zap className="w-5 h-5" />
-            Alerts ({alerts.filter(a => !hiddenIds.has(a.id)).length})
-          </div>
-
-          {/* Filter Buttons */}
-          <div className="flex items-center gap-2">
-            {(["all", "critical", "warning", "info"] as const).map(filter => {
-              return (
-                <button
-                  key={filter}
-                  onClick={() => setSeverityFilter(filter)}
-                  className={cn(
-                    "px-3 py-1 text-xs font-medium capitalize rounded-md border transition-colors",
-                    severityFilter === filter
-                      ? "bg-primary text-primary-foreground border-primary"
-                      : "bg-background text-muted-foreground hover:bg-muted"
-                  )}
-                >
-                  {filter}
-                </button>
-              )
-            })}
-          </div>
-        </div>
-        
-        {/* Alert Rows */}
-        <div className="divide-y">
-          {filteredAlerts.length === 0 ? (
-            <div className="p-8 text-center">
-              <CheckCircle className="w-12 h-12 text-emerald-600 mx-auto mb-2" />
-              <p className="font-medium text-muted-foreground">No alerts to display</p>
+          {nodes.length === 0 ? (
+            <div className="rounded-lg border bg-card p-8">
+              <p className="font-medium">No node is connected yet.</p>
+              <p className="mt-1 text-sm text-muted-foreground">Readings appear here once a node is added and answering.</p>
+              <Button asChild className="mt-4">
+                <Link href="/nodes/new">Add a node</Link>
+              </Button>
             </div>
           ) : (
-            filteredAlerts.map((alert) => {
-              const config = getSeverityConfig(alert.severity)
-              const Icon = config.icon
-
-              return (
-                <div
-                  key={alert.id}
-                  className={cn(
-                    "p-4 flex items-center gap-4"
-                  )}
-                >
-                  {/* Severity Icon */}
-                  <div className={cn("w-10 h-10 flex items-center justify-center rounded-md border", config.iconBg, config.border)}>
-                    <Icon className={cn("w-5 h-5", config.text)} />
-                  </div>
-
-                  {/* Alert Content */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className={cn("text-[10px] font-medium capitalize rounded-full px-2 py-0.5 border", config.bg, config.text, config.border)}>
-                        {alert.severity}
-                      </span>
-                    </div>
-                    <p className="font-medium truncate">{alert.message}</p>
-                    <p className="text-xs font-medium text-muted-foreground">Node: {alert.node}</p>
-                  </div>
-
-                  {/* Hide (local to this session) */}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handleHide(alert.id)}
-                    className="gap-1 shrink-0"
-                  >
-                    <CheckCircle className="w-3 h-3" aria-hidden="true" />
-                    Hide
-                  </Button>
-                </div>
-              )
-            })
+            nodes.map((n) => <NodeReadings key={n.id} n={n} range={range} />)
           )}
         </div>
-      </div>
+      )}
     </div>
   )
 }

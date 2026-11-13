@@ -24,11 +24,12 @@ func NewMetricsHandler(s *service.MetricsService, authorizer *authz.Authorizer) 
 }
 
 // GetNodeMetricsHistory handles GET /api/v1/nodes/:id/metrics/history.
-// Query params: minutes (window, default 60, max 1440), limit (default 500, max 5000).
+// Query params: minutes (window, default 60, max 10080 = the 7 days kept),
+// limit (most points returned, default 500, max 5000; longer windows are averaged down to it).
 func (h *MetricsHandler) GetNodeMetricsHistory(c echo.Context) error {
 	id := c.Param("id")
 
-	minutes := clampInt(c.QueryParam("minutes"), 60, 1, 1440)
+	minutes := clampInt(c.QueryParam("minutes"), 60, 1, 10080)
 	limit := clampInt(c.QueryParam("limit"), 500, 1, 5000)
 
 	samples, err := h.service.NodeHistory(c.Request().Context(), id, time.Duration(minutes)*time.Minute, limit)

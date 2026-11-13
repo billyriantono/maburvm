@@ -35,10 +35,73 @@ func NewMetricsService(db *gorm.DB) *MetricsService {
 	return &MetricsService{repo: repository.NewMetricsRepository(db)}
 }
 
-// NodeHistory returns a node's samples within the trailing window, oldest first.
+// NodeHistory returns a node's readings within the trailing window, oldest
+// first, averaged down to at most limit points.
 func (s *MetricsService) NodeHistory(ctx context.Context, nodeID string, window time.Duration, limit int) ([]models.NodeMetricSample, error) {
 	since := time.Now().Add(-window)
-	return s.repo.ListNodeSamples(ctx, nodeID, since, limit)
+	rows, err := s.repo.ListNodeSamples(ctx, nodeID, since, 0)
+	if err != nil {
+		return nil, err
+	}
+	return downsampleNode(rows, since, window, limit), nil
+}
+
+// downsampleNode drops the rows stored while a node could not be reached (they
+// are zeros, not readings) and averages the rest into at most n equal slices
+// of the window. A slice with no readings is left out, so an outage stays a
+// gap. Connections tracked keeps its peak, because the peak is what fills the
+// table; each point carries the time of the last reading it covers.
+func downsampleNode(rows []models.NodeMetricSample, since time.Time, window time.Duration, n int) []models.NodeMetricSample {
+	kept := make([]models.NodeMetricSample, 0, len(rows))
+	for _, r := range rows {
+		if r.Status != "offline" {
+			kept = append(kept, r)
+		}
+	}
+	if n <= 0 || len(kept) <= n || window <= 0 {
+		return kept
+	}
+	width := window / time.Duration(n)
+	if width <= 0 {
+		return kept
+	}
+	out := make([]models.NodeMetricSample, 0, n)
+	var (
+		acc                    models.NodeMetricSample
+		cpu, mem, disk, rx, tx float64
+		peak                   int64
+		count                  float64
+		slice                  int64 = -1
+	)
+	flush := func() {
+		if count == 0 {
+			return
+		}
+		acc.CPUUsage, acc.MemoryUsage, acc.DiskUsage = cpu/count, mem/count, disk/count
+		acc.NetworkRxBytesPerSec, acc.NetworkTxBytesPerSec = rx/count, tx/count
+		acc.ConntrackCount = peak
+		out = append(out, acc)
+	}
+	for _, r := range kept {
+		at := int64(r.RecordedAt.Sub(since) / width)
+		if at != slice {
+			flush()
+			slice, count, peak = at, 0, 0
+			cpu, mem, disk, rx, tx = 0, 0, 0, 0, 0
+		}
+		acc = r
+		cpu += r.CPUUsage
+		mem += r.MemoryUsage
+		disk += r.DiskUsage
+		rx += r.NetworkRxBytesPerSec
+		tx += r.NetworkTxBytesPerSec
+		if r.ConntrackCount > peak {
+			peak = r.ConntrackCount
+		}
+		count++
+	}
+	flush()
+	return out
 }
 
 // VMHistory returns a VM's samples within the trailing window, oldest first,

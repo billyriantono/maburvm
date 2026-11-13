@@ -41,3 +41,31 @@ func TestDownsampleVM(t *testing.T) {
 		require.True(t, got[i].RecordedAt.After(got[i-1].RecordedAt))
 	}
 }
+
+func TestDownsampleNode(t *testing.T) {
+	since := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	window := 100 * time.Minute
+
+	// One reading a minute; minutes 40-59 the node could not be reached, which
+	// the collector stores as rows of zeros marked offline.
+	var rows []models.NodeMetricSample
+	for i := 0; i < 100; i++ {
+		r := models.NodeMetricSample{ID: uint64(i + 1), NodeID: "n", Status: "online", CPUUsage: float64(i), ConntrackCount: int64(i * 100), ConntrackMax: 1 << 20,
+			RecordedAt: since.Add(time.Duration(i) * time.Minute)}
+		if i >= 40 && i < 60 {
+			r = models.NodeMetricSample{ID: uint64(i + 1), NodeID: "n", Status: "offline", RecordedAt: r.RecordedAt}
+		}
+		rows = append(rows, r)
+	}
+
+	// The zero rows are never returned, even when nothing needs averaging.
+	require.Len(t, downsampleNode(rows, since, window, 500), 80)
+
+	got := downsampleNode(rows, since, window, 10)
+	require.Len(t, got, 8)
+	require.InDelta(t, 4.5, got[0].CPUUsage, 0.001)
+	require.Equal(t, int64(900), got[0].ConntrackCount) // the peak of the slice, not its mean
+	require.Equal(t, int64(1<<20), got[0].ConntrackMax)
+	require.InDelta(t, 64.5, got[4].CPUUsage, 0.001) // first slice after the outage
+	require.True(t, got[4].RecordedAt.Sub(got[3].RecordedAt) > 20*time.Minute)
+}
