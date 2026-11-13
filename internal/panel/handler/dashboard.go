@@ -48,6 +48,9 @@ type dashNode struct {
 	ReportedAt       *time.Time `json:"reported_at" gorm:"column:reported_at"`
 	ConntrackCount   *int64     `json:"conntrack_count" gorm:"column:conntrack_count"`
 	ConntrackMax     *int64     `json:"conntrack_max" gorm:"column:conntrack_max"`
+	IP               string     `json:"ip" gorm:"column:ip"`
+	NetRx            *float64   `json:"net_rx_bytes_per_sec" gorm:"column:net_rx"`
+	NetTx            *float64   `json:"net_tx_bytes_per_sec" gorm:"column:net_tx"`
 }
 
 type dashPool struct {
@@ -126,7 +129,8 @@ func RegisterDashboardRoutes(e *echo.Echo, db *gorm.DB) {
 				coalesce(v.vm_count, 0) AS vm_count, coalesce(v.running, 0) AS running,
 				coalesce(v.vcpu, 0) AS vcpu, coalesce(v.rammb, 0) AS rammb, coalesce(v.diskgb, 0) AS diskgb,
 				coalesce(s.total, 0) AS disk_total, coalesce(s.used, 0) AS disk_used,
-				m.cpu_usage, m.memory_usage, m.recorded_at AS reported_at, m.conntrack_count, m.conntrack_max
+				m.cpu_usage, m.memory_usage, m.recorded_at AS reported_at, m.conntrack_count, m.conntrack_max,
+				host(n.ip_address) AS ip, m.network_rx_bytes_per_sec AS net_rx, m.network_tx_bytes_per_sec AS net_tx
 			FROM nodes n
 			LEFT JOIN regions r ON r.id = n.region_id
 			LEFT JOIN (SELECT node_id, count(*) AS vm_count, count(*) FILTER (WHERE status = 'running') AS running,
@@ -136,7 +140,8 @@ func RegisterDashboardRoutes(e *echo.Echo, db *gorm.DB) {
 				FROM storage_pools WHERE deleted_at IS NULL GROUP BY node_id) s ON s.node_id::text = n.id::text
 			-- The last time the node answered. The collector also stores a row of
 			-- zeros, marked offline, when it cannot reach a node; that is not a reading.
-			LEFT JOIN LATERAL (SELECT cpu_usage, memory_usage, recorded_at, conntrack_count, conntrack_max
+			LEFT JOIN LATERAL (SELECT cpu_usage, memory_usage, recorded_at, conntrack_count, conntrack_max,
+					network_rx_bytes_per_sec, network_tx_bytes_per_sec
 				FROM node_metrics WHERE node_id = n.id AND status <> 'offline' ORDER BY recorded_at DESC LIMIT 1) m ON true
 			WHERE n.deleted_at IS NULL ORDER BY n.name`).Scan(&nodes).Error; err != nil {
 			return fail(c, err)

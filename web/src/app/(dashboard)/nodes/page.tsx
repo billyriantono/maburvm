@@ -1,310 +1,246 @@
 "use client"
 
-import { useState, useMemo, useCallback } from "react"
+import { useState } from "react"
 import Link from "next/link"
-import {
-  Server,
-  Plus,
-  Search,
-  X,
-  Trash2,
-  Loader2,
-  Activity,
-  AlertTriangle
-} from "lucide-react"
+import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
-import { useNodes, useDeleteNode } from "@/lib/hooks/use-nodes"
-import { toast } from "sonner"
+import { Meter } from "@/components/ui/meter"
+import { Sparkline } from "@/components/ui/sparkline"
 import { StatusBadge } from "@/components/status-badge"
 import { useConfirm } from "@/components/confirm-provider"
+import { useCopy } from "@/lib/use-feedback"
+import { useDashboardOverview, type DashboardNode } from "@/lib/hooks/use-dashboard"
+import { useDeleteNode, useNodeMetricsHistory } from "@/lib/hooks/use-nodes"
 
-function formatDate(dateString: string) {
-  return new Date(dateString).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
+// The nodes page answers what an operator opens it for: is each node up, how
+// loaded is it, and how much room is left on it. One row per node, built from
+// what the panel has recorded, so it loads at once even when a node is down.
+
+const GIB = 1024 ** 3
+
+function rate(bytesPerSec: number): string {
+  const units = ["B/s", "KB/s", "MB/s", "GB/s"]
+  let v = Math.max(bytesPerSec, 0)
+  let u = 0
+  while (v >= 1024 && u < units.length - 1) {
+    v /= 1024
+    u++
+  }
+  return `${v >= 10 || u === 0 ? Math.round(v) : v.toFixed(1)} ${units[u]}`
+}
+
+function since(iso: string): string {
+  const min = Math.floor((Date.now() - new Date(iso).getTime()) / 60_000)
+  if (min < 1) return "just now"
+  if (min < 60) return `${min} min ago`
+  const h = Math.floor(min / 60)
+  return h < 48 ? `${h} h ago` : `${Math.floor(h / 24)} days ago`
+}
+
+/** Reporting means the node has answered within the last five minutes. */
+function reporting(n: DashboardNode): boolean {
+  return n.status === "active" && !!n.reported_at && Date.now() - new Date(n.reported_at).getTime() <= 5 * 60_000
+}
+
+function NodeRow({ n, onRemove }: { n: DashboardNode; onRemove: () => void }) {
+  const { copy, copied } = useCopy()
+  const { data: history } = useNodeMetricsHistory(n.id, 60)
+  // The collector stores a row of zeros when it cannot reach a node; leave those out.
+  const cpu = (history ?? []).filter((s) => s.status !== "offline").map((s) => s.cpu_usage)
+  const live = reporting(n)
+  const ramTotal = n.memory_total_bytes / GIB
+  const ramPromised = n.ram_allocated_mb / 1024
+  const ramRatio = ramTotal > 0 ? ramPromised / ramTotal : null
+  const diskShare = n.disk_total_bytes > 0 ? (n.disk_used_bytes / n.disk_total_bytes) * 100 : null
+
+  return (
+    <li className="grid grid-cols-2 gap-x-6 gap-y-5 px-5 py-5 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,0.75fr)_minmax(0,1.2fr)_minmax(0,1.2fr)_minmax(0,1.25fr)_auto] xl:items-center">
+      <div className="col-span-2 min-w-0 xl:col-span-1">
+        <Link href={`/nodes/${n.id}`} className="break-all text-lg font-semibold underline-offset-4 hover:underline [font-stretch:112%]">
+          {n.name}
+        </Link>
+        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+          <StatusBadge variant="lamp" className="text-xs" status={n.status} />
+          {n.region && <span className="text-xs text-muted-foreground">{n.region}</span>}
+          {n.creation_paused && <span className="text-xs font-medium text-muted-foreground">Closed to new VMs</span>}
+        </div>
+        <p className="mt-1 text-sm">
+          <span className="font-mono">{n.ip}</span>
+          <button
+            type="button"
+            onClick={() => copy(n.ip, n.id)}
+            aria-label={copied(n.id) ? "Copied" : `Copy address ${n.ip}`}
+            className="ml-2 border-b border-border pb-px text-xs font-semibold hover:border-foreground active:translate-y-px"
+          >
+            {copied(n.id) ? "Copied" : "Copy"}
+          </button>
+        </p>
+      </div>
+
+      <div className="min-w-0">
+        <p className="text-xs text-muted-foreground">VMs</p>
+        <p className="text-sm">
+          <span className="font-semibold">{n.running}</span> running of {n.vm_count}
+        </p>
+        <p className="text-xs text-muted-foreground">{n.vcpu_allocated} vCPU promised</p>
+      </div>
+
+      <div className="min-w-0">
+        <p className="text-xs text-muted-foreground">Memory promised to VMs</p>
+        {ramRatio === null ? (
+          <p className="text-sm text-muted-foreground">{ramPromised.toFixed(0)} GB. The node has not reported how much it has.</p>
+        ) : (
+          <>
+            <p className="text-sm">
+              <span className="font-semibold">{ramPromised.toFixed(0)} GB</span> of {ramTotal.toFixed(0)} GB installed
+              {ramRatio > 1 ? ` (${ramRatio.toFixed(1)} times)` : ""}
+            </p>
+            <Meter percent={ramRatio * 100} over={ramRatio > 1} />
+          </>
+        )}
+      </div>
+
+      <div className="min-w-0">
+        <p className="text-xs text-muted-foreground">Storage in use</p>
+        {diskShare === null ? (
+          <p className="text-sm text-muted-foreground">No storage registered</p>
+        ) : (
+          <>
+            <p className="text-sm">
+              <span className="font-semibold">{(n.disk_used_bytes / GIB).toFixed(0)} GB</span> of {(n.disk_total_bytes / GIB).toFixed(0)} GB ({Math.round(diskShare)}%)
+            </p>
+            <Meter percent={diskShare} over={diskShare >= 90} />
+          </>
+        )}
+      </div>
+
+      <div className="col-span-2 min-w-0 xl:col-span-1">
+        <p className="text-xs text-muted-foreground">Load now</p>
+        {live && n.cpu_usage !== null && n.memory_usage !== null ? (
+          <>
+            <div className="flex items-center gap-3" title={`CPU over the last hour, now ${Math.round(n.cpu_usage)}%`}>
+              <p className="shrink-0 text-sm">
+                CPU <span className="font-semibold">{Math.round(n.cpu_usage)}%</span>, memory <span className="font-semibold">{Math.round(n.memory_usage)}%</span>
+              </p>
+              {cpu.length > 1 && <Sparkline data={cpu} height={24} className="min-w-0 max-w-[7rem] flex-1" colorClass="text-[color:var(--chart-1)]" />}
+            </div>
+            {n.net_rx_bytes_per_sec !== null && n.net_tx_bytes_per_sec !== null && (
+              <p className="text-xs text-muted-foreground">
+                Traffic in {rate(n.net_rx_bytes_per_sec)}, out {rate(n.net_tx_bytes_per_sec)}
+              </p>
+            )}
+          </>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            {n.reported_at ? `No current reading. Last answered ${since(n.reported_at)}.` : "This node has never answered the panel."}
+          </p>
+        )}
+      </div>
+
+      <div className="col-span-2 flex flex-wrap items-center gap-2 xl:col-span-1 xl:justify-end">
+        <Button asChild size="sm" variant="outline">
+          <Link href={`/nodes/${n.id}`}>Open</Link>
+        </Button>
+        <Button size="sm" variant="ghost" className="text-muted-foreground" onClick={onRemove}>
+          Remove
+        </Button>
+      </div>
+    </li>
+  )
 }
 
 export default function NodesListPage() {
   const confirm = useConfirm()
-  // State
-  const [searchQuery, setSearchQuery] = useState("")
-  const [statusFilter, setStatusFilter] = useState<string>("")
-
-  // Data hooks
-  const { data: nodes, isLoading, error, refetch } = useNodes()
+  const { data: o, isLoading, error, refetch } = useDashboardOverview()
   const deleteNode = useDeleteNode()
+  const [query, setQuery] = useState("")
 
-  // Filter nodes
-  const filteredNodes = useMemo(() => {
-    if (!nodes) return []
-    let result = [...nodes]
+  const nodes = o?.nodes ?? []
+  const q = query.trim().toLowerCase()
+  const shown = q ? nodes.filter((n) => n.name.toLowerCase().includes(q) || n.ip.includes(q) || n.region.toLowerCase().includes(q)) : nodes
 
-    if (searchQuery) {
-      const query = searchQuery.toLowerCase()
-      result = result.filter(node =>
-        node.name.toLowerCase().includes(query) ||
-        node.ip_address.toLowerCase().includes(query)
-      )
-    }
-
-    if (statusFilter) {
-      result = result.filter(node => node.status === statusFilter)
-    }
-
-    return result
-  }, [nodes, searchQuery, statusFilter])
-
-  // Action handlers
-  const handleDelete = useCallback(async (node: { id: string; name: string }) => {
+  const remove = async (n: DashboardNode) => {
     const ok = await confirm({
-      title: `Delete node "${node.name}"?`,
+      title: `Remove node "${n.name}"?`,
       description:
-        "The panel stops managing this hypervisor. VMs on it keep running, but become unmanageable from here.",
-      confirmLabel: "Delete node",
+        n.vm_count > 0
+          ? `The panel stops managing this hypervisor. Its ${n.vm_count} ${n.vm_count === 1 ? "VM keeps" : "VMs keep"} running, but can no longer be managed from here.`
+          : "The panel stops managing this hypervisor. It has no VMs.",
+      confirmLabel: "Remove node",
       destructive: true,
-      action: () => deleteNode.mutateAsync(node.id),
+      action: () => deleteNode.mutateAsync(n.id),
     })
     if (!ok) return
-    toast.success(`Node ${node.name} deleted`)
+    toast.success(`Node ${n.name} removed`)
     refetch()
-  }, [confirm, deleteNode, refetch])
-
-  const clearFilters = () => {
-    setSearchQuery("")
-    setStatusFilter("")
   }
 
-  const hasFilters = searchQuery || statusFilter
-
-  // Calculate stats
-  const stats = useMemo(() => ({
-    total: nodes?.length || 0,
-    active: nodes?.filter(n => n.status === "active").length || 0,
-    offline: nodes?.filter(n => n.status === "offline").length || 0,
-    maintenance: nodes?.filter(n => n.status === "maintenance").length || 0,
-  }), [nodes])
-
-  // Loading state
-  if (isLoading) {
-    return (
-      <div className="max-w-7xl mx-auto">
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
-          <div>
-            <h1 className="text-2xl font-semibold text-foreground">Nodes</h1>
-            <Skeleton className="h-5 w-48 mt-1" />
-          </div>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-          {[1,2,3,4].map(i => <Skeleton key={i} className="h-24 rounded-lg" />)}
-        </div>
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {[1,2,3,4].map(i => <Skeleton key={i} className="h-48 rounded-lg" />)}
-        </div>
-      </div>
-    )
-  }
-
-  // Error state
-  if (error) {
-    return (
-      <div className="max-w-7xl mx-auto">
-        <div className="bg-card text-card-foreground border rounded-lg p-12 shadow-sm text-center">
-          <AlertTriangle className="w-16 h-16 text-red-500 mx-auto mb-4" />
-          <h2 className="text-lg font-semibold mb-2">Failed to load nodes</h2>
-          <p className="text-muted-foreground text-sm mb-6">{(error as Error).message}</p>
-          <Button onClick={() => refetch()} className="gap-2">
-            <Activity className="w-4 h-4" />
-            Retry
-          </Button>
-        </div>
-      </div>
-    )
-  }
+  const up = nodes.filter(reporting).length
+  const summary =
+    nodes.length === 0
+      ? "No node is connected yet."
+      : `${nodes.length} ${nodes.length === 1 ? "node" : "nodes"}, ${up === nodes.length ? "all answering" : `${up} answering`}. ` +
+        `${nodes.reduce((a, n) => a + n.vm_count, 0)} VMs with ${nodes.reduce((a, n) => a + n.vcpu_allocated, 0)} vCPU and ` +
+        `${Math.round(nodes.reduce((a, n) => a + n.ram_allocated_mb, 0) / 1024)} GB of memory promised.`
 
   return (
-    <div className="max-w-7xl mx-auto">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+    <div className="mx-auto max-w-7xl">
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold text-foreground">
-            Nodes
-          </h1>
-          <p className="text-muted-foreground text-sm">
-            {stats.total} nodes • {stats.active} active
-          </p>
+          <h1 className="text-2xl font-semibold">Nodes</h1>
+          <p className="mt-1 text-sm text-muted-foreground">{isLoading ? "Loading the nodes" : error ? "The nodes could not be loaded." : summary}</p>
         </div>
-        <Link href="/nodes/new">
-          <Button className="gap-2">
-            <Plus className="w-4 h-4" />
-            Add Node
-          </Button>
-        </Link>
-      </div>
-
-      {/* Quick Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-        <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-medium text-muted-foreground">Total Nodes</span>
-            <Server className="w-4 h-4 text-muted-foreground" />
-          </div>
-          <p className="text-2xl font-semibold text-foreground">{stats.total}</p>
-        </div>
-
-        <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-medium text-muted-foreground">Active</span>
-            <span className="w-2.5 h-2.5 bg-emerald-500 rounded-full" aria-hidden="true" />
-          </div>
-          <p className="text-2xl font-semibold text-emerald-600">{stats.active}</p>
-        </div>
-
-        <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-medium text-muted-foreground">Offline</span>
-            <span className="w-2.5 h-2.5 bg-red-500 rounded-full" aria-hidden="true" />
-          </div>
-          <p className="text-2xl font-semibold text-red-600">{stats.offline}</p>
-        </div>
-
-        <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-medium text-muted-foreground">Maintenance</span>
-            <AlertTriangle className="w-4 h-4 text-amber-600" />
-          </div>
-          <p className="text-2xl font-semibold text-amber-600">{stats.maintenance}</p>
-        </div>
-      </div>
-
-      {/* Filters */}
-      <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm mb-6">
-        <div className="flex flex-col lg:flex-row gap-4">
-          {/* Search */}
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            <Input
-              type="text"
-              placeholder="Search by name or IP..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-10"
-            />
-          </div>
-
-          {/* Status Filter */}
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="h-10 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-          >
-            <option value="">All Status</option>
-            <option value="active">Active</option>
-            <option value="offline">Offline</option>
-            <option value="maintenance">Maintenance</option>
-          </select>
-
-          {/* Clear filters */}
-          {hasFilters && (
-            <Button variant="outline" onClick={clearFilters} className="gap-1">
-              <X className="w-4 h-4" />
-              Clear
-            </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          {/* A filter only earns its place once there are more nodes than fit at a glance. */}
+          {nodes.length > 6 && (
+            <>
+              <label htmlFor="node-filter" className="sr-only">Filter nodes</label>
+              <Input id="node-filter" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter by name, address or region" className="w-64" />
+            </>
           )}
+          <Button asChild variant={nodes.length === 0 && !isLoading && !error ? "default" : "outline"}>
+            <Link href="/nodes/new">Add a node</Link>
+          </Button>
         </div>
       </div>
 
-      {/* Nodes Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {filteredNodes.length === 0 ? (
-          <div className="col-span-full bg-card text-card-foreground border rounded-lg p-12 shadow-sm text-center">
-            <Server className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
-            <p className="text-muted-foreground font-medium">No nodes found</p>
-            {hasFilters && (
-              <Button variant="outline" onClick={clearFilters} className="mt-4">
-                Clear filters
-              </Button>
-            )}
+      <section aria-label="Nodes" className="rounded-lg border bg-card text-card-foreground">
+        {isLoading ? (
+          <div className="space-y-4 p-5" aria-busy="true">
+            {[0, 1, 2].map((i) => (
+              <Skeleton key={i} className="h-20 w-full" />
+            ))}
+          </div>
+        ) : error ? (
+          <div className="p-8" role="alert">
+            <p className="font-medium">The nodes could not be loaded.</p>
+            <p className="mt-1 text-sm text-muted-foreground">{(error as Error).message}</p>
+            <Button className="mt-4" variant="outline" onClick={() => refetch()}>
+              Try again
+            </Button>
+          </div>
+        ) : nodes.length === 0 ? (
+          <div className="p-8">
+            <p className="font-medium">No node is connected yet.</p>
+            <p className="mt-1 text-sm text-muted-foreground">A node is a server that runs VMs. Add one and it appears here with its load and the room left on it.</p>
+          </div>
+        ) : shown.length === 0 ? (
+          <div className="p-8">
+            <p className="font-medium">No node matches &quot;{query}&quot;.</p>
+            <Button className="mt-3" size="sm" variant="outline" onClick={() => setQuery("")}>
+              Show all nodes
+            </Button>
           </div>
         ) : (
-          filteredNodes.map((node) => (
-            <div key={node.id} className="bg-card text-card-foreground border rounded-lg shadow-sm overflow-hidden">
-              {/* Node Header */}
-              <div className="p-4 border-b bg-muted/50">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <Link href={`/nodes/${node.id}`} className="text-lg font-semibold hover:text-primary transition-colors">
-                      {node.name}
-                    </Link>
-                    <p className="text-sm font-mono text-muted-foreground">{node.ip_address}</p>
-                  </div>
-                  <StatusBadge status={node.status} />
-                  {node.creation_paused && (<span className="inline-flex items-center rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">New VMs paused</span>)}
-                </div>
-              </div>
-
-              {/* Node Body */}
-              <div className="p-4">
-                {/* Info */}
-                <div className="flex items-center gap-4 mb-4">
-                  <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 bg-muted text-muted-foreground flex items-center justify-center rounded-md">
-                      <Server className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <p className="text-xs font-medium text-muted-foreground">ID</p>
-                      <p className="text-xs font-mono">{node.id.slice(0, 12)}</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Activity className="w-4 h-4 text-muted-foreground" />
-                    <span className="text-xs text-muted-foreground">Created: {formatDate(node.created_at)}</span>
-                  </div>
-                </div>
-
-                {/* Status Alerts */}
-                {node.status === "maintenance" && (
-                  <div className="bg-amber-50 text-amber-700 border border-amber-200 rounded-md p-3 mb-4 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900">
-                    <p className="text-xs font-medium">Node is in maintenance mode</p>
-                  </div>
-                )}
-
-                {node.status === "offline" && (
-                  <div className="bg-red-50 text-red-700 border border-red-200 rounded-md p-3 mb-4 dark:bg-red-950 dark:text-red-300 dark:border-red-900">
-                    <p className="text-xs font-medium">Node is offline</p>
-                  </div>
-                )}
-
-                {node.status === "active" && (
-                  <div className="bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md p-3 mb-4 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900">
-                    <p className="text-xs font-medium">Node is active: view details for metrics</p>
-                  </div>
-                )}
-
-                {/* Actions */}
-                <div className="flex items-center gap-2">
-                  <Link href={`/nodes/${node.id}`}>
-                    <Button variant="outline" size="sm">
-                      <Activity className="w-4 h-4" />
-                      <span className="ml-1">Details</span>
-                    </Button>
-                  </Link>
-
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handleDelete({ id: node.id, name: node.name })}
-                    disabled={deleteNode.isPending}
-                    className="text-red-600 hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950"
-                    title="Delete"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </Button>
-                </div>
-              </div>
-            </div>
-          ))
+          <ul className="divide-y divide-hair">
+            {shown.map((n) => (
+              <NodeRow key={n.id} n={n} onRemove={() => remove(n)} />
+            ))}
+          </ul>
         )}
-      </div>
+      </section>
     </div>
   )
 }

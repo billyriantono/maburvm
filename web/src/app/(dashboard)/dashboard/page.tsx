@@ -7,6 +7,7 @@ import { useDashboardStats, useDashboardOverview, type DashboardOverview, type D
 import { useNodes, useNodeMetricsHistory } from '@/lib/hooks/use-nodes'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Meter } from '@/components/ui/meter'
 import { StatusBadge } from '@/components/status-badge'
 import { BandwidthChart } from '@/components/ui/bandwidth-chart'
 
@@ -207,14 +208,6 @@ function attentionList(o: DashboardOverview): Attention[] {
   if (o.failed_jobs_24h > 0)
     rows.push({ key: 'jobs', bad: false, text: `${o.failed_jobs_24h} background ${o.failed_jobs_24h === 1 ? 'job' : 'jobs'} gave up in the last 24 hours.`, href: '/settings/queue', go: 'Open job queue' })
   return rows.sort((a, b) => Number(b.bad) - Number(a.bad))
-}
-
-function Meter({ percent, over }: { percent: number; over?: boolean }) {
-  return (
-    <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-muted" aria-hidden="true">
-      <div className={`h-full ${over ? 'bg-destructive' : 'bg-foreground'}`} style={{ width: `${Math.min(Math.max(percent, 0), 100)}%` }} />
-    </div>
-  )
 }
 
 // One node: what it has been promised to VMs against what it physically has.

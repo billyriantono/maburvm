@@ -66,6 +66,9 @@ export interface DashboardNode {
   reported_at: string | null
   conntrack_count: number | null
   conntrack_max: number | null
+  ip: string
+  net_rx_bytes_per_sec: number | null
+  net_tx_bytes_per_sec: number | null
 }
 
 export interface DashboardOverview {

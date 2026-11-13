@@ -5,6 +5,7 @@ import { useMyDashboard, type MyVM } from "@/lib/hooks/use-dashboard"
 import { useVMStatusStream } from "@/lib/hooks/use-vms"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Meter } from "@/components/ui/meter"
 import { Sparkline } from "@/components/ui/sparkline"
 import { StatusBadge } from "@/components/status-badge"
 import { CountryFlag } from "@/components/country-flag"
@@ -48,14 +49,6 @@ function attention(vms: MyVM[]): { key: string; bad: boolean; text: string; href
       rows.push({ key: `b-${vm.id}`, bad: false, text: `The last backup of ${vm.hostname} failed ${ago(vm.last_backup_at)}.`, href: `${href}?tab=backups` })
   }
   return rows.sort((a, b) => Number(b.bad) - Number(a.bad))
-}
-
-function Meter({ percent, over }: { percent: number; over?: boolean }) {
-  return (
-    <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-muted" aria-hidden="true">
-      <div className={`h-full ${over ? "bg-destructive" : "bg-foreground"}`} style={{ width: `${Math.min(Math.max(percent, 0), 100)}%` }} />
-    </div>
-  )
 }
 
 function ServerRow({ vm }: { vm: MyVM }) {
