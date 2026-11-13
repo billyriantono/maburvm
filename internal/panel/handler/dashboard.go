@@ -95,6 +95,9 @@ type dashMineVM struct {
 }
 
 // RegisterDashboardRoutes wires both dashboard endpoints.
+//
+// storage_pools.node_id is compared as text: databases built from the older
+// migration set store it as a string, newer ones as a UUID.
 func RegisterDashboardRoutes(e *echo.Echo, db *gorm.DB) {
 	auth := middleware.RequireAuth(db)
 	fail := func(c echo.Context, err error) error {
@@ -130,7 +133,7 @@ func RegisterDashboardRoutes(e *echo.Echo, db *gorm.DB) {
 					sum((resources->>'cpu')::bigint) AS vcpu, sum((resources->>'ram')::bigint) AS rammb, sum((resources->>'disk')::bigint) AS diskgb
 				FROM vms WHERE deleted_at IS NULL GROUP BY node_id) v ON v.node_id = n.id
 			LEFT JOIN (SELECT node_id, sum(total_space) AS total, sum(used_space) AS used
-				FROM storage_pools WHERE deleted_at IS NULL GROUP BY node_id) s ON s.node_id = n.id
+				FROM storage_pools WHERE deleted_at IS NULL GROUP BY node_id) s ON s.node_id::text = n.id::text
 			-- The last time the node answered. The collector also stores a row of
 			-- zeros, marked offline, when it cannot reach a node; that is not a reading.
 			LEFT JOIN LATERAL (SELECT cpu_usage, memory_usage, recorded_at, conntrack_count, conntrack_max
@@ -149,7 +152,7 @@ func RegisterDashboardRoutes(e *echo.Echo, db *gorm.DB) {
 		// Storage that has passed the alert level its operator set.
 		storage := []dashStorage{}
 		if err := q.Raw(`SELECT s.name, coalesce(n.name, '') AS node, s.total_space, s.used_space, s.alert_threshold
-			FROM storage_pools s LEFT JOIN nodes n ON n.id = s.node_id
+			FROM storage_pools s LEFT JOIN nodes n ON n.id::text = s.node_id::text
 			WHERE s.deleted_at IS NULL AND s.total_space > 0 AND s.alert_threshold > 0
 				AND s.used_space::numeric * 100 >= s.total_space::numeric * s.alert_threshold
 			ORDER BY s.name`).Scan(&storage).Error; err != nil {
