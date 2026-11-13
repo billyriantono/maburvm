@@ -755,6 +755,7 @@ func (s *Server) setupBackupRoutes() {
 	s.backupService = backupService
 	backupHandler := handler.NewBackupHandler(backupService)
 	handler.RegisterBackupRoutes(s.echo, backupHandler, s.db)
+	handler.RegisterSearchRoutes(s.echo, s.db)
 }
 
 // setupImportRoutes configures VM import routes

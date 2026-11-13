@@ -66,6 +66,12 @@ interface SidebarProps {
   user: User
 }
 
+// Every page reachable from this sidebar, for the header search and breadcrumb.
+export const adminPages: { href: string; label: string }[] = [
+  ...[...navItems, ...settingsNav].map(({ href, label }) => ({ href, label })),
+  { href: "/audit-logs", label: "Audit log" },
+]
+
 export function Sidebar({}: SidebarProps) {
   const pathname = usePathname()
   const { branding } = useBranding()

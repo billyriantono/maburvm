@@ -3,7 +3,8 @@
 import { useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { LogOut, Loader2 } from "lucide-react"
-import { ClientSidebar } from "@/components/client-sidebar"
+import { ClientSidebar, clientPages } from "@/components/client-sidebar"
+import { GlobalSearch } from "@/components/global-search"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -14,6 +15,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { useAuth, useLogout } from "@/lib/hooks/use-auth"
+
+const clientVmHref = (id: string) => `/client/vms/${id}`
 
 export default function ClientLayout({
   children,
@@ -75,6 +78,10 @@ export default function ClientLayout({
             <span className="text-sm font-semibold text-foreground">
               Client Area
             </span>
+
+            <div className="hidden md:block ml-auto mr-3">
+              <GlobalSearch pages={clientPages} vmHref={clientVmHref} admin={false} />
+            </div>
 
             <DropdownMenu>
               <DropdownMenuTrigger asChild>

@@ -37,6 +37,11 @@ interface ClientSidebarProps {
   user: User
 }
 
+// Every page reachable from this sidebar, for the header search and breadcrumb.
+export const clientPages: { href: string; label: string }[] = [
+  ...[...navItems, ...settingsNav].map(({ href, label }) => ({ href, label })),
+]
+
 export function ClientSidebar({ user }: ClientSidebarProps) {
   const pathname = usePathname()
   const { branding } = useBranding()
