@@ -2207,6 +2207,7 @@ func (s *VMService) RescueVM(ctx context.Context, vmID, isoURL string) (int64, e
 	if err := s.db.WithContext(ctx).Model(&models.VM{}).Where("id = ?", vmID).Update("rescue_mode", true).Error; err != nil {
 		return 0, fmt.Errorf("failed to mark rescue mode: %w", err)
 	}
+	s.emailOwner(ctx, vmID, EmailVMRescueOn)
 	return jobID, nil
 }
 
@@ -2220,7 +2221,18 @@ func (s *VMService) UnrescueVM(ctx context.Context, vmID string) (int64, error) 
 	if err := s.db.WithContext(ctx).Model(&models.VM{}).Where("id = ?", vmID).Update("rescue_mode", false).Error; err != nil {
 		return 0, fmt.Errorf("failed to clear rescue mode: %w", err)
 	}
+	s.emailOwner(ctx, vmID, EmailVMRescueOff)
 	return jobID, nil
+}
+
+// emailOwner sends one of the server emails in the background. The action it
+// reports has already happened, so a mail failure is logged and nothing more.
+func (s *VMService) emailOwner(ctx context.Context, vmID, key string) {
+	go func(ctx context.Context) {
+		if err := NotifyVMOwner(ctx, s.db, vmID, key); err != nil {
+			s.logger.WarnContext(ctx, "could not email the server's owner", "vm_id", vmID, "email", key, "error", err)
+		}
+	}(context.WithoutCancel(ctx))
 }
 
 // MigrateVMRequest contains parameters for a live migration.

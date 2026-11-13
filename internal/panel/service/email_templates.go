@@ -62,7 +62,19 @@ const (
 	EmailWelcome       = "welcome"
 	EmailPasswordReset = "password_reset"
 	EmailVMReady       = "vm_ready"
+	EmailVMReinstalled = "vm_reinstalled"
+	EmailVMRescueOn    = "vm_rescue_on"
+	EmailVMRescueOff   = "vm_rescue_off"
 )
+
+// serverSample fills the server placeholders in previews and test sends.
+var serverSample = map[string]string{
+	"name": "Dewi", "email": "dewi@example.com", "server": "web-01", "address": "203.0.113.24", "system": "Ubuntu 24.04 LTS",
+	"access": AccessPasswordOnPage,
+}
+
+const serverLinkMeaning = "The button opens the server's page in your panel."
+const notYou = "If you did not ask for this, contact support straight away."
 
 var emailTemplateDefs = []EmailTemplateDef{
 	{
@@ -104,12 +116,50 @@ var emailTemplateDefs = []EmailTemplateDef{
 				"Address: {{address}}\nSystem: {{system}}\nUser: root\n\n{{access}}",
 			Button: "Open your server",
 		},
-		Sample: map[string]string{
-			"name": "Dewi", "email": "dewi@example.com", "server": "web-01", "address": "203.0.113.24", "system": "Ubuntu 24.04 LTS",
-			"access": AccessPasswordOnPage,
-		},
+		Sample:      serverSample,
 		SampleLink:  "https://panel.example.com/client/vms/example",
 		LinkMeaning: "The button opens the server's page in your panel, where its root password can be read after signing in.",
+	},
+	{
+		Key:      EmailVMReinstalled,
+		Name:     "Server reinstalled",
+		SentWhen: "Sent to a server's owner when its operating system has been reinstalled. As with a new server, the root password is never in the email.",
+		Optional: true,
+		Default: EmailTemplate{
+			Subject: "Your server {{server}} has been reinstalled",
+			Body: "{{greeting}},\n\nYour server {{server}} has been reinstalled and is running {{system}}. " +
+				"Everything that was on its disk before is gone. Its address has not changed.\n\n" +
+				"Address: {{address}}\nUser: root\n\n{{access}}\n\n" + notYou,
+			Button: "Open your server",
+		},
+		Sample: serverSample, SampleLink: "https://panel.example.com/client/vms/example", LinkMeaning: serverLinkMeaning,
+	},
+	{
+		Key:      EmailVMRescueOn,
+		Name:     "Rescue mode on",
+		SentWhen: "Sent to a server's owner when it is put into rescue mode.",
+		Optional: true,
+		Default: EmailTemplate{
+			Subject: "Your server {{server}} is set to start in rescue mode",
+			Body: "{{greeting}},\n\nYour server {{server}} is set to start in rescue mode. The next time it starts, it runs a temporary recovery system " +
+				"instead of its own disk, so that it can be repaired from the console. Its sites and services stay offline until it leaves rescue mode.\n\n" +
+				"To use it, open the server's page, start the server and open the Console tab.\n\n" + notYou,
+			Button: "Open your server",
+		},
+		Sample: serverSample, SampleLink: "https://panel.example.com/client/vms/example", LinkMeaning: serverLinkMeaning,
+	},
+	{
+		Key:      EmailVMRescueOff,
+		Name:     "Rescue mode off",
+		SentWhen: "Sent to a server's owner when it leaves rescue mode.",
+		Optional: true,
+		Default: EmailTemplate{
+			Subject: "Your server {{server}} has left rescue mode",
+			Body: "{{greeting}},\n\nYour server {{server}} is no longer in rescue mode. The next time it starts, it boots from its own disk again.\n\n" +
+				"Open the server's page to start it.",
+			Button: "Open your server",
+		},
+		Sample: serverSample, SampleLink: "https://panel.example.com/client/vms/example", LinkMeaning: serverLinkMeaning,
 	},
 }
 

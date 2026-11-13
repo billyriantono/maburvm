@@ -24,6 +24,16 @@ func TestServerReadyEmail(t *testing.T) {
 	require.NotContains(t, out.Text, "{{")
 	require.False(t, strings.Contains(strings.ToLower(AccessOwnPassword+AccessPasswordOnPage), "password:"))
 
+	// Every server email fills all its placeholders and can be switched off.
+	for _, key := range []string{EmailVMReady, EmailVMReinstalled, EmailVMRescueOn, EmailVMRescueOff} {
+		d, ok := EmailTemplateDefFor(key)
+		require.True(t, ok, key)
+		require.True(t, d.Optional, key)
+		r := RenderEmail(d.Default, Branding{Name: "Acme"}, EmailData{Name: "Dewi", Email: "dewi@example.com", Link: d.SampleLink, Extra: d.Sample})
+		require.NotContains(t, r.Subject+r.Text, "{{", key)
+		require.Contains(t, r.Text, "web-01", key)
+	}
+
 	// Only optional emails can be switched off.
 	cfg := SMTPSettings{Templates: map[string]EmailTemplate{
 		EmailVMReady:       {Subject: "s", Body: "b", Off: true},

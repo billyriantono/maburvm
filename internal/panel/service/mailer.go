@@ -170,14 +170,15 @@ func SendMail(cfg SMTPSettings, to string, msg RenderedEmail) error {
 	return nil
 }
 
-// NotifyVMReady emails a server's owner that it has been created and is
-// running. It carries no password: when the panel generated one and is keeping
-// it, the email says where to read it; otherwise it reminds the owner they
-// chose their own. Best-effort: with no mail server set up, or the email
-// switched off, it does nothing.
-func NotifyVMReady(ctx context.Context, db *gorm.DB, vmID string) error {
+// NotifyVMOwner emails a server's owner about something that happened to it:
+// created, reinstalled, put into or taken out of rescue mode. key is the
+// template. No email ever carries a password: when the panel generated one and
+// is keeping it, the email says where to read it; otherwise it reminds the
+// owner they chose their own. Best-effort: with no mail server set up, or that
+// email switched off, it does nothing.
+func NotifyVMOwner(ctx context.Context, db *gorm.DB, vmID, key string) error {
 	cfg, ok, err := LoadSMTPSettings(db)
-	if err != nil || !ok || !cfg.Enabled(EmailVMReady) {
+	if err != nil || !ok || !cfg.Enabled(key) {
 		return err
 	}
 	var rows []struct {
@@ -220,7 +221,7 @@ func NotifyVMReady(ctx context.Context, db *gorm.DB, vmID string) error {
 		}
 		return v
 	}
-	return SendMail(cfg, r.Email, RenderEmail(cfg.Template(EmailVMReady), cfg.Brand, EmailData{
+	return SendMail(cfg, r.Email, RenderEmail(cfg.Template(key), cfg.Brand, EmailData{
 		Name: r.Name, Email: r.Email, Link: link, LogoURL: EmailLogoURL(cfg.Brand, publicURL),
 		Extra: map[string]string{
 			"server":  r.Hostname,

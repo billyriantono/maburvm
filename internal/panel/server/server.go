@@ -729,11 +729,15 @@ func (s *Server) setupMetricsRoutes() {
 	metricsHandler := handler.NewMetricsHandler(metricsService, authz.NewAuthorizer(s.db))
 	handler.RegisterMetricsRoutes(s.echo, metricsHandler, s.db)
 	handler.RegisterVMInitialPasswordRoutes(s.echo, s.db, authz.NewAuthorizer(s.db))
-	// Tell a server's owner by email when it is ready. The worker lives in a
-	// package that cannot reach the mailer, so it calls back here.
-	queue.VMCreatedHook = func(ctx context.Context, vmID string) {
-		if err := service.NotifyVMReady(ctx, s.db, vmID); err != nil {
-			slog.Default().Warn("could not send the server-ready email", "vm_id", vmID, "error", err)
+	// Tell a server's owner by email when it is ready or has been reinstalled.
+	// The worker lives in a package that cannot reach the mailer, so it calls back here.
+	queue.VMDoneHook = func(ctx context.Context, vmID string, op queue.VMOperationType) {
+		key := service.EmailVMReady
+		if op == queue.VMOpRebuild {
+			key = service.EmailVMReinstalled
+		}
+		if err := service.NotifyVMOwner(ctx, s.db, vmID, key); err != nil {
+			slog.Default().Warn("could not email the server's owner", "vm_id", vmID, "email", key, "error", err)
 		}
 	}
 }
