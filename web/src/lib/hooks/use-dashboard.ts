@@ -130,3 +130,63 @@ export function useMyDashboard() {
     refetchInterval: 30000,
   })
 }
+
+// --- The staff VM list ---
+
+export interface FleetVM {
+  id: string
+  hostname: string
+  status: string
+  suspended: boolean
+  rescue_mode: boolean
+  cpu: number
+  ram_mb: number
+  disk_gb: number
+  created_at: string
+  owner_id: string
+  owner_email: string
+  node_id: string
+  node_name: string
+  node_status: string
+  system: string
+  ip: string
+  /** The newest reading from the last three minutes; null when there is none. */
+  cpu_now: number | null
+  memory_now: number | null
+}
+
+export interface FleetVMsParams {
+  search: string
+  status: string
+  node: string
+  sort: string
+  page: number
+  pageSize: number
+}
+
+export interface FleetVMs {
+  vms: FleetVM[]
+  /** How many VMs match the search, node and state. */
+  total: number
+  page: number
+  page_size: number
+  /** How many match the search and node in any state, and in each. */
+  all: number
+  by_status: Record<string, number>
+}
+
+export function useFleetVMs(p: FleetVMsParams) {
+  return useQuery<FleetVMs>({
+    // Under the VM list key, which the live status stream refreshes when a VM changes state.
+    queryKey: ['vms', 'list', 'fleet', p],
+    queryFn: async () => {
+      const response = await api.get<FleetVMs>('/api/v1/dashboard/vms', {
+        params: { search: p.search, status: p.status, node: p.node, sort: p.sort, page: p.page, page_size: p.pageSize },
+      })
+      return response.data.data
+    },
+    // Keep the rows on screen while the next page or search loads.
+    placeholderData: (previous) => previous,
+    refetchInterval: 30000,
+  })
+}

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -95,6 +96,43 @@ type dashMineVM struct {
 	// The last hour, one point a minute, oldest first. Empty while the VM is off.
 	CPUSeries []float64 `json:"cpu_series" gorm:"-"`
 	MemoryNow *float64  `json:"memory_now" gorm:"-"`
+}
+
+// dashVMRow is one line of the staff VM list: who owns the VM, where it runs,
+// how to reach it and what it is doing now, so a VM can be found by any of them.
+type dashVMRow struct {
+	ID         string    `json:"id" gorm:"column:id"`
+	Hostname   string    `json:"hostname" gorm:"column:hostname"`
+	Status     string    `json:"status" gorm:"column:status"`
+	Suspended  bool      `json:"suspended" gorm:"column:suspended"`
+	RescueMode bool      `json:"rescue_mode" gorm:"column:rescue_mode"`
+	CPU        int       `json:"cpu" gorm:"column:cpu"`
+	RAMMB      int       `json:"ram_mb" gorm:"column:rammb"`
+	DiskGB     int       `json:"disk_gb" gorm:"column:diskgb"`
+	CreatedAt  time.Time `json:"created_at" gorm:"column:created_at"`
+	OwnerID    string    `json:"owner_id" gorm:"column:owner_id"`
+	OwnerEmail string    `json:"owner_email" gorm:"column:owner_email"`
+	NodeID     string    `json:"node_id" gorm:"column:node_id"`
+	NodeName   string    `json:"node_name" gorm:"column:node_name"`
+	NodeStatus string    `json:"node_status" gorm:"column:node_status"`
+	System     string    `json:"system" gorm:"column:system"`
+	IP         string    `json:"ip" gorm:"column:ip"`
+	// The newest reading from the last three minutes; nil when there is none.
+	CPUNow *float64 `json:"cpu_now" gorm:"column:cpu_now"`
+	MemNow *float64 `json:"memory_now" gorm:"column:mem_now"`
+}
+
+// How the staff VM list may be ordered. The key comes from the request; the
+// SQL never does.
+var dashVMOrder = map[string]string{
+	"name":    "lower(v.hostname)",
+	"newest":  "v.created_at DESC",
+	"oldest":  "v.created_at",
+	"cpu":     "m.cpu_usage DESC NULLS LAST, lower(v.hostname)",
+	"memory":  "(v.resources->>'ram')::int DESC, lower(v.hostname)",
+	"owner":   "lower(coalesce(u.email, '')), lower(v.hostname)",
+	"node":    "lower(coalesce(n.name, '')), lower(v.hostname)",
+	"address": "ip.addr NULLS LAST, lower(v.hostname)",
 }
 
 // RegisterDashboardRoutes wires both dashboard endpoints.
@@ -204,6 +242,67 @@ func RegisterDashboardRoutes(e *echo.Echo, db *gorm.DB) {
 		}})
 	}, auth, middleware.RequirePermission("admin:access"))
 
+	// The staff VM list: searched, filtered, ordered and paged by the database,
+	// so a VM is found by name, owner, address or id wherever it sits.
+	e.GET("/api/v1/dashboard/vms", func(c echo.Context) error {
+		q := db.WithContext(c.Request().Context())
+		search := strings.TrimSpace(c.QueryParam("search"))
+		status := c.QueryParam("status")
+		node := c.QueryParam("node")
+		order, ok := dashVMOrder[c.QueryParam("sort")]
+		if !ok {
+			order = dashVMOrder["name"]
+		}
+		size := clampInt(c.QueryParam("page_size"), 25, 5, 100)
+		page := clampInt(c.QueryParam("page"), 1, 1, 100000)
+
+		const from = `FROM vms v
+			LEFT JOIN users u ON u.id = v.user_id
+			LEFT JOIN nodes n ON n.id = v.node_id
+			LEFT JOIN os_templates t ON t.id = v.os_template_id
+			LEFT JOIN LATERAL (SELECT host(ip_address) AS addr FROM networks WHERE vm_id = v.id AND deleted_at IS NULL ORDER BY created_at LIMIT 1) ip ON true
+			LEFT JOIN LATERAL (SELECT cpu_usage, memory_usage FROM vm_metrics WHERE vm_id = v.id AND recorded_at > now() - interval '3 minutes' ORDER BY recorded_at DESC LIMIT 1) m ON true
+			WHERE v.deleted_at IS NULL
+			AND (@search = '' OR v.hostname ILIKE @like OR u.email ILIKE @like OR v.id::text ILIKE @like
+				OR EXISTS (SELECT 1 FROM networks x WHERE x.vm_id = v.id AND x.deleted_at IS NULL AND host(x.ip_address) LIKE @like))
+			AND (@node = '' OR v.node_id::text = @node)`
+		// "suspended" is a flag beside the power state, so it is filtered on its own.
+		const byStatus = ` AND (@status = '' OR (@status = 'suspended' AND v.suspended) OR (@status <> 'suspended' AND v.status::text = @status AND NOT v.suspended))`
+		args := map[string]interface{}{"search": search, "like": likePattern(search), "node": node, "status": status}
+
+		rows := []dashVMRow{}
+		if err := q.Raw(`SELECT v.id, v.hostname, v.status::text AS status, v.suspended, coalesce(v.rescue_mode, false) AS rescue_mode,
+				(v.resources->>'cpu')::int AS cpu, (v.resources->>'ram')::int AS rammb, (v.resources->>'disk')::int AS diskgb,
+				v.created_at, v.user_id::text AS owner_id, coalesce(u.email, '') AS owner_email,
+				v.node_id::text AS node_id, coalesce(n.name, '') AS node_name, coalesce(n.status::text, '') AS node_status,
+				coalesce(t.name, '') AS system, coalesce(ip.addr, '') AS ip, m.cpu_usage AS cpu_now, m.memory_usage AS mem_now
+			`+from+byStatus+` ORDER BY `+order+` LIMIT @limit OFFSET @offset`,
+			mergeArgs(args, map[string]interface{}{"limit": size, "offset": (page - 1) * size})).Scan(&rows).Error; err != nil {
+			return fail(c, err)
+		}
+		// How many VMs match the search and node, in each state, for the filter.
+		var counts []struct {
+			Status string `gorm:"column:status"`
+			N      int64  `gorm:"column:n"`
+		}
+		if err := q.Raw(`SELECT CASE WHEN v.suspended THEN 'suspended' ELSE v.status::text END AS status, count(*) AS n `+from+` GROUP BY 1`, args).Scan(&counts).Error; err != nil {
+			return fail(c, err)
+		}
+		byState := map[string]int64{}
+		var all, total int64
+		for _, cnt := range counts {
+			byState[cnt.Status] = cnt.N
+			all += cnt.N
+		}
+		total = all
+		if status != "" {
+			total = byState[status]
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{
+			"vms": rows, "total": total, "page": page, "page_size": size, "all": all, "by_status": byState,
+		}})
+	}, auth, middleware.RequirePermission("admin:access"))
+
 	e.GET("/api/v1/dashboard/mine", func(c echo.Context) error {
 		user, ok := middleware.GetUserContext(c)
 		if !ok {
@@ -260,4 +359,15 @@ func RegisterDashboardRoutes(e *echo.Echo, db *gorm.DB) {
 
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{"vms": vms}})
 	}, auth, middleware.RequirePermission("vm:read"))
+}
+
+func mergeArgs(a, b map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(a)+len(b))
+	for k, v := range a {
+		out[k] = v
+	}
+	for k, v := range b {
+		out[k] = v
+	}
+	return out
 }
