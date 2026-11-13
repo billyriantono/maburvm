@@ -34,6 +34,7 @@ import { useVMDisks, useAttachDisk, useDetachDisk } from "@/lib/hooks/use-disks"
 import { useVMActivity } from "@/lib/hooks/use-audit-logs"
 import { VNCConsole } from "@/components/vnc-console"
 import { VMTelemetry } from "@/components/vm-telemetry"
+import { OSLogoTile } from "@/components/os-icon"
 import type { Snapshot, Backup, FirewallRule } from "@/types"
 import { useConfirm } from "@/components/confirm-provider"
 import { StatusBadge, useVMTransitions } from "@/components/status-badge"
@@ -1560,7 +1561,10 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
           )}
           <div>
             <dt className="text-xs text-muted-foreground">System</dt>
-            <dd className="font-medium">{templates?.find((t) => t.id === vm.os_template_id)?.name || "Unknown"}</dd>
+            <dd className="flex items-center gap-2 font-medium">
+              <OSLogoTile name={templates?.find((t) => t.id === vm.os_template_id)?.name} className="h-5 w-5 rounded" />
+              {templates?.find((t) => t.id === vm.os_template_id)?.name || "Unknown"}
+            </dd>
           </div>
           {isAdmin ? (
             <div>

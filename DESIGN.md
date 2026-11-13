@@ -121,3 +121,8 @@ data arrives. Nothing loops for decoration. All of it stops under
 
 Controls are labelled in words. An icon may accompany a label in navigation;
 it never replaces one.
+
+An operating system is shown with its own mark on a tile of its own colour,
+beside its name: it is how people recognise a system at a glance, and it is
+the system's identity, not ours. A system the panel cannot identify gets the
+plain penguin on grey.

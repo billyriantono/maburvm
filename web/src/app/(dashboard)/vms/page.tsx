@@ -10,6 +10,7 @@ import { Meter } from "@/components/ui/meter"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { DeleteProgressDialog } from "@/components/vm-delete-progress"
 import { StatusBadge, useVMTransitions } from "@/components/status-badge"
+import { OSLogoTile } from "@/components/os-icon"
 import { useConfirm } from "@/components/confirm-provider"
 import { useCopy } from "@/lib/use-feedback"
 import { useFleetVMs, type FleetVM } from "@/lib/hooks/use-dashboard"
@@ -272,7 +273,7 @@ export default function VMsListPage() {
               return (
                 <li
                   key={vm.id}
-                  className="grid grid-cols-2 gap-x-6 gap-y-3 px-5 py-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1.1fr)_minmax(0,1.3fr)_minmax(0,1.2fr)_minmax(0,0.8fr)_9.5rem] lg:items-center"
+                  className="grid grid-cols-2 gap-x-6 gap-y-3 px-5 py-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1.2fr)_minmax(0,1.5fr)_minmax(0,0.7fr)_9.5rem] lg:items-center"
                 >
                   <div className="col-span-2 min-w-0 lg:col-span-1">
                     <Link href={`/vms/${vm.id}`} className="break-all text-base font-semibold underline-offset-4 hover:underline [font-stretch:112%]">
@@ -317,13 +318,17 @@ export default function VMsListPage() {
                     </p>
                   </div>
 
-                  <div className="min-w-0">
-                    <p className="truncate text-sm" title={vm.system}>
-                      {vm.system || "Unknown system"}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      {vm.cpu} vCPU, {Number((vm.ram_mb / 1024).toFixed(1))} GB, {vm.disk_gb} GB disk
-                    </p>
+                  <div className="flex min-w-0 items-center gap-3">
+                    {/* The system's own mark, so a row is recognised before it is read. */}
+                    <OSLogoTile name={vm.system} className="h-8 w-8" />
+                    <div className="min-w-0">
+                      <p className="truncate text-sm" title={vm.system}>
+                        {vm.system || "Unknown system"}
+                      </p>
+                      <p className="truncate text-xs text-muted-foreground">
+                        {vm.cpu} vCPU, {Number((vm.ram_mb / 1024).toFixed(1))} GB, {vm.disk_gb} GB disk
+                      </p>
+                    </div>
                   </div>
 
                   <div className="min-w-0">
