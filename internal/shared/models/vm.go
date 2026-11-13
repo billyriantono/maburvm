@@ -53,6 +53,9 @@ type VM struct {
 	// the image URL or path. Read-only here ("->") so ordinary saves never
 	// touch it; the operation worker writes it once the node confirms.
 	AttachedISO *string        `json:"attached_iso" gorm:"column:attached_iso;->"`
+	// Suspended blocks the owner from starting or changing the VM, whatever its
+	// power state. Read-only here; SetSuspended is the one writer.
+	Suspended bool `json:"suspended" gorm:"column:suspended;->"`
 	CreatedAt   time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
 	UpdatedAt   time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
 	DeletedAt   gorm.DeletedAt `json:"-" gorm:"index"`

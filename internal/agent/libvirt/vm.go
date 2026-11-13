@@ -1037,8 +1037,8 @@ func DeleteVM(uuidStr string) error {
 			return fmt.Errorf("failed to get domain XML: %w", err)
 		}
 
-		// Parse XML to find disk paths
-		diskPaths := extractDiskPaths(xmlDesc)
+		// Parse XML to find the files this VM owns
+		diskPaths := ownedDiskPaths(xmlDesc)
 
 		// Undefine the domain, taking everything attached to it with it.
 		//
@@ -1095,6 +1095,34 @@ func extractDiskPaths(xmlDesc string) []string {
 		}
 	}
 
+	return paths
+}
+
+// xmlText escapes a caller-supplied string for use as XML character data.
+func xmlText(v string) string {
+	var b strings.Builder
+	_ = xml.EscapeText(&b, []byte(v))
+	return b.String()
+}
+
+// ownedDiskPaths lists the files that belong to the VM and go away with it: its
+// disks and its own cloud-init seed. A mounted ISO is shared (the template
+// cache, or whatever path it was attached from) and must survive the delete.
+func ownedDiskPaths(xmlDesc string) []string {
+	var paths []string
+	var domain libvirtxml.Domain
+	if err := xml.Unmarshal([]byte(xmlDesc), &domain); err != nil || domain.Devices == nil {
+		return paths
+	}
+	for _, disk := range domain.Devices.Disks {
+		if disk.Source == nil || disk.Source.File == nil {
+			continue
+		}
+		path := disk.Source.File.File
+		if disk.Device == "disk" || strings.HasSuffix(path, "-seed.iso") {
+			paths = append(paths, path)
+		}
+	}
 	return paths
 }
 
@@ -1704,7 +1732,7 @@ func CreateSnapshot(uuidStr, name, description string) (*VMSnapshot, error) {
 	<name>%s</name>
 	<description>%s</description>
 	<creationTime>%d</creationTime>
-</domainsnapshot>`, name, description, time.Now().Unix())
+</domainsnapshot>`, xmlText(name), xmlText(description), time.Now().Unix())
 
 		snap, err := dom.CreateSnapshotXML(snapshotXML, libvirt.DOMAIN_SNAPSHOT_CREATE_ATOMIC)
 		if err != nil {

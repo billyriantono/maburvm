@@ -62,23 +62,6 @@ func Forbidden(c echo.Context) {
 	})
 }
 
-// vmOwner returns the owning user ID for a VM. It returns gorm.ErrRecordNotFound
-// (mapped to 404 by callers) when the VM does not exist.
-func (a *Authorizer) vmOwner(ctx context.Context, vmID string) (string, error) {
-	if a.db == nil {
-		return "", errors.New("authorizer has no database")
-	}
-	var vm models.VM
-	if err := a.db.WithContext(ctx).
-		Model(&models.VM{}).
-		Select("user_id").
-		Where("id = ?", vmID).
-		First(&vm).Error; err != nil {
-		return "", err
-	}
-	return vm.UserID, nil
-}
-
 // AuthorizeVM enforces per-resource tenant isolation for a VM-scoped request.
 // It returns true when the caller is authorized. When not, it writes the
 // appropriate response (401 if unauthenticated, 404 otherwise) and returns
@@ -93,9 +76,23 @@ func (a *Authorizer) AuthorizeVM(c echo.Context, vmID string) bool {
 	if userCtx.Role == models.RoleAdmin {
 		return true
 	}
-	ownerID, err := a.vmOwner(c.Request().Context(), vmID)
-	if err != nil || ownerID != userCtx.ID.String() {
+	var vm models.VM
+	err := errors.New("authorizer has no database")
+	if a.db != nil {
+		err = a.db.WithContext(c.Request().Context()).Model(&models.VM{}).
+			Select("user_id", "status", "suspended").Where("id = ?", vmID).First(&vm).Error
+	}
+	if err != nil || vm.UserID != userCtx.ID.String() {
 		NotFound(c)
+		return false
+	}
+	// A suspended VM is read-only to its owner: every route that changes it, or
+	// makes something out of it (clone, image, restore), is a non-GET.
+	if m := c.Request().Method; (vm.Suspended || vm.Status == models.VMStatusSuspended) && m != http.MethodGet && m != http.MethodHead {
+		_ = c.JSON(http.StatusForbidden, map[string]interface{}{
+			"error":   "Forbidden",
+			"message": "This VM is suspended. Contact support to restore service.",
+		})
 		return false
 	}
 	return true

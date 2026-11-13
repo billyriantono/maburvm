@@ -296,7 +296,10 @@ func portForwardRule(vmID string, externalPort int, internalIP string, internalP
 	if sourceCIDR != "" && sourceCIDR != "0.0.0.0/0" {
 		rule = append(rule, "-s", sourceCIDR)
 	}
+	// Only traffic addressed to the host itself. Without this the rule also
+	// rewrites packets passing through to other guests' public addresses.
 	rule = append(rule,
+		"-m", "addrtype", "--dst-type", "LOCAL",
 		"-p", protocol,
 		"--dport", strconv.Itoa(externalPort),
 		"-j", "DNAT",

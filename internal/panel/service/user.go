@@ -164,6 +164,12 @@ func (s *UserService) Register(req *RegisterRequest) (*RegisterResponse, error) 
 	}, nil
 }
 
+// ValidatePasswordStrength is the password policy for callers that have no
+// UserService at hand.
+func ValidatePasswordStrength(password string) error {
+	return (*UserService)(nil).validatePasswordStrength(password)
+}
+
 // validatePasswordStrength checks password complexity
 func (s *UserService) validatePasswordStrength(password string) error {
 	if len(password) < MinPasswordLength {

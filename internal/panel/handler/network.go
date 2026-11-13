@@ -280,6 +280,9 @@ func (h *NetworkHandler) AddPortForward(c echo.Context) error {
 			"message": "External port and internal port are required",
 		})
 	}
+	if isClientRole(c) && reservedHostPort(req.ExternalPort) {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "External port must be between 1024 and 65535 and not one the host uses"})
+	}
 
 	resp, err := h.service.AddPortForward(c.Request().Context(), vmID, networkID, &service.AddPortForwardRequest{
 		ExternalPort: req.ExternalPort,
@@ -409,6 +412,9 @@ func (h *NetworkHandler) AddVMPortForward(c echo.Context) error {
 	}
 	if req.ExternalPort == 0 || req.InternalPort == 0 {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "External port and internal port are required"})
+	}
+	if isClientRole(c) && reservedHostPort(req.ExternalPort) {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "External port must be between 1024 and 65535 and not one the host uses"})
 	}
 
 	resp, err := h.service.AddPortForwardForVM(c.Request().Context(), vmID, &service.AddPortForwardRequest{
@@ -900,6 +906,15 @@ func (h *NetworkHandler) SetAntiSpoofing(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "Anti-spoofing setting updated successfully",
 	})
+}
+
+// reservedHostPort reports whether a customer may not claim this port on the
+// node: the forward is a DNAT on the host's own addresses, so a low port or one
+// the host itself listens on (agent gRPC, libvirt, VNC/SPICE displays, libvirt
+// migration) would take the host's traffic.
+func reservedHostPort(p int) bool {
+	return p < 1024 || p > 65535 || p == 50051 || p == 16509 || p == 16514 ||
+		(p >= 5900 && p <= 6100) || (p >= 49152 && p <= 49215)
 }
 
 // RegisterNetworkRoutes registers all network routes with the Echo router

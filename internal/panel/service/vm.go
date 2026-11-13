@@ -1122,7 +1122,41 @@ func (s *VMService) GetVMStatus(ctx context.Context, vmID string) (models.VMStat
 		}
 		return "", fmt.Errorf("failed to get VM: %w", err)
 	}
+	if vm.Suspended {
+		return models.VMStatusSuspended, nil
+	}
 	return vm.Status, nil
+}
+
+// setSuspended writes the suspension flag. It is the only writer.
+func (s *VMService) setSuspended(ctx context.Context, vm *models.VM, on bool) error {
+	if err := s.db.WithContext(ctx).Model(&models.VM{}).Where("id = ?", vm.ID).Update("suspended", on).Error; err != nil {
+		return fmt.Errorf("failed to update suspension: %w", err)
+	}
+	vm.Suspended = on
+	return nil
+}
+
+// SuspendVM is the billing suspend: flag the VM, then power it off. The flag
+// goes first so the owner cannot start it again in between, and it holds
+// across node reboots, which a paused domain does not.
+func (s *VMService) SuspendVM(ctx context.Context, vmID string) error {
+	vm, err := s.vmRepo.GetByID(ctx, vmID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrVMNotFound
+		}
+		return fmt.Errorf("failed to get VM: %w", err)
+	}
+	if err := s.setSuspended(ctx, vm, true); err != nil {
+		return err
+	}
+	if vm.Status == models.VMStatusRunning || vm.Status == models.VMStatusSuspended {
+		if _, err := s.ExecuteLifecycleCommand(ctx, &LifecycleRequest{VMID: vmID, Command: LifecycleForceStop}); err != nil {
+			return fmt.Errorf("VM flagged suspended but could not be powered off: %w", err)
+		}
+	}
+	return s.vmRepo.UpdateStatus(ctx, vmID, models.VMStatusSuspended)
 }
 
 func (s *VMService) GetVM(ctx context.Context, vmID string, includeAgentStatus bool) (*GetVMResponse, error) {
@@ -1401,6 +1435,10 @@ func (s *VMService) syncVMStatus(ctx context.Context, vm *models.VM, agentState 
 	default:
 		return // Don't update for unknown states
 	}
+	// A suspended VM that is powered off still reads as suspended.
+	if vm.Suspended && newStatus == models.VMStatusStopped {
+		newStatus = models.VMStatusSuspended
+	}
 
 	if vm.Status != newStatus {
 		s.logger.InfoContext(ctx, "syncing VM status",
@@ -1666,13 +1704,36 @@ func (s *VMService) ExecuteLifecycleCommand(ctx context.Context, req *LifecycleR
 		return nil, fmt.Errorf("invalid lifecycle command: %s", req.Command)
 	}
 
+	switch req.Command {
+	case LifecycleStart, LifecycleRestart:
+		if vm.Suspended {
+			return nil, fmt.Errorf("VM is suspended")
+		}
+	case LifecycleSuspend:
+		if err := s.setSuspended(ctx, vm, true); err != nil {
+			return nil, err
+		}
+	case LifecycleUnsuspend:
+		if err := s.setSuspended(ctx, vm, false); err != nil {
+			return nil, err
+		}
+	}
+
 	if err := s.ensureVMNodeActive(ctx, vm.NodeID); err != nil {
 		return nil, err
 	}
 
 	// For synchronous execution, call agent directly
 	if !req.Async {
-		return s.executeSyncLifecycle(ctx, vm, vmCommand, req)
+		resp, err := s.executeSyncLifecycle(ctx, vm, vmCommand, req)
+		if err != nil && req.Command == LifecycleUnsuspend {
+			// Suspended while powered off (billing suspend): there is nothing to
+			// resume, so boot it.
+			startReq := *req
+			startReq.Command = LifecycleStart
+			return s.executeSyncLifecycle(ctx, vm, pb.VMCommandType_VM_COMMAND_TYPE_START, &startReq)
+		}
+		return resp, err
 	}
 
 	// For async execution, enqueue job

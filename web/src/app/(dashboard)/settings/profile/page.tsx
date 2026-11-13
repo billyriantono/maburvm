@@ -179,8 +179,8 @@ export default function ProfileSettingsPage() {
         current_password: data.oldPassword,
         new_password: data.newPassword,
       })
-      toast.success("Password changed successfully!", {
-        description: "Your password has been updated. Use it next time you log in.",
+      toast.success("Password changed", {
+        description: "Other sessions were signed out. Sign in again with the new password.",
       })
       setShowPasswordForm(false)
       passwordForm.reset()

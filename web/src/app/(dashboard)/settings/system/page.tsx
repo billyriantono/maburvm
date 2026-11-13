@@ -86,7 +86,7 @@ const emailSchema = z.object({
   smtpHost: z.string().min(1, "SMTP host is required"),
   smtpPort: z.number().min(1).max(65535),
   smtpUser: z.string().min(1, "SMTP user is required"),
-  smtpPassword: z.string().min(1, "SMTP password is required"),
+  smtpPassword: z.string(), // blank keeps the saved one; the server never sends it back
   smtpFrom: z.string().email("Invalid email").or(z.literal("")),
   smtpFromName: z.string().min(1, "From name is required"),
   enableTls: z.boolean(),
@@ -994,7 +994,7 @@ export default function SystemSettingsPage() {
                       id="abuseipdbToken"
                       type="password"
                       {...apiForm.register("abuseipdbToken")}
-                      placeholder="optional"
+                      placeholder="Optional. Leave blank to keep the saved key"
                     />
                     {/* Optional on purpose: the blocklist checks need no
                         credentials and carry IP Reputation on their own. The key
@@ -1031,6 +1031,7 @@ export default function SystemSettingsPage() {
                       id="hmacSecret"
                       type={showHmacSecret ? "text" : "password"}
                       {...apiForm.register("hmacSecret")}
+                      placeholder="Leave blank to keep the saved secret"
                       className="pr-10"
                     />
                     <button
@@ -1150,6 +1151,7 @@ export default function SystemSettingsPage() {
                         id="smtpPassword"
                         type="password"
                         {...emailForm.register("smtpPassword")}
+                        placeholder="Leave blank to keep the saved password"
                         className="pl-10"
                       />
                     </div>

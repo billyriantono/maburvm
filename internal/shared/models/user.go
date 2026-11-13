@@ -28,7 +28,7 @@ type User struct {
 	// user_quotas row cannot be mistaken for a legacy user who simply has no
 	// quota row. Managed quota assignment/enforcement reads this marker.
 	QuotaMode            QuotaMode `json:"quota_mode,omitempty" gorm:"column:quota_mode;type:quota_mode;not null;default:'legacy'"`
-	TwoFactorSecret      string    `json:"two_factor_secret,omitempty" gorm:"type:varchar(255)" validate:"-"`
+	TwoFactorSecret      string    `json:"-" gorm:"type:varchar(255)" validate:"-"`
 	// TwoFactorEnabled becomes true only after Verify2FASetup confirms a TOTP
 	// code. Login gates on THIS flag, not on TwoFactorSecret presence, so an
 	// abandoned setup (secret written, never verified) can't lock the user out.
