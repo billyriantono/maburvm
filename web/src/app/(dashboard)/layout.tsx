@@ -15,6 +15,7 @@ import {
 import { Sidebar, adminPages } from "@/components/sidebar"
 import { GlobalSearch } from "@/components/global-search"
 import { Button } from "@/components/ui/button"
+import { ThemeToggle } from "@/components/theme-toggle"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -111,7 +112,7 @@ export default function DashboardLayout({
       <div className="lg:pl-64">
         {/* Top Header Bar */}
         <header className="sticky top-0 z-40 bg-card border-b">
-          <div className="flex items-center justify-between h-16 px-4 lg:px-8">
+          <div className="flex items-center justify-between h-16 pl-16 pr-4 lg:px-8">
             {/* Left: Mobile menu + Breadcrumbs placeholder */}
             <div className="flex items-center gap-4">
               {/* Breadcrumbs - shown on desktop */}
@@ -191,6 +192,8 @@ export default function DashboardLayout({
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
+
+              <ThemeToggle />
 
               {/* User Menu */}
               <DropdownMenu>

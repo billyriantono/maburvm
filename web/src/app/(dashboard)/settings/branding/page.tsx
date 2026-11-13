@@ -408,7 +408,7 @@ export default function BrandStudioPage() {
 
             <div aria-hidden="true" className="bg-background select-none pointer-events-none">
               {scene === "signin" && (
-                <div className={`${brandFont.className} flex min-h-[420px] flex-col overflow-hidden bg-[color-mix(in_oklab,hsl(var(--primary))_5%,white)]`}>
+                <div className={`${brandFont.className} flex min-h-[420px] flex-col overflow-hidden bg-[color-mix(in_oklab,hsl(var(--primary))_5%,hsl(var(--card)))]`}>
                   <div className="flex items-center justify-between gap-4 px-6 pt-5">
                     <div className="flex items-center gap-2 min-w-0">
                       {/* eslint-disable-next-line @next/next/no-img-element */}

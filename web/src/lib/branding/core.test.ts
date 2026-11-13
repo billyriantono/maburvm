@@ -14,8 +14,10 @@ describe("branding core", () => {
     expect(hsl("#ff0000")).toBe("0 100% 50%")
     expect(hsl("#ffffff")).toBe("0 0% 100%")
   })
-  it("falls back to the neutral for a bad colour", () => {
-    expect(themeVars({ accent: "red" })["--primary"]).toBe(hsl("#18181b"))
+  it("leaves the stylesheet's colours alone for a bad or missing colour", () => {
+    expect(themeVars({ accent: "red" })).toEqual({})
+    expect(themeVars({ accent: "" })).toEqual({})
+    expect(themeVars({ accent: "#14674a" })["--primary"]).toBe(hsl("#14674a"))
   })
   it("builds initials and a monogram", () => {
     expect(initials("Acme Cloud")).toBe("AC")

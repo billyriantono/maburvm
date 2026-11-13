@@ -49,19 +49,44 @@ const STATUSES: Record<string, { tone: Tone; label: string; busy?: boolean }> = 
   offline: { tone: "bad", label: "Offline" },
 }
 
+// Lamp colours come from the theme tokens, so they stay readable on the dark
+// faceplate as well as on a normal panel.
+const LAMPS: Record<Tone, string> = {
+  ok: "bg-success",
+  idle: "bg-muted-foreground",
+  warn: "bg-warning",
+  info: "bg-muted-foreground",
+  bad: "bg-destructive",
+}
+
 export function StatusBadge({
   status,
   transition,
   className,
+  variant = "badge",
 }: {
   status: string
   /** A requested power action the server has not reflected yet. */
   transition?: VMTransition | null
   className?: string
+  /** "lamp" drops the pill: a status light and the word, for use beside a title. */
+  variant?: "badge" | "lamp"
 }) {
   const shown = transition || status
   const cfg = STATUSES[shown] ?? { tone: "idle" as Tone, label: shown.replace(/_/g, " ") || "Unknown" }
   const tone = TONES[cfg.tone]
+  if (variant === "lamp") {
+    return (
+      <span className={cn("inline-flex items-center gap-2 text-sm font-semibold capitalize text-foreground", className)}>
+        {cfg.busy ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+        ) : (
+          <span className={cn("h-2.5 w-2.5 rounded-full", LAMPS[cfg.tone])} aria-hidden="true" />
+        )}
+        {cfg.label}
+      </span>
+    )
+  }
   return (
     <span
       className={cn(

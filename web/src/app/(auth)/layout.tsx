@@ -13,7 +13,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
 
   return (
     <div
-      className={`${brandFont.className} min-h-screen flex flex-col overflow-hidden text-foreground bg-[color-mix(in_oklab,hsl(var(--primary))_5%,white)]`}
+      className={`${brandFont.className} min-h-screen flex flex-col overflow-hidden text-foreground bg-[color-mix(in_oklab,hsl(var(--primary))_5%,hsl(var(--card)))]`}
     >
       <header className="flex flex-wrap items-center justify-between gap-x-8 gap-y-3 px-6 pt-7 sm:px-10 lg:px-16 lg:pt-8">
         <div className="flex items-center gap-3 min-w-0">

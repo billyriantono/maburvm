@@ -27,8 +27,9 @@ export const DEFAULT_BRANDING: Branding = {
   footer_text: "",
 }
 
-/** The built-in neutral used when the operator has not picked a colour. */
-export const NEUTRAL_ACCENT = "#18181b"
+/** The built-in colour used when the operator has not picked one. Matches
+ *  --primary in globals.css. */
+export const NEUTRAL_ACCENT = "#1f4fd8"
 
 export function accentOf(b: Pick<Branding, "accent">): string {
   return /^#[0-9a-f]{6}$/i.test(b.accent) ? b.accent.toLowerCase() : NEUTRAL_ACCENT
@@ -82,8 +83,10 @@ export function hsl(hex: string): string {
   return `${Math.round(h)} ${Math.round(s * 100)}% ${Math.round(l * 100)}%`
 }
 
-/** CSS variables that recolour the whole interface. */
+/** CSS variables that recolour the whole interface. Empty when the operator
+ *  has not picked a colour, so the stylesheet's own light and dark values apply. */
 export function themeVars(b: Pick<Branding, "accent">): Record<string, string> {
+  if (!/^#[0-9a-f]{6}$/i.test(b.accent)) return {}
   const accent = accentOf(b)
   return {
     "--primary": hsl(accent),
