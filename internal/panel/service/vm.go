@@ -1074,7 +1074,7 @@ type GetVMResponse struct {
 	Status   *pb.VMStatusResponse `json:"agent_status,omitempty"`
 	VNC      *VNCConfig           `json:"vnc,omitempty"`
 	// IPv6 is the VM's delegated routed prefix, nil when it has none.
-	IPv6 *models.VMIPv6Prefix `json:"ipv6,omitempty"`
+	IPv6 *VMIPv6 `json:"ipv6,omitempty"`
 }
 
 // GetVM retrieves a VM by ID with details and status
@@ -1240,7 +1240,7 @@ func (s *VMService) GetVM(ctx context.Context, vmID string, includeAgentStatus b
 		}
 	}
 	if s.ipamService != nil {
-		response.IPv6, _ = s.ipamService.GetVMIPv6Prefix(ctx, vm.ID)
+		response.IPv6, _ = s.ipamService.GetVMIPv6(ctx, vm.ID)
 	}
 
 	// Get agent status if requested and the VM is in a stable state. Skip while

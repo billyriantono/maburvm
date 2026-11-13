@@ -956,7 +956,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const assignIP = useAssignVMIP(vmId)
   const releaseIP = useReleaseVMIP(vmId)
   const [assignIPOpen, setAssignIPOpen] = useState(false)
-  // Routed IPv6 (/64 per VM) — only pools that delegate, on this VM's node.
+  // IPv6: a routed prefix or one address, from a pool on this VM's node.
   const assignIPv6 = useAssignVMIPv6(vmId)
   const releaseIPv6 = useReleaseVMIPv6(vmId)
   const [assignIPv6Open, setAssignIPv6Open] = useState(false)
@@ -2330,13 +2330,13 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
             </div>
 
             {/* Routed IPv6. Customers see it only when they have a prefix. */}
-            {(isAdmin || vm.ipv6_prefix) && (
+            {(isAdmin || vm.ipv6_address) && (
             <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
                   <Network className="w-5 h-5" />IPv6
                 </h2>
-                {isAdmin && (vm.ipv6_prefix ? (
+                {isAdmin && (vm.ipv6_address ? (
                   <Button
                     type="button"
                     size="sm"
@@ -2345,30 +2345,30 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                     disabled={releaseIPv6.isPending}
                     onClick={async () => {
                       const ok = await confirm({
-                        title: `Release ${vm.ipv6_prefix}?`,
+                        title: `Release ${vm.ipv6_prefix || vm.ipv6_address}?`,
                         description:
-                          "The prefix returns to its pool and the node stops routing it. The guest's IPv6 address is removed from its network configuration; a guest without a responsive guest agent is rebooted to apply that.",
-                        confirmLabel: "Release prefix",
+                          "It returns to its pool and the node stops carrying it. The guest's IPv6 address is removed from its network configuration; a guest without a responsive guest agent is rebooted to apply that.",
+                        confirmLabel: "Release IPv6",
                         destructive: true,
                         action: () => releaseIPv6.mutateAsync(),
                       })
                       if (!ok) return
-                      toast.success("IPv6 prefix released")
+                      toast.success("IPv6 released")
                     }}
                   >
                     <Trash2 className="w-4 h-4 mr-1" />Release
                   </Button>
                 ) : (
                   <Button type="button" size="sm" variant="outline" onClick={() => setAssignIPv6Open(true)}>
-                    <Plus className="w-4 h-4 mr-1" />Assign a prefix
+                    <Plus className="w-4 h-4 mr-1" />Assign IPv6
                   </Button>
                 ))}
               </div>
-              {vm.ipv6_prefix ? (
+              {vm.ipv6_address ? (
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div className="p-4 border">
-                    <span className="text-xs font-medium text-muted-foreground block">Prefix</span>
-                    <span className="text-sm font-mono font-medium break-all">{vm.ipv6_prefix}</span>
+                    <span className="text-xs font-medium text-muted-foreground block">{vm.ipv6_prefix ? "Routed prefix" : "Kind"}</span>
+                    <span className={`text-sm font-medium break-all ${vm.ipv6_prefix ? "font-mono" : ""}`}>{vm.ipv6_prefix || "One address on a shared subnet"}</span>
                   </div>
                   <div className="p-4 border">
                     <span className="text-xs font-medium text-muted-foreground block">Address</span>
@@ -2381,7 +2381,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                 </div>
               ) : (
                 <div className="border border-dashed border-gray-300 p-6 text-center text-sm font-medium text-muted-foreground">
-                  No IPv6 prefix delegated
+                  No IPv6 assigned
                 </div>
               )}
             </div>
@@ -2852,11 +2852,11 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
       <Dialog open={assignIPv6Open} onOpenChange={setAssignIPv6Open}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Assign an IPv6 prefix to {vm.hostname}</DialogTitle>
+            <DialogTitle>Assign IPv6 to {vm.hostname}</DialogTitle>
             <DialogDescription>
-              The next free prefix of the pool is routed to this VM. Its size is set on the pool. The guest is given the prefix&apos;s ::1
-              with fe80::1 as its gateway, and the firewall rules that apply to its IPv4 address apply to
-              the whole prefix.
+              Depending on the pool, the VM gets a routed prefix of its own (the guest takes its ::1, with fe80::1 as
+              gateway) or one address from a shared subnet (with that subnet&apos;s router as gateway). The firewall rules
+              on its IPv4 address apply to its IPv6 as well.
             </DialogDescription>
           </DialogHeader>
 
@@ -2868,16 +2868,16 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
               value={assignIPv6PoolID}
               onChange={(e) => setAssignIPv6PoolID(e.target.value)}
             >
-              <option value="">Select a delegating IPv6 pool</option>
+              <option value="">Choose an IPv6 pool</option>
               {(ipPools ?? [])
-                .filter((p) => p.family === "ipv6" && p.delegated_prefix_len)
+                .filter((p) => p.family === "ipv6")
                 .filter((p) => {
                   const bound = p.node_ids && p.node_ids.length > 0 ? p.node_ids : p.node_id ? [p.node_id] : []
                   return bound.length === 0 || bound.includes(vm.node_id)
                 })
                 .map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.name} ({p.cidr} → /{p.delegated_prefix_len} per VM)
+                    {p.name} ({p.cidr}: {p.delegated_prefix_len ? `a routed /${p.delegated_prefix_len}` : "one address"})
                   </option>
                 ))}
             </select>

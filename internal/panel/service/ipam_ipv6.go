@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"net"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/maburvm/panel/internal/shared/models"
@@ -16,7 +17,7 @@ import (
 
 var (
 	ErrPoolNotDelegated          = errors.New("ip pool does not delegate prefixes per VM")
-	ErrVMAlreadyHasIPv6Prefix    = errors.New("VM already has an IPv6 prefix")
+	ErrVMAlreadyHasIPv6Prefix    = errors.New("this VM already has IPv6; release it before assigning another")
 	ErrNoAvailableIPv6Prefix     = errors.New("no free IPv6 prefix left in pool")
 	ErrInvalidDelegatedPrefixLen = errors.New("the per-VM prefix must be smaller than the pool and one of /48, /52, /56, /60, /64, /80, /96 or /112")
 )
@@ -321,4 +322,57 @@ func insertSorted(s []int, v int) []int {
 	copy(s[i+1:], s[i:])
 	s[i] = v
 	return s
+}
+
+// VMIPv6 is a VM's IPv6, whichever way its pool hands it out: a routed prefix
+// of its own (Prefix set, gateway fe80::1 on the node), or one address from a
+// subnet shared with other VMs (OnLink, with the subnet's real gateway).
+type VMIPv6 struct {
+	Prefix  string `json:"prefix,omitempty"`
+	Address string `json:"address"` // with its length, e.g. 2001:db8:30::15/64
+	Gateway string `json:"gateway"`
+	OnLink  bool   `json:"on_link"`
+}
+
+// onLinkIPv6 returns the VM's address from a shared IPv6 subnet, or nil.
+func onLinkIPv6(ctx context.Context, db *gorm.DB, vmID string) (*VMIPv6, error) {
+	var row struct {
+		Address string
+		CIDR    string `gorm:"column:cidr"`
+		Gateway string
+	}
+	err := db.WithContext(ctx).Table("ip_addresses AS a").
+		Select("CAST(a.address AS TEXT) AS address, CAST(p.cidr AS TEXT) AS cidr, COALESCE(CAST(p.gateway AS TEXT), '') AS gateway").
+		Joins("JOIN ip_pools p ON p.id = a.pool_id").
+		Where("a.vm_id = ? AND a.family = ? AND a.deleted_at IS NULL AND p.delegated_prefix_len IS NULL", vmID, models.IPFamilyIPv6).
+		Order("a.address").Limit(1).Scan(&row).Error
+	if err != nil || row.Address == "" {
+		return nil, err
+	}
+	_, subnet, perr := net.ParseCIDR(row.CIDR)
+	if perr != nil {
+		return nil, fmt.Errorf("pool CIDR %q is not valid", row.CIDR)
+	}
+	ones, _ := subnet.Mask.Size()
+	host := strings.SplitN(row.Address, "/", 2)[0]
+	// An inet column prints with its mask ("…::1/128"); a gateway is a bare address.
+	gateway := strings.SplitN(row.Gateway, "/", 2)[0]
+	return &VMIPv6{Address: fmt.Sprintf("%s/%d", host, ones), Gateway: gateway, OnLink: true}, nil
+}
+
+// vmIPv6 returns the VM's IPv6 in either form, or nil when it has none.
+func vmIPv6(ctx context.Context, db *gorm.DB, vmID string) (*VMIPv6, error) {
+	p, err := vmIPv6Prefix(ctx, db, vmID)
+	if err != nil {
+		return nil, err
+	}
+	if p != nil {
+		return &VMIPv6{Prefix: p.Prefix, Address: p.Address(), Gateway: models.IPv6LinkLocalGateway}, nil
+	}
+	return onLinkIPv6(ctx, db, vmID)
+}
+
+// GetVMIPv6 is vmIPv6 for callers outside the package.
+func (s *IPAMService) GetVMIPv6(ctx context.Context, vmID string) (*VMIPv6, error) {
+	return vmIPv6(ctx, s.db, vmID)
 }

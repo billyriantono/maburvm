@@ -52,8 +52,10 @@ export interface VM {
   console_enabled?: boolean;
   /** Service suspended by billing or staff: the owner can view but not change it. */
   suspended?: boolean;
-  /** Routed IPv6 delegated to the VM (a /64); absent when it has none. The
-   *  guest uses ipv6_address with ipv6_gateway (the node's fe80::1). */
+  /** The VM's IPv6. With ipv6_prefix it is a routed network of its own and
+   *  the guest uses ipv6_address with fe80::1 as gateway; without it,
+   *  ipv6_address is one address on a shared subnet and ipv6_gateway is that
+   *  subnet's router. All absent when the VM has no IPv6. */
   ipv6_prefix?: string;
   ipv6_address?: string;
   ipv6_gateway?: string;

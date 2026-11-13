@@ -778,10 +778,12 @@ func (s *NetworkService) enqueueNetworkConfig(ctx context.Context, vm *models.VM
 	// The VM's routed IPv6 prefix rides on the primary interface in the same
 	// job: the agent applies one interface set per job, so a separate v6 job
 	// would clobber the v4 one (and vice versa).
-	if p, err := vmIPv6Prefix(ctx, s.db, vm.ID); err == nil && p != nil {
-		params.IPv6Prefix = p.Prefix
-		params.IPv6Address = p.Address()
-		params.IPv6Gateway = models.IPv6LinkLocalGateway
+	if v6, err := vmIPv6(ctx, s.db, vm.ID); err == nil && v6 != nil {
+		// A routed prefix has a Prefix; an address on a shared subnet has none
+		// and comes with that subnet's real gateway.
+		params.IPv6Prefix = v6.Prefix
+		params.IPv6Address = v6.Address
+		params.IPv6Gateway = v6.Gateway
 	}
 	if others, err := s.networkRepo.ListByVMID(ctx, vm.ID); err == nil {
 		for _, o := range others {
