@@ -759,6 +759,7 @@ func (s *Server) setupBackupRoutes() {
 	handler.RegisterBackupRoutes(s.echo, backupHandler, s.db)
 	handler.RegisterSearchRoutes(s.echo, s.db)
 	handler.RegisterOpsRoutes(s.echo, s.db, s.riverClient, s.queueConfig)
+	handler.RegisterDashboardRoutes(s.echo, s.db)
 }
 
 // setupImportRoutes configures VM import routes

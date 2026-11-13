@@ -2,15 +2,14 @@
 
 import { useState } from "react"
 
-// Series colours. Blue #3b82f6 / emerald #059669 were validated together against
-// both the light and dark chart surfaces: they clear the lightness band, the
-// chroma floor, colour-vision separation (ΔE 22.7 deutan) and 3:1 contrast in
-// both modes — which is why one pair serves both rather than a mode switch.
+// Series colours come from the theme: --chart-1 for in, --chart-2 for out, the
+// same pair every chart in the panel uses (see DESIGN.md). They were checked
+// together for colour-blind separation on both panel colours.
 //
 // Identity is never carried by colour alone: each series is directly labelled
 // with its current value, so the chart still reads in greyscale or print.
-const RX_COLOR = "#3b82f6"
-const TX_COLOR = "#059669"
+const RX_COLOR = "var(--chart-1)"
+const TX_COLOR = "var(--chart-2)"
 
 export interface BandwidthPoint {
   rx: number
