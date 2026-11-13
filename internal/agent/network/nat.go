@@ -206,6 +206,14 @@ func (nm *NATManager) RemoveNAT(vmID string, internalIP string) error {
 	nm.mu.Lock()
 	defer nm.mu.Unlock()
 
+	// Port forwards go first and are found by their tag, not rebuilt from
+	// memory: the deletes below return early when a rule they expect is not
+	// there (a VM on a public bridge has no MASQUERADE rule), and that used to
+	// leave every forward in place. Reading the chain also catches forwards
+	// added before the agent last restarted.
+	nm.removeTaggedPortForwards(vmID)
+	delete(nm.portForwards, vmID)
+
 	// Remove MASQUERADE rule
 	rule := []string{"-s", internalIP, "-j", "MASQUERADE", "-m", "comment", "--comment", fmt.Sprintf("maburvm-vm-%s", vmID)}
 	if err := nm.ipt.Delete(NATTable, PostroutingChain, rule...); err != nil {
@@ -239,6 +247,30 @@ func (nm *NATManager) RemoveNAT(vmID string, internalIP string) error {
 	}
 
 	return nil
+}
+
+// removeTaggedPortForwards deletes every DNAT rule carrying this VM's
+// port-forward comment. Best-effort; assumes the lock is held.
+func (nm *NATManager) removeTaggedPortForwards(vmID string) {
+	rules, err := nm.ipt.List(NATTable, MaburVMChain)
+	if err != nil {
+		log.Printf("[NATManager] WARNING: could not list port forwards for %s: %v", vmID, err)
+		return
+	}
+	tag := fmt.Sprintf("maburvm-vm-%s-port-", vmID)
+	for _, rule := range rules {
+		if !strings.Contains(rule, tag) {
+			continue
+		}
+		// "-A CHAIN <spec>": the spec has no quoted spaces, the tag is one word.
+		parts := strings.SplitN(rule, " ", 3)
+		if len(parts) < 3 {
+			continue
+		}
+		if err := nm.ipt.Delete(NATTable, MaburVMChain, strings.Fields(parts[2])...); err != nil {
+			log.Printf("[NATManager] WARNING: could not remove port forward for %s: %v", vmID, err)
+		}
+	}
 }
 
 // AddPortForward adds a port forwarding rule (DNAT)
