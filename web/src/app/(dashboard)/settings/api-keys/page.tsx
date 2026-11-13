@@ -1,5 +1,6 @@
 "use client"
 
+import { useBranding } from "@/lib/branding/provider"
 import { useState } from "react"
 import { toast } from "sonner"
 import {
@@ -44,6 +45,7 @@ function isExpired(key: APIKey): boolean {
 }
 
 export default function APIKeysSettingsPage() {
+  const { branding } = useBranding()
   const { data: keys, isLoading, error, refetch } = useAPIKeys()
   const createKey = useCreateAPIKey()
   const revokeKey = useRevokeAPIKey()
@@ -163,7 +165,7 @@ export default function APIKeysSettingsPage() {
               <KeyRound className="w-12 h-12 text-muted-foreground/40 mx-auto mb-3" />
               <p className="font-medium">No API keys yet</p>
               <p className="text-sm text-muted-foreground mt-1 mb-4">
-                Create a key to access the MaburVM API from scripts and CI.
+                Create a key to access the {branding.name} API from scripts and CI.
               </p>
               <Button onClick={() => setShowCreate(true)}>
                 <Plus className="w-4 h-4 mr-2" />

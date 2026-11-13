@@ -164,6 +164,13 @@ func (s *Server) SetupRoutes() {
 	// API v1 routes
 	v1 := s.echo.Group("/api/v1")
 
+	// Public: the sign-in page needs the operator's name, logo and colour
+	// before anyone is logged in. Holds nothing secret.
+	v1.GET("/branding", func(c echo.Context) error {
+		c.Response().Header().Set("Cache-Control", "public, max-age=60")
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": service.LoadBranding(s.db.WithContext(c.Request().Context()))})
+	})
+
 	// Auth routes (no auth required)
 	s.setupAuthRoutes(v1)
 
@@ -1534,7 +1541,7 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		if err := s.db.WithContext(c.Request().Context()).
 			// The nameserver connection holds a credential and has its own
 			// endpoints below that never return it.
-			Raw("SELECT section, data::text AS data FROM system_settings WHERE section <> ?", service.DNSProviderSection).Scan(&rows).Error; err != nil {
+			Raw("SELECT section, data::text AS data FROM system_settings WHERE section NOT IN (?, ?)", service.DNSProviderSection, service.BrandingSection).Scan(&rows).Error; err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to load settings"})
 		}
 		out := map[string]json.RawMessage{}
@@ -1552,6 +1559,9 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 			if section == service.DNSProviderSection {
 				return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "The DNS provider is saved through its own form"})
 			}
+			if section == service.BrandingSection {
+				return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Branding is saved through its own form"})
+			}
 			var stored string
 			_ = s.db.WithContext(c.Request().Context()).
 				Raw("SELECT data::text FROM system_settings WHERE section = ?", section).Scan(&stored).Error
@@ -1565,6 +1575,21 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 			}
 		}
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "Settings saved"})
+	})
+
+	// Branding (admin-only save). Reading it is public; see /api/v1/branding.
+	sys.PUT("/branding", func(c echo.Context) error {
+		var b service.Branding
+		if err := c.Bind(&b); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Invalid request body"})
+		}
+		if err := b.Normalize(); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
+		}
+		if err := service.SaveBranding(s.db.WithContext(c.Request().Context()), &b); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to save branding"})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": service.LoadBranding(s.db.WithContext(c.Request().Context()))})
 	})
 
 	// Nameserver connection (admin-only). The API key goes in and never comes

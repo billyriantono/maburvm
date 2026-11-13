@@ -182,3 +182,11 @@
     @apply bg-muted;
   }
 }
+
+/* Sign-in page: the operator's name rises into place once, on load. */
+@keyframes brand-rise {
+  from {
+    transform: translateY(24%);
+    opacity: 0;
+  }
+}

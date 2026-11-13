@@ -1,5 +1,6 @@
 "use client"
 
+import { useBranding } from "@/lib/branding/provider"
 import { useState, useEffect } from "react"
 import { toast } from "sonner"
 import QRCode from "qrcode"
@@ -108,6 +109,7 @@ function QuotaMeter({
 }
 
 export default function ProfileSettingsPage() {
+  const { branding } = useBranding()
   // Data hook
   const { data: user, isLoading: userLoading, error: userError, refetch: refetchUser } = useCurrentUser()
   const { data: quota } = useMyQuota()
@@ -163,7 +165,8 @@ export default function ProfileSettingsPage() {
   // Render the QR for the real secret returned by the backend setup call.
   useEffect(() => {
     if (showSetupDialog && setupStep === "qr" && user && setupSecret) {
-      const otpauthUrl = `otpauth://totp/MaburVM:${user.email}?secret=${setupSecret}&issuer=MaburVM`
+      const issuer = encodeURIComponent(branding.name)
+      const otpauthUrl = `otpauth://totp/${issuer}:${user.email}?secret=${setupSecret}&issuer=${issuer}`
       QRCode.toDataURL(otpauthUrl, {
         width: 200,
         margin: 2,

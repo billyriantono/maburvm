@@ -38,6 +38,7 @@ func LoadSMTPSettings(db *gorm.DB) (cfg SMTPSettings, ok bool, err error) {
 	return SMTPSettings{
 		Host: d.SMTPHost, Port: d.SMTPPort, Username: d.SMTPUser,
 		Password: d.SMTPPassword, From: d.SMTPFrom, FromName: d.SMTPFromName,
+		BrandName: LoadBranding(db).Name,
 	}, true, nil
 }
 
@@ -66,17 +67,17 @@ func SendWelcomeEmail(cfg SMTPSettings, to, name, panelURL string) error {
 		greeting = "Hello " + name
 	}
 	if panelURL == "" {
-		panelURL = "the MaburVM panel"
+		panelURL = "the " + cfg.brand() + " panel"
 	}
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "From: %s\r\n", fromHeader)
 	fmt.Fprintf(&b, "To: %s\r\n", to)
-	b.WriteString("Subject: Welcome to MaburVM\r\n")
+	fmt.Fprintf(&b, "Subject: Welcome to %s\r\n", cfg.brand())
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: text/plain; charset=UTF-8\r\n\r\n")
 	fmt.Fprintf(&b, "%s,\r\n\r\n", greeting)
-	b.WriteString("Your MaburVM account has been created.\r\n\r\n")
+	fmt.Fprintf(&b, "Your %s account has been created.\r\n\r\n", cfg.brand())
 	fmt.Fprintf(&b, "Sign in: %s\r\n", panelURL)
 	fmt.Fprintf(&b, "Username: %s\r\n\r\n", to)
 	b.WriteString("For security, the password was set by your administrator — please change it after your first sign-in.\r\n")
@@ -120,11 +121,11 @@ func SendPasswordResetEmail(cfg SMTPSettings, to, name, resetURL string) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "From: %s\r\n", fromHeader)
 	fmt.Fprintf(&b, "To: %s\r\n", to)
-	b.WriteString("Subject: Reset your MaburVM password\r\n")
+	fmt.Fprintf(&b, "Subject: Reset your %s password\r\n", cfg.brand())
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: text/plain; charset=UTF-8\r\n\r\n")
 	fmt.Fprintf(&b, "%s,\r\n\r\n", greeting)
-	b.WriteString("We received a request to reset your MaburVM password.\r\n\r\n")
+	fmt.Fprintf(&b, "We received a request to reset your %s password.\r\n\r\n", cfg.brand())
 	fmt.Fprintf(&b, "Reset it here (valid for 1 hour): %s\r\n\r\n", resetURL)
 	b.WriteString("If you didn't request this, you can safely ignore this email — your password won't change.\r\n")
 
@@ -147,6 +148,16 @@ type SMTPSettings struct {
 	Password string
 	From     string
 	FromName string
+	// BrandName is the operator's product name used in message text.
+	BrandName string
+}
+
+// brand is the name to write in a message; never empty.
+func (c SMTPSettings) brand() string {
+	if c.BrandName == "" {
+		return DefaultBrandName
+	}
+	return c.BrandName
 }
 
 // SendTestEmail sends a short test message using the given SMTP settings. It uses
@@ -176,10 +187,10 @@ func SendTestEmail(cfg SMTPSettings, to string) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "From: %s\r\n", fromHeader)
 	fmt.Fprintf(&b, "To: %s\r\n", to)
-	b.WriteString("Subject: MaburVM SMTP test\r\n")
+	fmt.Fprintf(&b, "Subject: %s SMTP test\r\n", cfg.brand())
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: text/plain; charset=UTF-8\r\n\r\n")
-	b.WriteString("This is a test email from MaburVM. If you received it, your SMTP settings are working.\r\n")
+	fmt.Fprintf(&b, "This is a test email from %s. If you received it, your SMTP settings are working.\r\n", cfg.brand())
 
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 	var auth smtp.Auth

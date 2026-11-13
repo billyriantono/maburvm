@@ -1,5 +1,6 @@
 'use client'
 
+import { useBranding } from "@/lib/branding/provider"
 import Link from 'next/link'
 import {
   Plus, Trash2, Play, Square, RotateCw, RefreshCw, Pause, Camera,
@@ -154,6 +155,7 @@ function NodeBandwidthSection() {
 }
 
 export default function DashboardPage() {
+  const { branding } = useBranding()
   const { data: stats, isLoading, error, refetch } = useDashboardStats()
 
   if (isLoading) {
@@ -191,7 +193,7 @@ export default function DashboardPage() {
         Dashboard
       </h1>
       <p className="text-muted-foreground text-sm mb-8">
-        Welcome to MaburVM
+        Welcome to {branding.name}
       </p>
 
       {/* Quick Stats */}
