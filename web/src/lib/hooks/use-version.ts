@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api-client'
 
 export interface BuildInfo {
@@ -44,17 +44,14 @@ export function useSystemVersion() {
 }
 
 // Pushes the agent bundled with this panel to one node. Success only means the
-// node accepted and scheduled the swap; it restarts and runs a ~15s health check
-// (rolling back on failure), so the version is re-read after that window.
+// node accepted and scheduled the swap; it then restarts and runs a health
+// check (rolling back on failure). The caller watches useSystemVersion for the
+// node to report the new build.
 export function useUpdateAgent() {
-  const qc = useQueryClient()
   return useMutation<{ message: string }, Error, string>({
     mutationFn: async (nodeId) => {
       const res = await api.post(`/api/v1/system/nodes/${nodeId}/update-agent`)
       return res.data as { message: string }
-    },
-    onSuccess: () => {
-      setTimeout(() => qc.invalidateQueries({ queryKey: ['system', 'version'] }), 25_000)
     },
   })
 }
