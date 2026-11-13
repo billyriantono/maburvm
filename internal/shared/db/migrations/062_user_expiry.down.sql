@@ -1,0 +1,2 @@
+ALTER TABLE users DROP COLUMN IF EXISTS support_note;
+ALTER TABLE users DROP COLUMN IF EXISTS expires_at;

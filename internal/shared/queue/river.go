@@ -5,6 +5,7 @@ package queue
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -420,4 +421,35 @@ func (c *Client) InsertAudit(ctx context.Context, job AuditJob) (*rivertype.JobI
 
 func (c *Client) InsertNetworkConfig(ctx context.Context, job NetworkConfigJob) (*rivertype.JobInsertResult, error) {
 	return c.riverClient.Insert(ctx, job, nil)
+}
+
+// WorkerOverridesSection is the system_settings row where an operator's
+// per-queue worker counts are kept.
+const WorkerOverridesSection = "queue_workers"
+
+// LoadWorkerOverrides reads the saved per-queue worker counts; empty when
+// nothing was saved or the row cannot be read.
+func LoadWorkerOverrides(db *gorm.DB) map[string]int {
+	out := map[string]int{}
+	if db == nil {
+		return out
+	}
+	var raw string
+	if err := db.Raw("SELECT data::text FROM system_settings WHERE section = ?", WorkerOverridesSection).Scan(&raw).Error; err == nil && raw != "" {
+		_ = json.Unmarshal([]byte(raw), &out)
+	}
+	return out
+}
+
+// ApplyWorkerOverrides sets the worker counts an operator saved. Counts are
+// read once, when the panel starts: River fixes them for the life of a client.
+func (c *Config) ApplyWorkerOverrides(saved map[string]int) {
+	for name, target := range map[string]*int{
+		QueueCritical: &c.CriticalWorkers, QueueDefault: &c.DefaultWorkers,
+		QueueBatch: &c.BatchWorkers, QueueAudit: &c.AuditWorkers,
+	} {
+		if n := saved[name]; n >= 1 && n <= 200 {
+			*target = n
+		}
+	}
 }

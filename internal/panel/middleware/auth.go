@@ -203,7 +203,7 @@ func authenticateAPIKey(db *gorm.DB, token string, clientIP string) (*UserContex
 		return nil, false
 	}
 	var user models.User
-	if err := db.Where("id = ?", key.UserID).First(&user).Error; err != nil || user.DeletedAt.Valid {
+	if err := db.Where("id = ?", key.UserID).First(&user).Error; err != nil || user.DeletedAt.Valid || user.Expired() {
 		return nil, false
 	}
 	if len(user.IPWhitelist) > 0 && !isIPWhitelisted(clientIP, user.IPWhitelist) {
@@ -338,8 +338,8 @@ func RequireAuth(db *gorm.DB) echo.MiddlewareFunc {
 					})
 				}
 
-				// Check if user is soft-deleted
-				if user.DeletedAt.Valid {
+				// Check if user is soft-deleted, or a temporary account that ran out
+				if user.DeletedAt.Valid || user.Expired() {
 					return c.JSON(http.StatusUnauthorized, map[string]interface{}{
 						"error":   "Unauthorized",
 						"message": "User account is deactivated",

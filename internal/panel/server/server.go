@@ -38,10 +38,12 @@ import (
 
 // Server represents the HTTP server
 type Server struct {
-	echo          *echo.Echo
-	db            *gorm.DB
-	cfg           *config.Config
-	queueClient   *queue.Client
+	echo        *echo.Echo
+	db          *gorm.DB
+	cfg         *config.Config
+	queueClient *queue.Client
+	// queueConfig is the worker configuration the queue was started with.
+	queueConfig   *queue.Config
 	riverClient   *river.Client[pgx.Tx]
 	backupService *service.BackupService
 
@@ -756,6 +758,7 @@ func (s *Server) setupBackupRoutes() {
 	backupHandler := handler.NewBackupHandler(backupService)
 	handler.RegisterBackupRoutes(s.echo, backupHandler, s.db)
 	handler.RegisterSearchRoutes(s.echo, s.db)
+	handler.RegisterOpsRoutes(s.echo, s.db, s.riverClient, s.queueConfig)
 }
 
 // setupImportRoutes configures VM import routes
@@ -1982,7 +1985,9 @@ func Run() error {
 	}
 
 	// Initialize River queue before routes are registered so services receive a non-nil client.
-	queueClient, err := queue.NewClient(queue.DefaultConfig(databaseURL(cfg.Database)), slog.Default())
+	queueCfg := queue.DefaultConfig(databaseURL(cfg.Database))
+	queueCfg.ApplyWorkerOverrides(queue.LoadWorkerOverrides(db))
+	queueClient, err := queue.NewClient(queueCfg, slog.Default())
 	if err != nil {
 		return fmt.Errorf("failed to initialize queue: %w", err)
 	}
@@ -2007,6 +2012,7 @@ func Run() error {
 
 	// Create and start server
 	server := NewServer(db, cfg)
+	server.queueConfig = queueCfg
 	server.SetQueueClient(queueClient)
 	fmt.Printf("Panel server starting on %s:%d\n", cfg.Server.Host, cfg.Server.Port)
 

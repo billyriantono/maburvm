@@ -26,6 +26,10 @@ import {
   ShieldX,
   Palette,
   Mail,
+  ShieldCheck,
+  ListChecks,
+  FileDown,
+  Rocket,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { BrandMark, useBranding } from "@/lib/branding/provider"
@@ -49,6 +53,7 @@ const navItems = [
   { href: "/monitoring", label: "Monitoring", icon: Activity },
   { href: "/abuse", label: "Abuse", icon: ShieldAlert },
   { href: "/ip-reputation", label: "IP Reputation", icon: ShieldX },
+  { href: "/security", label: "Security", icon: ShieldCheck },
 ]
 
 // Settings navigation with sub-items
@@ -59,6 +64,9 @@ const settingsNav = [
   { href: "/settings/recipes", label: "Recipes", icon: ScrollText },
   { href: "/settings/branding", label: "Branding", icon: Palette },
   { href: "/settings/emails", label: "Emails", icon: Mail },
+  { href: "/settings/queue", label: "Job queue", icon: ListChecks },
+  { href: "/settings/export", label: "Export data", icon: FileDown },
+  { href: "/setup", label: "Setup guide", icon: Rocket },
   { href: "/settings/system", label: "System", icon: Shield },
 ]
 
