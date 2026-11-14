@@ -12,6 +12,7 @@ import {
   User as UserIcon,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { BrandMark, useBranding } from "@/lib/branding/provider"
 import type { User } from "@/types"
 
 // Client-facing navigation. Deliberately narrow: an end user only ever sees
@@ -36,8 +37,14 @@ interface ClientSidebarProps {
   user: User
 }
 
+// Every page reachable from this sidebar, for the header search and breadcrumb.
+export const clientPages: { href: string; label: string }[] = [
+  ...[...navItems, ...settingsNav].map(({ href, label }) => ({ href, label })),
+]
+
 export function ClientSidebar({ user }: ClientSidebarProps) {
   const pathname = usePathname()
+  const { branding } = useBranding()
   const isSettingsActive = pathname.startsWith("/client/settings") || pathname.startsWith("/settings")
 
   return (
@@ -45,12 +52,10 @@ export function ClientSidebar({ user }: ClientSidebarProps) {
       {/* Logo */}
       <div className="h-16 flex items-center px-6 border-b">
         <Link href="/client/dashboard" className="flex items-center gap-2">
-          <div className="w-10 h-10 bg-primary flex items-center justify-center rounded-md">
-            <Monitor className="w-6 h-6 text-primary-foreground" />
-          </div>
-          <div className="flex flex-col">
-            <span className="text-lg font-bold leading-none">
-              MaburVM
+          <BrandMark />
+          <div className="flex flex-col min-w-0">
+            <span className="text-lg font-bold leading-none truncate">
+              {branding.name}
             </span>
             <span className="text-[10px] font-medium text-muted-foreground">
               Client Area

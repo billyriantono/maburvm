@@ -231,6 +231,10 @@ func (s *UserService) Login(req *LoginRequest) (*LoginResponse, error) {
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
 		return nil, ErrInvalidCredentials
 	}
+	// A temporary account that has run out is simply not an account any more.
+	if user.Expired() {
+		return nil, ErrInvalidCredentials
+	}
 
 	// Check IP whitelist (if configured)
 	if len(user.IPWhitelist) > 0 {

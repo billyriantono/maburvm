@@ -58,9 +58,9 @@ export interface CreateBackupRequest {
 
 // CreateBackupScheduleRequest for creating backup schedules
 export interface CreateBackupScheduleRequest {
-  vm_id: string;
+  vm_id?: string;
   schedule: string;
-  storage_provider: string;
+  storage_provider?: string;
   compression?: 'gzip' | 'zstd' | 'none';
   retention_policy?: BackupRetentionPolicy;
 }

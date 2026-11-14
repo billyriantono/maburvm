@@ -24,8 +24,15 @@ import {
   Waypoints,
   ShieldAlert,
   ShieldX,
+  Palette,
+  Mail,
+  ShieldCheck,
+  ListChecks,
+  FileDown,
+  Rocket,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { BrandMark, useBranding } from "@/lib/branding/provider"
 import type { User } from "@/types"
 
 const navItems = [
@@ -46,6 +53,7 @@ const navItems = [
   { href: "/monitoring", label: "Monitoring", icon: Activity },
   { href: "/abuse", label: "Abuse", icon: ShieldAlert },
   { href: "/ip-reputation", label: "IP Reputation", icon: ShieldX },
+  { href: "/security", label: "Security", icon: ShieldCheck },
 ]
 
 // Settings navigation with sub-items
@@ -54,6 +62,11 @@ const settingsNav = [
   { href: "/settings/api-keys", label: "API Keys", icon: KeyRound },
   { href: "/settings/ssh-keys", label: "SSH Keys", icon: KeySquare },
   { href: "/settings/recipes", label: "Recipes", icon: ScrollText },
+  { href: "/settings/branding", label: "Branding", icon: Palette },
+  { href: "/settings/emails", label: "Emails", icon: Mail },
+  { href: "/settings/queue", label: "Job queue", icon: ListChecks },
+  { href: "/settings/export", label: "Export data", icon: FileDown },
+  { href: "/setup", label: "Setup guide", icon: Rocket },
   { href: "/settings/system", label: "System", icon: Shield },
 ]
 
@@ -61,23 +74,28 @@ interface SidebarProps {
   user: User
 }
 
+// Every page reachable from this sidebar, for the header search and breadcrumb.
+export const adminPages: { href: string; label: string }[] = [
+  ...[...navItems, ...settingsNav].map(({ href, label }) => ({ href, label })),
+  { href: "/audit-logs", label: "Audit log" },
+]
+
 export function Sidebar({}: SidebarProps) {
   const pathname = usePathname()
+  const { branding } = useBranding()
 
   return (
     <aside className="fixed left-0 top-0 z-50 h-screen w-64 bg-card border-r overflow-hidden">
       {/* Logo */}
       <div className="h-16 flex items-center px-6 border-b">
         <Link href="/dashboard" className="flex items-center gap-2">
-          <div className="w-10 h-10 bg-primary flex items-center justify-center rounded-md">
-            <Monitor className="w-6 h-6 text-primary-foreground" />
-          </div>
-          <div className="flex flex-col">
-            <span className="text-lg font-bold leading-none">
-              MaburVM
+          <BrandMark />
+          <div className="flex flex-col min-w-0">
+            <span className="text-lg font-bold leading-none truncate">
+              {branding.name}
             </span>
-            <span className="text-[10px] font-medium text-muted-foreground">
-              Virtualization
+            <span className="text-[10px] font-medium text-muted-foreground truncate">
+              {branding.tagline || "Virtualization"}
             </span>
           </div>
         </Link>

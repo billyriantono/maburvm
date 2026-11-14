@@ -63,6 +63,7 @@ type NetworkResponse struct {
 	IPAddress      string `json:"ip_address"`
 	BandwidthLimit int64  `json:"bandwidth_limit"`
 	VLANID         *int   `json:"vlan_id,omitempty"`
+	AntiSpoofing   bool   `json:"anti_spoofing"`
 	Gateway        string `json:"gateway,omitempty"`
 	Netmask        string `json:"netmask,omitempty"`
 	Bridge         string `json:"bridge,omitempty"`
@@ -142,6 +143,7 @@ func (h *NetworkHandler) AddNetworkInterface(c echo.Context) error {
 			VMID:           resp.Network.VMID,
 			IPAddress:      resp.Network.IPAddress,
 			BandwidthLimit: resp.Network.BandwidthLimit,
+			AntiSpoofing:   resp.Network.AntiSpoofing,
 			VLANID:         resp.Network.VLANID,
 			CreatedAt:      resp.Network.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 			UpdatedAt:      resp.Network.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
@@ -734,6 +736,7 @@ func (h *NetworkHandler) ListNetworkInterfaces(c echo.Context) error {
 			VMID:           net.VMID,
 			IPAddress:      net.IPAddress,
 			BandwidthLimit: net.BandwidthLimit,
+			AntiSpoofing:   net.AntiSpoofing,
 			VLANID:         net.VLANID,
 			Gateway:        net.Gateway,
 			Netmask:        net.Netmask,

@@ -899,6 +899,9 @@ func resolveTemplateImage(ref string) (string, error) {
 			// default path on the source node. Pull it via scp (requires this node
 			// to have root SSH access to the source node — the same node↔node trust
 			// migration uses).
+			// ponytail: assumes the default directory on the source node; a
+			// source VM in another pool is not found. Ask the source agent for
+			// the path when cross-node clone is wired up properly.
 			srcPath := filepath.Join(defaultImageDir, srcID+".qcow2")
 			dstPath := filepath.Join(templateCacheDir, "clone-"+srcID+".qcow2")
 			if err := os.MkdirAll(templateCacheDir, 0o755); err != nil {
@@ -914,7 +917,12 @@ func resolveTemplateImage(ref string) (string, error) {
 			}
 			return dstPath, nil
 		}
-		path := filepath.Join(defaultImageDir, spec+".qcow2")
+		// Ask libvirt where the source disk is; it is in whichever pool the VM
+		// was placed in, which is often not the default directory.
+		path, perr := libvirt.PrimaryDiskPath(spec)
+		if perr != nil {
+			path = filepath.Join(defaultImageDir, spec+".qcow2")
+		}
 		if _, err := os.Stat(path); err != nil {
 			return "", fmt.Errorf("source VM disk not found at %s: %w", path, err)
 		}
@@ -1362,7 +1370,13 @@ func (s *NodeAgentService) rebuildVM(req *pb.VMCommandRequest) error {
 		mac = generateMAC(req.VmId)
 	}
 
-	seedPath := filepath.Join(defaultImageDir, req.VmId+"-seed.iso")
+	// The seed sits beside the VM's disk, where create put it; writing it to
+	// the default directory left the VM booting its old seed.
+	seedDir := defaultImageDir
+	if disk, derr := libvirt.PrimaryDiskPath(req.VmId); derr == nil {
+		seedDir = filepath.Dir(disk)
+	}
+	seedPath := filepath.Join(seedDir, req.VmId+"-seed.iso")
 	if err := cloudinit.GenerateSeedISO(cloudinit.Config{
 		InstanceID:   req.VmId,
 		Hostname:     hostname,
@@ -1525,7 +1539,7 @@ func (s *NodeAgentService) RestoreDisk(ctx context.Context, req *pb.RestoreDiskR
 	}
 
 	// Download to a temp file next to the disk (same filesystem => rename is atomic).
-	tmpPath := filepath.Join(defaultImageDir, req.VmId+"-restore.qcow2")
+	tmpPath := filepath.Join(filepath.Dir(diskPath), req.VmId+"-restore.qcow2")
 	_ = os.Remove(tmpPath)
 	if err := func() error {
 		reader, err := client.Download(ctx, req.SourceKey)
@@ -1963,6 +1977,16 @@ func (s *NodeAgentService) GetVMStatus(ctx context.Context, req *pb.VMStatusRequ
 			resp.IpAddresses = ips
 		} else if _, gaIPs := queryGuestAgentInfo(vmInfo.Name); len(gaIPs) > 0 {
 			resp.IpAddresses = gaIPs
+		}
+
+		// Cumulative traffic counters: the panel's monthly bandwidth accounting
+		// reads these and nothing else. They restart from zero when the VM
+		// does; the panel treats a decrease as a restart.
+		if st, serr := libvirt.GetVMStats(req.VmId); serr == nil {
+			resp.CurrentResources = &pb.VMResourceUsage{
+				NetworkRxBytes: st.NetRXBytes,
+				NetworkTxBytes: st.NetTXBytes,
+			}
 		}
 	}
 

@@ -50,6 +50,8 @@ export interface VM {
    *  known, "" = none, otherwise the image URL or path. Detail response only. */
   attached_iso?: string | null;
   console_enabled?: boolean;
+  /** Service suspended by billing or staff: the owner can view but not change it. */
+  suspended?: boolean;
   /** Routed IPv6 delegated to the VM (a /64); absent when it has none. The
    *  guest uses ipv6_address with ipv6_gateway (the node's fe80::1). */
   ipv6_prefix?: string;

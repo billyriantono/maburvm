@@ -7,6 +7,8 @@ export interface Node {
   name: string;
   ip_address: string;
   status: NodeStatus;
+  /** No new VMs are placed on the node; the ones already there are unaffected. */
+  creation_paused?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -61,6 +63,7 @@ export interface CreateNodeRequest {
 export interface UpdateNodeRequest {
   name?: string;
   status?: NodeStatus;
+  creation_paused?: boolean;
 }
 
 // GuestConnection is how fast one guest NIC on one node is opening new outbound

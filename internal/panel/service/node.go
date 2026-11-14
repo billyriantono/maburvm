@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/maburvm/panel/internal/panel/client"
@@ -202,6 +203,8 @@ type UpdateNodeRequest struct {
 	Name      string             `json:"name,omitempty" validate:"omitempty,max=100"`
 	IPAddress string             `json:"ip_address,omitempty" validate:"omitempty,ip"`
 	Status    *models.NodeStatus `json:"status,omitempty" validate:"omitempty,oneof=active maintenance offline"`
+	// CreationPaused, when set, stops or resumes placing new VMs on the node.
+	CreationPaused *bool `json:"creation_paused,omitempty"`
 }
 
 // UpdateNode updates an existing node's information
@@ -255,6 +258,15 @@ func (s *NodeService) UpdateNode(ctx context.Context, id string, req *UpdateNode
 		return nil, fmt.Errorf("failed to update node: %w", err)
 	}
 
+	if req.CreationPaused != nil {
+		// By table name: the model field is read-only (see models.Node).
+		if err := s.db.WithContext(ctx).Table("nodes").Where("id = ?", node.ID).
+			Update("creation_paused", *req.CreationPaused).Error; err != nil {
+			return nil, fmt.Errorf("failed to update node: %w", err)
+		}
+		node.CreationPaused = *req.CreationPaused
+	}
+
 	return node, nil
 }
 
@@ -305,22 +317,64 @@ func (s *NodeService) RegenerateToken(ctx context.Context, id string) (string, e
 	return newToken, nil
 }
 
-// CheckNodeHealth checks if a node is reachable via TCP connection
+// nodeHealthTTL is how old a reachability answer may be before it is checked
+// again. The nodes and monitoring pages ask about every node on every poll,
+// and the node page asks twice per load; each of those used to wait out a
+// full dial timeout for every node that is down.
+const nodeHealthTTL = 10 * time.Second
+
+type nodeHealth struct {
+	online bool
+	at     time.Time
+}
+
+// nodeHealthCache maps agent address to its last reachability answer;
+// nodeHealthRefreshing marks addresses with a background check in flight.
+var nodeHealthCache, nodeHealthRefreshing sync.Map
+
+// CheckNodeHealth checks if a node is reachable via TCP connection.
+//
+// Only the first question about a node waits for a dial. After that the last
+// answer is returned at once, and an answer older than nodeHealthTTL is
+// refreshed in the background, so a node that is down never holds up a page.
 func (s *NodeService) CheckNodeHealth(ctx context.Context, node *models.Node) (bool, error) {
 	address := fmt.Sprintf("%s:%d", node.IPAddress, s.agentPort)
 
-	// Create a dialer with timeout
-	dialer := net.Dialer{
-		Timeout: s.timeout,
+	if v, ok := nodeHealthCache.Load(address); ok {
+		h := v.(nodeHealth)
+		if time.Since(h.at) >= nodeHealthTTL {
+			if _, busy := nodeHealthRefreshing.LoadOrStore(address, true); !busy {
+				go func() {
+					defer nodeHealthRefreshing.Delete(address)
+					s.dialNode(context.Background(), address)
+				}()
+			}
+		}
+		return h.online, nil
 	}
+	return s.dialNode(ctx, address), nil // offline is an answer, not an error
+}
+
+// dialNode asks the node's agent port and records the answer.
+func (s *NodeService) dialNode(ctx context.Context, address string) bool {
+	// A node on the same network answers in milliseconds; two seconds is
+	// already generous.
+	timeout := s.timeout
+	if timeout <= 0 || timeout > 2*time.Second {
+		timeout = 2 * time.Second
+	}
+	dialer := net.Dialer{Timeout: timeout}
 
 	conn, err := dialer.DialContext(ctx, "tcp", address)
-	if err != nil {
-		return false, nil // Node is offline, not an error
+	online := err == nil
+	if online {
+		conn.Close()
 	}
-	defer conn.Close()
-
-	return true, nil
+	// A request that was cancelled says nothing about the node.
+	if ctx.Err() == nil {
+		nodeHealthCache.Store(address, nodeHealth{online: online, at: time.Now()})
+	}
+	return online
 }
 
 // CheckNodeHealthByID checks health of a node by its ID
@@ -340,9 +394,21 @@ func (s *NodeService) GetNodesWithHealth(ctx context.Context) ([]NodeWithHealth,
 		return nil, fmt.Errorf("failed to list nodes: %w", err)
 	}
 
+	// Ask all nodes at once: the page waits for the slowest node, not the sum.
+	onlineByIdx := make([]bool, len(nodes))
+	var wg sync.WaitGroup
+	for i := range nodes {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			onlineByIdx[i], _ = s.CheckNodeHealth(ctx, &nodes[i])
+		}(i)
+	}
+	wg.Wait()
+
 	result := make([]NodeWithHealth, len(nodes))
 	for i, node := range nodes {
-		online, _ := s.CheckNodeHealth(ctx, &node)
+		online := onlineByIdx[i]
 		result[i] = NodeWithHealth{
 			Node:   node,
 			Online: online,

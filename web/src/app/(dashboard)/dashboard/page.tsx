@@ -1,5 +1,7 @@
 'use client'
 
+import { useDismissSetup, useSetup } from "@/lib/hooks/use-ops"
+import { useBranding } from "@/lib/branding/provider"
 import Link from 'next/link'
 import {
   Plus, Trash2, Play, Square, RotateCw, RefreshCw, Pause, Camera,
@@ -153,7 +155,31 @@ function NodeBandwidthSection() {
   )
 }
 
+// Shown until the setup list is finished or the admin hides it.
+function SetupReminder() {
+  const { data } = useSetup()
+  const dismiss = useDismissSetup()
+  if (!data || data.dismissed) return null
+  const next = data.steps.find((s) => !s.done)
+  if (!next) return null
+  const done = data.steps.filter((s) => s.done).length
+  return (
+    <div className="mb-8 flex flex-wrap items-center gap-x-6 gap-y-3 rounded-lg border bg-card p-4 shadow-sm">
+      <div className="min-w-0 flex-1 basis-64">
+        <p className="font-medium">Setup: {done} of {data.steps.length} done. Next: {next.title.toLowerCase()}.</p>
+        <p className="text-sm text-muted-foreground mt-0.5">{next.why}</p>
+      </div>
+      <div className="flex items-center gap-2">
+        <Link href={next.href}><Button size="sm">Do this now</Button></Link>
+        <Link href="/setup"><Button size="sm" variant="outline">See the list</Button></Link>
+        <Button size="sm" variant="ghost" onClick={() => dismiss.mutate(true)} disabled={dismiss.isPending}>Hide</Button>
+      </div>
+    </div>
+  )
+}
+
 export default function DashboardPage() {
+  const { branding } = useBranding()
   const { data: stats, isLoading, error, refetch } = useDashboardStats()
 
   if (isLoading) {
@@ -191,8 +217,10 @@ export default function DashboardPage() {
         Dashboard
       </h1>
       <p className="text-muted-foreground text-sm mb-8">
-        Welcome to MaburVM
+        Welcome to {branding.name}
       </p>
+
+      <SetupReminder />
 
       {/* Quick Stats */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">

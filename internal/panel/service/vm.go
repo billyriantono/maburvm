@@ -392,6 +392,9 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		if node.Status != models.NodeStatusActive {
 			return nil, fmt.Errorf("selected node is not active")
 		}
+		if node.CreationPaused {
+			return nil, fmt.Errorf("selected node is not taking new VMs (creation is paused on it)")
+		}
 	}
 
 	// Generate VNC credentials
@@ -831,6 +834,7 @@ func (s *VMService) selectNodeInRegion(ctx context.Context, regionID string, dis
 		Find(&nodes).Error; err != nil {
 		return "", err
 	}
+	nodes = nodesTakingVMs(nodes)
 	if len(nodes) == 0 {
 		return "", ErrRegionNoCapacity
 	}
@@ -875,12 +879,25 @@ func (s *VMService) nodesWithRoom(ctx context.Context, nodes []models.Node, disk
 // SetRegionService wires region resolution for order placement.
 func (s *VMService) SetRegionService(r *RegionService) { s.regionService = r }
 
+// nodesTakingVMs drops nodes where an operator has paused VM creation.
+// Filtered here rather than in SQL so every placement path shares one rule.
+func nodesTakingVMs(nodes []models.Node) []models.Node {
+	out := nodes[:0:0]
+	for _, n := range nodes {
+		if !n.CreationPaused {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // selectNode selects an available node for VM placement
 func (s *VMService) selectNode(ctx context.Context) (string, error) {
 	nodes, err := s.nodeRepo.ListActive(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to list active nodes: %w", err)
 	}
+	nodes = nodesTakingVMs(nodes)
 	if len(nodes) == 0 {
 		return "", ErrNoAvailableNodes
 	}
@@ -1130,7 +1147,10 @@ func (s *VMService) GetVMStatus(ctx context.Context, vmID string) (models.VMStat
 
 // setSuspended writes the suspension flag. It is the only writer.
 func (s *VMService) setSuspended(ctx context.Context, vm *models.VM, on bool) error {
-	if err := s.db.WithContext(ctx).Model(&models.VM{}).Where("id = ?", vm.ID).Update("suspended", on).Error; err != nil {
+	// By table name, not by model: the field is read-only on the model (so a
+	// full-row save cannot overwrite it), and an update through the model is
+	// silently dropped for a read-only field.
+	if err := s.db.WithContext(ctx).Table("vms").Where("id = ?", vm.ID).Update("suspended", on).Error; err != nil {
 		return fmt.Errorf("failed to update suspension: %w", err)
 	}
 	vm.Suspended = on
@@ -1157,6 +1177,31 @@ func (s *VMService) SuspendVM(ctx context.Context, vmID string) error {
 		}
 	}
 	return s.vmRepo.UpdateStatus(ctx, vmID, models.VMStatusSuspended)
+}
+
+// UnsuspendVM lifts a suspension and boots the VM. The flag is cleared first:
+// if the node cannot start the VM right now, the owner still gets it back and
+// can start it themselves.
+func (s *VMService) UnsuspendVM(ctx context.Context, vmID string) error {
+	vm, err := s.vmRepo.GetByID(ctx, vmID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrVMNotFound
+		}
+		return fmt.Errorf("failed to get VM: %w", err)
+	}
+	if err := s.setSuspended(ctx, vm, false); err != nil {
+		return err
+	}
+	if vm.Status == models.VMStatusSuspended {
+		if err := s.vmRepo.UpdateStatus(ctx, vmID, models.VMStatusStopped); err != nil {
+			return err
+		}
+	}
+	if _, err := s.ExecuteLifecycleCommand(ctx, &LifecycleRequest{VMID: vmID, Command: LifecycleStart}); err != nil {
+		return fmt.Errorf("suspension lifted, but the VM did not start: %w", err)
+	}
+	return nil
 }
 
 func (s *VMService) GetVM(ctx context.Context, vmID string, includeAgentStatus bool) (*GetVMResponse, error) {
@@ -1467,6 +1512,9 @@ type UpdateVMRequest struct {
 	// UserID, when set, reassigns VM ownership to another user (admin-only;
 	// enforced at the handler). Empty leaves ownership unchanged.
 	UserID string `json:"user_id,omitempty" validate:"omitempty,uuid"`
+	// StartAfter boots the VM once the resize has been applied. Set by callers
+	// that stopped a running VM to resize it; never read from a request body.
+	StartAfter bool `json:"-"`
 }
 
 // UpdateVM updates VM hostname and/or resources
@@ -1549,7 +1597,7 @@ func (s *VMService) UpdateVM(ctx context.Context, req *UpdateVMRequest) (*models
 		}
 
 		// Enqueue the resize job only after the new resources are committed.
-		paramsJSON, _ := json.Marshal(map[string]interface{}{"resources": *req.Resources})
+		paramsJSON, _ := json.Marshal(map[string]interface{}{"resources": *req.Resources, "start_after": req.StartAfter})
 		job := queue.VMOperationJob{VMID: vm.ID, Operation: queue.VMOpResize, NodeID: vm.NodeID, Params: paramsJSON}
 		if _, err := s.riverClient.Insert(ctx, job, nil); err != nil {
 			return nil, fmt.Errorf("failed to enqueue VM resize job: %w", err)

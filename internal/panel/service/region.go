@@ -76,19 +76,19 @@ func (s *RegionService) List(ctx context.Context, availableOnly bool) ([]models.
 
 // activeNodeCounts maps region id → number of active nodes.
 func (s *RegionService) activeNodeCounts(ctx context.Context) (map[string]int, error) {
-	var rows []struct {
-		RegionID string
-		N        int
-	}
-	if err := s.db.WithContext(ctx).Model(&models.Node{}).
-		Select("region_id, COUNT(*) AS n").
+	// Counted in Go: a node with VM creation paused cannot take an order, so
+	// it must not make its region look available.
+	var nodes []models.Node
+	if err := s.db.WithContext(ctx).
 		Where("status = ? AND region_id IS NOT NULL", models.NodeStatusActive).
-		Group("region_id").Scan(&rows).Error; err != nil {
+		Find(&nodes).Error; err != nil {
 		return nil, err
 	}
-	counts := make(map[string]int, len(rows))
-	for _, r := range rows {
-		counts[r.RegionID] = r.N
+	counts := make(map[string]int)
+	for _, n := range nodes {
+		if !n.CreationPaused && n.RegionID != nil {
+			counts[*n.RegionID]++
+		}
 	}
 	return counts, nil
 }

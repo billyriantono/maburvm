@@ -56,12 +56,24 @@ const (
 	EventVMUnsuspend WebhookEventType = "vm.unsuspend"
 	// EventVMDestroy destroys a VM
 	EventVMDestroy WebhookEventType = "vm.destroy"
+	// EventVMResize changes CPU, memory and disk (a package change)
+	EventVMResize WebhookEventType = "vm.resize"
+	// EventVMResetPassword sets the guest root password
+	EventVMResetPassword WebhookEventType = "vm.reset_password"
+	// EventVMUsage reports this period's traffic and the disk allowance
+	EventVMUsage WebhookEventType = "vm.usage"
+	// EventVMStart, EventVMStop and EventVMRestart are staff power actions
+	EventVMStart   WebhookEventType = "vm.start"
+	EventVMStop    WebhookEventType = "vm.stop"
+	EventVMRestart WebhookEventType = "vm.restart"
 )
 
 // IsValid checks if the event type is valid
 func (e WebhookEventType) IsValid() bool {
 	switch e {
-	case EventVMCreate, EventVMSuspend, EventVMUnsuspend, EventVMDestroy:
+	case EventVMCreate, EventVMSuspend, EventVMUnsuspend, EventVMDestroy,
+		EventVMResize, EventVMResetPassword, EventVMUsage,
+		EventVMStart, EventVMStop, EventVMRestart:
 		return true
 	}
 	return false
@@ -75,7 +87,7 @@ func (e WebhookEventType) IsValid() bool {
 // Document for integrators:
 //
 //	{
-//	  "event": "vm.create|vm.suspend|vm.unsuspend|vm.destroy",
+//	  "event": "vm.create|vm.suspend|vm.unsuspend|vm.destroy|vm.resize|vm.reset_password|vm.usage|vm.start|vm.stop|vm.restart",
 //	  "timestamp": "2024-01-01T00:00:00Z",
 //	  "data": {
 //	    "user_id": "external_user_id",
@@ -104,6 +116,8 @@ type WebhookData struct {
 	VMID string `json:"vm_id,omitempty"`
 	// ExternalRef is an optional external reference
 	ExternalRef string `json:"external_ref,omitempty"`
+	// Password is the new root password (vm.reset_password)
+	Password string `json:"password,omitempty"`
 }
 
 // VMSpecs represents VM resource specifications
@@ -460,6 +474,18 @@ func (h *BillingHandler) HandleWebhook(c echo.Context) error {
 		response, err = h.handleVMUnsuspend(ctx, &payload.Data, requestID)
 	case EventVMDestroy:
 		response, err = h.handleVMDestroy(ctx, &payload.Data, requestID)
+	case EventVMResize:
+		response, err = h.handleVMResize(ctx, &payload.Data, requestID)
+	case EventVMResetPassword:
+		response, err = h.handleVMResetPassword(ctx, &payload.Data, requestID)
+	case EventVMUsage:
+		response, err = h.handleVMUsage(ctx, &payload.Data, requestID)
+	case EventVMStart:
+		response, err = h.handleVMPower(ctx, &payload.Data, requestID, service.LifecycleStart)
+	case EventVMStop:
+		response, err = h.handleVMPower(ctx, &payload.Data, requestID, service.LifecycleStop)
+	case EventVMRestart:
+		response, err = h.handleVMPower(ctx, &payload.Data, requestID, service.LifecycleRestart)
 	}
 
 	if err != nil {
@@ -483,11 +509,11 @@ func (h *BillingHandler) HandleWebhook(c echo.Context) error {
 		return c.JSON(statusCode, response)
 	}
 
-	// Store idempotency record if key was provided. Suspend and unsuspend are
-	// not cached: the billing module reuses one key per service and action, so a
-	// cached "suspended" would answer the next suspend after an unsuspend without
-	// doing anything. Both are safe to repeat.
-	if idempotencyKey != "" && payload.Event != EventVMSuspend && payload.Event != EventVMUnsuspend {
+	// Only create and destroy are cached, the two that must not run twice.
+	// Everything else is safe to repeat, and the billing module reuses one key
+	// per service and action: a cached "suspended" would answer the next
+	// suspend after an unsuspend without doing anything.
+	if idempotencyKey != "" && (payload.Event == EventVMCreate || payload.Event == EventVMDestroy) {
 		h.storeIdempotency(ctx, idempotencyKey, string(payload.Event), &IdempotencyRecord{
 			RequestID:   requestID,
 			Response:    response,
@@ -521,9 +547,15 @@ func (h *BillingHandler) validatePayload(payload *WebhookPayload) error {
 			return errors.New("vm_specs.disk is required for vm.create")
 		}
 
-	case EventVMSuspend, EventVMUnsuspend, EventVMDestroy:
+	default:
 		if payload.Data.VMID == "" {
 			return fmt.Errorf("vm_id is required for %s", payload.Event)
+		}
+		if payload.Event == EventVMResetPassword && len(payload.Data.Password) < 8 {
+			return errors.New("password of at least 8 characters is required for vm.reset_password")
+		}
+		if sp := payload.Data.VMSpecs; payload.Event == EventVMResize && (sp.CPU < 1 || sp.Memory < 128 || sp.Disk < 1) {
+			return errors.New("vm_specs.cpu, memory and disk are required for vm.resize")
 		}
 	}
 
@@ -646,9 +678,7 @@ func (h *BillingHandler) handleVMUnsuspend(
 		return WebhookResponse{}, err
 	}
 
-	if _, err = h.vmService.ExecuteLifecycleCommand(ctx, &service.LifecycleRequest{
-		VMID: data.VMID, Command: service.LifecycleUnsuspend,
-	}); err != nil {
+	if err = h.vmService.UnsuspendVM(ctx, data.VMID); err != nil {
 		return WebhookResponse{}, fmt.Errorf("failed to unsuspend VM: %w", err)
 	}
 
@@ -706,6 +736,102 @@ func (h *BillingHandler) handleVMDestroy(
 	}, nil
 }
 
+// handleVMResize applies a package change. The disk only grows: a smaller
+// disk in the new package leaves the current one as it is.
+func (h *BillingHandler) handleVMResize(ctx context.Context, data *WebhookData, requestID string) (WebhookResponse, error) {
+	current, err := h.vmService.GetVM(ctx, data.VMID, false)
+	if err != nil {
+		return WebhookResponse{}, err
+	}
+	res := current.VM.Resources
+	res.CPU, res.RAM = data.VMSpecs.CPU, data.VMSpecs.Memory
+	if data.VMSpecs.Disk > res.Disk {
+		res.Disk = data.VMSpecs.Disk
+	}
+
+	// CPU and memory only change on a stopped VM. A running one is shut down
+	// here and booted again by the resize job once the new size is applied.
+	wasRunning := current.VM.Status == models.VMStatusRunning
+	if wasRunning {
+		if _, err := h.vmService.ExecuteLifecycleCommand(ctx, &service.LifecycleRequest{
+			VMID: data.VMID, Command: service.LifecycleStop,
+		}); err != nil {
+			return WebhookResponse{}, fmt.Errorf("failed to stop VM for resize: %w", err)
+		}
+	}
+	vm, err := h.vmService.UpdateVM(ctx, &service.UpdateVMRequest{VMID: data.VMID, Resources: &res, StartAfter: wasRunning})
+	if err != nil {
+		if wasRunning { // do not leave the customer's VM off over a refused resize
+			_, _ = h.vmService.ExecuteLifecycleCommand(ctx, &service.LifecycleRequest{
+				VMID: data.VMID, Command: service.LifecycleStart,
+			})
+		}
+		return WebhookResponse{}, fmt.Errorf("failed to resize VM: %w", err)
+	}
+	return WebhookResponse{
+		Success: true, Message: "VM resized", VMID: data.VMID, ExternalRef: data.ExternalRef,
+		Timestamp: time.Now().UTC(), RequestID: requestID,
+		Metadata: map[string]string{
+			"cpu":    fmt.Sprintf("%d", vm.Resources.CPU),
+			"memory": fmt.Sprintf("%d", vm.Resources.RAM),
+			"disk":   fmt.Sprintf("%d", vm.Resources.Disk),
+		},
+	}, nil
+}
+
+// handleVMResetPassword queues a root password change on a running VM.
+func (h *BillingHandler) handleVMResetPassword(ctx context.Context, data *WebhookData, requestID string) (WebhookResponse, error) {
+	resp, err := h.vmService.ResetPassword(ctx, &service.VMResetPasswordRequest{VMID: data.VMID, Password: data.Password})
+	if err != nil {
+		return WebhookResponse{}, err
+	}
+	return WebhookResponse{
+		Success: true, Message: "Password reset queued", VMID: data.VMID, ExternalRef: data.ExternalRef,
+		Timestamp: time.Now().UTC(), RequestID: requestID,
+		Metadata: map[string]string{"job_id": fmt.Sprintf("%d", resp.JobID)},
+	}, nil
+}
+
+// handleVMPower runs a staff start, stop or restart. A suspended VM refuses
+// start and restart, the same as it does for its owner.
+func (h *BillingHandler) handleVMPower(ctx context.Context, data *WebhookData, requestID string, cmd service.LifecycleCommand) (WebhookResponse, error) {
+	if _, err := h.vmService.ExecuteLifecycleCommand(ctx, &service.LifecycleRequest{VMID: data.VMID, Command: cmd}); err != nil {
+		return WebhookResponse{}, err
+	}
+	return WebhookResponse{
+		Success: true, Message: "VM " + string(cmd) + " requested", VMID: data.VMID, ExternalRef: data.ExternalRef,
+		Timestamp: time.Now().UTC(), RequestID: requestID,
+	}, nil
+}
+
+// handleVMUsage reports the current period's traffic and the disk allowance,
+// in megabytes, which is the unit billing systems store.
+// ponytail: disk used is not reported; the panel does not measure it per VM.
+func (h *BillingHandler) handleVMUsage(ctx context.Context, data *WebhookData, requestID string) (WebhookResponse, error) {
+	vm, err := h.vmService.GetVM(ctx, data.VMID, false)
+	if err != nil {
+		return WebhookResponse{}, err
+	}
+	const mb = 1 << 20
+	meta := map[string]string{
+		"bandwidth_used_mb":  "0",
+		"bandwidth_limit_mb": "0",
+		"disk_limit_mb":      fmt.Sprintf("%d", vm.VM.Resources.Disk*1024),
+	}
+	if h.db != nil {
+		var usage models.BandwidthUsage
+		if err := h.db.WithContext(ctx).Where("vm_id = ?", data.VMID).
+			Order("period_start DESC").First(&usage).Error; err == nil {
+			meta["bandwidth_used_mb"] = fmt.Sprintf("%d", usage.TotalBytes/mb)
+			meta["bandwidth_limit_mb"] = fmt.Sprintf("%d", usage.QuotaBytes/mb)
+		}
+	}
+	return WebhookResponse{
+		Success: true, Message: "usage", VMID: data.VMID, ExternalRef: data.ExternalRef,
+		Timestamp: time.Now().UTC(), RequestID: requestID, Metadata: meta,
+	}, nil
+}
+
 // ============================================================================
 // Documentation Endpoint
 // ============================================================================
@@ -759,13 +885,13 @@ func (h *BillingHandler) GetWebhookDocumentation(c echo.Context) error {
 			},
 			{
 				Type:        string(EventVMSuspend),
-				Description: "Suspend a VM (pause + block network)",
+				Description: "Suspend a VM (power off; the owner cannot start it)",
 				Required:    []string{"vm_id"},
 				Optional:    []string{"external_ref"},
 			},
 			{
 				Type:        string(EventVMUnsuspend),
-				Description: "Unsuspend a VM (resume + restore network)",
+				Description: "Unsuspend a VM and start it",
 				Required:    []string{"vm_id"},
 				Optional:    []string{"external_ref"},
 			},
@@ -774,6 +900,26 @@ func (h *BillingHandler) GetWebhookDocumentation(c echo.Context) error {
 				Description: "Destroy a VM and cleanup resources",
 				Required:    []string{"vm_id"},
 				Optional:    []string{"external_ref"},
+			},
+			{
+				Type:        string(EventVMResize),
+				Description: "Change CPU, memory and disk. A running VM is shut down and booted again. Disk only grows.",
+				Required:    []string{"vm_id", "vm_specs.cpu", "vm_specs.memory", "vm_specs.disk"},
+			},
+			{
+				Type:        string(EventVMResetPassword),
+				Description: "Set the root password of a running VM",
+				Required:    []string{"vm_id", "password"},
+			},
+			{
+				Type:        string(EventVMUsage),
+				Description: "Traffic used and allowed this period and the disk allowance, in MB, returned in metadata",
+				Required:    []string{"vm_id"},
+			},
+			{
+				Type:        "vm.start | vm.stop | vm.restart",
+				Description: "Power actions",
+				Required:    []string{"vm_id"},
 			},
 		},
 		PayloadExample: map[string]interface{}{

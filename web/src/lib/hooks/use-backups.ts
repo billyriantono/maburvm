@@ -101,6 +101,14 @@ export function useCreateBackup(vmId: string) {
   })
 }
 
+export function useRestoreBackup(vmId: string) {
+  return useMutation<void, Error, string>({
+    mutationFn: async (backupId) => {
+      await api.post(`/api/v1/vms/${vmId}/backups/${backupId}/restore`)
+    },
+  })
+}
+
 export function useDeleteBackup(vmId: string) {
   const queryClient = useQueryClient()
 

@@ -1,9 +1,13 @@
 package service
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"mime"
+	"net/mail"
 	"net/smtp"
+	"os"
 	"strings"
 
 	"gorm.io/gorm"
@@ -38,108 +42,12 @@ func LoadSMTPSettings(db *gorm.DB) (cfg SMTPSettings, ok bool, err error) {
 	return SMTPSettings{
 		Host: d.SMTPHost, Port: d.SMTPPort, Username: d.SMTPUser,
 		Password: d.SMTPPassword, From: d.SMTPFrom, FromName: d.SMTPFromName,
+		Brand: LoadBranding(db), Templates: LoadEmailTemplates(db),
 	}, true, nil
 }
 
-// SendWelcomeEmail sends a new-account welcome message with the sign-in URL. It
-// mirrors SendTestEmail's transport (PlainAuth + opportunistic STARTTLS).
-func SendWelcomeEmail(cfg SMTPSettings, to, name, panelURL string) error {
-	if cfg.Host == "" || cfg.Port == 0 {
-		return fmt.Errorf("SMTP host and port are required")
-	}
-	if strings.TrimSpace(to) == "" {
-		return fmt.Errorf("a recipient is required")
-	}
-	from := cfg.From
-	if from == "" {
-		from = cfg.Username
-	}
-	if from == "" {
-		return fmt.Errorf("a From address (or username) is required")
-	}
-	fromHeader := from
-	if cfg.FromName != "" {
-		fromHeader = fmt.Sprintf("%s <%s>", cfg.FromName, from)
-	}
-	greeting := "Hello"
-	if strings.TrimSpace(name) != "" {
-		greeting = "Hello " + name
-	}
-	if panelURL == "" {
-		panelURL = "the MaburVM panel"
-	}
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "From: %s\r\n", fromHeader)
-	fmt.Fprintf(&b, "To: %s\r\n", to)
-	b.WriteString("Subject: Welcome to MaburVM\r\n")
-	b.WriteString("MIME-Version: 1.0\r\n")
-	b.WriteString("Content-Type: text/plain; charset=UTF-8\r\n\r\n")
-	fmt.Fprintf(&b, "%s,\r\n\r\n", greeting)
-	b.WriteString("Your MaburVM account has been created.\r\n\r\n")
-	fmt.Fprintf(&b, "Sign in: %s\r\n", panelURL)
-	fmt.Fprintf(&b, "Username: %s\r\n\r\n", to)
-	b.WriteString("For security, the password was set by your administrator — please change it after your first sign-in.\r\n")
-
-	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
-	var auth smtp.Auth
-	if cfg.Username != "" {
-		auth = smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.Host)
-	}
-	if err := smtp.SendMail(addr, auth, from, []string{to}, []byte(b.String())); err != nil {
-		return fmt.Errorf("SMTP send failed: %w", err)
-	}
-	return nil
-}
-
-// SendPasswordResetEmail sends a password-reset link. Same transport as the
-// other mailers (PlainAuth + opportunistic STARTTLS).
-func SendPasswordResetEmail(cfg SMTPSettings, to, name, resetURL string) error {
-	if cfg.Host == "" || cfg.Port == 0 {
-		return fmt.Errorf("SMTP host and port are required")
-	}
-	if strings.TrimSpace(to) == "" {
-		return fmt.Errorf("a recipient is required")
-	}
-	from := cfg.From
-	if from == "" {
-		from = cfg.Username
-	}
-	if from == "" {
-		return fmt.Errorf("a From address (or username) is required")
-	}
-	fromHeader := from
-	if cfg.FromName != "" {
-		fromHeader = fmt.Sprintf("%s <%s>", cfg.FromName, from)
-	}
-	greeting := "Hello"
-	if strings.TrimSpace(name) != "" {
-		greeting = "Hello " + name
-	}
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "From: %s\r\n", fromHeader)
-	fmt.Fprintf(&b, "To: %s\r\n", to)
-	b.WriteString("Subject: Reset your MaburVM password\r\n")
-	b.WriteString("MIME-Version: 1.0\r\n")
-	b.WriteString("Content-Type: text/plain; charset=UTF-8\r\n\r\n")
-	fmt.Fprintf(&b, "%s,\r\n\r\n", greeting)
-	b.WriteString("We received a request to reset your MaburVM password.\r\n\r\n")
-	fmt.Fprintf(&b, "Reset it here (valid for 1 hour): %s\r\n\r\n", resetURL)
-	b.WriteString("If you didn't request this, you can safely ignore this email — your password won't change.\r\n")
-
-	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
-	var auth smtp.Auth
-	if cfg.Username != "" {
-		auth = smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.Host)
-	}
-	if err := smtp.SendMail(addr, auth, from, []string{to}, []byte(b.String())); err != nil {
-		return fmt.Errorf("SMTP send failed: %w", err)
-	}
-	return nil
-}
-
-// SMTPSettings is the SMTP configuration used to send mail.
+// SMTPSettings is the SMTP configuration used to send mail, with the branding
+// and template edits a message is rendered from.
 type SMTPSettings struct {
 	Host     string
 	Port     int
@@ -147,18 +55,71 @@ type SMTPSettings struct {
 	Password string
 	From     string
 	FromName string
+	// Brand and Templates come from the same database read as the SMTP
+	// settings, so one load is enough to send a finished message.
+	Brand     Branding
+	Templates map[string]EmailTemplate
 }
 
-// SendTestEmail sends a short test message using the given SMTP settings. It uses
-// PlainAuth (when a username is set) and lets net/smtp upgrade to TLS via
-// STARTTLS when the server offers it — which covers the common submission port
-// (587). Returns a descriptive error so the UI can show why a test failed.
+// Template returns the operator's version of a template, or the built-in one.
+func (c SMTPSettings) Template(key string) EmailTemplate {
+	if t, ok := c.Templates[key]; ok && t.Subject != "" && t.Body != "" {
+		return t
+	}
+	def, _ := EmailTemplateDefFor(key)
+	return def.Default
+}
+
+// EmailLogoURL is the address a mail client fetches the logo from. Mail
+// clients do not show images embedded in the message, so the logo is only used
+// when the panel knows its public address; SVG is skipped because most mail
+// clients will not draw it.
+func EmailLogoURL(b Branding, publicURL string) string {
+	publicURL = strings.TrimRight(strings.TrimSpace(publicURL), "/")
+	if b.Logo == "" || publicURL == "" || strings.HasPrefix(b.Logo, "data:image/svg") {
+		return ""
+	}
+	return publicURL + "/api/v1/branding/logo"
+}
+
+// SendWelcomeEmail sends the new-account message with a link to sign in.
+func SendWelcomeEmail(cfg SMTPSettings, to, name, panelURL string) error {
+	link := ""
+	if panelURL != "" {
+		link = strings.TrimRight(panelURL, "/") + "/login"
+	}
+	return SendMail(cfg, to, RenderEmail(cfg.Template(EmailWelcome), cfg.Brand,
+		EmailData{Name: name, Email: to, Link: link, LogoURL: EmailLogoURL(cfg.Brand, panelURL)}))
+}
+
+// SendPasswordResetEmail sends a password-reset link.
+func SendPasswordResetEmail(cfg SMTPSettings, to, name, resetURL string) error {
+	return SendMail(cfg, to, RenderEmail(cfg.Template(EmailPasswordReset), cfg.Brand,
+		EmailData{Name: name, Email: to, Link: resetURL, LogoURL: EmailLogoURL(cfg.Brand, os.Getenv("PANEL_PUBLIC_URL"))}))
+}
+
+// SendTestEmail sends a short message that proves the SMTP settings work.
 func SendTestEmail(cfg SMTPSettings, to string) error {
+	if cfg.Brand.Name == "" {
+		cfg.Brand.Name = DefaultBrandName
+	}
+	return SendMail(cfg, to, RenderEmail(EmailTemplate{
+		Subject: "{{brand}} SMTP test",
+		Body:    "This is a test email from {{brand}}. If you received it, your SMTP settings are working.",
+	}, cfg.Brand, EmailData{Email: to}))
+}
+
+// SendMail sends one rendered message as HTML with a plain-text alternative.
+// It uses PlainAuth when a username is set and lets net/smtp upgrade to TLS
+// through STARTTLS when the server offers it (the common submission port, 587).
+// Errors are descriptive so the UI can say why a send failed.
+func SendMail(cfg SMTPSettings, to string, msg RenderedEmail) error {
 	if cfg.Host == "" || cfg.Port == 0 {
 		return fmt.Errorf("SMTP host and port are required")
 	}
-	if strings.TrimSpace(to) == "" {
-		return fmt.Errorf("a test recipient is required")
+	to = oneLine(to)
+	if to == "" {
+		return fmt.Errorf("a recipient is required")
 	}
 	from := cfg.From
 	if from == "" {
@@ -167,19 +128,28 @@ func SendTestEmail(cfg SMTPSettings, to string) error {
 	if from == "" {
 		return fmt.Errorf("a From address (or username) is required")
 	}
-
 	fromHeader := from
-	if cfg.FromName != "" {
-		fromHeader = fmt.Sprintf("%s <%s>", cfg.FromName, from)
+	if name := oneLine(cfg.FromName); name != "" {
+		fromHeader = (&mail.Address{Name: name, Address: from}).String()
 	}
 
+	const boundary = "maburvm-alt-7f3c9a"
 	var b strings.Builder
 	fmt.Fprintf(&b, "From: %s\r\n", fromHeader)
 	fmt.Fprintf(&b, "To: %s\r\n", to)
-	b.WriteString("Subject: MaburVM SMTP test\r\n")
+	fmt.Fprintf(&b, "Subject: %s\r\n", mime.QEncoding.Encode("utf-8", oneLine(msg.Subject)))
 	b.WriteString("MIME-Version: 1.0\r\n")
-	b.WriteString("Content-Type: text/plain; charset=UTF-8\r\n\r\n")
-	b.WriteString("This is a test email from MaburVM. If you received it, your SMTP settings are working.\r\n")
+	fmt.Fprintf(&b, "Content-Type: multipart/alternative; boundary=%q\r\n\r\n", boundary)
+	for _, part := range []struct{ kind, body string }{{"text/plain", msg.Text}, {"text/html", msg.HTML}} {
+		fmt.Fprintf(&b, "--%s\r\nContent-Type: %s; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n", boundary, part.kind)
+		enc := base64.StdEncoding.EncodeToString([]byte(part.body))
+		for len(enc) > 76 {
+			b.WriteString(enc[:76] + "\r\n")
+			enc = enc[76:]
+		}
+		b.WriteString(enc + "\r\n")
+	}
+	fmt.Fprintf(&b, "--%s--\r\n", boundary)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 	var auth smtp.Auth

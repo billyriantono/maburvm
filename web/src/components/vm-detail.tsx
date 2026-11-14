@@ -26,11 +26,11 @@ import { useNodes } from "@/lib/hooks/use-nodes"
 import { Sparkline } from "@/components/ui/sparkline"
 import { useSnapshots, useCreateSnapshot, useRestoreSnapshot, useDeleteSnapshot } from "@/lib/hooks/use-snapshots"
 import { useCreateImage } from "@/lib/hooks/use-images"
-import { useBackups, useCreateBackup, useDeleteBackup } from "@/lib/hooks/use-backups"
-import { useFirewallRules, useDeleteFirewallRule, useCreateFirewallRule, useVMNetworks, useSetVMBandwidth, useSetVMRDNS } from "@/lib/hooks/use-networks"
+import { useBackups, useCreateBackup, useDeleteBackup, useRestoreBackup, useBackupSchedules, useCreateBackupSchedule, useDeleteBackupSchedule } from "@/lib/hooks/use-backups"
+import { useFirewallRules, useDeleteFirewallRule, useCreateFirewallRule, useVMNetworks, useSetVMBandwidth, useSetVMRDNS, usePortForwards, useCreatePortForward, useDeletePortForward, useSetAntiSpoofing } from "@/lib/hooks/use-networks"
 import type { Network as NetworkIface } from "@/types"
 import { useTemplates } from "@/lib/hooks/use-templates"
-import { useVMBandwidth, useSetBandwidthQuota } from "@/lib/hooks/use-bandwidth"
+import { useVMBandwidth, useVMBandwidthHistory, useSetBandwidthQuota } from "@/lib/hooks/use-bandwidth"
 import { useVMDisks, useAttachDisk, useDetachDisk } from "@/lib/hooks/use-disks"
 import { useVMActivity } from "@/lib/hooks/use-audit-logs"
 import { VNCConsole } from "@/components/vnc-console"
@@ -64,6 +64,77 @@ function formatMbps(mbps: number): string {
 // BandwidthCell renders a VM interface's speed limit with inline editing.
 // Admins pick a preset tier (up to 10 Gbps) or enter a custom value; saving
 // re-applies the tc limit on the hypervisor via the bandwidth endpoint.
+// A real switch, not a label: the state is on the control itself.
+function AntiSpoofCell({ vmId, iface }: { vmId: string; iface: NetworkIface }) {
+  const set = useSetAntiSpoofing(vmId)
+  const on = iface.anti_spoofing !== false
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={`Anti-spoofing for ${iface.ip_address}`}
+      title="Drops traffic from this VM that claims an address it was not given"
+      disabled={set.isPending}
+      onClick={() => set.mutate(
+        { networkId: iface.id, enabled: !on },
+        { onError: (e) => toast.error(`Could not change anti-spoofing: ${e.message}`) },
+      )}
+      className={`inline-flex items-center gap-2 text-xs font-medium cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring rounded-full`}
+    >
+      <span className={`relative inline-block h-5 w-9 rounded-full border transition-colors ${on ? "bg-primary border-primary" : "bg-muted border-input"}`}>
+        <span className={`absolute top-0.5 h-3.5 w-3.5 rounded-full bg-background border transition-all ${on ? "left-[18px]" : "left-0.5"}`} />
+      </span>
+      {on ? "On" : "Off"}
+    </button>
+  )
+}
+
+function BandwidthHistory({ vmId }: { vmId: string }) {
+  const [open, setOpen] = useState(false)
+  const { data, isLoading, error } = useVMBandwidthHistory(open ? vmId : "")
+  const month = (d: string) => new Date(d).toLocaleDateString("en-US", { year: "numeric", month: "long" })
+  return (
+    <div className="mt-6 pt-4 border-t">
+      <Button variant="ghost" size="sm" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        {open ? "Hide previous months" : "Show previous months"}
+      </Button>
+      {open && (isLoading ? (
+        <Skeleton className="h-5 w-64 mt-3" />
+      ) : error ? (
+        <p role="alert" className="text-sm text-destructive mt-3">Could not load history: {(error as Error).message}</p>
+      ) : !data?.history?.length ? (
+        <p className="text-sm text-muted-foreground mt-3">No earlier months recorded yet.</p>
+      ) : (
+        <div className="border overflow-x-auto mt-3">
+          <table className="w-full text-sm">
+            <thead className="bg-muted text-xs text-muted-foreground">
+              <tr>
+                <th className="text-left p-3">Month</th>
+                <th className="text-right p-3">Received</th>
+                <th className="text-right p-3">Sent</th>
+                <th className="text-right p-3">Total</th>
+                <th className="text-right p-3">Quota</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.history.map((h) => (
+                <tr key={h.period_start} className="border-t">
+                  <td className="p-3">{month(h.period_start)}</td>
+                  <td className="p-3 text-right font-mono">{formatBytes(h.rx_bytes)}</td>
+                  <td className="p-3 text-right font-mono">{formatBytes(h.tx_bytes)}</td>
+                  <td className="p-3 text-right font-mono">{formatBytes(h.total_bytes)}</td>
+                  <td className="p-3 text-right font-mono">{h.quota_gb > 0 ? `${h.quota_gb} GB${h.exceeded ? " (exceeded)" : ""}` : "Unlimited"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function BandwidthCell({ vmId, iface }: { vmId: string; iface: NetworkIface }) {
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState<number>(iface.bandwidth_limit)
@@ -271,6 +342,242 @@ function isoLabel(iso: string) {
 }
 
 const VM_TABS = ["overview", "console", "network", "snapshots", "backups", "firewall", "logs", "settings"]
+
+// Port forwards: a port on the node's public address sent on to this VM.
+function PortForwardsCard({ vmId }: { vmId: string }) {
+  const confirm = useConfirm()
+  const { data: forwards, isLoading, error, refetch } = usePortForwards(vmId)
+  const create = useCreatePortForward(vmId)
+  const remove = useDeletePortForward(vmId)
+  const [adding, setAdding] = useState(false)
+  const [ext, setExt] = useState("")
+  const [int, setInt] = useState("")
+  const [proto, setProto] = useState<"tcp" | "udp">("tcp")
+  const [source, setSource] = useState("")
+  const [err, setErr] = useState("")
+
+  const validPort = (v: string) => { const n = Number(v); return Number.isInteger(n) && n >= 1 && n <= 65535 }
+
+  const handleAdd = async () => {
+    if (!validPort(ext) || !validPort(int)) { setErr("Enter both ports as numbers from 1 to 65535."); return }
+    setErr("")
+    try {
+      await create.mutateAsync({ external_port: Number(ext), internal_port: Number(int), protocol: proto, source_ip: source.trim() || undefined })
+      toast.success("Port forward added")
+      setAdding(false); setExt(""); setInt(""); setSource("")
+    } catch (e) {
+      setErr((e as Error).message)
+    }
+  }
+
+  return (
+    <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
+      <div className="flex items-center justify-between mb-2">
+        <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
+          <ArrowRightLeft className="w-5 h-5" aria-hidden="true" />Port Forwards
+        </h2>
+        <Button size="sm" onClick={() => setAdding((v) => !v)}><Plus className="w-4 h-4" aria-hidden="true" />Add Forward</Button>
+      </div>
+      <p className="text-sm text-muted-foreground mb-4">Sends a port on the host&apos;s public address to a port on this VM. Useful when the VM has a private address only.</p>
+
+      {adding && (
+        <div className="flex flex-wrap items-end gap-2 mb-4 p-3 border rounded-md bg-muted">
+          <div>
+            <label htmlFor="pf-ext" className="text-xs font-medium text-muted-foreground block mb-1">Host port</label>
+            <Input id="pf-ext" inputMode="numeric" value={ext} onChange={(e) => setExt(e.target.value)} placeholder="8080" className="border w-28 font-mono" />
+          </div>
+          <div>
+            <label htmlFor="pf-int" className="text-xs font-medium text-muted-foreground block mb-1">VM port</label>
+            <Input id="pf-int" inputMode="numeric" value={int} onChange={(e) => setInt(e.target.value)} placeholder="80" className="border w-28 font-mono" />
+          </div>
+          <div>
+            <label htmlFor="pf-proto" className="text-xs font-medium text-muted-foreground block mb-1">Protocol</label>
+            <select id="pf-proto" value={proto} onChange={(e) => setProto(e.target.value as "tcp" | "udp")} className="h-9 border rounded-md bg-background px-2 text-sm cursor-pointer">
+              <option value="tcp">TCP</option>
+              <option value="udp">UDP</option>
+            </select>
+          </div>
+          <div>
+            <label htmlFor="pf-src" className="text-xs font-medium text-muted-foreground block mb-1">Allowed source (optional)</label>
+            <Input id="pf-src" value={source} onChange={(e) => setSource(e.target.value)} placeholder="Any address" className="border w-44 font-mono" />
+          </div>
+          <Button size="sm" onClick={handleAdd} disabled={create.isPending}>
+            {create.isPending ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" /> : <Check className="w-4 h-4" aria-hidden="true" />}Add
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => { setAdding(false); setErr("") }}>Cancel</Button>
+        </div>
+      )}
+      {err && <p role="alert" className="text-xs text-destructive font-medium mb-3">{err}</p>}
+
+      {isLoading ? (
+        <SectionSkeleton />
+      ) : error ? (
+        <SectionError message={(error as Error).message} onRetry={() => refetch()} />
+      ) : !forwards?.length ? (
+        <SectionEmpty icon={ArrowRightLeft} message="No port forwards." />
+      ) : (
+        <div className="border overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-muted text-xs text-muted-foreground">
+              <tr>
+                <th className="text-left p-3">Host port</th>
+                <th className="text-left p-3">VM port</th>
+                <th className="text-left p-3">Protocol</th>
+                <th className="text-left p-3">Allowed source</th>
+                <th className="text-right p-3"><span className="sr-only">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {forwards.map((pf) => (
+                <tr key={pf.id} className="border-t">
+                  <td className="p-3 font-mono">{pf.external_port}</td>
+                  <td className="p-3 font-mono">{pf.internal_port}</td>
+                  <td className="p-3 uppercase">{pf.protocol}</td>
+                  <td className="p-3 font-mono">{pf.source_ip && pf.source_ip !== "0.0.0.0/0" ? pf.source_ip : "Any"}</td>
+                  <td className="p-3 text-right">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => confirm({
+                        title: `Remove forward on port ${pf.external_port}?`,
+                        description: `Traffic to host port ${pf.external_port} will stop reaching this VM.`,
+                        confirmLabel: "Remove",
+                        destructive: true,
+                        action: () => remove.mutateAsync(pf.id),
+                      })}
+                    >
+                      Remove
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// The schedule is stored as a cron line; the form offers the three shapes
+// people ask for and shows anything else as it is.
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+
+function describeCron(cron: string): { every: "daily" | "weekly" | "monthly"; hour: number; text: string } | null {
+  const m = cron.trim().match(/^0 (\d{1,2}) (\*|1) \* (\*|[0-6])$/)
+  if (!m) return null
+  const hour = Number(m[1])
+  const at = `${String(hour).padStart(2, "0")}:00`
+  if (m[2] === "1" && m[3] === "*") return { every: "monthly", hour, text: `On the 1st of each month at ${at}` }
+  if (m[2] === "*" && m[3] !== "*") return { every: "weekly", hour, text: `Every ${WEEKDAYS[Number(m[3])]} at ${at}` }
+  if (m[2] === "*" && m[3] === "*") return { every: "daily", hour, text: `Every day at ${at}` }
+  return null
+}
+
+function BackupScheduleCard({ vmId }: { vmId: string }) {
+  const confirm = useConfirm()
+  const { data: schedules, isLoading, error, refetch } = useBackupSchedules(vmId)
+  const save = useCreateBackupSchedule(vmId)
+  const remove = useDeleteBackupSchedule(vmId)
+  const current = schedules?.[0]
+  const parsed = current ? describeCron(current.schedule) : null
+
+  const [editing, setEditing] = useState(false)
+  const [every, setEvery] = useState<"daily" | "weekly" | "monthly">("daily")
+  const [hour, setHour] = useState(2)
+  const [keep, setKeep] = useState("7")
+  const [err, setErr] = useState("")
+
+  const startEdit = () => {
+    if (parsed) { setEvery(parsed.every); setHour(parsed.hour) }
+    if (current?.retention_policy?.keep_last) setKeep(String(current.retention_policy.keep_last))
+    setErr("")
+    setEditing(true)
+  }
+
+  const handleSave = async () => {
+    const keepLast = Number(keep)
+    if (!Number.isInteger(keepLast) || keepLast < 1 || keepLast > 365) { setErr("Keep between 1 and 365 backups."); return }
+    const cron = every === "monthly" ? `0 ${hour} 1 * *` : every === "weekly" ? `0 ${hour} * * 0` : `0 ${hour} * * *`
+    try {
+      await save.mutateAsync({ schedule: cron, retention_policy: { keep_last: keepLast } })
+      toast.success("Backup schedule saved")
+      setEditing(false)
+    } catch (e) {
+      setErr((e as Error).message)
+    }
+  }
+
+  return (
+    <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm mb-6">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-lg font-semibold text-foreground">Automatic backups</h2>
+        {!editing && !isLoading && !error && (
+          <div className="flex items-center gap-2">
+            {current && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => confirm({
+                  title: "Turn off automatic backups?",
+                  description: "No new backups will be made on a schedule. Existing backups are kept.",
+                  confirmLabel: "Turn off",
+                  action: () => remove.mutateAsync(current.id),
+                })}
+              >
+                Turn off
+              </Button>
+            )}
+            <Button variant="outline" size="sm" onClick={startEdit}>{current ? "Change" : "Set up"}</Button>
+          </div>
+        )}
+      </div>
+
+      {isLoading ? (
+        <Skeleton className="h-5 w-64" />
+      ) : error ? (
+        <SectionError message={(error as Error).message} onRetry={() => refetch()} />
+      ) : editing ? (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-end gap-3">
+            <div>
+              <label htmlFor="bs-every" className="text-xs font-medium text-muted-foreground block mb-1">How often</label>
+              <select id="bs-every" value={every} onChange={(e) => setEvery(e.target.value as typeof every)} className="h-9 border rounded-md bg-background px-2 text-sm cursor-pointer">
+                <option value="daily">Every day</option>
+                <option value="weekly">Every Sunday</option>
+                <option value="monthly">1st of each month</option>
+              </select>
+            </div>
+            <div>
+              <label htmlFor="bs-hour" className="text-xs font-medium text-muted-foreground block mb-1">Start time (server time)</label>
+              <select id="bs-hour" value={hour} onChange={(e) => setHour(Number(e.target.value))} className="h-9 border rounded-md bg-background px-2 text-sm font-mono cursor-pointer">
+                {Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{String(h).padStart(2, "0")}:00</option>)}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="bs-keep" className="text-xs font-medium text-muted-foreground block mb-1">Backups to keep</label>
+              <Input id="bs-keep" inputMode="numeric" value={keep} onChange={(e) => setKeep(e.target.value)} className="border w-24 font-mono" />
+            </div>
+            <Button size="sm" onClick={handleSave} disabled={save.isPending}>
+              {save.isPending && <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />}Save
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>Cancel</Button>
+          </div>
+          <p className="text-xs text-muted-foreground">Older backups are deleted once there are more than this number.</p>
+          {err && <p role="alert" className="text-xs text-destructive font-medium">{err}</p>}
+        </div>
+      ) : current ? (
+        <dl className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
+          <div><dt className="text-xs text-muted-foreground">Runs</dt><dd className="font-medium">{parsed ? parsed.text : <span className="font-mono">{current.schedule}</span>}</dd></div>
+          <div><dt className="text-xs text-muted-foreground">Keeps</dt><dd className="font-medium">{current.retention_policy?.keep_last ? `Last ${current.retention_policy.keep_last} backups` : "All backups"}</dd></div>
+          <div><dt className="text-xs text-muted-foreground">Next run</dt><dd className="font-medium">{current.next_run_at && !current.next_run_at.startsWith("0001") ? formatDate(current.next_run_at) : "Not scheduled yet"}</dd></div>
+        </dl>
+      ) : (
+        <p className="text-sm text-muted-foreground">Off. Backups are made only when you create one.</p>
+      )}
+    </div>
+  )
+}
 
 function SectionSkeleton() {
   return (
@@ -507,6 +814,7 @@ function BandwidthUsageCard({ vmId, canEditQuota }: { vmId: string; canEditQuota
         )}
       </div>
       )}
+      <BandwidthHistory vmId={vmId} />
     </div>
   )
 }
@@ -627,6 +935,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const { data: backups, isLoading: backupsLoading, error: backupsError, refetch: refetchBackups } = useBackups(vmId)
   const createBackup = useCreateBackup(vmId)
   const deleteBackupMutation = useDeleteBackup(vmId)
+  const restoreBackup = useRestoreBackup(vmId)
   const { data: firewallRules, isLoading: firewallLoading, error: firewallError, refetch: refetchFirewall } = useFirewallRules(vmId)
   const deleteFirewallRule = useDeleteFirewallRule(vmId)
   const { data: templates } = useTemplates()
@@ -993,7 +1302,8 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
 
   const ramGB = Math.round(vm.resources.ram / 1024 * 10) / 10
   // A suspended VM is frozen for customers until support restores it.
-  const locked = !isAdmin && vm.status === "suspended"
+  const suspended = vm.suspended || vm.status === "suspended"
+  const locked = !isAdmin && suspended
   // Allocation, not usage: there is no fill level to draw, so no bar.
   const diskAllocated = (
     <div className="flex justify-between items-center">
@@ -1079,6 +1389,26 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
             >
               <Terminal className="w-4 h-4" />Console
             </Button>
+            {isAdmin && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={actionLoading !== null || !!transitionOf(vm.id)}
+                onClick={async () => {
+                  if (suspended) { handleAction("unsuspend"); return }
+                  const ok = await confirm({
+                    title: `Suspend ${vm.hostname}?`,
+                    description: "The VM is powered off and its owner can no longer start or change it until you unsuspend it. Unsuspending starts it again.",
+                    confirmLabel: "Suspend",
+                    destructive: true,
+                  })
+                  if (ok) handleAction("suspend")
+                }}
+              >
+                {(actionLoading === "suspend" || actionLoading === "unsuspend") && <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />}
+                {suspended ? "Unsuspend" : "Suspend"}
+              </Button>
+            )}
             {/* Deliberately quieter than Stop: it is the last resort for a VM
                 that ignores a normal shutdown. */}
             {vm.status === "running" && (
@@ -1936,6 +2266,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                         <th className="text-left p-3">Gateway</th>
                         <th className="text-left p-3">Netmask</th>
                         {isAdmin && <th className="text-left p-3">VLAN</th>}
+                        {isAdmin && <th className="text-left p-3">Anti-spoofing</th>}
                         <th className="text-left p-3">{isAdmin ? "Bandwidth" : "Speed limit"}</th>
                         <th className="text-left p-3">rDNS</th>
                         {isAdmin && <th className="text-right p-3"></th>}
@@ -1952,6 +2283,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                           <td className="p-3 font-mono">{iface.gateway || "—"}</td>
                           <td className="p-3 font-mono">{iface.netmask || "—"}</td>
                           {isAdmin && <td className="p-3 font-mono">{iface.vlan_id ?? "—"}</td>}
+                          {isAdmin && <td className="p-3"><AntiSpoofCell vmId={vmId} iface={iface} /></td>}
                           <td className="p-3">
                             {isAdmin ? <BandwidthCell vmId={vmId} iface={iface} /> : <span className="font-mono">{formatMbps(iface.bandwidth_limit)}</span>}
                           </td>
@@ -2057,6 +2389,8 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
 
             {/* Data disks: admin only until billing for extra disks is decided. */}
             {isAdmin && <DisksCard vmId={vmId} />}
+
+            <PortForwardsCard vmId={vmId} />
 
             {/* Bandwidth Usage */}
             <BandwidthUsageCard vmId={vmId} canEditQuota={isAdmin} />
@@ -2166,6 +2500,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
 
         {/* Backups Tab */}
         <TabsContent value="backups">
+          <BackupScheduleCard vmId={vmId} />
           <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
@@ -2201,7 +2536,34 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                       }`}>
                         {backup.status}
                       </span>
-                      <Button variant="ghost" size="sm" onClick={() => handleDeleteBackup(backup.id)} disabled={deleteBackupMutation.isPending && deleteBackupMutation.variables === backup.id}>
+                      {backup.status === "completed" && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={locked}
+                          onClick={() => confirm({
+                            title: "Restore this backup?",
+                            description: `The VM's disk is replaced with the backup from ${formatDate(backup.created_at)}. Everything written since then is lost. The VM must be stopped first.`,
+                            confirmLabel: "Restore backup",
+                            destructive: true,
+                            action: async () => {
+                              await restoreBackup.mutateAsync(backup.id)
+                              toast.success("Restore started")
+                            },
+                          })}
+                        >
+                          Restore
+                        </Button>
+                      )}
+                      <Button variant="ghost" size="sm" onClick={async () => {
+                        const ok = await confirm({
+                          title: "Delete this backup?",
+                          description: `The backup from ${formatDate(backup.created_at)} is removed for good.`,
+                          confirmLabel: "Delete backup",
+                          destructive: true,
+                        })
+                        if (ok) handleDeleteBackup(backup.id)
+                      }} disabled={deleteBackupMutation.isPending && deleteBackupMutation.variables === backup.id}>
                         {deleteBackupMutation.isPending && deleteBackupMutation.variables === backup.id && <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />}
                         Delete
                       </Button>

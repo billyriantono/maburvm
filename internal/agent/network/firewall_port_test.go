@@ -1,6 +1,9 @@
 package network
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The panel accepts "80", "1000-11000" and "80,443"; iptables wants a colon for
 // a range and -m multiport for anything that is not a single port. A mismatch
@@ -58,5 +61,31 @@ func TestNormalizePortSpec(t *testing.T) {
 				t.Errorf("normalizePortSpec(%q) multiport = %v, want %v", tt.in, multi, tt.wantMulti)
 			}
 		})
+	}
+}
+
+func TestBuildRuleSpecRemoteAddress(t *testing.T) {
+	base := FirewallRule{ID: "r", Protocol: "tcp", PortRange: "22", Action: "allow", Priority: 10}
+
+	in := base
+	in.Direction, in.SourceIP = "inbound", "198.51.100.0/24"
+	got, err := buildRuleSpec("vm", "192.0.2.10", in)
+	if err != nil || strings.Join(got[:6], " ") != "-p tcp -s 198.51.100.0/24 -d 192.0.2.10" {
+		t.Fatalf("inbound: %v %v", got, err)
+	}
+
+	// Outbound: the CIDR is the destination; two -s flags made iptables fail.
+	out := base
+	out.Direction, out.SourceIP = "outbound", "198.51.100.0/24"
+	got, err = buildRuleSpec("vm", "192.0.2.10", out)
+	if err != nil || strings.Join(got[:6], " ") != "-p tcp -s 192.0.2.10 -d 198.51.100.0/24" {
+		t.Fatalf("outbound: %v %v", got, err)
+	}
+
+	// An IPv6 remote is not an IPv4 rule, and not an error either.
+	v6 := base
+	v6.Direction, v6.SourceIP = "inbound", "2001:db8::/32"
+	if got, err := buildRuleSpec("vm", "192.0.2.10", v6); got != nil || err != nil {
+		t.Fatalf("v6 remote: %v %v", got, err)
 	}
 }

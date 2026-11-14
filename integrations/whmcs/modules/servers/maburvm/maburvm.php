@@ -286,6 +286,112 @@ function maburvm_lifecycle(array $params, $event, $action)
 }
 
 /**
+ * Send one event for this service's VM. $extra is merged into the event data.
+ * Returns 'success' or an error string, or the decoded reply when $raw is set.
+ */
+function maburvm_vmEvent(array $params, $event, array $extra = [], $raw = false)
+{
+    try {
+        $vmId = maburvm_vmId($params);
+        if ($vmId === '') {
+            return 'MaburVM: no VM ID is stored for this service.';
+        }
+        $data = array_merge([
+            'user_id' => maburvm_panelUserId($params),
+            'vm_id' => $vmId,
+            'external_ref' => 'whmcs-' . $params['serviceid'],
+        ], $extra);
+        list($code, $resp) = maburvm_sendEvent($params, $event, $data, 'whmcs-' . $event . '-' . uniqid('', true));
+        if ($code >= 200 && $code < 300 && !empty($resp['success'])) {
+            return $raw ? $resp : 'success';
+        }
+        return 'MaburVM ' . $event . ' failed: ' . (isset($resp['message']) ? $resp['message'] : ('HTTP ' . $code));
+    } catch (\Throwable $e) {
+        logModuleCall('maburvm', $event, $params['serviceid'], $e->getMessage(), $e->getTraceAsString());
+        return $e->getMessage();
+    }
+}
+
+/**
+ * Upgrade or downgrade: apply the new product's CPU, memory and disk. A
+ * running VM is shut down and booted again by the panel. Disk only grows.
+ */
+function maburvm_ChangePackage(array $params)
+{
+    return maburvm_vmEvent($params, 'vm.resize', [
+        'vm_specs' => [
+            'cpu' => (int) $params['configoption2'],
+            'memory' => (int) $params['configoption3'],
+            'disk' => (int) $params['configoption4'],
+        ],
+    ]);
+}
+
+/**
+ * Set the root password to the one saved on the service. The VM must be running.
+ */
+function maburvm_ChangePassword(array $params)
+{
+    return maburvm_vmEvent($params, 'vm.reset_password', ['password' => $params['password']]);
+}
+
+/**
+ * Staff power buttons on the service page.
+ */
+function maburvm_AdminCustomButtonArray()
+{
+    return ['Start' => 'start', 'Stop' => 'stop', 'Reboot' => 'restart'];
+}
+
+function maburvm_start(array $params)
+{
+    return maburvm_vmEvent($params, 'vm.start');
+}
+
+function maburvm_stop(array $params)
+{
+    return maburvm_vmEvent($params, 'vm.stop');
+}
+
+function maburvm_restart(array $params)
+{
+    return maburvm_vmEvent($params, 'vm.restart');
+}
+
+/**
+ * Daily usage sync: traffic used and allowed this period, and the disk
+ * allowance, for every active service on this server. Disk used is left alone;
+ * the panel does not measure it.
+ */
+function maburvm_UsageUpdate(array $params)
+{
+    $services = \WHMCS\Service\Service::where('server', $params['serverid'])
+        ->where('domainstatus', 'Active')->get();
+    foreach ($services as $service) {
+        try {
+            $vmId = $service->serviceProperties->get('vm_id');
+            if (empty($vmId)) {
+                continue;
+            }
+            list($code, $resp) = maburvm_sendEvent($params, 'vm.usage', ['vm_id' => $vmId],
+                'whmcs-usage-' . uniqid('', true));
+            if ($code < 200 || $code >= 300 || empty($resp['success'])) {
+                continue;
+            }
+            $m = $resp['metadata'];
+            \WHMCS\Database\Capsule::table('tblhosting')->where('id', $service->id)->update([
+                'bwusage' => (int) $m['bandwidth_used_mb'],
+                'bwlimit' => (int) $m['bandwidth_limit_mb'],
+                'disklimit' => (int) $m['disk_limit_mb'],
+                'lastupdate' => \WHMCS\Database\Capsule::raw('now()'),
+            ]);
+        } catch (\Throwable $e) {
+            logModuleCall('maburvm', 'UsageUpdate', $service->id, $e->getMessage(), $e->getTraceAsString());
+        }
+    }
+}
+
+/**
  * "Test Connection" button in the Server configuration. Hits the public docs
  * endpoint to confirm the panel is reachable at the configured URL.
  */

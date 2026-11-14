@@ -751,6 +751,37 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 		newStatus = models.VMStatusSuspended
 	case VMOpUnsuspend:
 		newStatus = models.VMStatusRunning
+	case VMOpResize:
+		// A billing package change stops a running VM to resize it; boot it
+		// again here, after the resize, so the start cannot overtake it.
+		var p struct {
+			StartAfter bool `json:"start_after"`
+		}
+		_ = json.Unmarshal(job.Args.Params, &p)
+		if p.StartAfter {
+			// The stop was a guest shutdown request, which returns at once.
+			// The new CPU and memory apply only from a cold boot, so wait for
+			// the guest to power off (90s), cut power if it has not, then boot.
+			for i := 0; i < 30; i++ {
+				st, err := client.GetVMStatus(agentAuthContext(cmdCtx, node), &pb.VMStatusRequest{VmId: vm.ID})
+				if err == nil && st.GetState() != pb.VMState_VM_STATE_RUNNING {
+					break
+				}
+				time.Sleep(3 * time.Second)
+			}
+			_, _ = client.ExecuteVMCommand(agentAuthContext(cmdCtx, node), &pb.VMCommandRequest{
+				VmId: vm.ID, Command: pb.VMCommandType_VM_COMMAND_TYPE_FORCE_STOP,
+			})
+			sresp, serr := client.ExecuteVMCommand(agentAuthContext(cmdCtx, node), &pb.VMCommandRequest{
+				VmId: vm.ID, Command: pb.VMCommandType_VM_COMMAND_TYPE_START,
+			})
+			if serr != nil || !sresp.GetSuccess() {
+				w.logger.ErrorContext(ctx, "resize done but the VM did not start again",
+					"vm_id", vm.ID, "error", serr, "detail", sresp.GetMessage())
+			} else {
+				newStatus = models.VMStatusRunning
+			}
+		}
 	}
 
 	// Record what the agent just confirmed about the VM's ISO drive, so the
@@ -899,11 +930,19 @@ func (w *VMOperationWorker) cleanupDeletedVM(ctx context.Context, vmID string) e
 // boot; a shorter deadline made River retry while the agent was still working,
 // and the two calls fought over the VM.
 func (w *VMOperationWorker) Timeout(job *river.Job[VMOperationJob]) time.Duration {
-	if job.Args.Operation == VMOpConfigureNetwork {
-		return 5 * time.Minute
+	// Every operation gets slightly more than the deadline its agent call
+	// runs under (an hour for create, five minutes otherwise). River's own
+	// default is one minute, which cancelled the panel side of a long create
+	// or rebuild while the agent carried on.
+	if job.Args.Operation == VMOpCreate {
+		return 65 * time.Minute
 	}
-	return 0 // River's default
+	return 6 * time.Minute
 }
+
+// netConfigLocks serialises network applies per VM; netConfigDone holds the
+// highest job ID applied per VM.
+var netConfigLocks, netConfigDone sync.Map
 
 // handleConfigureNetwork dispatches a ConfigureNetwork operation to the agent
 // via the ApplyNetworkConfig gRPC method.
@@ -941,7 +980,27 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 		return fmt.Errorf("failed to parse network config params: %w", err)
 	}
 
-	// Build proto firewall rules
+	// One apply per VM at a time, and a job that a newer one has already
+	// overtaken is dropped: the agent replaces the whole config, so applying
+	// an older snapshot last would undo the newer change. A guest
+	// reconfiguration is never dropped; nothing later repeats it.
+	// ponytail: in-process lock, use a Postgres advisory lock if the panel
+	// ever runs more than one worker process.
+	lock, _ := netConfigLocks.LoadOrStore(vm.ID, &sync.Mutex{})
+	lock.(*sync.Mutex).Lock()
+	defer lock.(*sync.Mutex).Unlock()
+	// The post-create step calls this with a job built by hand, which has no
+	// row behind it (and so no ID): it is never skipped and never recorded.
+	var jobID int64
+	if job.JobRow != nil {
+		jobID = job.ID
+	}
+	if last, ok := netConfigDone.Load(vm.ID); ok && jobID != 0 && last.(int64) > jobID && !params.ConfigureGuest {
+		return nil
+	}
+
+	// Rules and port forwards are read now, not taken from the job: the copy
+	// in the job is as old as the enqueue. The copy is the fallback only.
 	var fwRules []*pb.FirewallRule
 	for _, r := range params.FirewallRules {
 		fwRules = append(fwRules, &pb.FirewallRule{
@@ -952,6 +1011,24 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 			DestPort:   r.PortRange,
 			Priority:   int32(r.Priority),
 		})
+	}
+	var freshPFs []models.PortForward
+	havePFs := false
+	if globalWorkerContext != nil && globalWorkerContext.DB != nil {
+		if rules, err := repository.NewFirewallRepository(globalWorkerContext.DB).ListByVMID(ctx, vm.ID, 0, 0); err == nil {
+			fwRules = fwRules[:0]
+			for _, r := range rules {
+				fwRules = append(fwRules, &pb.FirewallRule{
+					Direction:  modelDirectionToProto(r.Direction),
+					Action:     modelActionToProto(r.Action),
+					Protocol:   r.Protocol,
+					SourceCidr: r.SourceIP,
+					DestPort:   r.PortRange,
+					Priority:   int32(r.Priority),
+				})
+			}
+		}
+		havePFs = globalWorkerContext.DB.WithContext(ctx).Where("vm_id = ?", vm.ID).Find(&freshPFs).Error == nil
 	}
 
 	// Build network interface with anti-spoofing flag + VLAN tag.
@@ -984,13 +1061,24 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 	}
 
 	var pfRules []*pb.PortForward
-	for _, pf := range params.PortForwards {
-		pfRules = append(pfRules, &pb.PortForward{
-			ExternalPort: int32(pf.ExternalPort),
-			InternalPort: int32(pf.InternalPort),
-			Protocol:     pf.Protocol,
-			SourceCidr:   pf.SourceIP,
-		})
+	if havePFs {
+		for _, pf := range freshPFs {
+			pfRules = append(pfRules, &pb.PortForward{
+				ExternalPort: int32(pf.ExternalPort),
+				InternalPort: int32(pf.InternalPort),
+				Protocol:     pf.Protocol,
+				SourceCidr:   pf.SourceIP,
+			})
+		}
+	} else {
+		for _, pf := range params.PortForwards {
+			pfRules = append(pfRules, &pb.PortForward{
+				ExternalPort: int32(pf.ExternalPort),
+				InternalPort: int32(pf.InternalPort),
+				Protocol:     pf.Protocol,
+				SourceCidr:   pf.SourceIP,
+			})
+		}
 	}
 
 	req := &pb.NetworkConfigRequest{
@@ -1029,6 +1117,10 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 			w.metrics.RecordJobFailed()
 		}
 		return fmt.Errorf("network config failed: %s", errMsg)
+	}
+
+	if last, ok := netConfigDone.Load(vm.ID); jobID != 0 && (!ok || last.(int64) < jobID) {
+		netConfigDone.Store(vm.ID, jobID)
 	}
 
 	w.logger.InfoContext(ctx, "network config applied successfully",

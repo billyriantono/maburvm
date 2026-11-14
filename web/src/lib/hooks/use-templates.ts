@@ -74,6 +74,16 @@ export function useUpdateTemplate(id: string) {
   })
 }
 
+// useSyncTemplate asks every active node to fetch the template image now,
+// instead of on the first VM that needs it.
+export function useSyncTemplate() {
+  return useMutation<void, Error, string>({
+    mutationFn: async (id) => {
+      await api.post(`/api/v1/templates/${id}/sync`, {})
+    },
+  })
+}
+
 export function useDeleteTemplate() {
   const queryClient = useQueryClient()
 

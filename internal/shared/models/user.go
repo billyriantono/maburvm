@@ -33,6 +33,10 @@ type User struct {
 	// code. Login gates on THIS flag, not on TwoFactorSecret presence, so an
 	// abandoned setup (secret written, never verified) can't lock the user out.
 	TwoFactorEnabled bool `json:"two_factor_enabled" gorm:"column:two_factor_enabled;not null;default:false"`
+	// ExpiresAt is set only on temporary accounts (support access): past it,
+	// the account cannot sign in and its sessions and API keys stop working.
+	// Read-only here; written by table name when the access is granted.
+	ExpiresAt *time.Time `json:"expires_at,omitempty" gorm:"column:expires_at;->"`
 	TwoFactorBackupCodes string    `json:"-" gorm:"type:varchar(1000)"` // Encrypted backup codes
 	IPWhitelist          []string  `json:"ip_whitelist" gorm:"type:jsonb;serializer:json" validate:"omitempty,dive,ip"`
 	CreatedAt            time.Time `json:"created_at" gorm:"not null;default:NOW()"`
@@ -77,4 +81,9 @@ func ValidateIPWhitelist(ips []string) error {
 		}
 	}
 	return nil
+}
+
+// Expired reports whether a temporary account has run out.
+func (u *User) Expired() bool {
+	return u.ExpiresAt != nil && time.Now().After(*u.ExpiresAt)
 }
