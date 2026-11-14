@@ -161,6 +161,31 @@ const OS_CATALOG: CatalogEntry[] = [
     url: "https://download.mikrotik.com/routeros/6.49.20/chr-6.49.20.img.zip",
     osType: "routeros",
   },
+  // Windows cannot be downloaded: Microsoft does not allow an image to be
+  // handed out. These register the file scripts/build-windows-template.sh
+  // writes on a node, at the path its documentation uses.
+  {
+    id: "windows-2025",
+    name: "Windows Server",
+    version: "2025",
+    family: "Windows",
+    arch: "x86_64",
+    sizeHint: "~7 GB",
+    description: "Standard, with desktop. Built on your nodes; no licence included, owners activate with their own key",
+    url: "/var/lib/libvirt/templates/windows-2025.qcow2",
+    osType: "windows",
+  },
+  {
+    id: "windows-2022",
+    name: "Windows Server",
+    version: "2022",
+    family: "Windows",
+    arch: "x86_64",
+    sizeHint: "~5 GB",
+    description: "Standard, with desktop. Built on your nodes; no licence included, owners activate with their own key",
+    url: "/var/lib/libvirt/templates/windows-2022.qcow2",
+    osType: "windows",
+  },
 ]
 
 type AddState = "idle" | "adding" | "added" | "error"
@@ -260,15 +285,20 @@ export default function TemplateCatalogPage() {
         })}
       </div>
 
-      {/* Windows cannot be listed: there is no image anyone may hand out. */}
+      {/* The Windows entries register a file the operator builds; say how. */}
       <div className="mt-6 rounded-lg border bg-card p-5 text-sm text-card-foreground">
-        <h2 className="font-semibold">Windows Server</h2>
+        <h2 className="font-semibold">Before adding Windows Server</h2>
         <p className="mt-1 max-w-3xl text-muted-foreground">
-          Microsoft does not allow a Windows image to be shared, so none is listed here. Build your own on a node with{" "}
-          <code className="font-mono text-foreground">scripts/build-windows-template.sh --version 2022 --out /var/lib/libvirt/templates/windows-2022.qcow2</code>{" "}
-          (about fifteen minutes after the download, unattended), then add it under{" "}
-          <Link href="/templates/new" className="font-medium text-foreground underline">Add from URL</Link> with the system type set to Windows.
-          It installs without a licence: each customer activates their VM with their own key.
+          Microsoft does not allow a Windows image to be shared, so there is nothing to download. Build the image on every
+          node that should offer it (about fifteen minutes after the download, unattended), then add the entry above:
+        </p>
+        <pre className="mt-3 overflow-x-auto rounded-md border bg-muted px-3 py-2 font-mono text-xs text-foreground">
+          scripts/build-windows-template.sh --version 2025 --out /var/lib/libvirt/templates/windows-2025.qcow2
+        </pre>
+        <p className="mt-3 max-w-3xl text-muted-foreground">
+          A VM created on a node that does not have the file fails with a message naming the missing path.
+          For another edition or your own licensed media, build with the script&apos;s options and use{" "}
+          <Link href="/templates/new" className="font-medium text-foreground underline">Add from URL</Link>.
         </p>
       </div>
 
