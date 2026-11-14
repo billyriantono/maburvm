@@ -41,7 +41,7 @@ export default function NewTemplatePage() {
     else if (name.trim().length > 100) next.name = "Name must be 100 characters or fewer"
     if (!version.trim()) next.version = "Version is required"
     if (!url.trim()) next.url = "Image URL is required"
-    else if (!/^https?:\/\/.+/i.test(url.trim())) next.url = "Enter a valid http(s) URL"
+    else if (!/^(https?:\/\/.+|\/.+)/i.test(url.trim())) next.url = "Enter an http(s) URL, or a file path that exists on the nodes"
     setErrors(next)
     return Object.keys(next).length === 0
   }
@@ -166,7 +166,8 @@ export default function NewTemplatePage() {
             <LinkIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <Input
               id="template-url"
-              type="url"
+              type="text"
+              inputMode="url"
               placeholder="https://example.com/image.qcow2"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
@@ -196,9 +197,12 @@ export default function NewTemplatePage() {
           >
             <option value="linux">Linux</option>
             <option value="routeros">MikroTik RouterOS (CHR)</option>
+            <option value="windows">Windows Server</option>
           </select>
           <p id="template-os-type-help" className="text-xs text-muted-foreground mt-2">
-            {osType === "routeros"
+            {osType === "windows"
+              ? "The image must carry the virtio drivers, the QEMU guest agent and cloudbase-init: build one with scripts/build-windows-template.sh, which also explains licensing. The name, address and Administrator password are set on first start. Give a file path that exists on every node, or a URL the nodes can reach."
+              : osType === "routeros"
               ? "The address, name and admin password are written to the router's disk before its first start. SSH keys and first-boot scripts do not apply. Builds 6.49.21 to 6.49.23 do not keep their settings as a VM; use 6.49.20 or a version 7 build."
               : "The address, name, root password and SSH keys are set through cloud-init and the image's filesystem. The image needs cloud-init."}
           </p>

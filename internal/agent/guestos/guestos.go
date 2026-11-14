@@ -16,13 +16,16 @@ const (
 	Linux = models.OSTypeLinux
 	// RouterOS is MikroTik's Cloud Hosted Router, versions 6 and 7.
 	RouterOS = models.OSTypeRouterOS
+	// Windows is Windows Server from an image carrying virtio drivers, the
+	// QEMU guest agent and cloudbase-init (scripts/build-windows-template.sh).
+	Windows = models.OSTypeWindows
 )
 
 // Known reports whether this agent can install the kind. A panel newer than
 // the agent may ask for one it has never heard of; that must be refused, not
 // installed as if it were Linux.
 func Known(osType string) bool {
-	return osType == Linux || osType == RouterOS
+	return osType == Linux || osType == RouterOS || osType == Windows
 }
 
 // Normalize maps a recorded kind to one this agent handles, Linux when unsure.

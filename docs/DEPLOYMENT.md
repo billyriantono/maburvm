@@ -413,3 +413,56 @@ make docker-prod-down    # down
 The web service waits for `panel` (`/readyz` healthy); `panel` waits for
 `postgres` and `minio` (`service_healthy`). Supported `depends_on` relationships
 include `restart: true` so a depended-on service restart is propagated.
+
+## 12. Templates that are not Linux
+
+A template records what kind of system its image holds (Templates, Add from
+URL, "System type"). The kind decides how a VM built from it is set up, and a
+VM can only be reinstalled with a template of the same kind.
+
+Each node needs `guestfish` (package `libguestfs-tools`) for RouterOS, the
+same package the Linux path already uses for `virt-customize`.
+
+### MikroTik RouterOS (CHR)
+
+The template catalog lists the builds that were tested: 7.24.6 and 6.49.20.
+The node downloads MikroTik's zipped image itself. A router gets its address,
+gateway, DNS, name and a generated admin password before its first start.
+
+- Do not use RouterOS 6.49.21, 6.49.22 or 6.49.23. As a VM they never save
+  their configuration, so every restart returns the router to its first-boot
+  state, password included.
+- A password reset on RouterOS 7 restarts the router: version 7 does not let
+  the guest agent change users, so the new password is applied at start-up.
+- Routers get no default firewall rules, SSH keys or first-boot script.
+- MikroTik's free licence limits each interface to 1 Mbps of upload until the
+  owner adds a licence of their own.
+
+### Windows Server
+
+Microsoft does not allow a Windows image to be redistributed, so none is
+listed. Build one on a node (about fifteen minutes once the media is
+downloaded, unattended, nothing installed on the host):
+
+```bash
+scripts/build-windows-template.sh --version 2022 \
+  --out /var/lib/libvirt/templates/windows-2022.qcow2
+```
+
+Then add it under Templates, Add from URL, with the system type set to Windows
+and that path. The file must be at the same path on every node that should
+offer it, or be served from a URL the nodes can reach.
+
+- By default the script uses Microsoft's evaluation media, which runs
+  unactivated for 180 days. The owner of a VM activates it with their own key:
+  `DISM /Online /Set-Edition:ServerStandard /ProductKey:XXXXX-XXXXX-XXXXX-XXXXX-XXXXX /AcceptEula`.
+  Pass `--iso` to build from your own licensed media instead. Whether your
+  licensing terms allow hosting it for customers is yours to check.
+- A Windows VM needs at least 2 GB of memory and a 32 GB disk; smaller orders
+  are refused.
+- Windows takes about two minutes after creation to finish setting itself up.
+  It is reached over Remote Desktop as Administrator; the default firewall
+  opens 3389 instead of 22.
+- An image built another way must carry the virtio drivers, the QEMU guest
+  agent and cloudbase-init reading the NoCloud disc, and must have
+  `RealTimeIsUniversal` set, or its clock will be off by its time-zone offset.

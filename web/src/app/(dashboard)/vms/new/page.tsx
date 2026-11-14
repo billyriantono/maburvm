@@ -362,9 +362,9 @@ function NewVMForm() {
         vlan_id: vlanId,
         cpu_model: data.cpuModel || undefined,
         // A router takes neither: both are delivered through Linux's cloud-init.
-        user_data: isRouter ? undefined : data.userData || undefined,
-        ssh_key_ids: isRouter ? [] : selectedKeyIds,
-        ssh_public_keys: isRouter ? [] : pastedKeyList,
+        user_data: notLinux ? undefined : data.userData || undefined,
+        ssh_key_ids: notLinux ? [] : selectedKeyIds,
+        ssh_public_keys: notLinux ? [] : pastedKeyList,
       })
       // The create endpoint always makes the caller the owner, so "Assign to
       // User" is applied as a reassignment right after. A failure here must not
@@ -392,8 +392,12 @@ function NewVMForm() {
     return templates.find(t => t.id === watchedValues.templateId)
   }
   // A router is reached as admin with a password and is not set up by cloud-init.
-  const isRouter = !sourceImageId && getSelectedTemplate()?.os_type === "routeros"
-  const loginUser = isRouter ? "admin" : "root"
+  const selectedOS = (!sourceImageId && getSelectedTemplate()?.os_type) || "linux"
+  const isRouter = selectedOS === "routeros"
+  const isWindows = selectedOS === "windows"
+  // Neither a router nor Windows is set up through Linux's cloud-init.
+  const notLinux = isRouter || isWindows
+  const loginUser = isRouter ? "admin" : isWindows ? "Administrator" : "root"
 
   const getSelectedNode = () => {
     return nodes.find(n => n.id === watchedValues.nodeId)
@@ -442,6 +446,8 @@ function NewVMForm() {
               Shown <strong>once</strong>. Save it now.{" "}
               {isRouter
                 ? <>Sign in as <code className="font-mono">admin</code> with this password, in WinBox, over SSH or on the console.</>
+                : isWindows
+                ? <>Sign in as <code className="font-mono">Administrator</code> with this password, over Remote Desktop or on the console, once Windows has finished setting itself up (about ten minutes).</>
                 : <>Log in as <code className="font-mono">root</code> with this password, on the console or when the SSH key is not at hand.</>}
             </p>
             <div className="flex items-center gap-2 rounded-md border bg-background p-3">
@@ -856,7 +862,7 @@ function NewVMForm() {
               </div>
 
               {/* Recipe selector (fills the script below from a saved recipe) */}
-              {recipes.length > 0 && !isRouter && (
+              {recipes.length > 0 && !notLinux && (
                 <div className="space-y-2">
                   <label htmlFor="recipeId" className="text-sm font-medium">Recipe (optional)</label>
                   <select
@@ -882,7 +888,7 @@ function NewVMForm() {
               )}
 
               {/* Startup script / recipe */}
-              <div className="space-y-2" hidden={isRouter}>
+              <div className="space-y-2" hidden={notLinux}>
                 <label htmlFor="userData" className="text-sm font-medium">Startup Script (optional)</label>
                 <textarea
                   id="userData"
@@ -1008,6 +1014,13 @@ function NewVMForm() {
                 </p>
               )}
 
+              {isWindows && (
+                <p className="border-t pt-5 text-sm text-muted-foreground">
+                  Windows gets its name, address and a generated Administrator password on first start, which takes
+                  about ten minutes. SSH keys and start-up scripts are for Linux images and are not used. It needs at
+                  least 2 GB of memory and a 32 GB disk, and comes without a licence: its owner activates it with their own key.
+                </p>
+              )}
               {isRouter && (
                 <p className="border-t pt-5 text-sm text-muted-foreground">
                   The router gets its address, name and a generated admin password before it first starts.
@@ -1017,7 +1030,7 @@ function NewVMForm() {
               )}
 
               {/* SSH keys — injected into the new guest's root account */}
-              <div className="border-t pt-5" hidden={isRouter}>
+              <div className="border-t pt-5" hidden={notLinux}>
                 <h3 className="font-semibold text-sm mb-1">SSH Keys</h3>
                 <p className="text-xs text-muted-foreground mb-3">Injected into the new VM&apos;s root account for key-based login. Select saved keys and/or paste one below.</p>
 

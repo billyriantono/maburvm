@@ -4,22 +4,32 @@ import "strings"
 
 // The kinds of system a template can hold. The kind decides how a VM built
 // from it is set up: Linux through cloud-init, RouterOS through a script on
-// its disk.
+// its disk, Windows through cloudbase-init reading the cloud-init disc.
 const (
 	OSTypeLinux    = "linux"
 	OSTypeRouterOS = "routeros"
+	OSTypeWindows  = "windows"
+)
+
+// Windows Server does not install or run usefully below these.
+const (
+	WindowsMinRAMMB  = 2048
+	WindowsMinDiskGB = 32
 )
 
 // ValidOSType reports whether t is a kind this build can install.
 func ValidOSType(t string) bool {
-	return t == OSTypeLinux || t == OSTypeRouterOS
+	return t == OSTypeLinux || t == OSTypeRouterOS || t == OSTypeWindows
 }
 
 // OSLoginUser is the account a new VM of this kind is reached with, and the
 // one a password reset changes.
 func OSLoginUser(osType string) string {
-	if osType == OSTypeRouterOS {
+	switch osType {
+	case OSTypeRouterOS:
 		return "admin"
+	case OSTypeWindows:
+		return "Administrator"
 	}
 	return "root"
 }

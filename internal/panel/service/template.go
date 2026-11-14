@@ -86,7 +86,7 @@ type CreateTemplateRequest struct {
 	FileURL     string `json:"file_url" validate:"required,url"`
 	Description string `json:"description" validate:"max=500"`
 	// OSType is the kind of system in the image. Empty means Linux.
-	OSType string `json:"os_type" validate:"omitempty,oneof=linux routeros"`
+	OSType string `json:"os_type" validate:"omitempty,oneof=linux routeros windows"`
 }
 
 // CreateTemplateResponse contains the created template data
@@ -101,7 +101,7 @@ type UpdateTemplateRequest struct {
 	Version     string `json:"version,omitempty" validate:"omitempty,max=50"`
 	Description string `json:"description,omitempty" validate:"omitempty,max=500"`
 	IsActive    *bool  `json:"is_active,omitempty"`
-	OSType      string `json:"os_type,omitempty" validate:"omitempty,oneof=linux routeros"`
+	OSType      string `json:"os_type,omitempty" validate:"omitempty,oneof=linux routeros windows"`
 }
 
 // SyncTemplateRequest contains data for syncing a template to nodes

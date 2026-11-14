@@ -300,6 +300,35 @@ func generateDomainXML(config VMConfig) (string, error) {
 		},
 	}
 
+	// Windows runs noticeably better when told it is on a hypervisor it knows:
+	// without these it burns CPU on timers and its clock drifts. The hardware
+	// clock stays on UTC like every other VM's; the image is built to read it
+	// that way (RealTimeIsUniversal), which keeps the time right whatever time
+	// zone the owner sets. The tablet makes the console's pointer land where
+	// the cursor is.
+	if guestos.Normalize(config.OSType) == guestos.Windows {
+		on := libvirtxml.DomainFeatureState{State: "on"}
+		domain.Features.HyperV = &libvirtxml.DomainFeatureHyperV{
+			Relaxed:   &on,
+			VAPIC:     &on,
+			Spinlocks: &libvirtxml.DomainFeatureHyperVSpinlocks{DomainFeatureState: on, Retries: 8191},
+			VPIndex:   &on,
+			Runtime:   &on,
+			Synic:     &on,
+			STimer:    &libvirtxml.DomainFeatureHyperVSTimer{DomainFeatureState: on},
+		}
+		domain.Clock = &libvirtxml.DomainClock{
+			Offset: "utc",
+			Timer: []libvirtxml.DomainTimer{
+				{Name: "rtc", TickPolicy: "catchup"},
+				{Name: "pit", TickPolicy: "delay"},
+				{Name: "hpet", Present: "no"},
+				{Name: "hypervclock", Present: "yes"},
+			},
+		}
+		domain.Devices.Inputs = []libvirtxml.DomainInput{{Type: "tablet", Bus: "usb"}}
+	}
+
 	// Cloud-init NoCloud reliability: advertise "ds=nocloud" via the SMBIOS system
 	// serial in addition to attaching the cidata seed. On Debian/Ubuntu cloud
 	// images the cidata volume ALONE is not enough — cloud-init's ds-identify runs

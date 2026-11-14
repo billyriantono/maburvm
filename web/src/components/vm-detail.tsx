@@ -1032,7 +1032,9 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const vmTemplate = templates?.find((t) => t.id === vm?.os_template_id)
   const osType = vmTemplate?.os_type || "linux"
   const isRouter = osType === "routeros"
-  const loginUser = isRouter ? "admin" : "root"
+  const isWindows = osType === "windows"
+  const isLinux = !isRouter && !isWindows
+  const loginUser = isRouter ? "admin" : isWindows ? "Administrator" : "root"
   const installableTemplates = (templates ?? []).filter((t) => {
     const path = (t.image_path || "").trim()
     return t.is_active && path !== "" && path !== "/imported" && (t.os_type || "linux") === osType
@@ -1312,7 +1314,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
         template_id: selectedTemplate,
         preserve_ip: true,
         password: rebuildPassword || undefined,
-        ssh_key_ids: !isRouter && rebuildKeyIds.length ? rebuildKeyIds : undefined,
+        ssh_key_ids: isLinux && rebuildKeyIds.length ? rebuildKeyIds : undefined,
       })
       setRebuildDialogOpen(false)
       setConfirmVMName("")
@@ -1624,8 +1626,10 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                     {(templates ?? []).some((t) => t.is_active && (t.os_type || "linux") !== osType) && (
                       <p className="mt-2 text-xs text-muted-foreground">
                         {isRouter
-                          ? "Only RouterOS versions are listed: this VM's virtual hardware is set up for a router. To run Linux, create a new VM."
-                          : "RouterOS is not listed: it needs different virtual hardware. To run it, create a new VM."}
+                          ? "Only RouterOS versions are listed: this VM's virtual hardware is set up for a router. For another system, create a new VM."
+                          : isWindows
+                            ? "Only Windows versions are listed: this VM's virtual hardware is set up for Windows. For another system, create a new VM."
+                            : "Only Linux systems are listed: RouterOS and Windows need different virtual hardware. To run one, create a new VM."}
                       </p>
                     )}
                   </div>
@@ -1644,14 +1648,14 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                       className="border font-mono text-sm"
                     />
                     <p id="rebuild-password-help" className="mt-1 text-xs text-muted-foreground">
-                      {isRouter
-                        ? "A generated password is shown once after you confirm."
-                        : "A generated password is shown once after you confirm, even when SSH keys are selected, so the VM can still be reached without the key."}
+                      {isLinux
+                        ? "A generated password is shown once after you confirm, even when SSH keys are selected, so the VM can still be reached without the key."
+                        : "A generated password is shown once after you confirm."}
                     </p>
                   </div>
 
-                  {/* SSH keys: installed through the Linux filesystem, so not offered for a router. */}
-                  <div hidden={isRouter}>
+                  {/* SSH keys: installed through the Linux filesystem, so offered for Linux only. */}
+                  <div hidden={!isLinux}>
                     <span className="text-xs font-medium text-muted-foreground mb-2 block">SSH Keys</span>
                     {!sshKeys?.length ? (
                       <p className="text-xs text-muted-foreground">
@@ -1920,6 +1924,8 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                   <DialogDescription className="text-sm text-muted-foreground">
                     {isRouter
                       ? "Sets a new password for the admin user. RouterOS 7 only accepts this at start-up, so the router is restarted to apply it; expect it to be unreachable for under a minute."
+                      : isWindows
+                        ? "Sets a new password for the Administrator account through the guest agent inside Windows. The VM must be running. Windows refuses a password that does not meet its complexity rules."
                       : isAdmin
                         ? "Sets a new root password on the running guest via the QEMU guest agent. The VM must be running and have qemu-guest-agent installed."
                         : "Sets a new root password inside the VM. The VM must be running."}
@@ -1993,10 +1999,20 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
               <section className="p-4">
                 <h2 className="mb-1.5 text-xs font-medium text-muted-foreground">Sign in</h2>
                 {primaryIP ? (
+                  isWindows ? (
+                    <>
+                      <p className="font-medium">
+                        <span className="font-mono break-all">{primaryIP}</span>
+                        {copyLink(primaryIP, "rdp", "the address")}
+                      </p>
+                      <p className="mt-1 text-xs text-muted-foreground">Open Remote Desktop to this address and sign in as {loginUser}.</p>
+                    </>
+                  ) : (
                   <p className="font-medium">
                     <span className="font-mono break-all">ssh {loginUser}@{primaryIP}</span>
                     {copyLink(`ssh ${loginUser}@${primaryIP}`, "ssh", "the SSH command")}
                   </p>
+                  )
                 ) : (
                   <p className="text-muted-foreground">
                     No address yet.{" "}
@@ -2171,7 +2187,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
             <h2 className="px-6 py-4 text-base font-semibold flex items-center gap-2">
               Access
             </h2>
-            <ActionRow title={`Password for ${loginUser}`} description={isRouter ? "Set a new password for the router's admin user. The router may restart to apply it." : isAdmin ? "Set a new root password inside the VM through the guest agent." : "Set a new root password inside the running VM."}>
+            <ActionRow title={`Password for ${loginUser}`} description={isRouter ? "Set a new password for the router's admin user. The router may restart to apply it." : isWindows ? "Set a new password for the Administrator account inside the running VM." : isAdmin ? "Set a new root password inside the VM through the guest agent." : "Set a new root password inside the running VM."}>
               <Button variant="outline" size="sm" onClick={() => setResetPwOpen(true)} disabled={locked}>
                 <KeyRound className="w-4 h-4" />Reset password
               </Button>

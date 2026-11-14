@@ -97,3 +97,33 @@ func TestOSTypeRoundTrip(t *testing.T) {
 		t.Error("defaults changed")
 	}
 }
+
+func TestWindowsNetworkScript(t *testing.T) {
+	s, err := WindowsNetworkScript(WindowsNetwork{MAC: "52:54:00:ab:cd:ef", Address: "192.0.2.10", Prefix: 24, Gateway: "192.0.2.1",
+		IPv6Address: "2001:db8:20:5::1/64", IPv6DNS: []string{"2606:4700:4700::1111"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"$_.MacAddress -eq '52-54-00-AB-CD-EF'",
+		"New-NetIPAddress -InterfaceIndex $i -IPAddress '192.0.2.10' -PrefixLength 24 -DefaultGateway '192.0.2.1'",
+		"New-NetIPAddress -InterfaceIndex $i -IPAddress '2001:db8:20:5::1' -PrefixLength 64",
+		"-NextHop 'fe80::1'",
+		"-ServerAddresses 1.1.1.1,8.8.8.8,2606:4700:4700::1111",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("script lacks %q\n%s", want, s)
+		}
+	}
+	// Nothing reaches PowerShell unparsed.
+	for _, n := range []WindowsNetwork{
+		{MAC: "52:54:00:ab:cd:ef'; Restart-Computer; '", Address: "192.0.2.10", Prefix: 24},
+		{MAC: "52:54:00:ab:cd:ef", Address: "192.0.2.10'; x", Prefix: 24},
+		{MAC: "52:54:00:ab:cd:ef", Address: "192.0.2.10", Prefix: 24, Gateway: "$(x)"},
+		{MAC: "52:54:00:ab:cd:ef", Address: "192.0.2.10", Prefix: 24, IPv6Address: "2001:db8::1/64'; x"},
+	} {
+		if _, err := WindowsNetworkScript(n); err == nil {
+			t.Errorf("accepted %+v", n)
+		}
+	}
+}

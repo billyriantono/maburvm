@@ -209,3 +209,28 @@ func TestUserDataGuestAgentRefreshesPackageLists(t *testing.T) {
 		t.Fatalf("guest agent install must retry after refreshing apt lists:\n%s", ud)
 	}
 }
+
+func TestWindowsSeed(t *testing.T) {
+	cfg := Config{InstanceID: "vm-1", Hostname: "win-01", MACAddress: "52:54:00:AB:CD:EF", IPAddress: "192.0.2.10", Prefix: 24,
+		Gateway: "192.0.2.1", Password: `Pa55 "quoted" $x`, SSHPublicKey: "ssh-ed25519 AAAA x", UserData: "#!/bin/sh\necho hi", Windows: true}
+	ud := userData(cfg)
+	// The password goes to the Administrator account as one unbreakable scalar,
+	// and nothing meant for Linux is written.
+	if !strings.Contains(ud, "- name: Administrator\n    passwd: \"Pa55 \\\"quoted\\\" $x\"\n") {
+		t.Errorf("user-data does not set the Administrator password:\n%s", ud)
+	}
+	for _, linuxOnly := range []string{"chpasswd", "ssh_authorized_keys", "runcmd", "write_files", "sudoers"} {
+		if strings.Contains(ud, linuxOnly) {
+			t.Errorf("Windows user-data carries %q:\n%s", linuxOnly, ud)
+		}
+	}
+	nc := networkConfig(cfg)
+	for _, want := range []string{`macaddress: "52:54:00:ab:cd:ef"`, "- 192.0.2.10/24", "gateway4: 192.0.2.1", "dhcp4: false"} {
+		if !strings.Contains(nc, want) {
+			t.Errorf("network-config lacks %q:\n%s", want, nc)
+		}
+	}
+	if strings.Contains(nc, "set-name") || strings.Contains(nc, "routes:") {
+		t.Errorf("network-config uses forms cloudbase-init does not read:\n%s", nc)
+	}
+}

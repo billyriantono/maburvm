@@ -260,6 +260,18 @@ export default function TemplateCatalogPage() {
         })}
       </div>
 
+      {/* Windows cannot be listed: there is no image anyone may hand out. */}
+      <div className="mt-6 rounded-lg border bg-card p-5 text-sm text-card-foreground">
+        <h2 className="font-semibold">Windows Server</h2>
+        <p className="mt-1 max-w-3xl text-muted-foreground">
+          Microsoft does not allow a Windows image to be shared, so none is listed here. Build your own on a node with{" "}
+          <code className="font-mono text-foreground">scripts/build-windows-template.sh --version 2022 --out /var/lib/libvirt/templates/windows-2022.qcow2</code>{" "}
+          (about fifteen minutes after the download, unattended), then add it under{" "}
+          <Link href="/templates/new" className="font-medium text-foreground underline">Add from URL</Link> with the system type set to Windows.
+          It installs without a licence: each customer activates their VM with their own key.
+        </p>
+      </div>
+
       {/* Footer actions */}
       <div className="mt-8 flex items-center justify-between border-t pt-6">
         <p className="text-xs text-muted-foreground">

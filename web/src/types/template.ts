@@ -1,6 +1,6 @@
 // The kinds of system a template can hold. The kind decides how a VM built
 // from it is set up, and which account it is reached with.
-export type OSType = "linux" | "routeros";
+export type OSType = "linux" | "routeros" | "windows";
 
 // OSTemplate represents an operating system template for VM provisioning
 export interface OSTemplate {

@@ -34,3 +34,19 @@ func TestDomainXMLRecordsTheKindOfSystem(t *testing.T) {
 		t.Errorf("a VM that names no kind is not a Linux q35 domain:\n%s", x)
 	}
 }
+
+func TestDomainXMLForWindows(t *testing.T) {
+	x, err := generateDomainXML(VMConfig{Name: "vm", UUID: "1b4e28ba-2fa1-11d2-883f-0016d3cca427", CPU: 2, Memory: 4096,
+		DiskPath: "/tmp/vm.qcow2", Bridge: "br0", OSType: guestos.Windows})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`offset="utc"`, `name="hypervclock"`, `<hyperv>`, `<relaxed state="on">`, `type="tablet"`, `machine="q35"`} {
+		if !strings.Contains(x, want) {
+			t.Errorf("a Windows domain lacks %s:\n%s", want, x)
+		}
+	}
+	if guestos.FromDomainXML(x) != guestos.Windows {
+		t.Error("a Windows domain does not read back as Windows")
+	}
+}

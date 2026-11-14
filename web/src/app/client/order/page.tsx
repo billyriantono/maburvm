@@ -71,9 +71,13 @@ function OrderVMForm() {
     (t) => t.is_active && t.image_path !== "/imported"
   )
   const selectedPlan = activePlans.find((p) => p.id === planId)
-  // A router is reached as admin with a password; it takes no SSH keys at order time.
-  const isRouter = !sourceImageId && activeTemplates.find((t) => t.id === templateId)?.os_type === "routeros"
-  const loginUser = isRouter ? "admin" : "root"
+  // A router is reached as admin and Windows as Administrator, each with a
+  // password; neither takes SSH keys at order time.
+  const orderOS = (!sourceImageId && activeTemplates.find((t) => t.id === templateId)?.os_type) || "linux"
+  const isRouter = orderOS === "routeros"
+  const isWindows = orderOS === "windows"
+  const takesKeys = orderOS === "linux"
+  const loginUser = isRouter ? "admin" : isWindows ? "Administrator" : "root"
 
   const hostnameValid = /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/.test(hostname)
   // Region is required: it is a physical location with real latency
@@ -109,7 +113,7 @@ function OrderVMForm() {
         // Do NOT send bandwidth_mbps/node/pool — clients may not set
         // infrastructure/network placement (server rejects it). The backend
         // derives bandwidth + placement from the plan automatically.
-        ssh_key_ids: isRouter ? [] : selectedKeyIds,
+        ssh_key_ids: takesKeys ? selectedKeyIds : [],
         // Placing the VM in one of the customer's own private networks. Ownership
         // is verified server-side, and the network also decides which node the VM
         // lands on, since a private network lives on one host.
@@ -159,6 +163,8 @@ function OrderVMForm() {
             <p className="text-xs text-muted-foreground mt-2">
               {isRouter
                 ? <>Sign in as <span className="font-mono">admin</span> with this password, in WinBox, over SSH or on the console. You can change it later from inside the router.</>
+                : isWindows
+                ? <>Sign in as <span className="font-mono">Administrator</span> with this password, over Remote Desktop or on the console. Windows needs about ten minutes to finish setting itself up before it accepts it.</>
                 : <>Log in as <span className="font-mono">root</span> with this password, on the console or over SSH when your key is not at hand. You can change it later from inside the VM.</>}
             </p>
           </div>
@@ -294,6 +300,12 @@ function OrderVMForm() {
                     To lift it, add your own Cloud Hosted Router licence from inside the router after it is created.
                   </p>
                 )}
+                {isWindows && (
+                  <p className="mt-3 rounded-md border bg-muted/50 px-3 py-2 text-sm text-muted-foreground">
+                    Windows Server comes without a licence. Activate it with your own product key after it is created.
+                    It needs a plan with at least 2 GB of memory and a 32 GB disk.
+                  </p>
+                )}
               </>
             )}
           </Step>
@@ -345,10 +357,14 @@ function OrderVMForm() {
             </Step>
           )}
 
-          <Step title="SSH keys" optional last hint={isRouter ? "Not used for a router: you sign in as admin with a password that is generated and shown once." : "Keys ticked here are installed for root. A root password is also generated and shown once, so you can still get in without the key."}>
+          <Step title="SSH keys" optional last hint={isRouter ? "Not used for a router: you sign in as admin with a password that is generated and shown once." : isWindows ? "Not used for Windows: you sign in as Administrator with a password that is generated and shown once." : "Keys ticked here are installed for root. A root password is also generated and shown once, so you can still get in without the key."}>
             {isRouter ? (
               <p className="text-sm text-muted-foreground">
                 RouterOS keeps SSH keys per user inside the router. Add yours there after the first sign-in.
+              </p>
+            ) : isWindows ? (
+              <p className="text-sm text-muted-foreground">
+                Windows is reached over Remote Desktop with the Administrator password.
               </p>
             ) : !sshKeys?.length ? (
               <p className="text-sm text-muted-foreground">
@@ -406,7 +422,7 @@ function OrderVMForm() {
               {!!regionVPCs.length && <SummaryRow label="Network" value={selectedVPC ? selectedVPC.name : "Public address"} />}
               <SummaryRow
                 label="Login"
-                value={isRouter ? "Admin password" : selectedKeyIds.length ? `${selectedKeyIds.length} SSH ${selectedKeyIds.length === 1 ? "key" : "keys"} and a password` : "Root password"}
+                value={isRouter ? "Admin password" : isWindows ? "Administrator password" : selectedKeyIds.length ? `${selectedKeyIds.length} SSH ${selectedKeyIds.length === 1 ? "key" : "keys"} and a password` : "Root password"}
               />
             </dl>
             <div className="border-t p-5">

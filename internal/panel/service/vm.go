@@ -577,6 +577,14 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 	if req.CloneSourceRef != "" {
 		imagePath = req.CloneSourceRef
 	}
+	// Windows does not finish installing on less, and the node keeps a disk
+	// at least as large as the image, so a smaller plan would be given more
+	// than it pays for. Clones are exempt: their disk already exists.
+	if template.OSType == models.OSTypeWindows && req.CloneSourceRef == "" &&
+		(req.Resources.RAM < models.WindowsMinRAMMB || req.Resources.Disk < models.WindowsMinDiskGB) {
+		return nil, fmt.Errorf("%w: Windows Server needs at least %d GB of memory and a %d GB disk; choose a larger size",
+			ErrInvalidResources, models.WindowsMinRAMMB/1024, models.WindowsMinDiskGB)
+	}
 	// The node is told what kind of system this is with the image itself.
 	imagePath = models.GuestImageRef(template.OSType, imagePath)
 	linuxGuest := template.OSType == "" || template.OSType == models.OSTypeLinux
@@ -655,8 +663,8 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 	// caller's password (or a generated one) and any selected SSH keys so the VM
 	// is actually usable on first boot — matching the rebuild flow.
 	rootPassword := req.Password
-	// A router's image has an empty admin password and no keys to fall back
-	// on, so it always gets one, asked for or not.
+	// A router's image has an empty admin password, a Windows one a password
+	// nobody knows, and neither has keys to fall back on: both always get one.
 	generatePassword := req.RegeneratePassword || !linuxGuest
 	if rootPassword == "" && generatePassword {
 		rootPassword = generateRootPassword()
@@ -729,7 +737,7 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 	// A router is not given one: it carries tunnels and routing protocols no
 	// short list of ports can anticipate, and it has a firewall of its own.
 	if template.OSType != models.OSTypeRouterOS {
-		s.seedDefaultFirewall(ctx, vm.ID)
+		s.seedDefaultFirewall(ctx, vm.ID, template.OSType)
 	}
 
 	return &CreateVMResponse{
@@ -750,9 +758,14 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 //
 // The rules are enforced on the host by the post-create network-config apply
 // in the create worker (and by any later firewall resync).
-func (s *VMService) seedDefaultFirewall(ctx context.Context, vmID string) {
+func (s *VMService) seedDefaultFirewall(ctx context.Context, vmID, osType string) {
+	// The way in: SSH, or Remote Desktop on Windows.
+	remote := "22"
+	if osType == models.OSTypeWindows {
+		remote = "3389"
+	}
 	rules := []models.FirewallRule{
-		{VMID: vmID, Protocol: "tcp", PortRange: "22", Action: "allow", Direction: "inbound", SourceIP: "0.0.0.0/0", Priority: 10},
+		{VMID: vmID, Protocol: "tcp", PortRange: remote, Action: "allow", Direction: "inbound", SourceIP: "0.0.0.0/0", Priority: 10},
 		{VMID: vmID, Protocol: "icmp", Action: "allow", Direction: "inbound", SourceIP: "0.0.0.0/0", Priority: 20},
 		{VMID: vmID, Protocol: "tcp", PortRange: "80", Action: "allow", Direction: "inbound", SourceIP: "0.0.0.0/0", Priority: 30},
 		{VMID: vmID, Protocol: "tcp", PortRange: "443", Action: "allow", Direction: "inbound", SourceIP: "0.0.0.0/0", Priority: 40},
@@ -2508,8 +2521,11 @@ func osKind(osType string) string {
 
 // osKindName is the kind as shown to people.
 func osKindName(osType string) string {
-	if osKind(osType) == models.OSTypeRouterOS {
+	switch osKind(osType) {
+	case models.OSTypeRouterOS:
 		return "RouterOS"
+	case models.OSTypeWindows:
+		return "Windows"
 	}
 	return "Linux"
 }

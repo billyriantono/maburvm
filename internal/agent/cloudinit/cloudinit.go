@@ -6,6 +6,7 @@ package cloudinit
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -31,6 +32,10 @@ type Config struct {
 	SSHKeys      []string // optional additional authorized keys
 	Password     string   // optional root password (plaintext) to set via chpasswd
 	UserData     string   // optional first-boot script/recipe run once per instance
+	// Windows renders the seed for cloudbase-init, which reads the same disc
+	// but understands a smaller vocabulary: the password is set for the
+	// Administrator account, and nothing Linux-only is written.
+	Windows bool
 }
 
 // authorizedKeys returns the de-duplicated set of public keys from both
@@ -122,7 +127,58 @@ func metaData(cfg Config) string {
 	return fmt.Sprintf("instance-id: %s\nlocal-hostname: %s\n", cfg.InstanceID, host)
 }
 
+// windowsUserData sets the Administrator password. cloudbase-init takes it in
+// the clear (Windows cannot be handed a hash), so the string is written as a
+// JSON scalar, which YAML reads as is and which cannot be broken out of.
+func windowsUserData(cfg Config) string {
+	if cfg.Password == "" {
+		return "#cloud-config\n"
+	}
+	quoted, _ := json.Marshal(cfg.Password)
+	return "#cloud-config\nusers:\n  - name: Administrator\n    passwd: " + string(quoted) + "\n"
+}
+
+// windowsNetworkConfig is network-config v2 in the form cloudbase-init reads:
+// gateway4/gateway6 rather than a routes list, and no interface renaming.
+func windowsNetworkConfig(cfg Config) string {
+	var b strings.Builder
+	b.WriteString("version: 2\nethernets:\n  primary:\n")
+	if cfg.MACAddress != "" {
+		b.WriteString(fmt.Sprintf("    match:\n      macaddress: \"%s\"\n", strings.ToLower(cfg.MACAddress)))
+	}
+	if cfg.IPAddress == "" || cfg.Prefix <= 0 {
+		b.WriteString("    dhcp4: true\n")
+		return b.String()
+	}
+	b.WriteString("    dhcp4: false\n    addresses:\n")
+	b.WriteString(fmt.Sprintf("      - %s/%d\n", cfg.IPAddress, cfg.Prefix))
+	ns := []string{"1.1.1.1", "8.8.8.8"}
+	if cfg.IPv6Address != "" {
+		b.WriteString(fmt.Sprintf("      - %s\n", cfg.IPv6Address))
+		v6ns := cfg.IPv6DNS
+		if len(v6ns) == 0 {
+			v6ns = []string{"2606:4700:4700::1111", "2001:4860:4860::8888"}
+		}
+		ns = append(ns, v6ns...)
+	}
+	if cfg.Gateway != "" {
+		b.WriteString(fmt.Sprintf("    gateway4: %s\n", cfg.Gateway))
+	}
+	if cfg.IPv6Address != "" {
+		gw := cfg.IPv6Gateway
+		if gw == "" {
+			gw = "fe80::1"
+		}
+		b.WriteString(fmt.Sprintf("    gateway6: %s\n", gw))
+	}
+	b.WriteString(fmt.Sprintf("    nameservers:\n      addresses: [%s]\n", strings.Join(ns, ", ")))
+	return b.String()
+}
+
 func userData(cfg Config) string {
+	if cfg.Windows {
+		return windowsUserData(cfg)
+	}
 	var b strings.Builder
 	b.WriteString("#cloud-config\n")
 	if cfg.Hostname != "" {
@@ -199,6 +255,9 @@ func userData(cfg Config) string {
 
 // networkConfig renders cloud-init network-config v2 (netplan-style).
 func networkConfig(cfg Config) string {
+	if cfg.Windows {
+		return windowsNetworkConfig(cfg)
+	}
 	var b strings.Builder
 	b.WriteString("version: 2\n")
 	b.WriteString("ethernets:\n")

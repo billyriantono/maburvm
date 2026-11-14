@@ -304,7 +304,8 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 		if req.Config != nil && req.Config.RootPassword != "" && libvirt.GuestOSType(req.VmId) == guestos.RouterOS {
 			err = s.runRouterOSScript(ctx, req.VmId, guestos.RouterOSPasswordScript(req.Config.RootPassword))
 		} else if req.Config != nil && req.Config.RootPassword != "" {
-			err = libvirt.SetVMPassword(req.VmId, "root", req.Config.RootPassword)
+			// root, or Administrator on Windows: its guest agent sets it the same way.
+			err = libvirt.SetVMPassword(req.VmId, models.OSLoginUser(libvirt.GuestOSType(req.VmId)), req.Config.RootPassword)
 		} else {
 			err = fmt.Errorf("root_password required for RESET_PASSWORD")
 		}
@@ -569,12 +570,15 @@ func (s *NodeAgentService) applyGuestNetwork(ctx context.Context, vmID, ip strin
 		return err
 	}
 
-	if libvirt.GuestOSType(vmID) == guestos.RouterOS {
+	switch libvirt.GuestOSType(vmID) {
+	case guestos.RouterOS:
 		script, err := guestos.RouterOSNetworkScript(routerOSNetwork(ip, prefix, gateway, v6))
 		if err != nil {
 			return err
 		}
 		return s.runRouterOSScript(ctx, vmID, script)
+	case guestos.Windows:
+		return applyWindowsNetwork(ctx, vmID, ip, prefix, gateway, v6)
 	}
 
 	mac, err := libvirt.GetVMInterfaceMAC(vmID)
@@ -661,6 +665,41 @@ func (s *NodeAgentService) applyGuestNetwork(ctx context.Context, vmID, ip strin
 		return fmt.Errorf("virt-customize: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	log.Printf("[NodeAgent] guest %s reconfigured on disk to %s/%d", vmID, ip, prefix)
+	return nil
+}
+
+// applyWindowsNetwork re-addresses a running Windows guest through its guest
+// agent. There is no fallback: a Windows disk is not edited from outside, and
+// a stopped VM has no agent to ask. The host side of the change is already in
+// place, so the error says what is left to do by hand.
+func applyWindowsNetwork(ctx context.Context, vmID, ip string, prefix int, gateway string, v6 guestIPv6) error {
+	mac, err := libvirt.GetVMInterfaceMAC(vmID)
+	if err != nil {
+		return err
+	}
+	info, err := libvirt.GetVMInfo(vmID)
+	if err != nil {
+		return err
+	}
+	script, err := guestos.WindowsNetworkScript(guestos.WindowsNetwork{
+		MAC: mac, Address: ip, Prefix: prefix, Gateway: gateway,
+		IPv6Address: v6.Address, IPv6Gateway: v6.Gateway, IPv6DNS: v6.DNS,
+	})
+	if err != nil {
+		return err
+	}
+	if info.Status != libvirt.VMStatusRunning {
+		return fmt.Errorf("the VM is off, so Windows could not be given %s/%d; start it and assign the address again", ip, prefix)
+	}
+	_, err = guestos.WindowsExec(info.Name, script, 60*time.Second)
+	for deadline := time.Now().Add(guestAgentWait); err != nil && ctx.Err() == nil && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Second)
+		_, err = guestos.WindowsExec(info.Name, script, 60*time.Second)
+	}
+	if err != nil {
+		return fmt.Errorf("Windows was not given %s/%d (its guest agent must be running); set it in the VM's network settings: %w", ip, prefix, err)
+	}
+	log.Printf("[NodeAgent] Windows guest %s reconfigured live to %s/%d", vmID, ip, prefix)
 	return nil
 }
 
@@ -1333,6 +1372,7 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 		SSHPublicKey: cfg.SshPublicKey,
 		Password:     cfg.RootPassword,
 		UserData:     cfg.UserData,
+		Windows:      osType == guestos.Windows,
 	}, seedPath); err != nil {
 		log.Printf("[NodeAgent] cloud-init seed not attached for VM %s (guest will use DHCP): %v", req.VmId, err)
 		seedPath = ""
@@ -1382,8 +1422,10 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 		go func() {
 			if osType != guestos.Linux {
 				// The restart below exists for Linux images edited on disk. A
-				// router is up and configured within seconds of its first boot,
-				// so it is only announced.
+				// router is configured within seconds of its first boot, and
+				// Windows spends its first minutes finishing its own setup and
+				// must not be switched off in the middle of it. Both are only
+				// announced.
 				for i := 0; i < 25; i++ {
 					_ = sendGratuitousARP(bridge, ip, mac)
 					time.Sleep(5 * time.Second)
@@ -1549,6 +1591,7 @@ func (s *NodeAgentService) rebuildVM(req *pb.VMCommandRequest) error {
 		SSHPublicKey: cfg.SshPublicKey,
 		Password:     cfg.RootPassword,
 		UserData:     cfg.UserData,
+		Windows:      osType == guestos.Windows,
 	}, seedPath); err != nil {
 		// Non-fatal: the rebuilt guest still boots; it just won't pick up the new
 		// password/keys via cloud-init.
