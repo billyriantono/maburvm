@@ -762,6 +762,24 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 		newStatus = models.VMStatusSuspended
 	case VMOpUnsuspend:
 		newStatus = models.VMStatusRunning
+	case VMOpRebuild:
+		// A reinstall ends like a create: the VM is started on its fresh disk
+		// and the host is given its network state again (the firewall may have
+		// gained a rule for the new system's way in). A VM that does not start
+		// is left stopped and says so in the log; the reinstall itself is done.
+		startCtx, cancelStart := context.WithTimeout(ctx, 2*time.Minute)
+		sresp, serr := client.ExecuteVMCommand(agentAuthContext(startCtx, node), &pb.VMCommandRequest{
+			VmId: vm.ID, Command: pb.VMCommandType_VM_COMMAND_TYPE_START,
+		})
+		cancelStart()
+		if serr != nil || !sresp.GetSuccess() {
+			newStatus = models.VMStatusStopped
+			w.logger.ErrorContext(ctx, "reinstall done but the VM did not start",
+				"vm_id", vm.ID, "error", serr, "detail", sresp.GetMessage())
+		} else {
+			newStatus = models.VMStatusRunning
+			w.applyPostCreateNetworkConfig(ctx, client, node, vm)
+		}
 	case VMOpResize:
 		// A billing package change stops a running VM to resize it; boot it
 		// again here, after the resize, so the start cannot overtake it.

@@ -154,11 +154,4 @@ func TestRouterOSLifecycle(t *testing.T) {
 	if v7 && !holds(secondPassword) {
 		t.Errorf("after reinstall the router does not hold its password")
 	}
-
-	// A Linux template must be refused for this VM, before its disk is touched.
-	linux := request("x")
-	linux.Config.ImageId = image
-	if err := s.rebuildVM(linux); err == nil || !strings.Contains(err.Error(), "cannot be reinstalled") {
-		t.Errorf("reinstalling a router as Linux: err = %v, want a refusal", err)
-	}
 }

@@ -61,8 +61,8 @@ var (
 	// ErrVMNodeInactive is returned when trying to execute an agent-backed VM
 	// operation while the owning node is offline or in maintenance.
 	ErrVMNodeInactive = errors.New("VM node is not active")
-	// ErrRebuildOSKind is returned when a reinstall asks for another kind of system
-	ErrRebuildOSKind = errors.New("reinstall not possible")
+	// ErrRebuildNotPossible is returned when a VM cannot take the system asked for
+	ErrRebuildNotPossible = errors.New("reinstall not possible")
 	// ErrVMCannotBeModified is returned when trying to modify a VM that's not stopped
 	ErrVMCannotBeModified = errors.New("VM cannot be modified while running")
 )
@@ -773,6 +773,43 @@ func (s *VMService) seedDefaultFirewall(ctx context.Context, vmID, osType string
 	if err := s.db.WithContext(ctx).Create(&rules).Error; err != nil {
 		s.logger.WarnContext(ctx, "failed to seed default firewall rules; VM inbound traffic is unrestricted",
 			"vm_id", vmID, "error", err)
+	}
+}
+
+// openRemoteAccess makes sure a VM that changes its kind of system can still
+// be reached once it has. A VM with firewall rules drops everything they do
+// not allow, and the rules it was given at creation open the old system's way
+// in: SSH for Linux, Remote Desktop for Windows. A VM with no rules is open
+// already and is left that way.
+func (s *VMService) openRemoteAccess(ctx context.Context, vmID, osType string) {
+	ports := []string{"22"}
+	switch osType {
+	case models.OSTypeWindows:
+		ports = []string{"3389"}
+	case models.OSTypeRouterOS:
+		ports = []string{"22", "8291"} // SSH and WinBox
+	}
+	var rules []models.FirewallRule
+	if err := s.db.WithContext(ctx).Where("vm_id = ?", vmID).Find(&rules).Error; err != nil || len(rules) == 0 {
+		return
+	}
+	priority := 0
+	open := map[string]bool{}
+	for _, r := range rules {
+		priority = max(priority, r.Priority)
+		if r.Direction == "inbound" && r.Action == "allow" && r.Protocol == "tcp" {
+			open[r.PortRange] = true
+		}
+	}
+	for _, port := range ports {
+		if open[port] {
+			continue
+		}
+		priority = min(priority+10, 1000)
+		rule := models.FirewallRule{VMID: vmID, Protocol: "tcp", PortRange: port, Action: "allow", Direction: "inbound", SourceIP: "0.0.0.0/0", Priority: priority}
+		if err := s.db.WithContext(ctx).Create(&rule).Error; err != nil {
+			s.logger.WarnContext(ctx, "could not open the new system's remote access port", "vm_id", vmID, "port", port, "error", err)
+		}
 	}
 }
 
@@ -2389,6 +2426,7 @@ func (s *VMService) RebuildVM(ctx context.Context, req *RebuildVMRequest) (*Rebu
 	}
 
 	// Validate template if specified
+	kindChanged := "" // the new kind of system, when it differs from the installed one
 	templateID := vm.OSTemplateID
 	if req.TemplateID != "" {
 		template, err := s.templateRepo.GetByID(ctx, req.TemplateID)
@@ -2401,13 +2439,21 @@ func (s *VMService) RebuildVM(ctx context.Context, req *RebuildVMRequest) (*Rebu
 		if !template.IsActive {
 			return nil, fmt.Errorf("OS template is not active")
 		}
-		// A VM is built for one kind of system (its virtual hardware and how it
-		// is set up), so a reinstall stays within that kind.
+		// Any kind of system can replace any other: the node rewrites the VM's
+		// virtual hardware for it. What cannot change is the VM's size.
+		if osKind(template.OSType) == models.OSTypeWindows &&
+			(vm.Resources.RAM < models.WindowsMinRAMMB || vm.Resources.Disk < models.WindowsMinDiskGB) {
+			return nil, fmt.Errorf("%w: Windows Server needs at least %d GB of memory and a %d GB disk, and this VM has %d MB and %d GB",
+				ErrRebuildNotPossible, models.WindowsMinRAMMB/1024, models.WindowsMinDiskGB, vm.Resources.RAM, vm.Resources.Disk)
+		}
 		if current, cerr := s.templateRepo.GetByID(ctx, vm.OSTemplateID); cerr == nil && osKind(current.OSType) != osKind(template.OSType) {
-			return nil, fmt.Errorf("%w: this VM runs %s and cannot be reinstalled as %s; create a new VM for that",
-				ErrRebuildOSKind, osKindName(current.OSType), osKindName(template.OSType))
+			kindChanged = osKind(template.OSType)
 		}
 		templateID = req.TemplateID
+	}
+
+	if kindChanged != "" {
+		s.openRemoteAccess(ctx, vm.ID, kindChanged)
 	}
 
 	// Update VM template if changed
@@ -2517,17 +2563,6 @@ func osKind(osType string) string {
 		return models.OSTypeLinux
 	}
 	return osType
-}
-
-// osKindName is the kind as shown to people.
-func osKindName(osType string) string {
-	switch osKind(osType) {
-	case models.OSTypeRouterOS:
-		return "RouterOS"
-	case models.OSTypeWindows:
-		return "Windows"
-	}
-	return "Linux"
 }
 
 // generateRootPassword returns a random 16-char alphanumeric password for a

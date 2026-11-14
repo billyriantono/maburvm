@@ -1522,15 +1522,9 @@ func (s *NodeAgentService) rebuildVM(req *pb.VMCommandRequest) error {
 	if req.Config == nil || req.Config.ImageId == "" {
 		return fmt.Errorf("template image is required for REBUILD")
 	}
-	// A domain is built for one kind of system (machine type, how it is set
-	// up). Putting another kind on its disk would give a VM that does not boot
-	// or cannot be configured, so that is refused before anything is touched.
 	osType, imageRef := models.SplitGuestImageRef(req.Config.ImageId)
 	if !guestos.Known(osType) {
 		return fmt.Errorf("this node's agent cannot install %q systems; update the agent", osType)
-	}
-	if have := libvirt.GuestOSType(req.VmId); have != osType {
-		return fmt.Errorf("this VM was built for %s and cannot be reinstalled with a %s template; create a new VM instead", have, osType)
 	}
 	templatePath, err := resolveTemplateImage(imageRef)
 	if err != nil {
@@ -1555,20 +1549,14 @@ func (s *NodeAgentService) rebuildVM(req *pb.VMCommandRequest) error {
 		gateway = iface.Gateway
 		v6 = guestIPv6From(iface.Ipv6Address, iface.Ipv6Gateway, iface.Ipv6Dns)
 	}
-	// Match create-time behaviour: a deterministic MAC keyed on the VM ID so the
-	// regenerated network-config still matches the (unchanged) domain NIC.
+	// The setup disc matches the network card by its MAC, so use the one the
+	// domain really has (an imported VM's is not derived from its ID).
 	if mac == "" {
-		mac = generateMAC(req.VmId)
-	}
-
-	if osType == guestos.RouterOS {
-		script, err := guestos.RouterOSSetupScript(hostname, cfg.RootPassword, routerOSNetwork(ip, prefix, gateway, v6))
-		if err != nil {
-			return err
+		if real, merr := libvirt.GetVMInterfaceMAC(req.VmId); merr == nil && real != "" {
+			mac = real
+		} else {
+			mac = generateMAC(req.VmId)
 		}
-		return libvirt.RebuildVM(req.VmId, templatePath, func(diskPath string) error {
-			return guestos.WriteRouterOSAutorun(diskPath, script)
-		})
 	}
 
 	// The seed sits beside the VM's disk, where create put it; writing it to
@@ -1578,6 +1566,50 @@ func (s *NodeAgentService) rebuildVM(req *pb.VMCommandRequest) error {
 		seedDir = filepath.Dir(disk)
 	}
 	seedPath := filepath.Join(seedDir, req.VmId+"-seed.iso")
+
+	// convert gives the VM the virtual hardware the new system needs when it
+	// is of another kind than the one installed (see ConvertDomainKind). It is
+	// called once the setup disc is ready, and undone if the reinstall fails.
+	convert := func(attachSeed bool) (undo func(), err error) {
+		have := libvirt.GuestOSType(req.VmId)
+		if have == osType {
+			return func() {}, nil
+		}
+		seed := ""
+		if _, serr := os.Stat(seedPath); attachSeed && serr == nil {
+			seed = seedPath
+		}
+		restore, err := libvirt.ConvertDomainKind(req.VmId, osType, seed)
+		if err != nil {
+			return nil, err
+		}
+		log.Printf("[NodeAgent] VM %s: definition converted from %s to %s for reinstall", req.VmId, have, osType)
+		return func() {
+			if rerr := restore(); rerr != nil {
+				log.Printf("[NodeAgent] WARNING: could not put back the %s definition of VM %s after a failed reinstall: %v", have, req.VmId, rerr)
+			}
+		}, nil
+	}
+
+	if osType == guestos.RouterOS {
+		script, err := guestos.RouterOSSetupScript(hostname, cfg.RootPassword, routerOSNetwork(ip, prefix, gateway, v6))
+		if err != nil {
+			return err
+		}
+		undo, err := convert(false)
+		if err != nil {
+			return err
+		}
+		if err := libvirt.RebuildVM(req.VmId, templatePath, func(diskPath string) error {
+			return guestos.WriteRouterOSAutorun(diskPath, script)
+		}); err != nil {
+			undo()
+			return err
+		}
+		_ = os.Remove(seedPath) // a router reads no setup disc
+		return nil
+	}
+
 	if err := cloudinit.GenerateSeedISO(cloudinit.Config{
 		InstanceID:   req.VmId,
 		Hostname:     hostname,
@@ -1598,7 +1630,30 @@ func (s *NodeAgentService) rebuildVM(req *pb.VMCommandRequest) error {
 		log.Printf("[NodeAgent] cloud-init seed not regenerated for rebuilt VM %s: %v", req.VmId, err)
 	}
 
-	return libvirt.RebuildVM(req.VmId, templatePath, nil)
+	undo, err := convert(true)
+	if err != nil {
+		return err
+	}
+	// A Linux disk is prepared exactly as at create: its address, name,
+	// password and keys are written into it, because cloud-init alone does not
+	// apply them on every image. Best-effort, as there: the setup disc is the
+	// fallback.
+	var prepare func(diskPath string) error
+	if osType == guestos.Linux {
+		prepare = func(diskPath string) error {
+			vmCfg := libvirt.VMConfig{MACAddress: mac, IPAddress: ip, Netmask: prefix, Gateway: gateway,
+				IPv6Address: v6.Address, IPv6Gateway: v6.Gateway, IPv6DNS: v6.DNS}
+			if ierr := injectGuestConfig(diskPath, hostname, vmCfg, cfg.RootPassword, cfg.SshPublicKey, cfg.UserData); ierr != nil {
+				log.Printf("[NodeAgent] guest config injection failed for reinstalled VM %s (guest may lack static networking): %v", req.VmId, ierr)
+			}
+			return nil
+		}
+	}
+	if err := libvirt.RebuildVM(req.VmId, templatePath, prepare); err != nil {
+		undo()
+		return err
+	}
+	return nil
 }
 
 // BackupDisk exports a VM's primary disk (compressed qcow2) and uploads it to

@@ -216,6 +216,17 @@ if ($p.ExitCode -notin 0, 3010) { throw "cloudbase-init setup exited $($p.ExitCo
 Copy-Item "$cd\cloudbase-init.conf" "$cb\conf\cloudbase-init.conf" -Force
 Copy-Item "$cd\cloudbase-init-unattend.conf" "$cb\conf\cloudbase-init-unattend.conf" -Force
 
+# The cloudbase-init service must not run while Windows is still setting itself
+# up on a VM's first boot. Left on automatic start it does, alongside the copy
+# setup itself runs, and restarts the machine under it: the VM then stops at
+# "The computer restarted unexpectedly" (or setup crashes) on a share of first
+# boots, more often on a busy host. So it ships disabled, and Windows' own
+# end-of-setup hook turns it on once setup is truly finished.
+Stop-Service cloudbase-init -Force -ErrorAction SilentlyContinue
+Set-Service cloudbase-init -StartupType Disabled
+New-Item -ItemType Directory -Force -Path "$env:SystemRoot\Setup\Scripts" | Out-Null
+Set-Content -Encoding ASCII -Path "$env:SystemRoot\Setup\Scripts\SetupComplete.cmd" -Value "sc config cloudbase-init start= auto`r`nnet start cloudbase-init"
+
 # Remote Desktop on, with network-level authentication, and answer ping.
 Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
 Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 1

@@ -1027,8 +1027,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const { data: templates } = useTemplates()
   // Same rule as the create wizard: inactive templates and "/imported"
   // placeholders have no base image, so building from them fails on the node.
-  // What the VM runs decides the account it is reached with and what a
-  // reinstall may offer: the node refuses to put another kind of system on it.
+  // What the VM runs decides the account it is reached with.
   const vmTemplate = templates?.find((t) => t.id === vm?.os_template_id)
   const osType = vmTemplate?.os_type || "linux"
   const isRouter = osType === "routeros"
@@ -1037,8 +1036,13 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const loginUser = isRouter ? "admin" : isWindows ? "Administrator" : "root"
   const installableTemplates = (templates ?? []).filter((t) => {
     const path = (t.image_path || "").trim()
-    return t.is_active && path !== "" && path !== "/imported" && (t.os_type || "linux") === osType
+    return t.is_active && path !== "" && path !== "/imported"
   })
+  // A reinstall may put another kind of system on the VM, so its dialog goes
+  // by the template chosen there, not by what is installed now.
+  const rebuildOS = installableTemplates.find((t) => t.id === selectedTemplate)?.os_type || osType
+  const rebuildUser = rebuildOS === "routeros" ? "admin" : rebuildOS === "windows" ? "Administrator" : "root"
+  const rebuildTooSmall = rebuildOS === "windows" && !!vm && (vm.resources.ram < 2048 || vm.resources.disk < 32)
   // Only nodes that can take work; migrating also needs a node other than this one.
   const activeNodes = (allNodes ?? []).filter((n) => n.status === "active")
   const migrateTargets = activeNodes.filter((n) => n.id !== vm?.node_id)
@@ -1314,7 +1318,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
         template_id: selectedTemplate,
         preserve_ip: true,
         password: rebuildPassword || undefined,
-        ssh_key_ids: isLinux && rebuildKeyIds.length ? rebuildKeyIds : undefined,
+        ssh_key_ids: rebuildOS === "linux" && rebuildKeyIds.length ? rebuildKeyIds : undefined,
       })
       setRebuildDialogOpen(false)
       setConfirmVMName("")
@@ -1322,7 +1326,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
       setRebuildPassword("")
       setRebuildKeyIds([])
       toast.success(`${rebuildWord} initiated`)
-      if (res.root_password) setSecret({ title: `New password for ${loginUser}`, value: res.root_password })
+      if (res.root_password) setSecret({ title: `New password for ${rebuildUser}`, value: res.root_password })
     } catch (err) {
       toast.error(`Failed to rebuild VM: ${(err as Error).message}`)
     }
@@ -1612,7 +1616,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                   <DialogDescription className="text-sm text-muted-foreground">
                     {isAdmin
                       ? "This will destroy the current VM and create a new one from a template. All data will be lost."
-                      : "Erases this VM and installs a fresh operating system. All data on it will be lost. The VM keeps its IP address."}
+                      : "Erases this VM and installs a fresh operating system. All data on it will be lost. The VM keeps its IP address and is started when the install is done."}
                   </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-4 py-4 max-h-[60vh] overflow-y-auto">
@@ -1623,20 +1627,22 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                     <div className="p-px [&>div]:md:grid-cols-2 [&>div]:2xl:grid-cols-2">
                       <OSPicker templates={installableTemplates} value={selectedTemplate} onChange={setSelectedTemplate} labelledBy="rebuild-os-title" />
                     </div>
-                    {(templates ?? []).some((t) => t.is_active && (t.os_type || "linux") !== osType) && (
+                    {rebuildOS !== osType && !rebuildTooSmall && (
                       <p className="mt-2 text-xs text-muted-foreground">
-                        {isRouter
-                          ? "Only RouterOS versions are listed: this VM's virtual hardware is set up for a router. For another system, create a new VM."
-                          : isWindows
-                            ? "Only Windows versions are listed: this VM's virtual hardware is set up for Windows. For another system, create a new VM."
-                            : "Only Linux systems are listed: RouterOS and Windows need different virtual hardware. To run one, create a new VM."}
+                        This is a different kind of system from the one installed. The VM keeps its address, size and
+                        network card; its virtual hardware is adjusted for the new system.
+                      </p>
+                    )}
+                    {rebuildTooSmall && (
+                      <p role="alert" className="mt-2 text-xs font-medium text-destructive">
+                        Windows Server needs at least 2 GB of memory and a 32 GB disk. This VM has {Math.round(vm.resources.ram / 102.4) / 10} GB and {vm.resources.disk} GB.
                       </p>
                     )}
                   </div>
 
                   {/* Root password */}
                   <div>
-                    <label htmlFor="rebuild-password" className="text-xs font-medium text-muted-foreground mb-2 block">Password for {loginUser}</label>
+                    <label htmlFor="rebuild-password" className="text-xs font-medium text-muted-foreground mb-2 block">Password for {rebuildUser}</label>
                     <Input
                       id="rebuild-password"
                       type="text"
@@ -1648,14 +1654,14 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                       className="border font-mono text-sm"
                     />
                     <p id="rebuild-password-help" className="mt-1 text-xs text-muted-foreground">
-                      {isLinux
+                      {rebuildOS === "linux"
                         ? "A generated password is shown once after you confirm, even when SSH keys are selected, so the VM can still be reached without the key."
                         : "A generated password is shown once after you confirm."}
                     </p>
                   </div>
 
                   {/* SSH keys: installed through the Linux filesystem, so offered for Linux only. */}
-                  <div hidden={!isLinux}>
+                  <div hidden={rebuildOS !== "linux"}>
                     <span className="text-xs font-medium text-muted-foreground mb-2 block">SSH Keys</span>
                     {!sshKeys?.length ? (
                       <p className="text-xs text-muted-foreground">
@@ -1692,7 +1698,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                 </div>
                 <DialogFooter>
                   <Button variant="ghost" onClick={() => setRebuildDialogOpen(false)}>Cancel</Button>
-                  <Button variant="destructive" disabled={confirmVMName !== vm.hostname || !selectedTemplate || rebuildVM.isPending} onClick={handleRebuild}>
+                  <Button variant="destructive" disabled={confirmVMName !== vm.hostname || !selectedTemplate || rebuildTooSmall || rebuildVM.isPending} onClick={handleRebuild}>
                     {rebuildVM.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}{rebuildWord} VM
                   </Button>
                 </DialogFooter>

@@ -417,8 +417,11 @@ include `restart: true` so a depended-on service restart is propagated.
 ## 12. Templates that are not Linux
 
 A template records what kind of system its image holds (Templates, Add from
-URL, "System type"). The kind decides how a VM built from it is set up, and a
-VM can only be reinstalled with a template of the same kind.
+URL, "System type"). The kind decides how a VM built from it is set up. A VM
+can be reinstalled with a template of any kind: the node rewrites the VM's
+virtual hardware to suit the new system and keeps its network card, addresses
+and console password. Windows needs at least 2 GB of memory and a 32 GB disk,
+so a smaller VM cannot be reinstalled as Windows.
 
 Each node needs `guestfish` (package `libguestfs-tools`) for RouterOS, the
 same package the Linux path already uses for `virt-customize`.
