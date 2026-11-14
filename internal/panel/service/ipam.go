@@ -111,7 +111,7 @@ func (s *IPAMService) CreatePool(ctx context.Context, req *CreateIPPoolRequest) 
 		if req.DelegatedPrefixLen == nil {
 			return nil, fmt.Errorf("link_prefix is only valid for a pool that delegates prefixes")
 		}
-		if _, err := prefixIdx(req.CIDR, *req.DelegatedPrefixLen, lp); err != nil {
+		if _, _, err := linkPrefixRange(req.CIDR, *req.DelegatedPrefixLen, lp); err != nil {
 			return nil, fmt.Errorf("link_prefix: %w", err)
 		}
 		linkPrefix = &lp
@@ -205,7 +205,7 @@ func (s *IPAMService) UpdatePool(ctx context.Context, id string, req *UpdateIPPo
 			if !pool.IsDelegated() {
 				return nil, fmt.Errorf("link_prefix is only valid for a pool that delegates prefixes")
 			}
-			if _, err := prefixIdx(pool.CIDR, *pool.DelegatedPrefixLen, lp); err != nil {
+			if _, _, err := linkPrefixRange(pool.CIDR, *pool.DelegatedPrefixLen, lp); err != nil {
 				return nil, fmt.Errorf("link_prefix: %w", err)
 			}
 			var held int64

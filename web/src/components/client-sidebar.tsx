@@ -12,6 +12,7 @@ import {
   User as UserIcon,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { useNavDrawer } from "@/components/nav-drawer"
 import { BrandMark, useBranding } from "@/lib/branding/provider"
 import type { User } from "@/types"
 
@@ -45,12 +46,15 @@ export const clientPages: { href: string; label: string }[] = [
 export function ClientSidebar({ user }: ClientSidebarProps) {
   const pathname = usePathname()
   const { branding } = useBranding()
+  const drawer = useNavDrawer()
   const isSettingsActive = pathname.startsWith("/client/settings") || pathname.startsWith("/settings")
 
   return (
-    <aside className="fixed left-0 top-0 z-50 h-screen w-64 bg-card border-r overflow-hidden">
+    <>
+    {drawer.controls}
+    <aside id="app-nav" className={cn("fixed left-0 top-0 z-50 h-screen w-64 bg-card border-r overflow-hidden", drawer.asideClass)}>
       {/* Logo */}
-      <div className="h-16 flex items-center px-6 border-b">
+      <div className="h-16 flex items-center gap-2 pl-6 pr-3 border-b">
         <Link href="/client/dashboard" className="flex items-center gap-2">
           <BrandMark />
           <div className="flex flex-col min-w-0">
@@ -62,6 +66,7 @@ export function ClientSidebar({ user }: ClientSidebarProps) {
             </span>
           </div>
         </Link>
+        {drawer.closeButton}
       </div>
 
       {/* Navigation */}
@@ -131,5 +136,6 @@ export function ClientSidebar({ user }: ClientSidebarProps) {
         </div>
       </nav>
     </aside>
+    </>
   )
 }

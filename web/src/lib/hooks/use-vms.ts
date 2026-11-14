@@ -368,8 +368,9 @@ export function useVMMetricsHistory(id: string, minutes = 60) {
   return useQuery<VMMetricSample[]>({
     queryKey: ['vms', 'metrics-history', id, minutes],
     queryFn: async () => {
+      // 360 points fills a chart at any width; the server averages longer windows down to it.
       const response = await api.get<VMMetricSample[]>(`/api/v1/vms/${id}/metrics/history`, {
-        params: { minutes },
+        params: { minutes, limit: 360 },
       })
       return response.data.data
     },
@@ -442,5 +443,39 @@ export function useReleaseVMIP(vmId: string) {
       queryClient.invalidateQueries({ queryKey: ['vms', vmId] })
       queryClient.invalidateQueries({ queryKey: ['networks', 'vm', vmId] })
     },
+  })
+}
+
+// The root password the panel generated for a VM, kept for a short time so its
+// owner can read it here instead of receiving it by email.
+export function useInitialPassword(vmId: string) {
+  return useQuery<{ available: boolean; expires_at: string | null }>({
+    queryKey: ['vms', 'initial-password', vmId],
+    queryFn: async () => {
+      const response = await api.get<{ available: boolean; expires_at: string | null }>(`/api/v1/vms/${vmId}/initial-password`)
+      return response.data.data
+    },
+    enabled: !!vmId,
+  })
+}
+
+// Reads the stored password. Every call is written to the audit log.
+export function useRevealInitialPassword(vmId: string) {
+  return useMutation<{ password: string; expires_at: string }, Error, void>({
+    mutationFn: async () => {
+      const response = await api.post<{ password: string; expires_at: string }>(`/api/v1/vms/${vmId}/initial-password/reveal`)
+      return response.data.data
+    },
+  })
+}
+
+// Erases the stored password now.
+export function useForgetInitialPassword(vmId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<void, Error, void>({
+    mutationFn: async () => {
+      await api.delete(`/api/v1/vms/${vmId}/initial-password`)
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['vms', 'initial-password', vmId] }),
   })
 }

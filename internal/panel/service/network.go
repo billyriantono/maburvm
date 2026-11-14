@@ -463,14 +463,21 @@ func (s *NetworkService) SetVLAN(ctx context.Context, vmID string, networkID str
 		return ErrNetworkNotFound
 	}
 
-	// Update VLAN ID
-	vlanID := req.VLANID
-	if err := s.networkRepo.UpdateVLANID(ctx, networkID, &vlanID); err != nil {
+	if req.VLANID < 0 || req.VLANID > 4094 {
+		return fmt.Errorf("VLAN ID must be between 1 and 4094, or 0 for none")
+	}
+	// Update VLAN ID. 0 clears it: the VM goes back to the untagged network.
+	var vlan *int
+	if req.VLANID > 0 {
+		v := req.VLANID
+		vlan = &v
+	}
+	if err := s.networkRepo.UpdateVLANID(ctx, networkID, vlan); err != nil {
 		return fmt.Errorf("failed to update VLAN ID: %w", err)
 	}
 
 	// Enqueue VLAN config job to agent
-	network.VLANID = &vlanID
+	network.VLANID = vlan
 	if err := s.enqueueNetworkConfigJob(ctx, vm, network); err != nil {
 		fmt.Printf("failed to enqueue VLAN config job: %v\n", err)
 	}
@@ -771,10 +778,12 @@ func (s *NetworkService) enqueueNetworkConfig(ctx context.Context, vm *models.VM
 	// The VM's routed IPv6 prefix rides on the primary interface in the same
 	// job: the agent applies one interface set per job, so a separate v6 job
 	// would clobber the v4 one (and vice versa).
-	if p, err := vmIPv6Prefix(ctx, s.db, vm.ID); err == nil && p != nil {
-		params.IPv6Prefix = p.Prefix
-		params.IPv6Address = p.Address()
-		params.IPv6Gateway = models.IPv6LinkLocalGateway
+	if v6, err := vmIPv6(ctx, s.db, vm.ID); err == nil && v6 != nil {
+		// A routed prefix has a Prefix; an address on a shared subnet has none
+		// and comes with that subnet's real gateway.
+		params.IPv6Prefix = v6.Prefix
+		params.IPv6Address = v6.Address
+		params.IPv6Gateway = v6.Gateway
 	}
 	if others, err := s.networkRepo.ListByVMID(ctx, vm.ID); err == nil {
 		for _, o := range others {

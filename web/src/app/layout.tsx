@@ -1,14 +1,13 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
 import "./globals.css";
 import { cn } from "@/lib/utils";
 import { QueryProvider } from "@/lib/query-provider";
 import { ConfirmProvider } from "@/components/confirm-provider";
 import { BrandingProvider } from "@/lib/branding/provider";
 import { type Branding, faviconOf, themeVars, withDefaults } from "@/lib/branding/core";
+import { brandFont, monoFont } from "@/lib/branding/font";
+import { ThemeProvider } from "next-themes";
 import { Toaster } from "sonner";
-
-const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
 
 // Read on the server for every request, so the first paint already carries the
 // operator's name, colour and icon. It goes through this app's own /api
@@ -42,14 +41,18 @@ export default async function RootLayout({
 }>) {
   const branding = await loadBranding();
   return (
-    <html lang="en" className={cn("font-sans", inter.variable)} style={themeVars(branding) as React.CSSProperties}>
-      <body className={inter.className}>
-        <QueryProvider>
-          <BrandingProvider initial={branding}>
-            <ConfirmProvider>{children}</ConfirmProvider>
-          </BrandingProvider>
-        </QueryProvider>
-        <Toaster richColors position="top-right" />
+    // suppressHydrationWarning: the theme class is set on <html> before React
+    // loads, so the server and first client render differ there by design.
+    <html lang="en" suppressHydrationWarning className={cn("font-sans", brandFont.variable, monoFont.variable)} data-brand={Object.keys(themeVars(branding)).length ? "" : undefined} style={themeVars(branding) as React.CSSProperties}>
+      <body className="font-sans">
+        <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
+          <QueryProvider>
+            <BrandingProvider initial={branding}>
+              <ConfirmProvider>{children}</ConfirmProvider>
+            </BrandingProvider>
+          </QueryProvider>
+          <Toaster richColors position="top-right" />
+        </ThemeProvider>
       </body>
     </html>
   );

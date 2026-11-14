@@ -277,6 +277,7 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 			if cerr := s.networkMgr.CleanupVMNetwork(req.VmId); cerr != nil {
 				log.Printf("[NodeAgent] WARNING: network cleanup after destroy of %s: %v", req.VmId, cerr)
 			}
+			s.networkMgr.ForgetVM(req.VmId)
 		}
 	case pb.VMCommandType_VM_COMMAND_TYPE_PAUSE:
 		err = libvirt.SuspendVM(req.VmId)
@@ -467,6 +468,19 @@ type guestIPv6 struct {
 	Address string
 	Gateway string
 	DNS     []string
+}
+
+// onLinkIPv6Prefix returns the interface's IPv6 address as a /128 when it sits
+// on a shared subnet (an address but no routed prefix); empty otherwise.
+func onLinkIPv6Prefix(iface *pb.NetworkInterface) string {
+	if iface == nil || iface.Ipv6Prefix != "" || iface.Ipv6Address == "" {
+		return ""
+	}
+	host := strings.SplitN(iface.Ipv6Address, "/", 2)[0]
+	if ip := net.ParseIP(host); ip == nil || ip.To4() != nil {
+		return ""
+	}
+	return host + "/128"
 }
 
 func guestIPv6From(address, gateway string, dns []string) guestIPv6 {
@@ -2355,6 +2369,9 @@ func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *pb.Netwo
 			bridge = primary.BridgeName
 		}
 		ipv6 = &network.IPv6Delegation{Prefix: primary.Ipv6Prefix, MAC: mac, Bridge: bridge}
+	} else if onLink := onLinkIPv6Prefix(primary); onLink != "" {
+		// An address on a shared subnet, with no routed prefix behind it.
+		ipv6 = &network.IPv6Delegation{Prefix: onLink, OnLink: true}
 	}
 
 	// If replace_all, cleanup existing config first
@@ -2405,7 +2422,9 @@ func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *pb.Netwo
 		// feature never touched are left alone (see SyncInterfaceFilter).
 		var v6Prefix string
 		if primary != nil {
-			v6Prefix = primary.Ipv6Prefix
+			if v6Prefix = primary.Ipv6Prefix; v6Prefix == "" {
+				v6Prefix = onLinkIPv6Prefix(primary) // a /128: the guest filter treats it as on-link
+			}
 		}
 		if err := libvirt.SyncInterfaceFilter(req.VmId, internalIP, v6Prefix); err != nil {
 			log.Printf("[NodeAgent] WARNING: nwfilter not synced for VM %s: %v", req.VmId, err)

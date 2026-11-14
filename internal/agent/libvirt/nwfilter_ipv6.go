@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -23,7 +24,26 @@ const (
 	IPv6CleanTrafficFilter = "maburvm-clean-traffic-v6"
 	ipv6ChainFilter        = "maburvm-ipv6"
 	cleanTrafficFilter     = "clean-traffic"
+
+	// The same pair for a delegated prefix that is not a /64, with the mask
+	// as a parameter. Kept apart from the /64 filters on purpose: those are
+	// bound to running customer VMs that carry no mask parameter, and
+	// redefining a filter rewrites it under every VM that uses it.
+	IPv6MaskedCleanTrafficFilter = "maburvm-clean-traffic-v6m"
+	ipv6MaskedChainFilter        = "maburvm-ipv6m"
+
+	// And for one address on a subnet shared with other VMs. The guest may
+	// speak from exactly that address, and, unlike a routed guest, has to
+	// answer neighbour solicitations for it itself.
+	IPv6OnLinkCleanTrafficFilter = "maburvm-clean-traffic-v6l"
+	ipv6OnLinkChainFilter        = "maburvm-ipv6l"
 )
+
+// isOurIPv6Filter reports whether a filter name is one of MaburVM's own root
+// filters, of either prefix kind.
+func isOurIPv6Filter(name string) bool {
+	return name == IPv6CleanTrafficFilter || name == IPv6MaskedCleanTrafficFilter || name == IPv6OnLinkCleanTrafficFilter
+}
 
 // ipv6CleanTrafficXML is clean-traffic (libvirt 6.0 layout) with maburvm-ipv6
 // spliced in before no-other-l2-traffic. Rules inside an 'ipv6' chain use the
@@ -73,8 +93,30 @@ func InterfaceFilterRef(antiSpoofing bool, ip, mac, ipv6Prefix string) *libvirtx
 	if network := IPv6PrefixNetwork(ipv6Prefix); network != "" {
 		ref.Filter = IPv6CleanTrafficFilter
 		ref.Parameters = append(ref.Parameters, libvirtxml.DomainInterfaceFilterParam{Name: "IPV6_PREFIX", Value: network})
+		// Any other size uses the masked filter, so the guest may speak from
+		// exactly its own prefix: a fixed /64 would cut a /56 down to its first
+		// /64 and let a /112 guest borrow its neighbours' addresses.
+		switch n := ipv6PrefixLen(ipv6Prefix); {
+		case n == 128:
+			// One address on a shared subnet. A routed prefix is never a /128,
+			// so the length alone tells the two apart.
+			ref.Filter = IPv6OnLinkCleanTrafficFilter
+		case n != 64:
+			ref.Filter = IPv6MaskedCleanTrafficFilter
+			ref.Parameters = append(ref.Parameters, libvirtxml.DomainInterfaceFilterParam{Name: "IPV6_MASK", Value: strconv.Itoa(n)})
+		}
 	}
 	return ref
+}
+
+// ipv6PrefixLen is the length of an IPv6 CIDR; 64 when it cannot be read.
+func ipv6PrefixLen(prefix string) int {
+	_, n, err := net.ParseCIDR(prefix)
+	if err != nil {
+		return 64
+	}
+	ones, _ := n.Mask.Size()
+	return ones
 }
 
 // IPv6PrefixNetwork returns the bare network address of a prefix
@@ -102,7 +144,34 @@ func EnsureIPv6NWFilters() error {
 		return nil
 	}
 	err := WithConnection(func(conn *libvirt.Connect) error {
-		for name, def := range map[string]string{ipv6ChainFilter: ipv6ChainXML, IPv6CleanTrafficFilter: ipv6CleanTrafficXML} {
+		// The masked pair is derived from the /64 pair, so the two can never
+		// drift apart in anything but the mask and the names.
+		maskedChain := strings.NewReplacer(
+			"name='"+ipv6ChainFilter+"'", "name='"+ipv6MaskedChainFilter+"'",
+			"srcipaddr='$IPV6_PREFIX' srcipmask='64'", "srcipaddr='$IPV6_PREFIX' srcipmask='$IPV6_MASK'",
+		).Replace(ipv6ChainXML)
+		maskedRoot := strings.NewReplacer(
+			"name='"+IPv6CleanTrafficFilter+"'", "name='"+IPv6MaskedCleanTrafficFilter+"'",
+			"filter='"+ipv6ChainFilter+"'", "filter='"+ipv6MaskedChainFilter+"'",
+		).Replace(ipv6CleanTrafficXML)
+		// On-link: the one address at /128, and neighbour advertisements
+		// (type 136) allowed out. Router advertisements and DHCPv6 stay blocked.
+		onLinkChain := strings.NewReplacer(
+			"name='"+ipv6ChainFilter+"'", "name='"+ipv6OnLinkChainFilter+"'",
+			"srcipaddr='$IPV6_PREFIX' srcipmask='64'", "srcipaddr='$IPV6_PREFIX' srcipmask='128'",
+			"  <rule action='drop' direction='out' priority='110'><ipv6 protocol='icmpv6' type='136'/></rule>\n", "",
+		).Replace(ipv6ChainXML)
+		onLinkRoot := strings.NewReplacer(
+			"name='"+IPv6CleanTrafficFilter+"'", "name='"+IPv6OnLinkCleanTrafficFilter+"'",
+			"filter='"+ipv6ChainFilter+"'", "filter='"+ipv6OnLinkChainFilter+"'",
+		).Replace(ipv6CleanTrafficXML)
+		// Chains before the roots that reference them.
+		for _, f := range []struct{ name, def string }{
+			{ipv6ChainFilter, ipv6ChainXML}, {IPv6CleanTrafficFilter, ipv6CleanTrafficXML},
+			{ipv6MaskedChainFilter, maskedChain}, {IPv6MaskedCleanTrafficFilter, maskedRoot},
+			{ipv6OnLinkChainFilter, onLinkChain}, {IPv6OnLinkCleanTrafficFilter, onLinkRoot},
+		} {
+			name, def := f.name, f.def
 			// libvirt refuses to redefine a filter under a new UUID, and a definition
 			// without one gets a random UUID: reuse the existing filter's UUID so an
 			// agent restart (or a newer filter version) updates it in place.
@@ -229,7 +298,7 @@ func desiredFilterRef(current *libvirtxml.DomainInterfaceFilterRef, ip, mac, ipv
 	switch {
 	case ipv6Prefix != "":
 		return InterfaceFilterRef(true, ip, mac, ipv6Prefix)
-	case current != nil && (current.Filter == IPv6CleanTrafficFilter || current.Filter == cleanTrafficFilter):
+	case current != nil && (isOurIPv6Filter(current.Filter) || current.Filter == cleanTrafficFilter):
 		return InterfaceFilterRef(true, ip, mac, "")
 	default:
 		return nil

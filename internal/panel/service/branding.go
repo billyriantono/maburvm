@@ -1,6 +1,8 @@
 package service
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/mail"
@@ -37,11 +39,39 @@ type Branding struct {
 	SupportURL    string `json:"support_url"`
 	SupportEmail  string `json:"support_email"`
 	FooterText    string `json:"footer_text"`
+	// What fills the picture side of the sign-in page: "" or "traces" for the
+	// built-in artwork in the operator's colour, "logo" for their logo on their
+	// colour, "image" for a picture of their own.
+	LoginArt string `json:"login_art"`
+	// The operator's own picture, as a data URL. On save: empty keeps the stored
+	// one, "none" removes it. Never sent with the public branding (it would ride
+	// along in every page); LoginImageURL points at it instead.
+	LoginImage    string `json:"login_image"`
+	LoginImageURL string `json:"login_image_url,omitempty"`
+}
+
+// maxLoginImage caps the sign-in picture (as a data URL). It is a full-height
+// photograph, so it gets more room than a logo.
+const maxLoginImage = 1200 * 1024
+
+// RemoveLoginImage is what a save sends to drop the stored sign-in picture.
+const RemoveLoginImage = "none"
+
+// Public returns the branding as anyone may see it: the same, with the
+// sign-in picture replaced by an address that changes when the picture does.
+func (b Branding) Public() Branding {
+	if b.LoginImage != "" {
+		sum := sha1.Sum([]byte(b.LoginImage))
+		b.LoginImageURL = "/api/v1/branding/login-image?v=" + hex.EncodeToString(sum[:6])
+	}
+	b.LoginImage = ""
+	return b
 }
 
 var (
 	hexColor     = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
 	brandDataURL = regexp.MustCompile(`^data:image/(png|jpeg|webp|svg\+xml|x-icon|vnd\.microsoft\.icon);base64,[A-Za-z0-9+/=]+$`)
+	photoDataURL = regexp.MustCompile(`^data:image/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$`)
 )
 
 // Normalize trims the fields and reports the first thing wrong with them, in
@@ -78,6 +108,19 @@ func (b *Branding) Normalize() error {
 			return fmt.Errorf("%s must be a PNG, JPEG, WebP, SVG or ICO image", label)
 		}
 	}
+	switch b.LoginArt {
+	case "", "traces", "logo", "image":
+	default:
+		return fmt.Errorf("Sign-in picture style must be traces, logo or image")
+	}
+	if b.LoginImage != "" && b.LoginImage != RemoveLoginImage {
+		if len(b.LoginImage) > maxLoginImage {
+			return fmt.Errorf("Sign-in picture is too large (limit is about 850 KB)")
+		}
+		if !photoDataURL.MatchString(b.LoginImage) {
+			return fmt.Errorf("Sign-in picture must be a PNG, JPEG or WebP image")
+		}
+	}
 	if b.SupportURL != "" {
 		u, err := url.Parse(b.SupportURL)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
@@ -108,11 +151,27 @@ func LoadBranding(db *gorm.DB) Branding {
 	return b
 }
 
+// BrandingRefusal is a save turned down for a reason the operator can fix,
+// as opposed to the database failing.
+type BrandingRefusal struct{ Reason string }
+
+func (e *BrandingRefusal) Error() string { return e.Reason }
+
 // SaveBranding validates and stores the branding.
 func SaveBranding(db *gorm.DB, b *Branding) error {
 	if err := b.Normalize(); err != nil {
 		return err
 	}
+	switch b.LoginImage {
+	case "":
+		b.LoginImage = LoadBranding(db).LoginImage
+	case RemoveLoginImage:
+		b.LoginImage = ""
+	}
+	if b.LoginArt == "image" && b.LoginImage == "" {
+		return &BrandingRefusal{"Choose a picture for the sign-in page, or pick another style"}
+	}
+	b.LoginImageURL = ""
 	data, _ := json.Marshal(b)
 	return db.Exec(
 		"INSERT INTO system_settings (section, data, updated_at) VALUES (?, ?::jsonb, NOW()) "+

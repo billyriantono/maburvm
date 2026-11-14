@@ -133,7 +133,7 @@ export default function ProfileSettingsPage() {
   const [showBackupCodes, setShowBackupCodes] = useState(false)
   const [showDisableDialog, setShowDisableDialog] = useState(false)
   const [setupStep, setSetupStep] = useState<"qr" | "verify" | "backup">("qr")
-  const [qrCodeImage, setQrCodeImage] = useState<string>("")
+  const [qrCode, setQrCode] = useState<{ size: number; path: string } | null>(null)
   const [backupCodes, setBackupCodes] = useState<string[]>([])
   const [isVerifying, setIsVerifying] = useState(false)
 
@@ -166,12 +166,20 @@ export default function ProfileSettingsPage() {
   useEffect(() => {
     if (showSetupDialog && setupStep === "qr" && user && setupSecret) {
       const issuer = encodeURIComponent(branding.name)
-      const otpauthUrl = `otpauth://totp/${issuer}:${user.email}?secret=${setupSecret}&issuer=${issuer}`
-      QRCode.toDataURL(otpauthUrl, {
-        width: 200,
-        margin: 2,
-        color: { dark: "#000000", light: "#FFFFFF" },
-      }).then(setQrCodeImage).catch(console.error)
+      const otpauthUrl = `otpauth://totp/${issuer}:${encodeURIComponent(user.email)}?secret=${setupSecret}&issuer=${issuer}`
+      // Drawn as vector squares on whole-unit coordinates. It used to be a
+      // 200px picture shown at 192px, and that resampling smeared the squares
+      // enough that apps reading the code from the screen could not decode it.
+      try {
+        const { modules } = QRCode.create(otpauthUrl, { errorCorrectionLevel: "M" })
+        let d = ""
+        for (let y = 0; y < modules.size; y++)
+          for (let x = 0; x < modules.size; x++) if (modules.data[y * modules.size + x]) d += `M${x} ${y}h1v1h-1z`
+        setQrCode({ size: modules.size, path: d })
+      } catch {
+        setQrCode(null)
+        toast.error("Could not draw the QR code. Use the manual entry code below instead.")
+      }
     }
   }, [showSetupDialog, setupStep, user, setupSecret, branding.name])
 
@@ -199,7 +207,7 @@ export default function ProfileSettingsPage() {
   const handleStart2FASetup = async () => {
     setShowSetupDialog(true)
     setSetupStep("qr")
-    setQrCodeImage("")
+    setQrCode(null)
     setSetupSecret("")
     try {
       // Backend generates a real TOTP secret + backup codes (encrypted at rest).
@@ -234,6 +242,29 @@ export default function ProfileSettingsPage() {
   }
 
   const { copy, copied } = useCopy()
+  // The codes as a text file, made in the browser: they are never sent anywhere.
+  const handleDownloadBackupCodes = () => {
+    const lines = [
+      `${branding.name} backup codes for ${user?.email ?? "your account"}`,
+      `Saved ${new Date().toLocaleString()}`,
+      "",
+      "Each code signs you in once, in place of the code from your authenticator app.",
+      "Keep this file somewhere only you can reach.",
+      "",
+      ...backupCodes,
+      "",
+    ]
+    const url = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" }))
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `${branding.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "panel"}-backup-codes.txt`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+    toast.success("Backup codes saved as a text file")
+  }
+
   const handleCopyBackupCodes = async (key: string) => {
     if (await copy(backupCodes.join("\n"), key)) {
       toast.success("Backup codes copied!", {
@@ -624,19 +655,46 @@ export default function ProfileSettingsPage() {
 
           {setupStep === "qr" && (
             <div className="flex flex-col items-center space-y-4">
-              <div className="p-4 bg-white rounded-md border">
-                {qrCodeImage ? (
-                  // eslint-disable-next-line @next/next/no-img-element, jsx-a11y/alt-text
-                  <img src={qrCodeImage} alt="QR Code" className="w-48 h-48" />
+              {/* White in both themes, with the four-square quiet zone scanners expect. */}
+              <div className="rounded-md border bg-white p-2">
+                {qrCode ? (
+                  <svg
+                    role="img"
+                    aria-label="QR code for your authenticator app"
+                    viewBox={`-4 -4 ${qrCode.size + 8} ${qrCode.size + 8}`}
+                    shapeRendering="crispEdges"
+                    className="h-64 w-64"
+                  >
+                    <rect x={-4} y={-4} width={qrCode.size + 8} height={qrCode.size + 8} fill="#ffffff" />
+                    <path d={qrCode.path} fill="#000000" />
+                  </svg>
                 ) : (
-                  <div className="w-48 h-48 flex items-center justify-center">
-                    <Loader2 className="w-8 h-8 animate-spin" />
+                  <div className="flex h-64 w-64 items-center justify-center text-black">
+                    <Loader2 className="h-8 w-8 animate-spin" aria-label="Drawing the QR code" />
                   </div>
                 )}
               </div>
               <div className="text-center">
-                <p className="text-sm font-medium">Manual entry code:</p>
-                <code className="text-xs bg-muted px-2 py-1 rounded-md border break-all">{setupSecret || "…"}</code>
+                <p className="text-sm font-medium">Cannot scan it? Enter this key in the app instead</p>
+                <p className="mt-1.5 flex flex-wrap items-center justify-center gap-2">
+                  <code className="break-all rounded-md border bg-muted px-2 py-1 font-mono text-xs">{setupSecret || "…"}</code>
+                  {setupSecret && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(setupSecret)
+                          toast.success("Key copied")
+                        } catch {
+                          toast.error("Could not copy. Select the key and copy it manually.")
+                        }
+                      }}
+                      className="border-b border-border pb-px text-xs font-semibold hover:border-foreground active:translate-y-px"
+                    >
+                      Copy
+                    </button>
+                  )}
+                </p>
               </div>
               <Button onClick={() => setSetupStep("verify")} className="w-full">
                 Next: Verify Code
@@ -699,13 +757,16 @@ export default function ProfileSettingsPage() {
               <div className="flex items-center gap-2 p-3 rounded-md border border-destructive/30 bg-destructive/10 text-destructive">
                 <AlertTriangle className="w-4 h-4" />
                 <p className="text-xs font-medium">
-                  Save these codes! You won&apos;t see them again.
+                  Save these codes now. They are not shown again, and each one works once.
                 </p>
               </div>
               <div className="flex gap-2">
                 <Button variant="secondary" onClick={() => handleCopyBackupCodes("backup-setup")} className="flex-1">
                   {copied("backup-setup") ? <Check className="w-4 h-4 mr-2" aria-hidden="true" /> : <Copy className="w-4 h-4 mr-2" aria-hidden="true" />}
-                  {copied("backup-setup") ? "Copied" : "Copy Codes"}
+                  {copied("backup-setup") ? "Copied" : "Copy codes"}
+                </Button>
+                <Button variant="secondary" onClick={handleDownloadBackupCodes} className="flex-1">
+                  Download as a text file
                 </Button>
               </div>
               <Button onClick={handleCloseSetupDialog} className="w-full">
@@ -759,10 +820,15 @@ export default function ProfileSettingsPage() {
               Close
             </Button>
             {backupCodes.length > 0 && (
+              <>
               <Button variant="secondary" onClick={() => handleCopyBackupCodes("backup-all")}>
                 {copied("backup-all") ? <Check className="w-4 h-4 mr-2" aria-hidden="true" /> : <Copy className="w-4 h-4 mr-2" aria-hidden="true" />}
                 {copied("backup-all") ? "Copied" : "Copy All"}
               </Button>
+              <Button variant="secondary" onClick={handleDownloadBackupCodes}>
+                Download as a text file
+              </Button>
+              </>
             )}
           </DialogFooter>
         </DialogContent>

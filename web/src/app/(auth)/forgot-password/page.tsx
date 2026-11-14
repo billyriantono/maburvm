@@ -41,12 +41,12 @@ export default function ForgotPasswordPage() {
     return (
       <div className="w-full text-center space-y-4">
         <MailCheck className="w-10 h-10 text-primary mx-auto" />
-        <h2 className="text-2xl font-semibold tracking-tight text-foreground">Check your email</h2>
+        <h1 className="text-[2rem] font-semibold leading-tight tracking-[-0.01em] text-balance text-foreground">Check your email</h1>
         <p className="text-sm text-muted-foreground">
           If an account exists for <span className="font-medium text-foreground">{email}</span>, we&apos;ve
           sent a link to reset your password. The link is valid for 1 hour.
         </p>
-        <Link href="/login" className="inline-block text-sm font-medium text-primary hover:underline">
+        <Link href="/login" className="inline-block text-sm font-semibold text-foreground underline underline-offset-4">
           Back to sign in
         </Link>
       </div>
@@ -55,7 +55,7 @@ export default function ForgotPasswordPage() {
 
   return (
     <div className="w-full">
-      <h2 className="text-2xl font-semibold tracking-tight mb-2 text-foreground">Reset your password</h2>
+      <h1 className="text-[2rem] font-semibold leading-tight tracking-[-0.01em] text-balance mb-2 text-foreground">Reset your password</h1>
       <p className="text-sm text-muted-foreground mb-6">
         Enter your email and we&apos;ll send you a link to reset your password.
       </p>
@@ -98,7 +98,7 @@ export default function ForgotPasswordPage() {
       </form>
 
       <div className="mt-6 text-center">
-        <Link href="/login" className="text-sm font-medium text-primary hover:underline">
+        <Link href="/login" className="text-sm font-semibold text-foreground underline underline-offset-4">
           Back to sign in
         </Link>
       </div>

@@ -669,6 +669,15 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 
 	paramsJSON, _ := json.Marshal(params)
 
+	// Keep a generated password, encrypted and for a short time, so the owner
+	// can read it from the VM's page: whoever ordered through billing never
+	// sees this response. A password the caller chose is theirs and is not kept.
+	if generatedPassword != "" {
+		if err := StoreInitialPassword(ctx, s.db, vm.ID, generatedPassword); err != nil {
+			s.logger.WarnContext(ctx, "could not keep the generated root password for its owner", "vm_id", vm.ID, "error", err)
+		}
+	}
+
 	if s.riverClient == nil {
 		s.logger.WarnContext(ctx, "VM creation queue disabled; VM record created without background job", "vm_id", vm.ID)
 		return &CreateVMResponse{VM: vm, JobID: 0, Status: "pending", RootPassword: generatedPassword}, nil
@@ -1074,7 +1083,7 @@ type GetVMResponse struct {
 	Status   *pb.VMStatusResponse `json:"agent_status,omitempty"`
 	VNC      *VNCConfig           `json:"vnc,omitempty"`
 	// IPv6 is the VM's delegated routed prefix, nil when it has none.
-	IPv6 *models.VMIPv6Prefix `json:"ipv6,omitempty"`
+	IPv6 *VMIPv6 `json:"ipv6,omitempty"`
 }
 
 // GetVM retrieves a VM by ID with details and status
@@ -1240,7 +1249,7 @@ func (s *VMService) GetVM(ctx context.Context, vmID string, includeAgentStatus b
 		}
 	}
 	if s.ipamService != nil {
-		response.IPv6, _ = s.ipamService.GetVMIPv6Prefix(ctx, vm.ID)
+		response.IPv6, _ = s.ipamService.GetVMIPv6(ctx, vm.ID)
 	}
 
 	// Get agent status if requested and the VM is in a stable state. Skip while
@@ -2120,6 +2129,10 @@ func (s *VMService) ResetPassword(ctx context.Context, req *VMResetPasswordReque
 	if err != nil {
 		return nil, fmt.Errorf("failed to enqueue password reset job: %w", err)
 	}
+	// The password is being changed, so the one kept from creation is no longer the VM's.
+	if err := ForgetInitialPassword(ctx, s.db, vm.ID); err != nil {
+		s.logger.WarnContext(ctx, "could not erase the stored initial root password", "vm_id", vm.ID, "error", err)
+	}
 	return &VMResetPasswordResponse{VMID: vm.ID, JobID: result.Job.ID, Status: "pending"}, nil
 }
 
@@ -2194,6 +2207,7 @@ func (s *VMService) RescueVM(ctx context.Context, vmID, isoURL string) (int64, e
 	if err := s.db.WithContext(ctx).Model(&models.VM{}).Where("id = ?", vmID).Update("rescue_mode", true).Error; err != nil {
 		return 0, fmt.Errorf("failed to mark rescue mode: %w", err)
 	}
+	s.emailOwner(ctx, vmID, EmailVMRescueOn)
 	return jobID, nil
 }
 
@@ -2207,7 +2221,18 @@ func (s *VMService) UnrescueVM(ctx context.Context, vmID string) (int64, error) 
 	if err := s.db.WithContext(ctx).Model(&models.VM{}).Where("id = ?", vmID).Update("rescue_mode", false).Error; err != nil {
 		return 0, fmt.Errorf("failed to clear rescue mode: %w", err)
 	}
+	s.emailOwner(ctx, vmID, EmailVMRescueOff)
 	return jobID, nil
+}
+
+// emailOwner sends one of the server emails in the background. The action it
+// reports has already happened, so a mail failure is logged and nothing more.
+func (s *VMService) emailOwner(ctx context.Context, vmID, key string) {
+	go func(ctx context.Context) {
+		if err := NotifyVMOwner(ctx, s.db, vmID, key); err != nil {
+			s.logger.WarnContext(ctx, "could not email the server's owner", "vm_id", vmID, "email", key, "error", err)
+		}
+	}(context.WithoutCancel(ctx))
 }
 
 // MigrateVMRequest contains parameters for a live migration.
@@ -2419,6 +2444,16 @@ func (s *VMService) RebuildVM(ctx context.Context, req *RebuildVMRequest) (*Rebu
 	result, err := s.riverClient.Insert(ctx, job, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to enqueue VM rebuild job: %w", err)
+	}
+
+	// The old disk is gone, and with it the old password. Keep the new one for
+	// the owner if the panel generated it; otherwise drop whatever was kept.
+	if generatedPassword != "" {
+		if err := StoreInitialPassword(ctx, s.db, vm.ID, generatedPassword); err != nil {
+			s.logger.WarnContext(ctx, "could not keep the generated root password for its owner", "vm_id", vm.ID, "error", err)
+		}
+	} else if err := ForgetInitialPassword(ctx, s.db, vm.ID); err != nil {
+		s.logger.WarnContext(ctx, "could not erase the previous stored root password", "vm_id", vm.ID, "error", err)
 	}
 
 	s.logger.InfoContext(ctx, "VM rebuild job enqueued",

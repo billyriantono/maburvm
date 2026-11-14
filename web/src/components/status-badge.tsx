@@ -12,26 +12,6 @@ export type VMTransition = "starting" | "stopping" | "restarting"
 
 type Tone = "ok" | "idle" | "warn" | "info" | "bad"
 
-const TONES: Record<Tone, { badge: string; dot: string }> = {
-  ok: {
-    badge: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900",
-    dot: "bg-emerald-500",
-  },
-  idle: { badge: "bg-muted text-muted-foreground border-border", dot: "bg-muted-foreground" },
-  warn: {
-    badge: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900",
-    dot: "bg-amber-500",
-  },
-  info: {
-    badge: "bg-sky-50 text-sky-700 border-sky-200 dark:bg-sky-950 dark:text-sky-300 dark:border-sky-900",
-    dot: "bg-sky-500",
-  },
-  bad: {
-    badge: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-900",
-    dot: "bg-red-500",
-  },
-}
-
 const STATUSES: Record<string, { tone: Tone; label: string; busy?: boolean }> = {
   // VM
   running: { tone: "ok", label: "Running" },
@@ -43,37 +23,53 @@ const STATUSES: Record<string, { tone: Tone; label: string; busy?: boolean }> = 
   starting: { tone: "info", label: "Starting", busy: true },
   stopping: { tone: "info", label: "Stopping", busy: true },
   restarting: { tone: "info", label: "Restarting", busy: true },
+  // Backups, snapshots and other jobs
+  completed: { tone: "ok", label: "Completed" },
+  failed: { tone: "bad", label: "Failed" },
+  pending: { tone: "info", label: "Waiting", busy: true },
+  in_progress: { tone: "info", label: "In progress", busy: true },
+  // Firewall rules
+  allow: { tone: "ok", label: "Allow" },
+  deny: { tone: "bad", label: "Deny" },
   // Node
   active: { tone: "ok", label: "Active" },
   maintenance: { tone: "warn", label: "Maintenance" },
   offline: { tone: "bad", label: "Offline" },
 }
 
+// Lamp colours come from the theme tokens, so they stay readable on the dark
+// faceplate as well as on a normal panel.
+const LAMPS: Record<Tone, string> = {
+  ok: "bg-success",
+  idle: "bg-muted-foreground",
+  warn: "bg-warning",
+  info: "bg-muted-foreground",
+  bad: "bg-destructive",
+}
+
+// A state is always a lamp and a word, never a coloured pill (see DESIGN.md).
+// "lamp" is the larger size, for use beside a title; the default suits a table row.
 export function StatusBadge({
   status,
   transition,
   className,
+  variant = "badge",
 }: {
   status: string
   /** A requested power action the server has not reflected yet. */
   transition?: VMTransition | null
   className?: string
+  variant?: "badge" | "lamp"
 }) {
   const shown = transition || status
   const cfg = STATUSES[shown] ?? { tone: "idle" as Tone, label: shown.replace(/_/g, " ") || "Unknown" }
-  const tone = TONES[cfg.tone]
+  const large = variant === "lamp"
   return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs font-medium capitalize transition-colors duration-300",
-        tone.badge,
-        className
-      )}
-    >
+    <span className={cn("inline-flex items-center gap-2 whitespace-nowrap capitalize text-foreground", large ? "text-sm font-semibold" : "text-xs font-medium", className)}>
       {cfg.busy ? (
-        <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+        <Loader2 className={cn("animate-spin", large ? "h-3.5 w-3.5" : "h-3 w-3")} aria-hidden="true" />
       ) : (
-        <span className={cn("h-1.5 w-1.5 rounded-full", tone.dot)} aria-hidden="true" />
+        <span className={cn("rounded-full", large ? "h-2.5 w-2.5" : "h-2 w-2", LAMPS[cfg.tone])} aria-hidden="true" />
       )}
       {cfg.label}
     </span>

@@ -18,6 +18,11 @@ type IPv6Delegation struct {
 	Prefix string // "2001:db8:20:5::/64"
 	MAC    string
 	Bridge string
+	// OnLink marks an address on a subnet shared with other VMs (Prefix is
+	// then that one address as a /128). The guest answers for it itself and
+	// the subnet's own router is the gateway, so the node adds no route and
+	// no neighbour entries; only the firewall and the guest filter use it.
+	OnLink bool `json:",omitempty"`
 }
 
 // EUI64LinkLocal derives the guest's fe80:: address from its MAC the way
@@ -86,6 +91,9 @@ func (d IPv6Delegation) validate() (string, error) {
 
 // applyIPv6Route installs the neighbour entry and route for d. Idempotent.
 func applyIPv6Route(d IPv6Delegation) (string, error) {
+	if d.OnLink {
+		return "the shared subnet", nil
+	}
 	ll, err := d.validate()
 	if err != nil {
 		return "", err
@@ -101,6 +109,9 @@ func applyIPv6Route(d IPv6Delegation) (string, error) {
 // removeIPv6Route tears down what applyIPv6Route installed. A route or
 // neighbour that is already gone is not an error.
 func removeIPv6Route(d IPv6Delegation) error {
+	if d.OnLink {
+		return nil
+	}
 	ll, err := d.validate()
 	if err != nil {
 		return err

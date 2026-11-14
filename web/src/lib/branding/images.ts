@@ -78,3 +78,25 @@ export async function logoColours(dataUrl: string, limit = 5): Promise<string[]>
     .slice(0, limit)
     .map((e) => `#${hex(e.r / e.n)}${hex(e.g / e.n)}${hex(e.b / e.n)}`)
 }
+
+const PHOTO_BYTES = 850 * 1024
+
+/**
+ * A photograph for the picture side of the sign-in page, as a JPEG data URL
+ * small enough to store. Scaled to fit 1800px and compressed in steps until it
+ * fits; a picture that still does not fit is refused with the reason.
+ */
+export async function preparePhoto(file: File): Promise<string> {
+  if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) throw new Error("Use a PNG, JPEG or WebP picture")
+  const img = await load(await readAsDataURL(file))
+  for (const [side, quality] of [[1800, 0.84], [1800, 0.72], [1400, 0.72], [1100, 0.68]] as const) {
+    const scale = Math.min(1, side / Math.max(img.naturalWidth, img.naturalHeight))
+    const canvas = document.createElement("canvas")
+    canvas.width = Math.max(1, Math.round(img.naturalWidth * scale))
+    canvas.height = Math.max(1, Math.round(img.naturalHeight * scale))
+    canvas.getContext("2d")!.drawImage(img, 0, 0, canvas.width, canvas.height)
+    const out = canvas.toDataURL("image/jpeg", quality)
+    if (out.length <= PHOTO_BYTES) return out
+  }
+  throw new Error("That picture is too detailed to store even after shrinking. Try a simpler one.")
+}

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo } from "react"
 import { useSystemVersion, useUpdateAgent } from "@/lib/hooks/use-version"
+import { OperationProgress, type ProgressStep } from "@/components/operation-progress"
 import { useSystemSettings, useSaveSystemSettings, useTestEmail } from "@/lib/hooks/use-settings"
 import { toast } from "sonner"
 import { useFlash } from "@/lib/use-feedback"
@@ -21,7 +22,7 @@ import {
   Eye,
   EyeOff,
   RotateCcw,
-  Info,
+
   Clock,
   Calendar,
   Timer,
@@ -203,29 +204,94 @@ const schedulePresets = [
 // node still runs an older agent — sometimes on purpose, since a node with a
 // long export in flight is left alone until it finishes. A single version number
 // would hide exactly the difference an operator is checking for.
-function BuildPanel() {
-  const { data, isLoading } = useSystemVersion()
-  const updateAgent = useUpdateAgent()
-  const [pending, setPending] = useState<string | null>(null)
+// One agent update, as far as the panel can see it. There are two things it
+// can observe: its own request to the node finishing (the node has checked the
+// new agent and scheduled the swap), and the node then reporting the new build.
+interface AgentRun {
+  name: string
+  from: string
+  phase: "sending" | "restarting" | "done" | "failed"
+  startedAt: string
+  acceptedAt?: number
+  /** What the node said, or why it failed. */
+  note?: string
+}
 
-  const runUpdate = (nodeId: string, nodeName: string) => {
-    setPending(nodeId)
+// How long a node gets to come back on the new agent before the update is
+// called failed: the swap, the restart and its own 15 second health check.
+const AGENT_RETURN_MS = 120_000
+
+function agentSteps(run: AgentRun): ProgressStep[] {
+  const sent = run.phase !== "sending"
+  const failedSending = run.phase === "failed" && !run.acceptedAt
+  return [
+    {
+      label: "Send the new agent to the node, which checks it and test-runs it",
+      state: failedSending ? "failed" : sent ? "done" : "active",
+      detail: failedSending ? run.note : sent ? run.note : "This can take a minute: the agent is a large file.",
+    },
+    {
+      label: "The node swaps the agent in, restarts it and makes sure it stays up",
+      state: !sent || failedSending ? "pending" : run.phase === "done" ? "done" : run.phase === "failed" ? "failed" : "active",
+      detail:
+        run.phase === "restarting"
+          ? "Checked every 5 seconds. If the new agent does not stay up, the node goes back to the one it had."
+          : run.phase === "failed" && run.acceptedAt
+            ? run.note
+            : undefined,
+    },
+  ]
+}
+
+function BuildPanel() {
+  const { data, isLoading, refetch } = useSystemVersion()
+  const updateAgent = useUpdateAgent()
+  const [runs, setRuns] = useState<Record<string, AgentRun>>({})
+  const patch = (id: string, change: Partial<AgentRun>) => setRuns((r) => (r[id] ? { ...r, [id]: { ...r[id], ...change } } : r))
+
+  const runUpdate = (nodeId: string, name: string, from: string) => {
+    setRuns((r) => ({ ...r, [nodeId]: { name, from, phase: "sending", startedAt: new Date().toISOString() } }))
     updateAgent.mutate(nodeId, {
-      onSuccess: (r) => toast.success(`${nodeName}: ${r.message}`),
-      onError: (e) => {
-        setPending(null)
-        toast.error(`${nodeName}: ${e.message}`)
-      },
-      // Keep the row in "updating" until the version is re-read after the restart.
-      onSettled: () => setTimeout(() => setPending(null), 25_000),
+      onSuccess: (res) => patch(nodeId, { phase: "restarting", acceptedAt: Date.now(), note: res.message }),
+      onError: (e) => patch(nodeId, { phase: "failed", note: e.message }),
     })
   }
 
+  // While a node is restarting, keep asking every node for its build.
+  const waiting = Object.values(runs).some((r) => r.phase === "restarting")
+  useEffect(() => {
+    if (!waiting) return
+    const t = setInterval(() => refetch(), 5000)
+    return () => clearInterval(t)
+  }, [waiting, refetch])
+
+  // Each answer either settles a waiting update or leaves it waiting.
+  useEffect(() => {
+    if (!data) return
+    for (const [id, run] of Object.entries(runs)) {
+      if (run.phase !== "restarting" || !run.acceptedAt) continue
+      const node = (data.nodes ?? []).find((n) => n.node_id === id)
+      if (node && !node.error && node.matches_panel) {
+        patch(id, { phase: "done" })
+        toast.success(`${run.name} now runs ${data.panel.short_sha}`)
+      } else if (Date.now() - run.acceptedAt > AGENT_RETURN_MS) {
+        patch(id, {
+          phase: "failed",
+          note:
+            node && !node.error
+              ? `The node is still on ${node.short_sha || "its previous agent"}: it went back because the new agent did not stay up. On the node, "journalctl -u 'maburvm-agent-update-*'" has the reason.`
+              : "The node has not answered for two minutes since the restart. Check on the node that maburvm-agent is running.",
+        })
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, runs])
+
   if (isLoading) {
     return (
-      <div className="flex items-center gap-3 p-4 rounded-md border bg-muted">
-        <Loader2 className="w-4 h-4 animate-spin" />
-        <span className="text-sm text-muted-foreground">Reading build information…</span>
+      <div className="flex items-center gap-3 rounded-md border bg-muted p-4">
+        <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+        <span className="text-sm text-muted-foreground">Reading build information</span>
       </div>
     )
   }
@@ -233,73 +299,90 @@ function BuildPanel() {
 
   const panel = data.panel
   const nodes = data.nodes ?? []
+  const built = panel.build_time && !Number.isNaN(Date.parse(panel.build_time)) ? new Date(panel.build_time).toLocaleString() : ""
 
   return (
-    <div className="rounded-md border bg-muted p-4 space-y-3">
-      <div className="flex items-start gap-3">
-        <Info className="w-5 h-5 text-muted-foreground flex-shrink-0 mt-0.5" />
-        <div className="min-w-0">
-          <p className="text-sm font-medium">Panel build</p>
-          <p className="text-xs text-muted-foreground mt-1 font-mono break-all">
-            {panel.stamped ? (
-              <>
-                {panel.version} · {panel.short_sha}
-                {panel.build_time ? ` · built ${panel.build_time}` : ""}
-              </>
-            ) : (
-              // An unstamped build is not "up to date" — it is unidentified, and
-              // saying so is the difference between a check and a guess.
-              <span className="text-amber-600">
-                not stamped — this image was built without a revision
-              </span>
-            )}
-          </p>
-        </div>
+    <div className="space-y-4 rounded-md border bg-muted p-4">
+      <div>
+        <p className="text-sm font-medium">Panel build</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {panel.stamped ? (
+            <>
+              <span className="font-mono text-foreground">{panel.version && panel.version !== panel.short_sha ? `${panel.version} (${panel.short_sha})` : panel.short_sha}</span>
+              {built ? `, built ${built}` : ""}
+            </>
+          ) : (
+            // An unstamped build is not "up to date": it is unidentified, and
+            // saying so is the difference between a check and a guess.
+            <span className="text-warning">Not stamped. This image was built without a revision, so agents cannot be compared with it.</span>
+          )}
+        </p>
       </div>
 
       {nodes.length > 0 && (
-        <div className="pl-8 space-y-1">
+        <div>
           <p className="text-xs font-medium text-muted-foreground">Node agents</p>
-          {nodes.map((n) => (
-            <div key={n.node_id} className="flex items-center justify-between gap-3 text-xs">
-              <span className="font-medium truncate">{n.node_name}</span>
-              {n.error ? (
-                <span className="text-muted-foreground truncate max-w-[60%]" title={n.error}>
-                  unreachable
-                </span>
-              ) : (
-                <span className="font-mono flex items-center gap-2">
-                  <span>
-                    {n.version && n.version !== "dev" ? `${n.version} · ` : ""}
-                    {n.short_sha || "not stamped"}
-                  </span>
-                  {n.commit && panel.stamped && n.matches_panel && (
-                    <span className="text-emerald-600">same as panel</span>
+          <ul className="mt-1 divide-y divide-hair">
+            {nodes.map((n) => {
+              const run = runs[n.node_id]
+              const busy = run?.phase === "sending" || run?.phase === "restarting"
+              return (
+                <li key={n.node_id} className="py-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 text-sm">
+                    <span className="min-w-0 truncate font-medium">{n.node_name}</span>
+                    <span className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                      {n.error && !busy ? (
+                        <span className="flex items-center gap-2" title={n.error}>
+                          <span className="h-2 w-2 rounded-full bg-destructive" aria-hidden="true" />
+                          Not answering
+                        </span>
+                      ) : (
+                        <>
+                          <span className="font-mono text-xs">{n.short_sha || "not stamped"}</span>
+                          {panel.stamped && !busy && (
+                            <span className="flex items-center gap-2 text-xs">
+                              <span className={`h-2 w-2 rounded-full ${n.matches_panel ? "bg-success" : "bg-warning"}`} aria-hidden="true" />
+                              {n.matches_panel ? "Same as the panel" : "Not the panel's build"}
+                            </span>
+                          )}
+                          {panel.stamped && !n.matches_panel && !n.error && (
+                            <Button size="sm" variant="outline" disabled={busy} onClick={() => runUpdate(n.node_id, n.node_name, n.short_sha)}>
+                              {busy ? "Updating" : `Update to ${panel.short_sha}`}
+                            </Button>
+                          )}
+                        </>
+                      )}
+                    </span>
+                  </div>
+                  {run && (
+                    <OperationProgress
+                      className="mt-3 p-4"
+                      title={
+                        run.phase === "done"
+                          ? `${run.name} now runs ${panel.short_sha}`
+                          : run.phase === "failed"
+                            ? `${run.name} was not updated`
+                            : `Updating ${run.name} from ${run.from || "its current agent"} to ${panel.short_sha}`
+                      }
+                      steps={agentSteps(run)}
+                      startedAt={run.startedAt}
+                    >
+                      {!busy && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="mt-3"
+                          onClick={() => setRuns((r) => Object.fromEntries(Object.entries(r).filter(([id]) => id !== n.node_id)))}
+                        >
+                          Close
+                        </Button>
+                      )}
+                    </OperationProgress>
                   )}
-                  {panel.stamped && !n.matches_panel && (
-                    <>
-                      <span className="text-amber-600">differs from panel</span>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-6 px-2 text-xs"
-                        disabled={pending === n.node_id}
-                        onClick={() => runUpdate(n.node_id, n.node_name)}
-                      >
-                        {pending === n.node_id ? (
-                          <>
-                            <Loader2 className="w-3 h-3 animate-spin mr-1" /> Updating
-                          </>
-                        ) : (
-                          `Update to ${panel.short_sha}`
-                        )}
-                      </Button>
-                    </>
-                  )}
-                </span>
-              )}
-            </div>
-          ))}
+                </li>
+              )
+            })}
+          </ul>
         </div>
       )}
     </div>

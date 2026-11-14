@@ -1,575 +1,419 @@
 "use client"
 
-import { useState, useEffect, useCallback, useMemo } from "react"
-import { DeleteProgressDialog } from "@/components/vm-delete-progress"
+import { useCallback, useEffect, useState } from "react"
 import Link from "next/link"
-import { 
-  Play, 
-  Square, 
-  RotateCcw, 
-  Terminal, 
-  Trash2, 
-  Search,
-  Plus,
-  ChevronLeft,
-  ChevronRight,
-  X,
-  Loader2,
-  AlertCircle,
-  Server
-} from "lucide-react"
+import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
-import { useVMs, useDeleteVM, useVMActions, useVMStatusStream } from "@/lib/hooks/use-vms"
-import { useNodes } from "@/lib/hooks/use-nodes"
-import type { VM, VMNodeStatus } from "@/types"
-import { useConfirm } from "@/components/confirm-provider"
+import { Meter } from "@/components/ui/meter"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { DeleteProgressDialog } from "@/components/vm-delete-progress"
 import { StatusBadge, useVMTransitions } from "@/components/status-badge"
-import { toast } from "sonner"
+import { OSLogoTile } from "@/components/os-icon"
+import { useConfirm } from "@/components/confirm-provider"
+import { useCopy } from "@/lib/use-feedback"
+import { useFleetVMs, type FleetVM } from "@/lib/hooks/use-dashboard"
+import { useDeleteVM, useVMActions, useVMStatusStream } from "@/lib/hooks/use-vms"
+import { useNodes } from "@/lib/hooks/use-nodes"
 
-function NodeBadge({ name, status, fallback }: { name?: string; status?: VMNodeStatus; fallback?: string }) {
-  const label = name || fallback || "Unknown"
-  const state = status || ""
-  const styles: Record<string, string> = {
-    active: "bg-muted text-foreground border",
-    maintenance: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900",
-    offline: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-900",
-    "": "bg-muted text-muted-foreground border",
-  }
+// The VM list is for finding a machine and acting on it. It can be searched
+// by what an operator actually has in hand (a name, a customer's email, an
+// address from a ticket), and each row says who owns the VM, where it runs,
+// how to reach it and what it is doing now. Searching, filtering, ordering
+// and paging are all done by the server, so a VM is found wherever it sits.
 
-  return (
-    <div className="flex flex-col items-start gap-1">
-      <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium border ${styles[state] || styles[""]}`}>
-        {label}
-      </span>
-      {state && state !== "active" && (
-        <span className="text-[10px] font-semibold text-destructive">
-          Node {state}
-        </span>
-      )}
-    </div>
-  )
+const PAGE_SIZE = 25
+
+const STATES: { id: string; label: string }[] = [
+  { id: "running", label: "Running" },
+  { id: "stopped", label: "Stopped" },
+  { id: "suspended", label: "Suspended" },
+  { id: "error", label: "Failed" },
+  { id: "creating", label: "Creating" },
+  { id: "deleting", label: "Deleting" },
+]
+
+const SORTS: { id: string; label: string }[] = [
+  { id: "name", label: "Name" },
+  { id: "cpu", label: "Busiest CPU first" },
+  { id: "memory", label: "Most memory first" },
+  { id: "newest", label: "Newest first" },
+  { id: "oldest", label: "Oldest first" },
+  { id: "owner", label: "Owner" },
+  { id: "node", label: "Node" },
+  { id: "address", label: "Address" },
+]
+
+const selectClass =
+  "h-10 rounded-md border border-input bg-transparent px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+
+type Power = "start" | "stop" | "restart"
+
+const ASK: Record<"stop" | "restart", (name: string) => { title: string; description: string; confirmLabel: string }> = {
+  restart: (name) => ({ title: `Restart ${name}?`, description: "It shuts down cleanly, then boots again. Expect about a minute offline.", confirmLabel: "Restart" }),
+  stop: (name) => ({ title: `Stop ${name}?`, description: "It shuts down cleanly and stays off until you start it. Disks and addresses are kept.", confirmLabel: "Stop" }),
 }
 
-// Pagination component
-function Pagination({ 
-  currentPage, 
-  totalPages, 
-  onPageChange 
-}: { 
-  currentPage: number
-  totalPages: number
-  onPageChange: (page: number) => void
-}) {
-  const pages = []
-  const maxVisible = 5
-  
-  let start = Math.max(1, currentPage - Math.floor(maxVisible / 2))
-  let end = Math.min(totalPages, start + maxVisible - 1)
-  
-  if (end - start < maxVisible - 1) {
-    start = Math.max(1, end - maxVisible + 1)
-  }
-  
-  for (let i = start; i <= end; i++) {
-    pages.push(i)
-  }
-  
-  return (
-    <div className="flex items-center gap-1">
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => onPageChange(currentPage - 1)}
-        disabled={currentPage === 1}
-        className="border"
-      >
-        <ChevronLeft className="w-4 h-4" />
-      </Button>
-      
-      {start > 1 && (
-        <>
-          <Button variant="ghost" size="sm" onClick={() => onPageChange(1)} className="border">
-            1
-          </Button>
-          {start > 2 && <span className="px-2">...</span>}
-        </>
-      )}
-      
-      {pages.map(page => (
-        <Button
-          key={page}
-          variant={page === currentPage ? "default" : "ghost"}
-          size="sm"
-          onClick={() => onPageChange(page)}
-          className="border min-w-[40px]"
-        >
-          {page}
-        </Button>
-      ))}
-      
-      {end < totalPages && (
-        <>
-          {end < totalPages - 1 && <span className="px-2">...</span>}
-          <Button variant="ghost" size="sm" onClick={() => onPageChange(totalPages)} className="border">
-            {totalPages}
-          </Button>
-        </>
-      )}
-      
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => onPageChange(currentPage + 1)}
-        disabled={currentPage === totalPages}
-        className="border"
-      >
-        <ChevronRight className="w-4 h-4" />
-      </Button>
-    </div>
-  )
-}
-
-// Skeleton row for loading state
-function SkeletonRow() {
-  return (
-    <div className="grid grid-cols-12 gap-4 p-4 items-center border-b last:border-0">
-      <div className="col-span-3">
-        <Skeleton className="h-5 w-32" />
-        <Skeleton className="h-3 w-24 mt-1" />
-      </div>
-      <div className="col-span-2">
-        <Skeleton className="h-6 w-16" />
-      </div>
-      <div className="col-span-2">
-        <Skeleton className="h-6 w-20" />
-      </div>
-      <div className="col-span-2">
-        <div className="flex items-center gap-3">
-          <Skeleton className="h-6 w-6" />
-          <Skeleton className="h-6 w-6" />
-        </div>
-      </div>
-      <div className="col-span-3 flex items-center justify-end gap-2">
-        <Skeleton className="h-8 w-8" />
-        <Skeleton className="h-8 w-8" />
-        <Skeleton className="h-8 w-8" />
-        <Skeleton className="h-8 w-8" />
-        <Skeleton className="h-8 w-8" />
-      </div>
-    </div>
-  )
-}
-
-// Error state component
-function ErrorState({ message, onRetry }: { message: string, onRetry: () => void }) {
-  return (
-    <div className="p-12 text-center">
-      <AlertCircle className="w-12 h-12 mx-auto text-destructive mb-4" />
-      <p className="text-foreground font-semibold mb-2">Failed to load VMs</p>
-      <p className="text-muted-foreground text-sm mb-4">{message}</p>
-      <Button onClick={onRetry} className="gap-2">
-        <RotateCcw className="w-4 h-4" aria-hidden="true" />
-        Retry
-      </Button>
-    </div>
-  )
-}
-
-// Empty state component
-function EmptyState({ hasFilters, onClearFilters }: { hasFilters: boolean, onClearFilters: () => void }) {
-  return (
-    <div className="p-12 text-center">
-      <Server className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-      <p className="text-foreground font-semibold mb-2">No VMs found</p>
-      <p className="text-muted-foreground text-sm mb-4">
-        {hasFilters ? "Try adjusting your filters to see more results." : "Get started by creating your first VM."}
-      </p>
-      {hasFilters ? (
-        <Button variant="ghost" onClick={onClearFilters} className="border gap-2">
-          <X className="w-4 h-4" />
-          Clear filters
-        </Button>
-      ) : (
-        <Link href="/vms/new">
-          <Button className="gap-2">
-            <Plus className="w-4 h-4" />
-            Create VM
-          </Button>
-        </Link>
-      )}
-    </div>
-  )
-}
-
-export default function VMListPage() {
+export default function VMsListPage() {
   const confirm = useConfirm()
-  // State
-  const [currentPage, setCurrentPage] = useState(1)
-  const [searchQuery, setSearchQuery] = useState("")
-  const [statusFilter, setStatusFilter] = useState<string>("")
-  const [nodeFilter, setNodeFilter] = useState<string>("")
-  const [debouncedSearch, setDebouncedSearch] = useState("")
-  // VM whose deletion is in progress — drives the step-by-step progress dialog.
+  const { copy, copied } = useCopy()
+  const [typed, setTyped] = useState("")
+  const [search, setSearch] = useState("")
+  const [status, setStatus] = useState("")
+  const [node, setNode] = useState("")
+  const [sort, setSort] = useState("name")
+  const [page, setPage] = useState(1)
+  const [busy, setBusy] = useState<Record<string, Power>>({})
   const [deletingVM, setDeletingVM] = useState<{ id: string; hostname: string } | null>(null)
-  // vm id -> the action currently in flight for that VM
-  const [inFlight, setInFlight] = useState<Record<string, string>>({})
-  
-  const itemsPerPage = 10
 
-  // Live-update VM statuses via SSE (pushes refreshes the moment status changes).
-  useVMStatusStream()
-
-  // Debounce search query
+  // Search as they type, but not on every keystroke.
   useEffect(() => {
-    const timer = setTimeout(() => {
-      setDebouncedSearch(searchQuery)
-      setCurrentPage(1)
+    const t = setTimeout(() => {
+      setSearch(typed.trim())
+      setPage(1)
     }, 300)
-    return () => clearTimeout(timer)
-  }, [searchQuery])
-  
-  // Reset to page 1 when status filter changes
-  useEffect(() => {
-    setCurrentPage(1)
-  }, [statusFilter, nodeFilter])
-  
-  // Fetch VMs with pagination
-  const { data, isLoading, error, refetch } = useVMs({
-    page: currentPage,
-    pageSize: itemsPerPage,
-    status: statusFilter || undefined,
-    nodeId: nodeFilter || undefined,
-    search: debouncedSearch || undefined,
-  })
-  
+    return () => clearTimeout(t)
+  }, [typed])
+
+  useVMStatusStream()
+  const { data, isLoading, error, refetch, isPlaceholderData } = useFleetVMs({ search, status, node, sort, page, pageSize: PAGE_SIZE })
   const { data: nodes } = useNodes()
-  const nodeStatusByID = useMemo(() => {
-    const map = new Map<string, VMNodeStatus>()
-    for (const node of nodes || []) {
-      map.set(node.id, node.status)
-    }
-    return map
-  }, [nodes])
-  
-  const deleteVM = useDeleteVM()
   const vmActions = useVMActions()
-  
-  // The API does the searching. Filtering here instead would only ever look at
-  // the ten rows this page happens to hold, so a VM on any other page reads as
-  // "No VMs found" — beside a total that still says 65.
-  const filteredVMs = data?.data ?? []
-  const { transitionOf, begin, cancel } = useVMTransitions(filteredVMs)
-  
-  // Calculate total pages
-  const totalPages = data?.totalPages || 1
-  const totalItems = data?.total || 0
-  
-  // Clear all filters
-  const clearFilters = () => {
-    setSearchQuery("")
-    setStatusFilter("")
-    setNodeFilter("")
-    setCurrentPage(1)
-  }
-  
-  const hasFilters = Boolean(searchQuery || statusFilter || nodeFilter)
-  
-  // Action handlers
-  const handleAction = useCallback(async (vm: VM, action: "start" | "stop" | "restart" | "console") => {
-    if (action === "console") {
-      // Open console in new window/tab
-      window.open(`/vms/${vm.id}/console`, "_blank")
-      return
-    }
-    
-    setInFlight((p) => ({ ...p, [vm.id]: action }))
-    
-    try {
-      await vmActions.mutateAsync({ vmId: vm.id, action })
-      begin(vm.id, action, vm.status)
-      toast.success(`${action[0].toUpperCase()}${action.slice(1)} requested for ${vm.hostname}`)
-      refetch()
-    } catch (err) {
-      cancel(vm.id)
-      toast.error(`Failed to ${action} ${vm.hostname}: ${(err as Error).message}`)
-    } finally {
-      setInFlight((p) => {
-        const next = { ...p }
-        delete next[vm.id]
-        return next
+  const deleteVM = useDeleteVM()
+
+  const rows = data?.vms ?? []
+  const total = data?.total ?? 0
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const { transitionOf, begin, cancel } = useVMTransitions(rows)
+  const filtered = Boolean(search || status || node)
+
+  const power = useCallback(
+    async (vm: FleetVM, action: Power) => {
+      if (action !== "start" && !(await confirm(ASK[action](vm.hostname)))) return
+      setBusy((b) => ({ ...b, [vm.id]: action }))
+      try {
+        await vmActions.mutateAsync({ vmId: vm.id, action })
+        begin(vm.id, action, vm.status)
+        toast.success(`${action[0].toUpperCase()}${action.slice(1)} requested for ${vm.hostname}`)
+        refetch()
+      } catch (err) {
+        cancel(vm.id)
+        toast.error(`Could not ${action} ${vm.hostname}: ${(err as Error).message}`)
+      } finally {
+        setBusy((b) => {
+          const next = { ...b }
+          delete next[vm.id]
+          return next
+        })
+      }
+    },
+    [confirm, vmActions, begin, cancel, refetch]
+  )
+
+  const remove = useCallback(
+    async (vm: FleetVM) => {
+      const ok = await confirm({
+        title: `Delete "${vm.hostname}"?`,
+        description: "The machine and its disks are destroyed and its addresses go back to the pool. This cannot be undone.",
+        confirmLabel: "Delete VM",
+        destructive: true,
+        details: [
+          { label: "Owner", value: vm.owner_email || "Unknown" },
+          { label: "Node", value: vm.node_name || "Unknown" },
+          { label: "Address", value: vm.ip || "None" },
+        ],
+        action: () => deleteVM.mutateAsync(vm.id),
       })
-    }
-  }, [vmActions, refetch, begin, cancel])
-  
-  const handleDelete = useCallback(async (vm: VM) => {
-    const ok = await confirm({
-      title: `Delete "${vm.hostname}"?`,
-      description:
-        "The machine and its disks are destroyed and its addresses go back to the pool. This cannot be undone.",
-      confirmLabel: "Delete VM",
-      destructive: true,
-      details: [
-        { label: "Status", value: vm.status },
-        { label: "Location", value: vm.region_name ?? vm.node_name ?? "—" },
-      ],
-      action: () => deleteVM.mutateAsync(vm.id),
-    })
-    if (!ok) return
-    // Deletion is async + multi-step; the dialog only covers accepting the
-    // request, so hand over to the progress dialog that tracks the rest.
-    setDeletingVM({ id: vm.id, hostname: vm.hostname })
-  }, [confirm, deleteVM])
-  
+      // Deleting takes several steps; the progress dialog follows the rest.
+      if (ok) setDeletingVM({ id: vm.id, hostname: vm.hostname })
+    },
+    [confirm, deleteVM]
+  )
+
+  const by = data?.by_status ?? {}
+  const summary = !data
+    ? ""
+    : data.all === 0
+      ? filtered
+        ? "No VM matches."
+        : "No VMs yet."
+      : `${data.all} ${data.all === 1 ? "VM" : "VMs"}${search || node ? " match" : ""}: ` +
+        STATES.filter((s) => by[s.id])
+          .map((s) => `${by[s.id]} ${s.label.toLowerCase()}`)
+          .join(", ") +
+        "."
+
   return (
-    <div className="max-w-7xl mx-auto">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+    <div className="mx-auto max-w-7xl">
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold text-foreground">
-            Virtual Machines
-          </h1>
-          <div className="flex items-center gap-2 mt-1">
-            <p className="text-muted-foreground text-sm">
-              {isLoading ? "Loading..." : `${totalItems} VMs`}
-            </p>
-          </div>
+          <h1 className="text-2xl font-semibold">Virtual machines</h1>
+          <p className="mt-1 text-sm text-muted-foreground">{isLoading ? "Loading the VMs" : error && !data ? "The VMs could not be loaded." : summary}</p>
         </div>
-        <Link href="/vms/new">
-          <Button className="gap-2">
-            <Plus className="w-4 h-4" />
-            Create VM
-          </Button>
-        </Link>
+        <Button asChild variant={data && data.all === 0 && !filtered ? "default" : "outline"}>
+          <Link href="/vms/new">Create a VM</Link>
+        </Button>
       </div>
-      
-      {/* Filters */}
-      <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm mb-6">
-        <div className="flex flex-col lg:flex-row gap-4">
-          {/* Search */}
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            <Input
-              type="text"
-              placeholder="Search by hostname or ID..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-10 h-10"
-            />
-          </div>
 
-          {/* Status Filter */}
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="h-10 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-          >
-            <option value="">All Status</option>
-            <option value="running">Running</option>
-            <option value="stopped">Stopped</option>
-            <option value="suspended">Suspended</option>
-            <option value="creating">Creating</option>
-            <option value="error">Error</option>
-          </select>
-          
-          {/* Node Filter */}
-          <select
-            value={nodeFilter}
-            onChange={(e) => setNodeFilter(e.target.value)}
-            className="h-10 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-          >
-            <option value="">All Nodes</option>
-            {nodes?.map((node) => (
-              <option key={node.id} value={node.id}>{node.name}</option>
-            ))}
-          </select>
-          
-          {/* Clear filters */}
-          {hasFilters && (
-            <Button variant="ghost" onClick={clearFilters} className="border gap-1">
-              <X className="w-4 h-4" />
-              Clear
-            </Button>
-          )}
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <div className="min-w-[16rem] flex-1">
+          <label htmlFor="vm-search" className="sr-only">
+            Search VMs
+          </label>
+          <Input id="vm-search" type="search" value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="Search by name, owner, address or ID" />
         </div>
+        <label htmlFor="vm-node" className="sr-only">
+          Node
+        </label>
+        <select
+          id="vm-node"
+          value={node}
+          onChange={(e) => {
+            setNode(e.target.value)
+            setPage(1)
+          }}
+          className={selectClass}
+        >
+          <option value="">Every node</option>
+          {(nodes ?? []).map((n) => (
+            <option key={n.id} value={n.id}>
+              {n.name}
+            </option>
+          ))}
+        </select>
+        <label htmlFor="vm-sort" className="sr-only">
+          Order
+        </label>
+        <select
+          id="vm-sort"
+          value={sort}
+          onChange={(e) => {
+            setSort(e.target.value)
+            setPage(1)
+          }}
+          className={selectClass}
+        >
+          {SORTS.map((s) => (
+            <option key={s.id} value={s.id}>
+              Order: {s.label}
+            </option>
+          ))}
+        </select>
       </div>
-      
-      {/* Data Table */}
-      <div className="bg-card text-card-foreground border rounded-lg shadow-sm overflow-hidden">
-        {/* Table Header */}
-        <div className="grid grid-cols-12 gap-4 px-4 py-3 bg-muted text-muted-foreground border-b font-medium text-xs">
-          <div className="col-span-3">Hostname</div>
-          <div className="col-span-2">Node</div>
-          <div className="col-span-2">Status</div>
-          <div className="col-span-2">Resources</div>
-          <div className="col-span-3 text-right">Actions</div>
-        </div>
-        
-        {/* Table Body */}
-        {isLoading ? (
-          // Loading skeleton
-          <>
-            <SkeletonRow />
-            <SkeletonRow />
-            <SkeletonRow />
-            <SkeletonRow />
-            <SkeletonRow />
-          </>
-        ) : error ? (
-          <ErrorState message={(error as Error).message} onRetry={() => refetch()} />
-        ) : filteredVMs.length === 0 ? (
-          <EmptyState hasFilters={hasFilters} onClearFilters={clearFilters} />
-        ) : (
-          filteredVMs.map((vm) => {
-            const effectiveNodeStatus = vm.node_status || nodeStatusByID.get(vm.node_id) || ""
-            const nodeUnavailable = Boolean(effectiveNodeStatus && effectiveNodeStatus !== "active")
-            const transition = transitionOf(vm.id)
-            const rowBusy = !!inFlight[vm.id] || !!transition
-            // Start: stopped/error only (a paused domain needs resume, not start).
-            // Stop: running/error only. creating/deleting/suspended offer neither.
-            const canStart = vm.status === "stopped" || vm.status === "error"
-            const canStop = vm.status === "running" || vm.status === "error"
 
-            return (
-            <div 
-              key={vm.id} 
-              className={`grid grid-cols-12 gap-4 p-4 items-center border-b last:border-0 transition-colors ${
-                nodeUnavailable ? "bg-red-50 dark:bg-red-950/30" : "hover:bg-muted/50"
-              }`}
+      {/* The states that exist, with how many VMs are in each. */}
+      {data && data.all > 0 && (
+        <div role="group" aria-label="Show VMs in this state" className="mb-4 flex flex-wrap gap-1.5">
+          {[{ id: "", label: "All", n: data.all }, ...STATES.filter((s) => by[s.id]).map((s) => ({ ...s, n: by[s.id] }))].map((s) => (
+            <Button
+              key={s.id || "all"}
+              size="sm"
+              variant={status === s.id ? "default" : "outline"}
+              aria-pressed={status === s.id}
+              onClick={() => {
+                setStatus(s.id)
+                setPage(1)
+              }}
             >
-              <div className="col-span-3 flex flex-col justify-center">
-                <Link href={`/vms/${vm.id}`} className="font-medium text-foreground hover:underline w-fit">
-                  {vm.hostname}
-                </Link>
-                <p className="text-xs text-muted-foreground">ID: {vm.id.slice(0, 8)}</p>
-              </div>
-              <div className="col-span-2">
-                <NodeBadge name={vm.node_name} status={effectiveNodeStatus} fallback={vm.node_id?.slice(0, 8)} />
-              </div>
-              <div className="col-span-2">
-                <StatusBadge status={vm.status} transition={transition} />
-              </div>
-              <div className="col-span-2">
-                <div className="flex items-center gap-3">
-                  <div className="flex items-center gap-1">
-                    <span className="w-6 h-6 bg-muted text-foreground flex items-center justify-center rounded-md border text-xs font-medium">
-                      {vm.resources.cpu}
-                    </span>
-                    <span className="text-xs text-muted-foreground">CPU</span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <span className="w-6 h-6 bg-muted text-foreground flex items-center justify-center rounded-md border text-xs font-medium">
-                      {Math.round(vm.resources.ram / 1024)}
-                    </span>
-                    <span className="text-xs text-muted-foreground">GB</span>
-                  </div>
-                </div>
-              </div>
-              <div className="col-span-3 flex items-center justify-end gap-2">
-                {/* Start */}
-                <Button
-                  variant="success"
-                  size="sm"
-                  onClick={() => handleAction(vm, "start")}
-                  disabled={nodeUnavailable || !canStart || rowBusy}
-                  className="h-8 w-8 p-0"
-                  title={nodeUnavailable ? "Node is not active" : "Start"}
-                  aria-label={`Start ${vm.hostname}`}
-                >
-                  {inFlight[vm.id] === "start" ? (
-                    <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
-                  ) : (
-                    <Play className="w-4 h-4" aria-hidden="true" />
-                  )}
-                </Button>
-                
-                {/* Stop */}
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  onClick={() => handleAction(vm, "stop")}
-                  disabled={nodeUnavailable || !canStop || rowBusy}
-                  className="h-8 w-8 p-0"
-                  title={nodeUnavailable ? "Node is not active" : "Stop"}
-                  aria-label={`Stop ${vm.hostname}`}
-                >
-                  {inFlight[vm.id] === "stop" ? (
-                    <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
-                  ) : (
-                    <Square className="w-4 h-4" aria-hidden="true" />
-                  )}
-                </Button>
-                
-                {/* Restart */}
-                <Button
-                  variant="warning"
-                  size="sm"
-                  onClick={() => handleAction(vm, "restart")}
-                  disabled={nodeUnavailable || vm.status !== "running" || rowBusy}
-                  className="h-8 w-8 p-0"
-                  title={nodeUnavailable ? "Node is not active" : "Restart"}
-                  aria-label={`Restart ${vm.hostname}`}
-                >
-                  {inFlight[vm.id] === "restart" ? (
-                    <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
-                  ) : (
-                    <RotateCcw className="w-4 h-4" aria-hidden="true" />
-                  )}
-                </Button>
-                
-                {/* Console */}
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => handleAction(vm, "console")}
-                  disabled={nodeUnavailable || vm.status !== "running" || rowBusy}
-                  className="h-8 w-8 p-0"
-                  title={nodeUnavailable ? "Node is not active" : "Console"}
-                  aria-label={`Console ${vm.hostname}`}
-                >
-                  <Terminal className="w-4 h-4" aria-hidden="true" />
-                </Button>
-                
-                {/* Delete */}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => handleDelete(vm)}
-                  disabled={rowBusy}
-                  className="h-8 w-8 p-0 border hover:bg-destructive hover:text-destructive-foreground"
-                  title="Delete"
-                  aria-label={`Delete ${vm.hostname}`}
-                >
-                  <Trash2 className="w-4 h-4" aria-hidden="true" />
-                </Button>
-              </div>
-            </div>
-            )
-          })
-        )}
-      </div>
-      
-      {/* Pagination */}
-      {!isLoading && !error && totalPages > 1 && (
-        <div className="flex items-center justify-between mt-6">
-          <p className="text-sm text-muted-foreground">
-            Showing {(currentPage - 1) * itemsPerPage + 1} to {Math.min(currentPage * itemsPerPage, totalItems)} of {totalItems} VMs
-          </p>
-          <Pagination
-            currentPage={currentPage}
-            totalPages={totalPages}
-            onPageChange={setCurrentPage}
-          />
+              {s.label} {s.n}
+            </Button>
+          ))}
         </div>
       )}
-      
-      {/* Delete Confirmation Dialog */}
 
-      {/* Delete Progress (step-by-step) */}
+      <section aria-label="Virtual machines" className="rounded-lg border bg-card text-card-foreground">
+        {isLoading ? (
+          <div className="space-y-3 p-5" aria-busy="true">
+            {[0, 1, 2, 3, 4].map((i) => (
+              <Skeleton key={i} className="h-14 w-full" />
+            ))}
+          </div>
+        ) : error && !data ? (
+          <div className="p-8" role="alert">
+            <p className="font-medium">The VMs could not be loaded.</p>
+            <p className="mt-1 text-sm text-muted-foreground">{(error as Error).message}</p>
+            <Button className="mt-4" variant="outline" onClick={() => refetch()}>
+              Try again
+            </Button>
+          </div>
+        ) : rows.length === 0 ? (
+          <div className="p-8">
+            {filtered ? (
+              <>
+                <p className="font-medium">No VM matches.</p>
+                <p className="mt-1 text-sm text-muted-foreground">Nothing has that name, owner, address or ID{status || node ? " in this state and node" : ""}.</p>
+                <Button
+                  className="mt-4"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setTyped("")
+                    setStatus("")
+                    setNode("")
+                    setPage(1)
+                  }}
+                >
+                  Show every VM
+                </Button>
+              </>
+            ) : (
+              <>
+                <p className="font-medium">No VMs yet.</p>
+                <p className="mt-1 text-sm text-muted-foreground">Create one and it appears here with its owner, address and load.</p>
+              </>
+            )}
+          </div>
+        ) : (
+          <ul className={`divide-y divide-hair ${isPlaceholderData ? "opacity-60" : ""}`}>
+            {rows.map((vm) => {
+              const moving = !!transitionOf(vm.id) || !!busy[vm.id] || vm.status === "creating" || vm.status === "deleting"
+              const running = vm.status === "running" && !vm.suspended
+              const nodeDown = vm.node_status === "offline"
+              return (
+                <li
+                  key={vm.id}
+                  className="grid grid-cols-2 gap-x-6 gap-y-3 px-5 py-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1.2fr)_minmax(0,1.5fr)_minmax(0,0.7fr)_9.5rem] lg:items-center"
+                >
+                  <div className="col-span-2 min-w-0 lg:col-span-1">
+                    <Link href={`/vms/${vm.id}`} className="break-all text-base font-semibold underline-offset-4 hover:underline [font-stretch:112%]">
+                      {vm.hostname}
+                    </Link>
+                    <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <StatusBadge status={vm.suspended ? "suspended" : vm.status} transition={transitionOf(vm.id)} />
+                      {vm.rescue_mode && <span className="text-xs font-medium text-warning">Rescue mode</span>}
+                    </div>
+                  </div>
+
+                  <div className="min-w-0">
+                    <p className="text-xs text-muted-foreground lg:sr-only">Address</p>
+                    {vm.ip ? (
+                      <p className="text-sm">
+                        <span className="font-mono">{vm.ip}</span>
+                        <button
+                          type="button"
+                          onClick={() => copy(vm.ip, vm.id)}
+                          aria-label={copied(vm.id) ? "Copied" : `Copy address ${vm.ip}`}
+                          className="ml-2 border-b border-border pb-px text-xs font-semibold hover:border-foreground active:translate-y-px"
+                        >
+                          {copied(vm.id) ? "Copied" : "Copy"}
+                        </button>
+                      </p>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">No address</p>
+                    )}
+                  </div>
+
+                  <div className="min-w-0">
+                    <p className="text-xs text-muted-foreground lg:sr-only">Owner and node</p>
+                    {vm.owner_email ? (
+                      <Link href={`/users/${vm.owner_id}`} className="block truncate text-sm underline-offset-4 hover:underline" title={vm.owner_email}>
+                        {vm.owner_email}
+                      </Link>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">No owner</p>
+                    )}
+                    <p className={`truncate text-xs ${nodeDown ? "font-medium text-destructive" : "text-muted-foreground"}`}>
+                      {vm.node_name ? `on ${vm.node_name}${nodeDown ? ", which is offline" : ""}` : "on an unknown node"}
+                    </p>
+                  </div>
+
+                  <div className="flex min-w-0 items-center gap-3">
+                    {/* The system's own mark, so a row is recognised before it is read. */}
+                    <OSLogoTile name={vm.system} className="h-8 w-8" />
+                    <div className="min-w-0">
+                      <p className="truncate text-sm" title={vm.system}>
+                        {vm.system || "Unknown system"}
+                      </p>
+                      <p className="truncate text-xs text-muted-foreground">
+                        {vm.cpu} vCPU, {Number((vm.ram_mb / 1024).toFixed(1))} GB, {vm.disk_gb} GB disk
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="min-w-0">
+                    <p className="text-xs text-muted-foreground lg:sr-only">Load now</p>
+                    {running && vm.cpu_now !== null ? (
+                      <>
+                        <p className="whitespace-nowrap text-sm">
+                          CPU <span className="font-semibold">{Math.round(vm.cpu_now)}%</span>
+                        </p>
+                        <Meter percent={vm.cpu_now} over={vm.cpu_now >= 90} />
+                        {vm.memory_now ? <p className="mt-1 whitespace-nowrap text-xs text-muted-foreground">Memory {Math.round(vm.memory_now)}%</p> : null}
+                      </>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">{running ? "No reading" : "Off"}</p>
+                    )}
+                  </div>
+
+                  <div className="col-span-2 flex flex-wrap items-center gap-2 lg:col-span-1 lg:justify-end">
+                    {running ? (
+                      <Button size="sm" variant="outline" disabled={moving} onClick={() => power(vm, "restart")}>
+                        Restart
+                      </Button>
+                    ) : vm.status === "stopped" && !vm.suspended ? (
+                      <Button size="sm" variant="outline" disabled={moving} onClick={() => power(vm, "start")}>
+                        Start
+                      </Button>
+                    ) : null}
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button size="sm" variant="ghost" aria-label={`More actions for ${vm.hostname}`}>
+                          More
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-48">
+                        <DropdownMenuItem asChild className="cursor-pointer">
+                          <Link href={`/vms/${vm.id}`}>Open</Link>
+                        </DropdownMenuItem>
+                        {running && (
+                          <>
+                            <DropdownMenuItem asChild className="cursor-pointer">
+                              <a href={`/vms/${vm.id}/console`} target="_blank" rel="noreferrer">
+                                Console in a new window
+                              </a>
+                            </DropdownMenuItem>
+                            <DropdownMenuItem className="cursor-pointer" disabled={moving} onSelect={() => power(vm, "stop")}>
+                              Stop
+                            </DropdownMenuItem>
+                          </>
+                        )}
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem className="cursor-pointer text-destructive focus:text-destructive" disabled={vm.status === "deleting"} onSelect={() => remove(vm)}>
+                          Delete
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </section>
+
+      {total > PAGE_SIZE && (
+        <nav aria-label="Pages" className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm">
+          <p className="text-muted-foreground">
+            {(page - 1) * PAGE_SIZE + 1} to {Math.min(page * PAGE_SIZE, total)} of {total}
+          </p>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
+              Previous
+            </Button>
+            <Button size="sm" variant="outline" disabled={page >= pages} onClick={() => setPage((p) => p + 1)}>
+              Next
+            </Button>
+          </div>
+        </nav>
+      )}
+
       <DeleteProgressDialog
         vm={deletingVM}
-        onClose={() => { setDeletingVM(null); refetch() }}
+        onClose={() => {
+          setDeletingVM(null)
+          refetch()
+        }}
       />
     </div>
   )

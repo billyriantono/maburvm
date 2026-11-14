@@ -7,88 +7,166 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Design tokens. The reasoning behind them is in DESIGN.md at the repo root.
+   Cool slate, like the metal of the machines this panel runs. The brand colour
+   (--primary) is the operator's: lib/branding overrides it when one is set. */
 @layer base {
   :root {
-    --radius: 0.5rem;
+    --radius: 0.375rem;
 
-    --background: 0 0% 100%;
-    --foreground: 240 10% 3.9%;
+    --background: 210 16% 93%;
+    --foreground: 210 31% 13%;
 
-    --card: 0 0% 100%;
-    --card-foreground: 240 10% 3.9%;
+    --card: 210 25% 98%;
+    --card-foreground: 210 31% 13%;
 
-    --popover: 0 0% 100%;
-    --popover-foreground: 240 10% 3.9%;
+    --popover: 210 25% 98%;
+    --popover-foreground: 210 31% 13%;
 
-    --primary: 240 5.9% 10%;
-    --primary-foreground: 0 0% 98%;
+    --primary: 224 75% 48%;
+    --primary-foreground: 0 0% 100%;
 
-    --secondary: 240 4.8% 95.9%;
-    --secondary-foreground: 240 5.9% 10%;
+    --secondary: 210 21% 95%;
+    --secondary-foreground: 210 31% 13%;
 
-    --muted: 240 4.8% 95.9%;
-    --muted-foreground: 240 3.8% 46.1%;
+    --muted: 210 21% 95%;
+    --muted-foreground: 209 16% 35%;
 
-    --accent: 240 4.8% 95.9%;
-    --accent-foreground: 240 5.9% 10%;
+    --accent: 210 21% 95%;
+    --accent-foreground: 210 31% 13%;
 
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 0 0% 98%;
+    --destructive: 3 62% 48%;
+    --destructive-foreground: 0 0% 100%;
 
-    --border: 240 5.9% 90%;
-    --input: 240 5.9% 90%;
-    --ring: 240 5.9% 10%;
+    --border: 210 15% 80%;
+    /* Edges of fields and outlined buttons: 3:1 against the panel, so a control
+       can be found without relying on its label. */
+    --input: 210 12% 55%;
+    --ring: 224 75% 48%;
+    /* A lighter rule for dividing rows inside a panel. */
+    --hair: 207 18% 90%;
 
-    /* Extra semantic tokens (professional, muted) */
-    --success: 142 71% 45%;
-    --success-foreground: 0 0% 98%;
-    --warning: 38 92% 50%;
-    --warning-foreground: 240 6% 10%;
-    --danger: 0 84.2% 60.2%;
-    --danger-foreground: 0 0% 98%;
+    --success: 137 69% 33%;
+    --success-foreground: 0 0% 100%;
+    --warning: 35 100% 33%;
+    --warning-foreground: 0 0% 100%;
+    --danger: 3 62% 48%;
+    --danger-foreground: 0 0% 100%;
+
+    /* Chart series. Checked as a pair for colour-blind separation on both
+       panel colours; do not swap one without re-checking the other. */
+    --chart-1: #2a78d6;
+    --chart-2: #eb6834;
   }
 
   .dark {
-    --background: 240 10% 3.9%;
-    --foreground: 0 0% 98%;
+    --background: 207 23% 8%;
+    --foreground: 210 25% 92%;
 
-    --card: 240 10% 3.9%;
-    --card-foreground: 0 0% 98%;
+    --card: 210 21% 13%;
+    --card-foreground: 210 25% 92%;
 
-    --popover: 240 10% 3.9%;
-    --popover-foreground: 0 0% 98%;
+    --popover: 210 21% 13%;
+    --popover-foreground: 210 25% 92%;
 
-    --primary: 0 0% 98%;
-    --primary-foreground: 240 5.9% 10%;
+    --primary: 224 77% 57%;
+    --primary-foreground: 0 0% 100%;
 
-    --secondary: 240 3.7% 15.9%;
-    --secondary-foreground: 0 0% 98%;
+    --secondary: 210 21% 17%;
+    --secondary-foreground: 210 25% 92%;
 
-    --muted: 240 3.7% 15.9%;
-    --muted-foreground: 240 5% 64.9%;
+    --muted: 210 21% 17%;
+    --muted-foreground: 210 16% 69%;
 
-    --accent: 240 3.7% 15.9%;
-    --accent-foreground: 0 0% 98%;
+    --accent: 210 21% 17%;
+    --accent-foreground: 210 25% 92%;
 
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 98%;
+    --destructive: 3 73% 63%;
+    --destructive-foreground: 210 31% 10%;
 
-    --border: 240 3.7% 15.9%;
-    --input: 240 3.7% 15.9%;
-    --ring: 240 4.9% 83.9%;
+    --border: 209 19% 25%;
+    --input: 210 14% 46%;
+    --ring: 224 77% 57%;
+    --hair: 210 20% 18%;
 
-    --success: 142 71% 45%;
-    --success-foreground: 0 0% 98%;
-    --warning: 38 92% 50%;
-    --warning-foreground: 240 6% 10%;
-    --danger: 0 62.8% 30.6%;
-    --danger-foreground: 0 0% 98%;
+    --success: 140 58% 52%;
+    --success-foreground: 210 31% 10%;
+    --warning: 36 86% 58%;
+    --warning-foreground: 210 31% 10%;
+    --danger: 3 73% 63%;
+    --danger-foreground: 210 31% 10%;
+
+    --chart-1: #3987e5;
+    --chart-2: #d95926;
+  }
+
+  /* The operator's colour, where one is set (lib/branding sets --brand and
+     --brand-dark together with this attribute). The dark theme gets a version
+     lightened just enough to be read. */
+  [data-brand] {
+    --primary: var(--brand);
+    --primary-foreground: var(--brand-foreground);
+    --ring: var(--brand);
+  }
+  .dark[data-brand],
+  .dark [data-brand] {
+    --primary: var(--brand-dark);
+    --primary-foreground: var(--brand-dark-foreground);
+    --ring: var(--brand-dark);
+  }
+
+  /* The faceplate: the dark strip that carries a machine's name, state and
+     power controls. It is dark in both themes, so everything inside it reads
+     its colours from here. */
+  .faceplate {
+    --background: 210 28% 15%;
+    --foreground: 210 28% 93%;
+    --card: 210 28% 15%;
+    --card-foreground: 210 28% 93%;
+    --secondary: 210 24% 22%;
+    --secondary-foreground: 210 28% 93%;
+    --muted: 210 24% 22%;
+    --muted-foreground: 210 18% 71%;
+    --accent: 210 24% 22%;
+    --accent-foreground: 210 28% 93%;
+    --border: 210 19% 33%;
+    --input: 210 16% 52%;
+    --hair: 210 22% 24%;
+    --success: 140 58% 52%;
+    --warning: 36 86% 58%;
+    --destructive: 3 73% 63%;
+    --destructive-foreground: 210 31% 10%;
+    color: hsl(var(--foreground));
+  }
+  .dark .faceplate {
+    --background: 211 25% 18%;
+    --card: 211 25% 18%;
+    --secondary: 210 23% 25%;
+    --muted: 210 23% 25%;
+    --accent: 210 23% 25%;
+    --hair: 210 21% 27%;
   }
 }
 
 @layer base {
   * {
     @apply border-border;
+  }
+  /* Anything that can be pressed says so; anything switched off says that too. */
+  a[href],
+  button,
+  summary,
+  select,
+  label[for],
+  [role="button"],
+  [role="tab"],
+  [role="switch"],
+  [role="menuitem"] {
+    cursor: pointer;
+  }
+  :disabled,
+  [aria-disabled="true"] {
+    cursor: not-allowed;
   }
   body {
     @apply bg-background text-foreground;
@@ -183,10 +261,24 @@
   }
 }
 
-/* Sign-in page: the operator's name rises into place once, on load. */
-@keyframes brand-rise {
-  from {
-    transform: translateY(24%);
-    opacity: 0;
-  }
+/* Every native drop-down gets the same arrow, with room around it. The
+   browser's own arrow sits hard against the right edge and differs between
+   systems. Not in a layer, so it holds whatever padding a page gives the box. */
+select:not([multiple]):not([size]) {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%234A5967' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 6 4 4 4-4'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.7rem center;
+  background-size: 1rem 1rem;
+  padding-right: 2.25rem;
+  text-overflow: ellipsis;
+}
+.dark select:not([multiple]):not([size]),
+.faceplate select:not([multiple]):not([size]) {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23A3B0BD' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 6 4 4 4-4'/%3E%3C/svg%3E");
+}
+/* The list itself is drawn by the system; give it the panel's colours where the browser allows. */
+select option {
+  background-color: hsl(var(--card));
+  color: hsl(var(--foreground));
 }

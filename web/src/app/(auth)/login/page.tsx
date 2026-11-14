@@ -4,8 +4,9 @@ import { useEffect, useState } from "react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { z } from "zod"
-import { Eye, EyeOff, Loader2, AlertTriangle, ShieldCheck } from "lucide-react"
+import { Eye, EyeOff, Loader2, ShieldCheck } from "lucide-react"
 import { useRouter } from "next/navigation"
+import { useBranding } from "@/lib/branding/provider"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 
@@ -37,6 +38,7 @@ interface LoginError {
 }
 
 export default function LoginPage() {
+  const { branding } = useBranding()
   const router = useRouter()
   const [showPassword, setShowPassword] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
@@ -191,42 +193,29 @@ export default function LoginPage() {
 
   return (
     <div className="w-full">
-      <h2 className="text-2xl font-semibold tracking-tight mb-6 text-foreground">
-        Sign In
-      </h2>
+      <h1 className="text-[2rem] font-semibold leading-tight tracking-[-0.01em] text-balance text-foreground">
+        {branding.login_headline || "Sign in to manage your servers"}
+      </h1>
+      <p className="mt-2 mb-8 text-base text-muted-foreground">
+        {branding.tagline || `Use your ${branding.name} account.`}
+      </p>
 
       {/* IP Whitelist Warning */}
       {ipWarning && (
-        <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-lg dark:bg-amber-950 dark:border-amber-900">
-          <div className="flex items-start gap-3">
-            <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-            <div>
-              <p className="font-semibold text-amber-800 text-sm dark:text-amber-300">
-                Access Denied
-              </p>
-              <p className="text-amber-700 text-sm mt-1">
-                {ipWarning.message}
-              </p>
-              {ipWarning.userIP && (
-                <p className="text-amber-600 text-xs mt-2 font-mono">
-                  Your IP: {ipWarning.userIP}
-                </p>
-              )}
-              <p className="text-amber-700 text-xs mt-2">
-                Contact your administrator to whitelist your IP address or try from an allowed device.
-              </p>
-            </div>
-          </div>
+        <div role="alert" className="mb-6 rounded-md border border-warning/50 bg-warning/10 p-4 text-sm">
+          <p className="font-semibold">Access denied</p>
+          <p className="mt-1">{ipWarning.message}</p>
+          {ipWarning.userIP && <p className="mt-2 font-mono text-xs">Your IP: {ipWarning.userIP}</p>}
+          <p className="mt-2 text-xs text-muted-foreground">
+            Ask your administrator to allow this address, or sign in from an allowed device.
+          </p>
         </div>
       )}
 
       {/* General Error */}
       {error && !ipWarning && (
-        <div className="mb-6 p-4 bg-destructive/10 border border-destructive/20 rounded-lg">
-          <div className="flex items-start gap-3">
-            <AlertTriangle className="w-5 h-5 text-destructive shrink-0 mt-0.5" />
-            <p className="font-medium text-destructive text-sm">{error.message}</p>
-          </div>
+        <div role="alert" className="mb-6 rounded-md border border-destructive/50 bg-destructive/10 p-4">
+          <p className="text-sm font-medium">{error.message}</p>
         </div>
       )}
 
@@ -237,7 +226,7 @@ export default function LoginPage() {
             <div className="flex items-center gap-2 mb-2">
               <ShieldCheck className="w-4 h-4 text-muted-foreground" />
               <label htmlFor="ssoCode" className="block text-sm font-medium text-foreground">
-                Two-Factor Code
+                Two-factor code
               </label>
             </div>
             <Input
@@ -286,7 +275,7 @@ export default function LoginPage() {
             htmlFor="email"
             className="block text-sm font-medium text-foreground mb-2"
           >
-            Email Address
+            Email address
           </label>
           <Input
             id="email"
@@ -350,7 +339,7 @@ export default function LoginPage() {
                 htmlFor="totpCode"
                 className="block text-sm font-medium text-foreground"
               >
-                Two-Factor Code
+                Two-factor code
               </label>
             </div>
             <Input
@@ -392,7 +381,7 @@ export default function LoginPage() {
           ) : requires2FA ? (
             "Verify"
           ) : (
-            "Sign In"
+            "Sign in"
           )}
         </Button>
       </form>
@@ -403,7 +392,7 @@ export default function LoginPage() {
       <div className="mt-6 text-center">
         <p className="text-xs text-muted-foreground">
           Having trouble signing in?{" "}
-          <a href="/forgot-password" className="font-medium text-primary hover:underline">
+          <a href="/forgot-password" className="font-semibold text-foreground underline underline-offset-4">
             Reset password
           </a>
         </p>

@@ -1063,11 +1063,11 @@ func (h *NetworkHandler) AssignIPv6Prefix(c echo.Context) error {
 		}
 	}
 	return c.JSON(http.StatusCreated, map[string]interface{}{
-		"message": "IPv6 prefix assigned",
+		"message": "IPv6 assigned",
 		"data": map[string]interface{}{
 			"ipv6_prefix":  p.Prefix,
-			"ipv6_address": p.Address(),
-			"ipv6_gateway": models.IPv6LinkLocalGateway,
+			"ipv6_address": p.Address,
+			"ipv6_gateway": p.Gateway,
 		},
 	})
 }
@@ -1087,7 +1087,7 @@ func (h *NetworkHandler) ReleaseIPv6Prefix(c echo.Context) error {
 		}
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Internal Server Error", "message": err.Error()})
 	}
-	return c.JSON(http.StatusOK, map[string]interface{}{"message": "IPv6 prefix released"})
+	return c.JSON(http.StatusOK, map[string]interface{}{"message": "IPv6 released"})
 }
 
 // ReleaseIPAddress handles DELETE /api/v1/vms/:id/ip-addresses/:network_id.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/maburvm/panel/internal/shared/models"
 	"gorm.io/gorm"
@@ -58,6 +59,11 @@ func (s *NetworkService) AssignIPAddress(ctx context.Context, vmID, poolID, requ
 		}
 		candidates = candidates[:0]
 		for i := range pools {
+			// This creates an IPv4 interface. An IPv6 pool is assigned through
+			// the IPv6 action instead; picking one here used to be possible.
+			if pools[i].Family == models.IPFamilyIPv6 {
+				continue
+			}
 			candidates = append(candidates, pools[i].ID)
 		}
 		if len(candidates) == 0 {
@@ -129,7 +135,7 @@ func (s *NetworkService) AssignIPAddress(ctx context.Context, vmID, poolID, requ
 // interface: the prefix travels on that interface's network-config job, and
 // the guest reconfigure that writes the address is the same one that writes
 // the IPv4 config.
-func (s *NetworkService) AssignIPv6Prefix(ctx context.Context, vmID, poolID string) (*models.VMIPv6Prefix, error) {
+func (s *NetworkService) AssignIPv6Prefix(ctx context.Context, vmID, poolID string) (*VMIPv6, error) {
 	if s.ipamService == nil {
 		return nil, fmt.Errorf("address allocation is not configured")
 	}
@@ -145,17 +151,42 @@ func (s *NetworkService) AssignIPv6Prefix(ctx context.Context, vmID, poolID stri
 		return nil, err
 	}
 
-	var created *models.VMIPv6Prefix
+	// One IPv6 per VM, of either kind: the guest and the node are set up for
+	// a routed prefix or for an address on a shared subnet, not both.
+	if have, herr := vmIPv6(ctx, s.db, vm.ID); herr != nil {
+		return nil, herr
+	} else if have != nil {
+		return nil, ErrVMAlreadyHasIPv6Prefix
+	}
+	var pool models.IPPool
+	if err := s.db.WithContext(ctx).First(&pool, "id = ?", poolID).Error; err != nil {
+		return nil, ErrIPPoolNotFound
+	}
+	if pool.Family != models.IPFamilyIPv6 {
+		return nil, fmt.Errorf("that pool is not an IPv6 pool")
+	}
+
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		p, aerr := s.ipamService.AllocateIPv6PrefixInTx(ctx, tx, poolID, vm.ID, vm.NodeID)
-		created = p
+		if pool.IsDelegated() {
+			_, aerr := s.ipamService.AllocateIPv6PrefixInTx(ctx, tx, poolID, vm.ID, vm.NodeID)
+			return aerr
+		}
+		// A shared subnet: take one address from it, as an IPv4 pool would.
+		if strings.TrimSpace(pool.Gateway) == "" || pool.Gateway == models.IPv6LinkLocalGateway {
+			return fmt.Errorf("pool %s needs its router's address as the gateway before single addresses can be assigned from it", pool.Name)
+		}
+		_, aerr := s.ipamService.AllocateAddressInTx(ctx, tx, &AllocateIPAddressRequest{PoolID: poolID, NodeID: &vm.NodeID, VMID: &vm.ID})
 		return aerr
 	})
 	if err != nil {
 		return nil, err
 	}
+	created, err := vmIPv6(ctx, s.db, vm.ID)
+	if err != nil || created == nil {
+		return nil, fmt.Errorf("IPv6 was assigned but could not be read back: %v", err)
+	}
 	if cerr := s.enqueueNetworkConfig(ctx, vm, network, v4Pool); cerr != nil {
-		return created, fmt.Errorf("prefix assigned but node configuration could not be queued: %w", cerr)
+		return created, fmt.Errorf("IPv6 assigned but node configuration could not be queued: %w", cerr)
 	}
 	return created, nil
 }
@@ -175,6 +206,12 @@ func (s *NetworkService) ReleaseIPv6Prefix(ctx context.Context, vmID string) err
 	}
 	if err := s.ipamService.ReleaseIPv6PrefixByVMInTx(ctx, s.db, vm.ID); err != nil {
 		return err
+	}
+	// And an address taken from a shared subnet, which is an ordinary IPAM row.
+	if err := s.db.WithContext(ctx).Exec(
+		"UPDATE ip_addresses SET status = 'available', vm_id = NULL WHERE vm_id = ? AND family = ? AND delivery_mode = 'direct' AND pool_id IN (SELECT id FROM ip_pools WHERE delegated_prefix_len IS NULL)",
+		vm.ID, models.IPFamilyIPv6).Error; err != nil {
+		return fmt.Errorf("failed to release the IPv6 address: %w", err)
 	}
 	network, v4Pool, err := s.primaryNetworkWithPool(ctx, vm.ID)
 	if err != nil {

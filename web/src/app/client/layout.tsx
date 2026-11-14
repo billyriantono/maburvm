@@ -6,6 +6,7 @@ import { LogOut, Loader2 } from "lucide-react"
 import { ClientSidebar, clientPages } from "@/components/client-sidebar"
 import { GlobalSearch } from "@/components/global-search"
 import { Button } from "@/components/ui/button"
+import { ThemeToggle } from "@/components/theme-toggle"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -74,7 +75,7 @@ export default function ClientLayout({
 
       <div className="lg:pl-64">
         <header className="sticky top-0 z-40 bg-card border-b">
-          <div className="flex items-center justify-between h-16 px-4 lg:px-8">
+          <div className="flex items-center justify-between h-16 pl-16 pr-4 lg:px-8">
             <span className="text-sm font-semibold text-foreground">
               Client Area
             </span>
@@ -82,6 +83,8 @@ export default function ClientLayout({
             <div className="hidden md:block ml-auto mr-3">
               <GlobalSearch pages={clientPages} vmHref={clientVmHref} admin={false} />
             </div>
+
+            <div className="mr-3"><ThemeToggle /></div>
 
             <DropdownMenu>
               <DropdownMenuTrigger asChild>

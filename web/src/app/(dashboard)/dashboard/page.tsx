@@ -3,13 +3,13 @@
 import { useDismissSetup, useSetup } from "@/lib/hooks/use-ops"
 import { useBranding } from "@/lib/branding/provider"
 import Link from 'next/link'
-import {
-  Plus, Trash2, Play, Square, RotateCw, RefreshCw, Pause, Camera,
-  HardDriveDownload, KeyRound, Pencil, Activity as ActivityIcon,
-} from 'lucide-react'
-import { useDashboardStats } from '@/lib/hooks/use-dashboard'
+import { useDashboardStats, useDashboardOverview, type DashboardNode } from '@/lib/hooks/use-dashboard'
+import { attentionList, silentFor } from '@/lib/attention'
 import { useNodes, useNodeMetricsHistory } from '@/lib/hooks/use-nodes'
 import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Meter } from '@/components/ui/meter'
+import { StatusBadge } from '@/components/status-badge'
 import { BandwidthChart } from '@/components/ui/bandwidth-chart'
 
 function formatTimeAgo(dateStr: string): string {
@@ -31,37 +31,23 @@ function formatExact(dateStr: string): string {
   return new Date(dateStr).toLocaleString()
 }
 
-type IconType = typeof Plus
-type Tone = 'green' | 'red' | 'amber' | 'blue' | 'violet' | 'muted'
-
-// Static class strings per tone (Tailwind can't see dynamically-built class names,
-// so these must be full literals to be generated).
-const TONES: Record<Tone, { bg: string; text: string }> = {
-  green: { bg: 'bg-emerald-500/10', text: 'text-emerald-500' },
-  red: { bg: 'bg-red-500/10', text: 'text-red-500' },
-  amber: { bg: 'bg-amber-500/10', text: 'text-amber-500' },
-  blue: { bg: 'bg-blue-500/10', text: 'text-blue-500' },
-  violet: { bg: 'bg-violet-500/10', text: 'text-violet-500' },
-  muted: { bg: 'bg-muted', text: 'text-muted-foreground' },
-}
-
-// Map an audit action to a human verb, an icon, and a tone. Covers the common VM
-// lifecycle actions; anything else falls back to a prettified label.
-const ACTION_META: Record<string, { verb: string; icon: IconType; tone: Tone }> = {
-  'vm.create': { verb: 'Created', icon: Plus, tone: 'green' },
-  'vm.delete': { verb: 'Deleted', icon: Trash2, tone: 'red' },
-  'vm.start': { verb: 'Started', icon: Play, tone: 'green' },
-  'vm.stop': { verb: 'Stopped', icon: Square, tone: 'amber' },
-  'vm.restart': { verb: 'Restarted', icon: RotateCw, tone: 'blue' },
-  'vm.reboot': { verb: 'Rebooted', icon: RotateCw, tone: 'blue' },
-  'vm.reset': { verb: 'Reset', icon: RotateCw, tone: 'blue' },
-  'vm.suspend': { verb: 'Suspended', icon: Pause, tone: 'amber' },
-  'vm.resume': { verb: 'Resumed', icon: Play, tone: 'green' },
-  'vm.rebuild': { verb: 'Rebuilt', icon: RefreshCw, tone: 'blue' },
-  'vm.snapshot': { verb: 'Snapshotted', icon: Camera, tone: 'violet' },
-  'vm.reset-password': { verb: 'Reset password for', icon: KeyRound, tone: 'amber' },
-  'vm.update': { verb: 'Updated', icon: Pencil, tone: 'blue' },
-  'image.create': { verb: 'Captured image of', icon: HardDriveDownload, tone: 'violet' },
+// An audit action as a verb. Covers the common VM lifecycle actions; anything
+// else falls back to a prettified label.
+const ACTION_VERB: Record<string, string> = {
+  'vm.create': 'Created',
+  'vm.delete': 'Deleted',
+  'vm.start': 'Started',
+  'vm.stop': 'Stopped',
+  'vm.restart': 'Restarted',
+  'vm.reboot': 'Rebooted',
+  'vm.reset': 'Reset',
+  'vm.suspend': 'Suspended',
+  'vm.resume': 'Resumed',
+  'vm.rebuild': 'Rebuilt',
+  'vm.snapshot': 'Snapshotted',
+  'vm.reset-password': 'Reset password for',
+  'vm.update': 'Updated',
+  'image.create': 'Captured image of',
 }
 
 const RESOURCE_LABEL: Record<string, string> = {
@@ -76,18 +62,15 @@ function titleCase(s: string): string {
 // Build the display parts for one activity entry.
 function describeActivity(a: {
   action: string; resource_type: string; resource_name: string; resource_id: string
-}): { icon: IconType; tone: Tone; label: string; target: string } {
-  const meta = ACTION_META[a.action.toLowerCase()]
+}): { label: string; target: string } {
   const resourceLabel = RESOURCE_LABEL[a.resource_type] ?? a.resource_type.replace(/_/g, ' ')
   // Prefer a real name; fall back to a short id so it's never empty.
-  const target = a.resource_name || (a.resource_id ? `${a.resource_id.slice(0, 8)}…` : '')
-
-  if (meta) {
-    return { icon: meta.icon, tone: meta.tone, label: `${meta.verb} ${resourceLabel}`, target }
-  }
+  const target = a.resource_name || (a.resource_id ? a.resource_id.slice(0, 8) : '')
+  const known = ACTION_VERB[a.action.toLowerCase()]
+  if (known) return { label: `${known} ${resourceLabel}`, target }
   // Fallback: "vm.foo" -> "Foo vm"
   const verb = a.action.includes('.') ? a.action.split('.').slice(1).join(' ') : a.action
-  return { icon: ActivityIcon, tone: 'muted', label: `${titleCase(verb)} ${resourceLabel}`, target }
+  return { label: `${titleCase(verb)} ${resourceLabel}`, target }
 }
 
 // formatRate renders a bytes-per-second figure at a sensible magnitude.
@@ -116,7 +99,6 @@ function NodeBandwidthCard({ nodeId, name }: { nodeId: string; name: string }) {
     <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-4">
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm font-semibold truncate" title={name}>{name}</h3>
-        <span className="text-[10px] font-medium text-muted-foreground">last 60m</span>
       </div>
       {isLoading ? (
         <div className="h-[96px] flex items-center justify-center text-xs text-muted-foreground">
@@ -145,7 +127,7 @@ function NodeBandwidthSection() {
 
   return (
     <div className="mb-6">
-      <h2 className="text-lg font-semibold tracking-tight mb-3">Bandwidth by node</h2>
+      <h2 className="text-base font-semibold mb-3">Traffic by node, last hour</h2>
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
         {list.map((node) => (
           <NodeBandwidthCard key={node.id} nodeId={node.id} name={node.name} />
@@ -178,155 +160,188 @@ function SetupReminder() {
   )
 }
 
+const GIB = 1024 ** 3
+
+// One node: what it has been promised to VMs against what it physically has.
+function NodeRow({ n }: { n: DashboardNode }) {
+  const ramTotal = n.memory_total_bytes / GIB
+  const ramPromised = n.ram_allocated_mb / 1024
+  const ramRatio = ramTotal > 0 ? ramPromised / ramTotal : null
+  const diskShare = n.disk_total_bytes > 0 ? (n.disk_used_bytes / n.disk_total_bytes) * 100 : null
+  const reporting = n.status === 'active' && !silentFor(n)
+  return (
+    <li className="grid grid-cols-2 gap-x-6 gap-y-4 px-5 py-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,0.7fr)_minmax(0,1.3fr)_minmax(0,1.3fr)_minmax(0,1fr)] lg:items-center">
+      <div className="col-span-2 min-w-0 lg:col-span-1">
+        <Link href={`/nodes/${n.id}`} className="break-all text-base font-semibold underline-offset-4 hover:underline [font-stretch:112%]">{n.name}</Link>
+        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+          <StatusBadge variant="lamp" className="text-xs" status={n.status} />
+          {n.region && <span className="text-xs text-muted-foreground">{n.region}</span>}
+          {n.creation_paused && <span className="text-xs font-medium text-muted-foreground">Closed to new VMs</span>}
+        </div>
+      </div>
+      <div className="min-w-0">
+        <p className="text-xs text-muted-foreground">VMs</p>
+        <p className="text-sm"><span className="font-semibold">{n.running}</span> running of {n.vm_count}</p>
+        <p className="text-xs text-muted-foreground">{n.vcpu_allocated} vCPU promised</p>
+      </div>
+      <div className="min-w-0">
+        <p className="text-xs text-muted-foreground">Memory promised to VMs</p>
+        {ramRatio === null ? (
+          <p className="text-sm text-muted-foreground">{ramPromised.toFixed(0)} GB; this node has not reported its memory</p>
+        ) : (
+          <>
+            <p className="text-sm"><span className="font-semibold">{ramPromised.toFixed(0)} GB</span> of {ramTotal.toFixed(0)} GB installed{ramRatio > 1 ? ` (${ramRatio.toFixed(1)} times)` : ''}</p>
+            <Meter percent={ramRatio * 100} over={ramRatio > 1} />
+          </>
+        )}
+      </div>
+      <div className="min-w-0">
+        <p className="text-xs text-muted-foreground">Storage in use</p>
+        {diskShare === null ? (
+          <p className="text-sm text-muted-foreground">No storage registered</p>
+        ) : (
+          <>
+            <p className="text-sm"><span className="font-semibold">{(n.disk_used_bytes / GIB).toFixed(0)} GB</span> of {(n.disk_total_bytes / GIB).toFixed(0)} GB ({Math.round(diskShare)}%)</p>
+            <Meter percent={diskShare} over={diskShare >= 90} />
+          </>
+        )}
+      </div>
+      <div className="col-span-2 min-w-0 lg:col-span-1">
+        <p className="text-xs text-muted-foreground">Load now</p>
+        {reporting && n.cpu_usage !== null && n.memory_usage !== null ? (
+          <p className="text-sm">CPU <span className="font-semibold">{Math.round(n.cpu_usage)}%</span>, memory <span className="font-semibold">{Math.round(n.memory_usage)}%</span></p>
+        ) : (
+          <p className="text-sm text-muted-foreground">No current reading</p>
+        )}
+      </div>
+    </li>
+  )
+}
+
 export default function DashboardPage() {
   const { branding } = useBranding()
-  const { data: stats, isLoading, error, refetch } = useDashboardStats()
+  const { data: stats } = useDashboardStats()
+  const { data: o, isLoading, error, refetch } = useDashboardOverview()
+
+  const head = (sub: React.ReactNode) => (
+    <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+      <div>
+        <h1 className="text-2xl font-semibold">{branding.name} today</h1>
+        <p className="mt-1 text-sm text-muted-foreground">{sub}</p>
+      </div>
+      <Button asChild variant="outline"><Link href="/vms/new">New VM</Link></Button>
+    </div>
+  )
 
   if (isLoading) {
     return (
-      <div className="max-w-6xl mx-auto">
-        <h1 className="text-3xl font-bold tracking-tight mb-2">
-          Dashboard
-        </h1>
-        <p className="text-muted-foreground text-sm mb-8">
-          Loading...
-        </p>
+      <div className="mx-auto max-w-6xl" aria-busy="true">
+        {head('Loading the fleet')}
+        <div className="space-y-4">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-24 w-full" />)}</div>
       </div>
     )
   }
-
-  if (error) {
+  if (error || !o) {
     return (
-      <div className="max-w-6xl mx-auto">
-        <h1 className="text-3xl font-bold tracking-tight mb-2">
-          Dashboard
-        </h1>
-        <p className="text-destructive text-sm mb-8">
-          Failed to load dashboard data.
-        </p>
-        <Button variant="outline" onClick={() => refetch()}>Retry</Button>
+      <div className="mx-auto max-w-6xl" role="alert">
+        {head('The fleet overview could not be loaded.')}
+        <p className="mb-4 text-sm text-muted-foreground">{(error as Error)?.message}</p>
+        <Button variant="outline" onClick={() => refetch()}>Try again</Button>
       </div>
     )
   }
 
-  const utilization = stats ? Math.round(stats.utilization) : 0
+  const t = o.totals
+  const needs = attentionList(o)
+  const summary = t.vms === 0
+    ? `No VMs yet, on ${o.nodes.length} ${o.nodes.length === 1 ? 'node' : 'nodes'}.`
+    : `${t.vms} ${t.vms === 1 ? 'VM' : 'VMs'} on ${o.nodes.length} ${o.nodes.length === 1 ? 'node' : 'nodes'}: ${t.running} running, ${t.stopped} stopped${t.error ? `, ${t.error} failed` : ''}${t.suspended ? `, ${t.suspended} suspended` : ''}. ${t.customers} ${t.customers === 1 ? 'customer' : 'customers'}, ${t.new_7d} new ${t.new_7d === 1 ? 'VM' : 'VMs'} this week.`
 
   return (
-    <div className="max-w-6xl mx-auto">
-      <h1 className="text-3xl font-bold tracking-tight mb-2">
-        Dashboard
-      </h1>
-      <p className="text-muted-foreground text-sm mb-8">
-        Welcome to {branding.name}
-      </p>
+    <div className="mx-auto max-w-6xl">
+      {head(summary)}
 
       <SetupReminder />
 
-      {/* Quick Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-        <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-4">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-medium text-muted-foreground">Total VMs</span>
-            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-          </div>
-          <p className="text-4xl font-bold">{stats?.vms.total ?? 0}</p>
-          <p className="text-xs text-muted-foreground mt-1">{stats?.vms.running ?? 0} running</p>
-        </div>
-
-        <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-4">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-medium text-muted-foreground">Active Nodes</span>
-            <span className="w-2 h-2 rounded-full bg-primary"></span>
-          </div>
-          <p className="text-4xl font-bold">{stats?.nodes.active ?? 0}</p>
-          <p className="text-xs text-muted-foreground mt-1">of {stats?.nodes.total ?? 0} total</p>
-        </div>
-
-        <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-4">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-medium text-muted-foreground">Running</span>
-            <span className="w-2 h-2 rounded-full bg-primary"></span>
-          </div>
-          <p className="text-4xl font-bold">{stats?.vms.running ?? 0}</p>
-          <p className="text-xs text-muted-foreground mt-1">{utilization}% utilization</p>
-        </div>
-
-        <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-4">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-medium text-muted-foreground">Alerts</span>
-            <span className="w-2 h-2 rounded-full bg-destructive"></span>
-          </div>
-          <p className="text-4xl font-bold">{stats?.alerts ?? 0}</p>
-          <p className="text-xs text-muted-foreground mt-1">
-            {(stats?.alerts ?? 0) > 0 ? 'requires attention' : 'all clear'}
+      <section aria-labelledby="needs-attention" className="mb-6 rounded-lg border bg-card text-card-foreground">
+        <h2 id="needs-attention" className="border-b border-hair px-5 py-3 text-sm font-semibold">
+          {needs.length ? `Needs attention (${needs.length})` : 'Needs attention'}
+        </h2>
+        {needs.length === 0 ? (
+          <p className="px-5 py-4 text-sm text-muted-foreground">
+            Nothing right now. Every node is reporting, no VM has failed or stalled, no backup or job failed in the last 24 hours, and no storage or address range is nearly full.
           </p>
-        </div>
-      </div>
+        ) : (
+          <ul className="divide-y divide-hair">
+            {needs.map((n) => (
+              <li key={n.key} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-5 py-3 text-sm">
+                <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${n.bad ? 'bg-destructive' : 'bg-warning'}`} aria-hidden="true" />
+                <span className="min-w-0 flex-1 basis-64">{n.text}</span>
+                <Link href={n.href} className="font-semibold underline underline-offset-4">{n.go}</Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
-      {/* Per-node bandwidth. Small multiples rather than one combined chart:
-          the question is "which node is carrying what", and stacking several
-          nodes onto shared axes answers a different one while making each
-          node's own shape harder to read. */}
+      <section aria-labelledby="nodes-capacity" className="mb-6 rounded-lg border bg-card text-card-foreground">
+        <h2 id="nodes-capacity" className="border-b border-hair px-5 py-3 text-sm font-semibold">Room on each node</h2>
+        {o.nodes.length === 0 ? (
+          <div className="px-5 py-4 text-sm">
+            <p className="text-muted-foreground">No node is connected yet, so no VM can be created.</p>
+            <Button asChild className="mt-3" size="sm"><Link href="/nodes/new">Add a node</Link></Button>
+          </div>
+        ) : (
+          <ul className="divide-y divide-hair">{o.nodes.map((n) => <NodeRow key={n.id} n={n} />)}</ul>
+        )}
+      </section>
+
+      {o.address_pools.length > 0 && (
+        <section aria-labelledby="address-ranges" className="mb-6 rounded-lg border bg-card text-card-foreground">
+          <h2 id="address-ranges" className="border-b border-hair px-5 py-3 text-sm font-semibold">IPv4 addresses</h2>
+          <ul className="grid gap-x-8 gap-y-4 px-5 py-4 sm:grid-cols-2 lg:grid-cols-3">
+            {o.address_pools.map((p) => (
+              <li key={p.id} className="min-w-0">
+                <p className="truncate text-xs text-muted-foreground">{p.name}</p>
+                {p.total === 0 ? (
+                  <p className="text-sm text-muted-foreground">No addresses in this range</p>
+                ) : (
+                  <>
+                    <p className="text-sm"><span className="font-semibold">{p.total - p.used}</span> free of {p.total}</p>
+                    <Meter percent={(p.used / p.total) * 100} over={p.used / p.total >= 0.9} />
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {/* Per-node traffic as small multiples: the question is which node is
+          carrying what, and one shared chart would hide each node's own shape. */}
       <NodeBandwidthSection />
 
-      {/* Main Content Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Recent Activity */}
-        <div className="lg:col-span-2 rounded-lg border bg-card text-card-foreground shadow-sm p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold tracking-tight">Recent Activity</h2>
-            <Link href="/audit-logs" className="text-xs font-medium text-primary hover:underline">
-              View all
-            </Link>
-          </div>
-          <div className="space-y-1">
-            {stats?.recent_activity && stats.recent_activity.length > 0 ? (
-              stats.recent_activity.map((activity) => {
-                const { icon: Icon, tone, label, target } = describeActivity(activity)
-                return (
-                  <div key={activity.id} className="flex items-start gap-3 py-2.5 border-b last:border-0">
-                    <div className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${TONES[tone].bg}`}>
-                      <Icon className={`h-3.5 w-3.5 ${TONES[tone].text}`} />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm leading-snug">
-                        <span className="font-medium">{label}</span>
-                        {target && <span className="font-semibold text-foreground"> {target}</span>}
-                      </p>
-                      <p className="text-xs text-muted-foreground" title={formatExact(activity.created_at)}>
-                        {activity.actor} • {formatTimeAgo(activity.created_at)}
-                      </p>
-                    </div>
-                  </div>
-                )
-              })
-            ) : (
-              <p className="text-sm text-muted-foreground">No recent activity</p>
-            )}
-          </div>
+      <section aria-labelledby="recent-activity" className="rounded-lg border bg-card text-card-foreground">
+        <div className="flex items-center justify-between border-b border-hair px-5 py-3">
+          <h2 id="recent-activity" className="text-sm font-semibold">Recent activity</h2>
+          <Link href="/audit-logs" className="text-sm font-semibold underline underline-offset-4">Audit log</Link>
         </div>
-
-        {/* Quick Actions */}
-        <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-6">
-          <h2 className="text-lg font-semibold tracking-tight mb-4">
-            Quick Actions
-          </h2>
-          <div className="space-y-3">
-            <Link href="/vms/new" className="block w-full p-3 text-left rounded-md border bg-background hover:bg-muted transition-colors">
-              <span className="text-sm font-medium">+ New VM</span>
-            </Link>
-            <Link href="/nodes/new" className="block w-full p-3 text-left rounded-md border bg-background hover:bg-muted transition-colors">
-              <span className="text-sm font-medium">Add Node</span>
-            </Link>
-            <Link href="/templates/new" className="block w-full p-3 text-left rounded-md border bg-background hover:bg-muted transition-colors">
-              <span className="text-sm font-medium">Create Template</span>
-            </Link>
-            <Link href="/networks" className="block w-full p-3 text-left rounded-md border bg-background hover:bg-muted transition-colors">
-              <span className="text-sm font-medium">View Network</span>
-            </Link>
-          </div>
-        </div>
-      </div>
+        {stats?.recent_activity && stats.recent_activity.length > 0 ? (
+          <ul className="divide-y divide-hair">
+            {stats.recent_activity.map((activity) => {
+              const { label, target } = describeActivity(activity)
+              return (
+                <li key={activity.id} className="flex flex-wrap items-baseline gap-x-4 gap-y-0.5 px-5 py-2.5 text-sm">
+                  <span className="min-w-0 flex-1 basis-56">{label}{target && <span className="font-semibold"> {target}</span>}</span>
+                  <span className="text-xs text-muted-foreground" title={formatExact(activity.created_at)}>{activity.actor}, {formatTimeAgo(activity.created_at)}</span>
+                </li>
+              )
+            })}
+          </ul>
+        ) : (
+          <p className="px-5 py-4 text-sm text-muted-foreground">Nothing recorded yet. Actions on VMs appear here as they happen.</p>
+        )}
+      </section>
     </div>
   )
 }

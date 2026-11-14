@@ -72,9 +72,9 @@ func TestIPv6PrefixNetwork(t *testing.T) {
 	for in, want := range map[string]string{
 		"2001:db8:20:5::/64":  "2001:db8:20:5::",
 		"2001:db8:20:5::1/64": "2001:db8:20:5::",
-		"203.0.113.0/24":       "",
-		"":                     "",
-		"garbage":              "",
+		"203.0.113.0/24":      "",
+		"":                    "",
+		"garbage":             "",
 	} {
 		if got := IPv6PrefixNetwork(in); got != want {
 			t.Errorf("IPv6PrefixNetwork(%q) = %q, want %q", in, got, want)
@@ -112,5 +112,37 @@ func TestWithFilterUUID(t *testing.T) {
 	}
 	if f.UUID != "8f2b4c90-253d-49e5-94a8-9e5b8cbd1db3" || f.Name != ipv6ChainFilter {
 		t.Fatalf("uuid %q name %q", f.UUID, f.Name)
+	}
+}
+
+func TestInterfaceFilterRefByKindOfIPv6(t *testing.T) {
+	param := func(ref *libvirtxml.DomainInterfaceFilterRef, name string) string {
+		for _, p := range ref.Parameters {
+			if p.Name == name {
+				return p.Value
+			}
+		}
+		return ""
+	}
+	// A routed /64 keeps the filter it always had, with no mask parameter.
+	r64 := InterfaceFilterRef(true, "192.0.2.10", "52:54:00:aa:bb:cc", "2001:db8:20:5::/64")
+	if r64.Filter != IPv6CleanTrafficFilter || param(r64, "IPV6_MASK") != "" {
+		t.Fatalf("/64: %+v", r64)
+	}
+	// Any other routed size carries its own mask.
+	r56 := InterfaceFilterRef(true, "192.0.2.10", "52:54:00:aa:bb:cc", "2001:db8:20:500::/56")
+	if r56.Filter != IPv6MaskedCleanTrafficFilter || param(r56, "IPV6_MASK") != "56" || param(r56, "IPV6_PREFIX") != "2001:db8:20:500::" {
+		t.Fatalf("/56: %+v", r56)
+	}
+	// One address on a shared subnet.
+	on := InterfaceFilterRef(true, "192.0.2.10", "52:54:00:aa:bb:cc", "2001:db8:30::15/128")
+	if on.Filter != IPv6OnLinkCleanTrafficFilter || param(on, "IPV6_PREFIX") != "2001:db8:30::15" {
+		t.Fatalf("on-link: %+v", on)
+	}
+	// All three are recognised as ours, so releasing IPv6 falls back to clean-traffic.
+	for _, name := range []string{IPv6CleanTrafficFilter, IPv6MaskedCleanTrafficFilter, IPv6OnLinkCleanTrafficFilter} {
+		if !isOurIPv6Filter(name) {
+			t.Errorf("%s not recognised", name)
+		}
 	}
 }

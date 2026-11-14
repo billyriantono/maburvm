@@ -158,11 +158,9 @@ func generateDomainXML(config VMConfig) (string, error) {
 	if config.MACAddress != "" {
 		iface.MAC = &libvirtxml.DomainInterfaceMAC{Address: config.MACAddress}
 	}
-	if config.VLANID > 0 {
-		iface.VLan = &libvirtxml.DomainInterfaceVLan{
-			Tags: []libvirtxml.DomainInterfaceVLanTag{{ID: uint(config.VLANID)}},
-		}
-	}
+	// No <vlan> element: libvirt only accepts it on Open vSwitch and refuses to
+	// start a VM that has one on a Linux bridge. The VLAN is applied to the tap
+	// by the network manager once the VM is up.
 	if config.BandwidthMbps > 0 {
 		// libvirt expresses bandwidth average in kilobytes/sec: Mbps * 1000 / 8.
 		avgIn := config.BandwidthMbps * 125
@@ -436,12 +434,35 @@ func StartVM(uuidStr string) error {
 		}
 
 		// Start the domain
+		freeConsolePort(conn, dom)
 		if err := dom.Create(); err != nil {
 			return fmt.Errorf("failed to start domain: %w", err)
 		}
 
 		return nil
 	})
+}
+
+// freeConsolePort makes a stopped domain take whichever console port is free
+// when it starts, instead of a fixed one another VM may now hold. See
+// vncAutoPort. Best-effort: if the definition cannot be read or saved, the
+// start goes ahead as before and reports its own error.
+func freeConsolePort(conn *libvirt.Connect, dom *libvirt.Domain) {
+	// SECURE keeps the console password in the definition being saved back.
+	inactive, err := dom.GetXMLDesc(libvirt.DOMAIN_XML_INACTIVE | libvirt.DOMAIN_XML_SECURE)
+	if err != nil {
+		return
+	}
+	fixed, changed := vncAutoPort(inactive)
+	if !changed {
+		return
+	}
+	saved, err := redefineDomain(conn, fixed)
+	if err != nil {
+		log.Printf("warning: could not switch the console of a domain to an automatic port: %v", err)
+		return
+	}
+	saved.Free()
 }
 
 // cpuSharesRe matches a domain's <cputune><shares>. Domains written by other
@@ -593,6 +614,7 @@ func RestartVM(uuidStr string) error {
 				return fmt.Errorf("failed to reboot domain: %w", err)
 			}
 		} else {
+			freeConsolePort(conn, dom)
 			if err := dom.Create(); err != nil {
 				return fmt.Errorf("failed to start domain: %w", err)
 			}

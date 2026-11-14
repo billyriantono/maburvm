@@ -4,18 +4,18 @@ import { useState, useCallback, useEffect } from "react"
 import { useParams, useRouter } from "next/navigation"
 import Link from "next/link"
 import { 
-  Play, Square, RotateCcw, Trash2, RefreshCw, ArrowLeft,
+  Square, RotateCcw, Trash2, RefreshCw, ArrowLeft,
   Copy, Check, HardDrive,
-  Monitor, MonitorOff, KeyRound, Server, Network, Database, Shield, FileText, Terminal, Activity, ExternalLink,
+  Monitor, MonitorOff, KeyRound, Server, Database, Shield, FileText, Terminal, Activity, ExternalLink,
   Loader2, AlertCircle, Plus, Disc, CircleSlash, LifeBuoy, ArrowRightLeft, User,
-  Pencil, Cpu, X, Zap
+  Pencil, Cpu, X
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { useVM, useVMMetrics, useVMMetricsHistory, useVMAction, useDeleteVM, useAttachISO, useDetachISO, useRescueVM, useUnrescueVM, useMigrateVM, useRegenerateVNCPassword, useSetConsoleEnabled, useRepairConsole, useRebuildVM, useResetPassword, useCloneVM, useUpdateVM, useAssignVMIP, useReleaseVMIP, useAssignVMIPv6, useReleaseVMIPv6 } from "@/lib/hooks/use-vms"
+import { useVM, useVMMetrics, useVMAction, useDeleteVM, useAttachISO, useDetachISO, useRescueVM, useUnrescueVM, useMigrateVM, useRegenerateVNCPassword, useSetConsoleEnabled, useRepairConsole, useRebuildVM, useResetPassword, useCloneVM, useUpdateVM, useAssignVMIP, useReleaseVMIP, useAssignVMIPv6, useReleaseVMIPv6, useInitialPassword, useRevealInitialPassword, useForgetInitialPassword } from "@/lib/hooks/use-vms"
 import { useIPPools } from "@/lib/hooks/use-ipam"
 import { DeleteProgressDialog } from "@/components/vm-delete-progress"
 import { VMNameEditor } from "@/components/vm-name-editor"
@@ -23,7 +23,6 @@ import { OSPicker } from "@/components/os-picker"
 import { UserPicker } from "@/components/user-picker"
 import { useSSHKeys } from "@/lib/hooks/use-ssh-keys"
 import { useNodes } from "@/lib/hooks/use-nodes"
-import { Sparkline } from "@/components/ui/sparkline"
 import { useSnapshots, useCreateSnapshot, useRestoreSnapshot, useDeleteSnapshot } from "@/lib/hooks/use-snapshots"
 import { useCreateImage } from "@/lib/hooks/use-images"
 import { useBackups, useCreateBackup, useDeleteBackup, useRestoreBackup, useBackupSchedules, useCreateBackupSchedule, useDeleteBackupSchedule } from "@/lib/hooks/use-backups"
@@ -34,6 +33,8 @@ import { useVMBandwidth, useVMBandwidthHistory, useSetBandwidthQuota } from "@/l
 import { useVMDisks, useAttachDisk, useDetachDisk } from "@/lib/hooks/use-disks"
 import { useVMActivity } from "@/lib/hooks/use-audit-logs"
 import { VNCConsole } from "@/components/vnc-console"
+import { VMTelemetry } from "@/components/vm-telemetry"
+import { OSLogoTile } from "@/components/os-icon"
 import type { Snapshot, Backup, FirewallRule } from "@/types"
 import { useConfirm } from "@/components/confirm-provider"
 import { StatusBadge, useVMTransitions } from "@/components/status-badge"
@@ -145,7 +146,7 @@ function BandwidthCell({ vmId, iface }: { vmId: string; iface: NetworkIface }) {
     return (
       <div className="flex items-center gap-2">
         <span className="font-mono">{formatMbps(iface.bandwidth_limit)}</span>
-        {saved.active() && <Check className="w-3 h-3 text-emerald-600" aria-label="Saved" />}
+        {saved.active() && <Check className="w-3 h-3 text-success" aria-label="Saved" />}
         <button
           type="button"
           onClick={() => { setValue(iface.bandwidth_limit); setEditing(true) }}
@@ -222,26 +223,6 @@ function formatBytes(bytes: number): string {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
 }
 
-function formatBytesPerSec(bytes: number): string {
-  return `${formatBytes(bytes)}/s`
-}
-
-function ProgressBar({ value, max, label, unit, color = "primary" }: { value: number; max: number; label: string; unit?: string; color?: "primary" | "secondary" | "accent" | "success" | "danger" }) {
-  const percentage = max > 0 ? Math.round((value / max) * 100) : 0
-  const colorClasses = { primary: "bg-primary", secondary: "bg-primary", accent: "bg-primary", success: "bg-emerald-500", danger: "bg-destructive" }
-  return (
-    <div className="mb-4">
-      <div className="flex justify-between items-center mb-1">
-        <span className="text-xs font-medium text-muted-foreground">{label}</span>
-        <span className="text-xs font-semibold">{unit ? `${value} / ${max} ${unit}` : `${percentage}%`}</span>
-      </div>
-      <div className="h-2 rounded-full bg-muted overflow-hidden relative">
-        <div className={`h-full ${colorClasses[color]} transition-all duration-300`} style={{ width: `${Math.min(percentage, 100)}%` }} />
-      </div>
-    </div>
-  )
-}
-
 // Reverse DNS (PTR) for one address, edited in place. For a customer the server
 // only accepts a hostname that already resolves to the address, so the error
 // it returns is shown as written: it says exactly which record is missing.
@@ -257,7 +238,7 @@ function RDNSCell({ vmId, ipAddress, rdns, verified }: { vmId: string; ipAddress
     return (
       <div className="flex items-center gap-2">
         <span className={`font-mono text-xs break-all ${rdns ? "" : "text-muted-foreground"}`}>{rdns || "Not set"}</span>
-        {saved.active() && <Check className="w-3 h-3 shrink-0 text-emerald-600" aria-label="Saved" />}
+        {saved.active() && <Check className="w-3 h-3 shrink-0 text-success" aria-label="Saved" />}
         <button
           type="button"
           onClick={() => { setValue(rdns); setError(null); setEditing(true) }}
@@ -371,12 +352,12 @@ function PortForwardsCard({ vmId }: { vmId: string }) {
   }
 
   return (
-    <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
+    <div className="bg-card text-card-foreground border rounded-lg p-6">
       <div className="flex items-center justify-between mb-2">
         <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
-          <ArrowRightLeft className="w-5 h-5" aria-hidden="true" />Port Forwards
+          Port Forwards
         </h2>
-        <Button size="sm" onClick={() => setAdding((v) => !v)}><Plus className="w-4 h-4" aria-hidden="true" />Add Forward</Button>
+        <Button size="sm" variant="outline" onClick={() => setAdding((v) => !v)}><Plus className="w-4 h-4" aria-hidden="true" />Add Forward</Button>
       </div>
       <p className="text-sm text-muted-foreground mb-4">Sends a port on the host&apos;s public address to a port on this VM. Useful when the VM has a private address only.</p>
 
@@ -509,7 +490,7 @@ function BackupScheduleCard({ vmId }: { vmId: string }) {
   }
 
   return (
-    <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm mb-6">
+    <div className="bg-card text-card-foreground border rounded-lg p-6 mb-6">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-lg font-semibold text-foreground">Automatic backups</h2>
         {!editing && !isLoading && !error && (
@@ -652,12 +633,12 @@ function DisksCard({ vmId }: { vmId: string }) {
   }
 
   return (
-    <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
-      <div className="flex items-center justify-between mb-6">
+    <div className="bg-card text-card-foreground border rounded-lg p-6">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
         <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
-          <HardDrive className="w-5 h-5" />Data Disks
+          Data Disks
         </h2>
-        <Button size="sm" onClick={() => setAdding((v) => !v)}><Plus className="w-4 h-4" />Add Disk</Button>
+        <Button size="sm" variant="outline" onClick={() => setAdding((v) => !v)}><Plus className="w-4 h-4" />Add Disk</Button>
       </div>
 
       {adding && (
@@ -725,7 +706,7 @@ function BandwidthUsageCard({ vmId, canEditQuota }: { vmId: string; canEditQuota
   if (isLoading) return <SectionSkeleton />
   if (error) {
     return (
-      <div className="bg-card text-card-foreground border rounded-lg shadow-sm">
+      <div className="bg-card text-card-foreground border rounded-lg">
         <SectionError message={(error as Error).message} onRetry={() => refetch()} />
       </div>
     )
@@ -749,10 +730,10 @@ function BandwidthUsageCard({ vmId, canEditQuota }: { vmId: string; canEditQuota
   const isDanger = bandwidth.exceeded
 
   return (
-    <div className={`bg-card text-card-foreground border rounded-lg p-6 shadow-sm ${isDanger ? 'border-red-300 dark:border-red-900' : ''}`}>
+    <div className={`bg-card text-card-foreground border rounded-lg p-6 ${isDanger ? 'border-destructive' : ''}`}>
       <h2 className="text-lg font-semibold text-foreground mb-6 flex items-center gap-2">
-        <Activity className="w-5 h-5" />Bandwidth Usage
-        {isDanger && <span className="text-xs rounded-md bg-red-50 text-red-700 border border-red-200 px-2 py-0.5 dark:bg-red-950 dark:text-red-300 dark:border-red-900">Exceeded</span>}
+        Bandwidth Usage
+        {isDanger && <span className="text-xs font-semibold text-destructive">Over the limit</span>}
       </h2>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
@@ -782,7 +763,7 @@ function BandwidthUsageCard({ vmId, canEditQuota }: { vmId: string; canEditQuota
           </div>
           <div className="h-2 rounded-full bg-muted overflow-hidden relative">
             <div
-              className={`h-full transition-all duration-300 ${isDanger ? 'bg-destructive' : isWarning ? 'bg-amber-500' : 'bg-emerald-500'}`}
+              className={`h-full transition-all duration-300 ${isDanger ? 'bg-destructive' : isWarning ? 'bg-warning' : 'bg-foreground'}`}
               style={{ width: `${usagePercent}%` }}
             />
           </div>
@@ -816,6 +797,114 @@ function BandwidthUsageCard({ vmId, canEditQuota }: { vmId: string; canEditQuota
       )}
       <BandwidthHistory vmId={vmId} />
     </div>
+  )
+}
+
+// InitialPassword lets the owner read the root password the panel generated,
+// while it is still kept. It is never emailed: the "server is ready" email
+// points here. Reading it needs a signed-in session and is recorded.
+function InitialPassword({ vmId }: { vmId: string }) {
+  const { data } = useInitialPassword(vmId)
+  const reveal = useRevealInitialPassword(vmId)
+  const forget = useForgetInitialPassword(vmId)
+  const confirm = useConfirm()
+  const { copy, copied } = useCopy()
+  const [shown, setShown] = useState<string | null>(null)
+  if (!data?.available) return null
+  const until = data.expires_at ? new Date(data.expires_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : ""
+  return (
+    <div className="mt-3 border-t border-hair pt-3">
+      <p className="text-xs font-medium text-muted-foreground">Root password</p>
+      {shown ? (
+        <p className="mt-1 font-medium">
+          <span className="font-mono break-all">{shown}</span>
+          <button type="button" onClick={() => copy(shown, "initial-pw")} className="ml-2 border-b border-border pb-px text-xs font-semibold hover:border-foreground active:translate-y-px">
+            {copied("initial-pw") ? "Copied" : "Copy"}
+          </button>
+          <button type="button" onClick={() => setShown(null)} className="ml-3 border-b border-border pb-px text-xs font-semibold hover:border-foreground active:translate-y-px">
+            Hide
+          </button>
+        </p>
+      ) : (
+        <Button
+          size="sm"
+          variant="outline"
+          className="mt-1.5"
+          disabled={reveal.isPending}
+          onClick={async () => {
+            try {
+              setShown((await reveal.mutateAsync()).password)
+            } catch (e) {
+              toast.error(`Could not show the password: ${(e as Error).message}`)
+            }
+          }}
+        >
+          {reveal.isPending && <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />}
+          Show the password
+        </Button>
+      )}
+      <p className="mt-2 text-xs text-muted-foreground">
+        Set when this VM was installed. Kept until {until}, then erased. Each time it is shown is recorded.{" "}
+        <button
+          type="button"
+          className="font-semibold text-foreground underline underline-offset-2"
+          onClick={async () => {
+            const ok = await confirm({
+              title: "Erase the stored password now?",
+              description: "Do this once you have saved it somewhere safe. It cannot be shown again; if you lose it, set a new one from the Console tab.",
+              confirmLabel: "Erase it",
+              destructive: true,
+              action: () => forget.mutateAsync(),
+            })
+            if (ok) {
+              setShown(null)
+              toast.success("Stored password erased")
+            }
+          }}
+        >
+          Erase it now
+        </button>
+      </p>
+    </div>
+  )
+}
+
+// TransferSummary is the month's data transfer in one line, for the overview.
+// The full breakdown and its history live on the Network tab.
+function TransferSummary({ vmId, onOpen }: { vmId: string; onOpen: () => void }) {
+  const { data: bw, isLoading, error, refetch } = useVMBandwidth(vmId)
+  const limited = !!bw && bw.quota_gb > 0
+  return (
+    <section className="p-4">
+      <h2 className="mb-1.5 text-xs font-medium text-muted-foreground">Transfer this month</h2>
+      {isLoading ? (
+        <Skeleton className="h-10 w-full" aria-label="Loading transfer" />
+      ) : error ? (
+        <p className="text-muted-foreground">
+          Could not load.{" "}
+          <button type="button" onClick={() => refetch()} className="font-semibold text-foreground underline underline-offset-2">Try again</button>
+        </p>
+      ) : !bw ? (
+        <p className="text-muted-foreground">Nothing recorded yet.</p>
+      ) : (
+        <>
+          <p>
+            <span className="font-semibold">{bw.used_gb.toFixed(bw.used_gb < 10 ? 2 : 1)} GB</span>
+            {limited ? ` of ${bw.quota_gb.toLocaleString()} GB` : " used, no limit"}
+          </p>
+          {limited && (
+            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted" aria-hidden="true">
+              <div className={`h-full ${bw.exceeded ? "bg-destructive" : "bg-foreground"}`} style={{ width: `${Math.min(bw.usage_percent, 100)}%` }} />
+            </div>
+          )}
+          <p className={`mt-1.5 text-xs ${bw.exceeded ? "font-semibold text-destructive" : "text-muted-foreground"}`}>
+            {bw.exceeded ? "Over the monthly limit. " : ""}
+            {bw.period_end ? `Counter resets after ${bw.period_end}.` : ""}
+          </p>
+          <button type="button" onClick={onOpen} className="mt-2 text-xs font-semibold underline underline-offset-2">Download, upload and history</button>
+        </>
+      )}
+    </section>
   )
 }
 
@@ -893,10 +982,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
     },
   } as Parameters<typeof useVM>[1])
   const { data: activity, isLoading: activityLoading, error: activityError, refetch: refetchActivity } = useVMActivity(vmId)
-  const { data: metrics, isLoading: metricsLoading, error: metricsError, refetch: refetchMetrics } = useVMMetrics(vmId)
-  const { data: vmHistory } = useVMMetricsHistory(vmId, 60)
-  const cpuTrend = (vmHistory ?? []).map((s) => s.cpu_usage)
-  const memTrend = (vmHistory ?? []).map((s) => s.memory_usage)
+  const { data: metrics } = useVMMetrics(vmId)
   const vmAction = useVMAction(vmId)
   const { transitionOf, begin, cancel } = useVMTransitions(vm ? [vm] : [])
   const deleteVM = useDeleteVM()
@@ -956,7 +1042,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const assignIP = useAssignVMIP(vmId)
   const releaseIP = useReleaseVMIP(vmId)
   const [assignIPOpen, setAssignIPOpen] = useState(false)
-  // Routed IPv6 (/64 per VM) — only pools that delegate, on this VM's node.
+  // IPv6: a routed prefix or one address, from a pool on this VM's node.
   const assignIPv6 = useAssignVMIPv6(vmId)
   const releaseIPv6 = useReleaseVMIPv6(vmId)
   const [assignIPv6Open, setAssignIPv6Open] = useState(false)
@@ -1272,7 +1358,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
             <ArrowLeft className="w-4 h-4" aria-hidden="true" />{backLabel}
           </Link>
         </nav>
-        <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm mb-6">
+        <div className="bg-card text-card-foreground border rounded-lg p-6 mb-6">
           <div className="flex items-center gap-4">
             <Skeleton className="w-16 h-16" />
             <div>
@@ -1304,13 +1390,20 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   // A suspended VM is frozen for customers until support restores it.
   const suspended = vm.suspended || vm.status === "suspended"
   const locked = !isAdmin && suspended
-  // Allocation, not usage: there is no fill level to draw, so no bar.
-  const diskAllocated = (
-    <div className="flex justify-between items-center">
-      <span className="text-xs font-medium text-muted-foreground">Disk (Allocated)</span>
-      <span className="text-xs font-semibold">{vm.resources.disk} GB</span>
-    </div>
+  const powerBusy = locked || actionLoading !== null || !!transitionOf(vm.id)
+  // A text button beside a value people paste elsewhere.
+  const copyLink = (text: string, key: string, what: string) => (
+    <button
+      type="button"
+      onClick={() => copy(text, key)}
+      aria-label={copied(key) ? "Copied" : `Copy ${what}`}
+      className="ml-2 border-b border-border pb-px text-xs font-semibold hover:border-foreground active:translate-y-px"
+    >
+      {copied(key) ? "Copied" : "Copy"}
+    </button>
   )
+  const primaryIP = vmNetworks?.[0]?.ip_address
+  const lastBackup = [...(backups ?? [])].sort((x, y) => y.created_at.localeCompare(x.created_at))[0]
 
   return (
     <div className="max-w-7xl mx-auto">
@@ -1322,63 +1415,75 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
       </nav>
 
       {locked && (
-        <div role="status" className="mb-6 flex items-center gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm font-medium text-amber-800 dark:text-amber-300">
+        <div role="status" className="mb-6 flex items-center gap-3 rounded-lg border border-warning/50 bg-warning/10 p-4 text-sm font-medium text-foreground">
           <AlertCircle className="w-5 h-5 shrink-0" aria-hidden="true" />
           This VM is suspended. Contact support to restore service.
         </div>
       )}
 
-      {/* Header (identity) */}
-      <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm mb-6">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="flex min-w-0 items-center gap-4">
-            <div className="w-16 h-16 shrink-0 bg-muted text-foreground flex items-center justify-center rounded-lg border">
-              <Monitor className="w-8 h-8" />
-            </div>
-            <div>
-              <VMNameEditor
-                hostname={vm.hostname}
-                onRename={async (name) => {
-                  await updateVM.mutateAsync({ hostname: name })
-                  toast.success(`Renamed to "${name}"`)
-                }}
-              />
-              <div className="flex items-center gap-3 mt-2">
-                <StatusBadge status={vm.status} transition={transitionOf(vm.id)} />
-                {vm.rescue_mode && (
-                  <span className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-medium border border-amber-200 bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900">
-                    <LifeBuoy className="w-3 h-3" />
-                    Rescue
-                  </span>
-                )}
-                <span className="text-xs font-medium text-muted-foreground">ID: {vm.id.slice(0, 12)}</span>
-              </div>
-            </div>
+      {/* Faceplate: what this machine is, its state, and its power controls.
+          Dark in both themes; its colours come from .faceplate in globals.css. */}
+      <div className="faceplate mb-6 rounded-lg border bg-card px-5 pb-4 pt-5">
+        <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-4">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
+            <StatusBadge variant="lamp" status={suspended ? "suspended" : vm.status} transition={transitionOf(vm.id)} />
+            <VMNameEditor
+              hostname={vm.hostname}
+              headingClassName="text-2xl font-semibold text-foreground [font-stretch:118%] break-all"
+              onRename={async (name) => {
+                await updateVM.mutateAsync({ hostname: name })
+                toast.success(`Renamed to "${name}"`)
+              }}
+            />
+            {vm.rescue_mode && (
+              <span className="rounded-sm border border-warning px-1.5 py-0.5 text-xs font-semibold text-warning">Rescue mode</span>
+            )}
           </div>
-          {/* The two things an operator does most: power and console. Everything
-              else lives in the tab for the thing it changes. */}
           <div className="flex flex-wrap items-center gap-2">
             {(["creating", "deleting"] as string[]).includes(vm.status) ? (
-              // Transitional: the VM is mid-operation. Don't offer Start/Stop (which
-              // would be ambiguous or conflict) — show the in-progress state instead.
-              <Button variant="secondary" size="sm" disabled>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                {vm.status === "creating" ? "Provisioning…" : "Deleting…"}
+              // Mid-operation: power actions would conflict, so show what is happening instead.
+              <Button variant="outline" size="sm" disabled>
+                <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                {vm.status === "creating" ? "Provisioning" : "Deleting"}
               </Button>
             ) : vm.status === "running" ? (
               <>
-                <Button variant="secondary" size="sm" onClick={() => handleAction("stop")} disabled={locked || actionLoading !== null || !!transitionOf(vm.id)}>
-                  {actionLoading === "stop" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Square className="w-4 h-4" />}
-                  Stop
-                </Button>
-                <Button variant="secondary" size="sm" onClick={() => handleAction("restart")} disabled={locked || actionLoading !== null || !!transitionOf(vm.id)}>
-                  {actionLoading === "restart" ? <Loader2 className="w-4 h-4 animate-spin" /> : <RotateCcw className="w-4 h-4" />}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={powerBusy}
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: `Restart ${vm.hostname}?`,
+                      description: "It shuts down cleanly, then boots again. Expect about a minute offline.",
+                      confirmLabel: "Restart",
+                    })
+                    if (ok) handleAction("restart")
+                  }}
+                >
+                  {actionLoading === "restart" && <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />}
                   Restart
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={powerBusy}
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: `Stop ${vm.hostname}?`,
+                      description: "It shuts down cleanly and stays off until you start it. Disks and addresses are kept.",
+                      confirmLabel: "Stop",
+                    })
+                    if (ok) handleAction("stop")
+                  }}
+                >
+                  {actionLoading === "stop" && <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />}
+                  Stop
                 </Button>
               </>
             ) : (
-              <Button variant="default" size="sm" onClick={() => handleAction("start")} disabled={locked || actionLoading !== null || !!transitionOf(vm.id)}>
-                {actionLoading === "start" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+              <Button variant="default" size="sm" onClick={() => handleAction("start")} disabled={powerBusy}>
+                {actionLoading === "start" && <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />}
                 Start
               </Button>
             )}
@@ -1387,7 +1492,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
               size="sm"
               onClick={() => { setTab("console"); if (vm.status === "running" && vm.console_enabled !== false) setConsoleActive(true) }}
             >
-              <Terminal className="w-4 h-4" />Console
+              Console
             </Button>
             {isAdmin && (
               <Button
@@ -1409,14 +1514,13 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                 {suspended ? "Unsuspend" : "Suspend"}
               </Button>
             )}
-            {/* Deliberately quieter than Stop: it is the last resort for a VM
-                that ignores a normal shutdown. */}
+            {/* Deliberately quieter than Stop: the last resort for a VM that ignores a normal shutdown. */}
             {vm.status === "running" && (
               <Button
                 variant="ghost"
                 size="sm"
                 className="text-muted-foreground"
-                disabled={locked || actionLoading !== null || !!transitionOf(vm.id)}
+                disabled={powerBusy}
                 onClick={async () => {
                   const ok = await confirm({
                     title: `Force stop ${vm.hostname}?`,
@@ -1428,12 +1532,66 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                   if (ok) handleAction("force-stop")
                 }}
               >
-                {actionLoading === "force-stop" ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" /> : <Zap className="w-4 h-4" aria-hidden="true" />}
+                {actionLoading === "force-stop" && <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />}
                 Force stop
               </Button>
             )}
           </div>
         </div>
+        <dl className="mt-4 flex flex-wrap gap-x-8 gap-y-3 border-t border-hair pt-4 text-sm">
+          {(vmNetworks ?? []).length > 0 && (
+            <div>
+              <dt className="text-xs text-muted-foreground">IPv4</dt>
+              {(vmNetworks ?? []).map((net) => (
+                <dd key={net.id} className="font-medium">
+                  <span className="font-mono">{net.ip_address}</span>
+                  {copyLink(net.ip_address, `ip-${net.id}`, `address ${net.ip_address}`)}
+                </dd>
+              ))}
+            </div>
+          )}
+          {vm.ipv6_address && (
+            <div>
+              <dt className="text-xs text-muted-foreground">IPv6</dt>
+              <dd className="font-medium">
+                <span className="font-mono break-all">{vm.ipv6_address}</span>
+                {copyLink(vm.ipv6_address, "ipv6", `address ${vm.ipv6_address}`)}
+              </dd>
+            </div>
+          )}
+          <div>
+            <dt className="text-xs text-muted-foreground">System</dt>
+            <dd className="flex items-center gap-2 font-medium">
+              <OSLogoTile name={templates?.find((t) => t.id === vm.os_template_id)?.name} className="h-5 w-5 rounded" />
+              {templates?.find((t) => t.id === vm.os_template_id)?.name || "Unknown"}
+            </dd>
+          </div>
+          {isAdmin ? (
+            <div>
+              <dt className="text-xs text-muted-foreground">Node</dt>
+              <dd className="font-medium">{allNodes?.find((n) => n.id === vm.node_id)?.name || vm.node_name || vm.node_id.slice(0, 8)}</dd>
+            </div>
+          ) : (
+            <div>
+              <dt className="text-xs text-muted-foreground">Location</dt>
+              <dd className="flex items-center gap-2 font-medium">
+                {vm.region_country && <CountryFlag country={vm.region_country} />}
+                {vm.region_name || "Unknown"}
+              </dd>
+            </div>
+          )}
+          <div>
+            <dt className="text-xs text-muted-foreground">Created</dt>
+            <dd className="font-medium">{formatDate(vm.created_at)}</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-muted-foreground">ID</dt>
+            <dd className="font-medium">
+              <span className="font-mono">{vm.id.slice(0, 8)}</span>
+              {copyLink(vm.id, "vm-id", "the full VM ID")}
+            </dd>
+          </div>
+        </dl>
       </div>
 
       {/* Dialogs. Opened from the tabs below; they render nothing until open. */}
@@ -1502,7 +1660,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                     )}
                   </div>
 
-                  <div className="rounded-md border border-red-200 bg-red-50 p-4 dark:bg-red-950 dark:border-red-900">
+                  <div className="rounded-md border border-destructive/40 bg-destructive/10 p-4">
                     <p className="text-xs font-medium text-destructive mb-2">Warning: Data Loss</p>
                     <p className="text-xs text-foreground">All data on this VM will be permanently deleted.</p>
                   </div>
@@ -1809,231 +1967,97 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
           <TabsTrigger value="settings">Settings</TabsTrigger>
         </TabsList>
 
-        {/* Overview Tab */}
-        <TabsContent value="overview" className="space-y-6">
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Resource Usage */}
-            <div className="lg:col-span-2 bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
-              <div className="mb-6 flex items-center justify-between gap-3">
-                <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
-                  <Activity className="w-5 h-5" />Resource Usage
-                </h2>
-                {isAdmin && (
-                  <Button variant="outline" size="sm" onClick={openResize}>
-                    <Cpu className="w-4 h-4" />Resize
-                  </Button>
-                )}
-              </div>
-              {metricsLoading && vm.status === "running" ? (
-                <div className="space-y-6" aria-busy="true">
-                  <Skeleton className="h-8 w-full" />
-                  <Skeleton className="h-8 w-full" />
-                  {diskAllocated}
-                </div>
-              ) : metrics && vm.status === "running" ? (
-                // Only while running: the API answers with zeros for a stopped
-                // VM, and a row of 0% bars reads as a measurement.
-                <div className="space-y-6">
-                  <ProgressBar
-                    value={Math.round(metrics.cpu_percent)}
-                    max={100}
-                    label="CPU"
-                    color={metrics.cpu_percent > 80 ? "danger" : "primary"}
-                  />
-                  {metrics.memory_used > 0 ? (
-                    <ProgressBar
-                      value={Math.round(metrics.memory_used / (1024 * 1024))}
-                      max={Math.round(metrics.memory_total / (1024 * 1024))}
-                      label="Memory"
-                      unit="MB"
-                      color={metrics.memory_used_percent > 80 ? "danger" : "secondary"}
-                    />
-                  ) : (
-                    // A running machine never uses zero memory. Zero means the
-                    // operating system inside is not reporting it.
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="text-muted-foreground">Memory</span>
-                      <span className="text-muted-foreground">Not reported by this VM</span>
-                    </div>
-                  )}
-                  {diskAllocated}
-                  <div className="grid grid-cols-2 gap-4 mt-4 pt-4 border-t">
-                    <div className="p-3 border rounded-md bg-muted">
-                      <span className="text-xs font-medium text-muted-foreground block">Disk Read</span>
-                      <span className="text-sm font-semibold">{formatBytesPerSec(metrics.disk_read_bytes_per_sec)}</span>
-                    </div>
-                    <div className="p-3 border rounded-md bg-muted">
-                      <span className="text-xs font-medium text-muted-foreground block">Disk Write</span>
-                      <span className="text-sm font-semibold">{formatBytesPerSec(metrics.disk_write_bytes_per_sec)}</span>
-                    </div>
-                    <div className="p-3 border rounded-md bg-muted">
-                      <span className="text-xs font-medium text-muted-foreground block">Network RX</span>
-                      <span className="text-sm font-semibold">{formatBytesPerSec(metrics.network_rx_bytes_per_sec)}</span>
-                    </div>
-                    <div className="p-3 border rounded-md bg-muted">
-                      <span className="text-xs font-medium text-muted-foreground block">Network TX</span>
-                      <span className="text-sm font-semibold">{formatBytesPerSec(metrics.network_tx_bytes_per_sec)}</span>
-                    </div>
-                  </div>
-                  {/* Trend (last 60m) */}
-                  <div className="mt-4 pt-4 border-t">
-                    <p className="text-[10px] font-semibold text-muted-foreground mb-2">Trend · last 60m</p>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="border p-2">
-                        <span className="text-[10px] font-medium text-muted-foreground">CPU %</span>
-                        <Sparkline data={cpuTrend} colorClass="text-primary" height={36} />
-                      </div>
-                      <div className="border p-2">
-                        <span className="text-[10px] font-medium text-muted-foreground">Memory %</span>
-                        <Sparkline data={memTrend} colorClass="text-secondary" height={36} />
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-6">
-                  {vm.status !== "running" ? (
-                    <p className="text-sm text-muted-foreground">No live metrics. They appear while the VM is running.</p>
-                  ) : metricsError ? (
-                    <div className="flex flex-wrap items-center gap-3">
-                      <p className="text-sm text-muted-foreground">Could not load live metrics: {(metricsError as Error).message}</p>
-                      <Button size="sm" variant="outline" onClick={() => refetchMetrics()} className="gap-2">
-                        <RotateCcw className="w-3 h-3" aria-hidden="true" />Retry
-                      </Button>
-                    </div>
-                  ) : (
-                    <p className="text-sm text-muted-foreground">No live metrics yet.</p>
-                  )}
-                  {diskAllocated}
-                </div>
-              )}
-            </div>
+        {/* Overview: the readings, and beside them what you need to reach and judge the machine. */}
+        <TabsContent value="overview">
+          <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_19rem]">
+            <VMTelemetry vmId={vmId} running={vm.status === "running"} live={metrics} ramMB={vm.resources.ram} />
 
-            {/* VM Details Sidebar */}
-            <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
-              <h2 className="text-lg font-semibold text-foreground mb-6 flex items-center gap-2">
-                <Server className="w-5 h-5" />VM Details
-              </h2>
-              <div className="space-y-4">
-                {isAdmin ? (
-                  <div className="flex items-center justify-between pb-3 border-b">
-                    <span className="text-xs font-medium text-muted-foreground">Node</span>
-                    <span className="text-sm font-semibold">{allNodes?.find((n) => n.id === vm.node_id)?.name || vm.node_id}</span>
-                  </div>
+            <aside aria-label="Machine details" className="divide-y divide-hair rounded-lg border bg-card text-sm text-card-foreground">
+              <section className="p-4">
+                <h2 className="mb-1.5 text-xs font-medium text-muted-foreground">Sign in</h2>
+                {primaryIP ? (
+                  <p className="font-medium">
+                    <span className="font-mono break-all">ssh root@{primaryIP}</span>
+                    {copyLink(`ssh root@${primaryIP}`, "ssh", "the SSH command")}
+                  </p>
                 ) : (
-                  <div className="flex items-center justify-between pb-3 border-b">
-                    <span className="text-xs font-medium text-muted-foreground">Location</span>
-                    <span className="flex items-center gap-2 text-sm font-semibold">
-                      {vm.region_country && <CountryFlag country={vm.region_country} />}
-                      {vm.region_name || "Unknown"}
-                    </span>
-                  </div>
+                  <p className="text-muted-foreground">
+                    No address yet.{" "}
+                    {isAdmin ? (
+                      <button type="button" onClick={() => setTab("network")} className="font-semibold text-foreground underline underline-offset-2">Assign one on the Network tab</button>
+                    ) : "Contact support to have one assigned."}
+                  </p>
                 )}
-                {vmNetworks && vmNetworks.length > 0 && (
-                  <div className="flex items-center justify-between pb-3 border-b">
-                    <span className="text-xs font-medium text-muted-foreground">IP Address</span>
-                    <div className="flex flex-col items-end gap-1">
-                      {vmNetworks.map((net) => (
-                        <span key={net.id} className="text-sm font-semibold font-mono">{net.ip_address}</span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                <div className="flex items-center justify-between pb-3 border-b">
-                  <span className="text-xs font-medium text-muted-foreground">{isAdmin ? "OS Template" : "Operating system"}</span>
-                  <span className="text-sm font-semibold text-right">{templates?.find((t) => t.id === vm.os_template_id)?.name || vm.os_template_id}</span>
-                </div>
-                <div className="flex items-center justify-between pb-3 border-b">
-                  <span className="text-xs font-medium text-muted-foreground">CPU</span>
-                  <span className="text-sm font-semibold">{vm.resources.cpu} vCPU</span>
-                </div>
-                <div className="flex items-center justify-between pb-3 border-b">
-                  <span className="text-xs font-medium text-muted-foreground">RAM</span>
-                  <span className="text-sm font-semibold">{ramGB} GB</span>
-                </div>
-                <div className="flex items-center justify-between pb-3 border-b">
-                  <span className="text-xs font-medium text-muted-foreground">Disk</span>
-                  <span className="text-sm font-semibold">{vm.resources.disk} GB</span>
-                </div>
-                {vm.vnc_port && (
-                  <div className="flex items-center justify-between pb-3 border-b">
-                    <span className="text-xs font-medium text-muted-foreground">VNC Port</span>
-                    <div className="flex items-center gap-1">
-                      <span className="text-sm font-semibold font-mono">{vm.vnc_port}</span>
-                      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => copy(vm.vnc_port!.toString(), "vnc-port")} aria-label={copied("vnc-port") ? "Copied" : "Copy VNC port"}>
-                        {copied("vnc-port") ? <Check className="w-3 h-3" aria-hidden="true" /> : <Copy className="w-3 h-3" aria-hidden="true" />}
+                <InitialPassword vmId={vmId} />
+                {vm.status === "running" && (
+                  vm.vnc_port ? (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Button asChild size="sm" variant="outline">
+                        <Link href={`${basePath}/${vm.id}/console`} target="_blank">Console in a new window</Link>
                       </Button>
+                      {/* The SSH console page exists for staff only. */}
+                      {isAdmin && (
+                        <Button asChild size="sm" variant="outline">
+                          <Link href={`${basePath}/${vm.id}/ssh`} target="_blank">SSH console</Link>
+                        </Button>
+                      )}
                     </div>
-                  </div>
-                )}
-                <div className="flex items-center justify-between pb-3 border-b">
-                  <span className="text-xs font-medium text-muted-foreground">Created</span>
-                  <span className="text-sm font-medium">{formatDate(vm.created_at)}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-medium text-muted-foreground">Updated</span>
-                  <span className="text-sm font-medium">{formatDate(vm.updated_at)}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* VNC Access. Shown without a port too: a domain imported from another
-              platform often has no <graphics> device at all, and the old card
-              simply vanished — leaving no hint that Repair console is what adds
-              one. Worse, a remembered 5900 used to be displayed as if it were
-              real, sending operators to a console that could never connect. */}
-          {vm.status === "running" && (
-            <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
-              <h2 className="text-lg font-semibold text-foreground mb-6 flex items-center gap-2">
-                <Monitor className="w-5 h-5" />VNC Access
-              </h2>
-              <div className="flex items-center justify-between">
-                <div>
-                  <span className="text-xs font-medium text-muted-foreground block mb-1">VNC Port</span>
-                  {vm.vnc_port ? (
-                    <span className="text-xl font-semibold font-mono">{vm.vnc_port}</span>
                   ) : (
-                    <>
-                      <span className="text-xl font-semibold text-amber-600">No console device</span>
-                      <span className="block text-xs text-muted-foreground mt-1 max-w-md">
-                        {isAdmin
-                          ? "This VM has no VNC device in its definition. Use Repair console on the Console tab to add one — it restarts the VM."
-                          : "This VM has no console device. Contact support to add one."}
-                      </span>
-                    </>
-                  )}
+                    // A machine imported from elsewhere may have no display device at all.
+                    <p className="mt-3 text-xs text-muted-foreground">
+                      {isAdmin
+                        ? "This VM has no console device. Repair console on the Console tab adds one; it restarts the VM."
+                        : "This VM has no console device. Contact support to add one."}
+                    </p>
+                  )
+                )}
+              </section>
+
+              <section className="p-4">
+                <div className="mb-1.5 flex items-center justify-between gap-2">
+                  <h2 className="text-xs font-medium text-muted-foreground">Size</h2>
+                  {isAdmin && <Button variant="outline" size="sm" onClick={openResize}>Resize</Button>}
                 </div>
-                <div className="flex items-center gap-2">
-                  <Link href={`${basePath}/${vm.id}/ssh`} target="_blank">
-                    <Button variant="secondary" className="gap-2">
-                      <Terminal className="w-4 h-4" />
-                      SSH Console
-                    </Button>
-                  </Link>
-                  <Link
-                    href={`${basePath}/${vm.id}/console`}
-                    target="_blank"
-                    className={vm.vnc_port ? "" : "pointer-events-none"}
-                    aria-disabled={!vm.vnc_port}
-                  >
-                    <Button variant="accent" className="gap-2" disabled={!vm.vnc_port}>
-                      <ExternalLink className="w-4 h-4" />
-                      Open VNC Console
-                    </Button>
-                  </Link>
+                <dl className="space-y-1">
+                  <div className="flex justify-between gap-3"><dt>Processor</dt><dd className="font-semibold">{vm.resources.cpu} vCPU</dd></div>
+                  <div className="flex justify-between gap-3"><dt>Memory</dt><dd className="font-semibold">{ramGB} GB</dd></div>
+                  <div className="flex justify-between gap-3"><dt>Disk</dt><dd className="font-semibold">{vm.resources.disk} GB</dd></div>
+                </dl>
+              </section>
+
+              <TransferSummary vmId={vmId} onOpen={() => setTab("network")} />
+
+              <section className="p-4">
+                <h2 className="mb-1.5 text-xs font-medium text-muted-foreground">Protection</h2>
+                <dl className="space-y-1">
+                  <div>
+                    <dt>Last backup</dt>
+                    <dd className="font-semibold">
+                      {backupsLoading ? "Loading" : backupsError ? "Could not load" : lastBackup
+                        ? `${formatDate(lastBackup.created_at)}${lastBackup.status === "completed" ? (lastBackup.size > 0 ? `, ${formatBytes(lastBackup.size)}` : "") : `, ${lastBackup.status}`}`
+                        : "None yet"}
+                    </dd>
+                  </div>
+                  <div className="flex justify-between gap-3 pt-1">
+                    <dt>Snapshots</dt>
+                    <dd className="font-semibold">{snapshotsLoading ? "Loading" : snapshotsError ? "Could not load" : `${snapshots?.length ?? 0} of 10`}</dd>
+                  </div>
+                </dl>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" onClick={() => setTab("backups")}>Backups</Button>
+                  <Button size="sm" variant="outline" onClick={() => setTab("snapshots")}>Snapshots</Button>
                 </div>
-              </div>
-            </div>
-          )}
+              </section>
+            </aside>
+          </div>
         </TabsContent>
 
         {/* Console Tab */}
         <TabsContent value="console" className="space-y-6">
-          <div className="bg-card text-card-foreground border rounded-lg shadow-sm">
+          <div className="bg-card text-card-foreground border rounded-lg">
             <div className="flex items-center justify-between p-4 border-b">
               <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
-                <Terminal className="w-5 h-5" />Console
+                Console
               </h2>
               <div className="flex items-center gap-2">
                 {isAdmin && (
@@ -2064,7 +2088,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                 )}
                 {vm.status === "running" && vm.console_enabled !== false && (
                   <Button
-                    variant={consoleActive ? "destructive" : "default"}
+                    variant="outline"
                     size="sm"
                     onClick={() => setConsoleActive(!consoleActive)}
                   >
@@ -2085,9 +2109,8 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
               </div>
             </div>
             {vm.console_enabled === false ? (
-              <div className="bg-muted p-12 flex items-center justify-center h-[500px]">
+              <div className="bg-muted p-10 flex items-center justify-center min-h-[14rem]">
                 <div className="text-center">
-                  <MonitorOff className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
                   <p className="text-muted-foreground font-medium mb-2">Console disabled</p>
                   <p className="text-muted-foreground text-sm mb-4">Nobody can open this VM&apos;s screen until it is enabled again.</p>
                   <Button variant="default" size="sm" onClick={() => handleToggleConsole(true)} disabled={setConsole.isPending}>
@@ -2104,10 +2127,9 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                   onDisconnect={() => setConsoleActive(false)}
                 />
               ) : (
-                <div className="bg-muted p-12 flex items-center justify-center h-[500px]">
+                <div className="bg-muted p-10 flex items-center justify-center min-h-[14rem]">
                   <div className="text-center">
-                    <Terminal className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-                    <p className="text-muted-foreground font-mono text-sm mb-4">Console available</p>
+                    <p className="text-muted-foreground text-sm mb-4">The screen is not connected.</p>
                     <Button variant="default" onClick={() => setConsoleActive(true)} className="gap-2">
                       <Terminal className="w-4 h-4" />
                       Connect to Console
@@ -2116,9 +2138,8 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                 </div>
               )
             ) : (
-              <div className="bg-muted p-12 flex items-center justify-center h-[500px]">
+              <div className="bg-muted p-10 flex items-center justify-center min-h-[14rem]">
                 <div className="text-center">
-                  <Terminal className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
                   <p className="text-muted-foreground font-medium text-sm">VM is not running</p>
                   <p className="text-muted-foreground text-xs mt-1">Start the VM to access the console</p>
                 </div>
@@ -2126,9 +2147,9 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
             )}
           </div>
 
-          <section className="bg-card text-card-foreground border rounded-lg shadow-sm divide-y">
+          <section className="bg-card text-card-foreground border rounded-lg divide-y">
             <h2 className="px-6 py-4 text-base font-semibold flex items-center gap-2">
-              <KeyRound className="w-4 h-4" />Access
+              Access
             </h2>
             <ActionRow title="Root password" description={isAdmin ? "Set a new root password inside the VM through the guest agent." : "Set a new root password inside the running VM."}>
               <Button variant="outline" size="sm" onClick={() => setResetPwOpen(true)} disabled={locked}>
@@ -2159,9 +2180,9 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
             </ActionRow>
           </section>
 
-          <section className="bg-card text-card-foreground border rounded-lg shadow-sm divide-y">
+          <section className="bg-card text-card-foreground border rounded-lg divide-y">
             <h2 className="px-6 py-4 text-base font-semibold flex items-center gap-2">
-              <Disc className="w-4 h-4" />Boot media
+              Boot media
             </h2>
             <ActionRow
               title="ISO image"
@@ -2214,38 +2235,14 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
         {/* Network Tab */}
         <TabsContent value="network">
           <div className="space-y-6">
-            <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
+            <div className="bg-card text-card-foreground border rounded-lg p-6">
               <h2 className="text-lg font-semibold text-foreground mb-6 flex items-center gap-2">
-                <Network className="w-5 h-5" />Network Configuration
+                IPv4 addresses
               </h2>
-
-              {/* Placement & console */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-                {isAdmin && (
-                  <div className="p-4 border">
-                    <span className="text-xs font-medium text-muted-foreground block">Node</span>
-                    <Link href={`/nodes/${vm.node_id}`} className="text-sm font-medium underline hover:text-primary break-all">
-                      {allNodes?.find((n) => n.id === vm.node_id)?.name || vm.node_id}
-                    </Link>
-                  </div>
-                )}
-                <div className="p-4 border">
-                  <span className="text-xs font-medium text-muted-foreground block">VNC Port</span>
-                  <span className="text-sm font-mono font-medium">{vm.vnc_port || "N/A"}</span>
-                </div>
-                <div className="p-4 border">
-                  <span className="text-xs font-medium text-muted-foreground block">Status</span>
-                  <span className="text-sm font-medium">{vm.status}</span>
-                </div>
-                <div className="p-4 border">
-                  <span className="text-xs font-medium text-muted-foreground block">Resources</span>
-                  <span className="text-sm font-medium">{vm.resources.cpu}C / {ramGB}GB</span>
-                </div>
-              </div>
 
               {/* Interfaces (per-IP detail) */}
               <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-semibold text-muted-foreground">Network Interfaces</h3>
+                <h3 className="sr-only">Addresses on this VM</h3>
                 {isAdmin && (
                   <Button type="button" size="sm" variant="outline" onClick={() => setAssignIPOpen(true)}>
                     <Plus className="w-4 h-4 mr-1" />
@@ -2330,13 +2327,13 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
             </div>
 
             {/* Routed IPv6. Customers see it only when they have a prefix. */}
-            {(isAdmin || vm.ipv6_prefix) && (
-            <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
+            {(isAdmin || vm.ipv6_address) && (
+            <div className="bg-card text-card-foreground border rounded-lg p-6">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
-                  <Network className="w-5 h-5" />IPv6
+                  IPv6
                 </h2>
-                {isAdmin && (vm.ipv6_prefix ? (
+                {isAdmin && (vm.ipv6_address ? (
                   <Button
                     type="button"
                     size="sm"
@@ -2345,30 +2342,30 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                     disabled={releaseIPv6.isPending}
                     onClick={async () => {
                       const ok = await confirm({
-                        title: `Release ${vm.ipv6_prefix}?`,
+                        title: `Release ${vm.ipv6_prefix || vm.ipv6_address}?`,
                         description:
-                          "The prefix returns to its pool and the node stops routing it. The guest's IPv6 address is removed from its network configuration; a guest without a responsive guest agent is rebooted to apply that.",
-                        confirmLabel: "Release prefix",
+                          "It returns to its pool and the node stops carrying it. The guest's IPv6 address is removed from its network configuration; a guest without a responsive guest agent is rebooted to apply that.",
+                        confirmLabel: "Release IPv6",
                         destructive: true,
                         action: () => releaseIPv6.mutateAsync(),
                       })
                       if (!ok) return
-                      toast.success("IPv6 prefix released")
+                      toast.success("IPv6 released")
                     }}
                   >
                     <Trash2 className="w-4 h-4 mr-1" />Release
                   </Button>
                 ) : (
                   <Button type="button" size="sm" variant="outline" onClick={() => setAssignIPv6Open(true)}>
-                    <Plus className="w-4 h-4 mr-1" />Assign /64
+                    <Plus className="w-4 h-4 mr-1" />Assign IPv6
                   </Button>
                 ))}
               </div>
-              {vm.ipv6_prefix ? (
+              {vm.ipv6_address ? (
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div className="p-4 border">
-                    <span className="text-xs font-medium text-muted-foreground block">Prefix</span>
-                    <span className="text-sm font-mono font-medium break-all">{vm.ipv6_prefix}</span>
+                    <span className="text-xs font-medium text-muted-foreground block">{vm.ipv6_prefix ? "Routed prefix" : "Kind"}</span>
+                    <span className={`text-sm font-medium break-all ${vm.ipv6_prefix ? "font-mono" : ""}`}>{vm.ipv6_prefix || "One address on a shared subnet"}</span>
                   </div>
                   <div className="p-4 border">
                     <span className="text-xs font-medium text-muted-foreground block">Address</span>
@@ -2381,7 +2378,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                 </div>
               ) : (
                 <div className="border border-dashed border-gray-300 p-6 text-center text-sm font-medium text-muted-foreground">
-                  No IPv6 prefix delegated
+                  No IPv6 assigned
                 </div>
               )}
             </div>
@@ -2399,10 +2396,10 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
 
         {/* Snapshots Tab */}
         <TabsContent value="snapshots">
-          <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
-            <div className="flex items-center justify-between mb-6">
+          <div className="bg-card text-card-foreground border rounded-lg p-6">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
               <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
-                <Database className="w-5 h-5" />Snapshots
+                Snapshots
               </h2>
               <div className="flex items-center gap-2">
               <Dialog
@@ -2437,7 +2434,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
               </Dialog>
               <Dialog open={createSnapshotOpen} onOpenChange={setCreateSnapshotOpen}>
                 <DialogTrigger asChild>
-                  <Button variant="default" size="sm"><Plus className="w-4 h-4 mr-2" />Create Snapshot</Button>
+                  <Button variant="outline" size="sm"><Plus className="w-4 h-4 mr-2" />Create Snapshot</Button>
                 </DialogTrigger>
                 <DialogContent className="max-w-sm border shadow-lg">
                   <DialogHeader>
@@ -2466,22 +2463,17 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
             ) : !snapshots?.length ? (
               <SectionEmpty icon={Database} message="No snapshots yet. Create one to save the current VM state." />
             ) : (
-              <div className="space-y-3">
+              <div>
                 {snapshots.map((snap: Snapshot) => (
-                  <div key={snap.id} className="flex items-center justify-between p-4 border hover:bg-muted/50">
-                    <div className="flex items-center gap-4">
-                      <Database className="w-5 h-5" />
+                  <div key={snap.id} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-hair py-3 first:border-t-0 first:pt-0">
+                    <div className="min-w-0">
                       <div>
                         <span className="font-semibold">{snap.name}</span>
                         <span className="text-xs text-muted-foreground ml-2">{formatDate(snap.created_at)}</span>
                       </div>
                     </div>
-                    <div className="flex items-center gap-3">
-                      <span className={`text-xs font-medium px-2 py-1 border ${
-                        snap.status === "completed" ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900" : snap.status === "failed" ? "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-900" : "bg-muted text-muted-foreground"
-                      }`}>
-                        {snap.status}
-                      </span>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <StatusBadge variant="lamp" className="text-xs" status={snap.status} />
                       <Button variant="ghost" size="sm" onClick={() => handleRestoreSnapshot(snap.id)} disabled={restoreSnapshot.isPending && restoreSnapshot.variables === snap.id}>
                         {restoreSnapshot.isPending && restoreSnapshot.variables === snap.id && <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />}
                         Restore
@@ -2501,12 +2493,12 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
         {/* Backups Tab */}
         <TabsContent value="backups">
           <BackupScheduleCard vmId={vmId} />
-          <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
-            <div className="flex items-center justify-between mb-6">
+          <div className="bg-card text-card-foreground border rounded-lg p-6">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
               <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
-                <HardDrive className="w-5 h-5" />Backups
+                Backups
               </h2>
-              <Button variant="default" size="sm" onClick={handleCreateBackup} disabled={createBackup.isPending}>
+              <Button variant="outline" size="sm" onClick={handleCreateBackup} disabled={createBackup.isPending}>
                 {createBackup.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Plus className="w-4 h-4 mr-2" />}
                 Create Backup
               </Button>
@@ -2519,23 +2511,21 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
             ) : !backups?.length ? (
               <SectionEmpty icon={HardDrive} message="No backups yet. Create one to backup this VM." />
             ) : (
-              <div className="space-y-3">
+              <div>
                 {backups.map((backup: Backup) => (
-                  <div key={backup.id} className="flex items-center justify-between p-4 border hover:bg-muted/50">
-                    <div className="flex items-center gap-4">
-                      <HardDrive className="w-5 h-5" />
+                  <div key={backup.id} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-hair py-3 first:border-t-0 first:pt-0">
+                    <div className="min-w-0">
                       <div>
-                        <span className="font-semibold">{backup.backup_type} backup</span>
+                        <span className="font-semibold">{backup.backup_type === "scheduled" ? "Scheduled backup" : "Manual backup"}</span>
                         <span className="text-xs text-muted-foreground ml-2">{formatDate(backup.created_at)}</span>
                       </div>
+                      {backup.status === "failed" && backup.error_message && (
+                        <p className="mt-0.5 text-xs text-destructive break-words">{backup.error_message}</p>
+                      )}
                     </div>
-                    <div className="flex items-center gap-3">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                       <span className="text-xs font-medium">{formatBytes(backup.size)}</span>
-                      <span className={`text-xs font-medium px-2 py-1 border ${
-                        backup.status === "completed" ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900" : backup.status === "failed" ? "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-900" : backup.status === "in_progress" ? "bg-sky-50 text-sky-700 border-sky-200 dark:bg-sky-950 dark:text-sky-300 dark:border-sky-900" : "bg-muted text-muted-foreground"
-                      }`}>
-                        {backup.status}
-                      </span>
+                      <StatusBadge variant="lamp" className="text-xs" status={backup.status} />
                       {backup.status === "completed" && (
                         <Button
                           variant="outline"
@@ -2577,14 +2567,14 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
 
         {/* Firewall Tab */}
         <TabsContent value="firewall">
-          <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
-            <div className="flex items-center justify-between mb-6">
+          <div className="bg-card text-card-foreground border rounded-lg p-6">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
               <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
-                <Shield className="w-5 h-5" />Firewall Rules
+                Firewall Rules
               </h2>
               <Dialog open={fwOpen} onOpenChange={setFwOpen}>
                 <DialogTrigger asChild>
-                  <Button size="sm"><Plus className="w-4 h-4 mr-1" />Add Rule</Button>
+                  <Button size="sm" variant="outline"><Plus className="w-4 h-4 mr-1" />Add Rule</Button>
                 </DialogTrigger>
                 <DialogContent className="max-w-md">
                   <DialogHeader>
@@ -2666,11 +2656,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                         <td className="py-3 px-4 text-xs font-medium">{rule.direction}</td>
                         <td className="py-3 px-4 font-mono text-sm">{rule.source_ip || "Any"}</td>
                         <td className="py-3 px-4">
-                          <span className={`text-xs font-medium px-2 py-1 border ${
-                            rule.action === "allow" ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900" : "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-900"
-                          }`}>
-                            {rule.action}
-                          </span>
+                          <StatusBadge variant="lamp" className="text-xs" status={rule.action} />
                         </td>
                         <td className="py-3 px-4 font-mono text-sm">{rule.priority}</td>
                         <td className="py-3 px-4">
@@ -2690,9 +2676,9 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
 
         {/* Logs Tab */}
         <TabsContent value="logs">
-          <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
+          <div className="bg-card text-card-foreground border rounded-lg p-6">
             <h2 className="text-lg font-semibold text-foreground mb-6 flex items-center gap-2">
-              <FileText className="w-5 h-5" />{isAdmin ? "Activity Logs" : "Activity"}
+              {isAdmin ? "Activity Logs" : "Activity"}
             </h2>
             {activityLoading ? (
               <SectionSkeleton />
@@ -2740,16 +2726,16 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
             that destroy data, kept apart from everything routine. */}
         <TabsContent value="settings" className="space-y-6">
           {isAdmin && (
-          <section className="bg-card text-card-foreground border rounded-lg shadow-sm divide-y">
+          <section className="bg-card text-card-foreground border rounded-lg divide-y">
             <h2 className="px-6 py-4 text-base font-semibold flex items-center gap-2">
-              <Server className="w-4 h-4" />Ownership and placement
+              Ownership and placement
             </h2>
             <ActionRow title="Owner" description="Hand this VM to a different user account.">
               <Button variant="outline" size="sm" onClick={() => setReassignOpen(true)}>
                 <User className="w-4 h-4" />Reassign
               </Button>
             </ActionRow>
-            <ActionRow title="Node" description={<>Runs on <span className="font-medium text-foreground">{vm.node_name || vm.node_id}</span>. Move it to another node while it keeps running.</>}>
+            <ActionRow title="Node" description={<>Runs on <span className="font-medium text-foreground">{allNodes?.find((n) => n.id === vm.node_id)?.name || vm.node_name || "an unnamed node"}</span>. Move it to another node while it keeps running.</>}>
               <Button variant="outline" size="sm" onClick={() => setMigrateOpen(true)}>
                 <ArrowRightLeft className="w-4 h-4" />Migrate
               </Button>
@@ -2762,9 +2748,9 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
           </section>
           )}
 
-          <section className="bg-card text-card-foreground border border-destructive/40 rounded-lg shadow-sm divide-y divide-destructive/20">
+          <section className="bg-card text-card-foreground border border-destructive/40 rounded-lg divide-y divide-destructive/20">
             <h2 className="px-6 py-4 text-base font-semibold text-destructive flex items-center gap-2">
-              <AlertCircle className="w-4 h-4" />Danger zone
+              Danger zone
             </h2>
             <ActionRow title={rebuildWord} description="Reinstall the operating system. Everything on the disk is erased; the VM keeps its addresses.">
               <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => setRebuildDialogOpen(true)} disabled={locked}>
@@ -2818,7 +2804,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
               address, seeing it listed, and wondering why the VM is unreachable.
               Only a rebuild regenerates cloud-init, so an imported machine has
               to be configured from inside. */}
-          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
+          <div className="rounded-md border border-warning/50 bg-warning/10 p-3 text-xs text-foreground">
             The address is not written into the guest. Unless this VM is rebuilt, you must configure
             it inside the operating system — the panel reserves it and prepares the host, nothing
             more.
@@ -2852,11 +2838,11 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
       <Dialog open={assignIPv6Open} onOpenChange={setAssignIPv6Open}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Assign an IPv6 /64 to {vm.hostname}</DialogTitle>
+            <DialogTitle>Assign IPv6 to {vm.hostname}</DialogTitle>
             <DialogDescription>
-              The next free /64 of the pool is routed to this VM. The guest is given the prefix&apos;s ::1
-              with fe80::1 as its gateway, and the firewall rules that apply to its IPv4 address apply to
-              the whole prefix.
+              Depending on the pool, the VM gets a routed prefix of its own (the guest takes its ::1, with fe80::1 as
+              gateway) or one address from a shared subnet (with that subnet&apos;s router as gateway). The firewall rules
+              on its IPv4 address apply to its IPv6 as well.
             </DialogDescription>
           </DialogHeader>
 
@@ -2868,16 +2854,16 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
               value={assignIPv6PoolID}
               onChange={(e) => setAssignIPv6PoolID(e.target.value)}
             >
-              <option value="">Select a delegating IPv6 pool</option>
+              <option value="">Choose an IPv6 pool</option>
               {(ipPools ?? [])
-                .filter((p) => p.family === "ipv6" && p.delegated_prefix_len)
+                .filter((p) => p.family === "ipv6")
                 .filter((p) => {
                   const bound = p.node_ids && p.node_ids.length > 0 ? p.node_ids : p.node_id ? [p.node_id] : []
                   return bound.length === 0 || bound.includes(vm.node_id)
                 })
                 .map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.name} ({p.cidr} → /{p.delegated_prefix_len} per VM)
+                    {p.name} ({p.cidr}: {p.delegated_prefix_len ? `a routed /${p.delegated_prefix_len}` : "one address"})
                   </option>
                 ))}
             </select>

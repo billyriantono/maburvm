@@ -732,8 +732,8 @@ func (h *VMHandler) GetVM(c echo.Context) error {
 	}
 	if vm.IPv6 != nil {
 		resp.IPv6Prefix = vm.IPv6.Prefix
-		resp.IPv6Address = vm.IPv6.Address()
-		resp.IPv6Gateway = models.IPv6LinkLocalGateway
+		resp.IPv6Address = vm.IPv6.Address
+		resp.IPv6Gateway = vm.IPv6.Gateway
 	}
 
 	// Include agent status if available
