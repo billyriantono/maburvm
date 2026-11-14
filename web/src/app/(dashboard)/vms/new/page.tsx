@@ -361,9 +361,10 @@ function NewVMForm() {
         bandwidth_mbps: data.bandwidthMbps,
         vlan_id: vlanId,
         cpu_model: data.cpuModel || undefined,
-        user_data: data.userData || undefined,
-        ssh_key_ids: selectedKeyIds,
-        ssh_public_keys: pastedKeyList,
+        // A router takes neither: both are delivered through Linux's cloud-init.
+        user_data: isRouter ? undefined : data.userData || undefined,
+        ssh_key_ids: isRouter ? [] : selectedKeyIds,
+        ssh_public_keys: isRouter ? [] : pastedKeyList,
       })
       // The create endpoint always makes the caller the owner, so "Assign to
       // User" is applied as a reassignment right after. A failure here must not
@@ -390,6 +391,9 @@ function NewVMForm() {
   const getSelectedTemplate = () => {
     return templates.find(t => t.id === watchedValues.templateId)
   }
+  // A router is reached as admin with a password and is not set up by cloud-init.
+  const isRouter = !sourceImageId && getSelectedTemplate()?.os_type === "routeros"
+  const loginUser = isRouter ? "admin" : "root"
 
   const getSelectedNode = () => {
     return nodes.find(n => n.id === watchedValues.nodeId)
@@ -432,10 +436,13 @@ function NewVMForm() {
         {provisioning.password && (
           <div className="rounded-lg border border-amber-200 bg-amber-50 p-6 shadow-sm mb-6 dark:bg-amber-950/40 dark:border-amber-900">
             <h2 className="mb-1 text-lg font-semibold text-foreground">
-              Root password
+              Password for {loginUser}
             </h2>
             <p className="mb-3 text-sm text-muted-foreground">
-              Shown <strong>once</strong>. Save it now. Log in as <code className="font-mono">root</code> with this password, on the console or when the SSH key is not at hand.
+              Shown <strong>once</strong>. Save it now.{" "}
+              {isRouter
+                ? <>Sign in as <code className="font-mono">admin</code> with this password, in WinBox, over SSH or on the console.</>
+                : <>Log in as <code className="font-mono">root</code> with this password, on the console or when the SSH key is not at hand.</>}
             </p>
             <div className="flex items-center gap-2 rounded-md border bg-background p-3">
               <code className="flex-1 break-all font-mono text-sm text-foreground">{provisioning.password}</code>
@@ -849,7 +856,7 @@ function NewVMForm() {
               </div>
 
               {/* Recipe selector (fills the script below from a saved recipe) */}
-              {recipes.length > 0 && (
+              {recipes.length > 0 && !isRouter && (
                 <div className="space-y-2">
                   <label htmlFor="recipeId" className="text-sm font-medium">Recipe (optional)</label>
                   <select
@@ -875,7 +882,7 @@ function NewVMForm() {
               )}
 
               {/* Startup script / recipe */}
-              <div className="space-y-2">
+              <div className="space-y-2" hidden={isRouter}>
                 <label htmlFor="userData" className="text-sm font-medium">Startup Script (optional)</label>
                 <textarea
                   id="userData"
@@ -1001,8 +1008,16 @@ function NewVMForm() {
                 </p>
               )}
 
+              {isRouter && (
+                <p className="border-t pt-5 text-sm text-muted-foreground">
+                  The router gets its address, name and a generated admin password before it first starts.
+                  SSH keys and start-up scripts are for Linux images and are not used. It runs on MikroTik&apos;s free
+                  licence (1 Mbps of upload per interface) until its owner adds their own.
+                </p>
+              )}
+
               {/* SSH keys — injected into the new guest's root account */}
-              <div className="border-t pt-5">
+              <div className="border-t pt-5" hidden={isRouter}>
                 <h3 className="font-semibold text-sm mb-1">SSH Keys</h3>
                 <p className="text-xs text-muted-foreground mb-3">Injected into the new VM&apos;s root account for key-based login. Select saved keys and/or paste one below.</p>
 

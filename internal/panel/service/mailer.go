@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/maburvm/panel/internal/shared/models"
 	"gorm.io/gorm"
 )
 
@@ -187,10 +188,11 @@ func NotifyVMOwner(ctx context.Context, db *gorm.DB, vmID, key string) error {
 		Name     string
 		Role     string
 		System   string
+		OSType   string `gorm:"column:os_type"`
 		Address  string
 	}
 	if err := db.WithContext(ctx).Raw(`SELECT v.hostname, u.email, coalesce(u.name, '') AS name, u.role::text AS role,
-			coalesce(t.name, '') AS system,
+			coalesce(t.name, '') AS system, coalesce(t.os_type, '') AS os_type,
 			coalesce((SELECT host(n.ip_address) FROM networks n WHERE n.vm_id = v.id AND n.deleted_at IS NULL ORDER BY n.created_at LIMIT 1), '') AS address
 		FROM vms v JOIN users u ON u.id = v.user_id
 		LEFT JOIN os_templates t ON t.id = v.os_template_id
@@ -227,6 +229,7 @@ func NotifyVMOwner(ctx context.Context, db *gorm.DB, vmID, key string) error {
 			"server":  r.Hostname,
 			"address": fill(r.Address, "not assigned yet"),
 			"system":  fill(r.System, "as ordered"),
+			"user":    models.OSLoginUser(r.OSType),
 			"access":  access,
 		},
 	}))

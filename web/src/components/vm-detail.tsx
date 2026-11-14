@@ -803,7 +803,7 @@ function BandwidthUsageCard({ vmId, canEditQuota }: { vmId: string; canEditQuota
 // InitialPassword lets the owner read the root password the panel generated,
 // while it is still kept. It is never emailed: the "server is ready" email
 // points here. Reading it needs a signed-in session and is recorded.
-function InitialPassword({ vmId }: { vmId: string }) {
+function InitialPassword({ vmId, user }: { vmId: string; user: string }) {
   const { data } = useInitialPassword(vmId)
   const reveal = useRevealInitialPassword(vmId)
   const forget = useForgetInitialPassword(vmId)
@@ -814,7 +814,7 @@ function InitialPassword({ vmId }: { vmId: string }) {
   const until = data.expires_at ? new Date(data.expires_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : ""
   return (
     <div className="mt-3 border-t border-hair pt-3">
-      <p className="text-xs font-medium text-muted-foreground">Root password</p>
+      <p className="text-xs font-medium text-muted-foreground">Password for {user}</p>
       {shown ? (
         <p className="mt-1 font-medium">
           <span className="font-mono break-all">{shown}</span>
@@ -1027,9 +1027,15 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const { data: templates } = useTemplates()
   // Same rule as the create wizard: inactive templates and "/imported"
   // placeholders have no base image, so building from them fails on the node.
+  // What the VM runs decides the account it is reached with and what a
+  // reinstall may offer: the node refuses to put another kind of system on it.
+  const vmTemplate = templates?.find((t) => t.id === vm?.os_template_id)
+  const osType = vmTemplate?.os_type || "linux"
+  const isRouter = osType === "routeros"
+  const loginUser = isRouter ? "admin" : "root"
   const installableTemplates = (templates ?? []).filter((t) => {
     const path = (t.image_path || "").trim()
-    return t.is_active && path !== "" && path !== "/imported"
+    return t.is_active && path !== "" && path !== "/imported" && (t.os_type || "linux") === osType
   })
   // Only nodes that can take work; migrating also needs a node other than this one.
   const activeNodes = (allNodes ?? []).filter((n) => n.status === "active")
@@ -1306,7 +1312,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
         template_id: selectedTemplate,
         preserve_ip: true,
         password: rebuildPassword || undefined,
-        ssh_key_ids: rebuildKeyIds.length ? rebuildKeyIds : undefined,
+        ssh_key_ids: !isRouter && rebuildKeyIds.length ? rebuildKeyIds : undefined,
       })
       setRebuildDialogOpen(false)
       setConfirmVMName("")
@@ -1314,7 +1320,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
       setRebuildPassword("")
       setRebuildKeyIds([])
       toast.success(`${rebuildWord} initiated`)
-      if (res.root_password) setSecret({ title: "New root password", value: res.root_password })
+      if (res.root_password) setSecret({ title: `New password for ${loginUser}`, value: res.root_password })
     } catch (err) {
       toast.error(`Failed to rebuild VM: ${(err as Error).message}`)
     }
@@ -1326,7 +1332,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
       await resetPassword.mutateAsync(resetPwValue)
       setResetPwOpen(false)
       setResetPwValue("")
-      toast.success(isAdmin ? "Root password reset enqueued (applied via guest agent)" : "Root password reset requested")
+      toast.success(isRouter ? "Password reset requested. The router restarts if it has to." : "Password reset requested")
     } catch (err) {
       toast.error(`Failed to reset password: ${(err as Error).message}`)
     }
@@ -1615,11 +1621,18 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                     <div className="p-px [&>div]:md:grid-cols-2 [&>div]:2xl:grid-cols-2">
                       <OSPicker templates={installableTemplates} value={selectedTemplate} onChange={setSelectedTemplate} labelledBy="rebuild-os-title" />
                     </div>
+                    {(templates ?? []).some((t) => t.is_active && (t.os_type || "linux") !== osType) && (
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        {isRouter
+                          ? "Only RouterOS versions are listed: this VM's virtual hardware is set up for a router. To run Linux, create a new VM."
+                          : "RouterOS is not listed: it needs different virtual hardware. To run it, create a new VM."}
+                      </p>
+                    )}
                   </div>
 
                   {/* Root password */}
                   <div>
-                    <label htmlFor="rebuild-password" className="text-xs font-medium text-muted-foreground mb-2 block">Root password</label>
+                    <label htmlFor="rebuild-password" className="text-xs font-medium text-muted-foreground mb-2 block">Password for {loginUser}</label>
                     <Input
                       id="rebuild-password"
                       type="text"
@@ -1631,12 +1644,14 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                       className="border font-mono text-sm"
                     />
                     <p id="rebuild-password-help" className="mt-1 text-xs text-muted-foreground">
-                      A generated password is shown once after you confirm, even when SSH keys are selected, so the VM can still be reached without the key.
+                      {isRouter
+                        ? "A generated password is shown once after you confirm."
+                        : "A generated password is shown once after you confirm, even when SSH keys are selected, so the VM can still be reached without the key."}
                     </p>
                   </div>
 
-                  {/* SSH keys */}
-                  <div>
+                  {/* SSH keys: installed through the Linux filesystem, so not offered for a router. */}
+                  <div hidden={isRouter}>
                     <span className="text-xs font-medium text-muted-foreground mb-2 block">SSH Keys</span>
                     {!sshKeys?.length ? (
                       <p className="text-xs text-muted-foreground">
@@ -1897,20 +1912,22 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
 
             </>)}
 
-            {/* Reset root password (guest agent) */}
+            {/* Reset password */}
             <Dialog open={resetPwOpen} onOpenChange={setResetPwOpen}>
               <DialogContent className="max-w-md border shadow-lg">
                 <DialogHeader>
-                  <DialogTitle className="text-lg font-semibold">Reset Root Password</DialogTitle>
+                  <DialogTitle className="text-lg font-semibold">Reset the password for {loginUser}</DialogTitle>
                   <DialogDescription className="text-sm text-muted-foreground">
-                    {isAdmin
-                      ? "Sets a new root password on the running guest via the QEMU guest agent. The VM must be running and have qemu-guest-agent installed."
-                      : "Sets a new root password inside the VM. The VM must be running."}
+                    {isRouter
+                      ? "Sets a new password for the admin user. RouterOS 7 only accepts this at start-up, so the router is restarted to apply it; expect it to be unreachable for under a minute."
+                      : isAdmin
+                        ? "Sets a new root password on the running guest via the QEMU guest agent. The VM must be running and have qemu-guest-agent installed."
+                        : "Sets a new root password inside the VM. The VM must be running."}
                   </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-3 py-2">
                   <label htmlFor="reset-pw" className="text-xs font-medium text-muted-foreground block">New Password</label>
-                  <Input id="reset-pw" type="text" value={resetPwValue} onChange={(e) => setResetPwValue(e.target.value)} placeholder="Enter new root password" className="border font-mono" />
+                  <Input id="reset-pw" type="text" value={resetPwValue} onChange={(e) => setResetPwValue(e.target.value)} placeholder="New password" className="border font-mono" />
                   {vm.status !== "running" && (
                     <p className="text-xs text-destructive font-medium">VM is not running. Start it first.</p>
                   )}
@@ -1977,8 +1994,8 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                 <h2 className="mb-1.5 text-xs font-medium text-muted-foreground">Sign in</h2>
                 {primaryIP ? (
                   <p className="font-medium">
-                    <span className="font-mono break-all">ssh root@{primaryIP}</span>
-                    {copyLink(`ssh root@${primaryIP}`, "ssh", "the SSH command")}
+                    <span className="font-mono break-all">ssh {loginUser}@{primaryIP}</span>
+                    {copyLink(`ssh ${loginUser}@${primaryIP}`, "ssh", "the SSH command")}
                   </p>
                 ) : (
                   <p className="text-muted-foreground">
@@ -1988,7 +2005,10 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                     ) : "Contact support to have one assigned."}
                   </p>
                 )}
-                <InitialPassword vmId={vmId} />
+                {isRouter && primaryIP && (
+                  <p className="mt-1 text-xs text-muted-foreground">Or connect WinBox to this address as {loginUser}.</p>
+                )}
+                <InitialPassword vmId={vmId} user={loginUser} />
                 {vm.status === "running" && (
                   vm.vnc_port ? (
                     <div className="mt-3 flex flex-wrap gap-2">
@@ -2151,7 +2171,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
             <h2 className="px-6 py-4 text-base font-semibold flex items-center gap-2">
               Access
             </h2>
-            <ActionRow title="Root password" description={isAdmin ? "Set a new root password inside the VM through the guest agent." : "Set a new root password inside the running VM."}>
+            <ActionRow title={`Password for ${loginUser}`} description={isRouter ? "Set a new password for the router's admin user. The router may restart to apply it." : isAdmin ? "Set a new root password inside the VM through the guest agent." : "Set a new root password inside the running VM."}>
               <Button variant="outline" size="sm" onClick={() => setResetPwOpen(true)} disabled={locked}>
                 <KeyRound className="w-4 h-4" />Reset password
               </Button>

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -26,6 +27,7 @@ type CreateTemplateRequest struct {
 	Version     string `json:"version" validate:"required,max=50"`
 	FileURL     string `json:"file_url" validate:"required,url"`
 	Description string `json:"description" validate:"max=500"`
+	OSType      string `json:"os_type"`
 }
 
 // UpdateTemplateRequest represents the request body for updating a template
@@ -34,6 +36,7 @@ type UpdateTemplateRequest struct {
 	Version     string `json:"version,omitempty" validate:"omitempty,max=50"`
 	Description string `json:"description,omitempty" validate:"omitempty,max=500"`
 	IsActive    *bool  `json:"is_active,omitempty"`
+	OSType      string `json:"os_type,omitempty"`
 }
 
 // SyncTemplateRequest represents the request body for syncing a template
@@ -108,9 +111,13 @@ func (h *TemplateHandler) CreateTemplate(c echo.Context) error {
 		Version:     req.Version,
 		FileURL:     req.FileURL,
 		Description: req.Description,
+		OSType:      req.OSType,
 	}
 
 	resp, err := h.templateService.CreateTemplate(c.Request().Context(), &svcReq)
+	if errors.Is(err, service.ErrInvalidTemplate) {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Error: "validation_error", Message: err.Error()})
+	}
 	if err != nil {
 		switch err {
 		case service.ErrTemplateAlreadyExists:
@@ -221,9 +228,13 @@ func (h *TemplateHandler) UpdateTemplate(c echo.Context) error {
 		Version:     req.Version,
 		Description: req.Description,
 		IsActive:    req.IsActive,
+		OSType:      req.OSType,
 	}
 
 	template, err := h.templateService.UpdateTemplate(c.Request().Context(), id, &svcReq)
+	if errors.Is(err, service.ErrInvalidTemplate) {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Error: "validation_error", Message: err.Error()})
+	}
 	if err != nil {
 		switch err {
 		case service.ErrTemplateNotFound:

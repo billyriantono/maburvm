@@ -1,3 +1,7 @@
+// The kinds of system a template can hold. The kind decides how a VM built
+// from it is set up, and which account it is reached with.
+export type OSType = "linux" | "routeros";
+
 // OSTemplate represents an operating system template for VM provisioning
 export interface OSTemplate {
   id: string;
@@ -6,6 +10,8 @@ export interface OSTemplate {
   image_path: string;
   size_bytes?: number;
   is_active: boolean;
+  // What kind of system the image holds; decides how a VM from it is set up.
+  os_type?: OSType;
   description?: string;
   created_at: string;
   updated_at: string;
@@ -18,6 +24,7 @@ export interface CreateTemplateRequest {
   version: string;
   file_url: string;
   description?: string;
+  os_type?: OSType;
 }
 
 // UpdateTemplateRequest for updating OS templates

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/maburvm/panel/internal/agent/cloudinit"
+	"github.com/maburvm/panel/internal/agent/guestos"
 	"github.com/maburvm/panel/internal/agent/health"
 	"github.com/maburvm/panel/internal/agent/libvirt"
 	"github.com/maburvm/panel/internal/agent/network"
@@ -300,12 +301,19 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 		}
 		state = pb.VMState_VM_STATE_STOPPED
 	case pb.VMCommandType_VM_COMMAND_TYPE_RESET_PASSWORD:
-		if req.Config != nil && req.Config.RootPassword != "" {
+		if req.Config != nil && req.Config.RootPassword != "" && libvirt.GuestOSType(req.VmId) == guestos.RouterOS {
+			err = s.runRouterOSScript(ctx, req.VmId, guestos.RouterOSPasswordScript(req.Config.RootPassword))
+		} else if req.Config != nil && req.Config.RootPassword != "" {
 			err = libvirt.SetVMPassword(req.VmId, "root", req.Config.RootPassword)
 		} else {
 			err = fmt.Errorf("root_password required for RESET_PASSWORD")
 		}
 		state = pb.VMState_VM_STATE_RUNNING
+		// A stopped router takes its new password at its next start and stays
+		// stopped, so say where it really is.
+		if st, serr := libvirt.GetVMStatus(req.VmId); err == nil && serr == nil {
+			state = mapVMStatusToPBState(st)
+		}
 	case pb.VMCommandType_VM_COMMAND_TYPE_ATTACH_ISO:
 		err = s.attachISO(req)
 		state = pb.VMState_VM_STATE_STOPPED
@@ -561,6 +569,14 @@ func (s *NodeAgentService) applyGuestNetwork(ctx context.Context, vmID, ip strin
 		return err
 	}
 
+	if libvirt.GuestOSType(vmID) == guestos.RouterOS {
+		script, err := guestos.RouterOSNetworkScript(routerOSNetwork(ip, prefix, gateway, v6))
+		if err != nil {
+			return err
+		}
+		return s.runRouterOSScript(ctx, vmID, script)
+	}
+
 	mac, err := libvirt.GetVMInterfaceMAC(vmID)
 	if err != nil {
 		return err
@@ -645,6 +661,67 @@ func (s *NodeAgentService) applyGuestNetwork(ctx context.Context, vmID, ip strin
 		return fmt.Errorf("virt-customize: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	log.Printf("[NodeAgent] guest %s reconfigured on disk to %s/%d", vmID, ip, prefix)
+	return nil
+}
+
+// routerOSNetwork carries a VM's addressing into the form the router scripts take.
+func routerOSNetwork(ip string, prefix int, gateway string, v6 guestIPv6) guestos.RouterOSNetwork {
+	return guestos.RouterOSNetwork{
+		Address: ip, Prefix: prefix, Gateway: gateway,
+		IPv6Address: v6.Address, IPv6Gateway: v6.Gateway, IPv6DNS: v6.DNS,
+	}
+}
+
+// runRouterOSScript applies script to a RouterOS guest by whichever route it
+// accepts.
+//
+// A running router is asked through its guest agent first, which takes effect
+// at once. The agent may refuse (version 7 does not let it change users) or
+// not answer; then the script goes onto the disk to be run at the next boot,
+// and a router that was running is restarted so that boot happens now. A
+// stopped router is left stopped and picks the script up when it is started.
+//
+// As with a Linux guest, nothing is shut down once ctx is done.
+func (s *NodeAgentService) runRouterOSScript(ctx context.Context, vmID, script string) error {
+	info, err := libvirt.GetVMInfo(vmID)
+	if err != nil {
+		return err
+	}
+	running := info.Status == libvirt.VMStatusRunning
+	if running {
+		_, liveErr := guestos.RouterOSExec(info.Name, script, 30*time.Second)
+		if liveErr == nil {
+			log.Printf("[NodeAgent] router %s reconfigured live through its guest agent", vmID)
+			return nil
+		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("the router did not accept the change live and the caller gave up; VM left running: %w", ctx.Err())
+		}
+		log.Printf("[NodeAgent] router %s did not take the change live (%v); applying it from disk with a restart", vmID, liveErr)
+		if err := libvirt.StopVM(vmID, false); err != nil {
+			return fmt.Errorf("shutdown before reconfigure: %w", err)
+		}
+		// From here the VM is going down, so it must come back up whatever happens.
+		defer func() {
+			if err := libvirt.StartVM(vmID); err != nil {
+				log.Printf("[NodeAgent] WARNING: failed to start router %s after reconfigure: %v", vmID, err)
+			}
+		}()
+		if !waitVMStatus(vmID, libvirt.VMStatusStopped, 60*time.Second) {
+			if err := libvirt.StopVM(vmID, true); err != nil {
+				return fmt.Errorf("force stop before reconfigure: %w", err)
+			}
+			waitVMStatus(vmID, libvirt.VMStatusStopped, 15*time.Second)
+		}
+	}
+	diskPath, err := libvirt.GetVMPrimaryDiskPath(vmID)
+	if err != nil {
+		return err
+	}
+	if err := guestos.WriteRouterOSAutorun(diskPath, script); err != nil {
+		return err
+	}
+	log.Printf("[NodeAgent] router %s takes its change at this boot (was running: %v)", vmID, running)
 	return nil
 }
 
@@ -1010,6 +1087,8 @@ func resolveTemplateImage(ref string) (string, error) {
 	if base == "" || base == "/" || base == "." {
 		base = "image.qcow2"
 	}
+	// An archive is unpacked below, so the cached file is the image itself.
+	base = strings.TrimSuffix(base, ".zip")
 	cachePath := filepath.Join(templateCacheDir, fmt.Sprintf("%x-%s", sum[:6], base))
 
 	// Reuse the cached image if it was already downloaded.
@@ -1023,8 +1102,20 @@ func resolveTemplateImage(ref string) (string, error) {
 	}
 
 	log.Printf("[NodeAgent] Downloading template image %s -> %s", ref, cachePath)
-	if err := storage.NewTemplateManager().DownloadTemplate(ref, cachePath); err != nil {
+	// Download beside the final name and move it there only when it is ready:
+	// a download that is still being unpacked must never be picked up as a
+	// cached image by another create.
+	partPath := cachePath + ".part"
+	if err := storage.NewTemplateManager().DownloadTemplate(ref, partPath); err != nil {
 		return "", fmt.Errorf("failed to download template image from %s: %w", ref, err)
+	}
+	if err := storage.UnpackIfZip(partPath); err != nil {
+		_ = os.Remove(partPath)
+		return "", fmt.Errorf("template image from %s: %w", ref, err)
+	}
+	if err := os.Rename(partPath, cachePath); err != nil {
+		_ = os.Remove(partPath)
+		return "", fmt.Errorf("failed to store template image: %w", err)
 	}
 	log.Printf("[NodeAgent] Cached template image at %s", cachePath)
 	return cachePath, nil
@@ -1098,7 +1189,13 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 	// cfg.ImageId is the template's image_path, which may be a remote URL (from
 	// the catalog) or an existing local file. Resolve it to a local path,
 	// downloading and caching the image on this node if necessary.
-	templatePath, err := resolveTemplateImage(cfg.ImageId)
+	// The reference also says what kind of system the image holds, which
+	// decides how the VM is set up below.
+	osType, imageRef := models.SplitGuestImageRef(cfg.ImageId)
+	if !guestos.Known(osType) {
+		return fmt.Errorf("this node's agent cannot install %q systems; update the agent", osType)
+	}
+	templatePath, err := resolveTemplateImage(imageRef)
 	if err != nil {
 		return err
 	}
@@ -1167,6 +1264,7 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 			vmCfg.CPUModel = v
 		}
 	}
+	vmCfg.OSType = osType
 
 	// Apply the primary network interface from the network config.
 	if cfg.NetworkConfig != nil {
@@ -1207,7 +1305,22 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 	// the root filesystem outlives nothing useful and is missed by every cleanup
 	// that walks the pool.
 	seedPath := filepath.Join(imageDir, req.VmId+"-seed.iso")
-	if err := cloudinit.GenerateSeedISO(cloudinit.Config{
+	if osType == guestos.RouterOS {
+		// No cloud-init in RouterOS: its address, name and admin password go
+		// onto the disk as a script it runs on first boot. This one is not
+		// best-effort. A router that boots without it has an empty admin
+		// password and no address, which is not a VM worth handing over.
+		seedPath = ""
+		script, err := guestos.RouterOSSetupScript(hostname, cfg.RootPassword, routerOSNetwork(vmCfg.IPAddress, vmCfg.Netmask, vmCfg.Gateway,
+			guestIPv6From(vmCfg.IPv6Address, vmCfg.IPv6Gateway, vmCfg.IPv6DNS)))
+		if err == nil {
+			err = guestos.WriteRouterOSAutorun(diskPath, script)
+		}
+		if err != nil {
+			_ = os.Remove(diskPath)
+			return fmt.Errorf("failed to prepare the router for its first boot: %w", err)
+		}
+	} else if err := cloudinit.GenerateSeedISO(cloudinit.Config{
 		InstanceID:   req.VmId,
 		Hostname:     hostname,
 		MACAddress:   vmCfg.MACAddress,
@@ -1233,8 +1346,10 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 	// a common host-side provisioning technique). The cloud-init seed above is kept as a
 	// belt-and-suspenders for images where it does work. Best-effort: on failure
 	// we log and still create the VM (it just may lack static networking).
-	if err := injectGuestConfig(diskPath, hostname, vmCfg, cfg.RootPassword, cfg.SshPublicKey, cfg.UserData); err != nil {
-		log.Printf("[NodeAgent] guest config injection failed for VM %s (guest may lack static networking): %v", req.VmId, err)
+	if osType == guestos.Linux {
+		if err := injectGuestConfig(diskPath, hostname, vmCfg, cfg.RootPassword, cfg.SshPublicKey, cfg.UserData); err != nil {
+			log.Printf("[NodeAgent] guest config injection failed for VM %s (guest may lack static networking): %v", req.VmId, err)
+		}
 	}
 
 	domainUUID, err := libvirt.CreateVM(vmCfg)
@@ -1265,6 +1380,16 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 		// guest_IP→guest_MAC without waiting for a reboot.
 		bridge, ip, mac, vmID := vmCfg.Bridge, vmCfg.IPAddress, vmCfg.MACAddress, domainUUID
 		go func() {
+			if osType != guestos.Linux {
+				// The restart below exists for Linux images edited on disk. A
+				// router is up and configured within seconds of its first boot,
+				// so it is only announced.
+				for i := 0; i < 25; i++ {
+					_ = sendGratuitousARP(bridge, ip, mac)
+					time.Sleep(5 * time.Second)
+				}
+				return
+			}
 			// On this platform a brand-new VM built from a libguestfs-modified disk is
 			// NOT reachable from the internet on its FIRST boot — the upstream never
 			// commits its IP↔MAC binding (host + in-guest ARP announcements don't stick,
@@ -1355,7 +1480,17 @@ func (s *NodeAgentService) rebuildVM(req *pb.VMCommandRequest) error {
 	if req.Config == nil || req.Config.ImageId == "" {
 		return fmt.Errorf("template image is required for REBUILD")
 	}
-	templatePath, err := resolveTemplateImage(req.Config.ImageId)
+	// A domain is built for one kind of system (machine type, how it is set
+	// up). Putting another kind on its disk would give a VM that does not boot
+	// or cannot be configured, so that is refused before anything is touched.
+	osType, imageRef := models.SplitGuestImageRef(req.Config.ImageId)
+	if !guestos.Known(osType) {
+		return fmt.Errorf("this node's agent cannot install %q systems; update the agent", osType)
+	}
+	if have := libvirt.GuestOSType(req.VmId); have != osType {
+		return fmt.Errorf("this VM was built for %s and cannot be reinstalled with a %s template; create a new VM instead", have, osType)
+	}
+	templatePath, err := resolveTemplateImage(imageRef)
 	if err != nil {
 		return err
 	}
@@ -1384,6 +1519,16 @@ func (s *NodeAgentService) rebuildVM(req *pb.VMCommandRequest) error {
 		mac = generateMAC(req.VmId)
 	}
 
+	if osType == guestos.RouterOS {
+		script, err := guestos.RouterOSSetupScript(hostname, cfg.RootPassword, routerOSNetwork(ip, prefix, gateway, v6))
+		if err != nil {
+			return err
+		}
+		return libvirt.RebuildVM(req.VmId, templatePath, func(diskPath string) error {
+			return guestos.WriteRouterOSAutorun(diskPath, script)
+		})
+	}
+
 	// The seed sits beside the VM's disk, where create put it; writing it to
 	// the default directory left the VM booting its old seed.
 	seedDir := defaultImageDir
@@ -1410,7 +1555,7 @@ func (s *NodeAgentService) rebuildVM(req *pb.VMCommandRequest) error {
 		log.Printf("[NodeAgent] cloud-init seed not regenerated for rebuilt VM %s: %v", req.VmId, err)
 	}
 
-	return libvirt.RebuildVM(req.VmId, templatePath)
+	return libvirt.RebuildVM(req.VmId, templatePath, nil)
 }
 
 // BackupDisk exports a VM's primary disk (compressed qcow2) and uploads it to

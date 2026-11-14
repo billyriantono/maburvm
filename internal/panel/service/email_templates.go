@@ -55,6 +55,7 @@ var EmailPlaceholders = []struct {
 	{"{{server}}", "The server's name (server emails only)"},
 	{"{{address}}", "The server's IP address (server emails only)"},
 	{"{{system}}", "The operating system installed (server emails only)"},
+	{"{{user}}", "The account the server is signed in to with: root, or admin on a router (server emails only)"},
 	{"{{access}}", "How to sign in to the server: where to read its password, or a reminder of what was chosen (server emails only)"},
 }
 
@@ -70,7 +71,7 @@ const (
 // serverSample fills the server placeholders in previews and test sends.
 var serverSample = map[string]string{
 	"name": "Dewi", "email": "dewi@example.com", "server": "web-01", "address": "203.0.113.24", "system": "Ubuntu 24.04 LTS",
-	"access": AccessPasswordOnPage,
+	"user": "root", "access": AccessPasswordOnPage,
 }
 
 const serverLinkMeaning = "The button opens the server's page in your panel."
@@ -108,28 +109,28 @@ var emailTemplateDefs = []EmailTemplateDef{
 	{
 		Key:      EmailVMReady,
 		Name:     "Server ready",
-		SentWhen: "Sent to a server's owner when it has been created and started. The root password is never in the email: it is read on the server's page after signing in.",
+		SentWhen: "Sent to a server's owner when it has been created and started. The password is never in the email: it is read on the server's page after signing in.",
 		Optional: true,
 		Default: EmailTemplate{
 			Subject: "Your server {{server}} is ready",
 			Body: "{{greeting}},\n\nYour server {{server}} has been created and is running.\n\n" +
-				"Address: {{address}}\nSystem: {{system}}\nUser: root\n\n{{access}}",
+				"Address: {{address}}\nSystem: {{system}}\nUser: {{user}}\n\n{{access}}",
 			Button: "Open your server",
 		},
 		Sample:      serverSample,
 		SampleLink:  "https://panel.example.com/client/vms/example",
-		LinkMeaning: "The button opens the server's page in your panel, where its root password can be read after signing in.",
+		LinkMeaning: "The button opens the server's page in your panel, where its password can be read after signing in.",
 	},
 	{
 		Key:      EmailVMReinstalled,
 		Name:     "Server reinstalled",
-		SentWhen: "Sent to a server's owner when its operating system has been reinstalled. As with a new server, the root password is never in the email.",
+		SentWhen: "Sent to a server's owner when its operating system has been reinstalled. As with a new server, the password is never in the email.",
 		Optional: true,
 		Default: EmailTemplate{
 			Subject: "Your server {{server}} has been reinstalled",
 			Body: "{{greeting}},\n\nYour server {{server}} has been reinstalled and is running {{system}}. " +
 				"Everything that was on its disk before is gone. Its address has not changed.\n\n" +
-				"Address: {{address}}\nUser: root\n\n{{access}}\n\n" + notYou,
+				"Address: {{address}}\nUser: {{user}}\n\n{{access}}\n\n" + notYou,
 			Button: "Open your server",
 		},
 		Sample: serverSample, SampleLink: "https://panel.example.com/client/vms/example", LinkMeaning: serverLinkMeaning,
@@ -166,10 +167,10 @@ var emailTemplateDefs = []EmailTemplateDef{
 // What {{access}} becomes in a server email, by how the server can be reached.
 const (
 	// The panel generated the password and is keeping it for the owner.
-	AccessPasswordOnPage = "For your safety the root password is not in this email. Open the server's page and sign in to read it. " +
+	AccessPasswordOnPage = "For your safety the password is not in this email. Open the server's page and sign in to read it. " +
 		"It can be read there for 72 hours, and every time it is read is recorded. After that it is erased, and you can set a new one from the same page."
 	// The owner chose the password themselves when ordering.
-	AccessOwnPassword = "Sign in with the root password you chose when you ordered it. If you have lost it, you can set a new one from the server's page."
+	AccessOwnPassword = "Sign in with the password you chose when you ordered it. If you have lost it, you can set a new one from the server's page."
 )
 
 // EmailTemplateDefs lists every email the panel sends.

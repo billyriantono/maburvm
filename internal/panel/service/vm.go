@@ -61,6 +61,8 @@ var (
 	// ErrVMNodeInactive is returned when trying to execute an agent-backed VM
 	// operation while the owning node is offline or in maintenance.
 	ErrVMNodeInactive = errors.New("VM node is not active")
+	// ErrRebuildOSKind is returned when a reinstall asks for another kind of system
+	ErrRebuildOSKind = errors.New("reinstall not possible")
 	// ErrVMCannotBeModified is returned when trying to modify a VM that's not stopped
 	ErrVMCannotBeModified = errors.New("VM cannot be modified while running")
 )
@@ -575,6 +577,16 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 	if req.CloneSourceRef != "" {
 		imagePath = req.CloneSourceRef
 	}
+	// The node is told what kind of system this is with the image itself.
+	imagePath = models.GuestImageRef(template.OSType, imagePath)
+	linuxGuest := template.OSType == "" || template.OSType == models.OSTypeLinux
+	if !linuxGuest {
+		// First-boot scripts and SSH keys are delivered through cloud-init and
+		// the Linux filesystem. Another kind of system has neither, and an
+		// order that carries them (billing sends a fixed set) must not fail.
+		req.UserData = ""
+		req.SSHPublicKeys = nil
+	}
 
 	// Prepare VM creation params
 	params := map[string]interface{}{
@@ -643,7 +655,10 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 	// caller's password (or a generated one) and any selected SSH keys so the VM
 	// is actually usable on first boot — matching the rebuild flow.
 	rootPassword := req.Password
-	if rootPassword == "" && req.RegeneratePassword {
+	// A router's image has an empty admin password and no keys to fall back
+	// on, so it always gets one, asked for or not.
+	generatePassword := req.RegeneratePassword || !linuxGuest
+	if rootPassword == "" && generatePassword {
 		rootPassword = generateRootPassword()
 	}
 	if rootPassword != "" {
@@ -655,7 +670,7 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 	// Only surface a password we generated ourselves; never echo back one the
 	// caller supplied.
 	generatedPassword := ""
-	if req.Password == "" && req.RegeneratePassword {
+	if req.Password == "" && generatePassword {
 		generatedPassword = rootPassword
 	}
 
@@ -711,7 +726,11 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 	// Seed the default inbound firewall for the new VM. Best-effort: a VM
 	// without its seed is no worse off than before (fully open), so never fail
 	// the create for it.
-	s.seedDefaultFirewall(ctx, vm.ID)
+	// A router is not given one: it carries tunnels and routing protocols no
+	// short list of ports can anticipate, and it has a firewall of its own.
+	if template.OSType != models.OSTypeRouterOS {
+		s.seedDefaultFirewall(ctx, vm.ID)
+	}
 
 	return &CreateVMResponse{
 		VM:           vm,
@@ -2114,7 +2133,7 @@ func (s *VMService) ResetPassword(ctx context.Context, req *VMResetPasswordReque
 		return nil, fmt.Errorf("failed to get VM: %w", err)
 	}
 	if vm.Status != models.VMStatusRunning {
-		return nil, fmt.Errorf("VM must be running to reset the root password")
+		return nil, fmt.Errorf("the VM must be running to reset its password")
 	}
 	if s.riverClient == nil {
 		return nil, fmt.Errorf("job queue unavailable")
@@ -2369,6 +2388,12 @@ func (s *VMService) RebuildVM(ctx context.Context, req *RebuildVMRequest) (*Rebu
 		if !template.IsActive {
 			return nil, fmt.Errorf("OS template is not active")
 		}
+		// A VM is built for one kind of system (its virtual hardware and how it
+		// is set up), so a reinstall stays within that kind.
+		if current, cerr := s.templateRepo.GetByID(ctx, vm.OSTemplateID); cerr == nil && osKind(current.OSType) != osKind(template.OSType) {
+			return nil, fmt.Errorf("%w: this VM runs %s and cannot be reinstalled as %s; create a new VM for that",
+				ErrRebuildOSKind, osKindName(current.OSType), osKindName(template.OSType))
+		}
 		templateID = req.TemplateID
 	}
 
@@ -2381,13 +2406,13 @@ func (s *VMService) RebuildVM(ctx context.Context, req *RebuildVMRequest) (*Rebu
 	}
 
 	// Generate new VNC password for security
+	// The password only. generateVNCCredentials returns port 0 to mean "the
+	// node picks one", and vms.vnc_port accepts NULL or 5900 and up: storing
+	// that 0 made every reinstall fail on the constraint before it began. A
+	// reinstall replaces the disk, not the console, so the port stays as it is.
 	vncConfig := s.generateVNCCredentials()
 	vm.VNCPassword = vncConfig.Password
-	vm.VNCPort = &vncConfig.Port
-	if err := s.db.Model(vm).Updates(map[string]interface{}{
-		"vnc_password": vncConfig.Password,
-		"vnc_port":     vncConfig.Port,
-	}).Error; err != nil {
+	if err := s.db.Model(vm).Update("vnc_password", vncConfig.Password).Error; err != nil {
 		return nil, fmt.Errorf("failed to update VNC credentials: %w", err)
 	}
 
@@ -2400,7 +2425,9 @@ func (s *VMService) RebuildVM(ctx context.Context, req *RebuildVMRequest) (*Rebu
 	// Resolve the root password: explicit wins, else generate one when asked.
 	rootPassword := req.Password
 	generatedPassword := ""
-	if rootPassword == "" && req.RegeneratePassword {
+	// A reinstalled router starts from an image with an empty admin password,
+	// so it always gets a new one.
+	if rootPassword == "" && (req.RegeneratePassword || osKind(rebuildTmpl.OSType) != models.OSTypeLinux) {
 		rootPassword = generateRootPassword()
 		generatedPassword = rootPassword
 	}
@@ -2413,7 +2440,7 @@ func (s *VMService) RebuildVM(ctx context.Context, req *RebuildVMRequest) (*Rebu
 	// Prepare rebuild params
 	params := map[string]interface{}{
 		"template_id":    templateID,
-		"image_path":     rebuildTmpl.ImagePath,
+		"image_path":     models.GuestImageRef(rebuildTmpl.OSType, rebuildTmpl.ImagePath),
 		"preserve_ip":    req.PreserveIP,
 		"vnc_port":       vncConfig.Port,
 		"vnc_password":   vncConfig.Password,
@@ -2469,6 +2496,22 @@ func (s *VMService) RebuildVM(ctx context.Context, req *RebuildVMRequest) (*Rebu
 		Message:      "VM rebuild initiated",
 		RootPassword: generatedPassword,
 	}, nil
+}
+
+// osKind is a template's kind with the unset value read as Linux.
+func osKind(osType string) string {
+	if osType == "" {
+		return models.OSTypeLinux
+	}
+	return osType
+}
+
+// osKindName is the kind as shown to people.
+func osKindName(osType string) string {
+	if osKind(osType) == models.OSTypeRouterOS {
+		return "RouterOS"
+	}
+	return "Linux"
 }
 
 // generateRootPassword returns a random 16-char alphanumeric password for a

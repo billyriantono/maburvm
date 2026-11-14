@@ -71,6 +71,9 @@ function OrderVMForm() {
     (t) => t.is_active && t.image_path !== "/imported"
   )
   const selectedPlan = activePlans.find((p) => p.id === planId)
+  // A router is reached as admin with a password; it takes no SSH keys at order time.
+  const isRouter = !sourceImageId && activeTemplates.find((t) => t.id === templateId)?.os_type === "routeros"
+  const loginUser = isRouter ? "admin" : "root"
 
   const hostnameValid = /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/.test(hostname)
   // Region is required: it is a physical location with real latency
@@ -106,7 +109,7 @@ function OrderVMForm() {
         // Do NOT send bandwidth_mbps/node/pool — clients may not set
         // infrastructure/network placement (server rejects it). The backend
         // derives bandwidth + placement from the plan automatically.
-        ssh_key_ids: selectedKeyIds,
+        ssh_key_ids: isRouter ? [] : selectedKeyIds,
         // Placing the VM in one of the customer's own private networks. Ownership
         // is verified server-side, and the network also decides which node the VM
         // lands on, since a private network lives on one host.
@@ -145,15 +148,19 @@ function OrderVMForm() {
             <p className="text-sm text-muted-foreground">Your VM <span className="font-semibold text-foreground">{created.hostname}</span> is being provisioned.</p>
           </div>
           <div className="border rounded-md bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-900 p-4">
-            <p className="text-sm font-semibold text-amber-800 dark:text-amber-300 mb-2">Save your root password now. It is shown only once.</p>
+            <p className="text-sm font-semibold text-amber-800 dark:text-amber-300 mb-2">Save the password for {loginUser} now. It is shown only once.</p>
             <div className="flex items-center gap-2">
               <code className="flex-1 font-mono text-sm bg-background border rounded px-3 py-2 break-all">{created.root_password}</code>
-              <Button variant="outline" size="sm" aria-label="Copy root password" onClick={() => copy(created.root_password || "", "root-password")}>
+              <Button variant="outline" size="sm" aria-label="Copy the password" onClick={() => copy(created.root_password || "", "root-password")}>
                 {copied("root-password") ? <Check className="w-4 h-4" aria-hidden="true" /> : <Copy className="w-4 h-4" aria-hidden="true" />}
                 {copied("root-password") ? "Copied" : "Copy"}
               </Button>
             </div>
-            <p className="text-xs text-muted-foreground mt-2">Log in as <span className="font-mono">root</span> with this password, on the console or over SSH when your key is not at hand. You can change it later from inside the VM.</p>
+            <p className="text-xs text-muted-foreground mt-2">
+              {isRouter
+                ? <>Sign in as <span className="font-mono">admin</span> with this password, in WinBox, over SSH or on the console. You can change it later from inside the router.</>
+                : <>Log in as <span className="font-mono">root</span> with this password, on the console or over SSH when your key is not at hand. You can change it later from inside the VM.</>}
+            </p>
           </div>
           <Button onClick={() => router.push("/client/vms")}>Go to My VMs</Button>
         </div>
@@ -279,7 +286,15 @@ function OrderVMForm() {
             ) : activeTemplates.length === 0 ? (
               <p className="text-sm text-muted-foreground">No operating systems are available. Please contact support.</p>
             ) : (
-              <OSPicker templates={activeTemplates} value={templateId} onChange={setTemplateId} labelledBy="order-os-title" />
+              <>
+                <OSPicker templates={activeTemplates} value={templateId} onChange={setTemplateId} labelledBy="order-os-title" />
+                {isRouter && (
+                  <p className="mt-3 rounded-md border bg-muted/50 px-3 py-2 text-sm text-muted-foreground">
+                    RouterOS starts on MikroTik&apos;s free licence, which limits each interface to 1 Mbps of upload.
+                    To lift it, add your own Cloud Hosted Router licence from inside the router after it is created.
+                  </p>
+                )}
+              </>
             )}
           </Step>
 
@@ -330,8 +345,12 @@ function OrderVMForm() {
             </Step>
           )}
 
-          <Step title="SSH keys" optional last hint="Keys ticked here are installed for root. A root password is also generated and shown once, so you can still get in without the key.">
-            {!sshKeys?.length ? (
+          <Step title="SSH keys" optional last hint={isRouter ? "Not used for a router: you sign in as admin with a password that is generated and shown once." : "Keys ticked here are installed for root. A root password is also generated and shown once, so you can still get in without the key."}>
+            {isRouter ? (
+              <p className="text-sm text-muted-foreground">
+                RouterOS keeps SSH keys per user inside the router. Add yours there after the first sign-in.
+              </p>
+            ) : !sshKeys?.length ? (
               <p className="text-sm text-muted-foreground">
                 No keys saved yet. You will log in with the root password.{" "}
                 <Link href="/client/settings/ssh-keys" className="font-medium text-foreground underline underline-offset-4">Add an SSH key</Link>
@@ -387,7 +406,7 @@ function OrderVMForm() {
               {!!regionVPCs.length && <SummaryRow label="Network" value={selectedVPC ? selectedVPC.name : "Public address"} />}
               <SummaryRow
                 label="Login"
-                value={selectedKeyIds.length ? `${selectedKeyIds.length} SSH ${selectedKeyIds.length === 1 ? "key" : "keys"} and a password` : "Root password"}
+                value={isRouter ? "Admin password" : selectedKeyIds.length ? `${selectedKeyIds.length} SSH ${selectedKeyIds.length === 1 ? "key" : "keys"} and a password` : "Root password"}
               />
             </dl>
             <div className="border-t p-5">
@@ -403,7 +422,7 @@ function OrderVMForm() {
               <p className="mt-3 text-xs text-muted-foreground" aria-live="polite">
                 {missing.length
                   ? `Still needed: ${missing.join(", ")}.`
-                  : "Ready. The root password is shown once on the next screen."}
+                  : `Ready. The password for ${loginUser} is shown once on the next screen.`}
               </p>
             </div>
           </div>

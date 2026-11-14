@@ -689,6 +689,12 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 		if detail == "" {
 			detail = "agent reported failure without a message"
 		}
+		// An agent from before templates carried a kind takes the reference for
+		// a file path and cannot find it. Say what is actually wrong.
+		if kind, _ := models.SplitGuestImageRef(vmConfig.GetImageId()); kind != models.OSTypeLinux &&
+			strings.Contains(detail, "template image not found at guest:") {
+			detail = fmt.Sprintf("the agent on node %s is older than the panel and cannot install %s systems; update it under Settings, System and try again", node.Name, kind)
+		}
 		w.logger.ErrorContext(ctx, "VM command failed",
 			"vm_id", vm.ID,
 			"error_code", resp.Error.GetCode(),

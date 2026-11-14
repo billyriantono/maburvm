@@ -1198,6 +1198,11 @@ func (h *VMHandler) RebuildVM(c echo.Context) error {
 				"error":   "Not Found",
 				"message": "OS template not found",
 			})
+		case errors.Is(err, service.ErrRebuildOSKind):
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{
+				"error":   "Bad Request",
+				"message": strings.TrimPrefix(err.Error(), service.ErrRebuildOSKind.Error()+": "),
+			})
 		default:
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
 				"error":   "Internal Server Error",

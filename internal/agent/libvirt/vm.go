@@ -6,17 +6,16 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/maburvm/panel/internal/agent/guestos"
 	"github.com/maburvm/panel/internal/agent/storage"
 	"libvirt.org/go/libvirt"
 	"libvirt.org/go/libvirtxml"
@@ -34,8 +33,11 @@ type VMConfig struct {
 	Bridge      string
 	VNCPort     int
 	VNCPassword string
-	OSType      string
-	OSVariant   string
+	// OSType is the kind of system the template holds (guestos.Linux,
+	// guestos.RouterOS). It picks the machine type and is recorded in the
+	// domain so later operations know what is inside.
+	OSType    string
+	OSVariant string
 	// CPUModel selects the guest CPU. Empty defaults to a portable, live-migratable
 	// model ("kvm64"); "host-model"/"host-passthrough" maximize performance but
 	// reduce cross-host migratability; any other value is used as a custom model.
@@ -218,7 +220,7 @@ func generateDomainXML(config VMConfig) (string, error) {
 		OS: &libvirtxml.DomainOS{
 			Type: &libvirtxml.DomainOSType{
 				Arch:    "x86_64",
-				Machine: "q35",
+				Machine: guestos.Machine(config.OSType),
 				Type:    "hvm",
 			},
 			BootDevices: []libvirtxml.DomainBootDevice{
@@ -293,7 +295,8 @@ func generateDomainXML(config VMConfig) (string, error) {
 				<maburvm:created_at>%s</maburvm:created_at>
 				<maburvm:vm_name>%s</maburvm:vm_name>
 				<maburvm:vm_uuid>%s</maburvm:vm_uuid>
-			</maburvm:metadata>`, time.Now().Format(time.RFC3339), config.Name, config.UUID),
+				%s
+			</maburvm:metadata>`, time.Now().Format(time.RFC3339), config.Name, config.UUID, guestos.MetadataElement(config.OSType)),
 		},
 	}
 
@@ -1608,8 +1611,30 @@ func getVMInfoFromDomain(dom *libvirt.Domain) (*VMInfo, error) {
 	return info, nil
 }
 
-// RebuildVM replaces the VM's disk with a template copy
-func RebuildVM(uuidStr string, templatePath string) error {
+// GuestOSType reports the kind of system a VM was created with, read from its
+// own definition. Linux when the domain does not say or cannot be read.
+func GuestOSType(uuidStr string) string {
+	osType := guestos.Linux
+	_ = WithConnection(func(conn *libvirt.Connect) error {
+		dom, err := conn.LookupDomainByUUIDString(uuidStr)
+		if err != nil {
+			return err
+		}
+		defer dom.Free()
+		xmlDesc, err := dom.GetXMLDesc(libvirt.DOMAIN_XML_INACTIVE)
+		if err != nil {
+			return err
+		}
+		osType = guestos.FromDomainXML(xmlDesc)
+		return nil
+	})
+	return osType
+}
+
+// RebuildVM replaces the VM's disk with a template copy. prepare, when given,
+// is called with the new disk once it is in place and before the VM is started
+// again: the moment to write anything the system needs for its first boot.
+func RebuildVM(uuidStr string, templatePath string, prepare func(diskPath string) error) error {
 	if _, err := uuid.Parse(uuidStr); err != nil {
 		return fmt.Errorf("invalid UUID format: %w", err)
 	}
@@ -1675,9 +1700,12 @@ func RebuildVM(uuidStr string, templatePath string) error {
 			return fmt.Errorf("failed to backup old disk: %w", err)
 		}
 
-		// Copy template to new disk location
-		if err := copyFile(templatePath, diskPath); err != nil {
+		// Convert rather than copy: the domain declares a qcow2 disk, and a
+		// template is not always one (RouterOS ships a raw image), so a byte
+		// copy would hand the VM a disk it cannot read.
+		if err := storage.NewQCOW2Manager().CloneImage(templatePath, diskPath); err != nil {
 			// Restore backup on failure
+			os.Remove(diskPath)
 			os.Rename(backupPath, diskPath)
 			return fmt.Errorf("failed to copy template: %w", err)
 		}
@@ -1687,6 +1715,14 @@ func RebuildVM(uuidStr string, templatePath string) error {
 			if err := storage.NewQCOW2Manager().ResizeImage(diskPath, int((oldSize+gib-1)/gib)); err != nil {
 				os.Rename(backupPath, diskPath)
 				return fmt.Errorf("failed to size rebuilt disk: %w", err)
+			}
+		}
+
+		if prepare != nil {
+			if err := prepare(diskPath); err != nil {
+				os.Remove(diskPath)
+				os.Rename(backupPath, diskPath)
+				return fmt.Errorf("failed to prepare the rebuilt disk: %w", err)
 			}
 		}
 
@@ -1702,34 +1738,6 @@ func RebuildVM(uuidStr string, templatePath string) error {
 
 		return nil
 	})
-}
-
-// copyFile copies a file from src to dst
-func copyFile(src, dst string) error {
-	sourceFile, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer sourceFile.Close()
-
-	// Ensure destination directory exists
-	dir := filepath.Dir(dst)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-
-	destFile, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer destFile.Close()
-
-	_, err = io.Copy(destFile, sourceFile)
-	if err != nil {
-		return err
-	}
-
-	return destFile.Sync()
 }
 
 // String returns the string representation of VMStatus

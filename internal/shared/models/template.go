@@ -9,11 +9,13 @@ import (
 
 // OSTemplate represents an operating system template for VM provisioning
 type OSTemplate struct {
-	ID          string         `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	Name        string         `json:"name" gorm:"type:varchar(100);not null" validate:"required,max=100"`
-	Version     string         `json:"version" gorm:"type:varchar(50);not null" validate:"required,max=50"`
-	ImagePath   string         `json:"image_path" gorm:"type:varchar(255);not null" validate:"required"`
-	SizeBytes   int64          `json:"size_bytes" gorm:"column:size_bytes;not null;default:0"`
+	ID        string `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	Name      string `json:"name" gorm:"type:varchar(100);not null" validate:"required,max=100"`
+	Version   string `json:"version" gorm:"type:varchar(50);not null" validate:"required,max=50"`
+	ImagePath string `json:"image_path" gorm:"type:varchar(255);not null" validate:"required"`
+	SizeBytes int64  `json:"size_bytes" gorm:"column:size_bytes;not null;default:0"`
+	// OSType is the kind of system in the image (OSTypeLinux, OSTypeRouterOS).
+	OSType      string         `json:"os_type" gorm:"column:os_type;type:varchar(20);not null;default:linux"`
 	IsActive    bool           `json:"is_active" gorm:"default:true"`
 	Description string         `json:"description" gorm:"type:text"`
 	CreatedAt   time.Time      `json:"created_at" gorm:"not null;default:NOW()"`

@@ -3,10 +3,11 @@ package libvirt
 import "testing"
 
 func TestBuildDomainCPU(t *testing.T) {
-	// Empty model → portable, live-migratable default (kvm64 custom model).
+	// Empty model: the host's own CPU. The old kvm64 baseline lacks the
+	// instructions current software is built for.
 	def := buildDomainCPU("")
-	if def.Mode != "custom" || def.Model == nil || def.Model.Value != "kvm64" {
-		t.Fatalf("empty model: got mode=%q model=%+v, want custom/kvm64", def.Mode, def.Model)
+	if def.Mode != "host-passthrough" || def.Model != nil {
+		t.Fatalf("empty model: got mode=%q model=%+v, want host-passthrough", def.Mode, def.Model)
 	}
 
 	// Performance modes pass through as libvirt CPU modes (no custom model).

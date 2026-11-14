@@ -16,10 +16,11 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { OSIcon } from "@/components/os-icon"
 import { useCreateTemplate } from "@/lib/hooks/use-templates"
+import type { OSType } from "@/types/template"
 
-// CatalogEntry describes a curated, ready-to-use OS cloud image. Each image
-// ships with cloud-init pre-installed, which is what lets MaburVM inject the
-// assigned IP/SSH config into the guest at first boot.
+// CatalogEntry describes a ready-to-use image published by its vendor. The
+// Linux ones ship cloud-init, which is how a VM gets its address and keys on
+// first boot; a RouterOS one is set up from a script written to its disk.
 interface CatalogEntry {
   id: string
   name: string
@@ -29,6 +30,7 @@ interface CatalogEntry {
   sizeHint: string
   description: string
   url: string
+  osType?: OSType
 }
 
 // Stable "latest"/"current" image URLs from each distro's official cloud-image
@@ -41,7 +43,7 @@ const OS_CATALOG: CatalogEntry[] = [
     family: "Ubuntu",
     arch: "amd64",
     sizeHint: "~600 MB",
-    description: "Noble Numbat — cloud image with cloud-init",
+    description: "Noble Numbat, cloud image with cloud-init",
     url: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img",
   },
   {
@@ -51,7 +53,7 @@ const OS_CATALOG: CatalogEntry[] = [
     family: "Ubuntu",
     arch: "amd64",
     sizeHint: "~600 MB",
-    description: "Jammy Jellyfish — cloud image with cloud-init",
+    description: "Jammy Jellyfish, cloud image with cloud-init",
     url: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img",
   },
   {
@@ -61,7 +63,7 @@ const OS_CATALOG: CatalogEntry[] = [
     family: "Debian",
     arch: "amd64",
     sizeHint: "~350 MB",
-    description: "Bookworm — generic cloud image (qcow2)",
+    description: "Bookworm, generic cloud image (qcow2)",
     url: "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2",
   },
   {
@@ -71,7 +73,7 @@ const OS_CATALOG: CatalogEntry[] = [
     family: "Debian",
     arch: "amd64",
     sizeHint: "~350 MB",
-    description: "Bullseye — generic cloud image (qcow2)",
+    description: "Bullseye, generic cloud image (qcow2)",
     url: "https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-genericcloud-amd64.qcow2",
   },
   {
@@ -101,7 +103,7 @@ const OS_CATALOG: CatalogEntry[] = [
     family: "RHEL",
     arch: "x86_64",
     sizeHint: "~800 MB",
-    description: "Upstream of RHEL — generic cloud image (qcow2)",
+    description: "Upstream of RHEL, generic cloud image (qcow2)",
     url: "https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2",
   },
   {
@@ -134,6 +136,31 @@ const OS_CATALOG: CatalogEntry[] = [
     description: "NoCloud image (qcow2)",
     url: "https://download.opensuse.org/repositories/Cloud:/Images:/Leap_15.6/images/openSUSE-Leap-15.6.x86_64-NoCloud.qcow2",
   },
+  // The two RouterOS builds below were each started, configured, restarted and
+  // signed in to on this platform before being listed. 6.49.21 to 6.49.23 are
+  // newer but do not keep their settings as a VM, so version 6 stays on 6.49.20.
+  {
+    id: "routeros-7",
+    name: "MikroTik RouterOS",
+    version: "7.24.6",
+    family: "MikroTik",
+    arch: "x86_64",
+    sizeHint: "~45 MB",
+    description: "Cloud Hosted Router, long-term. Free licence: 1 Mbps per interface until the owner adds their own",
+    url: "https://download.mikrotik.com/routeros/7.24.6/chr-7.24.6.img.zip",
+    osType: "routeros",
+  },
+  {
+    id: "routeros-6",
+    name: "MikroTik RouterOS",
+    version: "6.49.20",
+    family: "MikroTik",
+    arch: "x86_64",
+    sizeHint: "~30 MB",
+    description: "Cloud Hosted Router 6, long-term. Free licence: 1 Mbps per interface until the owner adds their own",
+    url: "https://download.mikrotik.com/routeros/6.49.20/chr-6.49.20.img.zip",
+    osType: "routeros",
+  },
 ]
 
 type AddState = "idle" | "adding" | "added" | "error"
@@ -150,7 +177,8 @@ export default function TemplateCatalogPage() {
         name: `${entry.name} ${entry.version}`,
         version: entry.version,
         file_url: entry.url,
-        description: `${entry.description} • ${entry.arch}`,
+        description: `${entry.description} (${entry.arch})`,
+        os_type: entry.osType ?? "linux",
       })
       setStates((s) => ({ ...s, [entry.id]: "added" }))
       toast.success(`${entry.name} ${entry.version} added to library`)
@@ -173,11 +201,11 @@ export default function TemplateCatalogPage() {
       <div className="mb-6">
         <Link href="/templates" className="inline-flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors mb-3">
           <ArrowLeft className="w-4 h-4" />
-          Back to Templates
+          Back to templates
         </Link>
-        <h1 className="text-2xl font-semibold tracking-tight">OS Template Catalog</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">Template catalog</h1>
         <p className="text-muted-foreground text-sm mt-1">
-          Curated cloud images — add one to your library, then build VMs from it
+          Images published by their vendors. Add one to your library, then build VMs from it.
         </p>
       </div>
 
@@ -186,9 +214,8 @@ export default function TemplateCatalogPage() {
         <Info className="w-5 h-5 mt-0.5 shrink-0 text-muted-foreground" />
         <div className="text-sm text-muted-foreground">
           <p className="font-medium text-foreground text-xs mb-1">How it works</p>
-          Adding a template registers its image URL. The first time you build a VM from it,
-          the target node downloads and caches the image (one-time, may take a few minutes for large images);
-          later builds reuse the cache. All images include cloud-init for automatic IP/SSH configuration.
+          Adding a template records where its image is. The first time a VM is built from it, the node
+          downloads the image and keeps it, which can take a few minutes for a large one; later builds reuse it. Each VM gets its address, name and password set for it on first start.
         </div>
       </div>
 
@@ -218,15 +245,15 @@ export default function TemplateCatalogPage() {
               <p className="text-sm text-muted-foreground mt-3 flex-1">{entry.description}</p>
 
               <Button
-                variant={state === "added" ? "success" : "default"}
+                variant={state === "added" ? "success" : "outline"}
                 onClick={() => handleAdd(entry)}
                 disabled={state === "adding" || state === "added"}
                 className="mt-4 w-full gap-2"
               >
-                {state === "adding" && <><Loader2 className="w-4 h-4 animate-spin" /> Adding…</>}
-                {state === "added" && <><Check className="w-4 h-4" /> In Library</>}
+                {state === "adding" && <><Loader2 className="w-4 h-4 animate-spin" /> Adding</>}
+                {state === "added" && <><Check className="w-4 h-4" /> In library</>}
                 {state === "error" && <><AlertCircle className="w-4 h-4" /> Retry</>}
-                {state === "idle" && <><Download className="w-4 h-4" /> Add to Library</>}
+                {state === "idle" && <><Download className="w-4 h-4" /> Add to library</>}
               </Button>
             </div>
           )
@@ -240,7 +267,7 @@ export default function TemplateCatalogPage() {
           <Link href="/templates/new" className="font-medium text-foreground underline">Add from URL</Link>.
         </p>
         <Button variant="outline" onClick={() => router.push("/templates")} className="gap-2">
-          View Library
+          View library
         </Button>
       </div>
 

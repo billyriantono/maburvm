@@ -1,9 +1,11 @@
 package storage
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
@@ -24,6 +26,7 @@ const (
 type TemplateManager struct {
 	templatesDir string
 	httpClient   *http.Client
+	stall        time.Duration // 0 means downloadStall
 }
 
 // TemplateInfo holds metadata about a cached template
@@ -64,67 +67,120 @@ func (tm *TemplateManager) SetHTTPClient(client *http.Client) {
 	tm.httpClient = client
 }
 
-// DownloadTemplate downloads an OS template from URL to dest
-// Downloads to a temporary location first, then moves to final destination
+const (
+	// downloadAttempts is how many times a download is tried before giving up.
+	//
+	// Not a formality: one vendor's download host, measured from a node, served
+	// the same 45 MB file in three seconds on one connection and on the next
+	// cancelled the stream, closed without answering, or went silent after two
+	// megabytes. Each attempt gets a new connection, which is what gets past it.
+	downloadAttempts = 6
+	// downloadStall is how long a download may deliver nothing before it is
+	// abandoned and tried again. Without it a connection that goes quiet holds
+	// a VM's creation until the half-hour ceiling.
+	downloadStall = 45 * time.Second
+)
+
+// errDownloadRefused marks an answer that trying again will not change.
+var errDownloadRefused = errors.New("download refused")
+
+// DownloadTemplate downloads an OS template from URL to dest. It writes to a
+// temporary file beside dest and moves it into place only when complete, and
+// tries again when a transfer breaks or stalls.
 func (tm *TemplateManager) DownloadTemplate(url string, dest string) error {
-	// Create temp file in same directory as destination for atomic move
+	var err error
+	for attempt := 1; attempt <= downloadAttempts; attempt++ {
+		if err = tm.downloadOnce(url, dest); err == nil || errors.Is(err, errDownloadRefused) {
+			return err
+		}
+		if attempt < downloadAttempts {
+			// Not the connection that just failed.
+			tm.httpClient.CloseIdleConnections()
+			time.Sleep(tm.pauseAfter(attempt))
+		}
+	}
+	return fmt.Errorf("after %d attempts: %w", downloadAttempts, err)
+}
+
+func (tm *TemplateManager) downloadOnce(url string, dest string) error {
+	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
 	tempFile, err := os.CreateTemp(filepath.Dir(dest), ".download-*")
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
 	tempPath := tempFile.Name()
-
-	// Ensure cleanup on error
-	cleanup := func() {
+	defer func() {
 		tempFile.Close()
-		os.Remove(tempPath)
-	}
+		os.Remove(tempPath) // gone already when the move below succeeded
+	}()
 
-	// Download the file
-	req, err := http.NewRequest("GET", url, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		cleanup()
-		return fmt.Errorf("failed to create request: %w", err)
+		return fmt.Errorf("%w: %v", errDownloadRefused, err)
 	}
+	stall := time.AfterFunc(tm.stallAfter(), cancel)
+	defer stall.Stop()
 
 	resp, err := tm.httpClient.Do(req)
 	if err != nil {
-		cleanup()
 		return fmt.Errorf("failed to download template: %w", err)
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
-		cleanup()
-		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		err := fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
+			return fmt.Errorf("%w: %v", errDownloadRefused, err)
+		}
+		return err
 	}
 
-	// Copy to temp file with progress tracking
-	_, err = io.Copy(tempFile, resp.Body)
+	// Every chunk that arrives pushes the stall deadline back.
+	body := readerFunc(func(p []byte) (int, error) {
+		n, err := resp.Body.Read(p)
+		if n > 0 {
+			stall.Reset(tm.stallAfter())
+		}
+		return n, err
+	})
+	written, err := io.Copy(tempFile, body)
 	if err != nil {
-		cleanup()
 		return fmt.Errorf("failed to write downloaded content: %w", err)
 	}
-
+	if resp.ContentLength > 0 && written != resp.ContentLength {
+		return fmt.Errorf("download ended early: %d of %d bytes", written, resp.ContentLength)
+	}
 	if err := tempFile.Close(); err != nil {
-		cleanup()
 		return fmt.Errorf("failed to close temp file: %w", err)
 	}
-
-	// Ensure destination directory exists
-	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
-		cleanup()
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	// Atomic move from temp to final destination
 	if err := os.Rename(tempPath, dest); err != nil {
-		cleanup()
 		return fmt.Errorf("failed to move file to destination: %w", err)
 	}
-
 	return nil
 }
+
+// pauseAfter is the wait before the next attempt.
+func (tm *TemplateManager) pauseAfter(attempt int) time.Duration {
+	if tm.stall > 0 {
+		return tm.stall // a test, which has no server to be polite to
+	}
+	return time.Duration(attempt) * 2 * time.Second
+}
+
+// stallAfter is downloadStall unless a test shortened it.
+func (tm *TemplateManager) stallAfter() time.Duration {
+	if tm.stall > 0 {
+		return tm.stall
+	}
+	return downloadStall
+}
+
+type readerFunc func(p []byte) (int, error)
+
+func (f readerFunc) Read(p []byte) (int, error) { return f(p) }
 
 // VerifyChecksum verifies the SHA256 checksum of a file
 func (tm *TemplateManager) VerifyChecksum(path string, expected string) error {

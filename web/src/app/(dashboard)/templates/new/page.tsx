@@ -16,6 +16,7 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useCreateTemplate } from "@/lib/hooks/use-templates"
+import type { OSType } from "@/types/template"
 
 interface FormErrors {
   name?: string
@@ -31,6 +32,7 @@ export default function NewTemplatePage() {
   const [version, setVersion] = useState("")
   const [description, setDescription] = useState("")
   const [url, setUrl] = useState("")
+  const [osType, setOsType] = useState<OSType>("linux")
   const [errors, setErrors] = useState<FormErrors>({})
 
   const validateForm = (): boolean => {
@@ -54,6 +56,7 @@ export default function NewTemplatePage() {
         version: version.trim(),
         file_url: url.trim(),
         description: description.trim() || undefined,
+        os_type: osType,
       })
       toast.success(`Template "${name}" added`)
       setTimeout(() => router.push("/templates"), 1200)
@@ -177,8 +180,27 @@ export default function NewTemplatePage() {
             </p>
           )}
           <p className="text-xs text-muted-foreground mt-2">
-            Point to a qcow2/img cloud image. The target node downloads and caches it on the first VM build
-            (not now), so creation is instant. Images with cloud-init get automatic IP/SSH configuration.
+            Point to a qcow2 or raw image; a zip holding one is unpacked. The node downloads and keeps it
+            the first time a VM is built from it, not now.
+          </p>
+
+          <label htmlFor="template-os-type" className="block text-sm font-medium mt-5 mb-2">
+            System type
+          </label>
+          <select
+            id="template-os-type"
+            value={osType}
+            onChange={(e) => setOsType(e.target.value as OSType)}
+            aria-describedby="template-os-type-help"
+            className="h-10 w-full max-w-xs rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          >
+            <option value="linux">Linux</option>
+            <option value="routeros">MikroTik RouterOS (CHR)</option>
+          </select>
+          <p id="template-os-type-help" className="text-xs text-muted-foreground mt-2">
+            {osType === "routeros"
+              ? "The address, name and admin password are written to the router's disk before its first start. SSH keys and first-boot scripts do not apply. Builds 6.49.21 to 6.49.23 do not keep their settings as a VM; use 6.49.20 or a version 7 build."
+              : "The address, name, root password and SSH keys are set through cloud-init and the image's filesystem. The image needs cloud-init."}
           </p>
         </div>
 

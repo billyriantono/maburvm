@@ -26,6 +26,8 @@ var (
 	ErrTemplateAlreadyExists = errors.New("template with this name and version already exists")
 	// ErrInvalidChecksum is returned when checksum verification fails
 	ErrInvalidChecksum = errors.New("checksum verification failed")
+	// ErrInvalidTemplate is returned when a template's own fields are not acceptable
+	ErrInvalidTemplate = errors.New("invalid template")
 	// ErrInvalidFileURL is returned when the file URL is invalid or inaccessible
 	ErrInvalidFileURL = errors.New("invalid or inaccessible file URL")
 )
@@ -83,6 +85,8 @@ type CreateTemplateRequest struct {
 	Version     string `json:"version" validate:"required,max=50"`
 	FileURL     string `json:"file_url" validate:"required,url"`
 	Description string `json:"description" validate:"max=500"`
+	// OSType is the kind of system in the image. Empty means Linux.
+	OSType string `json:"os_type" validate:"omitempty,oneof=linux routeros"`
 }
 
 // CreateTemplateResponse contains the created template data
@@ -97,6 +101,7 @@ type UpdateTemplateRequest struct {
 	Version     string `json:"version,omitempty" validate:"omitempty,max=50"`
 	Description string `json:"description,omitempty" validate:"omitempty,max=500"`
 	IsActive    *bool  `json:"is_active,omitempty"`
+	OSType      string `json:"os_type,omitempty" validate:"omitempty,oneof=linux routeros"`
 }
 
 // SyncTemplateRequest contains data for syncing a template to nodes
@@ -209,9 +214,17 @@ func (s *TemplateService) CreateTemplate(ctx context.Context, req *CreateTemplat
 	// agent downloads and caches the image on first use, so we intentionally do
 	// NOT pull the (potentially multi-GB) image here just to hash it — that made
 	// template creation hang and duplicated bytes onto the panel host.
+	osType := req.OSType
+	if osType == "" {
+		osType = models.OSTypeLinux
+	}
+	if !models.ValidOSType(osType) {
+		return nil, fmt.Errorf("%w: unknown system type %q", ErrInvalidTemplate, osType)
+	}
 	template := &models.OSTemplate{
 		Name:        req.Name,
 		Version:     req.Version,
+		OSType:      osType,
 		ImagePath:   req.FileURL,
 		SizeBytes:   s.fetchRemoteSize(ctx, req.FileURL),
 		Description: req.Description,
@@ -345,6 +358,12 @@ func (s *TemplateService) UpdateTemplate(ctx context.Context, id string, req *Up
 	}
 	if req.IsActive != nil {
 		template.IsActive = *req.IsActive
+	}
+	if req.OSType != "" {
+		if !models.ValidOSType(req.OSType) {
+			return nil, fmt.Errorf("%w: unknown system type %q", ErrInvalidTemplate, req.OSType)
+		}
+		template.OSType = req.OSType
 	}
 
 	if err := s.templateRepo.Update(ctx, template); err != nil {

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"github.com/maburvm/panel/internal/shared/models"
 	"strings"
 	"testing"
 
@@ -15,10 +16,11 @@ func TestServerReadyEmail(t *testing.T) {
 	// The email names the server and how to get in, and never carries a password.
 	out := RenderEmail(def.Default, Branding{Name: "Acme"}, EmailData{
 		Name: "Dewi", Email: "dewi@example.com", Link: "https://panel.example.com/client/vms/1",
-		Extra: map[string]string{"server": "web-01", "address": "203.0.113.24", "system": "Ubuntu 24.04 LTS", "access": AccessPasswordOnPage},
+		Extra: map[string]string{"server": "web-01", "address": "203.0.113.24", "system": "RouterOS 7.24.6", "user": models.OSLoginUser(models.OSTypeRouterOS), "access": AccessPasswordOnPage},
 	})
 	require.Equal(t, "Your server web-01 is ready", out.Subject)
-	for _, want := range []string{"web-01", "203.0.113.24", "Ubuntu 24.04 LTS", "not in this email", "https://panel.example.com/client/vms/1"} {
+	// A router is signed in to as admin, and the email must say so.
+	for _, want := range []string{"web-01", "203.0.113.24", "RouterOS 7.24.6", "User: admin", "not in this email", "https://panel.example.com/client/vms/1"} {
 		require.Contains(t, out.Text, want)
 	}
 	require.NotContains(t, out.Text, "{{")
