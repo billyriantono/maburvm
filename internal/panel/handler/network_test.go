@@ -55,7 +55,7 @@ quota_mode TEXT NOT NULL DEFAULT 'legacy',
 			direction TEXT, source_ip TEXT, priority INTEGER, created_at DATETIME, updated_at DATETIME,
 			deleted_at DATETIME)`,
 		`CREATE TABLE IF NOT EXISTS port_forwards (
-			id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, network_id TEXT, external_port INTEGER,
+			id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, network_id TEXT, node_id TEXT, external_port INTEGER,
 			internal_port INTEGER, protocol TEXT, source_ip TEXT, created_at DATETIME,
 			updated_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE IF NOT EXISTS bandwidth_usages (
@@ -409,4 +409,54 @@ func TestNetworkHandler_OwnerPortForwardSelfServicePreserved(t *testing.T) {
 	require.NoError(t, h.AddVMPortForward(c))
 	assert.NotEqual(t, http.StatusForbidden, rec.Code)
 	assert.NotContains(t, rec.Body.String(), "may not select VM network or infrastructure placement")
+}
+
+// A second customer asking for a port another VM on the node already forwards
+// is told so (409), whatever source restriction they add: two forwards on one
+// port would shadow each other.
+func TestNetworkHandler_PortForwardTakenOnNodeIs409(t *testing.T) {
+	db := newAuthzTestDB(t)
+	first, second := seedUser(t, db, models.RoleClient), seedUser(t, db, models.RoleClient)
+	vmA, vmB := seedVM(t, db, first), seedVM(t, db, second)
+	seedNetwork(t, db, vmA)
+	require.NoError(t, db.Create(&models.Network{ID: uuid.New().String(), VMID: vmB, IPAddress: "10.0.0.2"}).Error)
+	// Both VMs on one node.
+	require.NoError(t, db.Exec("UPDATE vms SET node_id = (SELECT node_id FROM vms WHERE id = ?) WHERE id = ?", vmA, vmB).Error)
+
+	h := NewNetworkHandler(newTestNetworkService(db), authz.NewAuthorizer(db))
+	add := func(user, vmID string, body map[string]interface{}) *httptest.ResponseRecorder {
+		c, rec := ctxWithUser(t, db, user, models.RoleClient)
+		c.SetParamNames("id")
+		c.SetParamValues(vmID)
+		setBodyNetwork(t, c, body)
+		require.NoError(t, h.AddVMPortForward(c))
+		return rec
+	}
+
+	require.Equal(t, http.StatusCreated, add(first, vmA, map[string]interface{}{"external_port": 3306, "internal_port": 3306}).Code)
+	rec := add(second, vmB, map[string]interface{}{"external_port": 3306, "internal_port": 3306, "source_ip": "198.51.100.0/24"})
+	require.Equal(t, http.StatusConflict, rec.Code)
+	assert.Contains(t, rec.Body.String(), "already forwarded on this node")
+}
+
+// The firewall status of a VM is its owner's to read, and nobody else's.
+func TestNetworkHandler_FirewallStatusIsScopedToTheOwner(t *testing.T) {
+	db := newAuthzTestDB(t)
+	owner, other := seedUser(t, db, models.RoleClient), seedUser(t, db, models.RoleClient)
+	vmID := seedVM(t, db, owner)
+
+	h := NewNetworkHandler(newTestNetworkService(db), authz.NewAuthorizer(db))
+	get := func(user string) *httptest.ResponseRecorder {
+		c, rec := ctxWithUser(t, db, user, models.RoleClient)
+		c.SetParamNames("id")
+		c.SetParamValues(vmID)
+		require.NoError(t, h.FirewallStatus(c))
+		return rec
+	}
+
+	rec := get(owner)
+	require.Equal(t, http.StatusOK, rec.Code)
+	// The test nodes table has no firewall state: that must read as unknown.
+	assert.JSONEq(t, `{"success":true,"data":{"enforcement":"unknown"}}`, rec.Body.String())
+	require.Equal(t, http.StatusNotFound, get(other).Code)
 }

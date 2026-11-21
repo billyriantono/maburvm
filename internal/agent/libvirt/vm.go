@@ -1,20 +1,20 @@
 package libvirt
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/maburvm/panel/internal/agent/console"
 	"github.com/maburvm/panel/internal/agent/guestos"
 	"github.com/maburvm/panel/internal/agent/storage"
 	"libvirt.org/go/libvirt"
@@ -258,7 +258,11 @@ func generateDomainXML(config VMConfig) (string, error) {
 							}
 							return "no"
 						}(),
-						Listen: "0.0.0.0",
+						// Loopback and a password from the first boot: the panel
+						// reaches the console through the agent, and a console
+						// with no password is open to whoever finds the port.
+						Listen: console.Loopback,
+						Passwd: consolePassword(config.VNCPassword),
 					},
 				},
 			},
@@ -439,23 +443,33 @@ func StartVM(uuidStr string) error {
 	})
 }
 
-// freeConsolePort makes a stopped domain take whichever console port is free
-// when it starts, instead of a fixed one another VM may now hold. See
-// vncAutoPort. Best-effort: if the definition cannot be read or saved, the
-// start goes ahead as before and reports its own error.
+// consolePassword is the password a definition is saved with: the panel's when
+// it sent one, a random one otherwise.
+func consolePassword(fromPanel string) string {
+	if fromPanel == "" {
+		return console.NewPassword()
+	}
+	return console.ClipPassword(fromPanel)
+}
+
+// freeConsolePort readies a stopped domain's console for its start: it takes
+// whichever port is free instead of a fixed one another VM may now hold (see
+// vncAutoPort), and it comes up on loopback with a password (see
+// console.SecureXML). Best-effort: if the definition cannot be read or saved,
+// the start goes ahead as before and reports its own error.
 func freeConsolePort(conn *libvirt.Connect, dom *libvirt.Domain) {
 	// SECURE keeps the console password in the definition being saved back.
 	inactive, err := dom.GetXMLDesc(libvirt.DOMAIN_XML_INACTIVE | libvirt.DOMAIN_XML_SECURE)
 	if err != nil {
 		return
 	}
-	fixed, changed := vncAutoPort(inactive)
-	if !changed {
+	fixed, portChanged := vncAutoPort(inactive)
+	if !portChanged && !console.Exposed(fixed) {
 		return
 	}
 	saved, err := redefineDomain(conn, fixed)
 	if err != nil {
-		log.Printf("warning: could not switch the console of a domain to an automatic port: %v", err)
+		log.Printf("warning: could not ready the console of a domain for its start: %v", err)
 		return
 	}
 	saved.Free()
@@ -474,9 +488,13 @@ func clampCPUShares(domXML string) string {
 	})
 }
 
-// redefineDomain persists an edited definition of an existing domain.
+// redefineDomain persists an edited definition of an existing domain. Every
+// definition saved here leaves with its console on loopback and a password,
+// whatever the caller read or wrote: several callers read the definition
+// without its secrets, which would otherwise save it back with none.
 func redefineDomain(conn *libvirt.Connect, domXML string) (*libvirt.Domain, error) {
-	return conn.DomainDefineXML(clampCPUShares(domXML))
+	secured, _ := console.SecureXML(domXML, console.NewPassword())
+	return conn.DomainDefineXML(clampCPUShares(secured))
 }
 
 // SyncInterfaceBridge rewrites the host bridge of the VM's primary (first)
@@ -670,9 +688,15 @@ func AttachISO(uuidStr, isoPath string) error {
 		}
 		domain.Devices.Disks = removeDiskByTarget(domain.Devices.Disks, installISOTarget)
 		domain.Devices.Disks = append(domain.Devices.Disks, libvirtxml.DomainDisk{
-			Device:   "cdrom",
-			Driver:   &libvirtxml.DomainDiskDriver{Name: "qemu", Type: "raw"},
-			Source:   &libvirtxml.DomainDiskSource{File: &libvirtxml.DomainDiskSourceFile{File: isoPath}},
+			Device: "cdrom",
+			Driver: &libvirtxml.DomainDiskDriver{Name: "qemu", Type: "raw"},
+			// optional: a VM whose ISO has gone (a customer's download is evicted
+			// once nothing uses it, and a snapshot can bring the drive back) starts
+			// with an empty drive instead of refusing to start.
+			Source: &libvirtxml.DomainDiskSource{
+				File:          &libvirtxml.DomainDiskSourceFile{File: isoPath},
+				StartupPolicy: "optional",
+			},
 			Target:   &libvirtxml.DomainDiskTarget{Dev: installISOTarget, Bus: "sata"},
 			ReadOnly: &libvirtxml.DomainDiskReadOnly{},
 			Boot:     &libvirtxml.DomainDeviceBoot{Order: 1},
@@ -1144,6 +1168,48 @@ func ownedDiskPaths(xmlDesc string) []string {
 	return paths
 }
 
+// DiskSourceFiles returns every file some domain on this node uses as a disk or
+// CD image, in its saved or its running configuration.
+//
+// Callers delete what is not listed, so a domain that cannot be read fails the
+// whole call instead of being skipped.
+func DiskSourceFiles() (map[string]bool, error) {
+	out := map[string]bool{}
+	err := WithConnection(func(conn *libvirt.Connect) error {
+		doms, err := conn.ListAllDomains(0) // 0 = all, active and inactive
+		if err != nil {
+			return fmt.Errorf("failed to list domains: %w", err)
+		}
+		defer func() {
+			for i := range doms {
+				_ = doms[i].Free()
+			}
+		}()
+		for i := range doms {
+			for _, flags := range []libvirt.DomainXMLFlags{0, libvirt.DOMAIN_XML_INACTIVE} {
+				xmlDesc, err := doms[i].GetXMLDesc(flags)
+				if err != nil {
+					return fmt.Errorf("failed to read a domain: %w", err)
+				}
+				var def libvirtxml.Domain
+				if err := def.Unmarshal(xmlDesc); err != nil {
+					return fmt.Errorf("failed to parse a domain: %w", err)
+				}
+				if def.Devices == nil {
+					continue
+				}
+				for _, disk := range def.Devices.Disks {
+					if disk.Source != nil && disk.Source.File != nil && disk.Source.File.File != "" {
+						out[filepath.Clean(disk.Source.File.File)] = true
+					}
+				}
+			}
+		}
+		return nil
+	})
+	return out, err
+}
+
 // PrimaryDiskPath returns the source file path of the VM's primary disk
 // (the device='disk' entry, not cdrom/seed images).
 func PrimaryDiskPath(uuidStr string) (string, error) {
@@ -1416,10 +1482,10 @@ func ensureVNCInXML(inactiveXML string) (newXML string, added bool, err error) {
 		// address" and the VM simply will not start. Twelve domains across two
 		// nodes were in that state, undetected until someone tried to boot one.
 		if listen := strings.TrimSpace(g.VNC.Listen); listen != "" && !listenAddressIsUsable(listen) {
-			domain.Devices.Graphics[i].VNC.Listen = "0.0.0.0"
+			domain.Devices.Graphics[i].VNC.Listen = console.Loopback
 			for j := range domain.Devices.Graphics[i].VNC.Listeners {
 				if a := domain.Devices.Graphics[i].VNC.Listeners[j].Address; a != nil {
-					a.Address = "0.0.0.0"
+					a.Address = console.Loopback
 				}
 			}
 			out, merr := xml.MarshalIndent(&domain, "", "  ")
@@ -1436,7 +1502,7 @@ func ensureVNCInXML(inactiveXML string) (newXML string, added bool, err error) {
 		VNC: &libvirtxml.DomainGraphicVNC{
 			Port:     -1,
 			AutoPort: "yes",
-			Listen:   "0.0.0.0",
+			Listen:   console.Loopback,
 		},
 	})
 	// A graphics device is useless without a video device; imported no-graphics
@@ -1461,7 +1527,7 @@ func ensureVNCInXML(inactiveXML string) (newXML string, added bool, err error) {
 //
 // When VNC is already present it is a no-op and returns the current port. When it
 // is missing it rewrites the PERSISTENT domain XML to add
-// <graphics type='vnc' port='-1' autoport='yes' listen='0.0.0.0'/> (plus a qxl
+// <graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1'/> (plus a qxl
 // video device if none exists), because adding graphics is NOT hot-pluggable.
 // If the domain is running it is then RESTARTED (destroy + create) so the new XML
 // takes effect. Returns whether it restarted and the live autoport VNC port.
@@ -1724,6 +1790,7 @@ func RebuildVM(uuidStr string, templatePath string, prepare func(diskPath string
 
 		// Restart if was running
 		if wasRunning {
+			freeConsolePort(conn, dom)
 			if err := dom.Create(); err != nil {
 				return fmt.Errorf("failed to restart domain after rebuild: %w", err)
 			}
@@ -1825,16 +1892,15 @@ func ListSnapshots(uuidStr string) ([]VMSnapshot, error) {
 		}()
 
 		for _, snap := range snaps {
+			// The panel drops the record of a snapshot that is missing from this
+			// list, so one that cannot be read must fail the call or stay listed.
 			name, err := snap.GetName()
 			if err != nil {
-				continue
+				return fmt.Errorf("failed to read a snapshot: %w", err)
 			}
 			// Get snapshot XML to extract creation time and state
 			// (GetInfo was removed in newer libvirt Go bindings)
-			xmlDesc, err := snap.GetXMLDesc(0)
-			if err != nil {
-				continue
-			}
+			xmlDesc, _ := snap.GetXMLDesc(0)
 
 			// Parse creationTime from XML: <creationTime>1234567890</creationTime>
 			var createdAt time.Time
@@ -1891,6 +1957,11 @@ func RestoreSnapshot(uuidStr, snapshotName string) error {
 		if err := snap.RevertToSnapshot(libvirt.DOMAIN_SNAPSHOT_REVERT_RUNNING); err != nil {
 			return fmt.Errorf("failed to revert to snapshot: %w", err)
 		}
+		// Reverting also puts back the definition the VM had when the snapshot
+		// was taken: for an older one, a console on every address with no
+		// password. The stored definition is corrected here; the VM now running
+		// holds the old socket until it is powered off and on.
+		freeConsolePort(conn, dom)
 		return nil
 	})
 }
@@ -1917,7 +1988,9 @@ func DeleteSnapshot(uuidStr, snapshotName string) error {
 		}
 		defer snap.Free()
 
-		if err := snap.Delete(libvirt.DOMAIN_SNAPSHOT_DELETE_CHILDREN); err != nil {
+		// Flags 0 removes this snapshot alone and hands its children to its
+		// parent. DELETE_CHILDREN took every snapshot made after it as well.
+		if err := snap.Delete(0); err != nil {
 			return fmt.Errorf("failed to delete snapshot: %w", err)
 		}
 		return nil
@@ -2085,27 +2158,36 @@ func SetVNCPassword(uuidStr string, password string) error {
 			return fmt.Errorf("VM must be running to set VNC password")
 		}
 
-		// Set the VNC password via QMP (structured JSON) rather than HMP. HMP is a
-		// shell-like parser, so a password containing spaces or characters like
-		// $ ^ & * # would be mangled — QEMU would store a different value than the
-		// one the browser presents, causing "Authentication failed". QMP passes the
-		// password as a JSON string argument, so any byte is preserved verbatim.
-		payload, err := json.Marshal(map[string]interface{}{
-			"execute": "set_password",
-			"arguments": map[string]interface{}{
-				"protocol": "vnc",
-				"password": password,
-			},
-		})
-		if err != nil {
-			return fmt.Errorf("failed to encode set_password command: %w", err)
-		}
-		if _, err = dom.QemuMonitorCommand(string(payload), libvirt.DOMAIN_QEMU_MONITOR_COMMAND_DEFAULT); err != nil {
-			return fmt.Errorf("failed to set VNC password: %w", err)
-		}
-
-		return nil
+		return setLiveVNCPassword(dom, password)
 	})
+}
+
+// setLiveVNCPassword replaces the console password of a running domain.
+//
+// It only works on a domain that was started with a password: qemu picks the
+// console's authentication when it starts and cannot turn it on afterwards, so
+// on a domain started without one this fails and the console stays open until
+// the domain is next powered off and on.
+func setLiveVNCPassword(dom *libvirt.Domain, password string) error {
+	// Set the VNC password via QMP (structured JSON) rather than HMP. HMP is a
+	// shell-like parser, so a password containing spaces or characters like
+	// $ ^ & * # would be mangled — QEMU would store a different value than the
+	// one the browser presents, causing "Authentication failed". QMP passes the
+	// password as a JSON string argument, so any byte is preserved verbatim.
+	payload, err := json.Marshal(map[string]interface{}{
+		"execute": "set_password",
+		"arguments": map[string]interface{}{
+			"protocol": "vnc",
+			"password": password,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to encode set_password command: %w", err)
+	}
+	if _, err = dom.QemuMonitorCommand(string(payload), libvirt.DOMAIN_QEMU_MONITOR_COMMAND_DEFAULT); err != nil {
+		return fmt.Errorf("failed to set VNC password: %w", err)
+	}
+	return nil
 }
 
 // SetVMPassword sets a guest user's password via the qemu-guest-agent (the VM
@@ -2143,35 +2225,26 @@ func SetVMPassword(uuidStr, user, password string) error {
 
 // SetConsoleAccess enforces console enable/disable on the domain itself.
 //
-// Two layers, because neither alone is enough:
+// The console socket is on loopback either way, so what this changes is the
+// password: the panel's when enabled, one nobody holds when disabled. An empty
+// password would mean no authentication at all in qemu, which would turn
+// disabling the console into opening it.
 //
-//   - The persistent definition's listen address becomes 127.0.0.1 when
-//     disabled and 0.0.0.0 when enabled. This is what survives a reboot, but
-//     graphics is not hot-pluggable so it does not affect a running domain.
-//   - The live domain's VNC password is replaced, with existing viewers
-//     disconnected. That takes effect immediately, which is what makes
-//     "disable" mean something on a VM that is already running.
+//   - The stored definition gets the password, and loopback if it was still
+//     defined on every address. That is what the next boot uses.
+//   - A running domain gets the password live. Viewers already connected stay
+//     connected: qemu has no way to drop them on a password change.
 //
-// Disabling generates a password nobody holds rather than clearing it: an empty
-// VNC password means *no authentication* in qemu, which would turn disabling the
-// console into opening it.
+// restartRequired is true when the running domain could not take the change:
+// it was started without a password, or still holds a socket on every address.
 func SetConsoleAccess(uuidStr string, enabled bool, vncPassword string) (vncPort int, restartRequired bool, err error) {
 	if _, perr := uuid.Parse(uuidStr); perr != nil {
 		return 0, false, fmt.Errorf("invalid UUID format: %w", perr)
 	}
 
-	livePassword := vncPassword
-	if !enabled {
-		buf := make([]byte, 16)
-		if _, rerr := rand.Read(buf); rerr != nil {
-			return 0, false, fmt.Errorf("failed to generate lockout password: %w", rerr)
-		}
-		livePassword = hex.EncodeToString(buf)
-	}
-
-	listen := "127.0.0.1"
-	if enabled {
-		listen = "0.0.0.0"
+	password := console.NewPassword()
+	if enabled && vncPassword != "" {
+		password = console.ClipPassword(vncPassword)
 	}
 
 	err = WithConnection(func(conn *libvirt.Connect) error {
@@ -2200,12 +2273,7 @@ func SetConsoleAccess(uuidStr string, enabled bool, vncPassword string) (vncPort
 				continue
 			}
 			found = true
-			domain.Devices.Graphics[i].VNC.Listen = listen
-			for j := range domain.Devices.Graphics[i].VNC.Listeners {
-				if a := domain.Devices.Graphics[i].VNC.Listeners[j].Address; a != nil {
-					a.Address = listen
-				}
-			}
+			domain.Devices.Graphics[i].VNC.Passwd = password
 			if vncPort == 0 {
 				vncPort = domain.Devices.Graphics[i].VNC.Port
 			}
@@ -2231,23 +2299,124 @@ func SetConsoleAccess(uuidStr string, enabled bool, vncPassword string) (vncPort
 		if !active {
 			return nil
 		}
-		// A running domain keeps its socket until it reboots, so say so rather
-		// than let the caller believe the listen address already changed.
-		restartRequired = true
 
-		// The password change, unlike the listen address, applies live.
-		graphicsXML := fmt.Sprintf(
-			`<graphics type='vnc' passwd='%s' connected='disconnect'/>`, livePassword)
-		if uerr := dom.UpdateDeviceFlags(graphicsXML, libvirt.DOMAIN_DEVICE_MODIFY_LIVE); uerr != nil {
-			return fmt.Errorf("failed to apply console password to the running domain: %w", uerr)
+		liveXML, gerr := dom.GetXMLDesc(0)
+		if gerr != nil {
+			return fmt.Errorf("failed to read the running domain: %w", gerr)
 		}
+		live, _ := console.Find(liveXML)
+		if live.Port > 0 {
+			vncPort = live.Port
+		}
+		restartRequired = !live.Local()
 
-		if liveXML, gerr := dom.GetXMLDesc(0); gerr == nil {
-			if p := extractVNCPort(liveXML); p > 0 {
-				vncPort = p
+		if perr := setLiveVNCPassword(dom, password); perr != nil {
+			restartRequired = true
+			if !enabled {
+				// The one case that must not pass for success: the caller asked
+				// for the console to be shut and the running one still answers.
+				return fmt.Errorf("the running console could not be locked and stays as it is until the VM is powered off and on: %w", perr)
 			}
 		}
 		return nil
 	})
 	return vncPort, restartRequired, err
+}
+
+// LegacyConsole is a running VM whose console socket is still bound to more
+// than loopback, because it was started before consoles moved there. It stays
+// that way until the VM is powered off and on (a reboot keeps the same qemu).
+type LegacyConsole struct {
+	UUID string
+	Name string
+	Port int
+	// WebsocketPort is its second socket, 0 when it has none.
+	WebsocketPort int
+	HasPassword   bool
+}
+
+// SecureConsoles returns the running VMs whose console is still reachable from
+// outside the node. With redefine it first gives every stored definition a
+// console password and a loopback listen address, which is what each VM uses
+// the next time it is powered on; nothing is restarted.
+//
+// A VM that cannot be read or saved is logged and skipped: one bad domain must
+// not keep the rest of the node's consoles open.
+func SecureConsoles(redefine bool) ([]LegacyConsole, error) {
+	var legacy []LegacyConsole
+	err := WithConnection(func(conn *libvirt.Connect) error {
+		doms, err := conn.ListAllDomains(0) // 0 = all, active and inactive
+		if err != nil {
+			return fmt.Errorf("failed to list domains: %w", err)
+		}
+		defer func() {
+			for i := range doms {
+				_ = doms[i].Free()
+			}
+		}()
+		for i := range doms {
+			dom := &doms[i]
+			name, _ := dom.GetName()
+
+			if persistent, _ := dom.IsPersistent(); redefine && persistent {
+				inactive, xerr := dom.GetXMLDesc(libvirt.DOMAIN_XML_INACTIVE | libvirt.DOMAIN_XML_SECURE)
+				if xerr != nil {
+					log.Printf("[Console] WARNING: cannot read the definition of %s: %v", name, xerr)
+				} else if console.Exposed(inactive) {
+					if saved, derr := redefineDomain(conn, inactive); derr != nil {
+						log.Printf("[Console] WARNING: cannot secure the console of %s: %v", name, derr)
+					} else {
+						saved.Free()
+						log.Printf("[Console] %s: console set to loopback with a password, from its next power-on", name)
+					}
+				}
+			}
+
+			if active, _ := dom.IsActive(); !active {
+				continue
+			}
+			live, xerr := dom.GetXMLDesc(libvirt.DOMAIN_XML_SECURE)
+			if xerr != nil {
+				log.Printf("[Console] WARNING: cannot read running domain %s: %v", name, xerr)
+				continue
+			}
+			ep, ok := console.Find(live)
+			if !ok || ep.Port <= 0 || ep.Local() {
+				continue
+			}
+			id, _ := dom.GetUUIDString()
+			legacy = append(legacy, LegacyConsole{UUID: id, Name: name, Port: ep.Port, WebsocketPort: ep.WebsocketPort, HasPassword: ep.HasPassword})
+		}
+		return nil
+	})
+	return legacy, err
+}
+
+// ConsoleDialAddress returns where a running VM's console answers on this node.
+func ConsoleDialAddress(uuidStr string) (string, error) {
+	if _, err := uuid.Parse(uuidStr); err != nil {
+		return "", fmt.Errorf("invalid UUID format: %w", err)
+	}
+	var addr string
+	err := WithConnection(func(conn *libvirt.Connect) error {
+		dom, err := conn.LookupDomainByUUIDString(uuidStr)
+		if err != nil {
+			return fmt.Errorf("domain not found: %w", err)
+		}
+		defer dom.Free()
+		if active, _ := dom.IsActive(); !active {
+			return fmt.Errorf("the VM is not running")
+		}
+		live, err := dom.GetXMLDesc(0)
+		if err != nil {
+			return fmt.Errorf("failed to get domain XML: %w", err)
+		}
+		ep, ok := console.Find(live)
+		if !ok || ep.Port <= 0 {
+			return fmt.Errorf("the VM has no console")
+		}
+		addr = ep.DialAddress()
+		return nil
+	})
+	return addr, err
 }

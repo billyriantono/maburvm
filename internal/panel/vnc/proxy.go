@@ -21,6 +21,8 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/maburvm/panel/internal/panel/client"
 	"github.com/maburvm/panel/internal/shared/config"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const (
@@ -162,6 +164,14 @@ type ProxyServer struct {
 	rateLimiter *ConnectionRateLimiter
 	activeConns sync.Map // map[string]*ProxyConnection
 	connCounter atomic.Int64
+	// dialConsole opens a VM's console through its node's agent. It answers
+	// codes.Unimplemented when the agent is too old to carry one.
+	dialConsole func(ctx context.Context, vmID string) (net.Conn, error)
+}
+
+// SetConsoleDialer makes console sessions go through the node's agent.
+func (s *ProxyServer) SetConsoleDialer(dial func(ctx context.Context, vmID string) (net.Conn, error)) {
+	s.dialConsole = dial
 }
 
 // ProxyConnection represents an active WebSocket ↔ VNC bridge
@@ -387,19 +397,7 @@ func (s *ProxyServer) proxyConnection(pc *ProxyConnection) {
 	ctx, cancel := context.WithCancel(context.Background())
 	pc.cancel = cancel
 
-	// Call agent to get VNC connection details
-	tcpAddr, err := s.getVNCAddress(ctx, pc)
-	if err != nil {
-		s.logger.Error("Failed to get VNC address",
-			"conn_id", pc.ID,
-			"error", err,
-		)
-		s.sendErrorMessage(pc, "Failed to connect to VNC server")
-		return
-	}
-
-	// Connect to VNC server via TCP
-	tcpConn, err := net.DialTimeout("tcp", tcpAddr, 10*time.Second)
+	tcpConn, tcpAddr, err := s.connect(ctx, pc)
 	if err != nil {
 		s.logger.Error("Failed to connect to VNC server",
 			"conn_id", pc.ID,
@@ -410,6 +408,12 @@ func (s *ProxyServer) proxyConnection(pc *ProxyConnection) {
 		return
 	}
 	pc.tcpConn = tcpConn
+	// Closed while connecting (the console was disabled): cleanup has already
+	// run and did not see this connection.
+	if pc.closed.Load() {
+		tcpConn.Close()
+		return
+	}
 
 	s.logger.Info("Connected to VNC server",
 		"conn_id", pc.ID,
@@ -455,6 +459,33 @@ func (s *ProxyServer) proxyConnection(pc *ProxyConnection) {
 		)
 		s.sendErrorMessage(pc, "Session expired")
 	}
+}
+
+// connect reaches the VM's console: through its node's agent, or straight to the
+// console port when that agent is too old to carry it. Any other refusal from
+// the agent stands. Trying the port instead would only replace the agent's
+// reason with a timeout, because an agent that can carry consoles also keeps
+// their ports closed to the network.
+func (s *ProxyServer) connect(ctx context.Context, pc *ProxyConnection) (net.Conn, string, error) {
+	if s.dialConsole != nil {
+		conn, err := s.dialConsole(ctx, pc.VMID)
+		if err == nil {
+			return conn, "node agent", nil
+		}
+		if status.Code(err) != codes.Unimplemented {
+			return nil, "node agent", err
+		}
+		s.logger.Info("Node agent cannot carry consoles yet; connecting to the console port directly",
+			"conn_id", pc.ID,
+			"vm_id", pc.VMID,
+		)
+	}
+	addr, err := s.getVNCAddress(ctx, pc)
+	if err != nil {
+		return nil, "", err
+	}
+	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+	return conn, addr, err
 }
 
 // getVNCAddress retrieves the VNC server address from the token claims
@@ -630,6 +661,21 @@ func (s *ProxyServer) CloseConnection(connID string) error {
 		return nil
 	}
 	return fmt.Errorf("connection not found: %s", connID)
+}
+
+// CloseVMConnections ends every open console session of one VM and returns how
+// many there were. The hypervisor cannot drop a viewer when a console is
+// disabled, so the panel, which every session passes through, does.
+func (s *ProxyServer) CloseVMConnections(vmID string) int {
+	closed := 0
+	s.activeConns.Range(func(_, value interface{}) bool {
+		if pc := value.(*ProxyConnection); pc.VMID == vmID {
+			s.cleanupConnection(pc)
+			closed++
+		}
+		return true
+	})
+	return closed
 }
 
 // CloseAllConnections closes all active connections

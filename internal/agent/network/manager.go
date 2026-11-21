@@ -62,6 +62,10 @@ func NewManager() (*Manager, error) {
 		return nil, fmt.Errorf("failed to initialize NAT manager: %w", err)
 	}
 
+	// After the NAT manager: once bridged traffic passes through iptables it
+	// also meets the port forwards, which must be scoped to one address first.
+	ensureBridgeNetfilter()
+
 	// Initialize firewall manager
 	fwManager, err := NewFirewallManager()
 	if err != nil {
@@ -261,6 +265,10 @@ func (m *Manager) CleanupVMNetwork(vmID string) error {
 		if err := m.nat.CleanupVM(vmID, state.InternalIP); err != nil {
 			errs = append(errs, fmt.Errorf("NAT cleanup: %w", err))
 		}
+	} else {
+		// No state after an agent restart, but the forwards are still in the
+		// chain. Left there, a re-apply would add its set beside the old one.
+		m.nat.ClearPortForwards(vmID)
 	}
 
 	// 6. Remove the IPv6 route + neighbour (persisted, so this works after a restart).
@@ -282,6 +290,10 @@ func (m *Manager) CleanupVMNetwork(vmID string) error {
 	log.Printf("[NetworkManager] Network cleanup completed for VM %s", vmID)
 	return nil
 }
+
+// NATAddress is the node address port forwards are published on, empty when
+// the node has none.
+func (m *Manager) NATAddress() string { return m.nat.PublishAddress() }
 
 // AddPortForward adds a port forward for a VM. protocol is "tcp" or "udp"
 // (empty defaults to tcp).

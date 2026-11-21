@@ -362,6 +362,16 @@ func markBackupFailed(ctx context.Context, backupID, msg string) {
 		}).Error
 }
 
+// attachISORef is the image reference an attach-ISO job sends its node. Only a
+// job that says the operator chose the ISO is sent as given; any other, one
+// queued before the marker existed included, is sent as a customer's URL.
+func attachISORef(imagePath, isoSource string) string {
+	if isoSource == ISOSourceOperator {
+		return imagePath
+	}
+	return models.CustomerISORef(imagePath)
+}
+
 // Work implements the VM operation job handler
 func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperationJob]) error {
 	startTime := time.Now()
@@ -499,6 +509,9 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 			// leaves the choice to the node, which defaults to its root
 			// filesystem — fine as a fallback, wrong as a destination.
 			PoolPath string `json:"pool_path"`
+			// ISOSource is ISOSourceOperator when the operator chose the ISO
+			// being attached. Anything else is treated as a customer's URL.
+			ISOSource string `json:"iso_source"`
 		}
 
 		if err := json.Unmarshal(job.Args.Params, &params); err != nil {
@@ -523,6 +536,11 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 				metadata["cpu_model"] = params.CPUModel
 			}
 
+			imageID := params.ImagePath
+			if job.Args.Operation == VMOpAttachISO {
+				imageID = attachISORef(params.ImagePath, params.ISOSource)
+			}
+
 			iopsLimit := int32(0)
 			if vm.Resources.IOPS != nil {
 				iopsLimit = int32(*vm.Resources.IOPS)
@@ -541,7 +559,7 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 					IopsLimit:            iopsLimit,
 					NetworkBandwidthMbps: int32(params.BandwidthMbps),
 				},
-				ImageId:      params.ImagePath,
+				ImageId:      imageID,
 				SshPublicKey: params.SSHPublicKey,
 				UserData:     params.UserData,
 				Metadata:     metadata,
@@ -695,6 +713,12 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 			strings.Contains(detail, "template image not found at guest:") {
 			detail = fmt.Sprintf("the agent on node %s is older than the panel and cannot install %s systems; update it under Settings, System and try again", node.Name, kind)
 		}
+		// Likewise an agent from before customer URLs were fetched under their
+		// own rules: it does not fetch one at all, which is the point.
+		if _, customer := models.SplitCustomerISORef(vmConfig.GetImageId()); customer &&
+			strings.Contains(detail, "template image not found at "+models.CustomerISORef("")) {
+			detail = "this server's node cannot fetch an ISO from a URL until its agent is updated; ask support to update it"
+		}
 		w.logger.ErrorContext(ctx, "VM command failed",
 			"vm_id", vm.ID,
 			"error_code", resp.Error.GetCode(),
@@ -707,6 +731,11 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 
 		if w.metrics != nil {
 			w.metrics.RecordJobFailed()
+		}
+		// The node has already retried the transfer itself, and a refusal does
+		// not change: trying again only downloads the file again.
+		if job.Args.Operation == VMOpAttachISO {
+			return river.JobCancel(fmt.Errorf("VM command failed: %s", detail))
 		}
 		return fmt.Errorf("VM command failed: %s", detail)
 	}
@@ -2662,6 +2691,11 @@ func (w *SnapshotWorker) Work(ctx context.Context, job *river.Job[SnapshotJob]) 
 	default:
 		return fmt.Errorf("unsupported snapshot operation: %s", job.Args.Operation)
 	}
+	if job.Args.Operation == SnapshotOpDelete {
+		// Also when the node refuses: the usual refusal is a snapshot that an
+		// earlier delete already took with it, and its siblings are gone too.
+		defer w.reconcileSnapshots(ctx, client, node, vm.ID)
+	}
 
 	// Execute snapshot command via gRPC
 	req := &pb.SnapshotRequest{
@@ -2733,7 +2767,6 @@ func (w *SnapshotWorker) Work(ctx context.Context, job *river.Job[SnapshotJob]) 
 			}
 		}
 	}
-
 	latency := time.Since(startTime)
 	if w.metrics != nil {
 		w.metrics.RecordJobProcessed("snapshot_operation", latency)

@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/maburvm/panel/internal/shared/safefetch"
 )
 
 const (
@@ -27,6 +29,8 @@ type TemplateManager struct {
 	templatesDir string
 	httpClient   *http.Client
 	stall        time.Duration // 0 means downloadStall
+	maxBytes     int64         // largest download accepted; 0 means any size
+	minFree      int64         // space a download must leave free on its filesystem; 0 means unchecked
 }
 
 // TemplateInfo holds metadata about a cached template
@@ -53,6 +57,18 @@ func NewTemplateManager() *TemplateManager {
 			Timeout: 30 * time.Minute,
 		},
 	}
+}
+
+// NewCustomerDownloader returns a manager for a URL a customer supplied, as
+// opposed to one the operator configured. It connects only to public addresses
+// (see safefetch), accepts at most maxBytes, and stops rather than leave less
+// than minFree on the filesystem it writes to.
+func NewCustomerDownloader(maxBytes, minFree int64) *TemplateManager {
+	tm := NewTemplateManager()
+	tm.httpClient = safefetch.NewClient(tm.httpClient.Timeout)
+	tm.maxBytes = maxBytes
+	tm.minFree = minFree
+	return tm
 }
 
 // NewTemplateManagerWithDir creates a template manager with a custom directory
@@ -83,6 +99,10 @@ const (
 
 // errDownloadRefused marks an answer that trying again will not change.
 var errDownloadRefused = errors.New("download refused")
+
+// freeCheckEvery is how much of a download is written between looks at the
+// free space left.
+const freeCheckEvery = 64 << 20
 
 // DownloadTemplate downloads an OS template from URL to dest. It writes to a
 // temporary file beside dest and moves it into place only when complete, and
@@ -127,6 +147,9 @@ func (tm *TemplateManager) downloadOnce(url string, dest string) error {
 
 	resp, err := tm.httpClient.Do(req)
 	if err != nil {
+		if errors.Is(err, safefetch.ErrRefused) {
+			return fmt.Errorf("%w: %v", errDownloadRefused, err)
+		}
 		return fmt.Errorf("failed to download template: %w", err)
 	}
 	defer resp.Body.Close()
@@ -138,16 +161,44 @@ func (tm *TemplateManager) downloadOnce(url string, dest string) error {
 		return err
 	}
 
+	if tm.maxBytes > 0 && resp.ContentLength > tm.maxBytes {
+		return fmt.Errorf("%w: the file is %d bytes, over the %d byte limit", errDownloadRefused, resp.ContentLength, tm.maxBytes)
+	}
+	dir := filepath.Dir(dest)
+	if err := tm.checkFree(dir, resp.ContentLength); err != nil {
+		return err
+	}
+	var src io.Reader = resp.Body
+	if tm.maxBytes > 0 {
+		// The declared length is the server's word; this is the count.
+		src = safefetch.LimitReader(src, tm.maxBytes)
+	}
+
 	// Every chunk that arrives pushes the stall deadline back.
+	var sinceFreeCheck int64
 	body := readerFunc(func(p []byte) (int, error) {
-		n, err := resp.Body.Read(p)
+		n, err := src.Read(p)
 		if n > 0 {
 			stall.Reset(tm.stallAfter())
+			// Other downloads and VM disks share the filesystem, so the space
+			// that was there at the start may not be there now.
+			if sinceFreeCheck += int64(n); sinceFreeCheck >= freeCheckEvery {
+				sinceFreeCheck = 0
+				if ferr := tm.checkFree(dir, 0); ferr != nil {
+					return n, ferr
+				}
+			}
 		}
 		return n, err
 	})
 	written, err := io.Copy(tempFile, body)
 	if err != nil {
+		if errors.Is(err, safefetch.ErrTooLarge) {
+			return fmt.Errorf("%w: the file is over the %d byte limit", errDownloadRefused, tm.maxBytes)
+		}
+		if errors.Is(err, errDownloadRefused) {
+			return err
+		}
 		return fmt.Errorf("failed to write downloaded content: %w", err)
 	}
 	if resp.ContentLength > 0 && written != resp.ContentLength {
@@ -158,6 +209,23 @@ func (tm *TemplateManager) downloadOnce(url string, dest string) error {
 	}
 	if err := os.Rename(tempPath, dest); err != nil {
 		return fmt.Errorf("failed to move file to destination: %w", err)
+	}
+	return nil
+}
+
+// checkFree refuses a download that would leave, or has left, less than
+// minFree on the filesystem holding dir. need is what is still to be written,
+// when known.
+func (tm *TemplateManager) checkFree(dir string, need int64) error {
+	if tm.minFree <= 0 {
+		return nil
+	}
+	if need < 0 {
+		need = 0
+	}
+	// An unreadable filesystem counts as full.
+	if free := Capacity(dir).Available; free-need < tm.minFree {
+		return fmt.Errorf("%w: the node is too low on disk space for this download (%d bytes free, %d must stay free)", errDownloadRefused, free, tm.minFree)
 	}
 	return nil
 }

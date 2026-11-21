@@ -238,6 +238,78 @@ neighbour cache, which is blind for any pool subnet the node itself has no
 address in (the ping is routed upstream instead of ARPed on the bridge), so
 addresses already in use by imported guests look free.
 
+**ISOs customers attach by URL.** A customer may attach an install or rescue ISO
+from a URL they type. The node fetches such a URL only from public addresses
+outside its own networks (never loopback, private, carrier-NAT or link-local
+space, the node itself, or a neighbour on a network the node is attached to),
+checks every redirect the same way, and keeps the download in
+`/var/lib/libvirt/templates/customer-iso`, apart from the images you define.
+A file there is removed as soon as no VM has it attached. ISOs and templates an
+administrator defines are not restricted and are never removed. Three settings
+in the agent's environment bound what customers can put on the node:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `CUSTOMER_ISO_MAX_GB` | `8` | Largest ISO a customer may attach by URL. |
+| `CUSTOMER_ISO_MIN_FREE_GB` | `10` | A download is refused, or stopped, rather than leave less than this free on the filesystem holding the cache. |
+| `CUSTOMER_ISO_RETENTION_DAYS` | `7` | A customer ISO that no VM uses and that was missed when it was detached (an agent restart, a VM removed outside the panel) is removed after this long. |
+
+Customers attach ISOs by URL only on nodes whose agent has these checks; on an
+older agent the attach fails with a message asking for the agent to be updated.
+
+**Port forwards are published on one node address.** A customer's port forward
+answers on a single address of the node and nowhere else: not on floating IPs
+bound on the node, and not on the node's other addresses. The agent uses the
+address its default route sends from and logs it at start
+(`port forwards are published on ...`); the node's page in the panel shows it
+too. Forwards installed by an older agent are rewritten to that address when the
+agent starts. Before updating a node, check that this is the address customers
+use (`ip -4 route get 192.0.2.1` prints it after `src`), and set the variable
+below if it is not. A port is held by one VM per node and protocol, and a VM may
+hold a limited number of forwards (Settings, System, Quotas; 20 by default).
+
+**VM firewalls need bridge netfilter.** Traffic between ports of one bridge
+reaches iptables only while the `br_netfilter` module is loaded and
+`net.bridge.bridge-nf-call-iptables` and `-ip6tables` are 1. Without that, VM
+firewall rules and the outbound scan guard are installed and filter nothing. The
+installer turns it on for a new node. The agent reports the state to the panel,
+which warns on the node page, on each VM's firewall tab and in the security
+centre while a node is not enforcing, or has not said. Where it is on, the agent
+makes it survive a reboot (`/etc/modules-load.d/maburvm.conf`,
+`/etc/sysctl.d/99-maburvm-bridge.conf`). Where it is off, the agent leaves it
+off: turning it on starts enforcing rules that never applied to the running VMs
+(every VM is created with default rules that admit SSH or RDP, ping, 80 and 443
+only) and starts connection-tracking bridged traffic, so it is yours to
+schedule. To turn it on, add the variable below to the agent's unit
+(`Environment=` in `/etc/systemd/system/maburvm-agent.service`), then
+`systemctl daemon-reload` and restart the agent. Even then the agent does not
+turn it on while the node's `FORWARD` policy is `DROP`, because guests without
+their own accept rule would lose their network.
+
+**VM consoles stay on the node.** A VM's console socket listens on the node's
+loopback address with a password, and the panel reaches it through the agent's
+gRPC channel, so no console port needs to be open to the network. Update the
+panel before the agents: a panel older than the agent cannot open the console of
+any VM started under the new agent. A newer panel with an older agent keeps
+connecting to the console port directly, as before.
+
+A VM that was already running when its node's agent was updated keeps the socket
+it started with, which listens on every address and, unless it was started with
+a password, has none: the hypervisor cannot add one to a running VM. Until such
+a VM is powered off and on (a reboot from inside the guest or the panel's
+restart is not enough), the agent closes its console port to everything but the
+node itself, with one rule per port in the `MABURVM-CONSOLE` iptables and
+ip6tables chain, checked every five minutes. The agent's log names these VMs at
+start (`journalctl -u maburvm-agent | grep '\[Console\]'`), and
+`iptables -S MABURVM-CONSOLE` lists the ports. When the log says every running
+VM has its console on loopback, the chain is empty.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MABURVM_NAT_ADDRESS` | the default route's source address | The node's IPv4 address port forwards are published on. It must be an address the node holds and not a floating IP; otherwise the agent logs a warning, installs no forwards and leaves existing ones as they were. |
+| `MABURVM_BRIDGE_NETFILTER` | unset | Unset, the agent reports the state and only persists it when it is already on. Set to `enforce` to have the agent turn bridge netfilter on at start. |
+| `AGENT_CONSOLE_SHIELD` | on | Set to `off` to remove the console port rules. Only for running a panel older than the agent, which still connects to console ports directly; the consoles of VMs that have not been powered off and on are then reachable from the network again. |
+
 > **Exception / future work:** Privileged-agent minimization is an explicit
 > exception that requires a dedicated minimization test before any change. Do not
 > attempt to remove `--privileged` without that test.

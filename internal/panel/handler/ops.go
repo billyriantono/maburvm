@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/panel/service"
+	"github.com/maburvm/panel/internal/shared/models"
 	"github.com/maburvm/panel/internal/shared/queue"
 )
 
@@ -98,6 +100,35 @@ func securityChecks(ctx context.Context, db *gorm.DB) []SecurityCheck {
 		"Every node is answering.",
 		fmt.Sprintf("%s not answering. Their VMs cannot be managed and firewall changes are not reaching them.", plural(offline, "node is", "nodes are")), "/nodes")
 
+	// What each node last said about its own firewall. A node that says
+	// nothing (an agent older than the report) is unknown, never fine.
+	var fwNodes []struct{ Name, FirewallEnforcement string }
+	if err := db.Raw("SELECT name, firewall_enforcement FROM nodes WHERE deleted_at IS NULL ORDER BY name").Scan(&fwNodes).Error; err == nil && len(fwNodes) > 0 {
+		var off, unknown []string
+		for _, n := range fwNodes {
+			switch n.FirewallEnforcement {
+			case models.FirewallEnforced:
+			case models.FirewallOff:
+				off = append(off, n.Name)
+			default:
+				unknown = append(unknown, n.Name)
+			}
+		}
+		switch {
+		case len(off) > 0:
+			add("vm_firewall", "VM firewalls enforced on every node", true, "fail", "",
+				fmt.Sprintf("Not enforced on %s. VM firewall rules and the outbound scan guard are installed there but filter nothing, because the node does not pass bridged traffic through its firewall. Turning it on starts applying rules to VMs that are already running, so choose the moment: set MABURVM_BRIDGE_NETFILTER=enforce in the agent's environment on the node and restart the agent.", strings.Join(off, ", ")),
+				"/nodes")
+		case len(unknown) > 0:
+			add("vm_firewall", "VM firewalls enforced on every node", true, "warn", "",
+				fmt.Sprintf("Not confirmed on %s. The node has not reported whether it filters VM traffic: its agent is older than this panel, or the panel has not reached it yet. An agent that old also answers port forwards on every address of the node, floating IPs included. Update the agent from the Nodes page.", strings.Join(unknown, ", ")),
+				"/nodes")
+		default:
+			add("vm_firewall", "VM firewalls enforced on every node", false, "",
+				fmt.Sprintf("%s VM firewall rules to guest traffic.", plural(int64(len(fwNodes)), "node applies", "nodes apply")), "", "")
+		}
+	}
+
 	keys := countRows(db, "SELECT COUNT(*) FROM api_keys k JOIN users u ON u.id = k.user_id WHERE k.deleted_at IS NULL AND k.expires_at IS NULL AND k.read_only = false AND u.role = 'admin' AND COALESCE(k.role, '') <> 'client'")
 	add("api_keys", "Administrator API keys", keys > 0, "warn",
 		"No administrator API key is both unlimited and without an end date.",
@@ -116,6 +147,23 @@ func securityChecks(ctx context.Context, db *gorm.DB) []SecurityCheck {
 		add("billing", "Billing webhook", true, "fail", "", "The billing API key or signing secret is shorter than 24 characters. Whoever guesses it can create and destroy VMs. Replace both with long random values.", "")
 	default:
 		add("billing", "Billing webhook", false, "", "On, with a key and signing secret of reasonable length.", "", "")
+	}
+	// The panel charges for nothing: with a billing system connected, whatever
+	// a customer can take on their own is taken past it.
+	if billingKey != "" {
+		var open []string
+		for action, word := range map[service.SelfServiceAction]string{
+			service.SelfServiceOrder: "order servers", service.SelfServiceClone: "clone servers", service.SelfServiceExtraDisk: "add disks",
+		} {
+			if service.SelfServiceAllowed(ctx, db, action) {
+				open = append(open, word)
+			}
+		}
+		sort.Strings(open)
+		add("unbilled_self_service", "Self-service past billing", len(open) > 0, "warn",
+			"Customers cannot order, clone or add disks on their own; the billing system sells them.",
+			fmt.Sprintf("A billing system is connected, and customers can still %s on their own in the portal without it being charged. Turn off what billing should be selling under System settings, Limits.", strings.Join(open, ", ")),
+			"/settings/system")
 	}
 	return out
 }
@@ -245,6 +293,17 @@ func RegisterOpsRoutes(e *echo.Echo, db *gorm.DB, riverClient *river.Client[pgx.
 		return ok(c, grants)
 	})
 	g.POST("/security/support-access", func(c echo.Context) error {
+		// A support account is a full administrator, so opening one is creating
+		// an administrator: the founding administrator's call alone, and never
+		// through a narrowed API key or from another support account.
+		caller, authed := middleware.GetUserContext(c)
+		if !authed || caller.APIKeyRestricted || caller.ID != service.FoundingAdminID(c.Request().Context(), db) {
+			return c.JSON(http.StatusForbidden, map[string]interface{}{
+				"error":   "Forbidden",
+				"code":    "only_the_founding_administrator_may_grant_support_access",
+				"message": "Only the founding administrator can open support access.",
+			})
+		}
 		var req struct {
 			Hours int    `json:"hours"`
 			Note  string `json:"note"`
@@ -285,20 +344,29 @@ func RegisterOpsRoutes(e *echo.Echo, db *gorm.DB, riverClient *river.Client[pgx.
 			grant.ID, grant.Email, string(hash), grant.ExpiresAt, grant.Note).Error; err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Could not create the support account"})
 		}
+		service.AuditSupportAccess(c.Request().Context(), db, "support_access.create", caller.ID.String(), grant.ID, c.RealIP(), c.Request().UserAgent(),
+			map[string]any{"email": grant.Email, "note": grant.Note, "hours": req.Hours, "expires_at": grant.ExpiresAt})
 		// The password is returned once and never stored in a readable form.
 		return c.JSON(http.StatusCreated, map[string]interface{}{"success": true, "data": map[string]interface{}{"grant": grant, "password": password}})
 	})
 	g.DELETE("/security/support-access/:id", func(c echo.Context) error {
+		caller, authed := middleware.GetUserContext(c)
+		if !authed || service.IsTemporaryAccount(c.Request().Context(), db, caller.ID) {
+			return c.JSON(http.StatusForbidden, map[string]interface{}{
+				"error": "Forbidden", "message": "A support account cannot manage support access.",
+			})
+		}
 		// Only ever a temporary account: the expires_at condition keeps this
 		// from being a way to delete a real user.
 		res := db.WithContext(c.Request().Context()).Exec(
-			"UPDATE users SET deleted_at = NOW(), token_revoked_at = NOW() WHERE id = ? AND expires_at IS NOT NULL AND deleted_at IS NULL", c.Param("id"))
+			"UPDATE users SET deleted_at = CURRENT_TIMESTAMP, token_revoked_at = CURRENT_TIMESTAMP WHERE id = ? AND expires_at IS NOT NULL AND deleted_at IS NULL", c.Param("id"))
 		if res.Error != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Could not end the support access"})
 		}
 		if res.RowsAffected == 0 {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "That support access is already closed"})
 		}
+		service.AuditSupportAccess(c.Request().Context(), db, "support_access.revoke", caller.ID.String(), c.Param("id"), c.RealIP(), c.Request().UserAgent(), nil)
 		return ok(c, nil)
 	})
 

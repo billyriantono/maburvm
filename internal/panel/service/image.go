@@ -54,8 +54,9 @@ func (s *ImageService) CreateImageFromVM(ctx context.Context, userID uuid.UUID, 
 		}
 		return nil, err
 	}
-	if !isAdmin && vm.UserID != userID.String() {
-		return nil, ErrVMNotFound // don't reveal existence to non-owners
+	// An image of a suspended VM would be the same disk as a new, running VM.
+	if err := OwnerAccess(&vm, userID.String(), isAdmin, true); err != nil {
+		return nil, err
 	}
 
 	name = strings.TrimSpace(name)
@@ -231,6 +232,19 @@ func (s *ImageService) RetryCapture(ctx context.Context, imageID string, userID 
 	}
 	if img.SourceVMID == nil {
 		return nil, fmt.Errorf("this image has no source VM to capture from")
+	}
+	// The source may have been suspended, or handed to another customer, since the first attempt.
+	if !isAdmin {
+		var vm models.VM
+		if err := s.db.WithContext(ctx).First(&vm, "id = ?", img.SourceVMID.String()).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, ErrVMNotFound
+			}
+			return nil, err
+		}
+		if err := OwnerAccess(&vm, userID.String(), false, true); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := s.db.WithContext(ctx).Model(img).Updates(map[string]any{

@@ -465,6 +465,23 @@ func (h *BillingHandler) HandleWebhook(c echo.Context) error {
 
 	ctx := c.Request().Context()
 
+	// An event about an existing VM must come from the service that owns it.
+	if payload.Event != EventVMCreate {
+		if err := h.checkEventOwner(ctx, payload.Event, &payload.Data); err != nil {
+			status := http.StatusBadRequest
+			switch {
+			case errors.Is(err, service.ErrVMNotFound):
+				status = http.StatusNotFound
+			case errors.Is(err, errBillingOwnerMismatch):
+				status = http.StatusForbidden
+				h.auditOwnerMismatch(c, &payload, requestID)
+			}
+			h.logger.Warn("Billing event refused", "event", payload.Event, "vm_id", payload.Data.VMID,
+				"user_id", payload.Data.UserID, "request_id", requestID, "error", err)
+			return c.JSON(status, WebhookResponse{Success: false, Message: err.Error(), Timestamp: now, RequestID: requestID})
+		}
+	}
+
 	switch payload.Event {
 	case EventVMCreate:
 		response, err = h.handleVMCreate(ctx, &payload.Data, requestID)
@@ -522,6 +539,57 @@ func (h *BillingHandler) HandleWebhook(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, response)
+}
+
+// errBillingOwnerMismatch marks an event whose VM belongs to someone else.
+var errBillingOwnerMismatch = errors.New("the VM does not belong to the user this event names")
+
+// checkEventOwner refuses an event whose vm_id is not a VM of the user_id sent
+// with it. The billing system keeps the VM id in a field staff can edit, and a
+// wrong, copied or stale id would otherwise suspend, resize or destroy another
+// customer's VM.
+func (h *BillingHandler) checkEventOwner(ctx context.Context, event WebhookEventType, data *WebhookData) error {
+	claimed := strings.TrimSpace(data.UserID)
+	if claimed == "" {
+		// The daily usage sync names no user and changes nothing.
+		if event == EventVMUsage {
+			return nil
+		}
+		return fmt.Errorf("user_id is required for %s: set the panel user ID on this service", event)
+	}
+	owner, err := h.vmService.GetVMOwner(ctx, data.VMID)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(owner, claimed) {
+		return fmt.Errorf("%w: check the VM ID and the panel user ID stored on this service", errBillingOwnerMismatch)
+	}
+	return nil
+}
+
+// auditOwnerMismatch records a refused event against the VM it aimed at.
+func (h *BillingHandler) auditOwnerMismatch(c echo.Context, payload *WebhookPayload, requestID string) {
+	if h.db == nil {
+		return
+	}
+	vmID := payload.Data.VMID
+	entry := &models.AuditLog{
+		Action:       "billing.owner_mismatch",
+		ResourceType: "VM",
+		ResourceID:   &vmID,
+		IPAddress:    c.RealIP(),
+		UserAgent:    c.Request().UserAgent(),
+		Details: map[string]any{
+			"event":           string(payload.Event),
+			"claimed_user_id": payload.Data.UserID,
+			"external_ref":    payload.Data.ExternalRef,
+			"request_id":      requestID,
+			"refused":         true,
+		},
+	}
+	if err := h.db.WithContext(c.Request().Context()).Create(entry).Error; err != nil {
+		h.logger.Error("audit: could not record a refused billing event", "vm_id", vmID, "error", err)
+	}
 }
 
 // validatePayload validates the payload based on event type
@@ -591,6 +659,7 @@ func (h *BillingHandler) handleVMCreate(
 		Hostname:     data.Hostname,
 		OSTemplateID: data.TemplateID,
 		Resources:    resources,
+		Billed:       true,
 	}
 
 	// Create the VM
@@ -759,7 +828,7 @@ func (h *BillingHandler) handleVMResize(ctx context.Context, data *WebhookData, 
 			return WebhookResponse{}, fmt.Errorf("failed to stop VM for resize: %w", err)
 		}
 	}
-	vm, err := h.vmService.UpdateVM(ctx, &service.UpdateVMRequest{VMID: data.VMID, Resources: &res, StartAfter: wasRunning})
+	vm, err := h.vmService.UpdateVM(ctx, &service.UpdateVMRequest{VMID: data.VMID, Resources: &res, StartAfter: wasRunning, Billed: true})
 	if err != nil {
 		if wasRunning { // do not leave the customer's VM off over a refused resize
 			_, _ = h.vmService.ExecuteLifecycleCommand(ctx, &service.LifecycleRequest{
@@ -886,30 +955,30 @@ func (h *BillingHandler) GetWebhookDocumentation(c echo.Context) error {
 			{
 				Type:        string(EventVMSuspend),
 				Description: "Suspend a VM (power off; the owner cannot start it)",
-				Required:    []string{"vm_id"},
+				Required:    []string{"vm_id", "user_id"},
 				Optional:    []string{"external_ref"},
 			},
 			{
 				Type:        string(EventVMUnsuspend),
 				Description: "Unsuspend a VM and start it",
-				Required:    []string{"vm_id"},
+				Required:    []string{"vm_id", "user_id"},
 				Optional:    []string{"external_ref"},
 			},
 			{
 				Type:        string(EventVMDestroy),
-				Description: "Destroy a VM and cleanup resources",
-				Required:    []string{"vm_id"},
+				Description: "Destroy a VM and cleanup resources. Like every event about an existing VM, refused when the VM does not belong to user_id",
+				Required:    []string{"vm_id", "user_id"},
 				Optional:    []string{"external_ref"},
 			},
 			{
 				Type:        string(EventVMResize),
 				Description: "Change CPU, memory and disk. A running VM is shut down and booted again. Disk only grows.",
-				Required:    []string{"vm_id", "vm_specs.cpu", "vm_specs.memory", "vm_specs.disk"},
+				Required:    []string{"vm_id", "user_id", "vm_specs.cpu", "vm_specs.memory", "vm_specs.disk"},
 			},
 			{
 				Type:        string(EventVMResetPassword),
 				Description: "Set the root password of a running VM",
-				Required:    []string{"vm_id", "password"},
+				Required:    []string{"vm_id", "user_id", "password"},
 			},
 			{
 				Type:        string(EventVMUsage),
@@ -919,7 +988,7 @@ func (h *BillingHandler) GetWebhookDocumentation(c echo.Context) error {
 			{
 				Type:        "vm.start | vm.stop | vm.restart",
 				Description: "Power actions",
-				Required:    []string{"vm_id"},
+				Required:    []string{"vm_id", "user_id"},
 			},
 		},
 		PayloadExample: map[string]interface{}{

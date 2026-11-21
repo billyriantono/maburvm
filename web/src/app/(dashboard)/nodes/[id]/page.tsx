@@ -338,6 +338,37 @@ export default function NodeDetailPage() {
           {/* Resource Usage from NodeMetrics */}
           {metrics && node.status === "active" && (
             <>
+              {/* A firewall that is installed but filters nothing looks exactly
+                  like one that works, from every other screen. */}
+              {metrics.firewall_enforcement !== "enforced" && (
+                <div role="status" className="mb-6 p-4 rounded-md bg-amber-50 border border-amber-200 dark:bg-amber-950 dark:border-amber-900">
+                  <div className="flex items-start gap-3">
+                    <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" aria-hidden="true" />
+                    {metrics.firewall_enforcement === "off" ? (
+                      <div className="space-y-1">
+                        <p className="font-medium text-sm text-foreground">VM firewalls are not enforced on this node</p>
+                        <p className="text-xs text-muted-foreground">
+                          Firewall rules and the outbound scan guard are installed but filter nothing, because the node does
+                          not pass bridged traffic through its firewall. Turning it on starts applying rules to VMs that are
+                          already running, including the default rules of VMs that never had them applied, so choose the
+                          moment: set <code className="bg-muted px-1 rounded border font-mono">MABURVM_BRIDGE_NETFILTER=enforce</code> in
+                          the agent&apos;s environment on the node and restart the agent. It loads <code className="bg-muted px-1 rounded border font-mono">br_netfilter</code>,
+                          sets both <code className="bg-muted px-1 rounded border font-mono">net.bridge.bridge-nf-call-*</code> switches and keeps them across reboots.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-1">
+                        <p className="font-medium text-sm text-foreground">VM firewall enforcement is not confirmed on this node</p>
+                        <p className="text-xs text-muted-foreground">
+                          The node has not reported whether it filters VM traffic. Either its agent did not answer just now,
+                          or it is older than this panel. An agent that old also answers port forwards on every address of
+                          the node, floating IPs included: update it.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
                 <ResourceGauge
                   value={Math.round(metrics.cpu_percent)}
@@ -412,6 +443,12 @@ export default function NodeDetailPage() {
                         connections faster than it should.
                       </p>
                     )}
+                  </div>
+                )}
+                {metrics.nat_address && (
+                  <div className="mt-4 pt-4 border-t">
+                    <span className="text-xs font-medium text-muted-foreground">Port forwards published on: </span>
+                    <span className="font-mono font-semibold">{metrics.nat_address}</span>
                   </div>
                 )}
                 {metrics.load_avg && metrics.load_avg.length >= 3 && (

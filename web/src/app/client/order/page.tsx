@@ -17,6 +17,7 @@ import { Input } from "@/components/ui/input"
 import { OSPicker } from "@/components/os-picker"
 import { useCopy } from "@/lib/use-feedback"
 import { useSSHKeys } from "@/lib/hooks/use-ssh-keys"
+import { useSelfService } from "@/lib/hooks/use-quota"
 import type { OSTemplate } from "@/types"
 import type { Plan } from "@/types/plan"
 
@@ -38,6 +39,7 @@ function OrderVMForm() {
   const { data: images } = useImages()
   const sourceImage = sourceImageId ? images?.find((img) => img.id === sourceImageId) : undefined
   const { data: sshKeys } = useSSHKeys()
+  const { data: selfService } = useSelfService()
   const createVM = useCreateVM()
 
   const [planId, setPlanId] = useState<string>("")
@@ -103,8 +105,8 @@ function OrderVMForm() {
         os_template_id: sourceImageId ? undefined : templateId,
         source_image_id: sourceImageId || undefined,
         plan_id: planId,
-        // Resources are re-derived from the plan server-side; we send the plan's
-        // values so the request passes validation.
+        // The server takes the size from the plan and ignores this; it is sent
+        // because the request type carries it.
         resources: {
           cpu: selectedPlan.cpu,
           ram: selectedPlan.ram,
@@ -170,6 +172,19 @@ function OrderVMForm() {
           </div>
           <Button onClick={() => router.push("/client/vms")}>Go to My VMs</Button>
         </div>
+      </div>
+    )
+  }
+
+  // The operator can turn ordering off here; say so before the form is filled in.
+  if (selfService && !selfService.order) {
+    return (
+      <div className="max-w-prose space-y-4">
+        <h1 className="text-2xl font-semibold tracking-tight">Order a VM</h1>
+        <p className="text-sm text-muted-foreground">
+          New servers cannot be ordered from this page. Contact support to order one.
+        </p>
+        <Button variant="outline" onClick={() => router.push("/client/vms")}>Back to my VMs</Button>
       </div>
     )
   }

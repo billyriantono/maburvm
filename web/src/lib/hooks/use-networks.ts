@@ -12,6 +12,7 @@ import type {
   FirewallRule,
   CreatePortForwardRequest,
   CreateFirewallRuleRequest,
+  FirewallEnforcement,
 } from '@/types'
 
 // useNetworks lists administrator-defined managed networks (bridge/NAT/isolated).
@@ -126,6 +127,19 @@ export function useFirewallRules(vmId: string) {
     queryKey: ['networks', 'firewall-rules', vmId],
     queryFn: async () => {
       const response = await api.get<FirewallRule[]>(`/api/v1/vms/${vmId}/firewall-rules`)
+      return response.data.data
+    },
+    enabled: !!vmId,
+  })
+}
+
+// useFirewallStatus says whether the VM's node is applying firewall rules at
+// all, as the node last reported. The rule list cannot tell.
+export function useFirewallStatus(vmId: string) {
+  return useQuery<{ enforcement: FirewallEnforcement }>({
+    queryKey: ['networks', 'firewall-status', vmId],
+    queryFn: async () => {
+      const response = await api.get<{ enforcement: FirewallEnforcement }>(`/api/v1/vms/${vmId}/firewall-status`)
       return response.data.data
     },
     enabled: !!vmId,

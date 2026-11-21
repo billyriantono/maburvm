@@ -489,6 +489,8 @@ func (s *NodeService) GetNodeMetrics(ctx context.Context, id string) (*NodeMetri
 			DiskUsage:   0,
 			VMCount:     int(vmCount),
 			Status:      "offline",
+
+			FirewallEnforcement: models.FirewallUnknown,
 		}, nil
 	}
 
@@ -531,6 +533,9 @@ func (s *NodeService) GetNodeMetrics(ctx context.Context, id string) (*NodeMetri
 				LoadAvg:              []float64{liveInfo.LoadAvg1, liveInfo.LoadAvg5, liveInfo.LoadAvg15},
 				ConntrackCount:       liveInfo.ConntrackCount,
 				ConntrackMax:         liveInfo.ConntrackMax,
+				FirewallEnforcement:  firewallEnforcement(liveInfo.FirewallEnforcement),
+				NATAddress:           liveInfo.NATAddress,
+				Live:                 true,
 				Status:               "online",
 			}, nil
 		}
@@ -557,6 +562,7 @@ func (s *NodeService) GetNodeMetrics(ctx context.Context, id string) (*NodeMetri
 		AvailableDiskGB:      0,
 		LoadAvg:              []float64{0, 0, 0},
 		Status:               "online",
+		FirewallEnforcement:  models.FirewallUnknown,
 	}, nil
 }
 
@@ -589,4 +595,26 @@ type NodeMetrics struct {
 	// node could not read it — unknown, not empty.
 	ConntrackCount int64 `json:"conntrack_count"`
 	ConntrackMax   int64 `json:"conntrack_max"`
+
+	// FirewallEnforcement says whether the node passes bridged guest traffic
+	// through its firewall: models.FirewallEnforced, FirewallOff or
+	// FirewallUnknown. Unknown covers an unreachable node and an agent too old
+	// to say; it is never shown as enforced.
+	FirewallEnforcement string `json:"firewall_enforcement"`
+	// NATAddress is the node address port forwards are published on. Empty
+	// from an agent that still publishes them on every local address.
+	NATAddress string `json:"nat_address"`
+	// Live is true when the figures came from the agent in this call, rather
+	// than being the zero values of a node that did not answer.
+	Live bool `json:"-"`
+}
+
+// firewallEnforcement maps what an agent reported to a state the panel shows.
+// Anything but a clear answer is unknown: an old agent sends nothing.
+func firewallEnforcement(reported string) string {
+	switch reported {
+	case models.FirewallEnforced, models.FirewallOff:
+		return reported
+	}
+	return models.FirewallUnknown
 }

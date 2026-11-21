@@ -26,6 +26,10 @@ func (s *UserService) SSOLogin(email, clientIP string) (user *models.User, token
 		}
 		return nil, "", false, fmt.Errorf("database error: %w", err)
 	}
+	// A temporary account that has run out is not an account any more.
+	if u.Expired() {
+		return nil, "", false, ErrNoSSOAccount
+	}
 	if len(u.IPWhitelist) > 0 && !s.isIPWhitelisted(clientIP, u.IPWhitelist) {
 		return nil, "", false, ErrIPNotWhitelisted
 	}
@@ -36,13 +40,14 @@ func (s *UserService) SSOLogin(email, clientIP string) (user *models.User, token
 	if err != nil {
 		return nil, "", false, fmt.Errorf("failed to generate token: %w", err)
 	}
+	auditSupportSignIn(s.db, &u, clientIP)
 	return &u, token, false, nil
 }
 
 // SSOVerify2FA finishes an SSO sign-in that stopped at the two-factor step.
 func (s *UserService) SSOVerify2FA(userID uuid.UUID, code, clientIP string) (*models.User, string, error) {
 	var u models.User
-	if err := s.db.First(&u, "id = ?", userID).Error; err != nil {
+	if err := s.db.First(&u, "id = ?", userID).Error; err != nil || u.Expired() {
 		return nil, "", ErrInvalidCredentials
 	}
 	if len(u.IPWhitelist) > 0 && !s.isIPWhitelisted(clientIP, u.IPWhitelist) {
@@ -55,5 +60,6 @@ func (s *UserService) SSOVerify2FA(userID uuid.UUID, code, clientIP string) (*mo
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to generate token: %w", err)
 	}
+	auditSupportSignIn(s.db, &u, clientIP)
 	return &u, token, nil
 }

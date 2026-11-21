@@ -61,6 +61,20 @@ service (`serviceProperties['vm_id']`) so suspend/unsuspend/terminate can
 reference it. A hidden `VM ID` custom field is used as a fallback if service
 properties are unavailable.
 
+Every action on an existing VM (suspend, unsuspend, terminate, package change,
+password change, start, stop, restart) is sent with the service's
+`Panel User ID`. The panel refuses the action, and writes an audit entry, when
+that user does not own the VM, so a wrong or copied VM ID cannot touch another
+customer's VM. A service whose `Panel User ID` is empty cannot act on its VM
+until the field is filled in.
+
+## Orders and the account quota
+
+A VM this module orders is never held back by the customer's account quota in
+the panel: the quota limits what the customer adds on their own in the client
+portal. What customers may do there on their own (order, clone, add disks) is
+switched under System settings, Limits.
+
 ## Client area
 
 The service detail page (`templates/clientarea.tpl`) deep-links customers to the

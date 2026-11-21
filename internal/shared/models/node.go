@@ -50,6 +50,17 @@ type Node struct {
 	DeletedAt        gorm.DeletedAt `json:"-" gorm:"index"`
 }
 
+// Firewall enforcement of a node, kept in nodes.firewall_enforcement by the
+// metrics collector. The column is deliberately not a field of Node: it is
+// written and read by table name, so a full-row save cannot overwrite it.
+const (
+	FirewallEnforced = "enforced"
+	FirewallOff      = "off"
+	// FirewallUnknown is a node that has not said: unreachable, or running an
+	// agent older than the report. Stored as ''.
+	FirewallUnknown = "unknown"
+)
+
 // TableName specifies the table name for Node
 func (Node) TableName() string {
 	return "nodes"

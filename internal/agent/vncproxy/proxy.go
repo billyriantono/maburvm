@@ -78,8 +78,8 @@ func (p *Proxy) StartSession(vmID string, vncPort, wsPort int, expireSeconds int
 	// Start cleanup goroutine
 	go p.cleanupSession(ctx, token)
 
-	wsURL = fmt.Sprintf("ws://0.0.0.0:%d/websockify?token=%s", wsPort, token)
-	log.Printf("[VNCProxy] Started session for VM %s on port %d -> VNC port %d (token: %s)", vmID, wsPort, vncPort, token)
+	wsURL = fmt.Sprintf("ws://127.0.0.1:%d/websockify?token=%s", wsPort, token)
+	log.Printf("[VNCProxy] Started session for VM %s on port %d -> VNC port %d", vmID, wsPort, vncPort)
 
 	return wsURL, token, expiresAt, nil
 }
@@ -124,8 +124,11 @@ func (p *Proxy) startServer(ctx context.Context, port int, expectedToken string)
 		p.proxyWebSocket(conn, session.VNCPort)
 	})
 
+	// Loopback only: the panel carries consoles over the agent's gRPC channel,
+	// and this listener would otherwise be a cleartext way to a console from
+	// the network.
 	server := &http.Server{
-		Addr:    fmt.Sprintf("0.0.0.0:%d", port),
+		Addr:    fmt.Sprintf("127.0.0.1:%d", port),
 		Handler: mux,
 	}
 
@@ -223,7 +226,7 @@ func (p *Proxy) cleanupSession(ctx context.Context, token string) {
 	p.mu.Lock()
 	if session, exists := p.sessions[token]; exists {
 		delete(p.sessions, token)
-		log.Printf("[VNCProxy] Session expired for VM %s (token: %s)", session.VMID, token)
+		log.Printf("[VNCProxy] Session expired for VM %s", session.VMID)
 	}
 	p.mu.Unlock()
 }
@@ -243,7 +246,7 @@ func (p *Proxy) StopSession(token string) error {
 	}
 	delete(p.sessions, token)
 
-	log.Printf("[VNCProxy] Stopped session for VM %s (token: %s)", session.VMID, token)
+	log.Printf("[VNCProxy] Stopped session for VM %s", session.VMID)
 	return nil
 }
 

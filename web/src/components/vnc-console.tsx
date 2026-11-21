@@ -53,7 +53,9 @@ export function VNCConsole({ vmId, className, onConnect, onDisconnect, onError }
       });
 
       if (!resp.ok) {
-        throw new Error(`Failed to get VNC config: ${resp.statusText}`);
+        // The server says why (the console is turned off, the VM is not running).
+        const body = await resp.json().catch(() => null);
+        throw new Error(body?.message || `Failed to get VNC config: ${resp.statusText}`);
       }
 
       const json = await resp.json();

@@ -47,6 +47,7 @@ const (
 	NodeAgent_ConfigureVPC_FullMethodName        = "/agent.NodeAgent/ConfigureVPC"
 	NodeAgent_SetQuarantine_FullMethodName       = "/agent.NodeAgent/SetQuarantine"
 	NodeAgent_SetConsoleAccess_FullMethodName    = "/agent.NodeAgent/SetConsoleAccess"
+	NodeAgent_ConsoleStream_FullMethodName       = "/agent.NodeAgent/ConsoleStream"
 	NodeAgent_GetExportProgress_FullMethodName   = "/agent.NodeAgent/GetExportProgress"
 	NodeAgent_GetGuestConnections_FullMethodName = "/agent.NodeAgent/GetGuestConnections"
 	NodeAgent_UpdateAgent_FullMethodName         = "/agent.NodeAgent/UpdateAgent"
@@ -169,6 +170,11 @@ type NodeAgentClient interface {
 	// console was still reachable by anyone who could route to the node and knew
 	// the VNC password. Enforcement has to happen where the socket is.
 	SetConsoleAccess(ctx context.Context, in *SetConsoleAccessRequest, opts ...grpc.CallOption) (*SetConsoleAccessResponse, error)
+	// ConsoleStream carries a VM's console over this authenticated channel, so
+	// the console socket can stay on the node's loopback and its traffic is not
+	// sent in the clear. An agent without it answers Unimplemented, and the panel
+	// connects to the console port directly as it did before.
+	ConsoleStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ConsoleData, ConsoleData], error)
 	// GetExportProgress reports the disk exports running on this node right now.
 	//
 	// A compressed export of a large disk takes hours, during which the panel
@@ -490,6 +496,19 @@ func (c *nodeAgentClient) SetConsoleAccess(ctx context.Context, in *SetConsoleAc
 	return out, nil
 }
 
+func (c *nodeAgentClient) ConsoleStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ConsoleData, ConsoleData], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &NodeAgent_ServiceDesc.Streams[2], NodeAgent_ConsoleStream_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[ConsoleData, ConsoleData]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type NodeAgent_ConsoleStreamClient = grpc.BidiStreamingClient[ConsoleData, ConsoleData]
+
 func (c *nodeAgentClient) GetExportProgress(ctx context.Context, in *GetExportProgressRequest, opts ...grpc.CallOption) (*GetExportProgressResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetExportProgressResponse)
@@ -512,7 +531,7 @@ func (c *nodeAgentClient) GetGuestConnections(ctx context.Context, in *GetGuestC
 
 func (c *nodeAgentClient) UpdateAgent(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[AgentUpdateChunk, AgentUpdateResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &NodeAgent_ServiceDesc.Streams[2], NodeAgent_UpdateAgent_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &NodeAgent_ServiceDesc.Streams[3], NodeAgent_UpdateAgent_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -640,6 +659,11 @@ type NodeAgentServer interface {
 	// console was still reachable by anyone who could route to the node and knew
 	// the VNC password. Enforcement has to happen where the socket is.
 	SetConsoleAccess(context.Context, *SetConsoleAccessRequest) (*SetConsoleAccessResponse, error)
+	// ConsoleStream carries a VM's console over this authenticated channel, so
+	// the console socket can stay on the node's loopback and its traffic is not
+	// sent in the clear. An agent without it answers Unimplemented, and the panel
+	// connects to the console port directly as it did before.
+	ConsoleStream(grpc.BidiStreamingServer[ConsoleData, ConsoleData]) error
 	// GetExportProgress reports the disk exports running on this node right now.
 	//
 	// A compressed export of a large disk takes hours, during which the panel
@@ -752,6 +776,9 @@ func (UnimplementedNodeAgentServer) SetQuarantine(context.Context, *SetQuarantin
 }
 func (UnimplementedNodeAgentServer) SetConsoleAccess(context.Context, *SetConsoleAccessRequest) (*SetConsoleAccessResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetConsoleAccess not implemented")
+}
+func (UnimplementedNodeAgentServer) ConsoleStream(grpc.BidiStreamingServer[ConsoleData, ConsoleData]) error {
+	return status.Error(codes.Unimplemented, "method ConsoleStream not implemented")
 }
 func (UnimplementedNodeAgentServer) GetExportProgress(context.Context, *GetExportProgressRequest) (*GetExportProgressResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetExportProgress not implemented")
@@ -1269,6 +1296,13 @@ func _NodeAgent_SetConsoleAccess_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NodeAgent_ConsoleStream_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(NodeAgentServer).ConsoleStream(&grpc.GenericServerStream[ConsoleData, ConsoleData]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type NodeAgent_ConsoleStreamServer = grpc.BidiStreamingServer[ConsoleData, ConsoleData]
+
 func _NodeAgent_GetExportProgress_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetExportProgressRequest)
 	if err := dec(in); err != nil {
@@ -1443,6 +1477,12 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 			StreamName:    "StreamVMMetrics",
 			Handler:       _NodeAgent_StreamVMMetrics_Handler,
 			ServerStreams: true,
+		},
+		{
+			StreamName:    "ConsoleStream",
+			Handler:       _NodeAgent_ConsoleStream_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
 		},
 		{
 			StreamName:    "UpdateAgent",

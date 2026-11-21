@@ -29,6 +29,7 @@ var (
 	ErrFirewallRuleNotFound = fmt.Errorf("firewall rule not found")
 	ErrPortForwardNotFound  = fmt.Errorf("port forward not found")
 	ErrPortAlreadyInUse     = fmt.Errorf("external port already in use")
+	ErrPortForwardLimit     = fmt.Errorf("port forward limit reached")
 	ErrInvalidVLANID        = fmt.Errorf("invalid VLAN ID (must be 1-4094)")
 	ErrInvalidBandwidth     = fmt.Errorf("invalid bandwidth limit")
 	ErrInvalidPortRange     = fmt.Errorf("invalid port range")
@@ -237,10 +238,35 @@ func (s *NetworkService) AddPortForward(ctx context.Context, vmID string, networ
 		req.SourceIP = "0.0.0.0/0"
 	}
 
+	db := s.db.WithContext(ctx)
+
+	// Every forward takes a port on the node's one public address away from the
+	// other VMs there, so a VM may only hold so many.
+	var held int64
+	if err := db.Model(&models.PortForward{}).Where("vm_id = ?", vmID).Count(&held).Error; err != nil {
+		return nil, fmt.Errorf("failed to count port forwards: %w", err)
+	}
+	if limit := PortForwardsPerVM(ctx, s.db); held >= int64(limit) {
+		return nil, fmt.Errorf("%w: a VM may have at most %d", ErrPortForwardLimit, limit)
+	}
+
+	// One VM per (port, protocol) on a node, whatever the source restriction:
+	// two forwards on the same port would shadow each other on the node.
+	var taken int64
+	if err := db.Model(&models.PortForward{}).
+		Where("node_id = ? AND external_port = ? AND protocol = ?", vm.NodeID, req.ExternalPort, req.Protocol).
+		Count(&taken).Error; err != nil {
+		return nil, fmt.Errorf("failed to check port: %w", err)
+	}
+	if taken > 0 {
+		return nil, ErrPortAlreadyInUse
+	}
+
 	// Create port forward record
 	portForward := &models.PortForward{
 		VMID:         vmID,
 		NetworkID:    networkID,
+		NodeID:       vm.NodeID,
 		ExternalPort: req.ExternalPort,
 		InternalPort: req.InternalPort,
 		Protocol:     req.Protocol,
@@ -253,7 +279,11 @@ func (s *NetworkService) AddPortForward(ctx context.Context, vmID string, networ
 	}
 
 	// Save to database using GORM directly since we don't have a repository
-	if err := s.db.WithContext(ctx).Create(portForward).Error; err != nil {
+	if err := db.Create(portForward).Error; err != nil {
+		// Two requests for the same port at once: the unique index decides.
+		if strings.Contains(err.Error(), "idx_port_forwards_node_port") {
+			return nil, ErrPortAlreadyInUse
+		}
 		return nil, fmt.Errorf("failed to create port forward: %w", err)
 	}
 
@@ -339,6 +369,24 @@ func (s *NetworkService) RemovePortForwardForVM(ctx context.Context, vmID, forwa
 		return fmt.Errorf("failed to get port forward: %w", err)
 	}
 	return s.RemovePortForward(ctx, vmID, forward.NetworkID, forwardID)
+}
+
+// FirewallEnforcement says whether the VM's node applies firewall rules to
+// bridged guest traffic, as the node last reported: models.FirewallEnforced,
+// FirewallOff or FirewallUnknown. Anything unreadable is unknown, so a VM's
+// rules are never shown as working on a guess.
+func (s *NetworkService) FirewallEnforcement(ctx context.Context, vmID string) string {
+	var state string
+	if err := s.db.WithContext(ctx).
+		Raw("SELECT n.firewall_enforcement FROM nodes n JOIN vms v ON v.node_id = n.id WHERE v.id = ?", vmID).
+		Scan(&state).Error; err != nil {
+		return models.FirewallUnknown
+	}
+	switch state {
+	case models.FirewallEnforced, models.FirewallOff:
+		return state
+	}
+	return models.FirewallUnknown
 }
 
 // AddFirewallRuleRequest contains data for adding a firewall rule

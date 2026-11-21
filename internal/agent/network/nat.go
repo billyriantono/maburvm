@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"strconv"
+	"os"
 	"strings"
 	"sync"
 
 	"github.com/coreos/go-iptables/iptables"
+
+	"github.com/maburvm/panel/internal/agent/netrules"
 )
 
 const (
@@ -24,6 +26,9 @@ const (
 	ForwardChain = "FORWARD"
 	// MaburVMChain is the custom chain for MaburVM rules
 	MaburVMChain = "MABURVM-NAT"
+	// natAddressEnv overrides the node address port forwards are published on.
+	// Unset, it is the address the node's default route sends from.
+	natAddressEnv = "MABURVM_NAT_ADDRESS"
 )
 
 // NATManager handles NAT and port forwarding operations
@@ -32,6 +37,11 @@ type NATManager struct {
 	mu  sync.RWMutex
 	// portForwards tracks active port forwards: map[vmID]map[externalPort]{internalIP, internalPort}
 	portForwards map[string]map[int]portForwardEntry
+	// publishAddr is the one host address port forwards answer on. A forward
+	// must never match "any local address": floating IPs are local to the host
+	// too, and belong to other customers. Empty while no address could be
+	// determined, in which case no forward is installed.
+	publishAddr string
 }
 
 type portForwardEntry struct {
@@ -58,7 +68,94 @@ func NewNATManager() (*NATManager, error) {
 		return nil, err
 	}
 
+	if err := nm.ensurePublishAddr(); err != nil {
+		log.Printf("[NATManager] WARNING: %v. Port forwards are NOT applied until it is known", err)
+	}
+
 	return nm, nil
+}
+
+// PublishAddress is the node address port forwards answer on, empty when none.
+func (nm *NATManager) PublishAddress() string {
+	nm.mu.Lock()
+	defer nm.mu.Unlock()
+	// The panel polls this, so an address that was missing at start (no route
+	// yet) is settled, and the old forwards rescoped, without waiting for a VM.
+	_ = nm.ensurePublishAddr()
+	return nm.publishAddr
+}
+
+// ensurePublishAddr settles publishAddr if it is not known yet, and brings the
+// forwards already in the chain in line with it. Tried again on later use: at
+// boot the agent can start before the default route exists. Assumes the lock
+// is held (or that nothing else has the manager yet).
+func (nm *NATManager) ensurePublishAddr() error {
+	if nm.publishAddr != "" {
+		return nil
+	}
+	floating, _ := nm.ipt.List(NATTable, FloatingIPChain) // absent until the first floating IP
+	addr, err := netrules.ResolvePublishAddress(os.Getenv(natAddressEnv), defaultRouteSource(), netrules.RuleDestinations(floating))
+	if err == nil && !hostHasAddress(addr) {
+		// Rescoping to an address the node does not hold would stop every forward.
+		err = fmt.Errorf("%s is not an address of this node", addr)
+	}
+	if err != nil {
+		return fmt.Errorf("no node address to publish port forwards on (%w); set %s to the node's public IPv4 address", err, natAddressEnv)
+	}
+	nm.publishAddr = addr
+	log.Printf("[NATManager] port forwards are published on %s", addr)
+	nm.rescopePortForwards()
+	return nil
+}
+
+// hostHasAddress reports whether ip is assigned to an interface of this host.
+func hostHasAddress(ip string) bool {
+	addrs, _ := net.InterfaceAddrs()
+	for _, a := range addrs {
+		if n, ok := a.(*net.IPNet); ok && n.IP.String() == ip {
+			return true
+		}
+	}
+	return false
+}
+
+// defaultRouteSource is the address the kernel sends from on the default route.
+// Dialling UDP sends nothing; it only asks the routing table.
+func defaultRouteSource() string {
+	conn, err := net.Dial("udp4", "192.0.2.1:9")
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+	if a, ok := conn.LocalAddr().(*net.UDPAddr); ok {
+		return a.IP.String()
+	}
+	return ""
+}
+
+// rescopePortForwards rewrites, in place, forwards an older agent installed.
+// Those matched every address local to the host, so they also took the port
+// on other customers' floating IPs. Iptables rules outlive the agent, so
+// without this an upgraded node keeps the old rules until each VM is next
+// re-applied. Replacing by position keeps every forward answering throughout.
+func (nm *NATManager) rescopePortForwards() {
+	rules, err := nm.ipt.List(NATTable, MaburVMChain)
+	if err != nil {
+		log.Printf("[NATManager] WARNING: could not list port forwards to rescope: %v", err)
+		return
+	}
+	// rules[0] is the "-N <chain>" line, so rule i is at position i.
+	for i := 1; i < len(rules); i++ {
+		spec, changed := netrules.RescopedPortForward(rules[i], nm.publishAddr)
+		if !changed {
+			continue
+		}
+		if err := nm.ipt.Replace(NATTable, MaburVMChain, i, spec...); err != nil {
+			log.Printf("[NATManager] WARNING: could not rescope port forward %q: %v", rules[i], err)
+			continue
+		}
+		log.Printf("[NATManager] port forward rescoped to %s: %s", nm.publishAddr, strings.Join(spec, " "))
+	}
 }
 
 // ensureChain creates the custom MaburVM chain if it doesn't exist
@@ -249,15 +346,30 @@ func (nm *NATManager) RemoveNAT(vmID string, internalIP string) error {
 	return nil
 }
 
+// ClearPortForwards removes every port forward of a VM, whatever the agent
+// remembers of it: the rules are found in the chain, so forwards an earlier
+// agent process added (in any rule form) go too.
+func (nm *NATManager) ClearPortForwards(vmID string) {
+	nm.mu.Lock()
+	defer nm.mu.Unlock()
+	nm.removeTaggedPortForwards(vmID)
+	delete(nm.portForwards, vmID)
+}
+
 // removeTaggedPortForwards deletes every DNAT rule carrying this VM's
 // port-forward comment. Best-effort; assumes the lock is held.
 func (nm *NATManager) removeTaggedPortForwards(vmID string) {
+	nm.removeTagged(fmt.Sprintf("maburvm-vm-%s-port-", vmID))
+}
+
+// removeTagged deletes every rule of the chain whose line contains tag.
+// Best-effort; assumes the lock is held.
+func (nm *NATManager) removeTagged(tag string) {
 	rules, err := nm.ipt.List(NATTable, MaburVMChain)
 	if err != nil {
-		log.Printf("[NATManager] WARNING: could not list port forwards for %s: %v", vmID, err)
+		log.Printf("[NATManager] WARNING: could not list port forwards for %s: %v", tag, err)
 		return
 	}
-	tag := fmt.Sprintf("maburvm-vm-%s-port-", vmID)
 	for _, rule := range rules {
 		if !strings.Contains(rule, tag) {
 			continue
@@ -268,7 +380,7 @@ func (nm *NATManager) removeTaggedPortForwards(vmID string) {
 			continue
 		}
 		if err := nm.ipt.Delete(NATTable, MaburVMChain, strings.Fields(parts[2])...); err != nil {
-			log.Printf("[NATManager] WARNING: could not remove port forward for %s: %v", vmID, err)
+			log.Printf("[NATManager] WARNING: could not remove port forward %s: %v", tag, err)
 		}
 	}
 }
@@ -291,9 +403,13 @@ func (nm *NATManager) AddPortForward(vmID string, externalPort int, internalIP s
 	nm.mu.Lock()
 	defer nm.mu.Unlock()
 
+	if err := nm.ensurePublishAddr(); err != nil {
+		return err
+	}
+
 	// Build DNAT rule. When a source CIDR is set (and not "any"), restrict with
 	// -s so a "restrict to X" forward is actually enforced, not open to everyone.
-	rule := portForwardRule(vmID, externalPort, internalIP, internalPort, protocol, sourceCIDR)
+	rule := netrules.PortForwardRule(nm.publishAddr, vmID, externalPort, internalIP, internalPort, protocol, sourceCIDR)
 
 	exists, err := nm.ipt.Exists(NATTable, MaburVMChain, rule...)
 	if err != nil {
@@ -320,28 +436,6 @@ func (nm *NATManager) AddPortForward(vmID string, externalPort int, internalIP s
 	return nil
 }
 
-// portForwardRule builds the DNAT rulespec, restricting the source with -s when
-// a specific CIDR is given (empty or "0.0.0.0/0" means any). The comment is
-// stable per (vm, external port) so add/delete match.
-func portForwardRule(vmID string, externalPort int, internalIP string, internalPort int, protocol, sourceCIDR string) []string {
-	rule := []string{}
-	if sourceCIDR != "" && sourceCIDR != "0.0.0.0/0" {
-		rule = append(rule, "-s", sourceCIDR)
-	}
-	// Only traffic addressed to the host itself. Without this the rule also
-	// rewrites packets passing through to other guests' public addresses.
-	rule = append(rule,
-		"-m", "addrtype", "--dst-type", "LOCAL",
-		"-p", protocol,
-		"--dport", strconv.Itoa(externalPort),
-		"-j", "DNAT",
-		"--to-destination", fmt.Sprintf("%s:%d", internalIP, internalPort),
-		"-m", "comment",
-		"--comment", fmt.Sprintf("maburvm-vm-%s-port-%d", vmID, externalPort),
-	)
-	return rule
-}
-
 // RemovePortForward removes a port forwarding rule
 func (nm *NATManager) RemovePortForward(vmID string, externalPort int) error {
 	nm.mu.Lock()
@@ -355,21 +449,8 @@ func (nm *NATManager) removePortForwardInternal(vmID string, externalPort int) e
 	// Get the stored entry
 	entry, exists := nm.portForwards[vmID][externalPort]
 	if !exists {
-		// Try to delete anyway in case tracking is out of sync (try both protocols).
-		for _, proto := range []string{"tcp", "udp"} {
-			rule := []string{
-				"-p", proto,
-				"--dport", strconv.Itoa(externalPort),
-				"-j", "DNAT",
-				"-m", "comment",
-				"--comment", fmt.Sprintf("maburvm-vm-%s-port-%d", vmID, externalPort),
-			}
-			if err := nm.ipt.Delete(NATTable, MaburVMChain, rule...); err != nil {
-				if !strings.Contains(err.Error(), "No chain/target/match by that name") {
-					return fmt.Errorf("failed to delete port forward rule: %w", err)
-				}
-			}
-		}
+		// Not tracked (added before the agent last restarted): find it by its tag.
+		nm.removeTagged(fmt.Sprintf("maburvm-vm-%s-port-%d ", vmID, externalPort))
 		return nil
 	}
 
@@ -378,7 +459,7 @@ func (nm *NATManager) removePortForwardInternal(vmID string, externalPort int) e
 		proto = "tcp"
 	}
 	// Build and delete the rule (must match the add rule exactly, incl. -s).
-	rule := portForwardRule(vmID, externalPort, entry.internalIP, entry.internalPort, proto, entry.sourceCIDR)
+	rule := netrules.PortForwardRule(nm.publishAddr, vmID, externalPort, entry.internalIP, entry.internalPort, proto, entry.sourceCIDR)
 
 	if err := nm.ipt.Delete(NATTable, MaburVMChain, rule...); err != nil {
 		if !strings.Contains(err.Error(), "No chain/target/match by that name") {

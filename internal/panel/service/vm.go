@@ -203,9 +203,16 @@ type CreateVMRequest struct {
 	Region string `json:"region,omitempty"`
 	// RegionRequired marks a customer-initiated order, where silently choosing a
 	// physical location on their behalf is not acceptable.
-	RegionRequired bool   `json:"-"`
-	RequestedIP    string `json:"requested_ip,omitempty" validate:"omitempty,ip"`
-	BandwidthMbps  int    `json:"bandwidth_mbps,omitempty" validate:"omitempty,min=0,max=10000"`
+	RegionRequired bool `json:"-"`
+	// PlanRequired marks a customer-initiated order. Its size, speed cap and
+	// transfer quota come from the plan alone; whatever else the request says
+	// about them is dropped.
+	PlanRequired bool `json:"-"`
+	// Billed marks an order the billing system placed. The account quota limits
+	// what a customer adds on their own, not what they have paid for.
+	Billed        bool   `json:"-"`
+	RequestedIP   string `json:"requested_ip,omitempty" validate:"omitempty,ip"`
+	BandwidthMbps int    `json:"bandwidth_mbps,omitempty" validate:"omitempty,min=0,max=10000"`
 	// Monthly data quota (GB) + over-quota policy, normally inherited from the
 	// plan. 0 quota = unlimited. Populated from the plan in CreateVM.
 	DataQuotaGB       int64  `json:"data_quota_gb,omitempty" validate:"omitempty,min=0"`
@@ -253,17 +260,23 @@ type CreateVMResponse struct {
 
 // CreateVM creates a new VM and enqueues a creation job
 func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*CreateVMResponse, error) {
+	if req.PlanRequired {
+		if req.PlanID == "" {
+			return nil, ErrPlanRequired
+		}
+		req.BandwidthMbps, req.DataQuotaGB, req.OverQuotaPolicy, req.ThrottleSpeedMbps = 0, 0, "", 0
+	}
 	// If a plan (flavor) is selected, derive resources + bandwidth from it.
 	if req.PlanID != "" {
 		plan, err := s.planRepo.GetByID(ctx, req.PlanID)
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return nil, fmt.Errorf("plan not found")
+				return nil, ErrPlanNotFound
 			}
 			return nil, fmt.Errorf("failed to get plan: %w", err)
 		}
 		if !plan.IsActive {
-			return nil, fmt.Errorf("plan is not active")
+			return nil, ErrPlanInactive
 		}
 		req.Resources = models.Resources{CPU: plan.CPU, RAM: plan.RAM, Disk: plan.Disk}
 		if plan.BandwidthMbps > 0 && req.BandwidthMbps == 0 {
@@ -294,7 +307,7 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 	// AdmitVMCreateTx), so it serializes with the VM-row insert and can't
 	// double-spend. A cheap non-authoritative precheck here fails fast before we do
 	// template/node/IP work for an obviously-over-quota request.
-	if err := s.quotaService.CheckCanCreate(ctx, req.UserID, req.Resources); err != nil {
+	if err := s.quotaService.CheckCanCreate(ctx, req.UserID, req.Resources); err != nil && !billedOverQuota(req.Billed, err) {
 		return nil, err
 	}
 
@@ -497,7 +510,7 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		// Lane D admission: take the per-user lock and re-check quota against
 		// authoritative in-tx usage BEFORE inserting the VM row, so concurrent
 		// same-user creates serialize here and cannot overcommit.
-		if err := s.quotaService.AdmitVMCreateTx(ctx, tx, req.UserID, req.Resources); err != nil {
+		if err := s.quotaService.AdmitVMCreateTx(ctx, tx, req.UserID, req.Resources); err != nil && !billedOverQuota(req.Billed, err) {
 			return err
 		}
 		// Node RAM overcommit, checked in the same transaction for the same
@@ -858,14 +871,36 @@ func (s *VMService) CloneVM(ctx context.Context, req *CloneVMRequest) (*CreateVM
 		cloneRef = fmt.Sprintf("vm://%s/%s", srcNode.IPAddress, src.ID)
 	}
 
-	return s.CreateVM(ctx, &CreateVMRequest{
+	create := &CreateVMRequest{
 		UserID:         src.UserID,
 		Hostname:       hostname,
 		OSTemplateID:   src.OSTemplateID,
 		Resources:      src.Resources,
 		NodeID:         destNodeID,
 		CloneSourceRef: cloneRef,
-	})
+	}
+	s.inheritNetworkLimits(ctx, src.ID, create)
+	return s.CreateVM(ctx, create)
+}
+
+// inheritNetworkLimits gives a copy the speed cap and transfer quota its
+// source was sold with.
+func (s *VMService) inheritNetworkLimits(ctx context.Context, srcVMID string, req *CreateVMRequest) {
+	n, err := s.networkRepo.GetByVMID(ctx, srcVMID)
+	if err != nil || n == nil {
+		return
+	}
+	req.BandwidthMbps = int(n.BandwidthLimit)
+	req.DataQuotaGB = n.BandwidthQuotaGB
+	req.OverQuotaPolicy = n.OverQuotaPolicy
+	req.ThrottleSpeedMbps = n.ThrottleSpeedMbps
+}
+
+// billedOverQuota reports that err is only the account quota saying no to
+// something the billing system ordered. Every other refusal still stands,
+// including a managed account whose quota cannot be resolved.
+func billedOverQuota(billed bool, err error) bool {
+	return billed && errors.Is(err, ErrQuotaExceeded)
 }
 
 // cidrPrefixLen returns the prefix length (e.g. 24) from a CIDR string such as
@@ -1593,6 +1628,8 @@ type UpdateVMRequest struct {
 	// StartAfter boots the VM once the resize has been applied. Set by callers
 	// that stopped a running VM to resize it; never read from a request body.
 	StartAfter bool `json:"-"`
+	// Billed marks a package change from the billing system; see CreateVMRequest.
+	Billed bool `json:"-"`
 }
 
 // UpdateVM updates VM hostname and/or resources
@@ -1660,7 +1697,7 @@ func (s *VMService) UpdateVM(ctx context.Context, req *UpdateVMRequest) (*models
 		// Admit + persist atomically: the per-user lock + authoritative in-tx quota
 		// check serialize with the resource write, so a resize can't overcommit.
 		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			if err := s.quotaService.AdmitVMResizeTx(ctx, tx, vm.UserID, oldRes, *req.Resources); err != nil {
+			if err := s.quotaService.AdmitVMResizeTx(ctx, tx, vm.UserID, oldRes, *req.Resources); err != nil && !billedOverQuota(req.Billed, err) {
 				return err
 			}
 			// Node capacity is checked in the same transaction as the user's
@@ -2206,8 +2243,10 @@ func (s *VMService) ResetPassword(ctx context.Context, req *VMResetPasswordReque
 }
 
 // AttachISO enqueues attaching a bootable install/rescue ISO (by image URL or
-// on-node path) to a stopped VM.
-func (s *VMService) AttachISO(ctx context.Context, vmID, isoImage string) (int64, error) {
+// on-node path) to a stopped VM. operatorSupplied says the operator chose the
+// image; anything else is a URL a customer typed, which the node fetches only
+// from public addresses and within its size limit.
+func (s *VMService) AttachISO(ctx context.Context, vmID, isoImage string, operatorSupplied bool) (int64, error) {
 	if isoImage == "" {
 		return 0, fmt.Errorf("iso image is required")
 	}
@@ -2224,7 +2263,11 @@ func (s *VMService) AttachISO(ctx context.Context, vmID, isoImage string) (int64
 	if s.riverClient == nil {
 		return 0, fmt.Errorf("job queue unavailable")
 	}
-	paramsJSON, _ := json.Marshal(map[string]interface{}{"image_path": isoImage})
+	params := map[string]interface{}{"image_path": isoImage}
+	if operatorSupplied {
+		params["iso_source"] = queue.ISOSourceOperator
+	}
+	paramsJSON, _ := json.Marshal(params)
 	res, err := s.riverClient.Insert(ctx, queue.VMOperationJob{
 		VMID: vm.ID, Operation: queue.VMOpAttachISO, NodeID: vm.NodeID, Params: paramsJSON,
 	}, nil)
@@ -2260,16 +2303,18 @@ const rescueISOEnv = "RESCUE_ISO_URL"
 
 // RescueVM attaches a rescue ISO (which boots first) and marks the VM as in
 // rescue mode. The VM must be stopped; starting it afterward boots into rescue.
-// isoURL falls back to the RESCUE_ISO_URL env var when empty.
-func (s *VMService) RescueVM(ctx context.Context, vmID, isoURL string) (int64, error) {
+// isoURL falls back to the RESCUE_ISO_URL env var when empty; that one is the
+// operator's whoever asks for the rescue.
+func (s *VMService) RescueVM(ctx context.Context, vmID, isoURL string, operatorSupplied bool) (int64, error) {
 	if isoURL == "" {
 		isoURL = os.Getenv(rescueISOEnv)
+		operatorSupplied = true
 	}
 	if isoURL == "" {
 		return 0, fmt.Errorf("no rescue ISO configured: provide iso_url or set %s", rescueISOEnv)
 	}
 	// AttachISO validates the VM exists, is stopped, and enqueues the boot-first ISO.
-	jobID, err := s.AttachISO(ctx, vmID, isoURL)
+	jobID, err := s.AttachISO(ctx, vmID, isoURL, operatorSupplied)
 	if err != nil {
 		return 0, err
 	}
@@ -2338,6 +2383,19 @@ func (s *VMService) MigrateVM(ctx context.Context, req *MigrateVMRequest) error 
 		return fmt.Errorf("destination node is not active")
 	}
 
+	// The VM's port forwards move with it and need the same ports on the
+	// destination, so those must be free there before anything is copied.
+	var clash int64
+	if err := s.db.WithContext(ctx).Raw(`SELECT COUNT(*) FROM port_forwards mine
+		JOIN port_forwards theirs ON theirs.external_port = mine.external_port AND theirs.protocol = mine.protocol
+		WHERE mine.vm_id = ? AND mine.deleted_at IS NULL AND theirs.node_id = ? AND theirs.deleted_at IS NULL`,
+		vm.ID, req.DestNodeID).Scan(&clash).Error; err != nil {
+		return fmt.Errorf("failed to check port forwards on the destination node: %w", err)
+	}
+	if clash > 0 {
+		return fmt.Errorf("the destination node already forwards %d of the ports this VM forwards; remove those port forwards first", clash)
+	}
+
 	srcNode, err := s.nodeRepo.GetByID(ctx, vm.NodeID)
 	if err != nil {
 		return fmt.Errorf("failed to get source node: %w", err)
@@ -2395,6 +2453,10 @@ func (s *VMService) MigrateVM(ctx context.Context, req *MigrateVMRequest) error 
 	// The domain now lives on the destination node.
 	if err := s.vmRepo.UpdateNodeID(ctx, vm.ID, req.DestNodeID); err != nil {
 		return fmt.Errorf("migration succeeded but failed to update node assignment: %w", err)
+	}
+	if err := s.db.WithContext(ctx).Model(&models.PortForward{}).
+		Where("vm_id = ?", vm.ID).Update("node_id", req.DestNodeID).Error; err != nil {
+		return fmt.Errorf("migration succeeded but failed to move the VM's port forwards to the destination node: %w", err)
 	}
 	return nil
 }
@@ -2628,6 +2690,12 @@ func (s *VMService) GetVNCConfig(ctx context.Context, vmID string, includePasswo
 		return nil, fmt.Errorf("failed to get VM: %w", err)
 	}
 
+	// The console socket sits on the node's loopback whether the console is
+	// enabled or not, so this check is what keeps a disabled one shut.
+	if !vm.ConsoleEnabled {
+		return nil, ErrConsoleDisabled
+	}
+
 	// The VNC port is auto-assigned by libvirt at start time (see
 	// generateVNCCredentials), so the stored value may be NULL (not started yet)
 	// or stale. When the VM is running, read the real port from the agent and
@@ -2662,19 +2730,20 @@ func (s *VMService) GetVNCConfig(ctx context.Context, vmID string, includePasswo
 	// against QEMU with exactly this password) matches. Only meaningful while the
 	// VM is running.
 	//
-	// This is best-effort, NOT fatal. Imported (e.g. from another platform) domains often
-	// run VNC with no password auth (QEMU security type "None"); QMP set_password
-	// then fails because auth can't be enabled at runtime — but the console still
-	// works fine without a password (noVNC just skips the auth handshake). Hard-
-	// failing here is what made GetVNCConfig return 500 "Failed to get VNC config"
-	// for every imported VM. Freshly-created MaburVM domains are defined with a
-	// passwd attribute, so the sync succeeds and the browser password matches; a
-	// rare failure there degrades to a client-side "Authentication failed" (same
-	// as before this endpoint existed) instead of blocking the whole console.
+	// This is best-effort, NOT fatal. A domain started without a console
+	// password (anything started before consoles were given one at definition,
+	// and many imported domains) runs with QEMU security type "None"; QMP
+	// set_password then fails because auth can't be enabled at runtime — but the
+	// console still works without a password (noVNC just skips the auth
+	// handshake). Hard-failing here is what made GetVNCConfig return 500 "Failed
+	// to get VNC config" for every imported VM. Domains started since are defined
+	// with a passwd attribute, so the sync succeeds and the browser password
+	// matches; a rare failure there degrades to a client-side "Authentication
+	// failed" instead of blocking the whole console.
 	node, err := s.nodeRepo.GetByID(ctx, vm.NodeID)
 	if vm.Status == models.VMStatusRunning {
 		if syncErr := s.syncVNCPassword(ctx, vm.NodeID, vmID, vm.VNCPassword); syncErr != nil {
-			s.logger.WarnContext(ctx, "failed to apply VNC password to running VM; serving console without runtime password sync (normal for imported open-VNC domains)",
+			s.logger.WarnContext(ctx, "failed to apply VNC password to running VM; serving console without runtime password sync (expected until the VM is next powered off and on, if it was started without a console password)",
 				"vm_id", vmID, "error", syncErr)
 		}
 	}
@@ -2866,7 +2935,7 @@ func (s *VMService) applyConsoleAccess(ctx context.Context, vm *models.VM, enabl
 	}
 
 	if resp.GetRestartRequired() {
-		s.logger.InfoContext(ctx, "console listen address applied to the stored definition; takes effect on next boot",
+		s.logger.WarnContext(ctx, "the running VM kept its console as it was started; the change is stored and applies when it is next powered off and on",
 			"vm_id", vm.ID, "enabled", enabled)
 	}
 }

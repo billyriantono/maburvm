@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/maburvm/panel/internal/panel/middleware"
+	"github.com/maburvm/panel/internal/panel/service"
 	"github.com/maburvm/panel/internal/shared/config"
 	"github.com/maburvm/panel/internal/shared/models"
 	"github.com/stretchr/testify/assert"
@@ -60,9 +61,10 @@ quota_mode TEXT NOT NULL DEFAULT 'legacy',
 		ip_whitelist TEXT,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		token_revoked_at DATETIME, deleted_at DATETIME
+		token_revoked_at DATETIME, deleted_at DATETIME, expires_at DATETIME
 	)`
 	require.NoError(t, db.Exec(ddl).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS user_quotas (user_id TEXT PRIMARY KEY, max_vms INTEGER DEFAULT 0, max_vcpu INTEGER DEFAULT 0, max_ram_mb INTEGER DEFAULT 0, max_disk_gb INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, quota_mode TEXT NOT NULL DEFAULT 'legacy', policy_id TEXT, policy_version INTEGER, policy_name TEXT, policy_assigned_at DATETIME, policy_assigned_by TEXT, cap_revision_id TEXT)`).Error)
 	// Seed in deterministic order with explicit timestamps so founding-admin
 	// resolution (created_at ASC) is reproducible.
 	for i, u := range users {
@@ -609,4 +611,47 @@ func TestUserRoutes_RoleTransitionWithIPWhitelist(t *testing.T) {
 	assert.Equal(t, models.RoleAdmin, final.Role)
 	assert.Equal(t, []string{"203.0.113.9"}, final.IPWhitelist)
 	assert.Equal(t, models.QuotaModeManaged, final.QuotaMode, "quota_mode untouched by role transition")
+}
+
+// A new customer account starts with the default quota, not the unlimited one
+// an account with no quota row has.
+func TestUserRoutes_NewClientGetsStartingQuota(t *testing.T) {
+	founding := adminUser("founding@example.com")
+	db := setupUserContainmentDB(t, founding)
+	s := newUserServer(t, db)
+
+	rec := doUserReq(t, s, http.MethodPost, "/api/v1/users", mintToken(t, founding),
+		`{"email":"quota-client@example.com","password":"Sup3rSecret!","role":"client"}`)
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+
+	var q models.UserQuota
+	require.NoError(t, db.Raw(`SELECT q.* FROM user_quotas q JOIN users u ON u.id = q.user_id WHERE u.email = ?`, "quota-client@example.com").Scan(&q).Error)
+	assert.Equal(t, service.DefaultNewClientMaxVMs, q.MaxVMs)
+	assert.Equal(t, service.DefaultNewClientMaxVCPU, q.MaxVCPU)
+	assert.Equal(t, service.DefaultNewClientMaxRAMMB, q.MaxRAMMB)
+	assert.Equal(t, service.DefaultNewClientMaxDiskGB, q.MaxDiskGB)
+	assert.Equal(t, models.QuotaModeLegacy, q.QuotaMode)
+}
+
+// A support account is never the founding administrator, so it cannot create
+// an administrator, even when it is the oldest administrator there is.
+func TestUserRoutes_SupportAccountCannotCreateAdmin(t *testing.T) {
+	support := adminUser("support-1@support.invalid")
+	founding := adminUser("founding@example.com")
+	db := setupUserContainmentDB(t, support, founding) // the support account is created first
+	require.NoError(t, db.Exec("UPDATE users SET expires_at = ? WHERE id = ?", time.Now().Add(time.Hour), support.ID.String()).Error)
+	s := newUserServer(t, db)
+
+	body := `{"email":"minted@example.com","password":"Sup3rSecret!","role":"admin"}`
+	rec := doUserReq(t, s, http.MethodPost, "/api/v1/users", mintToken(t, support), body)
+	assert.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	assert.Equal(t, founding.ID, foundingAdminIDTx(db, context.Background()))
+
+	rec = doUserReq(t, s, http.MethodPost, "/api/v1/users", mintToken(t, founding), body)
+	assert.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+
+	// It is not the administrator left standing either.
+	remaining, err := countActiveAdminsExceptTx(db, context.Background(), founding.ID)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, remaining, "only the newly created permanent administrator counts")
 }

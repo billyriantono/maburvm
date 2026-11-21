@@ -302,6 +302,20 @@ func (c *MetricsCollector) collectOnce(ctx context.Context) {
 				c.logger.Warn("metrics collector: persist node memory total failed", "node_id", nodeID, "error", err)
 			}
 		}
+		// Persist what the node says about its firewall, so the security centre
+		// and the VM firewall page can read it without calling the agent. Only
+		// from a live answer: a node that did not answer keeps its last state.
+		if m.Live {
+			stored := m.FirewallEnforcement
+			if stored == models.FirewallUnknown {
+				stored = ""
+			}
+			if err := c.db.WithContext(ctx).Table("nodes").
+				Where("id = ? AND firewall_enforcement <> ?", nodeID, stored).
+				Update("firewall_enforcement", stored).Error; err != nil {
+				c.logger.Warn("metrics collector: persist node firewall state failed", "node_id", nodeID, "error", err)
+			}
+		}
 		if m.Status == "online" {
 			online[nodeID] = true
 			// A node marked offline stays offline, and every job for it fails with

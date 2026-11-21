@@ -122,6 +122,12 @@ func (r *NetworkRepository) Delete(ctx context.Context, id string) error {
 
 // DeleteByVMID removes all network configurations for a specific VM
 func (r *NetworkRepository) DeleteByVMID(ctx context.Context, vmID string) error {
+	// Port forwards go with the interfaces. A database built from an older
+	// schema may lack the cascade, and a forward left behind would hold its
+	// port on the node for good.
+	if err := r.db.WithContext(ctx).Unscoped().Where("vm_id = ?", vmID).Delete(&models.PortForward{}).Error; err != nil {
+		return err
+	}
 	return r.db.WithContext(ctx).Unscoped().Where("vm_id = ?", vmID).Delete(&models.Network{}).Error
 }
 

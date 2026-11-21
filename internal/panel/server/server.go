@@ -505,6 +505,7 @@ func (s *Server) setupVMRoutes(g *echo.Group) {
 
 	// Create VNC proxy server for WebSocket proxying
 	vncProxyServer := vnc.NewProxyServer(s.cfg, nil, logger, s.cfg.JWT.SecretKey)
+	vncProxyServer.SetConsoleDialer(vmService.DialConsole)
 
 	// Register VNC WebSocket endpoint
 	vncHandler := vnc.NewHandler(vncProxyServer)
@@ -917,7 +918,15 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 				Role:         models.RoleClient,
 				IPWhitelist:  req.IPWhitelist,
 			}
-			if err := repo.Create(ctx, &client); err != nil {
+			// The account and its starting quota are one write: an account left
+			// without a quota row may order without limit.
+			if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+				if err := repository.NewUserRepository(tx).Create(ctx, &client); err != nil {
+					return err
+				}
+				return service.ApplyNewClientQuota(ctx, tx, client.ID.String())
+			}); err != nil {
+				slog.Default().Error("create client failed", "email", req.Email, "error", err)
 				return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "failed to create user"})
 			}
 			// Best-effort welcome email (never fails the creation).

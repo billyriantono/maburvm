@@ -32,27 +32,12 @@ func NewBackupHandler(service *service.BackupService) *BackupHandler {
 // users only on VMs they own. Returns true when authorized; otherwise it writes
 // a 401/404 and returns false (caller should `return nil`). 404 (not 403) avoids
 // leaking which VM ids exist.
+//
+// A suspended VM's backups can be read but not made, restored, scheduled or
+// deleted by its owner: a restore or a fresh backup is a way around the
+// suspension.
 func (h *BackupHandler) authorizeVM(c echo.Context, vmID string) bool {
-	userCtx, ok := middleware.GetUserContext(c)
-	if !ok {
-		_ = c.JSON(http.StatusUnauthorized, map[string]interface{}{
-			"error":   "Unauthorized",
-			"message": "authentication required",
-		})
-		return false
-	}
-	if userCtx.Role == models.RoleAdmin {
-		return true
-	}
-	ownerID, err := h.service.GetVMOwner(c.Request().Context(), vmID)
-	if err != nil || ownerID != userCtx.ID.String() {
-		_ = c.JSON(http.StatusNotFound, map[string]interface{}{
-			"error":   "Not Found",
-			"message": "VM not found",
-		})
-		return false
-	}
-	return true
+	return authorizeVMAccess(c, h.service, vmID, !isReadRequest(c))
 }
 
 // ============================================================================

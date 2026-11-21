@@ -60,9 +60,13 @@ func (n *Network) Validate() ValidationErrors {
 // PortForward represents a port forwarding (NAT) rule for a VM
 // Maps external host ports to internal VM ports
 type PortForward struct {
-	ID           string         `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	VMID         string         `json:"vm_id" gorm:"type:uuid;not null" validate:"required,uuid"`
-	NetworkID    string         `json:"network_id" gorm:"type:uuid;not null" validate:"required,uuid"`
+	ID        string `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	VMID      string `json:"vm_id" gorm:"type:uuid;not null" validate:"required,uuid"`
+	NetworkID string `json:"network_id" gorm:"type:uuid;not null" validate:"required,uuid"`
+	// NodeID is the node whose address the forward is published on, i.e. the
+	// VM's node. It is what makes (port, protocol) unique per node in the
+	// database, and it moves with the VM when the VM is migrated.
+	NodeID       string         `json:"-" gorm:"type:uuid"`
 	ExternalPort int            `json:"external_port" gorm:"type:integer;not null" validate:"required,min=1,max=65535"`
 	InternalPort int            `json:"internal_port" gorm:"type:integer;not null" validate:"required,min=1,max=65535"`
 	Protocol     string         `json:"protocol" gorm:"type:varchar(10);default:'tcp'" validate:"omitempty,oneof=tcp udp"`

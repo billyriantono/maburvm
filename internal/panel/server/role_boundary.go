@@ -12,6 +12,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/maburvm/panel/internal/panel/repository"
+	"github.com/maburvm/panel/internal/panel/service"
 	"github.com/maburvm/panel/internal/shared/models"
 )
 
@@ -101,15 +102,7 @@ func recheckFoundingAuthority(db *gorm.DB, ctx context.Context, callerID uuid.UU
 // supplied (transaction-scoped) DB so the resolution is consistent with the
 // locked recheck.
 func foundingAdminIDTx(db *gorm.DB, ctx context.Context) uuid.UUID {
-	var user models.User
-	err := db.WithContext(ctx).
-		Where("role = ? AND deleted_at IS NULL", models.RoleAdmin).
-		Order("created_at ASC, id ASC").
-		First(&user).Error
-	if err != nil {
-		return uuid.Nil
-	}
-	return user.ID
+	return service.FoundingAdminID(ctx, db)
 }
 
 // countActiveAdminsExceptTx returns the number of active (non-deleted)
@@ -119,7 +112,8 @@ func foundingAdminIDTx(db *gorm.DB, ctx context.Context) uuid.UUID {
 func countActiveAdminsExceptTx(db *gorm.DB, ctx context.Context, exclude uuid.UUID) (int64, error) {
 	var count int64
 	err := db.WithContext(ctx).Model(&models.User{}).
-		Where("role = ? AND deleted_at IS NULL AND id <> ?", models.RoleAdmin, exclude).
+		// A support account runs out; it cannot be the administrator left standing.
+		Where("role = ? AND deleted_at IS NULL AND expires_at IS NULL AND id <> ?", models.RoleAdmin, exclude).
 		Count(&count).Error
 	return count, err
 }

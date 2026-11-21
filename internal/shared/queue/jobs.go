@@ -46,6 +46,10 @@ const (
 	VMOpConfigureNetwork VMOperationType = "configure_network"
 )
 
+// ISOSourceOperator is the "iso_source" param of an attach-ISO job whose image
+// the operator chose. A job without it carries a URL a customer typed.
+const ISOSourceOperator = "operator"
+
 // VMOperationJob represents a VM lifecycle operation job
 // This is inserted into the critical queue
 type VMOperationJob struct {

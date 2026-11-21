@@ -61,7 +61,8 @@ systemctl enable --now libvirtd 2>/dev/null || systemctl enable --now virtqemud 
 #
 # Done at install time on purpose. Turning it on later, on a node already running
 # customer VMs, starts enforcing rules that have never applied to them — correct,
-# but indistinguishable from an outage. A fresh node has no VMs yet.
+# but indistinguishable from an outage. A fresh node has no VMs yet. The agent
+# only reports the state afterwards, unless MABURVM_BRIDGE_NETFILTER=enforce.
 #
 # Both the module and the sysctl are persisted: the sysctl alone silently fails
 # to apply on the next boot if the module is not loaded first, and the firewall
@@ -73,6 +74,7 @@ echo "br_netfilter" > /etc/modules-load.d/maburvm.conf
 cat > /etc/sysctl.d/99-maburvm.conf <<'SYSCTL'
 net.ipv4.ip_forward = 1
 net.bridge.bridge-nf-call-iptables = 1
+net.bridge.bridge-nf-call-ip6tables = 1
 SYSCTL
 sysctl --system >/dev/null 2>&1 || true
 if [ "$(cat /proc/sys/net/bridge/bridge-nf-call-iptables 2>/dev/null || echo 0)" != "1" ]; then

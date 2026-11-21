@@ -122,7 +122,8 @@ export default function SecurityPage() {
           <h2 id="support-heading" className="text-lg font-semibold">Temporary support access</h2>
           <p className="text-sm text-muted-foreground mt-1 mb-4 max-w-prose">
             Let someone outside your team in to investigate a problem, without sharing your own password. The account has full
-            administrator rights, stops working by itself when the time is up, and can be ended early.
+            administrator rights, stops working by itself when the time is up, and can be ended early. Only the founding
+            administrator can create one, it cannot be extended, and each sign-in with it is written to the audit log.
           </p>
 
           <form onSubmit={handleGrant} className="rounded-lg border bg-card p-5 shadow-sm space-y-4">

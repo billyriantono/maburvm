@@ -13,9 +13,9 @@ import (
 const (
 	// FloatingIPChain holds the inbound DNAT rules for floating IPs. Its jump is
 	// APPENDED to PREROUTING, i.e. after MaburVMChain's jump (which is inserted at
-	// position 1), so a specific port forward always wins over a floating IP's
-	// catch-all "-d <fip> -j DNAT". Reversing that order would silently shadow
-	// every existing port forward the moment a floating IP is attached.
+	// position 1). The two never compete for a packet: a port forward matches the
+	// node's own publish address only (see netrules.PortForwardRule), a floating IP rule
+	// matches "-d <fip>", and the publish address is never a floating IP.
 	FloatingIPChain = "MABURVM-FIP"
 	// FloatingIPPostChain holds the egress SNAT rules for full-mode floating IPs.
 	// Its jump is INSERTED at the head of POSTROUTING so it is evaluated before
@@ -240,6 +240,12 @@ func (nm *NATManager) AttachFloatingIP(floatingIP, internalIP, bridge, natMode s
 	nm.mu.Lock()
 	defer nm.mu.Unlock()
 
+	// Port forwards answer on this address; as a floating IP it would hand them
+	// all to one customer.
+	if nm.publishAddr != "" && net.ParseIP(floatingIP).Equal(net.ParseIP(nm.publishAddr)) {
+		return fmt.Errorf("%s is the node's own port-forward address and cannot be a floating IP", floatingIP)
+	}
+
 	if err := nm.ensureFloatingChains(); err != nil {
 		return err
 	}
@@ -413,41 +419,18 @@ func delHostAddress(ip, bridge string) error {
 	return nil
 }
 
-// ensureForwardingSysctls checks the two kernel switches host-side rules depend
-// on. They are usually enabled as a side effect of Docker or libvirt, which is
+// ensureForwardingSysctls sets the kernel switches host-side rules depend on.
+// They are usually enabled as a side effect of Docker or libvirt, which is
 // exactly what makes an unset one so confusing: the rules are present and simply
 // never match.
 //
-// The two are treated differently on purpose.
-//
-// ip_forward is SET: without it the host cannot route a DNAT'd packet on to the
-// guest, so floating IPs cannot work at all. Enabling routing on a hypervisor
-// that is already routing guest traffic changes nothing that was working before.
-//
-// bridge-nf-call-iptables is only REPORTED, never set. It decides whether
-// already-bridged guest traffic is subjected to iptables — so flipping it from 0
-// to 1 on a node with live VMs would abruptly start enforcing FORWARD rules that
-// have never applied to them, which can cut customer connectivity. That is a
-// maintenance-window decision for an operator, not something an agent restart
-// should do silently. Floating IPs do not need it (their path is host-routed);
-// per-VM firewall rules on bridged VMs do.
+// ip_forward lets the host route a DNAT'd packet on to the guest (floating IPs,
+// port forwards), and enabling routing on a hypervisor that already routes
+// guest traffic changes nothing that worked. Bridge netfilter, which per-VM
+// firewall rules on bridged guests need, is handled by ensureBridgeNetfilter.
 func ensureForwardingSysctls() {
 	if out, err := exec.Command("sysctl", "-w", "net.ipv4.ip_forward=1").CombinedOutput(); err != nil {
 		log.Printf("[NetworkManager] WARNING: could not enable net.ipv4.ip_forward (%v: %s) — "+
 			"floating IPs and NAT to guests will not work", err, strings.TrimSpace(string(out)))
-	}
-
-	const bridgeNF = "net.bridge.bridge-nf-call-iptables"
-	out, err := exec.Command("sysctl", "-n", bridgeNF).CombinedOutput()
-	switch {
-	case err != nil:
-		log.Printf("[NetworkManager] NOTE: %s is unavailable (br_netfilter not loaded). "+
-			"Floating IPs are unaffected, but per-VM firewall rules on bridged VMs do not take "+
-			"effect. Enabling it changes traffic handling for running VMs — do it in a "+
-			"maintenance window, not automatically.", bridgeNF)
-	case strings.TrimSpace(string(out)) != "1":
-		log.Printf("[NetworkManager] NOTE: %s is 0. Per-VM firewall rules on bridged VMs do not "+
-			"take effect. Left unchanged on purpose: flipping it would start enforcing FORWARD "+
-			"rules on already-running VMs.", bridgeNF)
 	}
 }

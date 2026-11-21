@@ -267,6 +267,8 @@ func (s *UserService) Login(req *LoginRequest) (*LoginResponse, error) {
 		return nil, fmt.Errorf("failed to generate token: %w", err)
 	}
 
+	auditSupportSignIn(s.db, &user, req.ClientIP)
+
 	return &LoginResponse{
 		User:  &user,
 		Token: token,

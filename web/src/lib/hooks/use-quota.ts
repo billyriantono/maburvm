@@ -10,6 +10,20 @@ export function useMyQuota() {
   })
 }
 
+// What customers may do on their own; the operator sets it in system settings.
+export interface SelfService {
+  order: boolean
+  clone: boolean
+  extra_disk: boolean
+}
+
+export function useSelfService() {
+  return useQuery<SelfService>({
+    queryKey: ['self-service'],
+    queryFn: async () => (await api.get<SelfService>('/api/v1/self-service')).data.data,
+  })
+}
+
 // useUserQuota returns a specific user's limits and usage (admin only).
 export function useUserQuota(userId: string) {
   return useQuery<QuotaStatus>({

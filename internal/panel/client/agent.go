@@ -776,6 +776,12 @@ type LiveMetricsResult struct {
 	// exactly the failure this exists to catch.
 	ConntrackCount int64
 	ConntrackMax   int64
+
+	// FirewallEnforcement is "enforced" or "off"; NATAddress is where the node
+	// publishes port forwards. Both are empty from an agent too old to report
+	// them, which callers must treat as unknown.
+	FirewallEnforcement string
+	NATAddress          string
 }
 
 // GetLiveMetrics retrieves real-time system metrics from a node without the
@@ -819,6 +825,8 @@ func (c *AgentClient) GetLiveMetrics(ctx context.Context, nodeID string) (*LiveM
 			AvailableDiskGb:      resp.GetAvailableDiskGb(),
 			ConntrackCount:       resp.GetConntrackCount(),
 			ConntrackMax:         resp.GetConntrackMax(),
+			FirewallEnforcement:  resp.GetFirewallEnforcement(),
+			NATAddress:           resp.GetNatAddress(),
 		}
 		return nil
 	})

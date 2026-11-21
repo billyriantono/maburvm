@@ -60,6 +60,9 @@ func (h *ImageHandler) CreateImage(c echo.Context) error {
 		if errors.Is(err, service.ErrVMNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
 		}
+		if errors.Is(err, service.ErrVMSuspended) {
+			return vmSuspended(c)
+		}
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Internal Server Error", "message": err.Error()})
 	}
 	return c.JSON(http.StatusAccepted, map[string]interface{}{"data": img})
@@ -154,6 +157,10 @@ func (h *ImageHandler) RetryImage(c echo.Context) error {
 		switch {
 		case errors.Is(err, service.ErrImageNotFound):
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "Image not found"})
+		case errors.Is(err, service.ErrVMSuspended):
+			return vmSuspended(c)
+		case errors.Is(err, service.ErrVMNotFound):
+			return c.JSON(http.StatusConflict, map[string]interface{}{"error": "Conflict", "message": "The VM this image was captured from is no longer available"})
 		case errors.Is(err, service.ErrImageNotRetryable):
 			return c.JSON(http.StatusConflict, map[string]interface{}{"error": "Conflict", "message": err.Error()})
 		default:

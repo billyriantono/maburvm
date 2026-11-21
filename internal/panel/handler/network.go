@@ -294,6 +294,9 @@ func (h *NetworkHandler) AddPortForward(c echo.Context) error {
 	})
 
 	if err != nil {
+		if msg := portForwardRefusal(err); msg != "" {
+			return c.JSON(http.StatusConflict, map[string]interface{}{"error": "Conflict", "message": msg})
+		}
 		switch {
 		case errors.Is(err, service.ErrNetworkNotFound):
 			return c.JSON(http.StatusNotFound, map[string]interface{}{
@@ -380,6 +383,19 @@ func (h *NetworkHandler) RemovePortForward(c echo.Context) error {
 	})
 }
 
+// portForwardRefusal is the sentence for the two reasons a valid forward is
+// turned down (the port is taken on the VM's node, or the VM holds its limit),
+// or "" for any other error.
+func portForwardRefusal(err error) string {
+	switch {
+	case errors.Is(err, service.ErrPortAlreadyInUse):
+		return "That host port is already forwarded on this node. Choose another port."
+	case errors.Is(err, service.ErrPortForwardLimit):
+		return "This VM has reached its port forward limit. Remove one before adding another."
+	}
+	return ""
+}
+
 // portForwardToResponse maps a model to the API response shape.
 func portForwardToResponse(pf *models.PortForward) PortForwardResponse {
 	return PortForwardResponse{
@@ -426,6 +442,9 @@ func (h *NetworkHandler) AddVMPortForward(c echo.Context) error {
 		SourceIP:     req.SourceIP,
 	})
 	if err != nil {
+		if msg := portForwardRefusal(err); msg != "" {
+			return c.JSON(http.StatusConflict, map[string]interface{}{"error": "Conflict", "message": msg})
+		}
 		switch {
 		case errors.Is(err, service.ErrNetworkNotFound):
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "VM has no network interface to forward to (assign an IP first)"})
@@ -911,6 +930,19 @@ func (h *NetworkHandler) SetAntiSpoofing(c echo.Context) error {
 	})
 }
 
+// FirewallStatus handles GET /api/v1/vms/:id/firewall-status: whether the
+// VM's node is applying the rules at all. The rule list alone cannot say.
+func (h *NetworkHandler) FirewallStatus(c echo.Context) error {
+	vmID := c.Param("id")
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"success": true,
+		"data":    map[string]string{"enforcement": h.service.FirewallEnforcement(c.Request().Context(), vmID)},
+	})
+}
+
 // reservedHostPort reports whether a customer may not claim this port on the
 // node: the forward is a DNAT on the host's own addresses, so a low port or one
 // the host itself listens on (agent gRPC, libvirt, VNC/SPICE displays, libvirt
@@ -963,6 +995,7 @@ func RegisterNetworkRoutes(e *echo.Echo, handler *NetworkHandler, db *gorm.DB) {
 	// Firewall routes
 	vms.POST("/:id/firewall-rules", handler.AddFirewallRule, middleware.RequirePermission("vm:update"))
 	vms.GET("/:id/firewall-rules", handler.ListFirewallRules, middleware.RequirePermission("vm:read"))
+	vms.GET("/:id/firewall-status", handler.FirewallStatus, middleware.RequirePermission("vm:read"))
 	vms.DELETE("/:id/firewall-rules/:rule_id", handler.RemoveFirewallRule, middleware.RequirePermission("vm:update"))
 }
 

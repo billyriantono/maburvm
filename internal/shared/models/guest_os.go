@@ -58,3 +58,18 @@ func SplitGuestImageRef(ref string) (osType, imagePath string) {
 	}
 	return OSTypeLinux, ref
 }
+
+const customerISOPrefix = "customer:"
+
+// CustomerISORef is the reference sent to a node for an ISO URL that a customer
+// typed, as opposed to one the operator set. The node fetches it under its
+// public-addresses-only rules; a node whose agent predates those rules fails
+// to find the image and reports an error, instead of fetching it without them.
+func CustomerISORef(isoURL string) string {
+	return customerISOPrefix + isoURL
+}
+
+// SplitCustomerISORef undoes CustomerISORef on the node.
+func SplitCustomerISORef(ref string) (isoURL string, customer bool) {
+	return strings.CutPrefix(ref, customerISOPrefix)
+}

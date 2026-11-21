@@ -150,6 +150,12 @@ service NodeAgent {
   // the VNC password. Enforcement has to happen where the socket is.
   rpc SetConsoleAccess(SetConsoleAccessRequest) returns (SetConsoleAccessResponse);
 
+  // ConsoleStream carries a VM's console over this authenticated channel, so
+  // the console socket can stay on the node's loopback and its traffic is not
+  // sent in the clear. An agent without it answers Unimplemented, and the panel
+  // connects to the console port directly as it did before.
+  rpc ConsoleStream(stream ConsoleData) returns (stream ConsoleData);
+
   // GetExportProgress reports the disk exports running on this node right now.
   //
   // A compressed export of a large disk takes hours, during which the panel
@@ -1627,6 +1633,15 @@ message GetLiveMetricsResponse {
   int64 conntrack_count = 21;
   int64 conntrack_max = 22;
 
+  // firewall_enforcement says whether bridged guest traffic passes through the
+  // node's iptables rules: "enforced" or "off". Empty means an agent that does
+  // not report it, which the panel must show as unknown and never as enforced.
+  string firewall_enforcement = 23;
+
+  // nat_address is the one node address port forwards are published on. Empty
+  // from an agent that does not scope port forwards to an address.
+  string nat_address = 24;
+
   // error details if failed
   ErrorResponse error = 20;
 }
@@ -1810,14 +1825,24 @@ message GetExportProgressResponse {
 message SetConsoleAccessRequest {
   string vm_id = 1;
 
-  // enabled false restricts the domain's VNC to loopback and invalidates the
-  // live session password; true restores it.
+  // enabled false replaces the console password, stored and live, with one
+  // nobody holds; true sets vnc_password. The console listens on the node's
+  // loopback either way.
   bool enabled = 2;
 
-  // vnc_password is applied to the live domain when enabling, so the panel's
-  // proxy can still connect. Ignored when disabling, where a value nobody holds
-  // is generated instead.
+  // vnc_password is the password to set when enabling, so the panel's proxy
+  // can still connect. Ignored when disabling.
   string vnc_password = 3;
+}
+
+// ConsoleData is one piece of a console session.
+message ConsoleData {
+  // vm_id names the VM. Read only from the first message the panel sends.
+  string vm_id = 1;
+
+  // data is raw console bytes. The agent's first message carries none: it
+  // means the console socket is connected.
+  bytes data = 2;
 }
 
 message SetConsoleAccessResponse {
@@ -1827,9 +1852,10 @@ message SetConsoleAccessResponse {
   // console device at all.
   int32 vnc_port = 2;
 
-  // restart_required is true when the listen address could only be changed in
-  // the persistent definition — graphics is not hot-pluggable, so a running
-  // domain keeps its current socket until it next boots.
+  // restart_required is true when the running domain could not take the
+  // change: it was started without a console password, which cannot be added
+  // while it runs, or it still holds a socket on every address. Both end when
+  // it is next powered off and on.
   bool restart_required = 3;
 
   ErrorResponse error = 4;

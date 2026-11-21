@@ -396,7 +396,11 @@ func (s *Server) Start() error {
 	if networkMgr != nil {
 		restoreNetworkConfigs(nodeAgentSvc)
 	}
+	// Before serving, so no request is editing a definition this saves back.
+	secureConsoles(true)
+	go secureConsolesForever()
 	pb.RegisterNodeAgentServer(s.grpcServer, nodeAgentSvc)
+	go pruneCustomerISOsForever()
 
 	s.started = true
 

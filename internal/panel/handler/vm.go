@@ -19,6 +19,7 @@ import (
 	"github.com/maburvm/panel/internal/panel/service"
 	"github.com/maburvm/panel/internal/panel/vnc"
 	"github.com/maburvm/panel/internal/shared/models"
+	"github.com/maburvm/panel/internal/shared/safefetch"
 	"gorm.io/gorm"
 )
 
@@ -66,14 +67,29 @@ func NewVMHandlerWithoutVNC(service *service.VMService, authorizer *authz.Author
 	}
 }
 
-// authorizeVM enforces per-resource tenant isolation for a VM-scoped request.
-// Admins may act on any VM; every other user may act only on VMs they own.
+// vmAccessChecker is the service-side ownership and suspension rule
+// (service.OwnerAccess) for one VM.
+type vmAccessChecker interface {
+	CheckOwnerAccess(ctx context.Context, vmID, userID string, isAdmin, change bool) error
+}
+
+// vmSuspended is the answer to a customer acting on a suspended VM.
+func vmSuspended(c echo.Context) error {
+	return c.JSON(http.StatusForbidden, map[string]interface{}{
+		"error":   "Forbidden",
+		"message": "This VM is suspended. Contact support to restore service.",
+	})
+}
+
+// authorizeVMAccess is the one guard in front of every VM-scoped route here.
+// Admins may act on any VM; everyone else only on a VM they own, and on a
+// suspended one only to read it (change=false).
 //
 // It returns true when the caller is authorized. When not, it writes the
-// appropriate response (401 if unauthenticated, 404 otherwise — 404 rather than
-// 403 so a client cannot probe which VM IDs exist) and returns false; the caller
-// should then `return nil`, as the response has already been committed.
-func (h *VMHandler) authorizeVM(c echo.Context, vmID string) bool {
+// response (401 if unauthenticated, 403 for a suspended VM, 404 otherwise, so
+// a client cannot probe which VM IDs exist) and returns false; the caller
+// should then `return nil`.
+func authorizeVMAccess(c echo.Context, svc vmAccessChecker, vmID string, change bool) bool {
 	userCtx, ok := middleware.GetUserContext(c)
 	if !ok {
 		_ = c.JSON(http.StatusUnauthorized, map[string]interface{}{
@@ -82,49 +98,51 @@ func (h *VMHandler) authorizeVM(c echo.Context, vmID string) bool {
 		})
 		return false
 	}
-	// Admins bypass ownership checks.
 	if userCtx.Role == models.RoleAdmin {
 		return true
 	}
-	ownerID, err := h.service.GetVMOwner(c.Request().Context(), vmID)
-	if err != nil || ownerID != userCtx.ID.String() {
+	err := svc.CheckOwnerAccess(c.Request().Context(), vmID, userCtx.ID.String(), false, change)
+	switch {
+	case err == nil:
+		return true
+	case errors.Is(err, service.ErrVMSuspended):
+		_ = vmSuspended(c)
+	default:
 		_ = c.JSON(http.StatusNotFound, map[string]interface{}{
 			"error":   "Not Found",
 			"message": "VM not found",
 		})
-		return false
 	}
-	return true
+	return false
 }
 
-// authorizeVMChange is authorizeVM for actions that change a VM's power state
-// or contents, with one more rule: a customer may not act on a suspended VM.
+// isReadRequest reports a request that cannot change anything.
+func isReadRequest(c echo.Context) bool {
+	m := c.Request().Method
+	return m == http.MethodGet || m == http.MethodHead
+}
+
+// authorizeVM guards a VM-scoped route. Anything but a read counts as a change,
+// so a route added later is refused on a suspended VM without having to ask.
+func (h *VMHandler) authorizeVM(c echo.Context, vmID string) bool {
+	return authorizeVMAccess(c, h.service, vmID, !isReadRequest(c))
+}
+
+// authorizeVMOwner checks ownership only. It is for deleting the VM: walking
+// away from a suspended VM is always permitted.
+func (h *VMHandler) authorizeVMOwner(c echo.Context, vmID string) bool {
+	return authorizeVMAccess(c, h.service, vmID, false)
+}
+
+// authorizeVMChange guards an action that changes a VM or makes something out
+// of it, whatever the HTTP method.
 //
 // Suspension is the provider withholding service. Without this, the owner of a
 // suspended VM could simply call unsuspend, or force-stop then start, or
-// reinstall, and be running again, because every one of those is an action
-// they are otherwise entitled to on their own machine. Deleting the VM stays
-// allowed (it goes through authorizeVM): walking away is always permitted.
+// reinstall, or clone it, and be running again, because every one of those is
+// an action they are otherwise entitled to on their own machine.
 func (h *VMHandler) authorizeVMChange(c echo.Context, vmID string) bool {
-	if !h.authorizeVM(c, vmID) {
-		return false
-	}
-	if !isClientRole(c) {
-		return true
-	}
-	status, err := h.service.GetVMStatus(c.Request().Context(), vmID)
-	if err != nil {
-		_ = c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
-		return false
-	}
-	if status == models.VMStatusSuspended {
-		_ = c.JSON(http.StatusForbidden, map[string]interface{}{
-			"error":   "Forbidden",
-			"message": "This VM is suspended. Contact support to restore service.",
-		})
-		return false
-	}
-	return true
+	return authorizeVMAccess(c, h.service, vmID, true)
 }
 
 // clientNetworkSelectionDenied writes a generic, non-topology-leaking 4xx
@@ -148,11 +166,23 @@ func isClientRole(c echo.Context) bool {
 	return ok && u.Role != models.RoleAdmin
 }
 
+// selfServiceDisabled is the answer to a customer action the operator has
+// switched off. what names it, e.g. "Ordering a server".
+func selfServiceDisabled(c echo.Context, what string) error {
+	return c.JSON(http.StatusForbidden, map[string]interface{}{
+		"error":   "Forbidden",
+		"code":    "self_service_disabled",
+		"message": what + " is not available here. Contact support to order it.",
+	})
+}
+
 // applyClientVMPolicy enforces the Gate-1 client networking policy on VM
 // creation. For a RoleClient it rejects any explicit infrastructure/network
 // selection (node, IP pool, requested IP, managed network, CPU model, nonzero
 // bandwidth, nonzero VLAN) and otherwise forces AutoAssignIP so the VM lands on a
-// reachable public address. Admins pass through unchanged. It returns true when
+// reachable public address. A customer also orders by plan: the size they send
+// is dropped and the plan decides it, with its speed cap and transfer quota.
+// Admins pass through unchanged. It returns true when
 // it has committed a response (the caller must `return nil`); false to continue.
 func (h *VMHandler) applyClientVMPolicy(c echo.Context, userCtx *middleware.UserContext, req *CreateVMRequest, createReq *service.CreateVMRequest) bool {
 	// Admins retain full control; nothing to enforce.
@@ -167,6 +197,16 @@ func (h *VMHandler) applyClientVMPolicy(c echo.Context, userCtx *middleware.User
 		_ = clientNetworkSelectionDenied(c)
 		return true
 	}
+	if req.PlanID == "" {
+		_ = c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error":   "Bad Request",
+			"code":    "plan_required",
+			"message": "Choose a plan. Servers are ordered by plan, not by a custom size.",
+		})
+		return true
+	}
+	createReq.PlanRequired = true
+	createReq.Resources = models.Resources{}
 	// Permitted auto-only request: clients cannot pick a pool or network, so
 	// force automatic public IP assignment.
 	createReq.AutoAssignIP = true
@@ -255,6 +295,9 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 		})
 	}
 	userID := userCtx.ID.String()
+	if userCtx.Role != models.RoleAdmin && !h.service.SelfServiceAllowed(c.Request().Context(), service.SelfServiceOrder) {
+		return selfServiceDisabled(c, "Ordering a server")
+	}
 
 	// Resolve a selected recipe into the first-boot user-data (ownership-enforced).
 	// An explicit user_data wins; the recipe fills it only when none was supplied.
@@ -383,6 +426,14 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 			return c.JSON(http.StatusConflict, map[string]interface{}{
 				"error":   "Conflict",
 				"message": "Hostname already exists",
+			})
+		case errors.Is(err, service.ErrPlanRequired), errors.Is(err, service.ErrPlanInactive):
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{
+				"error": "Bad Request", "message": err.Error(),
+			})
+		case errors.Is(err, service.ErrPlanNotFound):
+			return c.JSON(http.StatusNotFound, map[string]interface{}{
+				"error": "Not Found", "message": "Plan not found",
 			})
 		case errors.Is(err, service.ErrTemplateNotFound):
 			return c.JSON(http.StatusNotFound, map[string]interface{}{
@@ -936,7 +987,7 @@ func (h *VMHandler) DeleteVM(c echo.Context) error {
 		})
 	}
 
-	if !h.authorizeVM(c, id) {
+	if !h.authorizeVMOwner(c, id) {
 		return nil
 	}
 
@@ -1237,6 +1288,9 @@ func (h *VMHandler) CloneVM(c echo.Context) error {
 	if !h.authorizeVM(c, id) {
 		return nil
 	}
+	if isClientRole(c) && !h.service.SelfServiceAllowed(c.Request().Context(), service.SelfServiceClone) {
+		return selfServiceDisabled(c, "Cloning a server")
+	}
 	var req struct {
 		Hostname   string `json:"hostname"`
 		DestNodeID string `json:"dest_node_id"`
@@ -1257,6 +1311,8 @@ func (h *VMHandler) CloneVM(c echo.Context) error {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
 		case errors.Is(err, service.ErrTemplateNotFound):
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "OS template not found"})
+		case errors.Is(err, service.ErrQuotaExceeded):
+			return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "Quota Exceeded", "message": err.Error()})
 		default:
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
 		}
@@ -1288,6 +1344,9 @@ func (h *VMHandler) ListVMDisks(c echo.Context) error {
 func (h *VMHandler) AttachVMDisk(c echo.Context) error {
 	if !h.authorizeVM(c, c.Param("id")) {
 		return nil
+	}
+	if isClientRole(c) && !h.service.SelfServiceAllowed(c.Request().Context(), service.SelfServiceExtraDisk) {
+		return selfServiceDisabled(c, "Adding a disk")
 	}
 	var req struct {
 		SizeGB int `json:"size_gb"`
@@ -1391,6 +1450,11 @@ func (h *VMHandler) GetVNCConfig(c echo.Context) error {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{
 				"error":   "Not Found",
 				"message": "VM not found",
+			})
+		case errors.Is(err, service.ErrConsoleDisabled):
+			return c.JSON(http.StatusForbidden, map[string]interface{}{
+				"error":   "Forbidden",
+				"message": "The console is turned off for this VM",
 			})
 		default:
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
@@ -1563,6 +1627,9 @@ func (h *VMHandler) setConsole(c echo.Context, enabled bool) error {
 			"message": err.Error(),
 		})
 	}
+	if !enabled && h.vncProxy != nil {
+		h.vncProxy.CloseVMConnections(id)
+	}
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "Console state updated",
@@ -1601,29 +1668,28 @@ func (h *VMHandler) ResetPasswordVM(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]interface{}{"message": "Password reset enqueued", "data": resp})
 }
 
-// checkISOSource limits what a non-admin may mount as an ISO. The node agent
-// treats anything that is not a URL as a path on the node, so a customer-supplied
-// path would mount (and, on VM delete, remove) any file there. Customers get
-// public http(s) URLs only; admins keep on-node paths.
-func checkISOSource(c echo.Context, ref string) error {
-	if !isClientRole(c) {
-		return nil
+// isoLookup resolves an ISO URL's host name; a test replaces it.
+var isoLookup safefetch.Lookup = net.DefaultResolver.LookupNetIP
+
+// checkISOSource reports whether the operator chose the ISO, and refuses what a
+// customer may not mount. The node agent treats anything that is not a URL as a
+// path on the node, so customers get http(s) URLs on public addresses only;
+// admins keep on-node paths and private mirrors.
+//
+// The lookup here is an early answer. The node checks every address again as
+// it connects, which is what holds against a redirect or a name that resolves
+// differently there.
+func checkISOSource(c echo.Context, ref string) (operatorSupplied bool, err error) {
+	if u, ok := middleware.GetUserContext(c); ok && u.Role == models.RoleAdmin {
+		return true, nil
 	}
-	u, err := url.Parse(ref)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
-		return errors.New("iso_url must be an http(s) URL")
+	ctx, cancel := context.WithTimeout(c.Request().Context(), 5*time.Second)
+	defer cancel()
+	if err := safefetch.CheckResolved(ctx, isoLookup, ref); err != nil {
+		reason := strings.TrimPrefix(err.Error(), safefetch.ErrRefused.Error()+": ")
+		return false, fmt.Errorf("iso_url must be an http(s) URL on a public address: %s", reason)
 	}
-	host := u.Hostname()
-	// ponytail: literal-address check only; a hostname that resolves to an
-	// internal address still gets fetched. Resolve on the node if that matters.
-	if ip := net.ParseIP(host); ip != nil {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
-			return errors.New("iso_url must point to a public address")
-		}
-	} else if strings.EqualFold(host, "localhost") {
-		return errors.New("iso_url must point to a public address")
-	}
-	return nil
+	return false, nil
 }
 
 // AttachISOVM handles POST /api/vms/:id/iso/attach - Attach a bootable ISO
@@ -1638,10 +1704,11 @@ func (h *VMHandler) AttachISOVM(c echo.Context) error {
 	if err := c.Bind(&req); err != nil || req.ISOURL == "" {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "iso_url is required"})
 	}
-	if err := checkISOSource(c, req.ISOURL); err != nil {
+	operatorSupplied, err := checkISOSource(c, req.ISOURL)
+	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
 	}
-	jobID, err := h.service.AttachISO(c.Request().Context(), id, req.ISOURL)
+	jobID, err := h.service.AttachISO(c.Request().Context(), id, req.ISOURL, operatorSupplied)
 	if err != nil {
 		if errors.Is(err, service.ErrVMNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
@@ -1678,12 +1745,15 @@ func (h *VMHandler) RescueVM(c echo.Context) error {
 		ISOURL string `json:"iso_url"`
 	}
 	_ = c.Bind(&req) // body is optional
+	// An empty iso_url means the operator's rescue ISO; the service marks that one.
+	operatorSupplied := false
 	if req.ISOURL != "" {
-		if err := checkISOSource(c, req.ISOURL); err != nil {
+		var err error
+		if operatorSupplied, err = checkISOSource(c, req.ISOURL); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
 		}
 	}
-	jobID, err := h.service.RescueVM(c.Request().Context(), id, req.ISOURL)
+	jobID, err := h.service.RescueVM(c.Request().Context(), id, req.ISOURL, operatorSupplied)
 	if err != nil {
 		if errors.Is(err, service.ErrVMNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})

@@ -135,6 +135,10 @@ func RegisterQuotaRoutes(e *echo.Echo, h *QuotaHandler, db *gorm.DB) {
 	adminOnly := panelMiddleware.RequirePermission("admin:access")
 
 	e.GET("/api/v1/quota", h.GetMyQuota, auth)
+	// What customers may do on their own here, so a page can say so up front.
+	e.GET("/api/v1/self-service", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": service.SelfServiceSwitches(c.Request().Context(), db)})
+	}, auth)
 
 	g := e.Group("/api/v1/users/:id/quota")
 	g.Use(auth)

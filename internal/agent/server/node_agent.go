@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,6 +33,7 @@ import (
 	"github.com/maburvm/panel/internal/shared/buildinfo"
 	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 	"github.com/maburvm/panel/internal/shared/models"
+	"github.com/maburvm/panel/internal/shared/safefetch"
 	sharedstorage "github.com/maburvm/panel/internal/shared/storage"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -265,6 +267,12 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 	case pb.VMCommandType_VM_COMMAND_TYPE_DESTROY:
 		err = libvirt.DeleteVM(req.VmId)
 		state = pb.VMState_VM_STATE_DESTROYED
+		// A deleted VM leaves the operator's ISOs alone (they are shared) and
+		// its own disks are already gone; a customer's ISO it was the last to
+		// use goes here.
+		if err == nil {
+			sweepCustomerISOs(0)
+		}
 		// Destroying the domain left every host-side rule behind: firewall,
 		// anti-spoof, bandwidth shaping and NAT. That was invisible while
 		// br_netfilter was off, because the firewall rules matched nothing — but
@@ -321,6 +329,9 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 	case pb.VMCommandType_VM_COMMAND_TYPE_DETACH_ISO:
 		err = libvirt.DetachISO(req.VmId)
 		state = pb.VMState_VM_STATE_STOPPED
+		if err == nil {
+			sweepCustomerISOs(0)
+		}
 	case pb.VMCommandType_VM_COMMAND_TYPE_REPAIR_CONSOLE:
 		// Inject a VNC graphics device into a domain that lacks one (common for
 		// imported VMs). Not hot-pluggable, so a running domain is restarted.
@@ -1501,6 +1512,12 @@ func (s *NodeAgentService) attachISO(req *pb.VMCommandRequest) error {
 	if req.Config == nil || req.Config.ImageId == "" {
 		return fmt.Errorf("ISO image is required for ATTACH_ISO")
 	}
+	// Attaching replaces what was in the drive, and a failed attach leaves a
+	// download nobody uses; either way there may be a customer's ISO to evict.
+	defer sweepCustomerISOs(0)
+	if isoURL, customer := models.SplitCustomerISORef(req.Config.ImageId); customer {
+		return attachCustomerISO(req.VmId, isoURL)
+	}
 	// vm:// and s3:// are disk sources for clone and image deploy, never ISOs.
 	if strings.HasPrefix(req.Config.ImageId, "vm://") || strings.HasPrefix(req.Config.ImageId, "s3://") {
 		return fmt.Errorf("unsupported ISO source")
@@ -1510,6 +1527,138 @@ func (s *NodeAgentService) attachISO(req *pb.VMCommandRequest) error {
 		return err
 	}
 	return libvirt.AttachISO(req.VmId, isoPath)
+}
+
+// customerISODir holds ISOs downloaded from URLs that customers typed. It is
+// apart from the operator's template cache so that evicting a customer's
+// download can never remove one of the operator's images.
+const customerISODir = templateCacheDir + "/customer-iso"
+
+// Limits on a customer's ISO download, each overridable in the agent's
+// environment. The cache shares the node's root filesystem with libvirt and
+// this agent, so what a customer may put there is bounded three ways.
+const (
+	// CUSTOMER_ISO_MAX_GB: the largest ISO a customer may attach by URL. Above
+	// every mainstream installer, including the Windows Server ones.
+	defaultCustomerISOMaxGB = 8
+	// CUSTOMER_ISO_MIN_FREE_GB: a download stops rather than leave less than
+	// this free on the cache's filesystem.
+	defaultCustomerISOMinFreeGB = 10
+	// CUSTOMER_ISO_RETENTION_DAYS: an ISO no VM uses is removed once it has
+	// been unused this long. Most go sooner, when they are detached.
+	defaultCustomerISORetentionDays = 7
+)
+
+// envPositiveInt reads a whole number above zero from the environment.
+func envPositiveInt(key string, def int64) int64 {
+	if n, err := strconv.ParseInt(strings.TrimSpace(os.Getenv(key)), 10, 64); err == nil && n > 0 {
+		return n
+	}
+	return def
+}
+
+// customerISOHolds counts the attaches in progress per cache file, so that an
+// ISO which is downloaded but not yet in a domain is not evicted as unused.
+var customerISOHolds = struct {
+	sync.Mutex
+	n map[string]int
+}{n: map[string]int{}}
+
+// customerISOFetches maps a cache file to the lock its download is made under.
+var customerISOFetches sync.Map
+
+// attachCustomerISO downloads an ISO from a URL a customer supplied, under the
+// rules for such URLs (public addresses only, a size cap, a free-space floor),
+// and attaches it.
+func attachCustomerISO(vmID, isoURL string) error {
+	u, err := url.Parse(isoURL)
+	if err != nil {
+		return fmt.Errorf("the ISO address is not a URL")
+	}
+	if err := safefetch.CheckURL(u); err != nil {
+		return fmt.Errorf("the ISO must be a public http(s) URL: %w", err)
+	}
+	cachePath := filepath.Join(customerISODir, storage.CustomerISOName(isoURL))
+
+	customerISOHolds.Lock()
+	customerISOHolds.n[cachePath]++
+	customerISOHolds.Unlock()
+	defer func() {
+		customerISOHolds.Lock()
+		if customerISOHolds.n[cachePath]--; customerISOHolds.n[cachePath] <= 0 {
+			delete(customerISOHolds.n, cachePath)
+		}
+		customerISOHolds.Unlock()
+	}()
+
+	// One download per URL. The panel gives up waiting after five minutes and
+	// asks again; without this each retry fetched the same file beside the
+	// first, several copies of a large ISO at once.
+	// ponytail: one small entry per distinct URL until the agent restarts.
+	fetch, _ := customerISOFetches.LoadOrStore(cachePath, &sync.Mutex{})
+	fetch.(*sync.Mutex).Lock()
+	defer fetch.(*sync.Mutex).Unlock()
+
+	if _, err := os.Stat(cachePath); err == nil {
+		// Counts as use, so the retention clock starts again.
+		now := time.Now()
+		_ = os.Chtimes(cachePath, now, now)
+	} else {
+		if err := os.MkdirAll(customerISODir, 0o755); err != nil {
+			return fmt.Errorf("failed to create ISO cache dir %s: %w", customerISODir, err)
+		}
+		maxBytes := envPositiveInt("CUSTOMER_ISO_MAX_GB", defaultCustomerISOMaxGB) << 30
+		minFree := envPositiveInt("CUSTOMER_ISO_MIN_FREE_GB", defaultCustomerISOMinFreeGB) << 30
+		log.Printf("[NodeAgent] Downloading customer ISO %s -> %s", isoURL, cachePath)
+		// Never unpacked: an archive is not an ISO, and unpacking one is a way
+		// around the size cap.
+		if err := storage.NewCustomerDownloader(maxBytes, minFree).DownloadTemplate(isoURL, cachePath); err != nil {
+			return fmt.Errorf("failed to download the ISO: %w", err)
+		}
+	}
+	return libvirt.AttachISO(vmID, cachePath)
+}
+
+// sweepCustomerISOs removes the customer ISO downloads that no VM uses and
+// that have been unused for minAge. It only ever looks in customerISODir.
+func sweepCustomerISOs(minAge time.Duration) {
+	// Held throughout, so an attach cannot start relying on a file between the
+	// moment it is found unused and the moment it is removed.
+	customerISOHolds.Lock()
+	defer customerISOHolds.Unlock()
+
+	// Asked once, and only if there is a file old enough to consider.
+	var used map[string]bool
+	var listed, failed bool
+	removed := storage.PruneUnused(customerISODir, func(path string) bool {
+		if customerISOHolds.n[path] > 0 {
+			return true
+		}
+		if !listed {
+			listed = true
+			var err error
+			if used, err = libvirt.DiskSourceFiles(); err != nil {
+				failed = true
+				log.Printf("[NodeAgent] WARNING: customer ISO cleanup skipped, could not list what VMs use: %v", err)
+			}
+		}
+		// Not knowing what is in use means keeping everything.
+		return failed || used[path]
+	}, minAge)
+	for _, path := range removed {
+		log.Printf("[NodeAgent] removed unused customer ISO %s", path)
+	}
+}
+
+// pruneCustomerISOsForever removes long-unused customer ISOs now and then for
+// as long as the agent runs. It catches what the sweeps on detach and delete
+// cannot: a download orphaned by a restart, a VM removed outside the panel.
+func pruneCustomerISOsForever() {
+	for {
+		days := envPositiveInt("CUSTOMER_ISO_RETENTION_DAYS", defaultCustomerISORetentionDays)
+		sweepCustomerISOs(time.Duration(days) * 24 * time.Hour)
+		time.Sleep(6 * time.Hour)
+	}
 }
 
 // rebuildVM reinstalls a VM by replacing its disk with a fresh copy of the
@@ -2495,6 +2644,8 @@ func (s *NodeAgentService) CreateSnapshot(ctx context.Context, req *pb.SnapshotR
 		if err := libvirt.RestoreSnapshot(req.VmId, req.SnapshotId); err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to restore snapshot: %v", err)
 		}
+		// The VM may now be running on the console socket of an older definition.
+		secureConsoles(false)
 		return &pb.SnapshotResponse{
 			Success:   true,
 			Operation: req.Operation,
@@ -3000,6 +3151,11 @@ func (s *NodeAgentService) GetLiveMetrics(ctx context.Context, req *pb.GetLiveMe
 	// smoothing or history to be meaningful.
 	conntrackCount, conntrackMax := network.ConntrackUsage()
 
+	var natAddress string
+	if s.networkMgr != nil {
+		natAddress = s.networkMgr.NATAddress()
+	}
+
 	var loadAvg1, loadAvg5, loadAvg15 float64
 	if len(metrics.LoadAvg) >= 3 {
 		loadAvg1 = metrics.LoadAvg[0]
@@ -3029,6 +3185,8 @@ func (s *NodeAgentService) GetLiveMetrics(ctx context.Context, req *pb.GetLiveMe
 		AvailableDiskGb:      metrics.AvailableDiskGB,
 		ConntrackCount:       conntrackCount,
 		ConntrackMax:         conntrackMax,
+		FirewallEnforcement:  network.FirewallEnforcement(),
+		NatAddress:           natAddress,
 	}, nil
 }
 

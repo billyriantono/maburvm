@@ -46,7 +46,7 @@ func testDB(t *testing.T) *gorm.DB {
 			direction TEXT, source_ip TEXT, priority INTEGER, created_at DATETIME, updated_at DATETIME,
 			deleted_at DATETIME)`,
 		`CREATE TABLE port_forwards (
-			id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, network_id TEXT, external_port INTEGER,
+			id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, network_id TEXT, node_id TEXT, external_port INTEGER,
 			internal_port INTEGER, protocol TEXT, source_ip TEXT, created_at DATETIME,
 			updated_at DATETIME, deleted_at DATETIME)`,
 	}

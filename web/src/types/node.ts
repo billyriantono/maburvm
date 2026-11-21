@@ -35,7 +35,14 @@ export interface NodeMetrics {
   // unknown, not empty — so the UI must not render that as 0% healthy.
   conntrack_count: number;
   conntrack_max: number;
+  // Whether the node passes bridged VM traffic through its firewall. "unknown"
+  // is a node that has not said (an older agent); never treat it as enforced.
+  firewall_enforcement?: FirewallEnforcement;
+  // The node address port forwards are published on; empty from an older agent.
+  nat_address?: string;
 }
+
+export type FirewallEnforcement = "enforced" | "off" | "unknown";
 
 // NodeMetricSample is one persisted historical point (matches the Go model's JSON).
 export interface NodeMetricSample {

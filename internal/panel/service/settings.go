@@ -23,6 +23,16 @@ const SettingsSectionQuotas = "quotas"
 const (
 	DefaultVPCsPerUser        = 5
 	DefaultFloatingIPsPerUser = 3
+	// DefaultPortForwardsPerVM: each forward takes a port on the node's one
+	// public address away from every other VM on that node.
+	DefaultPortForwardsPerVM = 20
+
+	// What a new customer account may hold before an operator says otherwise:
+	// enough for a first server, not an open tab on the nodes.
+	DefaultNewClientMaxVMs    = 2
+	DefaultNewClientMaxVCPU   = 4
+	DefaultNewClientMaxRAMMB  = 8192
+	DefaultNewClientMaxDiskGB = 100
 
 	// DefaultRAMOvercommitRatio is 0, meaning "no node RAM limit at all" —
 	// which is what the panel did before overcommit existed. Defaulting to a
@@ -40,6 +50,16 @@ const (
 type quotaSettings struct {
 	VPCMaxPerUser        *int `json:"vpcMaxPerUser"`
 	FloatingIPMaxPerUser *int `json:"floatingIpMaxPerUser"`
+	PortForwardMaxPerVM  *int `json:"portForwardMaxPerVm"`
+	// What customers may do on their own. Unset = allowed.
+	ClientOrderingEnabled   *bool `json:"clientOrderingEnabled"`
+	ClientCloneEnabled      *bool `json:"clientCloneEnabled"`
+	ClientExtraDisksEnabled *bool `json:"clientExtraDisksEnabled"`
+	// The quota a new customer account starts with. 0 = no limit.
+	NewClientMaxVMs    *int `json:"newClientMaxVms"`
+	NewClientMaxVCPU   *int `json:"newClientMaxVcpu"`
+	NewClientMaxRAMMB  *int `json:"newClientMaxRamMb"`
+	NewClientMaxDiskGB *int `json:"newClientMaxDiskGb"`
 	// Overcommit ratios are node-capacity limits rather than per-account ones,
 	// but they live in the same section so the admin page keeps a single
 	// "limits" form instead of growing a tab for two numbers.
@@ -57,7 +77,7 @@ func loadQuotaSettings(ctx context.Context, db *gorm.DB) quotaSettings {
 	}
 	var raw string
 	if err := db.WithContext(ctx).
-		Raw("SELECT data::text FROM system_settings WHERE section = ?", SettingsSectionQuotas).
+		Raw("SELECT CAST(data AS TEXT) FROM system_settings WHERE section = ?", SettingsSectionQuotas).
 		Scan(&raw).Error; err != nil || raw == "" {
 		return out
 	}
@@ -79,6 +99,14 @@ func FloatingIPsPerUser(ctx context.Context, db *gorm.DB) int {
 		return *v
 	}
 	return DefaultFloatingIPsPerUser
+}
+
+// PortForwardsPerVM is how many port forwards one VM may hold.
+func PortForwardsPerVM(ctx context.Context, db *gorm.DB) int {
+	if v := loadQuotaSettings(ctx, db).PortForwardMaxPerVM; v != nil && *v > 0 {
+		return *v
+	}
+	return DefaultPortForwardsPerVM
 }
 
 // RAMOvercommitRatio is how many times a node's physical RAM may be allocated

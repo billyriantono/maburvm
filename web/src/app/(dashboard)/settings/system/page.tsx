@@ -76,6 +76,16 @@ const apiSchema = z.object({
 const quotaSchema = z.object({
   vpcMaxPerUser: z.number().min(1).max(100),
   floatingIpMaxPerUser: z.number().min(1).max(100),
+  portForwardMaxPerVm: z.number().min(1).max(1000),
+  // What customers may do without the operator or the billing system.
+  clientOrderingEnabled: z.boolean(),
+  clientCloneEnabled: z.boolean(),
+  clientExtraDisksEnabled: z.boolean(),
+  // Starting quota of a new customer account. 0 = no limit, as on the user page.
+  newClientMaxVms: z.number().int().min(0).max(10000),
+  newClientMaxVcpu: z.number().int().min(0).max(100000),
+  newClientMaxRamMb: z.number().int().min(0).max(100000000),
+  newClientMaxDiskGb: z.number().int().min(0).max(100000000),
   // Overcommit ratios allow 0, unlike the limits above: for these, 0 is a
   // meaningful setting ("do not enforce") rather than an accidental lockout.
   ramOvercommitRatio: z.number().min(0).max(20),
@@ -133,6 +143,16 @@ const defaultApiSettings = {
 const defaultQuotaSettings = {
   vpcMaxPerUser: 5,
   floatingIpMaxPerUser: 3,
+  portForwardMaxPerVm: 20,
+  // Must mirror SelfServiceAllowed and the DefaultNewClient* values in
+  // internal/panel/service/settings.go.
+  clientOrderingEnabled: true,
+  clientCloneEnabled: true,
+  clientExtraDisksEnabled: true,
+  newClientMaxVms: 2,
+  newClientMaxVcpu: 4,
+  newClientMaxRamMb: 8192,
+  newClientMaxDiskGb: 100,
   // Must mirror DefaultRAMOvercommitRatio / DefaultDiskOvercommitRatio in
   // internal/panel/service/settings.go: 0 = RAM unenforced, 1 = disk admitted
   // against real free space.
@@ -995,6 +1015,100 @@ export default function SystemSettingsPage() {
                         {quotaForm.formState.errors.floatingIpMaxPerUser.message}
                       </p>
                     )}
+                  </div>
+                  <div className="space-y-2">
+                    <label htmlFor="portForwardMaxPerVm" className="block text-sm font-medium text-muted-foreground mb-2">
+                      Port forwards per VM
+                    </label>
+                    <Input
+                      id="portForwardMaxPerVm"
+                      type="number"
+                      {...quotaForm.register("portForwardMaxPerVm", { valueAsNumber: true })}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Each forward takes a port on the node&apos;s public address away from every
+                      other VM on that node. VMs already above a lowered limit keep what they have.
+                    </p>
+                    {quotaForm.formState.errors.portForwardMaxPerVm && (
+                      <p className="text-xs text-destructive">
+                        {quotaForm.formState.errors.portForwardMaxPerVm.message}
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="pt-2 border-t">
+                  <h3 className="text-sm font-medium mb-1">What customers may do on their own</h3>
+                  <p className="text-xs text-muted-foreground mb-4">
+                    The panel does not charge for anything. A customer who orders, clones or adds a disk
+                    here gets it without your billing system knowing. Turn off what your billing system
+                    should be selling instead; orders it places are not affected.
+                  </p>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <label className="flex items-center gap-3 cursor-pointer">
+                      <input type="checkbox" {...quotaForm.register("clientOrderingEnabled")} className="w-5 h-5 accent-primary" />
+                      <span className="text-sm font-medium">Order servers</span>
+                    </label>
+                    <label className="flex items-center gap-3 cursor-pointer">
+                      <input type="checkbox" {...quotaForm.register("clientCloneEnabled")} className="w-5 h-5 accent-primary" />
+                      <span className="text-sm font-medium">Clone their servers</span>
+                    </label>
+                    <label className="flex items-center gap-3 cursor-pointer">
+                      <input type="checkbox" {...quotaForm.register("clientExtraDisksEnabled")} className="w-5 h-5 accent-primary" />
+                      <span className="text-sm font-medium">Add extra disks</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div className="pt-2 border-t">
+                  <h3 className="text-sm font-medium mb-1">Starting quota for new customer accounts</h3>
+                  <p className="text-xs text-muted-foreground mb-4">
+                    Given to each customer account when it is created, and the ceiling on what that
+                    customer can add on their own. Change one account&apos;s quota on its user page.
+                    Existing accounts keep what they have. Orders from your billing system are not
+                    held back by it. 0 means no limit.
+                  </p>
+                  <div className="grid gap-6 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <label htmlFor="newClientMaxVms" className="block text-sm font-medium text-muted-foreground mb-2">
+                        Servers
+                      </label>
+                      <Input id="newClientMaxVms" type="number" {...quotaForm.register("newClientMaxVms", { valueAsNumber: true })} />
+                      <p className="text-xs text-muted-foreground">How many servers the account may hold at once.</p>
+                      {quotaForm.formState.errors.newClientMaxVms && (
+                        <p className="text-xs text-destructive">{quotaForm.formState.errors.newClientMaxVms.message}</p>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      <label htmlFor="newClientMaxVcpu" className="block text-sm font-medium text-muted-foreground mb-2">
+                        vCPUs
+                      </label>
+                      <Input id="newClientMaxVcpu" type="number" {...quotaForm.register("newClientMaxVcpu", { valueAsNumber: true })} />
+                      <p className="text-xs text-muted-foreground">Across all of the account&apos;s servers.</p>
+                      {quotaForm.formState.errors.newClientMaxVcpu && (
+                        <p className="text-xs text-destructive">{quotaForm.formState.errors.newClientMaxVcpu.message}</p>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      <label htmlFor="newClientMaxRamMb" className="block text-sm font-medium text-muted-foreground mb-2">
+                        Memory (MB)
+                      </label>
+                      <Input id="newClientMaxRamMb" type="number" {...quotaForm.register("newClientMaxRamMb", { valueAsNumber: true })} />
+                      <p className="text-xs text-muted-foreground">Across all of the account&apos;s servers.</p>
+                      {quotaForm.formState.errors.newClientMaxRamMb && (
+                        <p className="text-xs text-destructive">{quotaForm.formState.errors.newClientMaxRamMb.message}</p>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      <label htmlFor="newClientMaxDiskGb" className="block text-sm font-medium text-muted-foreground mb-2">
+                        Disk (GB)
+                      </label>
+                      <Input id="newClientMaxDiskGb" type="number" {...quotaForm.register("newClientMaxDiskGb", { valueAsNumber: true })} />
+                      <p className="text-xs text-muted-foreground">System disks and extra disks together.</p>
+                      {quotaForm.formState.errors.newClientMaxDiskGb && (
+                        <p className="text-xs text-destructive">{quotaForm.formState.errors.newClientMaxDiskGb.message}</p>
+                      )}
+                    </div>
                   </div>
                 </div>
 

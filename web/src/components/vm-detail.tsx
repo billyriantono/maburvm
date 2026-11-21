@@ -26,7 +26,7 @@ import { useNodes } from "@/lib/hooks/use-nodes"
 import { useSnapshots, useCreateSnapshot, useRestoreSnapshot, useDeleteSnapshot } from "@/lib/hooks/use-snapshots"
 import { useCreateImage } from "@/lib/hooks/use-images"
 import { useBackups, useCreateBackup, useDeleteBackup, useRestoreBackup, useBackupSchedules, useCreateBackupSchedule, useDeleteBackupSchedule } from "@/lib/hooks/use-backups"
-import { useFirewallRules, useDeleteFirewallRule, useCreateFirewallRule, useVMNetworks, useSetVMBandwidth, useSetVMRDNS, usePortForwards, useCreatePortForward, useDeletePortForward, useSetAntiSpoofing } from "@/lib/hooks/use-networks"
+import { useFirewallRules, useDeleteFirewallRule, useCreateFirewallRule, useVMNetworks, useSetVMBandwidth, useSetVMRDNS, usePortForwards, useCreatePortForward, useDeletePortForward, useSetAntiSpoofing, useFirewallStatus } from "@/lib/hooks/use-networks"
 import type { Network as NetworkIface } from "@/types"
 import { useTemplates } from "@/lib/hooks/use-templates"
 import { useVMBandwidth, useVMBandwidthHistory, useSetBandwidthQuota } from "@/lib/hooks/use-bandwidth"
@@ -1024,6 +1024,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const restoreBackup = useRestoreBackup(vmId)
   const { data: firewallRules, isLoading: firewallLoading, error: firewallError, refetch: refetchFirewall } = useFirewallRules(vmId)
   const deleteFirewallRule = useDeleteFirewallRule(vmId)
+  const { data: firewallStatus } = useFirewallStatus(vmId)
   const { data: templates } = useTemplates()
   // Same rule as the create wizard: inactive templates and "/imported"
   // placeholders have no base image, so building from them fails on the node.
@@ -2669,6 +2670,33 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                 </DialogContent>
               </Dialog>
             </div>
+
+            {/* Rules that are saved but not applied look the same as rules that
+                work, so the page says which it is. */}
+            {firewallStatus && firewallStatus.enforcement !== "enforced" && (
+              <div role="status" className="mb-6 flex items-start gap-3 rounded-md border border-warning/50 bg-warning/10 p-3 text-sm text-foreground">
+                <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" aria-hidden="true" />
+                {firewallStatus.enforcement === "off" ? (
+                  <p>
+                    <span className="font-semibold">Not enforced.</span>{" "}
+                    {isAdmin ? (
+                      <>The node this VM runs on is not passing VM traffic through its firewall, so these rules filter nothing. <Link href={`/nodes/${vm.node_id}`} className="underline underline-offset-2">See the node</Link> for the fix.</>
+                    ) : (
+                      <>These rules are saved but are not filtering traffic to this server right now. Until that is fixed, rely on a firewall inside the server, and contact support.</>
+                    )}
+                  </p>
+                ) : (
+                  <p>
+                    <span className="font-semibold">Not confirmed.</span>{" "}
+                    {isAdmin ? (
+                      <>The node this VM runs on has not reported whether it enforces firewall rules. Its agent has not answered yet or is older than this panel. <Link href={`/nodes/${vm.node_id}`} className="underline underline-offset-2">See the node</Link>.</>
+                    ) : (
+                      <>We could not confirm that these rules are being applied right now. Keep a firewall inside the server as well.</>
+                    )}
+                  </p>
+                )}
+              </div>
+            )}
 
             {firewallLoading ? (
               <SectionSkeleton />
