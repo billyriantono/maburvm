@@ -46,7 +46,8 @@ function isExpired(key: APIKey): boolean {
 
 export default function APIKeysSettingsPage() {
   const { branding } = useBranding()
-  const { data: keys, isLoading, error, refetch } = useAPIKeys()
+  const { data, isLoading, error, refetch } = useAPIKeys()
+  const keys = data?.keys
   const createKey = useCreateAPIKey()
   const revokeKey = useRevokeAPIKey()
   const { data: currentUser } = useCurrentUser()
@@ -109,7 +110,9 @@ export default function APIKeysSettingsPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-foreground">API Keys</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            Long-lived credentials for automation and the public API
+            {currentUser && !isAdmin
+              ? "For your own scripts and tools. A key acts as you and reaches only your own servers."
+              : "Long-lived credentials for automation and the public API"}
           </p>
         </div>
         <Button onClick={() => setShowCreate(true)}>
@@ -117,6 +120,16 @@ export default function APIKeysSettingsPage() {
           Create API Key
         </Button>
       </div>
+
+      {data && !data.apiEnabled && (
+        <div role="alert" className="mb-6 rounded-md border border-warning/50 bg-warning/10 p-4 text-sm">
+          <p className="font-semibold">API access is turned off on this panel</p>
+          <p className="mt-1">
+            Every key is refused until it is turned on again.{" "}
+            {isAdmin ? "Turn it on under Settings, System, API." : "Ask your provider if you need it."}
+          </p>
+        </div>
+      )}
 
       {/* Usage hint */}
       <Card className="mb-6">

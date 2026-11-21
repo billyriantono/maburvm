@@ -45,6 +45,9 @@ var (
 	// ErrTemplateNotInstallable is returned when a template has no real base image
 	// to provision from (e.g. the "/imported" placeholder created for imported VMs).
 	ErrTemplateNotInstallable = errors.New("OS template has no installable image (it was created for imported VMs); choose or add a real template")
+	// ErrTemplateNotOffered is returned when a template's availability rules
+	// (its plan list, or its licence) do not cover the order.
+	ErrTemplateNotOffered = errors.New("this operating system is not offered on this plan")
 	// ErrNoUsablePool is returned when an auto-assigned VM can't get a reachable
 	// public IP because no node-eligible pool has both a bridge and a gateway.
 	ErrNoUsablePool = errors.New("no usable IP pool (with a bridge and gateway) is available on the selected node; an administrator must configure one before VMs can be ordered")
@@ -204,7 +207,14 @@ type CreateVMRequest struct {
 	PlanRequired bool `json:"-"`
 	// Billed marks an order the billing system placed. The account quota limits
 	// what a customer adds on their own, not what they have paid for.
-	Billed        bool   `json:"-"`
+	Billed bool `json:"-"`
+	// BillingRef is the billing system's reference for the service this VM is
+	// provisioned for. Kept on the VM; empty for anything not ordered through billing.
+	BillingRef string `json:"-"`
+	// AnyHostname skips the "unique among the owner's VMs" check. Set for
+	// orders from the billing system, which sends whatever name the customer
+	// typed: a paid order is never refused over a name.
+	AnyHostname   bool   `json:"-"`
 	RequestedIP   string `json:"requested_ip,omitempty" validate:"omitempty,ip"`
 	BandwidthMbps int    `json:"bandwidth_mbps,omitempty" validate:"omitempty,min=0,max=10000"`
 	// Monthly data quota (GB) + over-quota policy, normally inherited from the
@@ -308,13 +318,15 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		return nil, err
 	}
 
-	// Check hostname uniqueness
-	exists, err := s.vmRepo.HostnameExists(ctx, req.Hostname)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check hostname: %w", err)
-	}
-	if exists {
-		return nil, ErrHostnameExists
+	// A name is unique among the owner's own VMs, not across customers.
+	if !req.AnyHostname {
+		exists, err := s.vmRepo.HostnameExistsForUser(ctx, req.UserID, req.Hostname, "")
+		if err != nil {
+			return nil, fmt.Errorf("failed to check hostname: %w", err)
+		}
+		if exists {
+			return nil, ErrHostnameExists
+		}
 	}
 
 	// Get OS template
@@ -341,6 +353,11 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 	// VM. Clones bypass this — they copy the source VM's disk via CloneSourceRef.
 	if req.CloneSourceRef == "" && !isInstallableImagePath(template.ImagePath) {
 		return nil, ErrTemplateNotInstallable
+	}
+	// Staff install anything. A customer needs the template offered on their
+	// plan; a billed order is already priced, so only a plan list refuses it.
+	if (req.PlanRequired && !template.OfferedOn(req.PlanID)) || (req.Billed && template.RestrictedFrom(req.PlanID)) {
+		return nil, ErrTemplateNotOffered
 	}
 
 	// Select node for VM placement
@@ -530,6 +547,11 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 				return fmt.Errorf("failed to record the VM's storage pool: %w", err)
 			}
 		}
+		if req.PlanID != "" || req.BillingRef != "" {
+			if err := writeBillingLink(tx, vm, strPtrOrNil(req.PlanID), strPtrOrNil(req.BillingRef)); err != nil {
+				return err
+			}
+		}
 		if req.RequestedIP != "" && req.IPPoolID == "" {
 			return fmt.Errorf("ip_pool_id is required when requested_ip is set")
 		}
@@ -714,6 +736,7 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		req.Restore.apply(params)
 	}
 
+	sealJobSecrets(params)
 	paramsJSON, _ := json.Marshal(params)
 
 	// Keep a generated password, encrypted and for a short time, so the owner
@@ -770,6 +793,18 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		Status:       "pending",
 		RootPassword: generatedPassword,
 	}, nil
+}
+
+// sealJobSecrets encrypts the passwords a job carries, so river_job rows never
+// hold them in clear; the worker opens them (queue.openJobSecret).
+func sealJobSecrets(params map[string]interface{}) {
+	for _, k := range []string{"root_password", "vnc_password"} {
+		if v, ok := params[k].(string); ok {
+			if sealed, err := models.SealSecret(v); err == nil {
+				params[k] = sealed
+			}
+		}
+	}
 }
 
 // seedDefaultFirewall inserts the default inbound ruleset for a NEWLY created
@@ -842,6 +877,9 @@ type CloneVMRequest struct {
 	SourceVMID string `json:"-"`
 	Hostname   string `json:"hostname"`     // new hostname; defaults to "<source>-clone"
 	DestNodeID string `json:"dest_node_id"` // target node; defaults to the source's node
+	// ByCustomer applies the template's availability rules: a copy of a
+	// licensed system is one more licence.
+	ByCustomer bool `json:"-"`
 }
 
 // CloneVM provisions a new VM as an independent copy of an existing one: same
@@ -859,6 +897,16 @@ func (s *VMService) CloneVM(ctx context.Context, req *CloneVMRequest) (*CreateVM
 	}
 	if src.Status == models.VMStatusRunning {
 		return nil, fmt.Errorf("source VM must be stopped before cloning")
+	}
+
+	if req.ByCustomer {
+		planID := ""
+		if src.PlanID != nil {
+			planID = *src.PlanID
+		}
+		if tmpl, terr := s.templateRepo.GetByID(ctx, src.OSTemplateID); terr == nil && !tmpl.OfferedOn(planID) {
+			return nil, ErrTemplateNotOffered
+		}
 	}
 
 	hostname := strings.TrimSpace(req.Hostname)
@@ -1316,6 +1364,7 @@ func (s *VMService) SuspendVM(ctx context.Context, vmID string) error {
 	if err := s.setSuspended(ctx, vm, true); err != nil {
 		return err
 	}
+	s.emitVMEvent(ctx, BillingEventVMSuspended, vmID)
 	if vm.Status == models.VMStatusRunning || vm.Status == models.VMStatusSuspended {
 		if _, err := s.ExecuteLifecycleCommand(ctx, &LifecycleRequest{VMID: vmID, Command: LifecycleForceStop}); err != nil {
 			return fmt.Errorf("VM flagged suspended but could not be powered off: %w", err)
@@ -1343,6 +1392,7 @@ func (s *VMService) UnsuspendVM(ctx context.Context, vmID string) error {
 			return err
 		}
 	}
+	s.emitVMEvent(ctx, BillingEventVMUnsuspended, vmID)
 	if _, err := s.ExecuteLifecycleCommand(ctx, &LifecycleRequest{VMID: vmID, Command: LifecycleStart}); err != nil {
 		return fmt.Errorf("suspension lifted, but the VM did not start: %w", err)
 	}
@@ -1698,9 +1748,14 @@ func (s *VMService) UpdateVM(ctx context.Context, req *UpdateVMRequest) (*models
 		return nil, ErrVMCannotBeModified
 	}
 
-	// Update hostname if provided
+	// Update hostname if provided. Unique among the owner's VMs, counting the
+	// owner the VM is being handed to when this request also reassigns it.
 	if req.Hostname != "" && req.Hostname != vm.Hostname {
-		exists, err := s.vmRepo.HostnameExists(ctx, req.Hostname)
+		owner := vm.UserID
+		if req.UserID != "" {
+			owner = req.UserID
+		}
+		exists, err := s.vmRepo.HostnameExistsForUser(ctx, owner, req.Hostname, vm.ID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to check hostname: %w", err)
 		}
@@ -1814,6 +1869,7 @@ func (s *VMService) DeleteVM(ctx context.Context, vmID string) error {
 			"vm_id", vm.ID,
 			"node_id", vm.NodeID,
 		)
+		s.emitVMEvent(ctx, BillingEventVMDestroyed, vm.ID)
 		return nil
 	}
 
@@ -2238,6 +2294,9 @@ type RebuildVMRequest struct {
 	// SSHPublicKeys are the authorized_keys lines to inject (resolved from the
 	// user's saved keys by the handler). Empty means none.
 	SSHPublicKeys []string `json:"-"`
+	// ByCustomer applies the template's availability rules to a change of
+	// system. Reinstalling the system the VM already runs is always allowed.
+	ByCustomer bool `json:"-"`
 }
 
 // VMResetPasswordRequest contains parameters for resetting the guest root password.
@@ -2271,7 +2330,9 @@ func (s *VMService) ResetPassword(ctx context.Context, req *VMResetPasswordReque
 	if s.riverClient == nil {
 		return nil, fmt.Errorf("job queue unavailable")
 	}
-	paramsJSON, _ := json.Marshal(map[string]interface{}{"root_password": req.Password})
+	params := map[string]interface{}{"root_password": req.Password}
+	sealJobSecrets(params)
+	paramsJSON, _ := json.Marshal(params)
 	result, err := s.riverClient.Insert(ctx, queue.VMOperationJob{
 		VMID:      vm.ID,
 		Operation: queue.VMOpResetPassword,
@@ -2547,6 +2608,14 @@ func (s *VMService) RebuildVM(ctx context.Context, req *RebuildVMRequest) (*Rebu
 		if !template.IsActive {
 			return nil, fmt.Errorf("OS template is not active")
 		}
+		if planID := ""; req.ByCustomer && req.TemplateID != vm.OSTemplateID {
+			if vm.PlanID != nil {
+				planID = *vm.PlanID
+			}
+			if !template.OfferedOn(planID) {
+				return nil, ErrTemplateNotOffered
+			}
+		}
 		// Any kind of system can replace any other: the node rewrites the VM's
 		// virtual hardware for it. What cannot change is the VM's size.
 		if osKind(template.OSType) == models.OSTypeWindows &&
@@ -2579,7 +2648,7 @@ func (s *VMService) RebuildVM(ctx context.Context, req *RebuildVMRequest) (*Rebu
 	// reinstall replaces the disk, not the console, so the port stays as it is.
 	vncConfig := s.generateVNCCredentials()
 	vm.VNCPassword = vncConfig.Password
-	if err := s.db.Model(vm).Update("vnc_password", vncConfig.Password).Error; err != nil {
+	if err := s.vmRepo.UpdateVNCPassword(ctx, vm.ID, vncConfig.Password); err != nil {
 		return nil, fmt.Errorf("failed to update VNC credentials: %w", err)
 	}
 
@@ -2625,6 +2694,7 @@ func (s *VMService) RebuildVM(ctx context.Context, req *RebuildVMRequest) (*Rebu
 		params["ipv6_address"] = p.Address()
 		params["ipv6_gateway"] = models.IPv6LinkLocalGateway
 	}
+	sealJobSecrets(params)
 	paramsJSON, _ := json.Marshal(params)
 
 	// Enqueue rebuild job
@@ -2767,7 +2837,7 @@ func (s *VMService) GetVNCConfig(ctx context.Context, vmID string, includePasswo
 	if vm.VNCPassword == "" {
 		vncConfig := s.generateVNCCredentials()
 		vm.VNCPassword = vncConfig.Password
-		if err := s.db.Model(&models.VM{}).Where("id = ?", vmID).Update("vnc_password", vm.VNCPassword).Error; err != nil {
+		if err := s.vmRepo.UpdateVNCPassword(ctx, vmID, vm.VNCPassword); err != nil {
 			s.logger.Error("failed to save generated VNC password", "vm_id", vmID, "error", err)
 		}
 	}

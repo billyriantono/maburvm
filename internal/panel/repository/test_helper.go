@@ -62,6 +62,8 @@ quota_mode TEXT NOT NULL DEFAULT 'legacy',
 			os_type TEXT NOT NULL DEFAULT 'linux',
 			is_active BOOLEAN DEFAULT 1,
 			description TEXT,
+			licensed BOOLEAN NOT NULL DEFAULT 0,
+			plan_ids TEXT,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			deleted_at DATETIME

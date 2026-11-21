@@ -4,7 +4,9 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/maburvm/panel/internal/panel/middleware"
@@ -32,6 +34,22 @@ type LoginResponse struct {
 	Token       string      `json:"token,omitempty"`
 	Requires2FA bool        `json:"requires2fa,omitempty"`
 	TempToken   string      `json:"tempToken,omitempty"`
+	// ExpiresIn is how many seconds the token lasts, so the page keeps it as long.
+	ExpiresIn int `json:"expiresIn,omitempty"`
+}
+
+// accountLocked answers a sign-in or a code check refused because the account
+// is locked. true when err was that.
+func accountLocked(c echo.Context, err error) (bool, error) {
+	var locked *service.AccountLockedError
+	if !errors.As(err, &locked) {
+		return false, nil
+	}
+	c.Response().Header().Set("Retry-After", strconv.Itoa(max(int(time.Until(locked.Until).Seconds()), 1)))
+	return true, c.JSON(http.StatusTooManyRequests, map[string]string{
+		"code":  "account_locked",
+		"error": "Too many failed sign-in attempts. Try again in " + locked.Wait() + ", or reset your password.",
+	})
 }
 
 // ClientIP returns the caller's public-facing IP address as seen by the panel.
@@ -68,6 +86,9 @@ func (h *AuthHandler) Login(c echo.Context) error {
 
 	resp, err := h.userService.Login(loginReq)
 	if err != nil {
+		if locked, out := accountLocked(c, err); locked {
+			return out
+		}
 		switch {
 		case errors.Is(err, service.ErrInvalidCredentials):
 			return c.JSON(http.StatusUnauthorized, map[string]string{
@@ -80,6 +101,11 @@ func (h *AuthHandler) Login(c echo.Context) error {
 		case errors.Is(err, service.ErrIPNotWhitelisted):
 			return c.JSON(http.StatusForbidden, map[string]string{
 				"error": "IP address not whitelisted",
+			})
+		case errors.Is(err, service.ErrAccountSuspended):
+			return c.JSON(http.StatusForbidden, map[string]string{
+				"code":  "account_suspended",
+				"error": "This account is suspended. Contact support.",
 			})
 		default:
 			return c.JSON(http.StatusInternalServerError, map[string]string{
@@ -96,11 +122,13 @@ func (h *AuthHandler) Login(c echo.Context) error {
 		})
 	}
 
-	// The token is returned in the body; the web client stores it and sends it as a
-	// Bearer header. No server-set auth cookie (the panel is header-authenticated).
+	// The browser keeps the session in an HttpOnly cookie no script can read.
+	// The token stays in the body for scripts that sign in this way.
+	middleware.SetSessionCookie(c, resp.Token, h.userService.SessionLifetime())
 	return c.JSON(http.StatusOK, LoginResponse{
-		User:  resp.User,
-		Token: resp.Token,
+		User:      resp.User,
+		Token:     resp.Token,
+		ExpiresIn: int(h.userService.SessionLifetime().Seconds()),
 	})
 }
 
@@ -135,7 +163,7 @@ func (h *AuthHandler) ForgotPassword(c echo.Context) error {
 	_ = c.Bind(&req)
 
 	// resetURLBase is the public frontend reset page. PANEL_PUBLIC_URL is the
-	// panel origin (e.g. https://mabur.gopek.id); fall back to a relative path.
+	// panel origin (e.g. https://panel.example.com); fall back to a relative path.
 	base := strings.TrimRight(os.Getenv("PANEL_PUBLIC_URL"), "/")
 	resetURLBase := base + "/reset-password"
 
@@ -189,6 +217,7 @@ func (h *AuthHandler) Logout(c echo.Context) error {
 			"error": "Failed to log out",
 		})
 	}
+	// The cookie itself is cleared by DropSessionCookie on the route.
 	return c.JSON(http.StatusOK, map[string]string{
 		"message": "Logged out successfully",
 	})
@@ -206,9 +235,12 @@ func (h *AuthHandler) Me(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"success": true,
 		"data": map[string]interface{}{
-			"id":    userCtx.ID,
-			"email": userCtx.Email,
-			"role":  userCtx.Role,
+			"id":                 userCtx.ID,
+			"email":              userCtx.Email,
+			"role":               userCtx.Role,
+			"two_factor_enabled": userCtx.TwoFactorEnabled,
+			// Set while an administrator must turn on two-factor before anything else.
+			"two_factor_setup_required": userCtx.TwoFactorSetupRequired,
 		},
 	})
 }

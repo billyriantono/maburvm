@@ -211,6 +211,17 @@ services:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?set ALLOWED_ORIGINS in .env.production}
       # Bearer token for GET /metrics (Prometheus); unset leaves the endpoint off.
       METRICS_TOKEN: ${METRICS_TOKEN:-}
+      # Hops whose X-Forwarded-For is believed. Unset: loopback and private
+      # ranges, which is Caddy on the host in front of this compose network.
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+      # Billing webhook (POST /webhooks/billing). Off, answering 503, unless both
+      # are set; they are the two values entered in the billing system's server
+      # settings. Use long random strings (24+ characters each).
+      BILLING_API_KEY: ${BILLING_API_KEY:-}
+      BILLING_WEBHOOK_SECRET: ${BILLING_WEBHOOK_SECRET:-}
+      # "true" makes a plan's monthly transfer quota act: a VM that goes over is
+      # throttled or stopped, as its plan says. Anything else only measures.
+      BANDWIDTH_ENFORCE: ${BANDWIDTH_ENFORCE:-false}
     # Panel needs: `data` (postgres/minio/minio-init), `webpanel` (web), and a
     # NON-internal `agent-egress` to initiate outbound gRPC to agents. It does
     # NOT join `edge`. A Docker network is NOT a full host/firewall policy.

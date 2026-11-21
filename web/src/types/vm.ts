@@ -54,6 +54,15 @@ export interface VM {
   console_enabled?: boolean;
   /** Service suspended by billing or staff: the owner can view but not change it. */
   suspended?: boolean;
+  /** The plan the VM was ordered on or last changed to. Detail response only. */
+  plan_id?: string;
+  plan_name?: string;
+  /** The billing system's reference for the service that pays for this VM.
+   *  Sent to operators only; the owner gets billing_managed. */
+  billing_ref?: string;
+  billing_managed?: boolean;
+  /** False when the owner may not delete the VM themselves (billing manages it). */
+  owner_may_delete?: boolean;
   /** The VM's IPv6. With ipv6_prefix it is a routed network of its own and
    *  the guest uses ipv6_address with fe80::1 as gateway; without it,
    *  ipv6_address is one address on a shared subnet and ipv6_gateway is that
@@ -121,6 +130,9 @@ export interface UpdateVMRequest {
   hostname?: string;
   resources?: Partial<Resources>;
   user_id?: string;
+  /** Operators only. "" clears; absent leaves it as it is. */
+  plan_id?: string;
+  billing_ref?: string;
 }
 
 // VMStartRequest for starting a VM

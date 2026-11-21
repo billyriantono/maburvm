@@ -13,6 +13,7 @@ import (
 	"log"
 	"math/big"
 	"net"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -23,7 +24,9 @@ import (
 	healthcollector "github.com/maburvm/panel/internal/agent/health"
 	"github.com/maburvm/panel/internal/agent/libvirt"
 	"github.com/maburvm/panel/internal/agent/network"
+	"github.com/maburvm/panel/internal/agent/peerallow"
 	"github.com/maburvm/panel/internal/agent/vncproxy"
+	"github.com/maburvm/panel/internal/shared/agentsign"
 	"github.com/maburvm/panel/internal/shared/config"
 	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 	"google.golang.org/grpc"
@@ -39,6 +42,7 @@ import (
 type Server struct {
 	grpcServer   *grpc.Server
 	config       *config.AgentServerConfig
+	allowedPeers []netip.Prefix
 	tlsConfig    *tls.Config
 	listener     net.Listener
 	healthServer *grpclibhealth.Server
@@ -61,6 +65,11 @@ func New(cfg *config.AgentServerConfig) (*Server, error) {
 	s := &Server{
 		config: cfg,
 	}
+	allowed, err := peerallow.Parse(cfg.AllowedPanelIPs)
+	if err != nil {
+		return nil, fmt.Errorf("AGENT_ALLOWED_PANEL_IPS: %w", err)
+	}
+	s.allowedPeers = allowed
 
 	// Setup TLS configuration
 	tlsConfig, err := s.setupTLS()
@@ -333,6 +342,19 @@ func (s *Server) Start() error {
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", address, err)
 	}
+	if len(s.allowedPeers) > 0 {
+		lis = peerallow.Listen(lis, s.allowedPeers)
+		log.Printf("gRPC accepts connections only from %s (and this host)", s.config.AllowedPanelIPs)
+	} else {
+		log.Printf("WARNING: AGENT_ALLOWED_PANEL_IPS is not set: any host that reaches %s and holds the token controls this node. Set it to the panel's address.", address)
+	}
+	if key := os.Getenv("AGENT_UPDATE_PUBKEY"); key == "" {
+		log.Println("WARNING: AGENT_UPDATE_PUBKEY is not set: this node installs any agent build the panel sends. Set it to accept only builds signed offline.")
+	} else if _, err := agentsign.ParsePublicKey(key); err != nil {
+		log.Println("ERROR: AGENT_UPDATE_PUBKEY is not a valid ed25519 public key: every agent update will be refused until it is fixed")
+	} else {
+		log.Println("Agent updates must be signed with the key in AGENT_UPDATE_PUBKEY")
+	}
 	s.listener = lis
 
 	// Create gRPC server with interceptors and TLS
@@ -502,6 +524,7 @@ func Run() error {
 		Environment:     getEnvOrDefault("ENVIRONMENT", "development"),
 		ShutdownTimeout: 30 * time.Second,
 		AuthToken:       getEnvOrDefault("AGENT_AUTH_TOKEN", ""),
+		AllowedPanelIPs: getEnvOrDefault("AGENT_ALLOWED_PANEL_IPS", ""),
 	}
 
 	// Create and start server

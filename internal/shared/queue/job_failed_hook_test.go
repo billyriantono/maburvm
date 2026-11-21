@@ -29,5 +29,11 @@ func TestJobFailedForGood(t *testing.T) {
 		if got := jobFailedForGood(tc.ctxErr, tc.err, tc.attempt, tc.max); got != tc.wantPermanent {
 			t.Errorf("%s: got %v, want %v", tc.name, got, tc.wantPermanent)
 		}
+		// A try that failed is every failure that is not a stop or a snooze.
+		wantFailed := tc.err != nil && tc.name != "stopped by an operator or a shutdown" &&
+			tc.name != "stopped while giving up" && tc.name != "asked to be run again later on the last try"
+		if got := tryFailed(tc.ctxErr, tc.err); got != wantFailed {
+			t.Errorf("%s: tryFailed got %v, want %v", tc.name, got, wantFailed)
+		}
 	}
 }

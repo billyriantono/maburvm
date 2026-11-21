@@ -1,6 +1,8 @@
 package models
 
 import (
+	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,8 +36,21 @@ func (AuditLog) TableName() string {
 	return "audit_logs"
 }
 
+type auditWritesKey struct{}
+
+// TrackAuditWrites returns a context under which creating an AuditLog sets the
+// flag, so the request audit middleware can skip its generic row when a
+// handler already recorded the action in its own words.
+func TrackAuditWrites(ctx context.Context) (context.Context, *atomic.Bool) {
+	written := new(atomic.Bool)
+	return context.WithValue(ctx, auditWritesKey{}, written), written
+}
+
 // BeforeCreate hook for AuditLog
 func (a *AuditLog) BeforeCreate(tx *gorm.DB) error {
+	if written, ok := tx.Statement.Context.Value(auditWritesKey{}).(*atomic.Bool); ok {
+		written.Store(true)
+	}
 	if a.ID == "" {
 		a.ID = uuid.New().String()
 	}

@@ -1938,6 +1938,10 @@ message AgentUpdateChunk {
   string commit = 3;
   int64 size = 4;
   bytes data = 5;
+  // Ed25519 signature over the binary's digest, made offline (cmd/agent-sign).
+  // First chunk only. A node with AGENT_UPDATE_PUBKEY set refuses an update
+  // without a valid one; other nodes ignore it.
+  bytes signature = 6;
 }
 
 message AgentUpdateResponse {

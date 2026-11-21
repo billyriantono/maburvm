@@ -12,14 +12,6 @@ interface SSHConsoleProps {
 
 type Status = 'auth' | 'connecting' | 'connected' | 'disconnected' | 'error';
 
-function getCookie(name: string): string | undefined {
-  return document.cookie
-    .split(';')
-    .map((c) => c.trim())
-    .find((c) => c.startsWith(name + '='))
-    ?.split('=')[1];
-}
-
 function buildWsUrl(apiBase: string, path: string, token: string): string {
   // apiBase is intentionally empty: the WebSocket must stay same-origin and
   // be routed through the /ws rewrite so the panel host never reaches the
@@ -50,14 +42,13 @@ export function SSHConsole({ vmId, className }: SSHConsoleProps) {
     setErrorMessage('');
 
     try {
-      const auth = getCookie('accessToken');
       // Same-origin: /api and /ws are proxied server-side to the panel via
       // next.config.js rewrites(); the panel host never reaches the client.
       const apiBase = '';
 
       const resp = await fetch(`/api/v1/vms/${vmId}/ssh/token`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth}` },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
       });
       if (!resp.ok) {

@@ -91,9 +91,13 @@ func securityChecks(ctx context.Context, db *gorm.DB) []SecurityCheck {
 
 	var smtpPass string
 	_ = db.Raw("SELECT COALESCE(data->>'smtpPassword', '') FROM system_settings WHERE section = 'email'").Scan(&smtpPass).Error
-	add("secrets_at_rest", "Stored mail password", smtpPass != "", "warn",
-		"No mail password is stored.",
-		"The mail server password is stored in the database as it was typed, not encrypted. Anyone with a database backup can read it. Use an app-specific password that can do nothing but send mail.", "/settings/system")
+	okMail := "No mail password is stored."
+	if smtpPass != "" {
+		okMail = "The mail server password is stored encrypted."
+	}
+	add("secrets_at_rest", "Stored mail password", smtpPass != "" && !models.IsSealed(smtpPass), "warn",
+		okMail,
+		"The mail server password is stored in the database as it was typed, not encrypted. Restart the panel: it encrypts stored credentials when it starts, and logs any it could not.", "/settings/system")
 
 	offline := countRows(db, "SELECT COUNT(*) FROM nodes WHERE status = 'offline' AND deleted_at IS NULL")
 	add("nodes_offline", "Nodes reachable", offline > 0, "warn",

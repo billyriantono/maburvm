@@ -406,9 +406,9 @@ func (s *ImportService) processDiscoveredVM(ctx context.Context, req *ImportVirt
 		"original_status":   candidate.Status,
 		"original_metadata": candidate.Metadata,
 		"networks":          candidate.Networks,
+		// The VNC password stays on the VM row (encrypted), never in job args.
 		"vnc_config": map[string]interface{}{
-			"port":     vncPort,
-			"password": vncPassword,
+			"port": vncPort,
 		},
 	}
 

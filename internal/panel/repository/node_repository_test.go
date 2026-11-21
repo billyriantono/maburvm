@@ -40,16 +40,30 @@ func (suite *NodeRepositoryTestSuite) TestNodeRepository_GetByID() {
 	assert.Equal(suite.T(), node.Name, found.Name)
 }
 
-func (suite *NodeRepositoryTestSuite) TestNodeRepository_GetByToken() {
+// The agent token is stored encrypted and read back in clear, whichever way it was written.
+func (suite *NodeRepositoryTestSuite) TestNodeRepository_TokenEncryptedAtRest() {
 	ctx := context.Background()
+	models.SetSecretKeys("0123456789abcdef0123456789abcdef")
+	defer models.SetSecretKeys("")
 
 	node := &models.Node{Name: "token-node", IPAddress: "192.168.1.2", Status: models.NodeStatusActive, Token: "secret-token-123"}
-	err := suite.DB.Create(node).Error
-	assert.NoError(suite.T(), err)
+	assert.NoError(suite.T(), suite.DB.Create(node).Error)
+	raw := func() string {
+		var v string
+		suite.DB.Raw("SELECT token FROM nodes WHERE id = ?", node.ID).Scan(&v)
+		return v
+	}
+	assert.True(suite.T(), models.IsSealed(raw()), "stored as %q", raw())
 
-	found, err := suite.nodeRepo.GetByToken(ctx, "secret-token-123")
+	found, err := suite.nodeRepo.GetByID(ctx, node.ID)
 	assert.NoError(suite.T(), err)
-	assert.Equal(suite.T(), node.ID, found.ID)
+	assert.Equal(suite.T(), "secret-token-123", found.Token)
+
+	assert.NoError(suite.T(), suite.nodeRepo.UpdateToken(ctx, node.ID, "rotated-token"))
+	assert.True(suite.T(), models.IsSealed(raw()))
+	found, err = suite.nodeRepo.GetByID(ctx, node.ID)
+	assert.NoError(suite.T(), err)
+	assert.Equal(suite.T(), "rotated-token", found.Token)
 }
 
 func (suite *NodeRepositoryTestSuite) TestNodeRepository_GetByIPAddress() {

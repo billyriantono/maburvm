@@ -160,3 +160,29 @@ func TestFirewallEnforcementOfAVMsNode(t *testing.T) {
 	require.Equal(t, "enforced", svc.FirewallEnforcement(ctx, pfVMB))
 	require.Equal(t, "unknown", svc.FirewallEnforcement(ctx, "no-such-vm"))
 }
+
+// Every VM's rules share one chain on its node, so a VM may hold only so many.
+func TestAddFirewallRuleIsCappedPerVM(t *testing.T) {
+	svc, db := newPortForwardTestService(t)
+	seedPortForwardVMs(t, db)
+	require.NoError(t, db.Exec(`CREATE TABLE firewall_rules (
+		id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, protocol TEXT NOT NULL, port_range TEXT, action TEXT NOT NULL,
+		direction TEXT NOT NULL, source_ip TEXT DEFAULT '0.0.0.0/0', priority INTEGER DEFAULT 100,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, deleted_at DATETIME
+	)`).Error)
+	setQuotaSettings(t, db, `{"firewallRuleMaxPerVm": 3}`)
+	ctx := context.Background()
+	rule := func(vm string) error {
+		_, err := svc.AddFirewallRule(ctx, vm, &AddFirewallRuleRequest{Protocol: "tcp", PortRange: "22", Action: "allow", Direction: "inbound", Priority: 100})
+		return err
+	}
+	for i := 0; i < 3; i++ {
+		require.NoError(t, rule(pfVMA))
+	}
+	require.ErrorIs(t, rule(pfVMA), ErrFirewallRuleLimit)
+	require.NoError(t, rule(pfVMB), "the limit is per VM")
+
+	// Unset, the built-in default applies.
+	setQuotaSettings(t, db, `{}`)
+	require.Equal(t, DefaultFirewallRulesPerVM, FirewallRulesPerVM(ctx, db))
+}

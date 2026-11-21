@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"regexp"
@@ -11,542 +12,291 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/maburvm/panel/internal/shared/models"
 	"github.com/maburvm/panel/internal/shared/queue"
 )
 
 var (
-	// SensitiveFields contains field names that should be redacted from audit logs
-	// to prevent sensitive data from being stored in plain text
-	SensitiveFields = []string{
-		"password",
-		"password_hash",
-		"token",
-		"secret",
-		"api_key",
-		"private_key",
-		"credential",
-		"auth_token",
-		"access_token",
-		"refresh_token",
-		"vnc_password",
-		"two_factor_secret",
-		"ssh_key_private",
-		"api_secret",
-		"session_token",
-		"csrf_token",
+	// sensitiveSubstrings: a body field whose name contains one of these is
+	// stored as [REDACTED]. Over-redacting costs a detail; under-redacting
+	// writes a credential into a table every administrator can read.
+	sensitiveSubstrings = []string{
+		"pass", "secret", "token", "private", "credential", "api_key", "apikey",
+		"access_key", "accesskey", "totp", "recovery", "backup_code", "signature",
+		"authorization", "cookie", "ticket", "user_data", "userdata", "cloud_init", "cloudinit",
+		// A chat webhook URL is itself the credential (alerts keep it encrypted).
+		"webhook_url", "webhookurl",
+	}
+	// sensitiveExact are names too short to match as substrings.
+	sensitiveExact = map[string]bool{"code": true, "otp": true, "key": true, "pin": true}
+
+	// skipPaths are mutating requests that change nothing worth recording.
+	skipPaths = []*regexp.Regexp{
+		regexp.MustCompile(`^/(api/v1/)?(health|healthz|livez|readyz|ready|ping)`),
+		regexp.MustCompile(`/preview$`),
 	}
 
-	// SkipPaths contains regex patterns for paths that should not be audited
-	// These include authentication endpoints and health checks
-	SkipPaths = []*regexp.Regexp{
-		regexp.MustCompile(`^/auth/.*$`),
-		regexp.MustCompile(`^/api/auth/.*$`),
-		regexp.MustCompile(`^/health.*$`),
-		regexp.MustCompile(`^/api/health.*$`),
-		regexp.MustCompile(`^/ping.*$`),
-		regexp.MustCompile(`^/ready.*$`),
-		regexp.MustCompile(`^/live.*$`),
-	}
-
-	// MutationMethods contains HTTP methods that trigger audit logging
-	MutationMethods = map[string]bool{
-		http.MethodPost:   true,
-		http.MethodPut:    true,
-		http.MethodDelete: true,
-		http.MethodPatch:  true,
-	}
+	uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 )
-
-// Action represents an audit action type derived from HTTP method
-type Action string
 
 const (
-	ActionCreate  Action = "CREATE"
-	ActionUpdate  Action = "UPDATE"
-	ActionDelete  Action = "DELETE"
-	ActionPatch   Action = "PATCH"
-	ActionUnknown Action = "UNKNOWN"
+	// maxAuditBody bounds the JSON body kept as the after snapshot.
+	maxAuditBody = 64 << 10
+	// maxAuditString shortens long values (a logo as a data URL, a script).
+	maxAuditString = 512
+	skipAuditKey   = "audit.skip"
 )
 
-// ResourceType represents the type of resource being audited
-type ResourceType string
-
-const (
-	ResourceVM           ResourceType = "VM"
-	ResourceUser         ResourceType = "USER"
-	ResourceNode         ResourceType = "NODE"
-	ResourceNetwork      ResourceType = "NETWORK"
-	ResourceFirewallRule ResourceType = "FIREWALL_RULE"
-	ResourceSnapshot     ResourceType = "SNAPSHOT"
-	ResourceBackup       ResourceType = "BACKUP"
-	ResourceOSTemplate   ResourceType = "OS_TEMPLATE"
-	ResourceSession      ResourceType = "SESSION"
-	ResourceIPAddress    ResourceType = "IP_ADDRESS"
-	ResourceUnknown      ResourceType = "UNKNOWN"
-)
-
-// String returns the string representation of ResourceType
-func (rt ResourceType) String() string {
-	return string(rt)
+// resourceTypes maps a path segment to the resource it names, most specific
+// first: /vms/:id/firewall is a firewall rule, not a VM.
+var resourceTypes = []struct{ seg, rt string }{
+	{"/auth/", "SESSION"},
+	{"/webhooks/billing", "BILLING"},
+	{"/mcp", "MCP"},
+	{"/api-keys", "API_KEY"},
+	{"/support-access", "SUPPORT_ACCESS"},
+	{"/firewall", "FIREWALL_RULE"},
+	{"/port-forwards", "PORT_FORWARD"},
+	{"/snapshots", "SNAPSHOT"},
+	{"/backups", "BACKUP"},
+	{"/floating-ips", "FLOATING_IP"},
+	{"/ip-addresses", "IP_ADDRESS"},
+	{"/ipam", "IP_POOL"},
+	{"/ip-pools", "IP_POOL"},
+	{"/templates", "OS_TEMPLATE"},
+	{"/images", "IMAGE"},
+	{"/isos", "ISO"},
+	{"/settings", "SETTINGS"},
+	{"/alerts", "ALERT"},
+	{"/plans", "PLAN"},
+	{"/regions", "REGION"},
+	{"/storage", "STORAGE"},
+	{"/dns", "DNS"},
+	{"/vpcs", "VPC"},
+	{"/networks", "NETWORK"},
+	{"/users", "USER"},
+	{"/nodes", "NODE"},
+	{"/vms", "VM"},
 }
 
-// AuditContext holds audit information during request processing
-type AuditContext struct {
-	UserID         *string
-	Action         Action
-	ResourceType   ResourceType
-	ResourceID     *string
-	IPAddress      string
-	UserAgent      string
-	Details        map[string]any
-	BeforeSnapshot *map[string]any
-	AfterSnapshot  *map[string]any
-	Timestamp      time.Time
-}
-
-// Client wraps a queue client for audit operations
+// Client records mutating requests to audit_logs through the job queue.
 type Client struct {
-	queueClient *queue.Client
+	insert func(context.Context, queue.AuditJob) error
 }
 
-// NewClient creates a new audit middleware client
+// NewClient creates the audit middleware client. A nil queue records nothing.
 func NewClient(queueClient *queue.Client) *Client {
-	return &Client{
-		queueClient: queueClient,
+	if queueClient == nil {
+		return &Client{}
 	}
+	return &Client{insert: func(ctx context.Context, job queue.AuditJob) error {
+		_, err := queueClient.InsertAudit(ctx, job)
+		return err
+	}}
 }
 
-// EchoMiddleware returns an Echo middleware that logs mutations to audit_logs
-// via River queue asynchronously. It captures resource snapshots and redacts sensitive data.
-//
-// Features:
-// - Logs only mutation methods (POST, PUT, DELETE, PATCH)
-// - Skips authentication and health check endpoints
-// - Extracts user ID from Echo context (set by auth middleware)
-// - Captures request body as "after" snapshot with sensitive data redacted
-// - Captures HTTP status code, method, and path in details
-// - Enqueues audit log asynchronously (non-blocking)
-// - Failed audit logging doesn't fail the request
+// SkipAudit marks a request whose POST only reads (a billing status poll), so
+// it is not recorded.
+func SkipAudit(c echo.Context) { c.Set(skipAuditKey, true) }
+
+// EchoMiddleware records every POST, PUT, PATCH and DELETE: who, from where,
+// which route, the outcome, and the JSON body with credentials redacted.
+// Mounted globally; it reads the user after the route's auth has run. A request
+// whose handler already wrote its own audit row is not recorded twice.
 func (c *Client) EchoMiddleware() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(ctx echo.Context) error {
-			request := ctx.Request()
-
-			// Skip non-mutation requests and excluded paths
-			if shouldSkip(request) {
+			req := ctx.Request()
+			if c.insert == nil || shouldSkip(req) {
 				return next(ctx)
 			}
-
-			// Create audit context
-			auditCtx := &AuditContext{
-				Action:       getAction(request.Method),
-				ResourceType: getResourceType(request.URL.Path),
-				IPAddress:    getClientIP(request),
-				UserAgent:    request.UserAgent(),
-				Details:      make(map[string]any),
+			job := queue.AuditJob{
+				Action:       auditAction(req),
+				ResourceType: resourceType(req.URL.Path),
+				ResourceID:   resourceID(req.URL.Path),
+				IPAddress:    ctx.RealIP(),
+				UserAgent:    truncate(req.UserAgent(), 500),
 				Timestamp:    time.Now().UTC(),
 			}
+			job.AfterSnapshot = captureBody(req)
 
-			// Extract user ID from Echo context (set by auth middleware)
-			extractUserIDFromContext(ctx, auditCtx)
-
-			// Extract resource ID from path
-			extractResourceID(auditCtx, request.URL.Path)
-
-			// Capture request body for after snapshot
-			captureRequestBody(request, auditCtx)
-
-			// Use custom response writer to capture status code
-			rec := &auditResponseRecorder{
-				Response:   ctx.Response(),
-				statusCode: http.StatusOK,
-			}
-			originalWriter := ctx.Response().Writer
-			ctx.Response().Writer = rec
-
-			// Process request
+			trackCtx, written := models.TrackAuditWrites(req.Context())
+			ctx.SetRequest(req.WithContext(trackCtx))
 			err := next(ctx)
+			ctx.SetRequest(req)
 
-			// Restore original writer
-			ctx.Response().Writer = originalWriter
-
-			// Record additional details
-			auditCtx.Details["http_status"] = rec.statusCode
-			auditCtx.Details["method"] = request.Method
-			auditCtx.Details["path"] = request.URL.Path
-			if reqID := ctx.Response().Header().Get(echo.HeaderXRequestID); reqID != "" {
-				auditCtx.Details["request_id"] = reqID
+			if written.Load() || ctx.Get(skipAuditKey) != nil {
+				return err
 			}
-
-			// Mark if the request failed
-			if rec.statusCode >= 400 {
-				auditCtx.Details["failed"] = true
-				auditCtx.Details["status_class"] = "error"
-			} else {
-				auditCtx.Details["status_class"] = "success"
+			status := ctx.Response().Status
+			if err != nil && !ctx.Response().Committed {
+				status = http.StatusInternalServerError
+				var he *echo.HTTPError
+				if errors.As(err, &he) {
+					status = he.Code
+				}
 			}
-
-			// Enqueue audit log asynchronously (don't block request)
-			// Use goroutine to ensure non-blocking behavior
-			go c.enqueueAuditLog(request.Context(), auditCtx)
-
+			// Nothing changed: no such route, or refused by a rate limit (a
+			// flood must not turn into a flood of audit rows).
+			if ctx.Path() == "" || status == http.StatusMethodNotAllowed || status == http.StatusTooManyRequests {
+				return err
+			}
+			user, signedIn := GetUserContext(ctx)
+			// Anyone could fill the table with refused anonymous calls; failed
+			// sign-ins (under /auth/, rate limited) are still kept.
+			if !signedIn && status == http.StatusUnauthorized && !strings.Contains(req.URL.Path, "/auth/") {
+				return err
+			}
+			if signedIn {
+				id := user.ID.String()
+				job.UserID = &id
+			}
+			job.Details = map[string]any{
+				"method":      req.Method,
+				"path":        req.URL.Path,
+				"route":       ctx.Path(),
+				"http_status": status,
+				"failed":      status >= 400,
+			}
+			if rid := ctx.Response().Header().Get(echo.HeaderXRequestID); rid != "" {
+				job.Details["request_id"] = rid
+			}
+			if loc := ctx.Response().Header().Get(echo.HeaderLocation); loc != "" {
+				loc, _, _ = strings.Cut(loc, "#") // an SSO two-factor ticket rides in the fragment
+				job.Details["redirect"] = loc
+			}
+			// After the response: the request context is done by then.
+			go func() {
+				ictx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				_ = c.insert(ictx, job)
+			}()
 			return err
 		}
 	}
 }
 
-// shouldSkip determines if the request should be skipped from audit logging
 func shouldSkip(r *http.Request) bool {
-	// Skip non-mutation methods (GET, HEAD, OPTIONS, TRACE, CONNECT)
-	if !MutationMethods[r.Method] {
-		return true
-	}
-
-	// Skip excluded paths (auth, health checks)
-	path := r.URL.Path
-	for _, pattern := range SkipPaths {
-		if pattern.MatchString(path) {
-			return true
-		}
-	}
-
-	return false
-}
-
-// getAction converts HTTP method to audit action
-func getAction(method string) Action {
-	switch method {
-	case http.MethodPost:
-		return ActionCreate
-	case http.MethodPut:
-		return ActionUpdate
-	case http.MethodDelete:
-		return ActionDelete
-	case http.MethodPatch:
-		return ActionPatch
-	default:
-		return ActionUnknown
-	}
-}
-
-// getResourceType extracts resource type from URL path
-func getResourceType(path string) ResourceType {
-	path = strings.ToLower(path)
-
-	// More specific matches first to avoid misclassification
 	switch {
-	case strings.Contains(path, "/firewall"):
-		return ResourceFirewallRule
-	case strings.Contains(path, "/snapshots"):
-		return ResourceSnapshot
-	case strings.Contains(path, "/backups"):
-		return ResourceBackup
-	case strings.Contains(path, "/templates"):
-		return ResourceOSTemplate
-	case strings.Contains(path, "/sessions"):
-		return ResourceSession
-	case strings.Contains(path, "/ip-addresses"):
-		return ResourceIPAddress
-	case strings.Contains(path, "/networks"):
-		return ResourceNetwork
-	case strings.Contains(path, "/vms"):
-		return ResourceVM
-	case strings.Contains(path, "/users"):
-		return ResourceUser
-	case strings.Contains(path, "/nodes"):
-		return ResourceNode
+	case r.Method == http.MethodPost, r.Method == http.MethodPut, r.Method == http.MethodPatch, r.Method == http.MethodDelete:
+	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/auth/oidc/callback"):
+		// An SSO sign-in finishes on a GET; its outcome is where it redirects to.
 	default:
-		return ResourceUnknown
+		return true
 	}
-}
-
-// extractResourceID extracts the resource ID from the URL path
-func extractResourceID(ctx *AuditContext, path string) {
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-
-	// Look for UUID patterns or numeric IDs in path segments
-	for _, part := range parts {
-		// Skip API version prefix and common non-ID segments
-		if part == "api" || part == "v1" || part == "v2" || part == "v3" {
-			continue
-		}
-
-		// Skip resource type segments (match against known resource types)
-		lowerPart := strings.ToLower(part)
-		if isResourceTypeName(lowerPart) {
-			continue
-		}
-
-		// Check if this segment looks like an ID (UUID or numeric)
-		if isResourceID(part) {
-			ctx.ResourceID = &part
-			return
-		}
-	}
-}
-
-// isResourceTypeName checks if a segment is a resource type name (not an ID)
-func isResourceTypeName(segment string) bool {
-	resourceTypes := []string{
-		"vms", "users", "nodes", "networks", "firewall",
-		"snapshots", "backups", "templates", "sessions",
-		"ip-addresses", "auth", "health", "api",
-	}
-	for _, rt := range resourceTypes {
-		if segment == rt {
+	for _, p := range skipPaths {
+		if p.MatchString(r.URL.Path) {
 			return true
 		}
 	}
 	return false
 }
 
-// isResourceID checks if a string segment looks like a resource ID
-func isResourceID(segment string) bool {
-	// UUID pattern (standard UUID format)
-	if matched, _ := regexp.MatchString(
-		`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`,
-		segment,
-	); matched {
-		return true
+func auditAction(r *http.Request) string {
+	switch {
+	case strings.HasSuffix(r.URL.Path, "/auth/login"), strings.HasSuffix(r.URL.Path, "/auth/oidc/2fa"),
+		strings.HasSuffix(r.URL.Path, "/auth/oidc/callback"):
+		return "LOGIN"
+	case strings.HasSuffix(r.URL.Path, "/auth/logout"):
+		return "LOGOUT"
 	}
-	// Numeric ID (positive integer)
-	if matched, _ := regexp.MatchString(`^\d+$`, segment); matched {
-		return true
-	}
-	return false
-}
-
-// extractUserIDFromContext extracts user ID from Echo context
-func extractUserIDFromContext(ctx echo.Context, auditCtx *AuditContext) {
-	// Try to get user context from Echo context (set by auth middleware)
-	if user, ok := GetUserContext(ctx); ok && user != nil {
-		userID := user.ID.String()
-		auditCtx.UserID = &userID
-		return
-	}
-
-	// Fallback to header (for API key auth or testing)
-	request := ctx.Request()
-	if userID := request.Header.Get("X-User-ID"); userID != "" {
-		auditCtx.UserID = &userID
+	switch r.Method {
+	case http.MethodPost:
+		return "CREATE"
+	case http.MethodPut:
+		return "UPDATE"
+	case http.MethodPatch:
+		return "PATCH"
+	default:
+		return "DELETE"
 	}
 }
 
-// captureRequestBody reads the request body and creates an after snapshot
-func captureRequestBody(r *http.Request, auditCtx *AuditContext) {
-	if r.Body == nil || r.Body == http.NoBody {
-		return
-	}
-
-	bodyBytes, err := io.ReadAll(r.Body)
-	if err != nil || len(bodyBytes) == 0 {
-		return
-	}
-
-	// Restore body for subsequent handlers
-	r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-
-	// Parse and redact body
-	var requestBody map[string]any
-	if err := json.Unmarshal(bodyBytes, &requestBody); err == nil {
-		auditCtx.AfterSnapshot = redactSnapshot(&requestBody)
-	}
-}
-
-// getClientIP extracts the client IP from request headers or RemoteAddr
-func getClientIP(r *http.Request) string {
-	// Check X-Forwarded-For header (common for proxies/load balancers)
-	xff := r.Header.Get("X-Forwarded-For")
-	if xff != "" {
-		ips := strings.Split(xff, ",")
-		if len(ips) > 0 {
-			return strings.TrimSpace(ips[0])
+func resourceType(path string) string {
+	path = strings.ToLower(path)
+	for _, r := range resourceTypes {
+		if strings.Contains(path, r.seg) {
+			return r.rt
 		}
 	}
-
-	// Check X-Real-Ip header (alternative proxy header)
-	xri := r.Header.Get("X-Real-Ip")
-	if xri != "" {
-		return xri
-	}
-
-	// Check CF-Connecting-IP (Cloudflare)
-	cfIP := r.Header.Get("CF-Connecting-IP")
-	if cfIP != "" {
-		return cfIP
-	}
-
-	// Fallback to RemoteAddr (strip port if present)
-	ip := r.RemoteAddr
-	if idx := strings.LastIndex(ip, ":"); idx != -1 {
-		ip = ip[:idx]
-	}
-	// Handle IPv6 addresses with brackets
-	ip = strings.Trim(ip, "[]")
-	return ip
+	return "UNKNOWN"
 }
 
-// redactSnapshot recursively redacts sensitive fields from a snapshot
-// It traverses nested maps and arrays to ensure all sensitive data is redacted
-func redactSnapshot(snapshot *map[string]any) *map[string]any {
-	if snapshot == nil {
+// resourceID is the first UUID in the path. audit_logs.resource_id is a uuid
+// column, so anything else would fail the insert.
+func resourceID(path string) *string {
+	for _, part := range strings.Split(path, "/") {
+		if uuidRe.MatchString(part) {
+			return &part
+		}
+	}
+	return nil
+}
+
+// captureBody reads a JSON body (and puts it back) as the redacted after
+// snapshot. Uploads and other bodies are not read.
+func captureBody(r *http.Request) *map[string]any {
+	if r.Body == nil || r.Body == http.NoBody || r.ContentLength > maxAuditBody ||
+		!strings.HasPrefix(r.Header.Get(echo.HeaderContentType), echo.MIMEApplicationJSON) {
 		return nil
 	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxAuditBody+1))
+	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(raw), r.Body))
+	if err != nil || len(raw) == 0 || len(raw) > maxAuditBody {
+		return nil
+	}
+	var body map[string]any
+	if json.Unmarshal(raw, &body) != nil {
+		return nil
+	}
+	out := redactMap(body)
+	return &out
+}
 
-	redacted := make(map[string]any)
-	for k, v := range *snapshot {
+func redactMap(m map[string]any) map[string]any {
+	out := make(map[string]any, len(m))
+	for k, v := range m {
 		if isSensitiveField(k) {
-			redacted[k] = "[REDACTED]"
-		} else if nested, ok := v.(map[string]any); ok {
-			redacted[k] = *redactSnapshot(&nested)
-		} else if arr, ok := v.([]any); ok {
-			redacted[k] = redactArray(arr)
-		} else {
-			redacted[k] = v
+			out[k] = "[REDACTED]"
+			continue
 		}
+		out[k] = redactValue(v)
 	}
-	return &redacted
+	return out
 }
 
-// redactArray recursively redacts sensitive fields from array elements
-func redactArray(arr []any) []any {
-	result := make([]any, len(arr))
-	for i, v := range arr {
-		if nested, ok := v.(map[string]any); ok {
-			result[i] = *redactSnapshot(&nested)
-		} else {
-			result[i] = v
+func redactValue(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		return redactMap(t)
+	case []any:
+		out := make([]any, len(t))
+		for i, e := range t {
+			out[i] = redactValue(e)
 		}
+		return out
+	case string:
+		return truncate(t, maxAuditString)
 	}
-	return result
+	return v
 }
 
-// isSensitiveField checks if a field name contains sensitive keywords
 func isSensitiveField(field string) bool {
 	lower := strings.ToLower(field)
-	for _, sensitive := range SensitiveFields {
-		if lower == sensitive || strings.Contains(lower, sensitive) {
+	if sensitiveExact[lower] {
+		return true
+	}
+	for _, s := range sensitiveSubstrings {
+		if strings.Contains(lower, s) {
 			return true
 		}
 	}
 	return false
 }
 
-// enqueueAuditLog sends the audit log to the River queue asynchronously
-// This function is designed to be non-blocking - errors are logged but not returned
-func (c *Client) enqueueAuditLog(ctx context.Context, auditCtx *AuditContext) {
-	if c.queueClient == nil {
-		return
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
 	}
-
-	job := queue.AuditJob{
-		UserID:         auditCtx.UserID,
-		Action:         string(auditCtx.Action),
-		ResourceType:   string(auditCtx.ResourceType),
-		ResourceID:     auditCtx.ResourceID,
-		IPAddress:      auditCtx.IPAddress,
-		UserAgent:      auditCtx.UserAgent,
-		Details:        auditCtx.Details,
-		BeforeSnapshot: auditCtx.BeforeSnapshot,
-		AfterSnapshot:  auditCtx.AfterSnapshot,
-		Timestamp:      auditCtx.Timestamp,
-	}
-
-	// Insert job to River queue
-	// Errors are intentionally not returned to prevent blocking the request
-	// The AuditWorker handles retries and logging of failures
-	_, _ = c.queueClient.InsertAudit(ctx, job)
-}
-
-// auditResponseRecorder wraps echo.Response to capture status code
-type auditResponseRecorder struct {
-	*echo.Response
-	statusCode int
-}
-
-// WriteHeader captures the status code before writing
-func (rec *auditResponseRecorder) WriteHeader(code int) {
-	rec.statusCode = code
-	rec.Response.WriteHeader(code)
-}
-
-// Write captures the written bytes and delegates to the underlying response
-func (rec *auditResponseRecorder) Write(b []byte) (int, error) {
-	return rec.Response.Write(b)
-}
-
-// AuditLog manually creates an audit log entry for programmatic use
-// This can be called from services when automatic middleware logging is not sufficient
-// Examples: background jobs, bulk operations, or complex multi-step transactions
-func (c *Client) AuditLog(
-	userID *string,
-	action string,
-	resourceType string,
-	resourceID *string,
-	ipAddress string,
-	userAgent string,
-	details map[string]any,
-	beforeSnapshot *map[string]any,
-	afterSnapshot *map[string]any,
-) {
-	if c.queueClient == nil {
-		return
-	}
-
-	// Redact sensitive data from snapshots before logging
-	if beforeSnapshot != nil {
-		beforeSnapshot = redactSnapshot(beforeSnapshot)
-	}
-	if afterSnapshot != nil {
-		afterSnapshot = redactSnapshot(afterSnapshot)
-	}
-
-	job := queue.AuditJob{
-		UserID:         userID,
-		Action:         action,
-		ResourceType:   resourceType,
-		ResourceID:     resourceID,
-		IPAddress:      ipAddress,
-		UserAgent:      userAgent,
-		Details:        details,
-		BeforeSnapshot: beforeSnapshot,
-		AfterSnapshot:  afterSnapshot,
-		Timestamp:      time.Now().UTC(),
-	}
-
-	// Fire and forget - don't block the caller
-	// Use background context as this is fire-and-forget
-	go func() {
-		_, _ = c.queueClient.InsertAudit(context.Background(), job)
-	}()
-}
-
-// CreateAuditContext creates a new AuditContext for manual audit logging
-// This is useful when you need to capture before/after snapshots programmatically
-func CreateAuditContext(userID *string, action Action, resourceType ResourceType) *AuditContext {
-	return &AuditContext{
-		UserID:       userID,
-		Action:       action,
-		ResourceType: resourceType,
-		Details:      make(map[string]any),
-		Timestamp:    time.Now().UTC(),
-	}
-}
-
-// SetBeforeSnapshot sets the before snapshot in the audit context with redaction
-func (a *AuditContext) SetBeforeSnapshot(data map[string]any) {
-	a.BeforeSnapshot = redactSnapshot(&data)
-}
-
-// SetAfterSnapshot sets the after snapshot in the audit context with redaction
-func (a *AuditContext) SetAfterSnapshot(data map[string]any) {
-	a.AfterSnapshot = redactSnapshot(&data)
-}
-
-// SetDetail adds a detail to the audit context
-func (a *AuditContext) SetDetail(key string, value any) {
-	if a.Details == nil {
-		a.Details = make(map[string]any)
-	}
-	a.Details[key] = value
+	return s[:n] + "…"
 }

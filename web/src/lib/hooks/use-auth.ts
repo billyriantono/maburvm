@@ -5,7 +5,7 @@ import {
   UseQueryOptions,
 } from '@tanstack/react-query'
 import { api } from '@/lib/api-client'
-import type { User, LoginRequest, LoginResponse } from '@/types'
+import type { User } from '@/types'
 
 export function useCurrentUser(
   options?: Omit<UseQueryOptions<User>, 'queryKey' | 'queryFn'>
@@ -27,32 +27,17 @@ export function useAuth(
   return useCurrentUser(options)
 }
 
-export function useLogin() {
-  const queryClient = useQueryClient()
-
-  return useMutation<LoginResponse, Error, LoginRequest>({
-    mutationFn: async (data) => {
-      const response = await api.post<LoginResponse>('/api/v1/auth/login', data)
-      return response.data.data
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['auth', 'me'] })
-    },
-  })
-}
-
 export function useLogout() {
   const queryClient = useQueryClient()
 
   return useMutation<void, Error, void>({
     mutationFn: async () => {
       try {
+        // The panel revokes the session and removes the HttpOnly cookie.
         await api.post('/api/v1/auth/logout')
       } catch {
-        // Ignore logout API errors
+        // The panel removes the cookie even when it refuses the session.
       }
-      // Always clear the cookie client-side
-      document.cookie = 'accessToken=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT'
     },
     onSuccess: () => {
       queryClient.clear()

@@ -21,13 +21,25 @@ type LoginFormData = z.infer<typeof loginSchema>
 // Messages for /login?sso=… after an SSO round trip (see handler/oidc.go).
 const SSO_MESSAGES: Record<string, string> = {
   noaccount: "You signed in with SSO, but no panel account uses that email. Ask an administrator to add you.",
+  suspended: "This account is suspended. Contact support.",
   ip: "Your IP address is not whitelisted for this account.",
   expired: "The SSO sign-in expired or was opened in another browser. Please try again.",
   error: "SSO sign-in failed. Please try again or sign in with your password.",
 }
 
-function storeSession(token: string) {
-  document.cookie = `accessToken=${token}; path=/; max-age=${24 * 60 * 60}; SameSite=Lax`
+// afterSignIn is the page a dropped session came from (?next=), or the
+// dashboard. Only a path on this site: never another origin.
+function afterSignIn(): string {
+  const next = new URLSearchParams(window.location.search).get("next") || ""
+  // Judge the parsed URL: the parser drops tabs and turns "\" into "/", so a
+  // string check alone lets "/\t/evil.example" through as "//evil.example".
+  try {
+    const url = new URL(next, window.location.origin)
+    if (next.startsWith("/") && url.origin === window.location.origin) return url.pathname + url.search + url.hash
+  } catch {
+    // not a URL: fall through
+  }
+  return "/dashboard"
 }
 
 interface LoginError {
@@ -48,8 +60,12 @@ export default function LoginPage() {
   const [ssoLabel, setSsoLabel] = useState<string | null>(null)
   const [ssoTicket, setSsoTicket] = useState<string | null>(null)
   const [ssoCode, setSsoCode] = useState("")
+  // Sign-in waits for the page to be live: a submit before that would be the
+  // browser's own, with nothing to stop it.
+  const [hydrated, setHydrated] = useState(false)
 
   useEffect(() => {
+    setHydrated(true)
     fetch("/api/v1/auth/oidc/config")
       .then((r) => r.json())
       .then((c) => setSsoLabel(c.enabled ? c.label : null))
@@ -84,8 +100,8 @@ export default function LoginPage() {
         setError({ message: result.error || "Invalid verification code" })
         return
       }
-      storeSession(result.token)
-      router.push("/dashboard")
+      // The panel set the session as an HttpOnly cookie on this response.
+      router.push(afterSignIn())
     } catch {
       setError({ message: "An unexpected error occurred. Please try again." })
     } finally {
@@ -126,8 +142,8 @@ export default function LoginPage() {
       const result = await response.json()
 
       if (!response.ok) {
-        // The panel answers 403 only when the IP isn't whitelisted.
-        if (response.status === 403) {
+        // A 403 is the IP allow-list, unless the account is suspended.
+        if (response.status === 403 && result.code !== "account_suspended") {
           setIpWarning({ message: result.error || "Your IP address is not whitelisted" })
           return
         }
@@ -141,9 +157,8 @@ export default function LoginPage() {
         return
       }
 
-      // Success - store token and redirect to dashboard
-      storeSession(result.token)
-      router.push("/dashboard")
+      // The panel set the session as an HttpOnly cookie on this response.
+      router.push(afterSignIn())
     } catch (err) {
       setError({
         message: "An unexpected error occurred. Please try again.",
@@ -179,9 +194,8 @@ export default function LoginPage() {
         return
       }
 
-      // Success - store token and redirect to dashboard
-      storeSession(result.token)
-      router.push("/dashboard")
+      // The panel set the session as an HttpOnly cookie on this response.
+      router.push(afterSignIn())
     } catch (err) {
       setError({
         message: "An unexpected error occurred. Please try again.",
@@ -221,7 +235,7 @@ export default function LoginPage() {
 
       {/* SSO sign-in that stopped at the panel's own two-factor step */}
       {ssoTicket ? (
-        <form onSubmit={handleSso2FA} className="space-y-5 animate-in fade-in duration-200">
+        <form method="post" onSubmit={handleSso2FA} className="space-y-5 animate-in fade-in duration-200">
           <div>
             <div className="flex items-center gap-2 mb-2">
               <ShieldCheck className="w-4 h-4 text-muted-foreground" />
@@ -232,7 +246,6 @@ export default function LoginPage() {
             <Input
               id="ssoCode"
               type="text"
-              inputMode="numeric"
               autoComplete="one-time-code"
               maxLength={8}
               placeholder="123456"
@@ -266,6 +279,7 @@ export default function LoginPage() {
       )}
 
       <form
+        method="post"
         onSubmit={handleSubmit(requires2FA ? handle2FA : onSubmit)}
         className="space-y-5"
       >
@@ -345,18 +359,16 @@ export default function LoginPage() {
             <Input
               id="totpCode"
               type="text"
-              inputMode="numeric"
-              pattern="[0-9]*"
               autoComplete="one-time-code"
               autoFocus
-              maxLength={6}
+              maxLength={8}
               placeholder="123456"
               className="tracking-widest text-center"
-              {...register("totpCode")}
+              {...register("totpCode", { setValueAs: (v: string) => v.trim() })}
               disabled={isLoading}
             />
             <p className="mt-2 text-xs text-muted-foreground">
-              Enter the 6-digit code from your authenticator app
+              Enter the 6-digit code from your authenticator app, or one of your backup codes.
             </p>
             {errors.totpCode && (
               <p className="mt-2 text-sm font-medium text-destructive">
@@ -371,7 +383,7 @@ export default function LoginPage() {
           type="submit"
           size="xl"
           className="w-full text-base font-medium"
-          disabled={isLoading}
+          disabled={isLoading || !hydrated}
         >
           {isLoading ? (
             <>

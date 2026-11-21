@@ -158,6 +158,16 @@ func clientNetworkSelectionDenied(c echo.Context) error {
 	})
 }
 
+// templateNotOffered answers a customer who picked a system their plan does
+// not include.
+func templateNotOffered(c echo.Context) error {
+	return c.JSON(http.StatusForbidden, map[string]interface{}{
+		"error":   "Forbidden",
+		"code":    "template_not_offered",
+		"message": "This operating system is not included in this server's plan. Choose another one, or contact support to order it.",
+	})
+}
+
 // isClientRole reports whether the caller is an authenticated non-admin (client).
 // Unauthenticated callers return false so the dedicated 401 path elsewhere owns
 // that case.
@@ -431,6 +441,8 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{
 				"error": "Bad Request", "message": err.Error(),
 			})
+		case errors.Is(err, service.ErrTemplateNotOffered):
+			return templateNotOffered(c)
 		case errors.Is(err, service.ErrPlanNotFound):
 			return c.JSON(http.StatusNotFound, map[string]interface{}{
 				"error": "Not Found", "message": "Plan not found",
@@ -718,9 +730,17 @@ type VMDetailResponse struct {
 	ConsoleEnabled bool   `json:"console_enabled"`
 	RescueMode     bool   `json:"rescue_mode"`
 	// null = not known, "" = no ISO in the drive, otherwise the attached image.
-	AttachedISO *string                `json:"attached_iso"`
-	Suspended   bool                   `json:"suspended"`
-	AgentStatus map[string]interface{} `json:"agent_status,omitempty"`
+	AttachedISO *string `json:"attached_iso"`
+	Suspended   bool    `json:"suspended"`
+	// What the VM is sold as. The billing reference itself is for operators;
+	// its owner is told only that billing manages the VM, and whether that
+	// stops them deleting it.
+	PlanID         string                 `json:"plan_id,omitempty"`
+	PlanName       string                 `json:"plan_name,omitempty"`
+	BillingRef     string                 `json:"billing_ref,omitempty"`
+	BillingManaged bool                   `json:"billing_managed"`
+	OwnerMayDelete bool                   `json:"owner_may_delete"`
+	AgentStatus    map[string]interface{} `json:"agent_status,omitempty"`
 	// StateUnknown: the node is offline, so Status is only what the panel last saw.
 	NodeStatus   string `json:"node_status,omitempty"`
 	StateUnknown bool   `json:"state_unknown"`
@@ -792,6 +812,17 @@ func (h *VMHandler) GetVM(c echo.Context) error {
 	if vm.VM.VNCPort != nil {
 		resp.VNCPort = *vm.VM.VNCPort
 	}
+	resp.BillingManaged = vm.VM.BillingManaged()
+	resp.OwnerMayDelete = h.service.OwnerMayDelete(c.Request().Context(), vm.VM, vm.VM.UserID) == nil
+	if vm.VM.PlanID != nil {
+		resp.PlanID = *vm.VM.PlanID
+		if plan, perr := h.service.GetPlan(c.Request().Context(), resp.PlanID); perr == nil {
+			resp.PlanName = plan.Name
+		}
+	}
+	if resp.BillingManaged && !isClientRole(c) {
+		resp.BillingRef = *vm.VM.BillingRef
+	}
 	if vm.IPv6 != nil {
 		resp.IPv6Prefix = vm.IPv6.Prefix
 		resp.IPv6Address = vm.IPv6.Address
@@ -833,6 +864,10 @@ type UpdateVMRequest struct {
 	Hostname  string            `json:"hostname,omitempty"`
 	Resources *models.Resources `json:"resources,omitempty"`
 	UserID    string            `json:"user_id,omitempty"`
+	// PlanID and BillingRef record what the VM is sold as (admin-only). Absent
+	// leaves one as it is; "" clears it. Neither changes the VM itself.
+	PlanID     *string `json:"plan_id,omitempty"`
+	BillingRef *string `json:"billing_ref,omitempty"`
 }
 
 // UpdateVM handles PUT /api/vms/:id - Update VM hostname and resources
@@ -889,6 +924,41 @@ func (h *VMHandler) UpdateVM(c echo.Context) error {
 			})
 		}
 		updateReq.UserID = req.UserID
+	}
+	if req.PlanID != nil || req.BillingRef != nil {
+		if !isAdmin {
+			return c.JSON(http.StatusForbidden, map[string]interface{}{
+				"error": "Forbidden", "message": "Only administrators can change a VM's plan or billing reference",
+			})
+		}
+		if req.BillingRef != nil {
+			trimmed := strings.TrimSpace(*req.BillingRef)
+			req.BillingRef = &trimmed
+		}
+		before, linkErr := h.service.GetVMRecord(c.Request().Context(), id)
+		if linkErr == nil {
+			_, linkErr = h.service.SetBillingLink(c.Request().Context(), id, req.PlanID, req.BillingRef)
+		}
+		switch {
+		case errors.Is(linkErr, service.ErrVMNotFound):
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
+		case errors.Is(linkErr, service.ErrPlanNotFound):
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Plan not found"})
+		case errors.Is(linkErr, service.ErrInvalidResources):
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": linkErr.Error()})
+		case linkErr != nil:
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Internal Server Error", "message": linkErr.Error()})
+		}
+		// The reference decides which billing service may act on the VM and
+		// whether its owner may delete it: who changed it is on record.
+		details := map[string]any{"hostname": before.Hostname}
+		if req.PlanID != nil {
+			details["plan_id"], details["previous_plan_id"] = *req.PlanID, derefStr(before.PlanID)
+		}
+		if req.BillingRef != nil {
+			details["billing_ref"], details["previous_billing_ref"] = *req.BillingRef, derefStr(before.BillingRef)
+		}
+		h.logVMActivity(c, id, "vm.billing_link", details)
 	}
 
 	// Update VM
@@ -965,6 +1035,13 @@ func (h *VMHandler) UpdateVM(c echo.Context) error {
 	})
 }
 
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
 // ============================================================================
 // Delete VM
 // ============================================================================
@@ -1005,9 +1082,22 @@ func (h *VMHandler) DeleteVM(c echo.Context) error {
 	// Capture the hostname before the VM is gone so the audit entry is readable.
 	deletedHostname := h.vmHostname(c, id)
 
-	// Delete VM
-	if err := h.service.DeleteVM(c.Request().Context(), id); err != nil {
+	// An operator deletes any VM; an owner only what the service layer's rule
+	// for owners allows.
+	var err error
+	if userCtx, ok := middleware.GetUserContext(c); ok && userCtx.Role != models.RoleAdmin {
+		err = h.service.DeleteVMByOwner(c.Request().Context(), id, userCtx.ID.String())
+	} else {
+		err = h.service.DeleteVM(c.Request().Context(), id)
+	}
+	if err != nil {
 		switch {
+		case errors.Is(err, service.ErrBillingManaged):
+			return c.JSON(http.StatusForbidden, map[string]interface{}{
+				"error":   "Forbidden",
+				"code":    "billing_managed",
+				"message": "This server is managed by your billing account. Cancel the service there to remove it.",
+			})
 		case errors.Is(err, service.ErrVMNotFound):
 			return c.JSON(http.StatusNotFound, map[string]interface{}{
 				"error":   "Not Found",
@@ -1240,6 +1330,7 @@ func (h *VMHandler) RebuildVM(c echo.Context) error {
 		Password:           req.Password,
 		RegeneratePassword: req.RegeneratePassword,
 		SSHPublicKeys:      sshPublicKeys,
+		ByCustomer:         isClientRole(c),
 	}
 	// Same rule as create: a reinstalled VM always has a root password its
 	// owner has been shown, with or without SSH keys.
@@ -1260,6 +1351,8 @@ func (h *VMHandler) RebuildVM(c echo.Context) error {
 				"error":   "Not Found",
 				"message": "OS template not found",
 			})
+		case errors.Is(err, service.ErrTemplateNotOffered):
+			return templateNotOffered(c)
 		case errors.Is(err, service.ErrRebuildNotPossible):
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{
 				"error":   "Bad Request",
@@ -1315,9 +1408,11 @@ func (h *VMHandler) CloneVM(c echo.Context) error {
 		return clientNetworkSelectionDenied(c)
 	}
 
-	resp, err := h.service.CloneVM(c.Request().Context(), &service.CloneVMRequest{SourceVMID: id, Hostname: req.Hostname, DestNodeID: req.DestNodeID})
+	resp, err := h.service.CloneVM(c.Request().Context(), &service.CloneVMRequest{SourceVMID: id, Hostname: req.Hostname, DestNodeID: req.DestNodeID, ByCustomer: isClientRole(c)})
 	if err != nil {
 		switch {
+		case errors.Is(err, service.ErrTemplateNotOffered):
+			return templateNotOffered(c)
 		case errors.Is(err, service.ErrVMNotFound):
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
 		case errors.Is(err, service.ErrTemplateNotFound):

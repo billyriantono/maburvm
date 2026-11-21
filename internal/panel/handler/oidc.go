@@ -148,6 +148,8 @@ func (h *OIDCHandler) Callback(c echo.Context) error {
 		return c.Redirect(http.StatusFound, "/login?sso=noaccount")
 	case errors.Is(err, service.ErrIPNotWhitelisted):
 		return c.Redirect(http.StatusFound, "/login?sso=ip")
+	case errors.Is(err, service.ErrAccountSuspended):
+		return c.Redirect(http.StatusFound, "/login?sso=suspended")
 	case err != nil:
 		slog.Default().Error("sso sign-in failed", "error", err)
 		return c.Redirect(http.StatusFound, "/login?sso=error")
@@ -160,7 +162,7 @@ func (h *OIDCHandler) Callback(c echo.Context) error {
 		return c.Redirect(http.StatusFound, "/login?sso=2fa#ticket="+url.QueryEscape(ticket))
 	}
 	slog.Default().Info("sso sign-in", "user_id", user.ID, "ip", c.RealIP())
-	setSessionCookie(c, token)
+	middleware.SetSessionCookie(c, token, h.users.SessionLifetime())
 	return c.Redirect(http.StatusFound, "/dashboard")
 }
 
@@ -170,7 +172,7 @@ type sso2FATicket struct {
 }
 
 // Verify2FA completes an SSO sign-in for a user with panel two-factor on.
-// Responds like the password login, so the page stores the token the same way.
+// Responds like the password login, session cookie included.
 func (h *OIDCHandler) Verify2FA(c echo.Context) error {
 	var req struct {
 		Ticket   string `json:"ticket"`
@@ -184,6 +186,9 @@ func (h *OIDCHandler) Verify2FA(c echo.Context) error {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "This sign-in expired. Start again with SSO."})
 	}
 	user, token, err := h.users.SSOVerify2FA(t.UserID, req.TOTPCode, c.RealIP())
+	if locked, out := accountLocked(c, err); locked {
+		return out
+	}
 	switch {
 	case errors.Is(err, service.ErrIPNotWhitelisted):
 		return c.JSON(http.StatusForbidden, map[string]string{"error": "IP address not whitelisted"})
@@ -191,7 +196,8 @@ func (h *OIDCHandler) Verify2FA(c echo.Context) error {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Invalid 2FA code"})
 	}
 	slog.Default().Info("sso sign-in", "user_id", user.ID, "ip", c.RealIP(), "two_factor", true)
-	return c.JSON(http.StatusOK, LoginResponse{User: user, Token: token})
+	middleware.SetSessionCookie(c, token, h.users.SessionLifetime())
+	return c.JSON(http.StatusOK, LoginResponse{User: user, Token: token, ExpiresIn: int(h.users.SessionLifetime().Seconds())})
 }
 
 // email swaps the code for a token and asks the provider whose it is.
@@ -249,13 +255,6 @@ func (h *OIDCHandler) doJSON(req *http.Request, out any) error {
 		return fmt.Errorf("%s: %s", req.URL.Host, resp.Status)
 	}
 	return json.Unmarshal(body, out)
-}
-
-// setSessionCookie stores the session exactly as the login page does after a
-// password login (a script-readable cookie the API client sends as Bearer).
-func setSessionCookie(c echo.Context, token string) {
-	c.SetCookie(&http.Cookie{Name: "accessToken", Value: token, Path: "/",
-		MaxAge: int(middleware.AccessTokenExpiry.Seconds()), Secure: true, SameSite: http.SameSiteLaxMode})
 }
 
 func randomString(n int) string {

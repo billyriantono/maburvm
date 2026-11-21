@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maburvm/panel/internal/shared/agentsign"
 	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 )
 
@@ -50,6 +51,25 @@ install -m0755 "$BAK" "$EXE"
 systemctl restart "$UNIT"
 exit 1
 `
+
+// checkUpdateSignature says why an update must be refused, or "" to go on.
+// With no AGENT_UPDATE_PUBKEY on the node every update is accepted, as before.
+func checkUpdateSignature(pubKey, digest string, sig []byte, arch string) string {
+	if pubKey == "" {
+		return ""
+	}
+	pub, err := agentsign.ParsePublicKey(pubKey)
+	if err != nil {
+		return "AGENT_UPDATE_PUBKEY on this node is not valid (" + err.Error() + "); fix it before updating"
+	}
+	if len(sig) == 0 {
+		return "this node installs only signed agent builds (AGENT_UPDATE_PUBKEY is set) and the panel sent no signature: put agent-" + arch + ".sig beside the panel's bundled agent"
+	}
+	if !agentsign.Verify(pub, digest, sig) {
+		return "the agent build's signature does not match this node's AGENT_UPDATE_PUBKEY"
+	}
+	return ""
+}
 
 // UpdateAgent receives a new agent binary from the panel and schedules the swap.
 //
@@ -127,8 +147,12 @@ func (s *NodeAgentService) UpdateAgent(stream pb.NodeAgent_UpdateAgentServer) er
 	if n != first.Size {
 		return fail("received %d of %d bytes", n, first.Size)
 	}
-	if got := hex.EncodeToString(h.Sum(nil)); got != strings.ToLower(first.Sha256) {
-		return fail("sha256 mismatch: got %s", got)
+	digest := hex.EncodeToString(h.Sum(nil))
+	if digest != strings.ToLower(first.Sha256) {
+		return fail("sha256 mismatch: got %s", digest)
+	}
+	if msg := checkUpdateSignature(os.Getenv("AGENT_UPDATE_PUBKEY"), digest, first.Signature, first.Arch); msg != "" {
+		return fail("%s", msg)
 	}
 
 	ctx, cancel := context.WithTimeout(stream.Context(), 15*time.Second)

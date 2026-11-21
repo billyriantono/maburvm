@@ -9,6 +9,8 @@ import {
   Monitor,
   Network,
   PlusCircle,
+  KeyRound,
+  KeySquare,
   User as UserIcon,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -32,6 +34,8 @@ const navItems = [
 
 const settingsNav = [
   { href: "/client/settings/profile", label: "Profile", icon: UserIcon },
+  { href: "/client/settings/api-keys", label: "API Keys", icon: KeyRound },
+  { href: "/client/settings/ssh-keys", label: "SSH Keys", icon: KeySquare },
 ]
 
 interface ClientSidebarProps {

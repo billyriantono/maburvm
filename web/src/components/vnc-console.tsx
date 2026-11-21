@@ -41,16 +41,8 @@ export function VNCConsole({ vmId, className, onConnect, onDisconnect, onError }
     setErrorMessage('');
 
     try {
-      // Fetch VNC config from API
-      const token = document.cookie
-        .split(';')
-        .map(c => c.trim())
-        .find(c => c.startsWith('accessToken='))
-        ?.split('=')[1];
-
-      const resp = await fetch(`/api/v1/vms/${vmId}/vnc`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      // Fetch VNC config from API; the session cookie goes with it.
+      const resp = await fetch(`/api/v1/vms/${vmId}/vnc`);
 
       if (!resp.ok) {
         // The server says why (the console is turned off, the VM is not running).

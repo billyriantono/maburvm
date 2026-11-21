@@ -16,13 +16,14 @@ import (
 	"gorm.io/gorm"
 )
 
-// JWT Claims keys for cookie storage
-const (
-	AccessTokenCookieName = "access_token"
-)
+// AccessTokenCookieName is the browser session cookie: HttpOnly, set by the
+// panel at sign-in. The name is the one the web app always used, so a session
+// started before the cookie became HttpOnly keeps working until it expires.
+const AccessTokenCookieName = "accessToken"
 
-// AccessTokenExpiry is the lifetime of the panel's single stateless access JWT.
-// There is no refresh stack, so this is the full session length.
+// AccessTokenExpiry is the built-in lifetime of the panel's single stateless
+// access JWT. There is no refresh stack, so this is the full session length
+// unless the operator set another one (SignInPolicy.SessionHours).
 const AccessTokenExpiry = 24 * time.Hour
 
 // Context keys
@@ -53,6 +54,12 @@ type UserContext struct {
 	// owner (read-only or downgraded role); such keys can't manage credentials.
 	APIKeyReadOnly   bool
 	APIKeyRestricted bool
+	// APIKeyID is the key the request was made with; "" for sessions.
+	APIKeyID string
+	// TwoFactorEnabled is the account's own setting. TwoFactorSetupRequired is
+	// set on a session held to the setup pages until two-factor is on.
+	TwoFactorEnabled       bool
+	TwoFactorSetupRequired bool
 }
 
 // GetJWTSecret returns the JWT signing key. It resolves via secret.JWTSecret:
@@ -222,7 +229,7 @@ func authenticateAPIKey(db *gorm.DB, token string, clientIP string) (*UserContex
 		return nil, false
 	}
 	var user models.User
-	if err := db.Where("id = ?", key.UserID).First(&user).Error; err != nil || user.DeletedAt.Valid || user.Expired() {
+	if err := db.Where("id = ?", key.UserID).First(&user).Error; err != nil || user.DeletedAt.Valid || user.Locked() {
 		return nil, false
 	}
 	if len(user.IPWhitelist) > 0 && !isIPWhitelisted(clientIP, user.IPWhitelist) {
@@ -239,6 +246,7 @@ func authenticateAPIKey(db *gorm.DB, token string, clientIP string) (*UserContex
 		Permissions:      GetPermissionsForRole(role),
 		APIKeyReadOnly:   key.ReadOnly,
 		APIKeyRestricted: key.ReadOnly || role != user.Role,
+		APIKeyID:         key.ID,
 	}, true
 }
 
@@ -301,15 +309,19 @@ func RequireAuth(db *gorm.DB) echo.MiddlewareFunc {
 						"message": msg,
 					})
 				}
+				if limited, err := limitAPI(c, db, "key:"+userCtx.APIKeyID); limited {
+					return err
+				}
 				c.Set(UserContextKey, userCtx)
 				return next(c)
 			}
 
-			// Try to extract token from cookie first, then header
+			// The session cookie first (the browser), then a Bearer header.
 			var tokenString string
 			var err error
 
 			tokenString, err = extractTokenFromCookie(c, AccessTokenCookieName)
+			fromCookie := err == nil
 			if err != nil {
 				tokenString, err = extractTokenFromHeader(c)
 				if err != nil {
@@ -318,6 +330,27 @@ func RequireAuth(db *gorm.DB) echo.MiddlewareFunc {
 						"message": "Access token required",
 					})
 				}
+			}
+			handler := next
+			if fromCookie {
+				// A cookie is sent by the browser on its own, so a cross-site
+				// page must not be able to make a change with it (SameSite=Lax
+				// already stops most of that; this covers the rest).
+				if crossSiteWrite(c.Request()) {
+					return c.JSON(http.StatusForbidden, map[string]interface{}{
+						"error":   "Forbidden",
+						"message": "Cross-site request refused",
+					})
+				}
+				// A session the panel no longer accepts is dropped from the
+				// browser, so the sign-in page does not bounce straight back.
+				authed := false
+				c.Response().Before(func() {
+					if !authed && c.Response().Status == http.StatusUnauthorized {
+						ClearSessionCookie(c)
+					}
+				})
+				handler = func(c echo.Context) error { authed = true; return next(c) }
 			}
 
 			// Parse and validate the token
@@ -370,6 +403,13 @@ func RequireAuth(db *gorm.DB) echo.MiddlewareFunc {
 						"message": "User account is deactivated",
 					})
 				}
+				if user.Suspended() {
+					return c.JSON(http.StatusUnauthorized, map[string]interface{}{
+						"error":   "Unauthorized",
+						"code":    "account_suspended",
+						"message": "This account is suspended. Contact support.",
+					})
+				}
 
 				// Enforce logout-based revocation: reject any token minted before the
 				// user's revocation cutoff. NULL cutoff (never logged out) allows all.
@@ -392,12 +432,26 @@ func RequireAuth(db *gorm.DB) echo.MiddlewareFunc {
 					})
 				}
 
+				// Staff must have two-factor on when the operator requires it. Until
+				// then the session reaches only the pages that set it up. API keys
+				// are automation and are not held to this.
+				setupRequired := user.Role == models.RoleAdmin && !user.TwoFactorEnabled && LoadSignInPolicy(db).RequireStaff2FA
+				if setupRequired && !isTwoFactorSetupPath(c.Request().URL.Path) {
+					return c.JSON(http.StatusForbidden, map[string]interface{}{
+						"error":   "Forbidden",
+						"code":    "two_factor_required",
+						"message": "Set up two-factor authentication to continue",
+					})
+				}
+
 				// Create user context from DB user
 				userCtx := &UserContext{
-					ID:          user.ID,
-					Email:       user.Email,
-					Role:        user.Role,
-					Permissions: GetPermissionsForRole(user.Role),
+					ID:                     user.ID,
+					Email:                  user.Email,
+					Role:                   user.Role,
+					Permissions:            GetPermissionsForRole(user.Role),
+					TwoFactorEnabled:       user.TwoFactorEnabled,
+					TwoFactorSetupRequired: setupRequired,
 				}
 
 				c.Set(UserContextKey, userCtx)
@@ -415,9 +469,62 @@ func RequireAuth(db *gorm.DB) echo.MiddlewareFunc {
 				c.Set(ClaimsContextKey, claims)
 			}
 
-			return next(c)
+			if u, _ := GetUserContext(c); u != nil {
+				if limited, err := limitAPI(c, db, "user:"+u.ID.String()); limited {
+					return err
+				}
+			}
+			return handler(c)
 		}
 	}
+}
+
+// crossSiteWrite reports a state-changing request a browser marked as coming
+// from another origin. The web app is always same-origin; "same-site" is
+// refused too, because SameSite=Lax does not stop a sibling subdomain (a VM
+// hostname under the panel's domain). Browsers that send no Sec-Fetch-Site are
+// left to SameSite=Lax.
+func crossSiteWrite(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return false
+	}
+	site := r.Header.Get("Sec-Fetch-Site")
+	return site == "cross-site" || site == "same-site"
+}
+
+// SetSessionCookie stores a session in the browser: HttpOnly so no script can
+// read it, SameSite=Lax, and Secure whenever the browser reached the panel
+// over https (directly or through the proxy, per X-Forwarded-Proto).
+func SetSessionCookie(c echo.Context, token string, lifetime time.Duration) {
+	c.SetCookie(&http.Cookie{Name: AccessTokenCookieName, Value: token, Path: "/", MaxAge: int(lifetime.Seconds()),
+		HttpOnly: true, Secure: requestIsHTTPS(c), SameSite: http.SameSiteLaxMode})
+}
+
+// ClearSessionCookie removes the session cookie from the browser.
+func ClearSessionCookie(c echo.Context) {
+	c.SetCookie(&http.Cookie{Name: AccessTokenCookieName, Value: "", Path: "/", MaxAge: -1,
+		HttpOnly: true, Secure: requestIsHTTPS(c), SameSite: http.SameSiteLaxMode})
+}
+
+// DropSessionCookie clears the session cookie on the way in, so signing out
+// ends the browser's session even when the panel refuses it with a 403 (an IP
+// allow-list): no script can remove an HttpOnly cookie.
+func DropSessionCookie(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		if !crossSiteWrite(c.Request()) {
+			ClearSessionCookie(c)
+		}
+		return next(c)
+	}
+}
+
+func requestIsHTTPS(c echo.Context) bool {
+	if c.IsTLS() {
+		return true
+	}
+	proto, _, _ := strings.Cut(c.Request().Header.Get(echo.HeaderXForwardedProto), ",")
+	return strings.EqualFold(strings.TrimSpace(proto), "https")
 }
 
 // OptionalAuth middleware attempts to authenticate but doesn't require it
@@ -542,11 +649,16 @@ func RequirePermission(permission string) echo.MiddlewareFunc {
 // access JWT signed with the shared JWT secret, carrying the user's id/email/role/
 // permissions, a jti, and an iat that logout revocation (users.token_revoked_at)
 // compares against. There is no refresh/server-session stack — this token,
-// validated by RequireAuth, IS the session.
-func GenerateAccessToken(user *models.User) (string, error) {
+// validated by RequireAuth, IS the session. lifetime is the operator's session
+// length (SignInPolicy.SessionLifetime); without it the built-in one applies.
+func GenerateAccessToken(user *models.User, lifetime ...time.Duration) (string, error) {
 	secret, err := GetJWTSecret()
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve JWT secret: %w", err)
+	}
+	ttl := AccessTokenExpiry
+	if len(lifetime) > 0 && lifetime[0] > 0 {
+		ttl = lifetime[0]
 	}
 	now := time.Now()
 	claims := JWTClaims{
@@ -556,7 +668,7 @@ func GenerateAccessToken(user *models.User) (string, error) {
 		Permissions: GetPermissionsForRole(user.Role),
 		TokenType:   "access",
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(now.Add(AccessTokenExpiry)),
+			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 			IssuedAt:  jwt.NewNumericDate(now),
 			NotBefore: jwt.NewNumericDate(now),
 			Subject:   user.ID.String(),

@@ -263,7 +263,11 @@ func (r *VMRepository) ClearVNCPort(ctx context.Context, id string) error {
 
 // UpdateVNCPassword updates a VM's VNC password
 func (r *VMRepository) UpdateVNCPassword(ctx context.Context, id string, password string) error {
-	return r.db.WithContext(ctx).Model(&models.VM{}).Where("id = ?", id).Update("vnc_password", password).Error
+	sealed, err := models.SealSecret(password)
+	if err != nil {
+		return err
+	}
+	return r.db.WithContext(ctx).Model(&models.VM{}).Where("id = ?", id).Update("vnc_password", sealed).Error
 }
 
 // UpdateResources updates a VM's resource allocation
@@ -284,6 +288,21 @@ func (r *VMRepository) GetByHostname(ctx context.Context, hostname string) (*mod
 func (r *VMRepository) HostnameExists(ctx context.Context, hostname string) (bool, error) {
 	var count int64
 	if err := r.db.WithContext(ctx).Model(&models.VM{}).Where("hostname = ?", hostname).Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// HostnameExistsForUser reports whether this owner already has a VM by that
+// name. Names are unique per owner only: two customers may both run "web1",
+// and neither learns of the other's.
+func (r *VMRepository) HostnameExistsForUser(ctx context.Context, userID, hostname, exceptVMID string) (bool, error) {
+	var count int64
+	q := r.db.WithContext(ctx).Model(&models.VM{}).Where("user_id = ? AND LOWER(hostname) = LOWER(?)", userID, hostname)
+	if exceptVMID != "" {
+		q = q.Where("id <> ?", exceptVMID)
+	}
+	if err := q.Count(&count).Error; err != nil {
 		return false, err
 	}
 	return count > 0, nil

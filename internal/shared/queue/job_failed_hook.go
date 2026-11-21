@@ -14,14 +14,25 @@ import (
 // tell operators; this package cannot import the panel's services.
 var JobFailedHook func(ctx context.Context, kind string, args []byte, reason string)
 
+// JobRetryingHook, when set, is called each time a try fails and the queue
+// will try the job again: with many tries spaced ever further apart, "failed
+// for good" can be weeks after the first sign of trouble.
+var JobRetryingHook func(ctx context.Context, kind string, args []byte, reason string)
+
+// tryFailed reports that this try ended in a failure of the job's own: not a
+// success, not a stop from outside and not a snooze.
+func tryFailed(ctxErr, err error) bool {
+	var snoozed *rivertype.JobSnoozeError
+	return err != nil && !errors.Is(ctxErr, context.Canceled) && !errors.As(err, &snoozed)
+}
+
 // jobFailedForGood reports that an attempt's error is the job's last word: the
 // worker cancelled it as not worth another try, or no tries are left. A job
 // whose context was cancelled was stopped from outside, by an operator or by
 // the panel shutting down, and did not fail; one that ran out of time did.
 // A snooze is the worker asking to be run again later, and uses no try.
 func jobFailedForGood(ctxErr, err error, attempt, maxAttempts int) bool {
-	var snoozed *rivertype.JobSnoozeError
-	if err == nil || errors.Is(ctxErr, context.Canceled) || errors.As(err, &snoozed) {
+	if !tryFailed(ctxErr, err) {
 		return false
 	}
 	var cancelled *rivertype.JobCancelError
@@ -43,8 +54,12 @@ func (*jobFailureReporter) Work(ctx context.Context, job *rivertype.JobRow, doIn
 		}
 	}()
 	err := doInner(ctx)
-	if hook := JobFailedHook; hook != nil && jobFailedForGood(ctx.Err(), err, job.Attempt, job.MaxAttempts) {
+	forGood := jobFailedForGood(ctx.Err(), err, job.Attempt, job.MaxAttempts)
+	if hook := JobFailedHook; hook != nil && forGood {
 		// The job's context is often what just ran out.
+		go hook(context.WithoutCancel(ctx), job.Kind, job.EncodedArgs, err.Error())
+	}
+	if hook := JobRetryingHook; hook != nil && !forGood && tryFailed(ctx.Err(), err) {
 		go hook(context.WithoutCancel(ctx), job.Kind, job.EncodedArgs, err.Error())
 	}
 	return err

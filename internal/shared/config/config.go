@@ -34,6 +34,30 @@ type ServerConfig struct {
 	AllowedOrigins string        `env:"ALLOWED_ORIGINS" envDefault:"http://localhost:3000"`
 	// MetricsToken enables GET /metrics (Prometheus) for "Authorization: Bearer <token>".
 	MetricsToken string `env:"METRICS_TOKEN"`
+	// TrustedProxies are the addresses (IPs or CIDRs, comma separated) whose
+	// X-Forwarded-For is believed. Unset: loopback and private ranges, which is
+	// the Caddy-in-front, panel-in-compose deployment.
+	TrustedProxies string `env:"TRUSTED_PROXIES"`
+}
+
+// TrustedProxyNets parses TrustedProxies; empty means "use the defaults".
+func (s ServerConfig) TrustedProxyNets() ([]*net.IPNet, error) {
+	var out []*net.IPNet
+	for _, f := range strings.FieldsFunc(s.TrustedProxies, func(r rune) bool { return r == ',' || r == ' ' }) {
+		if !strings.Contains(f, "/") {
+			if ip := net.ParseIP(f); ip != nil && ip.To4() != nil {
+				f += "/32"
+			} else {
+				f += "/128"
+			}
+		}
+		_, n, err := net.ParseCIDR(f)
+		if err != nil {
+			return nil, fmt.Errorf("TRUSTED_PROXIES: %q is not an IP address or CIDR", f)
+		}
+		out = append(out, n)
+	}
+	return out, nil
 }
 
 // JWT settings
@@ -81,6 +105,9 @@ type AgentServerConfig struct {
 	Environment     string
 	ShutdownTimeout time.Duration
 	AuthToken       string
+	// AllowedPanelIPs (AGENT_ALLOWED_PANEL_IPS) lists the IPs/CIDRs that may
+	// connect at all. Empty keeps the old behaviour: anyone holding the token.
+	AllowedPanelIPs string
 }
 
 // S3 settings
@@ -280,6 +307,9 @@ func validate(cfg *Config) error {
 	}
 	if cfg.S3.Bucket == "" {
 		return errors.New("S3_BUCKET is required")
+	}
+	if _, err := cfg.Server.TrustedProxyNets(); err != nil {
+		return err
 	}
 
 	return nil

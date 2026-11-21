@@ -192,6 +192,46 @@ resolves `DB_PASSWORD`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `JWT_SECRET_KEY`,
 `AES_KEY` when their `*_FILE` vars are set), but multi-instance pinning or custom
 secret mounting requires a separately designed topology, not this file.
 
+### Sessions, headers, audit log and secrets at rest
+
+- **Sessions** live in an `HttpOnly`, `SameSite=Lax` cookie the panel sets at
+  sign-in; no script can read it. It is marked `Secure` whenever the browser
+  reached the panel over https, which the panel learns from the proxy's
+  `X-Forwarded-Proto` (Caddy sends it). Its lifetime is the session length under
+  Settings, System, Security. Sessions started before this release keep working
+  until they expire. A state-changing request carrying the cookie that the
+  browser marks `Sec-Fetch-Site: cross-site` or `same-site` (another subdomain,
+  such as a VM hostname under the panel's domain) is refused. API keys and
+  `Bearer` tokens are unaffected.
+- **Headers.** Pages carry a Content-Security-Policy (scripts, styles, fonts and
+  images from the panel itself; API calls and console websockets to the same
+  host; no framing), HSTS, `X-Frame-Options: DENY`, `nosniff` and a referrer
+  policy. API answers carry a deny-all policy of their own.
+- **Client address.** Rate limits, per-user IP allow-lists and audit rows use the
+  address from `X-Forwarded-For`, believing only hops in `TRUSTED_PROXIES`
+  (default: loopback and private ranges, which fits Caddy on the host in front
+  of this compose network).
+- **API rate limit.** Every signed-in person and every API key gets "Requests
+  per minute" (Settings, System, API; default 1200, 0 = off). Past it the panel
+  answers 429 with `Retry-After`. The billing webhook is not counted. The count
+  is kept in the panel's memory.
+- **Audit log.** Every POST, PUT, PATCH and DELETE, by staff, customers, API
+  keys, MCP and the billing webhook, is recorded with who, from where, the route
+  and the outcome, plus the JSON body with passwords, tokens, keys, codes,
+  webhook URLs and cloud-init redacted. Failed sign-ins are recorded with the
+  email tried. Not recorded: other calls refused for having no valid session,
+  and billing status and usage polls.
+- **Secrets at rest.** Node agent tokens, VNC passwords, the mail password, the
+  billing HMAC secret, the AbuseIPDB key and the passwords inside queued jobs are
+  encrypted with the AES key in `secrets.json`. On every boot the panel
+  encrypts any that are still plaintext and moves values on a retired key
+  (`AES_KEY_PREVIOUS`) to the current one; the log says how many. Keep
+  `secrets.json` with your database backups (section 9). A panel image from
+  before this release cannot read the encrypted values: rolled back to one, it
+  sends nodes an encrypted token they refuse and consoles and mail stop. Roll
+  back by restoring the database dump taken just before the upgrade, not by
+  starting the old image on the upgraded database.
+
 ### Optional: Sign in with SSO
 
 The login page can offer a "Sign in with SSO" button for any OpenID Connect
@@ -210,6 +250,50 @@ panel uses the authorization code flow with PKCE and reads the email from the
 provider's userinfo endpoint; it must be verified. That email is matched to an
 existing panel user, and nobody is created automatically. A user's IP whitelist
 and panel two-factor still apply to SSO sign-ins.
+
+### Optional: billing system and transfer quotas
+
+A billing system drives the panel through the signed webhook
+`POST <PANEL_PUBLIC_URL>/webhooks/billing`. The compose file passes three
+values from `.env.production` to the panel:
+
+| Variable | |
+|---|---|
+| `BILLING_API_KEY`, `BILLING_WEBHOOK_SECRET` | the shared key and signing secret. The webhook is off (it answers 503) until both are set. Use `openssl rand -hex 32` for each and enter the same values in the billing system (for WHMCS: `integrations/whmcs/README.md`). |
+| `BANDWIDTH_ENFORCE` | `true` makes a plan's monthly transfer quota act: a VM that goes over is throttled or stopped, as its plan says. Any other value only measures. Default `false`. |
+
+After changing them, recreate the panel container
+(`docker compose ... up -d panel`); a restart alone keeps the old environment.
+The Security page reports whether the webhook is on.
+
+Every request must carry a `timestamp` in its signed body within 5 minutes of
+the panel's clock, and each signed request is accepted once, so keep the
+billing server's clock synchronised. `GET /webhooks/billing/docs` lists the
+events and their fields.
+
+With `BANDWIDTH_ENFORCE` on, a VM is throttled or stopped at the moment it
+crosses its quota. A VM that already crossed this month while enforcement was
+off is left alone until the next month. Check the quotas your plans carry
+before turning it on: from then on they are what customers get.
+
+What customers may do past the billing system is set under System settings,
+Quotas: ordering, cloning and adding disks on their own, and whether they may
+delete a VM that a billing service pays for (off unless you turn it on).
+
+An order that names no region lands in the default region when one is set
+(System settings), so check that region has a node with room before taking
+billing orders. A template can be limited to chosen plans or marked as needing
+a paid licence (Templates, a template, Edit); an order for it on another plan
+is refused.
+
+The panel also sends events back (a server created, suspended or deleted, a
+failed installation, floating IP counts, transfer overage) to the webhook URL
+saved under System settings, API, signed with the HMAC secret saved there, or
+with `BILLING_WEBHOOK_SECRET` when none is. Each event is stored, retried up to
+10 times over about four hours, and listed with its outcome on the same page.
+Nothing is sent or stored while no URL is saved. The WHMCS receiver is the
+events addon in `integrations/whmcs`. The "Welcome (billing order)" email to a
+new customer needs SMTP and `PANEL_PUBLIC_URL`.
 
 ## 6. Agent deployment (separate, privileged)
 
@@ -233,6 +317,47 @@ docker run --privileged --network host \
   -e AGENT_AUTH_TOKEN=<node-token> \
   maburvm-agent:local
 ```
+
+**Who may talk to the agent.** Two settings in the agent's environment
+(systemd unit, or passed to `install-agent.sh`) narrow what a stolen token or
+a compromised panel can do. Both are off unless set, and the agent logs a
+warning at start for each one that is off.
+
+| Variable | Meaning |
+|---|---|
+| `AGENT_ALLOWED_PANEL_IPS` | The panel's outgoing address(es), as IPs or CIDRs. Connections from anywhere else (except the node itself) are closed before TLS. Use the address the panel's traffic leaves from, which may differ from the address of its hostname. An invalid entry stops the agent from starting. |
+| `AGENT_UPDATE_PUBKEY` | An ed25519 public key. The node then installs only agent builds signed with its private key, which you keep off the panel host. An unsigned or wrongly signed update is refused and the running agent is untouched. |
+
+To add them on a node set up earlier, `systemctl edit maburvm-agent`, add for
+example `Environment=AGENT_ALLOWED_PANEL_IPS=192.0.2.10`, and restart the agent.
+Check `journalctl -u maburvm-agent` for "accepts connections only from" and
+confirm the node still shows online in the panel before moving to the next one.
+
+Signing agent builds, offline:
+
+```bash
+# Once, on the signing machine (never the panel host; the key stays there):
+go run ./cmd/agent-sign keygen agent-signing.key   # prints AGENT_UPDATE_PUBKEY=...
+
+# For each panel image. On the panel host, take the bundled agent out:
+docker compose -f docker-compose.production.yml --env-file .env.production \
+  cp panel:/app/bin/linux/agent-amd64 ./agent-amd64
+sha256sum agent-amd64
+# Copy agent-amd64 to the signing machine. Check its sha256 against the agent
+# you built there from the same commit (a panel that was tampered with would
+# hand you its own build to sign), then sign it:
+go run ./cmd/agent-sign sign agent-signing.key agent-amd64   # writes agent-amd64.sig
+go run ./cmd/agent-sign verify "$AGENT_UPDATE_PUBKEY" agent-amd64
+# Copy only agent-amd64.sig back to the panel host and put it beside the binary:
+docker compose -f docker-compose.production.yml --env-file .env.production \
+  cp ./agent-amd64.sig panel:/app/bin/linux/agent-amd64.sig
+```
+
+The panel sends `agent-<arch>.sig` with the update when it is there. A rebuilt
+panel image has a new agent build, so sign again after every rebuild (the copied
+signature does not survive a container being recreated: bind-mount it, or
+repeat the `cp`). Nodes without `AGENT_UPDATE_PUBKEY` ignore the signature, and
+older panels keep working with them.
 
 **Node packages the agent shells out to:** install `iputils-arping` on every
 hypervisor. The panel's IP reconciler asks the agent to ARP-probe pool addresses
@@ -352,7 +477,7 @@ certificates from **Google Trust Services (GTS)** via ACME with External Account
 Binding (EAB), and reverse-proxies to the loopback-published `web` container:
 
 ```caddyfile
-mabur.gopek.id {
+panel.example.com {
     tls {
         # ACME with Google Trust Services (get eab_key_id + eab_mac_key from
         # Google Cloud → Public CA → external account key).
@@ -452,7 +577,7 @@ all four must survive the loss of the host:
 | What | Where it lives | Without it |
 |------|----------------|------------|
 | Panel database | `postgres_data` volume | Every VM, user, IP and setting record is gone. |
-| `secrets.json` | `panel_data` volume (`/data` in the panel container) | The database restores but **cannot be decrypted**: 2FA secrets, the DNS provider key, kept initial passwords and every other stored secret are lost, and all sessions are invalid. |
+| `secrets.json` | `panel_data` volume (`/data` in the panel container) | The database restores but **cannot be decrypted**: 2FA secrets, node agent tokens (every node then needs a new token), the mail password, the DNS provider key, kept initial passwords and every other stored secret are lost, and all sessions are invalid. |
 | `.env.production` and `deploy/secrets/` | The repo directory on the host | The stack has to be reconfigured by hand. |
 | The age private key | **Not on the host.** With you. | No backup can be read by anyone. |
 

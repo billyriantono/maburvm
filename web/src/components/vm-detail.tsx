@@ -27,7 +27,9 @@ import { useSnapshots, useCreateSnapshot, useRestoreSnapshot, useDeleteSnapshot 
 import { useCreateImage } from "@/lib/hooks/use-images"
 import { useBackups, useCreateBackup, useDeleteBackup, useRestoreBackup, useRestoreBackupAsNew, useBackupSchedules, useCreateBackupSchedule, useDeleteBackupSchedule } from "@/lib/hooks/use-backups"
 import { useFirewallRules, useDeleteFirewallRule, useCreateFirewallRule, useVMNetworks, useSetVMBandwidth, useSetVMRDNS, usePortForwards, useCreatePortForward, useDeletePortForward, useSetAntiSpoofing, useFirewallStatus } from "@/lib/hooks/use-networks"
-import type { Network as NetworkIface } from "@/types"
+import type { Network as NetworkIface, VM } from "@/types"
+import { templateOfferedOn } from "@/types/template"
+import { usePlans } from "@/lib/hooks/use-plans"
 import { useTemplates } from "@/lib/hooks/use-templates"
 import { useVMBandwidth, useVMBandwidthHistory, useSetBandwidthQuota } from "@/lib/hooks/use-bandwidth"
 import { useVMDisks, useAttachDisk, useDetachDisk } from "@/lib/hooks/use-disks"
@@ -313,6 +315,73 @@ function ActionRow({ title, description, children }: { title: string; descriptio
       </div>
       <div className="flex shrink-0 flex-wrap gap-2">{children}</div>
     </div>
+  )
+}
+
+// What the VM is sold as: its plan and the billing service that pays for it.
+// Mounted only while open, so the plan list is fetched when it is needed.
+function BillingLinkDialog({ vm, onClose }: { vm: VM; onClose: () => void }) {
+  const { data: plans, isLoading, error } = usePlans()
+  const updateVM = useUpdateVM(vm.id)
+  const [planId, setPlanId] = useState(vm.plan_id ?? "")
+  const [ref, setRef] = useState(vm.billing_ref ?? "")
+  const changed = planId !== (vm.plan_id ?? "") || ref.trim() !== (vm.billing_ref ?? "")
+  // A plan that has since been deleted still has to be shown as the current choice.
+  const planGone = !!vm.plan_id && !!plans && !plans.some((p) => p.id === vm.plan_id)
+
+  const save = async () => {
+    try {
+      await updateVM.mutateAsync({ plan_id: planId, billing_ref: ref.trim() })
+      toast.success("Plan and billing service saved")
+      onClose()
+    } catch (err) {
+      toast.error(`Not saved: ${(err as Error).message}`)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="text-lg font-semibold">Plan and billing service</DialogTitle>
+          <DialogDescription className="text-sm text-muted-foreground">
+            What {vm.hostname} is sold as. Saving this records it; it does not resize the VM or change its speed cap and transfer quota.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4 py-2">
+          <div>
+            <label htmlFor="link-plan" className="text-xs font-medium text-muted-foreground mb-2 block">Plan</label>
+            <select
+              id="link-plan"
+              value={planId}
+              onChange={(e) => setPlanId(e.target.value)}
+              disabled={isLoading || !!error}
+              className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            >
+              <option value="">No plan</option>
+              {planGone && <option value={vm.plan_id}>A plan that has been deleted</option>}
+              {plans?.map((p) => (
+                <option key={p.id} value={p.id}>{p.name} ({p.cpu} vCPU, {Math.round(p.ram / 1024 * 10) / 10} GB, {p.disk} GB disk){p.is_active ? "" : ", not offered"}</option>
+              ))}
+            </select>
+            {error && <p className="mt-1 text-xs text-destructive">The plans could not be loaded. Close this and try again.</p>}
+          </div>
+          <div>
+            <label htmlFor="link-ref" className="text-xs font-medium text-muted-foreground mb-2 block">Billing service reference</label>
+            <Input id="link-ref" value={ref} onChange={(e) => setRef(e.target.value)} maxLength={255} placeholder="whmcs-123" className="font-mono" />
+            <p className="mt-1 text-xs text-muted-foreground">
+              The billing system&apos;s reference for the service that pays for this VM. While one is set, billing actions from any other service are refused, and the owner cannot delete the VM unless System settings allow it. Leave it empty for a VM billing does not manage.
+            </p>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button onClick={save} disabled={!changed || updateVM.isPending || isLoading}>
+            {updateVM.isPending && <Loader2 className="w-4 h-4 animate-spin" />}Save
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -1072,6 +1141,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const { data: allNodes } = useNodes(isAdmin)
   const updateVM = useUpdateVM(vmId)
   const [reassignOpen, setReassignOpen] = useState(false)
+  const [billingLinkOpen, setBillingLinkOpen] = useState(false)
   const [reassignUserId, setReassignUserId] = useState("")
   const handleReassign = useCallback(async () => {
     if (!reassignUserId) return
@@ -1107,9 +1177,12 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const isWindows = osType === "windows"
   const isLinux = !isRouter && !isWindows
   const loginUser = isRouter ? "admin" : isWindows ? "Administrator" : "root"
+  // A customer also keeps to what their plan includes, plus the system the
+  // VM already runs; the panel refuses anything else.
   const installableTemplates = (templates ?? []).filter((t) => {
     const path = (t.image_path || "").trim()
-    return t.is_active && path !== "" && path !== "/imported"
+    return t.is_active && path !== "" && path !== "/imported" &&
+      (isAdmin || t.id === vm?.os_template_id || templateOfferedOn(t, vm?.plan_id))
   })
   // A reinstall may put another kind of system on the VM, so its dialog goes
   // by the template chosen there, not by what is installed now.
@@ -2089,6 +2162,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                   {isAdmin && <Button variant="outline" size="sm" onClick={openResize}>Resize</Button>}
                 </div>
                 <dl className="space-y-1">
+                  {vm.plan_name && <div className="flex justify-between gap-3"><dt>Plan</dt><dd className="font-semibold">{vm.plan_name}</dd></div>}
                   <div className="flex justify-between gap-3"><dt>Processor</dt><dd className="font-semibold">{vm.resources.cpu} vCPU</dd></div>
                   <div className="flex justify-between gap-3"><dt>Memory</dt><dd className="font-semibold">{ramGB} GB</dd></div>
                   <div className="flex justify-between gap-3"><dt>Disk</dt><dd className="font-semibold">{vm.resources.disk} GB</dd></div>
@@ -2851,8 +2925,22 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                 <Copy className="w-4 h-4" />Clone
               </Button>
             </ActionRow>
+            <ActionRow
+              title="Plan and billing service"
+              description={<>
+                {vm.plan_id
+                  ? <>On plan <span className="font-medium text-foreground">{vm.plan_name || "that has been deleted"}</span>. </>
+                  : "Not on a plan. "}
+                {vm.billing_ref
+                  ? <>Paid for by billing service <span className="font-mono text-foreground">{vm.billing_ref}</span>{vm.owner_may_delete === false ? "; its owner cannot delete it." : "."}</>
+                  : "Not linked to a billing service."}
+              </>}
+            >
+              <Button variant="outline" size="sm" onClick={() => setBillingLinkOpen(true)}>Edit</Button>
+            </ActionRow>
           </section>
           )}
+          {isAdmin && billingLinkOpen && <BillingLinkDialog vm={vm} onClose={() => setBillingLinkOpen(false)} />}
 
           <section className="bg-card text-card-foreground border border-destructive/40 rounded-lg divide-y divide-destructive/20">
             <h2 className="px-6 py-4 text-base font-semibold text-destructive flex items-center gap-2">
@@ -2863,11 +2951,15 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                 <RefreshCw className="w-4 h-4" />{rebuildWord}
               </Button>
             </ActionRow>
+            {!isAdmin && vm.owner_may_delete === false ? (
+              <ActionRow title="Delete" description="This server is managed by your billing account. Cancel the service there to remove it." />
+            ) : (
             <ActionRow title="Delete" description="Remove this VM and its disks for good and release its addresses.">
               <Button variant="destructive" size="sm" onClick={() => setDeleteDialogOpen(true)}>
                 <Trash2 className="w-4 h-4" />Delete
               </Button>
             </ActionRow>
+            )}
           </section>
         </TabsContent>
       </Tabs>

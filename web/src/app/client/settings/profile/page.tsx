@@ -5,6 +5,7 @@ import { toast } from "sonner"
 import { useCurrentUser } from "@/lib/hooks/use-auth"
 import { useChangePassword } from "@/lib/hooks/use-settings"
 import { useMyQuota } from "@/lib/hooks/use-quota"
+import { TwoFactorSettings } from "@/components/two-factor-settings"
 
 function quotaLabel(used: number, max: number, unit: string) {
   return `${used}${unit} / ${max === 0 ? "∞" : `${max}${unit}`}`
@@ -65,6 +66,8 @@ export default function ClientProfilePage() {
           </div>
         </div>
       </section>
+
+      <TwoFactorSettings />
 
       {/* Quota */}
       {quota && (

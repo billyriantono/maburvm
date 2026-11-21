@@ -1,24 +1,15 @@
 "use client"
 
-import { useBranding } from "@/lib/branding/provider"
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import { toast } from "sonner"
-import QRCode from "qrcode"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
 import { z } from "zod"
 import {
   User as UserIcon,
   Lock,
-  Shield,
-  ShieldCheck,
-  ShieldOff,
-  Key,
-  Copy,
-  Check,
   Eye,
   EyeOff,
-  AlertTriangle,
   AlertCircle,
   Save,
   Loader2,
@@ -32,42 +23,23 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
+import { TwoFactorSettings } from "@/components/two-factor-settings"
 import { useCurrentUser } from "@/lib/hooks/use-auth"
-import { useCopy } from "@/lib/use-feedback"
-import { useChangePassword, useSetup2FA, useVerify2FA, useDisable2FA } from "@/lib/hooks/use-settings"
+import { useChangePassword } from "@/lib/hooks/use-settings"
 import { useMyQuota } from "@/lib/hooks/use-quota"
 
-// Password change schema
+// The panel checks a new password against the operator's policy (Settings,
+// System, Security) and says which rule it breaks; the form does not guess it.
 const passwordSchema = z.object({
   oldPassword: z.string().min(1, "Current password is required"),
-  newPassword: z
-    .string()
-    .min(8, "Password must be at least 8 characters")
-    .regex(/[A-Z]/, "Password must contain at least one uppercase letter")
-    .regex(/[a-z]/, "Password must contain at least one lowercase letter")
-    .regex(/[0-9]/, "Password must contain at least one number")
-    .regex(/[^A-Za-z0-9]/, "Password must contain at least one special character"),
+  newPassword: z.string().min(1, "Enter a new password"),
   confirmPassword: z.string(),
 }).refine((data) => data.newPassword === data.confirmPassword, {
   message: "Passwords don't match",
   path: ["confirmPassword"],
 })
 
-// TOTP verification schema
-const totpSchema = z.object({
-  code: z.string().length(6, "Code must be 6 digits").regex(/^\d+$/, "Code must be numeric"),
-})
-
 type PasswordFormData = z.infer<typeof passwordSchema>
-type TOTPFormData = z.infer<typeof totpSchema>
 
 // QuotaMeter renders one resource dimension as a labelled usage bar.
 // A limit of 0 means unlimited (shown as ∞ with an empty track).
@@ -109,40 +81,15 @@ function QuotaMeter({
 }
 
 export default function ProfileSettingsPage() {
-  const { branding } = useBranding()
-  // Data hook
   const { data: user, isLoading: userLoading, error: userError, refetch: refetchUser } = useCurrentUser()
   const { data: quota } = useMyQuota()
-
-  // Real settings mutations (backend-backed)
   const changePassword = useChangePassword()
-  const setup2FA = useSetup2FA()
-  const verify2FA = useVerify2FA()
-  const disable2FA = useDisable2FA()
-  const [setupSecret, setSetupSecret] = useState("")
 
   const [showPasswordForm, setShowPasswordForm] = useState(false)
   const [showCurrentPassword, setShowCurrentPassword] = useState(false)
   const [showNewPassword, setShowNewPassword] = useState(false)
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
-
-  // 2FA state
-  const [twoFactorEnabled, setTwoFactorEnabled] = useState(false)
-  const [showSetupDialog, setShowSetupDialog] = useState(false)
-  const [showBackupCodes, setShowBackupCodes] = useState(false)
-  const [showDisableDialog, setShowDisableDialog] = useState(false)
-  const [setupStep, setSetupStep] = useState<"qr" | "verify" | "backup">("qr")
-  const [qrCode, setQrCode] = useState<{ size: number; path: string } | null>(null)
-  const [backupCodes, setBackupCodes] = useState<string[]>([])
-  const [isVerifying, setIsVerifying] = useState(false)
-
-  // Sync 2FA state with user data
-  useEffect(() => {
-    if (user) {
-      setTwoFactorEnabled(!!user.two_factor_secret)
-    }
-  }, [user])
 
   // Password form
   const passwordForm = useForm<PasswordFormData>({
@@ -153,35 +100,6 @@ export default function ProfileSettingsPage() {
       confirmPassword: "",
     },
   })
-
-  // TOTP verification form
-  const totpForm = useForm<TOTPFormData>({
-    resolver: zodResolver(totpSchema),
-    defaultValues: {
-      code: "",
-    },
-  })
-
-  // Render the QR for the real secret returned by the backend setup call.
-  useEffect(() => {
-    if (showSetupDialog && setupStep === "qr" && user && setupSecret) {
-      const issuer = encodeURIComponent(branding.name)
-      const otpauthUrl = `otpauth://totp/${issuer}:${encodeURIComponent(user.email)}?secret=${setupSecret}&issuer=${issuer}`
-      // Drawn as vector squares on whole-unit coordinates. It used to be a
-      // 200px picture shown at 192px, and that resampling smeared the squares
-      // enough that apps reading the code from the screen could not decode it.
-      try {
-        const { modules } = QRCode.create(otpauthUrl, { errorCorrectionLevel: "M" })
-        let d = ""
-        for (let y = 0; y < modules.size; y++)
-          for (let x = 0; x < modules.size; x++) if (modules.data[y * modules.size + x]) d += `M${x} ${y}h1v1h-1z`
-        setQrCode({ size: modules.size, path: d })
-      } catch {
-        setQrCode(null)
-        toast.error("Could not draw the QR code. Use the manual entry code below instead.")
-      }
-    }
-  }, [showSetupDialog, setupStep, user, setupSecret, branding.name])
 
   const handlePasswordChange = async (data: PasswordFormData) => {
     setIsLoading(true)
@@ -202,103 +120,6 @@ export default function ProfileSettingsPage() {
     } finally {
       setIsLoading(false)
     }
-  }
-
-  const handleStart2FASetup = async () => {
-    setShowSetupDialog(true)
-    setSetupStep("qr")
-    setQrCode(null)
-    setSetupSecret("")
-    try {
-      // Backend generates a real TOTP secret + backup codes (encrypted at rest).
-      const res = await setup2FA.mutateAsync()
-      setSetupSecret(res.secret)
-      setBackupCodes(res.backup_codes || [])
-    } catch (err) {
-      toast.error("Failed to start 2FA setup", {
-        description: (err as Error).message,
-      })
-      setShowSetupDialog(false)
-    }
-  }
-
-  const handleVerifySetup = async (data: TOTPFormData) => {
-    setIsVerifying(true)
-    try {
-      // Verifies the TOTP code against the real secret server-side.
-      await verify2FA.mutateAsync(data.code)
-      setSetupStep("backup") // backup codes already returned by setup
-      setTwoFactorEnabled(true)
-      toast.success("2FA enabled successfully!", {
-        description: "Save your backup codes in a secure location.",
-      })
-    } catch (err) {
-      toast.error("Invalid code", {
-        description: (err as Error).message || "The code did not match. Try again.",
-      })
-    } finally {
-      setIsVerifying(false)
-    }
-  }
-
-  const { copy, copied } = useCopy()
-  // The codes as a text file, made in the browser: they are never sent anywhere.
-  const handleDownloadBackupCodes = () => {
-    const lines = [
-      `${branding.name} backup codes for ${user?.email ?? "your account"}`,
-      `Saved ${new Date().toLocaleString()}`,
-      "",
-      "Each code signs you in once, in place of the code from your authenticator app.",
-      "Keep this file somewhere only you can reach.",
-      "",
-      ...backupCodes,
-      "",
-    ]
-    const url = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" }))
-    const a = document.createElement("a")
-    a.href = url
-    a.download = `${branding.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "panel"}-backup-codes.txt`
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    URL.revokeObjectURL(url)
-    toast.success("Backup codes saved as a text file")
-  }
-
-  const handleCopyBackupCodes = async (key: string) => {
-    if (await copy(backupCodes.join("\n"), key)) {
-      toast.success("Backup codes copied!", {
-        description: "Save them in a secure location.",
-      })
-    }
-  }
-
-  const handleDisable2FA = async () => {
-    setIsLoading(true)
-    try {
-      await disable2FA.mutateAsync("")
-      setTwoFactorEnabled(false)
-      setShowDisableDialog(false)
-      setShowBackupCodes(false)
-      setShowSetupDialog(false)
-      setBackupCodes([])
-      toast.success("2FA disabled", {
-        description: "Two-factor authentication has been disabled for your account.",
-      })
-    } catch (err) {
-      toast.error("Failed to disable 2FA", {
-        description: (err as Error).message,
-      })
-    } finally {
-      setIsLoading(false)
-    }
-  }
-
-  const handleCloseSetupDialog = () => {
-    setShowSetupDialog(false)
-    setSetupStep("qr")
-    totpForm.reset()
-    setBackupCodes([])
   }
 
   // Loading state
@@ -386,6 +207,8 @@ export default function ProfileSettingsPage() {
             </div>
           </CardContent>
         </Card>
+
+        <TwoFactorSettings />
 
         {/* Resource Quota Card */}
         {quota?.usage && quota?.quota && (
@@ -492,27 +315,9 @@ export default function ProfileSettingsPage() {
                       {passwordForm.formState.errors.newPassword.message}
                     </p>
                   )}
-                  {/* Password requirements */}
-                  <div className="mt-2 p-3 rounded-md border bg-muted">
-                    <p className="text-xs font-medium mb-2">Password requirements:</p>
-                    <ul className="text-xs space-y-1">
-                      <li className={passwordForm.watch("newPassword")?.length >= 8 ? "text-emerald-600" : "text-muted-foreground"}>
-                        {passwordForm.watch("newPassword")?.length >= 8 ? "✓" : "○"} At least 8 characters
-                      </li>
-                      <li className={/[A-Z]/.test(passwordForm.watch("newPassword") || "") ? "text-emerald-600" : "text-muted-foreground"}>
-                        {/[A-Z]/.test(passwordForm.watch("newPassword") || "") ? "✓" : "○"} One uppercase letter
-                      </li>
-                      <li className={/[a-z]/.test(passwordForm.watch("newPassword") || "") ? "text-emerald-600" : "text-muted-foreground"}>
-                        {/[a-z]/.test(passwordForm.watch("newPassword") || "") ? "✓" : "○"} One lowercase letter
-                      </li>
-                      <li className={/[0-9]/.test(passwordForm.watch("newPassword") || "") ? "text-emerald-600" : "text-muted-foreground"}>
-                        {/[0-9]/.test(passwordForm.watch("newPassword") || "") ? "✓" : "○"} One number
-                      </li>
-                      <li className={/[^A-Za-z0-9]/.test(passwordForm.watch("newPassword") || "") ? "text-emerald-600" : "text-muted-foreground"}>
-                        {/[^A-Za-z0-9]/.test(passwordForm.watch("newPassword") || "") ? "✓" : "○"} One special character
-                      </li>
-                    </ul>
-                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    The panel&apos;s password rules apply. If the new password breaks one, you are told which.
+                  </p>
                 </div>
 
                 {/* Confirm Password */}
@@ -577,300 +382,7 @@ export default function ProfileSettingsPage() {
             )}
           </CardContent>
         </Card>
-
-        {/* Two-Factor Authentication Card */}
-        <Card>
-          <CardHeader className="border-b">
-            <CardTitle className="flex items-center gap-2">
-              <Shield className="w-5 h-5" />
-              Two-Factor Authentication
-            </CardTitle>
-            <CardDescription>Add an extra layer of security to your account</CardDescription>
-          </CardHeader>
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-4">
-                <div
-                  className={`w-12 h-12 flex items-center justify-center rounded-md border ${
-                    twoFactorEnabled ? "bg-emerald-50 text-emerald-600 border-emerald-200 dark:bg-emerald-950 dark:border-emerald-900" : "bg-muted"
-                  }`}
-                >
-                  {twoFactorEnabled ? (
-                    <ShieldCheck className="w-6 h-6" />
-                  ) : (
-                    <ShieldOff className="w-6 h-6 text-muted-foreground" />
-                  )}
-                </div>
-                <div>
-                  <p className="font-medium text-foreground">
-                    {twoFactorEnabled ? "2FA is enabled" : "2FA is disabled"}
-                  </p>
-                  <p className="text-sm text-muted-foreground">
-                    {twoFactorEnabled
-                      ? "Your account is protected with an authenticator app"
-                      : "Protect your account with an authenticator app"}
-                  </p>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                {twoFactorEnabled ? (
-                  <>
-                    <Button variant="secondary" onClick={() => setShowBackupCodes(true)}>
-                      <Key className="w-4 h-4 mr-2" />
-                      Backup Codes
-                    </Button>
-                    <Button variant="destructive" onClick={() => setShowDisableDialog(true)}>
-                      <ShieldOff className="w-4 h-4 mr-2" />
-                      Disable
-                    </Button>
-                  </>
-                ) : (
-                  <Button onClick={handleStart2FASetup}>
-                    <ShieldCheck className="w-4 h-4 mr-2" />
-                    Enable 2FA
-                  </Button>
-                )}
-              </div>
-            </div>
-          </CardContent>
-        </Card>
       </div>
-
-      {/* 2FA Setup Dialog */}
-      <Dialog open={showSetupDialog} onOpenChange={(open) => !open && handleCloseSetupDialog()}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <ShieldCheck className="w-5 h-5" />
-              {setupStep === "qr" && "Set Up Two-Factor Authentication"}
-              {setupStep === "verify" && "Verify Your Authenticator"}
-              {setupStep === "backup" && "Backup Codes"}
-            </DialogTitle>
-            <DialogDescription>
-              {setupStep === "qr" && "Scan this QR code with your authenticator app"}
-              {setupStep === "verify" && "Enter the 6-digit code from your authenticator app"}
-              {setupStep === "backup" && "Save these backup codes in a secure location"}
-            </DialogDescription>
-          </DialogHeader>
-
-          {setupStep === "qr" && (
-            <div className="flex flex-col items-center space-y-4">
-              {/* White in both themes, with the four-square quiet zone scanners expect. */}
-              <div className="rounded-md border bg-white p-2">
-                {qrCode ? (
-                  <svg
-                    role="img"
-                    aria-label="QR code for your authenticator app"
-                    viewBox={`-4 -4 ${qrCode.size + 8} ${qrCode.size + 8}`}
-                    shapeRendering="crispEdges"
-                    className="h-64 w-64"
-                  >
-                    <rect x={-4} y={-4} width={qrCode.size + 8} height={qrCode.size + 8} fill="#ffffff" />
-                    <path d={qrCode.path} fill="#000000" />
-                  </svg>
-                ) : (
-                  <div className="flex h-64 w-64 items-center justify-center text-black">
-                    <Loader2 className="h-8 w-8 animate-spin" aria-label="Drawing the QR code" />
-                  </div>
-                )}
-              </div>
-              <div className="text-center">
-                <p className="text-sm font-medium">Cannot scan it? Enter this key in the app instead</p>
-                <p className="mt-1.5 flex flex-wrap items-center justify-center gap-2">
-                  <code className="break-all rounded-md border bg-muted px-2 py-1 font-mono text-xs">{setupSecret || "…"}</code>
-                  {setupSecret && (
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        try {
-                          await navigator.clipboard.writeText(setupSecret)
-                          toast.success("Key copied")
-                        } catch {
-                          toast.error("Could not copy. Select the key and copy it manually.")
-                        }
-                      }}
-                      className="border-b border-border pb-px text-xs font-semibold hover:border-foreground active:translate-y-px"
-                    >
-                      Copy
-                    </button>
-                  )}
-                </p>
-              </div>
-              <Button onClick={() => setSetupStep("verify")} className="w-full">
-                Next: Verify Code
-              </Button>
-            </div>
-          )}
-
-          {setupStep === "verify" && (
-            <form onSubmit={totpForm.handleSubmit(handleVerifySetup)} className="space-y-4">
-              <div>
-                <Input
-                  type="text"
-                  placeholder="000000"
-                  maxLength={6}
-                  className="text-center text-2xl font-mono tracking-widest"
-                  {...totpForm.register("code")}
-                />
-                {totpForm.formState.errors.code && (
-                  <p className="text-destructive text-sm mt-1">
-                    {totpForm.formState.errors.code.message}
-                  </p>
-                )}
-              </div>
-              <div className="flex items-center gap-2 p-3 rounded-md border bg-muted">
-                <Shield className="w-4 h-4 text-muted-foreground" />
-                <p className="text-xs font-medium">
-                  Enter the current 6-digit code from your authenticator app
-                </p>
-              </div>
-              <Button type="submit" className="w-full" disabled={isVerifying}>
-                {isVerifying ? (
-                  <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Verifying...
-                  </>
-                ) : (
-                  <>
-                    <ShieldCheck className="w-4 h-4 mr-2" />
-                    Verify & Enable 2FA
-                  </>
-                )}
-              </Button>
-            </form>
-          )}
-
-          {setupStep === "backup" && (
-            <div className="space-y-4">
-              <div className="p-4 rounded-md border bg-muted">
-                <div className="grid grid-cols-2 gap-2">
-                  {backupCodes.map((code) => (
-                    <code
-                      key={code}
-                      className="text-xs font-mono bg-background px-2 py-1 rounded-md border text-center"
-                    >
-                      {code}
-                    </code>
-                  ))}
-                </div>
-              </div>
-              <div className="flex items-center gap-2 p-3 rounded-md border border-destructive/30 bg-destructive/10 text-destructive">
-                <AlertTriangle className="w-4 h-4" />
-                <p className="text-xs font-medium">
-                  Save these codes now. They are not shown again, and each one works once.
-                </p>
-              </div>
-              <div className="flex gap-2">
-                <Button variant="secondary" onClick={() => handleCopyBackupCodes("backup-setup")} className="flex-1">
-                  {copied("backup-setup") ? <Check className="w-4 h-4 mr-2" aria-hidden="true" /> : <Copy className="w-4 h-4 mr-2" aria-hidden="true" />}
-                  {copied("backup-setup") ? "Copied" : "Copy codes"}
-                </Button>
-                <Button variant="secondary" onClick={handleDownloadBackupCodes} className="flex-1">
-                  Download as a text file
-                </Button>
-              </div>
-              <Button onClick={handleCloseSetupDialog} className="w-full">
-                Done
-              </Button>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
-
-      {/* Backup Codes Display Dialog */}
-      <Dialog open={showBackupCodes} onOpenChange={setShowBackupCodes}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Key className="w-5 h-5" />
-              Your Backup Codes
-            </DialogTitle>
-            <DialogDescription>
-              Use these codes to access your account if you lose your authenticator
-            </DialogDescription>
-          </DialogHeader>
-          <div className="p-4 rounded-md border bg-muted">
-            <div className="grid grid-cols-2 gap-2">
-              {backupCodes.length > 0 ? (
-                backupCodes.map((code) => (
-                  <code
-                    key={code}
-                    className="text-xs font-mono bg-background px-2 py-1 rounded-md border text-center"
-                  >
-                    {code}
-                  </code>
-                ))
-              ) : (
-                <div className="col-span-2 text-center py-4">
-                  <p className="text-sm text-muted-foreground">No backup codes available</p>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    className="mt-2"
-                    onClick={handleStart2FASetup}
-                  >
-                    Generate New Codes
-                  </Button>
-                </div>
-              )}
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setShowBackupCodes(false)}>
-              Close
-            </Button>
-            {backupCodes.length > 0 && (
-              <>
-              <Button variant="secondary" onClick={() => handleCopyBackupCodes("backup-all")}>
-                {copied("backup-all") ? <Check className="w-4 h-4 mr-2" aria-hidden="true" /> : <Copy className="w-4 h-4 mr-2" aria-hidden="true" />}
-                {copied("backup-all") ? "Copied" : "Copy All"}
-              </Button>
-              <Button variant="secondary" onClick={handleDownloadBackupCodes}>
-                Download as a text file
-              </Button>
-              </>
-            )}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Disable 2FA Dialog */}
-      <Dialog open={showDisableDialog} onOpenChange={setShowDisableDialog}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <AlertTriangle className="w-5 h-5 text-destructive" />
-              Disable Two-Factor Authentication?
-            </DialogTitle>
-            <DialogDescription>
-              This will make your account less secure. You will only need your password to log in.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="p-4 rounded-md border border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
-            <p className="text-sm font-medium">
-              Are you sure you want to disable 2FA?
-            </p>
-          </div>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setShowDisableDialog(false)}>
-              Cancel
-            </Button>
-            <Button variant="destructive" onClick={handleDisable2FA} disabled={isLoading}>
-              {isLoading ? (
-                <>
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Disabling...
-                </>
-              ) : (
-                <>
-                  <ShieldOff className="w-4 h-4 mr-2" />
-                  Disable 2FA
-                </>
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

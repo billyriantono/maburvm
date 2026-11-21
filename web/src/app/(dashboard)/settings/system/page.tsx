@@ -4,6 +4,7 @@ import { useState, useEffect } from "react"
 import { useSystemVersion, useUpdateAgent } from "@/lib/hooks/use-version"
 import { OperationProgress, type ProgressStep } from "@/components/operation-progress"
 import { useSystemSettings, useSaveSystemSettings, useTestEmail } from "@/lib/hooks/use-settings"
+import { useCurrentUser } from "@/lib/hooks/use-auth"
 import { toast } from "sonner"
 import { useFlash } from "@/lib/use-feedback"
 import { zodResolver } from "@hookform/resolvers/zod"
@@ -33,13 +34,24 @@ import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { DNSProviderSettings } from "@/components/dns-provider-settings"
 import { BackupDestinationSettings } from "@/components/backup-destination-settings"
+import { BillingDeliveries } from "@/components/billing-deliveries"
 
-// The password policy. Read by LoadPasswordPolicy in internal/panel/service/user.go.
+// The password policy (LoadPasswordPolicy in internal/panel/service/user.go)
+// and the sign-in policy (LoadSignInPolicy in internal/panel/middleware/sign_in_policy.go).
 const securitySchema = z.object({
   minPasswordLength: z.number().int().min(8, "Minimum 8 characters").max(128, "Maximum 128 characters"),
   requireUppercase: z.boolean(),
   requireNumbers: z.boolean(),
   requireSpecial: z.boolean(),
+  lockoutAttempts: z
+    .number()
+    .int()
+    .min(0)
+    .max(100, "At most 100")
+    .refine((v) => v === 0 || v >= 3, "0 turns lockout off; otherwise at least 3"),
+  lockoutMinutes: z.number().int().min(1, "At least 1 minute").max(1440, "At most 1440 minutes (a day)"),
+  requireStaff2fa: z.boolean(),
+  sessionHours: z.number().int().min(1, "At least 1 hour").max(720, "At most 720 hours (30 days)"),
 })
 
 // API settings schema
@@ -48,6 +60,8 @@ const apiSchema = z.object({
   hmacSecret: z.string().min(32, "HMAC secret must be at least 32 characters").or(z.literal("")),
   enableApi: z.boolean(),
   abuseipdbToken: z.string().or(z.literal("")),
+  // 0 turns the limit off. Mirrors DefaultAPIRequestsPerMinute in internal/panel/middleware.
+  apiRequestsPerMinute: z.number().int().min(0, "0 or more").max(100000),
 })
 
 // Per-account limits. Both are kept optional-with-minimum rather than allowing
@@ -57,10 +71,12 @@ const quotaSchema = z.object({
   vpcMaxPerUser: z.number().min(1).max(100),
   floatingIpMaxPerUser: z.number().min(1).max(100),
   portForwardMaxPerVm: z.number().min(1).max(1000),
+  firewallRuleMaxPerVm: z.number().int().min(1).max(1000),
   // What customers may do without the operator or the billing system.
   clientOrderingEnabled: z.boolean(),
   clientCloneEnabled: z.boolean(),
   clientExtraDisksEnabled: z.boolean(),
+  clientDeleteBilledEnabled: z.boolean(),
   // Starting quota of a new customer account. 0 = no limit, as on the user page.
   newClientMaxVms: z.number().int().min(0).max(10000),
   newClientMaxVcpu: z.number().int().min(0).max(100000),
@@ -88,12 +104,16 @@ type APIFormData = z.infer<typeof apiSchema>
 type QuotaFormData = z.infer<typeof quotaSchema>
 type EmailFormData = z.infer<typeof emailSchema>
 
-// Must mirror LoadPasswordPolicy's built-in values.
+// Must mirror the built-in values of LoadPasswordPolicy and DefaultSignInPolicy.
 const defaultSecuritySettings = {
   minPasswordLength: 12,
   requireUppercase: true,
   requireNumbers: true,
   requireSpecial: true,
+  lockoutAttempts: 10,
+  lockoutMinutes: 15,
+  requireStaff2fa: false,
+  sessionHours: 24,
 }
 
 const defaultApiSettings = {
@@ -101,17 +121,21 @@ const defaultApiSettings = {
   hmacSecret: "",
   enableApi: true,
   abuseipdbToken: "",
+  apiRequestsPerMinute: 1200,
 }
 
 const defaultQuotaSettings = {
   vpcMaxPerUser: 5,
   floatingIpMaxPerUser: 3,
   portForwardMaxPerVm: 20,
+  firewallRuleMaxPerVm: 100,
   // Must mirror SelfServiceAllowed and the DefaultNewClient* values in
   // internal/panel/service/settings.go.
   clientOrderingEnabled: true,
   clientCloneEnabled: true,
   clientExtraDisksEnabled: true,
+  // Mirrors ClientMayDeleteBilledVMs: off until an operator turns it on.
+  clientDeleteBilledEnabled: false,
   newClientMaxVms: 2,
   newClientMaxVcpu: 4,
   newClientMaxRamMb: 8192,
@@ -329,6 +353,7 @@ export default function SystemSettingsPage() {
   const { data: sysSettings, isLoading: settingsLoading, error: settingsError, refetch: refetchSettings } = useSystemSettings()
   const saveSettings = useSaveSystemSettings()
   const testEmail = useTestEmail()
+  const { data: me } = useCurrentUser()
 
   // Security form
   const securityForm = useForm<SecurityFormData>({
@@ -378,8 +403,16 @@ export default function SystemSettingsPage() {
     }
   }
 
+  // Keys this form does not show stay as they are.
   const handleSaveSecurity = (data: SecurityFormData) =>
-    saveSection("security", data, "Password policy", `New passwords need at least ${data.minPasswordLength} characters`)
+    saveSection(
+      "security",
+      { ...sysSettings?.security, ...data },
+      "Security settings",
+      data.lockoutAttempts === 0
+        ? "Accounts are never locked after failed sign-ins"
+        : `An account locks for ${data.lockoutMinutes} min after ${data.lockoutAttempts} failed sign-ins`,
+    )
 
   const handleSaveApi = (data: APIFormData) =>
     saveSection("api", data, "API settings", data.enableApi ? "API keys are accepted" : "API keys are refused")
@@ -517,18 +550,17 @@ export default function SystemSettingsPage() {
           </Card>
         </TabsContent>
 
-        {/* Password policy. Account lockout and session lifetime are not
-            enforced by the panel yet, so they have no controls here. */}
+        {/* Password policy and sign-in policy: one settings row, one form. */}
         <TabsContent value="security">
           <Card>
             <CardHeader className="border-b">
               <CardTitle className="flex items-center gap-2">
                 <Shield className="w-5 h-5" />
-                Password policy
+                Passwords and sign-in
               </CardTitle>
               <CardDescription>
-                What a new password must contain. It applies to accounts created, and passwords
-                changed or reset, from now on. Passwords already set keep working.
+                What a new password must contain, and how sign-in is protected. Password rules apply to
+                passwords set from now on; passwords already set keep working.
               </CardDescription>
             </CardHeader>
             <CardContent className="p-6">
@@ -581,6 +613,68 @@ export default function SystemSettingsPage() {
                       <span className="text-sm font-medium">A symbol</span>
                     </label>
                   </div>
+                </div>
+
+                <div className="space-y-5 pt-6 border-t">
+                  <h3 className="text-sm font-semibold">Sign-in</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label htmlFor="lockoutAttempts" className="block text-sm font-medium text-muted-foreground mb-2">
+                        Failed sign-ins before an account locks
+                      </label>
+                      <Input id="lockoutAttempts" type="number" min={0} max={100} {...securityForm.register("lockoutAttempts", { valueAsNumber: true })} />
+                      <p className="text-xs text-muted-foreground mt-1.5">
+                        Wrong passwords or two-factor codes in a row. 0 never locks. An administrator can unlock an
+                        account from its user page, and resetting the password unlocks it.
+                      </p>
+                      {securityForm.formState.errors.lockoutAttempts && (
+                        <p className="text-destructive text-sm mt-1">{securityForm.formState.errors.lockoutAttempts.message}</p>
+                      )}
+                    </div>
+                    <div>
+                      <label htmlFor="lockoutMinutes" className="block text-sm font-medium text-muted-foreground mb-2">
+                        Locked for (minutes)
+                      </label>
+                      <Input
+                        id="lockoutMinutes"
+                        type="number"
+                        min={1}
+                        max={1440}
+                        {...securityForm.register("lockoutMinutes", { valueAsNumber: true })}
+                      />
+                      <p className="text-xs text-muted-foreground mt-1.5">The account unlocks by itself after this.</p>
+                      {securityForm.formState.errors.lockoutMinutes && (
+                        <p className="text-destructive text-sm mt-1">{securityForm.formState.errors.lockoutMinutes.message}</p>
+                      )}
+                    </div>
+                    <div>
+                      <label htmlFor="sessionHours" className="block text-sm font-medium text-muted-foreground mb-2">
+                        Session length (hours)
+                      </label>
+                      <Input id="sessionHours" type="number" min={1} max={720} {...securityForm.register("sessionHours", { valueAsNumber: true })} />
+                      <p className="text-xs text-muted-foreground mt-1.5">
+                        How long a sign-in lasts before the person signs in again. Applies to sign-ins from now on.
+                      </p>
+                      {securityForm.formState.errors.sessionHours && (
+                        <p className="text-destructive text-sm mt-1">{securityForm.formState.errors.sessionHours.message}</p>
+                      )}
+                    </div>
+                  </div>
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input type="checkbox" {...securityForm.register("requireStaff2fa")} className="mt-0.5 w-5 h-5 accent-primary" />
+                    <span>
+                      <span className="text-sm font-medium">Require two-factor authentication for administrators</span>
+                      <span className="block text-xs text-muted-foreground mt-0.5">
+                        An administrator without it reaches only their profile, where they turn it on, until they do.
+                        Customers and API keys are not affected.
+                      </span>
+                      {securityForm.watch("requireStaff2fa") && me && !me.two_factor_enabled && (
+                        <span className="block text-xs font-medium text-foreground mt-1">
+                          You have not turned it on yourself: once saved, you are asked to before anything else.
+                        </span>
+                      )}
+                    </span>
+                  </label>
                 </div>
 
                 <div className="flex items-center justify-between pt-4 border-t">
@@ -694,6 +788,26 @@ export default function SystemSettingsPage() {
                       </p>
                     )}
                   </div>
+                  <div className="space-y-2">
+                    <label htmlFor="firewallRuleMaxPerVm" className="block text-sm font-medium text-muted-foreground mb-2">
+                      Firewall rules per VM
+                    </label>
+                    <Input
+                      id="firewallRuleMaxPerVm"
+                      type="number"
+                      {...quotaForm.register("firewallRuleMaxPerVm", { valueAsNumber: true })}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Every VM&apos;s rules share one chain on its node, so each rule slows new
+                      connections a little for every VM there. VMs already above a lowered limit keep
+                      what they have.
+                    </p>
+                    {quotaForm.formState.errors.firewallRuleMaxPerVm && (
+                      <p className="text-xs text-destructive">
+                        {quotaForm.formState.errors.firewallRuleMaxPerVm.message}
+                      </p>
+                    )}
+                  </div>
                 </div>
 
                 <div className="pt-2 border-t">
@@ -717,6 +831,17 @@ export default function SystemSettingsPage() {
                       <span className="text-sm font-medium">Add extra disks</span>
                     </label>
                   </div>
+                  <label className="mt-4 flex items-start gap-3 cursor-pointer">
+                    <input type="checkbox" {...quotaForm.register("clientDeleteBilledEnabled")} className="mt-0.5 w-5 h-5 accent-primary" />
+                    <span>
+                      <span className="text-sm font-medium">Delete servers that billing manages</span>
+                      <span className="block text-xs text-muted-foreground">
+                        Off: a customer cannot delete a server that has a billing service reference, because
+                        the service would go on being charged. They cancel it in your billing system, which
+                        removes it. Servers with no reference can always be deleted by their owner.
+                      </span>
+                    </span>
+                  </label>
                 </div>
 
                 <div className="pt-2 border-t">
@@ -873,6 +998,27 @@ export default function SystemSettingsPage() {
                   </label>
                 </div>
 
+                <div className="max-w-sm">
+                  <label htmlFor="apiRequestsPerMinute" className="block text-sm font-medium text-muted-foreground mb-2">
+                    Requests per minute, per account or key
+                  </label>
+                  <Input
+                    id="apiRequestsPerMinute"
+                    type="number"
+                    min={0}
+                    {...apiForm.register("apiRequestsPerMinute", { valueAsNumber: true })}
+                  />
+                  <p className="text-[11px] text-muted-foreground mt-1 font-medium">
+                    Counted for each signed-in person and each API key, the panel&apos;s own pages
+                    included. Past it, requests are refused for a few seconds with a note saying when
+                    to try again. Your billing system&apos;s webhook is not counted. 0 turns the
+                    limit off.
+                  </p>
+                  {apiForm.formState.errors.apiRequestsPerMinute && (
+                    <p className="text-destructive text-sm mt-1">{apiForm.formState.errors.apiRequestsPerMinute.message}</p>
+                  )}
+                </div>
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   {/* Webhook URL */}
                   <div>
@@ -888,7 +1034,7 @@ export default function SystemSettingsPage() {
                         className="pl-10"
                       />
                     </div>
-                    <p className="text-[11px] text-muted-foreground mt-1 font-medium">Outbound events (e.g. bandwidth overage) are POSTed here, signed with the HMAC secret below. Applied at runtime — no restart needed.</p>
+                    <p className="text-[11px] text-muted-foreground mt-1 font-medium">Events for your billing system (a server created, suspended or deleted, a failed installation, floating IP counts, transfer overage) are sent here, signed with the HMAC secret below, or with the billing webhook secret when none is saved. Takes effect at once. The list under this form shows each event and whether it arrived.</p>
                     {apiForm.formState.errors.webhookUrl && (
                       <p className="text-destructive text-sm mt-1">
                         {apiForm.formState.errors.webhookUrl.message}
@@ -976,6 +1122,7 @@ export default function SystemSettingsPage() {
               </form>
             </CardContent>
           </Card>
+          <BillingDeliveries />
           <DNSProviderSettings />
         </TabsContent>
 

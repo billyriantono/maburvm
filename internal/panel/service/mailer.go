@@ -45,9 +45,13 @@ func LoadSMTPSettings(db *gorm.DB) (cfg SMTPSettings, ok bool, err error) {
 	if d.SMTPHost == "" || d.SMTPPort == 0 {
 		return SMTPSettings{}, false, nil
 	}
+	password, err := models.OpenSecret(d.SMTPPassword)
+	if err != nil {
+		return SMTPSettings{}, false, err
+	}
 	return SMTPSettings{
 		Host: d.SMTPHost, Port: d.SMTPPort, Username: d.SMTPUser,
-		Password: d.SMTPPassword, From: d.SMTPFrom, FromName: d.SMTPFromName,
+		Password: password, From: d.SMTPFrom, FromName: d.SMTPFromName,
 		Brand: LoadBranding(db), Templates: LoadEmailTemplates(db), RequireTLS: d.EnableTLS,
 	}, true, nil
 }

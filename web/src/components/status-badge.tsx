@@ -37,6 +37,10 @@ const STATUSES: Record<string, { tone: Tone; label: string; busy?: boolean }> = 
   active: { tone: "ok", label: "Active" },
   maintenance: { tone: "warn", label: "Maintenance" },
   offline: { tone: "bad", label: "Offline" },
+  // Accounts: two-factor, sign-in lockout
+  on: { tone: "ok", label: "On" },
+  off: { tone: "idle", label: "Off" },
+  locked: { tone: "bad", label: "Locked" },
 }
 
 // vmStatus is the status to show for a VM. A VM on a node that is not

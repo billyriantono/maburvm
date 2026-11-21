@@ -7,8 +7,6 @@ import {
   Search,
   Shield,
   Trash2,
-  CheckCircle,
-  XCircle,
   Loader2,
   AlertCircle,
   Users,
@@ -31,8 +29,9 @@ import {
 import { useUsers, useDeleteUser } from "@/lib/hooks/use-users"
 import { useUserQuota, useSetUserQuota } from "@/lib/hooks/use-quota"
 import type { SetQuotaRequest } from "@/types/quota"
-import type { User } from "@/types"
+import { isSignInLocked, type User } from "@/types"
 import { useConfirm } from "@/components/confirm-provider"
+import { StatusBadge } from "@/components/status-badge"
 
 const PAGE_SIZE = 20
 
@@ -254,7 +253,7 @@ export default function UsersPage() {
         <div className="grid grid-cols-12 gap-4 p-4 bg-muted text-muted-foreground font-medium text-xs">
           <div className="col-span-4">User</div>
           <div className="col-span-2">Role</div>
-          <div className="col-span-2">2FA</div>
+          <div className="col-span-2">Two-factor</div>
           <div className="col-span-2">Created</div>
           <div className="col-span-2 text-right">Actions</div>
         </div>
@@ -296,21 +295,13 @@ export default function UsersPage() {
                   <Shield className="w-3 h-3" />
                   {user.role}
                 </Badge>
+                {user.suspended_at && <StatusBadge status="suspended" className="mt-1 flex" />}
               </div>
 
               {/* 2FA */}
               <div className="col-span-2">
-                {user.two_factor_secret ? (
-                  <div className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
-                    <CheckCircle className="w-4 h-4" />
-                    <span className="text-xs font-medium">Enabled</span>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-1 text-muted-foreground">
-                    <XCircle className="w-4 h-4" />
-                    <span className="text-xs font-medium">Disabled</span>
-                  </div>
-                )}
+                <StatusBadge status={user.two_factor_enabled ? "on" : "off"} />
+                {isSignInLocked(user) && <StatusBadge status="locked" className="mt-1 flex" />}
               </div>
 
               {/* Created */}

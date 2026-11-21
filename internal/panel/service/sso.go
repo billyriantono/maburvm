@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/shared/models"
 	"gorm.io/gorm"
 )
@@ -30,13 +29,16 @@ func (s *UserService) SSOLogin(email, clientIP string) (user *models.User, token
 	if u.Expired() {
 		return nil, "", false, ErrNoSSOAccount
 	}
+	if u.Suspended() {
+		return nil, "", false, ErrAccountSuspended
+	}
 	if len(u.IPWhitelist) > 0 && !s.isIPWhitelisted(clientIP, u.IPWhitelist) {
 		return nil, "", false, ErrIPNotWhitelisted
 	}
 	if u.TwoFactorEnabled {
 		return &u, "", true, nil
 	}
-	token, err = middleware.GenerateAccessToken(&u)
+	token, err = s.mintSession(&u)
 	if err != nil {
 		return nil, "", false, fmt.Errorf("failed to generate token: %w", err)
 	}
@@ -47,16 +49,19 @@ func (s *UserService) SSOLogin(email, clientIP string) (user *models.User, token
 // SSOVerify2FA finishes an SSO sign-in that stopped at the two-factor step.
 func (s *UserService) SSOVerify2FA(userID uuid.UUID, code, clientIP string) (*models.User, string, error) {
 	var u models.User
-	if err := s.db.First(&u, "id = ?", userID).Error; err != nil || u.Expired() {
+	if err := s.db.First(&u, "id = ?", userID).Error; err != nil || u.Locked() {
 		return nil, "", ErrInvalidCredentials
 	}
 	if len(u.IPWhitelist) > 0 && !s.isIPWhitelisted(clientIP, u.IPWhitelist) {
 		return nil, "", ErrIPNotWhitelisted
 	}
-	if !u.TwoFactorEnabled || !s.verifyTwoFactorCode(&u, code) {
+	if !u.TwoFactorEnabled {
 		return nil, "", ErrInvalidTOTPCode
 	}
-	token, err := middleware.GenerateAccessToken(&u)
+	if err := s.checkTwoFactor(&u, code, clientIP); err != nil {
+		return nil, "", err
+	}
+	token, err := s.mintSession(&u)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to generate token: %w", err)
 	}

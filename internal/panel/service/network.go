@@ -30,6 +30,7 @@ var (
 	ErrPortForwardNotFound  = fmt.Errorf("port forward not found")
 	ErrPortAlreadyInUse     = fmt.Errorf("external port already in use")
 	ErrPortForwardLimit     = fmt.Errorf("port forward limit reached")
+	ErrFirewallRuleLimit    = fmt.Errorf("firewall rule limit reached")
 	ErrInvalidVLANID        = fmt.Errorf("invalid VLAN ID (must be 1-4094)")
 	ErrInvalidBandwidth     = fmt.Errorf("invalid bandwidth limit")
 	ErrInvalidPortRange     = fmt.Errorf("invalid port range")
@@ -418,6 +419,14 @@ func (s *NetworkService) AddFirewallRule(ctx context.Context, vmID string, req *
 	// Set defaults
 	if req.SourceIP == "" {
 		req.SourceIP = "0.0.0.0/0"
+	}
+
+	held, err := s.firewallRepo.CountByVMID(ctx, vmID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count firewall rules: %w", err)
+	}
+	if limit := FirewallRulesPerVM(ctx, s.db); held >= int64(limit) {
+		return nil, fmt.Errorf("%w: a VM may have at most %d", ErrFirewallRuleLimit, limit)
 	}
 
 	// Create firewall rule

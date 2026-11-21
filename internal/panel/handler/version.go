@@ -11,6 +11,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/panel/service"
+	"github.com/maburvm/panel/internal/shared/agentsign"
 	"github.com/maburvm/panel/internal/shared/buildinfo"
 	"gorm.io/gorm"
 )
@@ -89,8 +90,16 @@ func (h *VersionHandler) UpdateAgent(c echo.Context) error {
 		return fail(http.StatusServiceUnavailable, "this panel image has no "+arch+" agent bundled ("+path+")")
 	}
 
+	// An offline signature, when the operator made one, sits beside the binary.
+	var signature []byte
+	if raw, err := os.ReadFile(path + ".sig"); err == nil {
+		if signature, err = agentsign.DecodeSignature(string(raw)); err != nil {
+			return fail(http.StatusServiceUnavailable, "the signature beside the bundled agent ("+path+".sig) is not valid: "+err.Error())
+		}
+	}
+
 	panelCommit := buildinfo.Get().Commit
-	msg, err := h.nodeService.AgentClient().UpdateAgent(ctx, nodeID, arch, panelCommit, binary)
+	msg, err := h.nodeService.AgentClient().UpdateAgent(ctx, nodeID, arch, panelCommit, binary, signature)
 	if err != nil {
 		return fail(http.StatusBadGateway, err.Error())
 	}

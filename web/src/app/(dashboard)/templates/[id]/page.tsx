@@ -25,6 +25,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { useTemplate, useDeleteTemplate, useUpdateTemplate } from "@/lib/hooks/use-templates"
 import { useVMs } from "@/lib/hooks/use-vms"
+import { usePlans } from "@/lib/hooks/use-plans"
 import { OSIcon } from "@/components/os-icon"
 import type { VM } from "@/types"
 import { useConfirm } from "@/components/confirm-provider"
@@ -43,12 +44,15 @@ export default function TemplateDetailPage() {
   const [editName, setEditName] = useState("")
   const [editVersion, setEditVersion] = useState("")
   const [editDescription, setEditDescription] = useState("")
+  const [editLicensed, setEditLicensed] = useState(false)
+  const [editPlanIds, setEditPlanIds] = useState<string[]>([])
 
   // Data hooks
   const { data: template, isLoading, error, refetch } = useTemplate(templateId)
   const { data: vmsData, isLoading: vmsLoading } = useVMs({ pageSize: 100 })
   const deleteTemplate = useDeleteTemplate()
   const updateTemplate = useUpdateTemplate(templateId)
+  const { data: plans } = usePlans()
 
   // Filter VMs that use this template
   const templateVMs = (vmsData?.data || []).filter((vm: VM) => vm.os_template_id === templateId)
@@ -78,6 +82,8 @@ export default function TemplateDetailPage() {
         name: editName,
         version: editVersion,
         description: editDescription || undefined,
+        licensed: editLicensed,
+        plan_ids: editPlanIds,
       })
       toast.success("Template updated")
       setEditOpen(false)
@@ -85,7 +91,7 @@ export default function TemplateDetailPage() {
     } catch (err) {
       toast.error(`Failed to update: ${(err as Error).message}`)
     }
-  }, [updateTemplate, editName, editVersion, editDescription, refetch])
+  }, [updateTemplate, editName, editVersion, editDescription, editLicensed, editPlanIds, refetch])
 
   // Loading
   if (isLoading) {
@@ -138,7 +144,10 @@ export default function TemplateDetailPage() {
         <div className="flex gap-2">
           <Dialog open={editOpen} onOpenChange={(open) => {
             setEditOpen(open)
-            if (open) { setEditName(template.name); setEditVersion(template.version); setEditDescription(template.description || "") }
+            if (open) {
+              setEditName(template.name); setEditVersion(template.version); setEditDescription(template.description || "")
+              setEditLicensed(!!template.licensed); setEditPlanIds(template.plan_ids ?? [])
+            }
           }}>
             <DialogTrigger asChild>
               <Button variant="outline" className="gap-2"><Edit2 className="w-4 h-4" />Edit</Button>
@@ -160,6 +169,45 @@ export default function TemplateDetailPage() {
                   <label htmlFor="edit-desc" className="block text-xs font-medium text-muted-foreground mb-1">Description</label>
                   <Input id="edit-desc" value={editDescription} onChange={(e) => setEditDescription(e.target.value)} />
                 </div>
+                <fieldset className="border-t pt-4">
+                  <legend className="sr-only">Who can install it</legend>
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input type="checkbox" checked={editLicensed} onChange={(e) => setEditLicensed(e.target.checked)} className="mt-0.5 w-4 h-4 accent-primary" />
+                    <span>
+                      <span className="block text-sm font-medium">Needs a paid licence</span>
+                      <span className="block text-xs text-muted-foreground">
+                        Customers can install it only on the plans ticked below. With none ticked, only staff and orders from your billing system can.
+                      </span>
+                    </span>
+                  </label>
+                  <p className="mt-4 mb-2 text-xs font-medium text-muted-foreground">Offered on these plans</p>
+                  {!plans ? (
+                    <p className="text-sm text-muted-foreground">Loading plans</p>
+                  ) : plans.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">There are no plans yet.</p>
+                  ) : (
+                    <div className="max-h-40 space-y-1.5 overflow-y-auto">
+                      {plans.map((p) => (
+                        <label key={p.id} className="flex items-center gap-3 cursor-pointer text-sm">
+                          <input
+                            type="checkbox"
+                            className="w-4 h-4 accent-primary"
+                            checked={editPlanIds.includes(p.id)}
+                            onChange={(e) => setEditPlanIds(e.target.checked ? [...editPlanIds, p.id] : editPlanIds.filter((id) => id !== p.id))}
+                          />
+                          {p.name}{!p.is_active && <span className="text-muted-foreground">(not on sale)</span>}
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {editPlanIds.length > 0
+                      ? "Customers and billing orders on any other plan are refused this template."
+                      : editLicensed
+                        ? "No plan ticked: customers cannot pick it themselves."
+                        : "No plan ticked: every plan can use it."}
+                  </p>
+                </fieldset>
               </div>
               <DialogFooter>
                 <Button variant="ghost" onClick={() => setEditOpen(false)}>Cancel</Button>
@@ -194,6 +242,15 @@ export default function TemplateDetailPage() {
               ) : (
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-md border bg-muted text-muted-foreground"><XCircle className="w-3 h-3" />Inactive</span>
               )}
+            </div>
+            <div className="flex items-center justify-between gap-4 py-2 border-b">
+              <span className="text-sm text-muted-foreground">Customers can install it</span>
+              <span className="text-right text-sm font-medium">
+                {(template.plan_ids ?? []).length > 0
+                  ? `On ${(template.plan_ids ?? []).map((id) => plans?.find((p) => p.id === id)?.name ?? "a deleted plan").join(", ")}`
+                  : template.licensed ? "No, staff and billing orders only" : "On every plan"}
+                {template.licensed && <span className="block text-xs font-normal text-muted-foreground">Needs a paid licence</span>}
+              </span>
             </div>
             <div className="flex items-center justify-between py-2 border-b">
               <span className="text-sm text-muted-foreground">Image Path</span>

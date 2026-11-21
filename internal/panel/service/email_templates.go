@@ -61,6 +61,7 @@ var EmailPlaceholders = []struct {
 
 const (
 	EmailWelcome       = "welcome"
+	EmailWelcomeOrder  = "welcome_order"
 	EmailPasswordReset = "password_reset"
 	EmailVMReady       = "vm_ready"
 	EmailVMReinstalled = "vm_reinstalled"
@@ -91,6 +92,21 @@ var emailTemplateDefs = []EmailTemplateDef{
 		Sample:      map[string]string{"name": "Dewi", "email": "dewi@example.com"},
 		SampleLink:  "https://panel.example.com/login",
 		LinkMeaning: "The button opens your panel's sign-in page.",
+	},
+	{
+		Key:      EmailWelcomeOrder,
+		Name:     "Welcome (billing order)",
+		SentWhen: "Sent when the billing system creates an account for a new customer. Switched off, the customer sets a password through \"Forgot password\" on the sign-in page.",
+		Optional: true,
+		Default: EmailTemplate{
+			Subject: "Your {{brand}} account",
+			Body: "{{greeting}},\n\nA {{brand}} account has been created for your order. It is where you manage your servers.\n\nUsername: {{email}}\n\n" +
+				"Choose a password with the button below. It works for 72 hours; after that, use \"Forgot password\" on the sign-in page.",
+			Button: "Choose a password",
+		},
+		Sample:      map[string]string{"name": "Dewi", "email": "dewi@example.com"},
+		SampleLink:  "https://panel.example.com/reset-password?token=example",
+		LinkMeaning: "The button opens the page where they choose their password.",
 	},
 	{
 		Key:      EmailPasswordReset,

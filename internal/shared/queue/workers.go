@@ -512,6 +512,14 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 				"error", err,
 			)
 		} else {
+			// Passwords ride in the job encrypted; a job queued before that is plaintext.
+			root, rerr := models.OpenSecret(params.RootPassword)
+			vncPass, verr := models.OpenSecret(params.VNCPassword)
+			if err := errors.Join(rerr, verr); err != nil {
+				vmRepo.UpdateStatus(ctx, vm.ID, models.VMStatusError)
+				return river.JobCancel(fmt.Errorf("the job's password cannot be decrypted: %w", err))
+			}
+			params.RootPassword, params.VNCPassword = root, vncPass
 			poolPath = params.PoolPath
 			wantsObjectStore = params.ObjectStore
 			metadata := params.Metadata
@@ -2808,7 +2816,7 @@ func NewAuditWorker(logger *slog.Logger, auditRepo *repository.AuditRepository) 
 
 // Work implements the audit job handler - inserts audit log to database
 func (w *AuditWorker) Work(ctx context.Context, job *river.Job[AuditJob]) error {
-	w.logger.InfoContext(ctx, "processing audit log",
+	w.logger.DebugContext(ctx, "processing audit log",
 		"action", job.Args.Action,
 		"resource_type", job.Args.ResourceType,
 		"user_id", job.Args.UserID,
@@ -2844,7 +2852,7 @@ func (w *AuditWorker) Work(ctx context.Context, job *river.Job[AuditJob]) error 
 		return nil
 	}
 
-	w.logger.InfoContext(ctx, "audit log inserted successfully",
+	w.logger.DebugContext(ctx, "audit log inserted successfully",
 		"audit_id", auditLog.ID,
 		"action", job.Args.Action,
 	)

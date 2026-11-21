@@ -184,6 +184,7 @@ func (c *Client) initRiver() error {
 	river.AddWorker(workers, NewImportWorker(c.logger))
 	river.AddWorker(workers, NewNetworkConfigWorker(c.logger))
 	river.AddWorker(workers, NewAuditWorker(c.logger, c.auditRepo))
+	river.AddWorker(workers, &webhookDeliveryWorker{})
 
 	riverClient, err := river.NewClient(riverpgxv5.New(c.pool), &river.Config{
 		Queues: map[string]river.QueueConfig{

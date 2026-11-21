@@ -19,6 +19,7 @@ import { useCopy } from "@/lib/use-feedback"
 import { useSSHKeys } from "@/lib/hooks/use-ssh-keys"
 import { useSelfService } from "@/lib/hooks/use-quota"
 import type { OSTemplate } from "@/types"
+import { templateOfferedOn } from "@/types/template"
 import type { Plan } from "@/types/plan"
 
 // A client orders a VM by picking a plan (resource flavor) + an OS template and a
@@ -69,8 +70,10 @@ function OrderVMForm() {
   // Only offer installable templates: active AND backed by a real base image.
   // The "/imported" image path is a placeholder for VMs imported from another
   // system — it can't seed a fresh install, so hide those from ordering.
+  // A system tied to plans is offered once one of its plans is chosen; a
+  // licensed one on no plan is ordered through billing, not here.
   const activeTemplates: OSTemplate[] = (templates ?? []).filter(
-    (t) => t.is_active && t.image_path !== "/imported"
+    (t) => t.is_active && t.image_path !== "/imported" && templateOfferedOn(t, planId)
   )
   const selectedPlan = activePlans.find((p) => p.id === planId)
   // A router is reached as admin and Windows as Administrator, each with a
@@ -260,7 +263,12 @@ function OrderVMForm() {
                       key={p.id}
                       type="button"
                       aria-pressed={selected}
-                      onClick={() => setPlanId(p.id)}
+                      onClick={() => {
+                        setPlanId(p.id)
+                        // A system the new plan does not include is no longer chosen.
+                        const chosen = (templates ?? []).find((t) => t.id === templateId)
+                        if (chosen && !templateOfferedOn(chosen, p.id)) setTemplateId("")
+                      }}
                       className={choiceClass(selected, "p-4")}
                     >
                       <span className="flex items-start justify-between gap-2">

@@ -26,6 +26,9 @@ const (
 	// DefaultPortForwardsPerVM: each forward takes a port on the node's one
 	// public address away from every other VM on that node.
 	DefaultPortForwardsPerVM = 20
+	// DefaultFirewallRulesPerVM: every VM's rules share one chain on its node,
+	// so each rule slows new connections for every tenant there a little.
+	DefaultFirewallRulesPerVM = 100
 
 	// What a new customer account may hold before an operator says otherwise:
 	// enough for a first server, not an open tab on the nodes.
@@ -52,10 +55,13 @@ type quotaSettings struct {
 	VPCMaxPerUser        *int `json:"vpcMaxPerUser"`
 	FloatingIPMaxPerUser *int `json:"floatingIpMaxPerUser"`
 	PortForwardMaxPerVM  *int `json:"portForwardMaxPerVm"`
+	FirewallRuleMaxPerVM *int `json:"firewallRuleMaxPerVm"`
 	// What customers may do on their own. Unset = allowed.
 	ClientOrderingEnabled   *bool `json:"clientOrderingEnabled"`
 	ClientCloneEnabled      *bool `json:"clientCloneEnabled"`
 	ClientExtraDisksEnabled *bool `json:"clientExtraDisksEnabled"`
+	// Whether a customer may delete a VM a billing service pays for. Unset = no.
+	ClientDeleteBilledEnabled *bool `json:"clientDeleteBilledEnabled"`
 	// The quota a new customer account starts with. 0 = no limit.
 	NewClientMaxVMs    *int `json:"newClientMaxVms"`
 	NewClientMaxVCPU   *int `json:"newClientMaxVcpu"`
@@ -111,6 +117,14 @@ func PortForwardsPerVM(ctx context.Context, db *gorm.DB) int {
 		return *v
 	}
 	return DefaultPortForwardsPerVM
+}
+
+// FirewallRulesPerVM is how many firewall rules one VM may hold.
+func FirewallRulesPerVM(ctx context.Context, db *gorm.DB) int {
+	if v := loadQuotaSettings(ctx, db).FirewallRuleMaxPerVM; v != nil && *v > 0 {
+		return *v
+	}
+	return DefaultFirewallRulesPerVM
 }
 
 // RAMOvercommitRatio is how many times a node's physical RAM may be allocated

@@ -577,6 +577,11 @@ func (h *NetworkHandler) AddFirewallRule(c echo.Context) error {
 
 	if err != nil {
 		switch {
+		case errors.Is(err, service.ErrFirewallRuleLimit):
+			return c.JSON(http.StatusConflict, map[string]interface{}{
+				"error":   "Conflict",
+				"message": "This VM has reached its firewall rule limit. Remove one before adding another.",
+			})
 		case err.Error() == "VM not found":
 			return c.JSON(http.StatusNotFound, map[string]interface{}{
 				"error":   "Not Found",

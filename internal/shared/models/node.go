@@ -22,7 +22,9 @@ type Node struct {
 	Name      string     `json:"name" gorm:"type:varchar(100);not null" validate:"required,max=100"`
 	IPAddress string     `json:"ip_address" gorm:"type:inet;not null" validate:"required,ip"`
 	Status    NodeStatus `json:"status" gorm:"type:node_status;default:offline" validate:"required,oneof=active maintenance offline"`
-	Token     string     `json:"-" gorm:"type:varchar(255);uniqueIndex;not null"` // Never exposed in JSON
+	// Token is the agent credential, encrypted at rest (serializer:secret).
+	// Never exposed in JSON.
+	Token string `json:"-" gorm:"type:varchar(255);uniqueIndex;not null;serializer:secret"`
 	// CreationPaused keeps new VMs off the node; the VMs already on it are not
 	// affected. Read-only here so a full-row save cannot overwrite it; it is
 	// written by table name in NodeService.UpdateNode.

@@ -173,9 +173,11 @@ func (r *BandwidthUsageRepository) SetQuota(ctx context.Context, vmID string, qu
 			Update("quota_bytes", quotaBytes).Error; err != nil {
 			return err
 		}
-		// Clear overage flag when unlimited or now under the new quota.
+		// Clear overage flag when unlimited or now under the new quota. The cast
+		// is needed: compared to a bare 0, Postgres takes the parameter for an
+		// int4 and refuses any quota of 2 GB or more.
 		return tx.Model(&models.BandwidthUsage{}).
-			Where("vm_id = ? AND period_start = ? AND (? = 0 OR total_bytes < ?)", vmID, periodStart, quotaBytes, quotaBytes).
+			Where("vm_id = ? AND period_start = ? AND (CAST(? AS BIGINT) = 0 OR total_bytes < ?)", vmID, periodStart, quotaBytes, quotaBytes).
 			Updates(map[string]interface{}{"exceeded": false, "blocked_at": nil}).Error
 	})
 }

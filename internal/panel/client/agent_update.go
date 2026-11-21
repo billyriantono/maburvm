@@ -14,7 +14,10 @@ import (
 //
 // Deliberately not run through executeWithRetry: a retry after a lost response
 // would schedule a second swap on a node that already accepted the first.
-func (c *AgentClient) UpdateAgent(ctx context.Context, nodeID, arch, commit string, binary []byte) (string, error) {
+//
+// signature is the offline ed25519 signature for the binary (nil when the
+// operator has not signed it); a node that requires one refuses without it.
+func (c *AgentClient) UpdateAgent(ctx context.Context, nodeID, arch, commit string, binary, signature []byte) (string, error) {
 	node, err := c.getNodeInfo(nodeID)
 	if err != nil {
 		return "", err
@@ -34,6 +37,7 @@ func (c *AgentClient) UpdateAgent(ctx context.Context, nodeID, arch, commit stri
 		msg := &pb.AgentUpdateChunk{Data: binary[off:min(off+chunk, len(binary))]}
 		if off == 0 {
 			msg.Sha256, msg.Arch, msg.Commit, msg.Size = hex.EncodeToString(sum[:]), arch, commit, int64(len(binary))
+			msg.Signature = signature
 		}
 		if err := stream.Send(msg); err != nil {
 			// The real reason is in the status CloseAndRecv returns.

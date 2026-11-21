@@ -19,6 +19,12 @@ AGENT_SHA256_AMD64="${AGENT_SHA256_AMD64:-__AGENT_SHA256_AMD64__}"
 AGENT_SHA256_ARM64="${AGENT_SHA256_ARM64:-__AGENT_SHA256_ARM64__}"
 GRPC_PORT="${AGENT_GRPC_PORT:-50051}"
 BIND="${AGENT_BIND_ADDRESS:-0.0.0.0}"
+# Optional hardening, passed through to the agent when given:
+#   AGENT_ALLOWED_PANEL_IPS  the panel's outgoing address(es); nobody else may connect
+#   AGENT_UPDATE_PUBKEY      only agent builds signed offline with this key are installed
+# No spaces: systemd splits an unquoted Environment= line at them.
+ALLOWED_PANEL_IPS="$(printf '%s' "${AGENT_ALLOWED_PANEL_IPS:-}" | tr ' ' ',')"
+UPDATE_PUBKEY="$(printf '%s' "${AGENT_UPDATE_PUBKEY:-}" | tr -d ' ')"
 INSTALL_DIR=/opt/maburvm
 
 if [ "${TOKEN:-}" = "" ]; then
@@ -121,6 +127,8 @@ Wants=network-online.target
 Environment=AGENT_AUTH_TOKEN=${TOKEN}
 Environment=AGENT_BIND_ADDRESS=${BIND}
 Environment=AGENT_GRPC_PORT=${GRPC_PORT}
+${ALLOWED_PANEL_IPS:+Environment=AGENT_ALLOWED_PANEL_IPS=${ALLOWED_PANEL_IPS}}
+${UPDATE_PUBKEY:+Environment=AGENT_UPDATE_PUBKEY=${UPDATE_PUBKEY}}
 Environment=ENVIRONMENT=development
 ExecStart=${INSTALL_DIR}/agent
 Restart=always
@@ -143,5 +151,9 @@ systemctl enable --now maburvm-agent
 echo ""
 echo "==> MaburVM agent installed and started."
 echo "    Listening on ${BIND}:${GRPC_PORT} (this host's public IP must be reachable by the panel)."
+if [ -z "$ALLOWED_PANEL_IPS" ]; then
+  echo "    Any host holding the token may connect. To accept only the panel, re-run with"
+  echo "    AGENT_ALLOWED_PANEL_IPS=<panel address>, or firewall ${GRPC_PORT}/tcp to it."
+fi
 echo "    Check status: systemctl status maburvm-agent --no-pager"
 echo "    Logs:        journalctl -u maburvm-agent -f"

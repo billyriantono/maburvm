@@ -80,6 +80,9 @@ func NewServer(db *gorm.DB, cfg *config.Config) *Server {
 	// service dials) uses it.
 	client.SetDefaultPinStore(newNodePinStore(repository.NewNodeRepository(db)))
 
+	// Rate limits, IP allow-lists and audit rows all read c.RealIP().
+	e.IPExtractor = clientIPExtractor(cfg.Server)
+
 	// Middleware
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
@@ -107,7 +110,17 @@ func NewServer(db *gorm.DB, cfg *config.Config) *Server {
 		AllowCredentials: true,
 		MaxAge:           86400,
 	}))
-	e.Use(middleware.Secure())
+	// The API answers JSON only: nothing may frame or render it, and a browser
+	// that reached it over https keeps using https (HSTS is sent on https only).
+	e.Use(middleware.SecureWithConfig(middleware.SecureConfig{
+		XSSProtection:         "0",
+		ContentTypeNosniff:    "nosniff",
+		XFrameOptions:         "DENY",
+		HSTSMaxAge:            31536000,
+		HSTSExcludeSubdomains: true,
+		ContentSecurityPolicy: "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+		ReferrerPolicy:        "no-referrer",
+	}))
 	e.Use(middleware.BodyLimit("10M"))
 	e.Use(middleware.RequestID())
 	e.Use(metricsMiddleware)
@@ -118,6 +131,24 @@ func NewServer(db *gorm.DB, cfg *config.Config) *Server {
 		cfg:                   cfg,
 		readinessCheckTimeout: 5 * time.Second,
 	}
+}
+
+// clientIPExtractor takes the client address from X-Forwarded-For, walking in
+// from the right and believing only hops in TRUSTED_PROXIES (default: loopback,
+// link-local and private ranges). A spoofed leftmost entry is never used.
+func clientIPExtractor(sc config.ServerConfig) echo.IPExtractor {
+	nets, err := sc.TrustedProxyNets()
+	if err != nil {
+		slog.Default().Error("ignoring TRUSTED_PROXIES", "error", err)
+	}
+	if len(nets) == 0 {
+		return echo.ExtractIPFromXFFHeader()
+	}
+	opts := []echo.TrustOption{echo.TrustLoopback(false), echo.TrustLinkLocal(false), echo.TrustPrivateNet(false)}
+	for _, n := range nets {
+		opts = append(opts, echo.TrustIPRange(n))
+	}
+	return echo.ExtractIPFromXFFHeader(opts...)
 }
 
 // SetQueueClient wires the River queue into HTTP services that enqueue asynchronous work.
@@ -172,6 +203,9 @@ func (s *Server) SetupRoutes() {
 	// checks for readiness). Kept separate from DB-dependent routes so they can be
 	// tested without a live database.
 	s.setupHealthRoutes()
+
+	// Every mutating request, admin and customer alike, goes to the audit log.
+	s.echo.Use(panelMiddleware.NewClient(s.queueClient).EchoMiddleware())
 
 	// API v1 routes
 	v1 := s.echo.Group("/api/v1")
@@ -430,7 +464,7 @@ func (s *Server) setupAuthRoutes(g *echo.Group) {
 	auth.POST("/register", authHandler.Register)
 	auth.POST("/forgot-password", authHandler.ForgotPassword, panelMiddleware.LoginRateLimiter())
 	auth.POST("/reset-password", authHandler.ResetPassword, panelMiddleware.LoginRateLimiter())
-	auth.POST("/logout", authHandler.Logout, panelMiddleware.RequireAuth(s.db))
+	auth.POST("/logout", authHandler.Logout, panelMiddleware.DropSessionCookie, panelMiddleware.RequireAuth(s.db))
 	auth.GET("/me", authHandler.Me, panelMiddleware.RequireAuth(s.db))
 	auth.GET("/client-ip", authHandler.ClientIP)
 
@@ -749,6 +783,9 @@ func (s *Server) setupMetricsRoutes() {
 		if err := service.NotifyVMOwner(ctx, s.db, vmID, key); err != nil {
 			slog.Default().Warn("could not email the server's owner", "vm_id", vmID, "email", key, "error", err)
 		}
+		if op == queue.VMOpCreate {
+			service.EmitVMBillingEvent(ctx, s.db, s.riverClient, slog.Default(), service.BillingEventVMCreated, vmID, nil)
+		}
 	}
 }
 
@@ -942,7 +979,7 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 			if exists, err := repo.EmailExists(ctx, req.Email); err != nil {
 				return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "email check failed"})
 			} else if exists {
-				return c.JSON(http.StatusConflict, map[string]interface{}{"error": "email_exists"})
+				return c.JSON(http.StatusConflict, map[string]interface{}{"error": "email_exists", "message": roleBoundaryMessages["email_exists"]})
 			}
 			hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 			if err != nil {
@@ -1034,6 +1071,7 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 		}
 		ctx := c.Request().Context()
 		var req struct {
+			Name        *string  `json:"name"`
 			Email       string   `json:"email"`
 			Role        string   `json:"role"`
 			IPWhitelist []string `json:"ip_whitelist"`
@@ -1048,23 +1086,84 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 				return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 			}
 		}
+		caller, ok := panelMiddleware.GetUserContext(c)
+		if !ok || caller.Role != models.RoleAdmin {
+			return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "Insufficient permissions"})
+		}
+		// Another administrator's account is the founding administrator's to change.
+		if rbErr := s.mayManageAccount(ctx, caller, user); rbErr != nil {
+			return writeRoleBoundaryErr(c, rbErr)
+		}
+
+		// The email is where password resets go, so a new one is validated like a
+		// new account's, and one's own is changed under Profile with the password.
+		newEmail := strings.ToLower(strings.TrimSpace(req.Email))
+		if newEmail == strings.ToLower(user.Email) {
+			newEmail = ""
+		}
+		if newEmail != "" {
+			if caller.ID == id {
+				return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "change_own_email_under_profile",
+					"message": "Change your own email address under Profile, with your current password"})
+			}
+			if addr, perr := mail.ParseAddress(newEmail); perr != nil || addr.Address != newEmail {
+				return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Enter a valid email address"})
+			}
+			if exists, eerr := userRepo.EmailExists(ctx, newEmail); eerr != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "email check failed"})
+			} else if exists {
+				return c.JSON(http.StatusConflict, map[string]interface{}{"error": "email_exists", "message": roleBoundaryMessages["email_exists"]})
+			}
+		}
+		var newName *string
+		if req.Name != nil {
+			n := strings.TrimSpace(*req.Name)
+			if len(n) > 255 {
+				return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "The name is too long (255 characters at most)"})
+			}
+			if n != user.Name {
+				newName = &n
+			}
+		}
+		// What changed, for the audit row and, for the email, the old address.
+		changed := map[string]any{}
+		if newEmail != "" {
+			changed["email_from"], changed["email_to"] = user.Email, newEmail
+		}
+		if newName != nil {
+			changed["name"] = *newName
+		}
+		if req.IPWhitelist != nil {
+			changed["ip_whitelist"] = req.IPWhitelist
+		}
+		recordChange := func() {
+			if len(changed) == 0 {
+				return
+			}
+			changed["email"] = user.Email
+			service.AuditUserEvent(ctx, s.db, "user.update", caller.ID.String(), id.String(), c.RealIP(), c.Request().UserAgent(), changed)
+			if newEmail != "" {
+				service.NotifyEmailChanged(s.db, user.Email, newEmail, user.Name)
+			}
+		}
 
 		// Determine whether this request crosses the admin role boundary: it does
 		// when a role is supplied that differs from the caller-fetched current role.
 		isRoleTransition := req.Role != "" && models.UserRole(req.Role) != user.Role
 
-		// Non-role update (e.g. email / ip_whitelist). This is a permitted operation
-		// that does not require founding authority and is NOT serialized by the
+		// Non-role update (name / email / ip_whitelist). It is NOT serialized by the
 		// advisory lock. CRITICAL: we must not use a full-model Save of the pre-read
 		// User, because that would write back a STALE `role` and clobber a concurrent
 		// serialized role transition. Instead we apply a SELECTIVE UPDATE restricted
-		// to an explicit allow-list of non-role columns (email, ip_whitelist);
-		// "role" (and every security/quota field) is dropped on purpose by
-		// updateUserNonRoleFields.
+		// to an explicit allow-list of non-role columns; "role" (and every
+		// security/quota field) is dropped on purpose by updateUserNonRoleFields.
 		if !isRoleTransition {
 			fields := map[string]interface{}{}
-			if req.Email != "" {
-				fields["email"] = req.Email
+			if newEmail != "" {
+				fields["email"] = newEmail
+			}
+			if newName != nil {
+				fields["name"] = *newName
 			}
 			if req.IPWhitelist != nil {
 				fields["ip_whitelist"] = req.IPWhitelist
@@ -1073,6 +1172,7 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 				if err := updateUserNonRoleFields(s.db, ctx, id, fields); err != nil {
 					return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to update user"})
 				}
+				recordChange()
 			}
 			// Re-read to return the authoritative, current row (reflecting any
 			// concurrent committed role change rather than the stale pre-read).
@@ -1080,7 +1180,7 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 			if gerr != nil {
 				return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to load user"})
 			}
-			return c.JSON(http.StatusOK, map[string]interface{}{"data": updated})
+			return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": updated})
 		}
 
 		// Role transitions are gated. Any request that would change the role —
@@ -1091,10 +1191,6 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 		}
 
 		newRole := models.UserRole(req.Role)
-		caller, ok := panelMiddleware.GetUserContext(c)
-		if !ok || caller.Role != models.RoleAdmin {
-			return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "Insufficient permissions"})
-		}
 
 		// Serialize the entire role transition (recheck + last-admin count +
 		// mutation) in one transaction behind the role-boundary advisory lock so
@@ -1123,8 +1219,11 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 					return &roleBoundaryErr{status: http.StatusForbidden, code: "cannot_demote_last_active_admin"}
 				}
 			}
-			if req.Email != "" {
-				target.Email = req.Email
+			if newEmail != "" {
+				target.Email = newEmail
+			}
+			if newName != nil {
+				target.Name = *newName
 			}
 			// A role transition may be combined with an allowed non-role field
 			// (ip_whitelist). The target row is freshly read INSIDE this locked
@@ -1142,13 +1241,64 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 		if rbErr != nil {
 			return writeRoleBoundaryErr(c, rbErr)
 		}
+		changed["role_from"], changed["role_to"] = string(user.Role), string(newRole)
+		recordChange()
 		// Reflect the mutation back into the outer user object for the response.
 		updated, gerr := userRepo.GetByID(ctx, id)
 		if gerr != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to load user"})
 		}
-		return c.JSON(http.StatusOK, map[string]interface{}{"data": updated})
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": updated})
 	}, panelMiddleware.RequirePermission("user:update"))
+
+	s.setupUserAccountRoutes(users, userRepo)
+
+	// Suspend a customer account without deleting it, and lift it again.
+	// with_vms does the same to the account's VMs.
+	accountVMs := service.NewVMService(s.db, repository.NewVMRepository(s.db), repository.NewNodeRepository(s.db),
+		repository.NewTemplateRepository(s.db), s.riverClient, slog.Default())
+	setSuspended := func(on bool) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			id, err := parseUUID(c.Param("id"))
+			if err != nil {
+				return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid user ID"})
+			}
+			caller, ok := panelMiddleware.GetUserContext(c)
+			if !ok || caller.Role != models.RoleAdmin {
+				return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "Insufficient permissions"})
+			}
+			var req struct {
+				WithVMs bool   `json:"with_vms"`
+				Reason  string `json:"reason"`
+			}
+			if err := c.Bind(&req); err != nil {
+				return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request body"})
+			}
+			ctx := c.Request().Context()
+			result, err := accountVMs.SetAccountSuspended(ctx, id.String(), on, req.WithVMs)
+			if result == nil {
+				switch {
+				case errors.Is(err, service.ErrUserNotFound):
+					return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "User not found"})
+				case errors.Is(err, service.ErrNotACustomerAccount):
+					return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Only customer accounts can be suspended. To remove an administrator's access, change its role or delete it."})
+				}
+				slog.Default().Error("account suspension failed", "user_id", id, "suspend", on, "error", err)
+				return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to update the account"})
+			}
+			service.AuditAccountSuspension(ctx, s.db, on, caller.ID.String(), id.String(), c.RealIP(), c.Request().UserAgent(), map[string]any{
+				"email": result.User.Email, "reason": strings.TrimSpace(req.Reason), "with_vms": req.WithVMs,
+				"vms_changed": result.VMsChanged, "vms_failed": result.VMsFailed,
+			})
+			if err != nil {
+				// The account is changed; its VMs could not be listed.
+				return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": result, "warning": err.Error()})
+			}
+			return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": result})
+		}
+	}
+	users.POST("/:id/suspend", setSuspended(true), panelMiddleware.RequirePermission("user:update"))
+	users.POST("/:id/unsuspend", setSuspended(false), panelMiddleware.RequirePermission("user:update"))
 
 	users.DELETE("/:id", func(c echo.Context) error {
 		id, err := parseUUID(c.Param("id"))
@@ -1162,22 +1312,22 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 			return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "Insufficient permissions"})
 		}
 
+		var deleted models.User
 		rbErr := s.execRoleBoundaryTx(ctx, func(tx *gorm.DB) error {
-			// Founding-admin authority enforcement: only the earliest active
-			// founding admin may delete an admin. A peer admin cannot delete the
-			// founder or any other admin and seize authority.
-			if authErr := recheckFoundingAuthority(tx, ctx, caller.ID, "only_the_founding_administrator_may_delete_admins"); authErr != nil {
-				return authErr
-			}
 			repo := repository.NewUserRepository(tx)
 			target, gerr := repo.GetByID(ctx, id)
 			if gerr != nil {
 				return &roleBoundaryErr{status: http.StatusNotFound, code: "user_not_found"}
 			}
-			// Last-admin guard: a delete that would remove the only remaining
-			// active administrator is forbidden so the control plane can never be
-			// left with zero admins.
 			if target.Role == models.RoleAdmin {
+				// Only the founding administrator may delete an administrator. A
+				// peer cannot delete the founder or any other admin and seize authority.
+				if authErr := recheckFoundingAuthority(tx, ctx, caller.ID, "only_the_founding_administrator_may_delete_admins"); authErr != nil {
+					return authErr
+				}
+				// Last-admin guard: a delete that would remove the only remaining
+				// active administrator is forbidden so the control plane can never be
+				// left with zero admins.
 				remaining, cerr := countActiveAdminsExceptTx(tx, ctx, target.ID)
 				if cerr != nil {
 					return fmt.Errorf("admin count: %w", cerr)
@@ -1185,15 +1335,21 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 				if remaining <= 0 {
 					return &roleBoundaryErr{status: http.StatusForbidden, code: "cannot_delete_last_active_admin"}
 				}
+			} else if !isActiveAdminTx(tx, ctx, caller.ID) {
+				// A customer account is any administrator's to delete.
+				return &roleBoundaryErr{status: http.StatusForbidden, code: "insufficient_permissions"}
 			}
 			if err := repo.Delete(ctx, id); err != nil {
 				return fmt.Errorf("delete: %w", err)
 			}
+			deleted = *target
 			return nil
 		})
 		if rbErr != nil {
 			return writeRoleBoundaryErr(c, rbErr)
 		}
+		service.AuditUserEvent(ctx, s.db, "user.delete", caller.ID.String(), id.String(), c.RealIP(), c.Request().UserAgent(),
+			map[string]any{"email": deleted.Email, "role": string(deleted.Role)})
 		return c.NoContent(http.StatusNoContent)
 	}, panelMiddleware.RequirePermission("user:delete"))
 }
@@ -1445,9 +1601,16 @@ func (s *Server) setupBillingRoutes() {
 	templateRepo := repository.NewTemplateRepository(s.db)
 
 	vmService := service.NewVMService(s.db, vmRepo, nodeRepo, templateRepo, s.riverClient, logger)
+	// A billed order names its region, or lands in the default one when set.
+	vmService.SetRegionService(service.NewRegionService(s.db))
 
 	billingHandler := handler.NewBillingHandler(vmService, logger, s.db)
+	// A package change that names a plan sets the plan's speed cap and quota
+	// through the same network-config job a manual speed change uses.
+	billingHandler.SetNetworkService(service.NewNetworkService(s.db, repository.NewNetworkRepository(s.db),
+		repository.NewFirewallRepository(s.db), vmRepo, nodeRepo, s.riverClient))
 	handler.RegisterBillingRoutes(s.echo, billingHandler)
+	handler.RegisterBillingDeliveryRoutes(s.echo, s.db, s.riverClient)
 }
 
 // setupSettingsRoutes configures user settings routes (profile, password, 2FA)
@@ -1615,8 +1778,13 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 			Code string `json:"code"`
 		}
 		_ = c.Bind(&req)
-		if err := userService.Verify2FA(&service.Verify2FARequest{UserID: userCtx.ID, Code: strings.TrimSpace(req.Code)}); err != nil {
-			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Enter a current authenticator code or a backup code"})
+		if err := userService.Verify2FA(&service.Verify2FARequest{UserID: userCtx.ID, Code: strings.TrimSpace(req.Code), ClientIP: c.RealIP()}); err != nil {
+			var locked *service.AccountLockedError
+			if errors.As(err, &locked) {
+				return c.JSON(http.StatusTooManyRequests, map[string]interface{}{"error": "Too many wrong codes. Try again in " + locked.Wait() + "."})
+			}
+			// A code is taken once: the one used to sign in will not also turn 2FA off.
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Enter a new code from your authenticator app, or a backup code"})
 		}
 		if err := userService.Disable2FA(userCtx.ID); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
@@ -1669,7 +1837,10 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 			var stored string
 			_ = s.db.WithContext(c.Request().Context()).
 				Raw("SELECT data::text FROM system_settings WHERE section = ?", section).Scan(&stored).Error
-			data = keepSettingSecrets(data, json.RawMessage(stored))
+			data, err := sealSettingSecrets(keepSettingSecrets(data, json.RawMessage(stored)))
+			if err != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to encrypt a stored credential"})
+			}
 			if err := s.db.WithContext(c.Request().Context()).Exec(
 				"INSERT INTO system_settings (section, data, updated_at) VALUES (?, ?::jsonb, NOW()) "+
 					"ON CONFLICT (section) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()",
@@ -1952,7 +2123,7 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 			var stored string
 			_ = s.db.WithContext(c.Request().Context()).
 				Raw("SELECT data->>'smtpPassword' FROM system_settings WHERE section = 'email'").Scan(&stored).Error
-			body.SMTPPassword = stored
+			body.SMTPPassword, _ = models.OpenSecret(stored)
 		}
 		if err := service.SendTestEmail(service.SMTPSettings{
 			Host:     body.SMTPHost,
@@ -2027,6 +2198,29 @@ func keepSettingSecrets(incoming, stored json.RawMessage) json.RawMessage {
 		return incoming
 	}
 	return out
+}
+
+// sealSettingSecrets encrypts credential fields that are still plaintext.
+func sealSettingSecrets(data json.RawMessage) (json.RawMessage, error) {
+	var m map[string]interface{}
+	if json.Unmarshal(data, &m) != nil || m == nil {
+		return data, nil
+	}
+	changed := false
+	for _, k := range settingSecretKeys {
+		v, _ := m[k].(string)
+		sealed, err := models.SealSecret(v)
+		if err != nil {
+			return nil, err
+		}
+		if sealed != v {
+			m[k], changed = sealed, true
+		}
+	}
+	if !changed {
+		return data, nil
+	}
+	return json.Marshal(m)
 }
 
 // setupNotificationRoutes configures notification routes (uses audit_logs as source)
@@ -2141,6 +2335,16 @@ func Run() error {
 		return fmt.Errorf("failed to run migrations: %w", err)
 	}
 
+	// Credentials in the database (agent tokens, VNC and mail passwords, job
+	// passwords) are encrypted with the AES key; plaintext left from before is
+	// sealed now, and values on a retired key are moved to the current one.
+	models.SetSecretKeys(cfg.JWT.AESKey, cfg.JWT.AESPreviousKeys...)
+	if n, err := sealSecretsAtRest(context.Background(), db); err != nil {
+		slog.Default().Error("encrypting stored credentials: some could not be processed", "encrypted", n, "error", err)
+	} else if n > 0 {
+		slog.Default().Info("encrypted stored credentials under the current AES key", "count", n)
+	}
+
 	// Initialize River queue before routes are registered so services receive a non-nil client.
 	queueCfg := queue.DefaultConfig(databaseURL(cfg.Database))
 	queueCfg.ApplyWorkerOverrides(queue.LoadWorkerOverrides(db))
@@ -2161,7 +2365,16 @@ func Run() error {
 	queue.ObjectStoreHook = service.NewBackupDestinations(db, nil, cfg.JWT.AESKey, cfg.JWT.AESPreviousKeys...).ObjectStore
 	// Likewise a job that fails for good in the first seconds must be reported.
 	alerts := service.NewAlertService(db, slog.Default(), cfg.JWT.AESKey, cfg.JWT.AESPreviousKeys...)
-	queue.JobFailedHook = alerts.JobFailed
+	queue.JobFailedHook = func(ctx context.Context, kind string, args []byte, reason string) {
+		alerts.JobFailed(ctx, kind, args, reason)
+		service.BillingJobFailed(ctx, db, queueClient.RiverClient(), kind, args, reason, false)
+	}
+	queue.JobRetryingHook = func(ctx context.Context, kind string, args []byte, reason string) {
+		service.BillingJobFailed(ctx, db, queueClient.RiverClient(), kind, args, reason, true)
+	}
+	queue.WebhookDeliverHook = func(ctx context.Context, deliveryID string, final bool) error {
+		return service.DeliverBillingEvent(ctx, db, deliveryID, final)
+	}
 	if err := queueClient.Start(context.Background()); err != nil {
 		_ = queueClient.Stop(context.Background())
 		return fmt.Errorf("failed to start queue: %w", err)

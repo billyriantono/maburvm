@@ -173,3 +173,20 @@ jobs:
           touch deploy/secrets/postgres_password deploy/secrets/s3_restricted_password
           docker compose -f docker-compose.production.yml --env-file .env.production.example config -q
           docker compose -f docker-compose.production.yml -f docker-compose.rehearsal.yml --env-file .env.production.example config -q
+
+  whmcs:
+    name: WHMCS modules (PHP lint and unit tests)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Lint
+        # The runner image ships PHP and Composer.
+        working-directory: integrations/whmcs
+        run: find modules tests/src tests/bootstrap.php -name '*.php' -print0 | xargs -0 -n1 php -l
+      - name: Unit tests
+        # Against stand-ins for WHMCS: this does not prove the modules inside a WHMCS install.
+        working-directory: integrations/whmcs/tests
+        run: |
+          composer install --no-interaction --no-progress
+          vendor/bin/phpunit

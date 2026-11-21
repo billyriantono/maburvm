@@ -1,16 +1,11 @@
 package service
 
 import (
-	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-	"net/http"
 	"os"
-	"time"
 
+	"github.com/maburvm/panel/internal/shared/models"
 	"gorm.io/gorm"
 )
 
@@ -24,17 +19,10 @@ import (
 // even if one is missed or retried, which for billing matters more than being
 // terse.
 
-// FloatingIPBillingEvent is the payload sent to WHMCS.
-type FloatingIPBillingEvent struct {
-	Event    string    `json:"event"`  // always "floating_ip.usage"
-	Reason   string    `json:"reason"` // ordered | released | attached | detached
-	UserID   string    `json:"user_id"`
-	Address  string    `json:"address,omitempty"`
-	Total    int64     `json:"total"`
-	Free     int64     `json:"free"`     // one attached address is included
-	Billable int64     `json:"billable"` // what to charge for
-	SentAt   time.Time `json:"sent_at"`
-}
+// The floating_ip.usage event carries: reason (ordered | released | attached |
+// detached), user_id, user_ref (the billing system's own reference for the
+// customer, when the panel knows it), address, total, free (one attached
+// address is included) and billable (what to charge for).
 
 // resolveBillingWebhook returns the WHMCS endpoint and signing secret from the
 // admin-managed API settings, falling back to the env secret when unset — the
@@ -46,7 +34,7 @@ func resolveBillingWebhook(ctx context.Context, db *gorm.DB) (url, secret string
 	}
 	var raw string
 	if err := db.WithContext(ctx).
-		Raw("SELECT data::text FROM system_settings WHERE section = 'api'").
+		Raw("SELECT CAST(data AS TEXT) FROM system_settings WHERE section = 'api'").
 		Scan(&raw).Error; err != nil || raw == "" {
 		return "", secret
 	}
@@ -57,19 +45,19 @@ func resolveBillingWebhook(ctx context.Context, db *gorm.DB) (url, secret string
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 		return "", secret
 	}
-	if cfg.HMACSecret != "" {
-		secret = cfg.HMACSecret
+	if s, err := models.OpenSecret(cfg.HMACSecret); err == nil && s != "" {
+		secret = s
 	}
 	return cfg.WebhookURL, secret
 }
 
-// notifyFloatingIPBilling reports a customer's new chargeable count to WHMCS.
+// notifyFloatingIPBilling reports a customer's new chargeable count to the
+// billing system.
 //
 // Best-effort on purpose: a billing endpoint being down must never stop a
-// customer attaching or releasing an address. The counts are also readable at
-// any time from /api/v1/floating-ips/billing, so a missed event self-corrects on
-// the next one or on a poll — the webhook is an optimisation, not the source of
-// truth.
+// customer attaching or releasing an address. The event is delivered by the
+// job queue with retries, and the counts are also readable at any time from
+// /api/v1/floating-ips/billing.
 func (s *VMService) notifyFloatingIPBilling(ctx context.Context, userID, address, reason string) {
 	if userID == "" {
 		return
@@ -79,38 +67,14 @@ func (s *VMService) notifyFloatingIPBilling(ctx context.Context, userID, address
 		s.logger.WarnContext(ctx, "floating IP billing: count failed", "user_id", userID, "error", err)
 		return
 	}
-	url, secret := resolveBillingWebhook(ctx, s.db)
-	if url == "" {
-		s.logger.InfoContext(ctx, "floating IP usage changed (no billing webhook configured)",
-			"user_id", userID, "reason", reason, "billable", billable)
-		return
+	fields := map[string]any{
+		"reason": reason, "user_id": userID, "total": total, "free": free, "billable": billable,
 	}
-	body, _ := json.Marshal(FloatingIPBillingEvent{
-		Event: "floating_ip.usage", Reason: reason, UserID: userID, Address: address,
-		Total: total, Free: free, Billable: billable, SentAt: time.Now().UTC(),
-	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		s.logger.WarnContext(ctx, "floating IP billing: build request failed", "error", err)
-		return
+	if address != "" {
+		fields["address"] = address
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if secret != "" {
-		mac := hmac.New(sha256.New, []byte(secret))
-		mac.Write(body)
-		req.Header.Set("X-Webhook-Signature", hex.EncodeToString(mac.Sum(nil)))
+	if ref := BillingUserRef(ctx, s.db, userID); ref != "" {
+		fields["user_ref"] = ref
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		s.logger.WarnContext(ctx, "floating IP billing: post failed", "user_id", userID, "error", err)
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		s.logger.WarnContext(ctx, "floating IP billing: non-2xx", "user_id", userID, "status", resp.StatusCode)
-		return
-	}
-	s.logger.InfoContext(ctx, "floating IP usage reported to billing",
-		"user_id", userID, "reason", reason, "billable", billable)
+	EmitBillingEvent(ctx, s.db, s.riverClient, s.logger, BillingEventFloatingIP, userID, fields)
 }

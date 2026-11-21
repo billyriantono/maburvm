@@ -13,8 +13,21 @@ export interface OSTemplate {
   // What kind of system the image holds; decides how a VM from it is set up.
   os_type?: OSType;
   description?: string;
+  // A system that costs a licence per VM. Customers install it only on a plan
+  // in plan_ids; with no plans listed, only staff and billing orders do.
+  licensed?: boolean;
+  // The plans the template is offered on. Empty or null means every plan.
+  plan_ids?: string[] | null;
   created_at: string;
   updated_at: string;
+}
+
+// Whether a customer may install the template on a server of this plan. The
+// panel enforces the same rule; this only keeps the choice off the screen.
+export function templateOfferedOn(t: OSTemplate, planId?: string | null): boolean {
+  const plans = t.plan_ids ?? [];
+  if (plans.length === 0) return !t.licensed;
+  return !!planId && plans.includes(planId);
 }
 
 // CreateTemplateRequest for creating OS templates.
@@ -34,4 +47,6 @@ export interface UpdateTemplateRequest {
   image_path?: string;
   is_active?: boolean;
   description?: string;
+  licensed?: boolean;
+  plan_ids?: string[];
 }

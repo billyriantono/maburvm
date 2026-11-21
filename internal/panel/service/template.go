@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/maburvm/panel/internal/panel/repository"
 	"github.com/maburvm/panel/internal/shared/models"
@@ -102,6 +103,9 @@ type UpdateTemplateRequest struct {
 	Description string `json:"description,omitempty" validate:"omitempty,max=500"`
 	IsActive    *bool  `json:"is_active,omitempty"`
 	OSType      string `json:"os_type,omitempty" validate:"omitempty,oneof=linux routeros windows"`
+	// Licensed and PlanIDs are the availability rules; nil leaves each as it is.
+	Licensed *bool     `json:"licensed,omitempty"`
+	PlanIDs  *[]string `json:"plan_ids,omitempty"`
 }
 
 // SyncTemplateRequest contains data for syncing a template to nodes
@@ -364,6 +368,19 @@ func (s *TemplateService) UpdateTemplate(ctx context.Context, id string, req *Up
 			return nil, fmt.Errorf("%w: unknown system type %q", ErrInvalidTemplate, req.OSType)
 		}
 		template.OSType = req.OSType
+	}
+	if req.Licensed != nil {
+		template.Licensed = *req.Licensed
+	}
+	if req.PlanIDs != nil {
+		ids := []string{}
+		for _, id := range *req.PlanIDs {
+			if _, perr := uuid.Parse(id); perr != nil {
+				return nil, fmt.Errorf("%w: %q is not a plan ID", ErrInvalidTemplate, id)
+			}
+			ids = append(ids, id)
+		}
+		template.PlanIDs = ids
 	}
 
 	if err := s.templateRepo.Update(ctx, template); err != nil {

@@ -37,6 +37,9 @@ type UpdateTemplateRequest struct {
 	Description string `json:"description,omitempty" validate:"omitempty,max=500"`
 	IsActive    *bool  `json:"is_active,omitempty"`
 	OSType      string `json:"os_type,omitempty"`
+	// Availability rules: a licensed system, and the plans it is offered on.
+	Licensed *bool     `json:"licensed,omitempty"`
+	PlanIDs  *[]string `json:"plan_ids,omitempty"`
 }
 
 // SyncTemplateRequest represents the request body for syncing a template
@@ -229,6 +232,8 @@ func (h *TemplateHandler) UpdateTemplate(c echo.Context) error {
 		Description: req.Description,
 		IsActive:    req.IsActive,
 		OSType:      req.OSType,
+		Licensed:    req.Licensed,
+		PlanIDs:     req.PlanIDs,
 	}
 
 	template, err := h.templateService.UpdateTemplate(c.Request().Context(), id, &svcReq)

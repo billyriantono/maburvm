@@ -27,6 +27,8 @@ func TestVMDTOsExposeModelFields(t *testing.T) {
 		"console_enabled": true,
 		"rescue_mode":     true,
 		"attached_iso":    true,
+		"plan_id":         true,
+		"billing_ref":     true,
 	}
 
 	modelKeys := jsonFieldNames(models.VM{})

@@ -120,6 +120,10 @@ func (s *UserService) ResetPassword(ctx context.Context, rawToken, newPassword s
 		return err
 	}
 
+	// Whoever holds the mailbox has proved the account is theirs: a sign-in
+	// lock from guessed passwords is lifted with the reset.
+	_ = ClearSignInLock(ctx, s.db, tok.UserID)
+
 	// Invalidate any outstanding sessions for this account.
 	return s.RevokeUserTokens(tok.UserID)
 }

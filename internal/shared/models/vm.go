@@ -45,7 +45,7 @@ type VM struct {
 	Status          VMStatus  `json:"status" gorm:"type:vm_status;default:stopped" validate:"required,oneof=running stopped suspended creating deleting error"`
 	SourceMigration string    `json:"source_migration,omitempty" gorm:"type:varchar(50);default:null"`
 	VNCPort         *int      `json:"vnc_port" gorm:"type:integer" validate:"omitempty,min=5900,max=5999"`
-	VNCPassword     string    `json:"-" gorm:"type:varchar(255)"` // Never exposed in JSON
+	VNCPassword     string    `json:"-" gorm:"type:varchar(255);serializer:secret"` // Never exposed in JSON; encrypted at rest
 	ConsoleEnabled  bool      `json:"console_enabled" gorm:"column:console_enabled;not null;default:true"`
 	RescueMode      bool      `json:"rescue_mode" gorm:"column:rescue_mode;not null;default:false"`
 	// AttachedISO is the ISO in the VM's CD drive as last confirmed by the node:
@@ -56,9 +56,14 @@ type VM struct {
 	// Suspended blocks the owner from starting or changing the VM, whatever its
 	// power state. Read-only here; SetSuspended is the one writer.
 	Suspended bool `json:"suspended" gorm:"column:suspended;->"`
-	CreatedAt   time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
-	UpdatedAt   time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
-	DeletedAt   gorm.DeletedAt `json:"-" gorm:"index"`
+	// PlanID is the plan the VM was ordered on or last changed to; BillingRef is
+	// the billing system's reference for the service that pays for it. Both
+	// read-only here; VMService.SetBillingLink is the writer.
+	PlanID     *string        `json:"plan_id,omitempty" gorm:"column:plan_id;->"`
+	BillingRef *string        `json:"billing_ref,omitempty" gorm:"column:billing_ref;->"`
+	CreatedAt  time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
+	UpdatedAt  time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
+	DeletedAt  gorm.DeletedAt `json:"-" gorm:"index"`
 
 	// Region is where this VM physically runs, filled for responses from its
 	// node. Customers reason in regions, not nodes — node placement is
@@ -67,6 +72,11 @@ type VM struct {
 	RegionID      string `json:"region_id,omitempty" gorm:"-"`
 	RegionName    string `json:"region_name,omitempty" gorm:"-"`
 	RegionCountry string `json:"region_country,omitempty" gorm:"-"`
+}
+
+// BillingManaged reports a VM a billing service pays for.
+func (v *VM) BillingManaged() bool {
+	return v.BillingRef != nil && *v.BillingRef != ""
 }
 
 // TableName specifies the table name for VM

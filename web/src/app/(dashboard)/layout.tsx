@@ -57,6 +57,14 @@ export default function DashboardLayout({
     }
   }, [user, router])
 
+  // The operator requires two-factor for administrators: the panel answers
+  // nothing else until it is on, so go straight to where it is turned on.
+  useEffect(() => {
+    if (user?.two_factor_setup_required && pathname !== "/settings/profile") {
+      router.replace("/settings/profile")
+    }
+  }, [user, pathname, router])
+
   // Handle logout
   const handleLogout = () => {
     logout.mutate(undefined, {

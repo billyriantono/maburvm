@@ -35,7 +35,8 @@ quota_mode TEXT NOT NULL DEFAULT 'legacy',
 		ip_whitelist TEXT,
 		created_at DATETIME NOT NULL,
 		updated_at DATETIME NOT NULL,
-		token_revoked_at DATETIME, deleted_at DATETIME
+		token_revoked_at DATETIME, deleted_at DATETIME,
+		failed_login_count INTEGER NOT NULL DEFAULT 0, locked_until DATETIME, totp_last_step INTEGER NOT NULL DEFAULT 0
 	);`
 
 	if err := db.Exec(createTableSQL).Error; err != nil {
@@ -361,16 +362,22 @@ func TestUserService_2FAFlow(t *testing.T) {
 			t.Fatalf("Verify2FASetup() failed: %v", err)
 		}
 
-		// Now login with valid TOTP
+		// The code that confirmed the setup is spent: it does not also sign in.
 		loginReq := &LoginRequest{
 			Email:    "2fa@test.com",
 			Password: "StrongP@ssw0rd!",
 			TOTPCode: totpCode,
 			ClientIP: "192.168.1.1",
 		}
+		if _, err := service.Login(loginReq); err != ErrInvalidTOTPCode {
+			t.Fatalf("Login() with an already used code = %v, want ErrInvalidTOTPCode", err)
+		}
+
+		// The next code signs in.
+		loginReq.TOTPCode, _ = totp.GenerateCode(setupResp.Secret, time.Now().Add(30*time.Second))
 		resp, err := service.Login(loginReq)
 		if err != nil {
-			t.Errorf("Login() with valid TOTP failed: %v", err)
+			t.Fatalf("Login() with valid TOTP failed: %v", err)
 		}
 		if resp.Requires2FA {
 			t.Error("Login() should not require 2FA after providing valid code")
@@ -756,6 +763,9 @@ func TestGenerateEvidence(t *testing.T) {
 	}
 
 	// 4c. Login with valid TOTP code
+	// Section 3 spent every code valid right now. Forget them, as a minute's
+	// wait would, so a current code signs in.
+	db.Exec("UPDATE users SET totp_last_step = 0 WHERE email = ?", "qa-test@example.com")
 	validCode, _ := totp.GenerateCode(setupResp.Secret, time.Now())
 	loginReq.TOTPCode = validCode
 	loginResp, err = service.Login(loginReq)

@@ -8171,11 +8171,15 @@ func (x *SetQuarantineResponse) GetError() *ErrorResponse {
 type AgentUpdateChunk struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Set on the first chunk only.
-	Sha256        string `protobuf:"bytes,1,opt,name=sha256,proto3" json:"sha256,omitempty"`
-	Arch          string `protobuf:"bytes,2,opt,name=arch,proto3" json:"arch,omitempty"`
-	Commit        string `protobuf:"bytes,3,opt,name=commit,proto3" json:"commit,omitempty"`
-	Size          int64  `protobuf:"varint,4,opt,name=size,proto3" json:"size,omitempty"`
-	Data          []byte `protobuf:"bytes,5,opt,name=data,proto3" json:"data,omitempty"`
+	Sha256 string `protobuf:"bytes,1,opt,name=sha256,proto3" json:"sha256,omitempty"`
+	Arch   string `protobuf:"bytes,2,opt,name=arch,proto3" json:"arch,omitempty"`
+	Commit string `protobuf:"bytes,3,opt,name=commit,proto3" json:"commit,omitempty"`
+	Size   int64  `protobuf:"varint,4,opt,name=size,proto3" json:"size,omitempty"`
+	Data   []byte `protobuf:"bytes,5,opt,name=data,proto3" json:"data,omitempty"`
+	// Ed25519 signature over the binary's digest, made offline (cmd/agent-sign).
+	// First chunk only. A node with AGENT_UPDATE_PUBKEY set refuses an update
+	// without a valid one; other nodes ignore it.
+	Signature     []byte `protobuf:"bytes,6,opt,name=signature,proto3" json:"signature,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8241,6 +8245,13 @@ func (x *AgentUpdateChunk) GetSize() int64 {
 func (x *AgentUpdateChunk) GetData() []byte {
 	if x != nil {
 		return x.Data
+	}
+	return nil
+}
+
+func (x *AgentUpdateChunk) GetSignature() []byte {
+	if x != nil {
+		return x.Signature
 	}
 	return nil
 }
@@ -8934,13 +8945,14 @@ const file_api_proto_agent_proto_rawDesc = "" +
 	"\x15SetQuarantineResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12)\n" +
 	"\x10quarantined_macs\x18\x02 \x03(\tR\x0fquarantinedMacs\x12*\n" +
-	"\x05error\x18\x03 \x01(\v2\x14.agent.ErrorResponseR\x05error\"~\n" +
+	"\x05error\x18\x03 \x01(\v2\x14.agent.ErrorResponseR\x05error\"\x9c\x01\n" +
 	"\x10AgentUpdateChunk\x12\x16\n" +
 	"\x06sha256\x18\x01 \x01(\tR\x06sha256\x12\x12\n" +
 	"\x04arch\x18\x02 \x01(\tR\x04arch\x12\x16\n" +
 	"\x06commit\x18\x03 \x01(\tR\x06commit\x12\x12\n" +
 	"\x04size\x18\x04 \x01(\x03R\x04size\x12\x12\n" +
-	"\x04data\x18\x05 \x01(\fR\x04data\"u\n" +
+	"\x04data\x18\x05 \x01(\fR\x04data\x12\x1c\n" +
+	"\tsignature\x18\x06 \x01(\fR\tsignature\"u\n" +
 	"\x13AgentUpdateResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12*\n" +
