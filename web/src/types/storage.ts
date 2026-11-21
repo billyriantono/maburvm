@@ -2,7 +2,7 @@
 export interface StoragePool {
   id: string;
   name: string;
-  type: string; // "dir" is the only type that can be registered
+  type: string; // "dir", "lvm" (path is a volume group) or "lvmthin" (path is "vg/thinpool")
   status: 'online' | 'offline' | 'degraded';
   total_space: number; // bytes
   used_space: number; // bytes
@@ -12,6 +12,10 @@ export interface StoragePool {
   alert_threshold: number; // 0-100
   overcommit: number; // bytes, 0 = disabled
   is_primary: boolean;
+  // Why the node cannot use the pool; empty when it can.
+  status_note?: string;
+  // A thin pool's metadata use, 0-100. Absent for other pools.
+  metadata_percent?: number;
   // Virtual disk size promised on the pool, in bytes. Absent when not known.
   allocated_space?: number;
   // The most the disk overcommit ratio allows, in bytes. 0 = no limit set.
@@ -41,6 +45,7 @@ export interface StorageVolume {
 // CreateStoragePoolRequest for creating storage pools
 export interface CreateStoragePoolRequest {
   name: string;
+  type: "dir" | "lvm" | "lvmthin";
   path: string;
   node_id: string;
   alert_threshold: number;

@@ -19,41 +19,50 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	NodeAgent_RegisterNode_FullMethodName        = "/agent.NodeAgent/RegisterNode"
-	NodeAgent_Heartbeat_FullMethodName           = "/agent.NodeAgent/Heartbeat"
-	NodeAgent_ExecuteVMCommand_FullMethodName    = "/agent.NodeAgent/ExecuteVMCommand"
-	NodeAgent_GetVMStatus_FullMethodName         = "/agent.NodeAgent/GetVMStatus"
-	NodeAgent_StreamVMMetrics_FullMethodName     = "/agent.NodeAgent/StreamVMMetrics"
-	NodeAgent_CreateSnapshot_FullMethodName      = "/agent.NodeAgent/CreateSnapshot"
-	NodeAgent_ApplyNetworkConfig_FullMethodName  = "/agent.NodeAgent/ApplyNetworkConfig"
-	NodeAgent_StartVNCProxy_FullMethodName       = "/agent.NodeAgent/StartVNCProxy"
-	NodeAgent_GetNodeInfo_FullMethodName         = "/agent.NodeAgent/GetNodeInfo"
-	NodeAgent_ImportDisk_FullMethodName          = "/agent.NodeAgent/ImportDisk"
-	NodeAgent_BackupDisk_FullMethodName          = "/agent.NodeAgent/BackupDisk"
-	NodeAgent_RestoreDisk_FullMethodName         = "/agent.NodeAgent/RestoreDisk"
-	NodeAgent_TestObjectStore_FullMethodName     = "/agent.NodeAgent/TestObjectStore"
-	NodeAgent_GetLiveMetrics_FullMethodName      = "/agent.NodeAgent/GetLiveMetrics"
-	NodeAgent_ScanVMs_FullMethodName             = "/agent.NodeAgent/ScanVMs"
-	NodeAgent_CreateStorageVolume_FullMethodName = "/agent.NodeAgent/CreateStorageVolume"
-	NodeAgent_DeleteStorageVolume_FullMethodName = "/agent.NodeAgent/DeleteStorageVolume"
-	NodeAgent_GetStorageReport_FullMethodName    = "/agent.NodeAgent/GetStorageReport"
-	NodeAgent_MigrateVM_FullMethodName           = "/agent.NodeAgent/MigrateVM"
-	NodeAgent_SyncTemplate_FullMethodName        = "/agent.NodeAgent/SyncTemplate"
-	NodeAgent_AttachDisk_FullMethodName          = "/agent.NodeAgent/AttachDisk"
-	NodeAgent_DetachDisk_FullMethodName          = "/agent.NodeAgent/DetachDisk"
-	NodeAgent_DefineNetwork_FullMethodName       = "/agent.NodeAgent/DefineNetwork"
-	NodeAgent_UndefineNetwork_FullMethodName     = "/agent.NodeAgent/UndefineNetwork"
-	NodeAgent_ProbeIPs_FullMethodName            = "/agent.NodeAgent/ProbeIPs"
-	NodeAgent_ConfigureFloatingIP_FullMethodName = "/agent.NodeAgent/ConfigureFloatingIP"
-	NodeAgent_ConfigureVPC_FullMethodName        = "/agent.NodeAgent/ConfigureVPC"
-	NodeAgent_SetQuarantine_FullMethodName       = "/agent.NodeAgent/SetQuarantine"
-	NodeAgent_SetConsoleAccess_FullMethodName    = "/agent.NodeAgent/SetConsoleAccess"
-	NodeAgent_ConsoleStream_FullMethodName       = "/agent.NodeAgent/ConsoleStream"
-	NodeAgent_GetExportProgress_FullMethodName   = "/agent.NodeAgent/GetExportProgress"
-	NodeAgent_GetGuestConnections_FullMethodName = "/agent.NodeAgent/GetGuestConnections"
-	NodeAgent_UpdateAgent_FullMethodName         = "/agent.NodeAgent/UpdateAgent"
-	NodeAgent_SetVMLimits_FullMethodName         = "/agent.NodeAgent/SetVMLimits"
-	NodeAgent_GetPreflight_FullMethodName        = "/agent.NodeAgent/GetPreflight"
+	NodeAgent_RegisterNode_FullMethodName           = "/agent.NodeAgent/RegisterNode"
+	NodeAgent_Heartbeat_FullMethodName              = "/agent.NodeAgent/Heartbeat"
+	NodeAgent_ExecuteVMCommand_FullMethodName       = "/agent.NodeAgent/ExecuteVMCommand"
+	NodeAgent_GetVMStatus_FullMethodName            = "/agent.NodeAgent/GetVMStatus"
+	NodeAgent_StreamVMMetrics_FullMethodName        = "/agent.NodeAgent/StreamVMMetrics"
+	NodeAgent_CreateSnapshot_FullMethodName         = "/agent.NodeAgent/CreateSnapshot"
+	NodeAgent_ApplyNetworkConfig_FullMethodName     = "/agent.NodeAgent/ApplyNetworkConfig"
+	NodeAgent_StartVNCProxy_FullMethodName          = "/agent.NodeAgent/StartVNCProxy"
+	NodeAgent_GetNodeInfo_FullMethodName            = "/agent.NodeAgent/GetNodeInfo"
+	NodeAgent_ImportDisk_FullMethodName             = "/agent.NodeAgent/ImportDisk"
+	NodeAgent_BackupDisk_FullMethodName             = "/agent.NodeAgent/BackupDisk"
+	NodeAgent_RestoreDisk_FullMethodName            = "/agent.NodeAgent/RestoreDisk"
+	NodeAgent_TestObjectStore_FullMethodName        = "/agent.NodeAgent/TestObjectStore"
+	NodeAgent_DeleteBackupFiles_FullMethodName      = "/agent.NodeAgent/DeleteBackupFiles"
+	NodeAgent_GetLiveMetrics_FullMethodName         = "/agent.NodeAgent/GetLiveMetrics"
+	NodeAgent_ScanVMs_FullMethodName                = "/agent.NodeAgent/ScanVMs"
+	NodeAgent_CreateStorageVolume_FullMethodName    = "/agent.NodeAgent/CreateStorageVolume"
+	NodeAgent_DeleteStorageVolume_FullMethodName    = "/agent.NodeAgent/DeleteStorageVolume"
+	NodeAgent_GetStorageReport_FullMethodName       = "/agent.NodeAgent/GetStorageReport"
+	NodeAgent_MigrateVM_FullMethodName              = "/agent.NodeAgent/MigrateVM"
+	NodeAgent_SyncTemplate_FullMethodName           = "/agent.NodeAgent/SyncTemplate"
+	NodeAgent_AttachDisk_FullMethodName             = "/agent.NodeAgent/AttachDisk"
+	NodeAgent_DetachDisk_FullMethodName             = "/agent.NodeAgent/DetachDisk"
+	NodeAgent_DefineNetwork_FullMethodName          = "/agent.NodeAgent/DefineNetwork"
+	NodeAgent_UndefineNetwork_FullMethodName        = "/agent.NodeAgent/UndefineNetwork"
+	NodeAgent_ProbeIPs_FullMethodName               = "/agent.NodeAgent/ProbeIPs"
+	NodeAgent_ConfigureFloatingIP_FullMethodName    = "/agent.NodeAgent/ConfigureFloatingIP"
+	NodeAgent_ConfigureVPC_FullMethodName           = "/agent.NodeAgent/ConfigureVPC"
+	NodeAgent_SetQuarantine_FullMethodName          = "/agent.NodeAgent/SetQuarantine"
+	NodeAgent_SetConsoleAccess_FullMethodName       = "/agent.NodeAgent/SetConsoleAccess"
+	NodeAgent_ConsoleStream_FullMethodName          = "/agent.NodeAgent/ConsoleStream"
+	NodeAgent_GetExportProgress_FullMethodName      = "/agent.NodeAgent/GetExportProgress"
+	NodeAgent_GetGuestConnections_FullMethodName    = "/agent.NodeAgent/GetGuestConnections"
+	NodeAgent_UpdateAgent_FullMethodName            = "/agent.NodeAgent/UpdateAgent"
+	NodeAgent_SetVMLimits_FullMethodName            = "/agent.NodeAgent/SetVMLimits"
+	NodeAgent_GetPreflight_FullMethodName           = "/agent.NodeAgent/GetPreflight"
+	NodeAgent_GetMigrationInfo_FullMethodName       = "/agent.NodeAgent/GetMigrationInfo"
+	NodeAgent_SetMigrationPeers_FullMethodName      = "/agent.NodeAgent/SetMigrationPeers"
+	NodeAgent_PrepareMigrationTarget_FullMethodName = "/agent.NodeAgent/PrepareMigrationTarget"
+	NodeAgent_PullMigratedVM_FullMethodName         = "/agent.NodeAgent/PullMigratedVM"
+	NodeAgent_GetMigrationProgress_FullMethodName   = "/agent.NodeAgent/GetMigrationProgress"
+	NodeAgent_AbortMigration_FullMethodName         = "/agent.NodeAgent/AbortMigration"
+	NodeAgent_FinishMigrationTarget_FullMethodName  = "/agent.NodeAgent/FinishMigrationTarget"
+	NodeAgent_FinishMigrationSource_FullMethodName  = "/agent.NodeAgent/FinishMigrationSource"
 )
 
 // NodeAgentClient is the client API for NodeAgent service.
@@ -109,6 +118,9 @@ type NodeAgentClient interface {
 	// small object, reads it back and deletes it. An agent without it answers
 	// Unimplemented, which the panel reports as "needs an agent update".
 	TestObjectStore(ctx context.Context, in *TestObjectStoreRequest, opts ...grpc.CallOption) (*TestObjectStoreResponse, error)
+	// DeleteBackupFiles removes stored backup files the panel cannot reach
+	// itself (a path mounted on the node). Feature "backup_targets".
+	DeleteBackupFiles(ctx context.Context, in *DeleteBackupFilesRequest, opts ...grpc.CallOption) (*DeleteBackupFilesResponse, error)
 	// GetLiveMetrics retrieves real-time system metrics from the node including
 	// CPU usage, memory usage, disk usage, network I/O, disk I/O, and load average.
 	GetLiveMetrics(ctx context.Context, in *GetLiveMetricsRequest, opts ...grpc.CallOption) (*GetLiveMetricsResponse, error)
@@ -129,8 +141,9 @@ type NodeAgentClient interface {
 	// path fixes the number; reporting the disk locations is what reveals storage
 	// in use that nobody registered as a pool at all.
 	GetStorageReport(ctx context.Context, in *GetStorageReportRequest, opts ...grpc.CallOption) (*GetStorageReportResponse, error)
-	// MigrateVM live-migrates a domain from this (source) node to a destination
-	// libvirt URI using peer-to-peer migration.
+	// MigrateVM starts a live move of a domain from this (source) node to
+	// dest_address over the migration link, in the background; progress comes
+	// from GetMigrationProgress. The old form (dest_uri alone) is refused.
 	MigrateVM(ctx context.Context, in *MigrateVMRequest, opts ...grpc.CallOption) (*MigrateVMResponse, error)
 	// SyncTemplate downloads/caches an OS template image on this node and returns
 	// its local path, size and checksum (idempotent — reuses a cached copy).
@@ -210,6 +223,31 @@ type NodeAgentClient interface {
 	// netfilter, tools, clock), one check at a time. Read-only. An agent
 	// without it answers Unimplemented.
 	GetPreflight(ctx context.Context, in *PreflightRequest, opts ...grpc.CallOption) (*PreflightResponse, error)
+	// GetMigrationInfo describes this node for a migration (its migration key,
+	// SSH host keys and CPU) and, with vm_id, that VM's disks and state. With
+	// peer_address it also tries the migration link to that node.
+	GetMigrationInfo(ctx context.Context, in *GetMigrationInfoRequest, opts ...grpc.CallOption) (*GetMigrationInfoResponse, error)
+	// SetMigrationPeers replaces the nodes this node trusts for migration. A
+	// node left out can no longer connect here, and is no longer connected to.
+	SetMigrationPeers(ctx context.Context, in *SetMigrationPeersRequest, opts ...grpc.CallOption) (*SetMigrationPeersResponse, error)
+	// PrepareMigrationTarget checks (dry_run) or prepares this node to receive
+	// a VM: its disk files in the chosen pool and its seed image.
+	PrepareMigrationTarget(ctx context.Context, in *PrepareMigrationTargetRequest, opts ...grpc.CallOption) (*PrepareMigrationTargetResponse, error)
+	// PullMigratedVM copies a stopped VM's disks from its node over the
+	// migration link and defines it here. It returns at once; progress comes
+	// from GetMigrationProgress.
+	PullMigratedVM(ctx context.Context, in *PullMigratedVMRequest, opts ...grpc.CallOption) (*PullMigratedVMResponse, error)
+	// GetMigrationProgress reports a migration this node runs (a live move on
+	// the source, an offline copy on the destination).
+	GetMigrationProgress(ctx context.Context, in *GetMigrationProgressRequest, opts ...grpc.CallOption) (*GetMigrationProgressResponse, error)
+	// AbortMigration stops a migration this node runs. The VM stays where it was.
+	AbortMigration(ctx context.Context, in *AbortMigrationRequest, opts ...grpc.CallOption) (*AbortMigrationResponse, error)
+	// FinishMigrationTarget confirms a VM that arrived here (commit), or removes
+	// the files a failed migration prepared here and nothing else.
+	FinishMigrationTarget(ctx context.Context, in *FinishMigrationTargetRequest, opts ...grpc.CallOption) (*FinishMigrationTargetResponse, error)
+	// FinishMigrationSource removes a VM that now runs on another node: its
+	// definition, the disk files it owned here and its host network rules.
+	FinishMigrationSource(ctx context.Context, in *FinishMigrationSourceRequest, opts ...grpc.CallOption) (*FinishMigrationSourceResponse, error)
 }
 
 type nodeAgentClient struct {
@@ -356,6 +394,16 @@ func (c *nodeAgentClient) TestObjectStore(ctx context.Context, in *TestObjectSto
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TestObjectStoreResponse)
 	err := c.cc.Invoke(ctx, NodeAgent_TestObjectStore_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeAgentClient) DeleteBackupFiles(ctx context.Context, in *DeleteBackupFilesRequest, opts ...grpc.CallOption) (*DeleteBackupFilesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteBackupFilesResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_DeleteBackupFiles_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -588,6 +636,86 @@ func (c *nodeAgentClient) GetPreflight(ctx context.Context, in *PreflightRequest
 	return out, nil
 }
 
+func (c *nodeAgentClient) GetMigrationInfo(ctx context.Context, in *GetMigrationInfoRequest, opts ...grpc.CallOption) (*GetMigrationInfoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetMigrationInfoResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_GetMigrationInfo_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeAgentClient) SetMigrationPeers(ctx context.Context, in *SetMigrationPeersRequest, opts ...grpc.CallOption) (*SetMigrationPeersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetMigrationPeersResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_SetMigrationPeers_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeAgentClient) PrepareMigrationTarget(ctx context.Context, in *PrepareMigrationTargetRequest, opts ...grpc.CallOption) (*PrepareMigrationTargetResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PrepareMigrationTargetResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_PrepareMigrationTarget_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeAgentClient) PullMigratedVM(ctx context.Context, in *PullMigratedVMRequest, opts ...grpc.CallOption) (*PullMigratedVMResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PullMigratedVMResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_PullMigratedVM_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeAgentClient) GetMigrationProgress(ctx context.Context, in *GetMigrationProgressRequest, opts ...grpc.CallOption) (*GetMigrationProgressResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetMigrationProgressResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_GetMigrationProgress_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeAgentClient) AbortMigration(ctx context.Context, in *AbortMigrationRequest, opts ...grpc.CallOption) (*AbortMigrationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AbortMigrationResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_AbortMigration_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeAgentClient) FinishMigrationTarget(ctx context.Context, in *FinishMigrationTargetRequest, opts ...grpc.CallOption) (*FinishMigrationTargetResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FinishMigrationTargetResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_FinishMigrationTarget_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeAgentClient) FinishMigrationSource(ctx context.Context, in *FinishMigrationSourceRequest, opts ...grpc.CallOption) (*FinishMigrationSourceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FinishMigrationSourceResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_FinishMigrationSource_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // NodeAgentServer is the server API for NodeAgent service.
 // All implementations must embed UnimplementedNodeAgentServer
 // for forward compatibility.
@@ -641,6 +769,9 @@ type NodeAgentServer interface {
 	// small object, reads it back and deletes it. An agent without it answers
 	// Unimplemented, which the panel reports as "needs an agent update".
 	TestObjectStore(context.Context, *TestObjectStoreRequest) (*TestObjectStoreResponse, error)
+	// DeleteBackupFiles removes stored backup files the panel cannot reach
+	// itself (a path mounted on the node). Feature "backup_targets".
+	DeleteBackupFiles(context.Context, *DeleteBackupFilesRequest) (*DeleteBackupFilesResponse, error)
 	// GetLiveMetrics retrieves real-time system metrics from the node including
 	// CPU usage, memory usage, disk usage, network I/O, disk I/O, and load average.
 	GetLiveMetrics(context.Context, *GetLiveMetricsRequest) (*GetLiveMetricsResponse, error)
@@ -661,8 +792,9 @@ type NodeAgentServer interface {
 	// path fixes the number; reporting the disk locations is what reveals storage
 	// in use that nobody registered as a pool at all.
 	GetStorageReport(context.Context, *GetStorageReportRequest) (*GetStorageReportResponse, error)
-	// MigrateVM live-migrates a domain from this (source) node to a destination
-	// libvirt URI using peer-to-peer migration.
+	// MigrateVM starts a live move of a domain from this (source) node to
+	// dest_address over the migration link, in the background; progress comes
+	// from GetMigrationProgress. The old form (dest_uri alone) is refused.
 	MigrateVM(context.Context, *MigrateVMRequest) (*MigrateVMResponse, error)
 	// SyncTemplate downloads/caches an OS template image on this node and returns
 	// its local path, size and checksum (idempotent — reuses a cached copy).
@@ -742,6 +874,31 @@ type NodeAgentServer interface {
 	// netfilter, tools, clock), one check at a time. Read-only. An agent
 	// without it answers Unimplemented.
 	GetPreflight(context.Context, *PreflightRequest) (*PreflightResponse, error)
+	// GetMigrationInfo describes this node for a migration (its migration key,
+	// SSH host keys and CPU) and, with vm_id, that VM's disks and state. With
+	// peer_address it also tries the migration link to that node.
+	GetMigrationInfo(context.Context, *GetMigrationInfoRequest) (*GetMigrationInfoResponse, error)
+	// SetMigrationPeers replaces the nodes this node trusts for migration. A
+	// node left out can no longer connect here, and is no longer connected to.
+	SetMigrationPeers(context.Context, *SetMigrationPeersRequest) (*SetMigrationPeersResponse, error)
+	// PrepareMigrationTarget checks (dry_run) or prepares this node to receive
+	// a VM: its disk files in the chosen pool and its seed image.
+	PrepareMigrationTarget(context.Context, *PrepareMigrationTargetRequest) (*PrepareMigrationTargetResponse, error)
+	// PullMigratedVM copies a stopped VM's disks from its node over the
+	// migration link and defines it here. It returns at once; progress comes
+	// from GetMigrationProgress.
+	PullMigratedVM(context.Context, *PullMigratedVMRequest) (*PullMigratedVMResponse, error)
+	// GetMigrationProgress reports a migration this node runs (a live move on
+	// the source, an offline copy on the destination).
+	GetMigrationProgress(context.Context, *GetMigrationProgressRequest) (*GetMigrationProgressResponse, error)
+	// AbortMigration stops a migration this node runs. The VM stays where it was.
+	AbortMigration(context.Context, *AbortMigrationRequest) (*AbortMigrationResponse, error)
+	// FinishMigrationTarget confirms a VM that arrived here (commit), or removes
+	// the files a failed migration prepared here and nothing else.
+	FinishMigrationTarget(context.Context, *FinishMigrationTargetRequest) (*FinishMigrationTargetResponse, error)
+	// FinishMigrationSource removes a VM that now runs on another node: its
+	// definition, the disk files it owned here and its host network rules.
+	FinishMigrationSource(context.Context, *FinishMigrationSourceRequest) (*FinishMigrationSourceResponse, error)
 	mustEmbedUnimplementedNodeAgentServer()
 }
 
@@ -790,6 +947,9 @@ func (UnimplementedNodeAgentServer) RestoreDisk(context.Context, *RestoreDiskReq
 }
 func (UnimplementedNodeAgentServer) TestObjectStore(context.Context, *TestObjectStoreRequest) (*TestObjectStoreResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TestObjectStore not implemented")
+}
+func (UnimplementedNodeAgentServer) DeleteBackupFiles(context.Context, *DeleteBackupFilesRequest) (*DeleteBackupFilesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteBackupFiles not implemented")
 }
 func (UnimplementedNodeAgentServer) GetLiveMetrics(context.Context, *GetLiveMetricsRequest) (*GetLiveMetricsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetLiveMetrics not implemented")
@@ -856,6 +1016,30 @@ func (UnimplementedNodeAgentServer) SetVMLimits(context.Context, *SetVMLimitsReq
 }
 func (UnimplementedNodeAgentServer) GetPreflight(context.Context, *PreflightRequest) (*PreflightResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetPreflight not implemented")
+}
+func (UnimplementedNodeAgentServer) GetMigrationInfo(context.Context, *GetMigrationInfoRequest) (*GetMigrationInfoResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetMigrationInfo not implemented")
+}
+func (UnimplementedNodeAgentServer) SetMigrationPeers(context.Context, *SetMigrationPeersRequest) (*SetMigrationPeersResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetMigrationPeers not implemented")
+}
+func (UnimplementedNodeAgentServer) PrepareMigrationTarget(context.Context, *PrepareMigrationTargetRequest) (*PrepareMigrationTargetResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PrepareMigrationTarget not implemented")
+}
+func (UnimplementedNodeAgentServer) PullMigratedVM(context.Context, *PullMigratedVMRequest) (*PullMigratedVMResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PullMigratedVM not implemented")
+}
+func (UnimplementedNodeAgentServer) GetMigrationProgress(context.Context, *GetMigrationProgressRequest) (*GetMigrationProgressResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetMigrationProgress not implemented")
+}
+func (UnimplementedNodeAgentServer) AbortMigration(context.Context, *AbortMigrationRequest) (*AbortMigrationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AbortMigration not implemented")
+}
+func (UnimplementedNodeAgentServer) FinishMigrationTarget(context.Context, *FinishMigrationTargetRequest) (*FinishMigrationTargetResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method FinishMigrationTarget not implemented")
+}
+func (UnimplementedNodeAgentServer) FinishMigrationSource(context.Context, *FinishMigrationSourceRequest) (*FinishMigrationSourceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method FinishMigrationSource not implemented")
 }
 func (UnimplementedNodeAgentServer) mustEmbedUnimplementedNodeAgentServer() {}
 func (UnimplementedNodeAgentServer) testEmbeddedByValue()                   {}
@@ -1090,6 +1274,24 @@ func _NodeAgent_TestObjectStore_Handler(srv interface{}, ctx context.Context, de
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(NodeAgentServer).TestObjectStore(ctx, req.(*TestObjectStoreRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeAgent_DeleteBackupFiles_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteBackupFilesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).DeleteBackupFiles(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_DeleteBackupFiles_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).DeleteBackupFiles(ctx, req.(*DeleteBackupFilesRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1468,6 +1670,150 @@ func _NodeAgent_GetPreflight_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NodeAgent_GetMigrationInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetMigrationInfoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).GetMigrationInfo(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_GetMigrationInfo_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).GetMigrationInfo(ctx, req.(*GetMigrationInfoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeAgent_SetMigrationPeers_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetMigrationPeersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).SetMigrationPeers(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_SetMigrationPeers_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).SetMigrationPeers(ctx, req.(*SetMigrationPeersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeAgent_PrepareMigrationTarget_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PrepareMigrationTargetRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).PrepareMigrationTarget(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_PrepareMigrationTarget_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).PrepareMigrationTarget(ctx, req.(*PrepareMigrationTargetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeAgent_PullMigratedVM_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PullMigratedVMRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).PullMigratedVM(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_PullMigratedVM_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).PullMigratedVM(ctx, req.(*PullMigratedVMRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeAgent_GetMigrationProgress_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetMigrationProgressRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).GetMigrationProgress(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_GetMigrationProgress_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).GetMigrationProgress(ctx, req.(*GetMigrationProgressRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeAgent_AbortMigration_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AbortMigrationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).AbortMigration(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_AbortMigration_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).AbortMigration(ctx, req.(*AbortMigrationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeAgent_FinishMigrationTarget_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FinishMigrationTargetRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).FinishMigrationTarget(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_FinishMigrationTarget_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).FinishMigrationTarget(ctx, req.(*FinishMigrationTargetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeAgent_FinishMigrationSource_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FinishMigrationSourceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).FinishMigrationSource(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_FinishMigrationSource_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).FinishMigrationSource(ctx, req.(*FinishMigrationSourceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // NodeAgent_ServiceDesc is the grpc.ServiceDesc for NodeAgent service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1518,6 +1864,10 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "TestObjectStore",
 			Handler:    _NodeAgent_TestObjectStore_Handler,
+		},
+		{
+			MethodName: "DeleteBackupFiles",
+			Handler:    _NodeAgent_DeleteBackupFiles_Handler,
 		},
 		{
 			MethodName: "GetLiveMetrics",
@@ -1598,6 +1948,38 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetPreflight",
 			Handler:    _NodeAgent_GetPreflight_Handler,
+		},
+		{
+			MethodName: "GetMigrationInfo",
+			Handler:    _NodeAgent_GetMigrationInfo_Handler,
+		},
+		{
+			MethodName: "SetMigrationPeers",
+			Handler:    _NodeAgent_SetMigrationPeers_Handler,
+		},
+		{
+			MethodName: "PrepareMigrationTarget",
+			Handler:    _NodeAgent_PrepareMigrationTarget_Handler,
+		},
+		{
+			MethodName: "PullMigratedVM",
+			Handler:    _NodeAgent_PullMigratedVM_Handler,
+		},
+		{
+			MethodName: "GetMigrationProgress",
+			Handler:    _NodeAgent_GetMigrationProgress_Handler,
+		},
+		{
+			MethodName: "AbortMigration",
+			Handler:    _NodeAgent_AbortMigration_Handler,
+		},
+		{
+			MethodName: "FinishMigrationTarget",
+			Handler:    _NodeAgent_FinishMigrationTarget_Handler,
+		},
+		{
+			MethodName: "FinishMigrationSource",
+			Handler:    _NodeAgent_FinishMigrationSource_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

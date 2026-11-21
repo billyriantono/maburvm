@@ -12,8 +12,8 @@ import (
 
 const gibibyte = 1024 * 1024 * 1024
 
-// VolumeManager provisions and removes storage volumes across pool backends:
-// directory/file (qemu-img), LVM (lvcreate), and ZFS (zfs create -V).
+// VolumeManager provisions and removes storage volumes in directory (qemu-img)
+// and ZFS (zfs create -V) pools. LVM pools go through LVM.
 type VolumeManager struct {
 	qemu    *QCOW2Manager
 	timeout time.Duration
@@ -69,14 +69,6 @@ func DataDiskDir(poolPath, primaryDisk, fallback string) string {
 	return fallback
 }
 
-// lvCreateArgs builds args for `lvcreate -L <size>G -n <name> <vg>`.
-func lvCreateArgs(vg, name string, sizeGB int) []string {
-	return []string{"-L", fmt.Sprintf("%dG", sizeGB), "-n", name, vg}
-}
-
-// lvDevicePath returns the device path of a logical volume.
-func lvDevicePath(vg, name string) string { return filepath.Join("/dev", vg, name) }
-
 // zfsCreateArgs builds args for `zfs create -V <size>G <dataset>/<name>`.
 func zfsCreateArgs(dataset, name string, sizeGB int) []string {
 	return []string{"create", "-V", fmt.Sprintf("%dG", sizeGB), dataset + "/" + name}
@@ -113,10 +105,7 @@ func (m *VolumeManager) CreateVolume(poolType, poolPath, name, format string, si
 		return full, size, err
 
 	case "lvm":
-		if _, err := m.run("lvcreate", lvCreateArgs(poolPath, filepath.Base(name), sizeGB)...); err != nil {
-			return "", 0, err
-		}
-		return lvDevicePath(poolPath, filepath.Base(name)), int64(sizeGB) * gibibyte, nil
+		return "", 0, errLVMElsewhere
 
 	case "zfs":
 		if _, err := m.run("zfs", zfsCreateArgs(poolPath, filepath.Base(name), sizeGB)...); err != nil {
@@ -143,11 +132,7 @@ func (m *VolumeManager) DeleteVolume(poolType, path string) error {
 		return m.qemu.DeleteImage(path)
 
 	case "lvm":
-		if !strings.HasPrefix(path, "/dev/") {
-			return fmt.Errorf("refusing to lvremove non-device path: %s", path)
-		}
-		_, err := m.run("lvremove", "-f", path)
-		return err
+		return errLVMElsewhere
 
 	case "zfs":
 		const prefix = "/dev/zvol/"
@@ -161,6 +146,10 @@ func (m *VolumeManager) DeleteVolume(poolType, path string) error {
 		return fmt.Errorf("volume deletion for pool type %q is not supported", poolType)
 	}
 }
+
+// errLVMElsewhere: logical volumes are made and removed only through LVM
+// (lvm.go), which proves a volume is in a registered pool and unused first.
+var errLVMElsewhere = fmt.Errorf("logical volumes are created and removed through a registered LVM pool")
 
 // hasVolumeExt reports whether path looks like a provisioned file-based volume.
 func hasVolumeExt(path string) bool {

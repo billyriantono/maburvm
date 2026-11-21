@@ -29,6 +29,9 @@ var (
 	ErrSnapshotOperationFailed = errors.New("snapshot operation failed")
 	// ErrSnapshotInProgress is returned when a snapshot operation is already in progress
 	ErrSnapshotInProgress = errors.New("snapshot operation already in progress")
+	// ErrSnapshotsNeedQcow2 refuses a snapshot of a VM with a disk on a logical
+	// volume: snapshots live inside qcow2 images. Backups still work.
+	ErrSnapshotsNeedQcow2 = errors.New("snapshots need qcow2 disks, and this VM has a disk on LVM storage; take a backup instead")
 )
 
 // MaxSnapshotsPerVM is the maximum number of snapshots allowed per VM
@@ -96,6 +99,10 @@ func (s *SnapshotService) CreateSnapshot(ctx context.Context, req *CreateSnapsho
 	// (owner OR admin) is enforced at the handler boundary via authz.AuthorizeVM,
 	// so the service no longer gates on vm.UserID here — that previously denied
 	// legitimate admin support.
+
+	if VMOnBlockStorage(ctx, s.db, vm) {
+		return nil, ErrSnapshotsNeedQcow2
+	}
 
 	// Check if snapshot name already exists for this VM
 	exists, err := s.snapshotRepo.NameExists(ctx, req.VMID, req.Name)

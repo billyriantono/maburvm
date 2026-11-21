@@ -73,6 +73,10 @@ service NodeAgent {
   // Unimplemented, which the panel reports as "needs an agent update".
   rpc TestObjectStore(TestObjectStoreRequest) returns (TestObjectStoreResponse);
 
+  // DeleteBackupFiles removes stored backup files the panel cannot reach
+  // itself (a path mounted on the node). Feature "backup_targets".
+  rpc DeleteBackupFiles(DeleteBackupFilesRequest) returns (DeleteBackupFilesResponse);
+
   // GetLiveMetrics retrieves real-time system metrics from the node including
   // CPU usage, memory usage, disk usage, network I/O, disk I/O, and load average.
   rpc GetLiveMetrics(GetLiveMetricsRequest) returns (GetLiveMetricsResponse);
@@ -98,8 +102,9 @@ service NodeAgent {
   // in use that nobody registered as a pool at all.
   rpc GetStorageReport(GetStorageReportRequest) returns (GetStorageReportResponse);
 
-  // MigrateVM live-migrates a domain from this (source) node to a destination
-  // libvirt URI using peer-to-peer migration.
+  // MigrateVM starts a live move of a domain from this (source) node to
+  // dest_address over the migration link, in the background; progress comes
+  // from GetMigrationProgress. The old form (dest_uri alone) is refused.
   rpc MigrateVM(MigrateVMRequest) returns (MigrateVMResponse);
 
   // SyncTemplate downloads/caches an OS template image on this node and returns
@@ -193,6 +198,45 @@ service NodeAgent {
   // netfilter, tools, clock), one check at a time. Read-only. An agent
   // without it answers Unimplemented.
   rpc GetPreflight(PreflightRequest) returns (PreflightResponse);
+
+  // The RPCs below move a VM between nodes over a migration link the panel
+  // sets up: each node has its own key, accepted on the other nodes only from
+  // its address and only for a libvirt connection, and each node pins the
+  // others' SSH host keys. An agent without them answers Unimplemented and the
+  // panel refuses to move VMs to or from that node until it is updated.
+
+  // GetMigrationInfo describes this node for a migration (its migration key,
+  // SSH host keys and CPU) and, with vm_id, that VM's disks and state. With
+  // peer_address it also tries the migration link to that node.
+  rpc GetMigrationInfo(GetMigrationInfoRequest) returns (GetMigrationInfoResponse);
+
+  // SetMigrationPeers replaces the nodes this node trusts for migration. A
+  // node left out can no longer connect here, and is no longer connected to.
+  rpc SetMigrationPeers(SetMigrationPeersRequest) returns (SetMigrationPeersResponse);
+
+  // PrepareMigrationTarget checks (dry_run) or prepares this node to receive
+  // a VM: its disk files in the chosen pool and its seed image.
+  rpc PrepareMigrationTarget(PrepareMigrationTargetRequest) returns (PrepareMigrationTargetResponse);
+
+  // PullMigratedVM copies a stopped VM's disks from its node over the
+  // migration link and defines it here. It returns at once; progress comes
+  // from GetMigrationProgress.
+  rpc PullMigratedVM(PullMigratedVMRequest) returns (PullMigratedVMResponse);
+
+  // GetMigrationProgress reports a migration this node runs (a live move on
+  // the source, an offline copy on the destination).
+  rpc GetMigrationProgress(GetMigrationProgressRequest) returns (GetMigrationProgressResponse);
+
+  // AbortMigration stops a migration this node runs. The VM stays where it was.
+  rpc AbortMigration(AbortMigrationRequest) returns (AbortMigrationResponse);
+
+  // FinishMigrationTarget confirms a VM that arrived here (commit), or removes
+  // the files a failed migration prepared here and nothing else.
+  rpc FinishMigrationTarget(FinishMigrationTargetRequest) returns (FinishMigrationTargetResponse);
+
+  // FinishMigrationSource removes a VM that now runs on another node: its
+  // definition, the disk files it owned here and its host network rules.
+  rpc FinishMigrationSource(FinishMigrationSourceRequest) returns (FinishMigrationSourceResponse);
 }
 
 // ============================================================================
@@ -499,6 +543,37 @@ message VMCommandRequest {
   // object_store is where an "s3://" image reference is read from, for CREATE.
   // Unset means the store in the node's own environment file.
   ObjectStore object_store = 9;
+
+  // pool_type is the type of pool_path: "" or "dir" for a directory, "lvm"
+  // (pool_path is a volume group) or "lvmthin" (pool_path is "vg/thinpool").
+  string pool_type = 10;
+
+  // lvm_pools are the LVM pools the panel has registered on this node. A
+  // logical volume is grown or removed only when it lives in one of them.
+  repeated LVMPool lvm_pools = 11;
+
+  // remove_foreign_volumes, for DESTROY, also removes the VM's logical volumes
+  // that MaburVM did not create (an imported VM's), when they live in a
+  // registered pool. The operator confirmed it; without it they are kept.
+  bool remove_foreign_volumes = 12;
+}
+
+// LVMPool is a volume group, or a thin pool inside one, registered as a pool.
+message LVMPool {
+  string vg = 1;
+  // thin_pool is empty for a thick pool.
+  string thin_pool = 2;
+}
+
+// KeptVolume is a block device a DESTROY left in place, and why.
+message KeptVolume {
+  string path = 1;
+  string target = 2;
+  int64 size_bytes = 3;
+  // vg and thin_pool name the registered pool holding it; empty when none does.
+  string vg = 4;
+  string thin_pool = 5;
+  string reason = 6;
 }
 
 // VMCommandResponse reports the result of a VM command.
@@ -531,6 +606,9 @@ message VMCommandResponse {
   // restored_disks are the data disks a CREATE made from restore_disks, with
   // where each is on the node.
   repeated BackupDiskFile restored_disks = 9;
+
+  // kept_volumes are the block devices a DESTROY did not remove.
+  repeated KeptVolume kept_volumes = 10;
 }
 
 // VMConfig defines the configuration for creating a new VM.
@@ -570,6 +648,10 @@ message VMConfig {
   // with an "s3://" image). Each is downloaded and attached with its target
   // before the first boot.
   repeated BackupDiskFile restore_disks = 11;
+
+  // restore_layers are the images under an incremental backup's primary disk,
+  // the full backup first. Sent only to an agent with "incremental_backup".
+  repeated BackupLayer restore_layers = 12;
 }
 
 // ============================================================================
@@ -918,6 +1000,21 @@ message VMNetworkConfig {
 
   // block_smtp rejects new outbound connections to port 25 from the VM.
   bool block_smtp = 6;
+
+  // hostname_forwards are the hostnames the node's web router sends to this
+  // VM's primary address. An agent without the "hostname_proxy" feature
+  // ignores them; the panel does not send any to such a node.
+  repeated HostnameForward hostname_forwards = 7;
+}
+
+// HostnameForward routes one hostname, arriving on the node's publish address,
+// to the VM: plain HTTP by its Host header, TLS by its SNI, passed through
+// without the node holding any certificate.
+message HostnameForward {
+  string hostname = 1;
+  // http_port and https_port are the VM's ports; 0 leaves that one out.
+  int32 http_port = 2;
+  int32 https_port = 3;
 }
 
 // PortForward defines a DNAT port-forwarding rule.
@@ -1088,6 +1185,10 @@ message NetworkConfigResponse {
   // guest agent answers or the VM is started); false means it is left to the
   // owner, e.g. a guest that does not use systemd-networkd.
   bool guest_retry = 5;
+
+  // hostname_error says why the node is not routing the VM's hostnames (for
+  // instance port 80 is taken on it); empty when it is, or when there are none.
+  string hostname_error = 6;
 }
 
 // ============================================================================
@@ -1414,6 +1515,15 @@ message BackupDiskRequest {
   // all_disks backs up every disk of the VM, not only the primary one. Each
   // disk after the first is stored beside destination_key.
   bool all_disks = 6;
+
+  // checkpoint names the libvirt checkpoint this backup creates, so a later
+  // backup can copy only what changed after it. Empty: no checkpoint.
+  string checkpoint = 7;
+
+  // incremental_from is the checkpoint of the backup this one builds on.
+  // Empty asks for a full backup. The agent falls back to a full one when the
+  // checkpoint is gone or the node cannot, and says so in mode_note.
+  string incremental_from = 8;
 }
 
 // BackupDiskFile is one disk of a backup.
@@ -1435,6 +1545,18 @@ message BackupDiskFile {
 
   // path is where the disk is on the node (set on a VM restored as a new one).
   string path = 6;
+
+  // layers are the images an incremental backup's disk is built on, the full
+  // backup first; key is the top. Sent only to an agent with
+  // "incremental_backup": an older one would restore the top alone.
+  repeated BackupLayer layers = 7;
+}
+
+// BackupLayer is one stored image of a chain of backups.
+message BackupLayer {
+  string key = 1;
+  // checksum is the SHA256 (hex) recorded when it was stored.
+  string checksum = 2;
 }
 
 // BackupDiskResponse reports the result of a disk backup.
@@ -1471,6 +1593,16 @@ message BackupDiskResponse {
   // without a freeze) or "live" (read while the VM wrote to it). Empty from an
   // older agent, which always read live.
   string consistency = 9;
+
+  // mode is "full" or "incremental". Empty from an older agent: full.
+  string mode = 10;
+
+  // checkpoint is the checkpoint created, empty when none was.
+  string checkpoint = 11;
+
+  // mode_note says why the backup is full when incremental was asked, or why
+  // no checkpoint was made.
+  string mode_note = 12;
 }
 
 // RestoreDiskRequest requests restoring a VM's primary disk from a backup object.
@@ -1495,7 +1627,7 @@ message RestoreDiskRequest {
   repeated BackupDiskFile disks = 5;
 }
 
-// ObjectStore is an S3-compatible store and the credentials to use it. The
+// ObjectStore is where backups are kept and the credentials to use it. The
 // panel sends it with each request that reads or writes backups and images, so
 // a node needs no storage keys of its own.
 message ObjectStore {
@@ -1510,6 +1642,43 @@ message ObjectStore {
   // plain_http reaches an endpoint given without a scheme over HTTP instead of
   // HTTPS.
   bool plain_http = 6;
+
+  // kind is "" or "s3" (the fields above), "sftp" or "path". The other kinds
+  // are sent only to an agent with "backup_targets": an older one ignores
+  // them and would use its own store.
+  string kind = 7;
+  SFTPStore sftp = 8;
+
+  // path is, for kind "path", a directory on a file system mounted on the
+  // node (NFS, CIFS or a local disk), never on its root file system.
+  string path = 9;
+}
+
+// SFTPStore is an SSH server backups are copied to.
+message SFTPStore {
+  string host = 1;
+  int32 port = 2;
+  string user = 3;
+  // password or private_key (PEM), one of them.
+  string password = 4;
+  string private_key = 5;
+  // host_key is the server's public key ("ssh-ed25519 AAAA..."); a server
+  // presenting any other key is refused.
+  string host_key = 6;
+  // path is the directory on the server backups go under.
+  string path = 7;
+}
+
+message DeleteBackupFilesRequest {
+  ObjectStore object_store = 1;
+  repeated string keys = 2;
+}
+
+message DeleteBackupFilesResponse {
+  // deleted are the keys removed; missing were not there.
+  repeated string deleted = 1;
+  repeated string missing = 2;
+  ErrorResponse error = 3;
 }
 
 // TestObjectStoreRequest asks the node to prove it can use an object store.
@@ -1518,6 +1687,11 @@ message TestObjectStoreRequest {
 
   // key is the object to write, read back and delete.
   string key = 2;
+
+  // expect_keys must already be there, as this node sees the store: a
+  // backup about to be restored on it. Ignored by an agent older than
+  // "backup_targets".
+  repeated string expect_keys = 3;
 }
 
 message TestObjectStoreResponse {
@@ -1576,6 +1750,10 @@ message DeleteStorageVolumeRequest {
 
   // pool_type selects the removal backend (dir/file=rm, lvm=lvremove, zfs=destroy)
   string pool_type = 2;
+
+  // pool_path is the pool the volume must live in: for an LVM pool its volume
+  // group ("vg/thinpool" for a thin pool). A logical volume outside it is refused.
+  string pool_path = 3;
 }
 
 // DeleteStorageVolumeResponse reports the result of a volume deletion.
@@ -1624,6 +1802,9 @@ message DetachDiskRequest {
   // agent persists a durable manifest before any destructive action and returns
   // the recorded result on retry. Empty operation_id is rejected fail-closed.
   string operation_id = 6;
+  // pool_path is the pool a logical volume being deleted must live in (see
+  // DeleteStorageVolumeRequest.pool_path).
+  string pool_path = 7;
 }
 
 // DetachDiskResponse reports the result of a disk detach.
@@ -1679,6 +1860,20 @@ message MigrateVMRequest {
 
   // copy_storage enables full block migration (disks copied; no shared storage)
   bool copy_storage = 4;
+
+  // migration_id names this move; the progress and abort calls use it.
+  string migration_id = 5;
+
+  // dest_address is the destination node. When set, the agent connects over
+  // the migration link (dest_uri is ignored), starts the move in the
+  // background and answers at once.
+  string dest_address = 6;
+
+  // disks says where each disk, and the seed image, lives on the destination.
+  repeated MigrationDiskMap disks = 7;
+
+  // bandwidth_mib_s caps the transfer, in MiB/s. 0 is no cap.
+  int64 bandwidth_mib_s = 8;
 }
 
 // MigrateVMResponse reports the result of a migration.
@@ -1721,6 +1916,26 @@ message GetStorageReportRequest {
   // paths are the pool paths to measure. Each is measured on its own, because
   // pools on a node routinely live on different filesystems.
   repeated string paths = 1;
+
+  // lvm_pools are LVM pools to measure and check. An agent that predates LVM
+  // pools ignores them and reports none.
+  repeated LVMPool lvm_pools = 2;
+}
+
+// LVMPoolCapacity is one LVM pool's state: a volume group's extents, or a
+// thin pool's data and metadata use.
+message LVMPoolCapacity {
+  string vg = 1;
+  string thin_pool = 2;
+  bool exists = 3;
+  // error says why the pool cannot hold VM disks (missing, not a thin pool,
+  // holds the host's own system); empty when it can.
+  string error = 4;
+  int64 total_bytes = 5;
+  int64 used_bytes = 6;
+  int64 available_bytes = 7;
+  // metadata_percent is a thin pool's metadata use; 0 for a thick pool.
+  double metadata_percent = 8;
 }
 
 // PoolCapacity is one pool path's real filesystem usage.
@@ -1758,6 +1973,8 @@ message GetStorageReportResponse {
   repeated DiskLocation disk_locations = 3;
 
   ErrorResponse error = 4;
+
+  repeated LVMPoolCapacity lvm_pools = 5;
 }
 
 // GetLiveMetricsRequest requests real-time system metrics from the node.
@@ -2131,4 +2348,216 @@ message PreflightResponse {
   bool success = 1;
   repeated PreflightCheck checks = 2;
   ErrorResponse error = 3;
+}
+
+// ============================================================================
+// VM migration between nodes
+// ============================================================================
+
+// MigrationDiskMap is one of a VM's drives and its path on the destination.
+message MigrationDiskMap {
+  // target is the drive's target (vda, vdb, sda).
+  string target = 1;
+  string dest_path = 2;
+  // copy is true for a disk whose content moves; false for the seed image,
+  // which the destination already has.
+  bool copy = 3;
+  // expected_bytes is the source file's length, checked after an offline copy.
+  int64 expected_bytes = 4;
+}
+
+message GetMigrationInfoRequest {
+  string vm_id = 1;
+  // peer_address, when set, is a node to try the migration link to.
+  string peer_address = 2;
+  // include_payload adds the VM's seed image and definition (offline moves).
+  bool include_payload = 3;
+}
+
+// MigrationDiskInfo is one drive of a VM.
+message MigrationDiskInfo {
+  string target = 1;
+  // device is "disk" or "cdrom".
+  string device = 2;
+  // path is the source file or device; empty for an empty drive.
+  string path = 3;
+  string format = 4;
+  // source_type is the libvirt source: file, block, network or volume.
+  string source_type = 5;
+  int64 virtual_size_bytes = 6;
+  // file_size_bytes is the image file's length: what an offline copy moves.
+  int64 file_size_bytes = 7;
+  // backing_file is set when the image sits on another image.
+  string backing_file = 8;
+  bool readonly = 9;
+  // seed marks the VM's own cloud-init seed image.
+  bool seed = 10;
+}
+
+message GetMigrationInfoResponse {
+  bool success = 1;
+  ErrorResponse error = 2;
+  // migration_public_key is this node's migration key (authorized_keys form).
+  string migration_public_key = 3;
+  // ssh_host_keys are this node's SSH host keys ("type base64").
+  repeated string ssh_host_keys = 4;
+  // ssh_proxy is what an incoming migration connection runs here
+  // (virt-ssh-helper, socat or nc); empty when none is installed.
+  string ssh_proxy = 5;
+  string cpu_vendor = 6;
+  string cpu_model = 7;
+  // cpu_features is the host CPU's feature list, sorted.
+  repeated string cpu_features = 8;
+  string libvirt_version = 9;
+
+  // VM, when vm_id was given.
+  bool vm_found = 10;
+  // vm_state is running, paused, shutoff, crashed or other.
+  string vm_state = 11;
+  // vm_cpu_mode is host-passthrough, host-model or custom.
+  string vm_cpu_mode = 12;
+  // vm_cpu_xml is the VM's CPU definition, for a compatibility check.
+  string vm_cpu_xml = 13;
+  repeated MigrationDiskInfo disks = 14;
+  int32 snapshot_count = 15;
+  // backup_running is true while a backup holds the disks on overlays.
+  bool backup_running = 16;
+  // bridges are the bridges the VM's interfaces attach to.
+  repeated string bridges = 17;
+  // seed_image is the seed's content (include_payload).
+  bytes seed_image = 18;
+  // domain_xml is the VM's persistent definition (include_payload).
+  string domain_xml = 19;
+
+  // Link test, when peer_address was given.
+  bool link_ok = 20;
+  string link_error = 21;
+}
+
+// MigrationPeer is another node this one trusts for migration.
+message MigrationPeer {
+  string node_id = 1;
+  string address = 2;
+  // public_key may log in here, from address only, for a libvirt connection.
+  string public_key = 3;
+  // host_keys are pinned for connections from here to address.
+  repeated string host_keys = 4;
+}
+
+message SetMigrationPeersRequest {
+  repeated MigrationPeer peers = 1;
+}
+
+message SetMigrationPeersResponse {
+  bool success = 1;
+  ErrorResponse error = 2;
+}
+
+// MigrationTargetDisk is a disk to receive.
+message MigrationTargetDisk {
+  string target = 1;
+  // file_name is its name inside the pool directory.
+  string file_name = 2;
+  // virtual_size_bytes is the size it is created at (live moves).
+  int64 virtual_size_bytes = 3;
+  string format = 4;
+}
+
+message PrepareMigrationTargetRequest {
+  string vm_id = 1;
+  string migration_id = 2;
+  // pool_path is the directory the disks go to.
+  string pool_path = 3;
+  repeated MigrationTargetDisk disks = 4;
+  // create_disks creates empty images for a live copy; an offline copy
+  // writes the files itself.
+  bool create_disks = 5;
+  bytes seed_image = 6;
+  string seed_file_name = 7;
+  // bridges must exist here.
+  repeated string bridges = 8;
+  // cpu_xml, when set, must run on this host's CPU.
+  string cpu_xml = 9;
+  // dry_run checks without changing anything.
+  bool dry_run = 10;
+  // free_bytes_needed must be free on the pool's filesystem.
+  int64 free_bytes_needed = 11;
+}
+
+message PrepareMigrationTargetResponse {
+  bool success = 1;
+  ErrorResponse error = 2;
+  // paths maps each disk target to its path here.
+  map<string, string> paths = 3;
+  string seed_path = 4;
+  // problems say why this node cannot receive the VM.
+  repeated string problems = 5;
+}
+
+message PullMigratedVMRequest {
+  string vm_id = 1;
+  string migration_id = 2;
+  string source_address = 3;
+  // disks are every drive's path here; those with copy set are copied.
+  repeated MigrationDiskMap disks = 4;
+  // domain_xml is the VM's definition on the source; it is defined here with
+  // the paths above.
+  string domain_xml = 5;
+}
+
+message PullMigratedVMResponse {
+  bool success = 1;
+  ErrorResponse error = 2;
+}
+
+message GetMigrationProgressRequest {
+  string vm_id = 1;
+  string migration_id = 2;
+}
+
+message GetMigrationProgressResponse {
+  // state is running, completed, failed, cancelled, or unknown when this
+  // agent has no record of the migration (it was restarted, say).
+  string state = 1;
+  string phase = 2;
+  int64 total_bytes = 3;
+  int64 processed_bytes = 4;
+  string error = 5;
+}
+
+message AbortMigrationRequest {
+  string vm_id = 1;
+  string migration_id = 2;
+}
+
+message AbortMigrationResponse {
+  bool success = 1;
+  ErrorResponse error = 2;
+}
+
+message FinishMigrationTargetRequest {
+  string vm_id = 1;
+  string migration_id = 2;
+  // commit confirms the VM; otherwise the prepared files are removed.
+  bool commit = 3;
+}
+
+message FinishMigrationTargetResponse {
+  bool success = 1;
+  ErrorResponse error = 2;
+  // vm_state is the VM's state here after a commit.
+  string vm_state = 3;
+  // removed are the files a rollback deleted.
+  repeated string removed = 4;
+}
+
+message FinishMigrationSourceRequest {
+  string vm_id = 1;
+  string migration_id = 2;
+}
+
+message FinishMigrationSourceResponse {
+  bool success = 1;
+  ErrorResponse error = 2;
+  repeated string removed = 3;
 }

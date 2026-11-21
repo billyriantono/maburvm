@@ -1,13 +1,10 @@
 package storage
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
-	"time"
 )
 
 // Destination is an S3-compatible store as an operator describes it: where the
@@ -65,28 +62,7 @@ func (e *ProbeError) Unwrap() error { return e.Err }
 // Probe proves the store can be used with these credentials: it writes a small
 // object at key, reads it back and deletes it.
 func (c *Client) Probe(ctx context.Context, key string) error {
-	body := []byte("backup destination test " + time.Now().UTC().Format(time.RFC3339Nano))
-	if err := c.Upload(ctx, key, bytes.NewReader(body), int64(len(body)), "text/plain"); err != nil {
-		return &ProbeError{Step: ProbeWrite, Err: err}
-	}
-	rc, err := c.Download(ctx, key)
-	if err == nil {
-		var got []byte
-		got, err = io.ReadAll(io.LimitReader(rc, int64(len(body))+1))
-		rc.Close()
-		if err == nil && !bytes.Equal(got, body) {
-			err = errors.New("the object read back is not the one written")
-		}
-	}
-	// Deleted even when the read failed, so a failed test leaves nothing behind.
-	delErr := c.Delete(ctx, key)
-	if err != nil {
-		return &ProbeError{Step: ProbeRead, Err: err}
-	}
-	if delErr != nil {
-		return &ProbeError{Step: ProbeDelete, Err: delErr}
-	}
-	return nil
+	return ProbeStore(ctx, c, key)
 }
 
 // Rejected reports that the store answered and refused the request (wrong

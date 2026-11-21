@@ -200,6 +200,17 @@ export default function IPPoolsPage() {
             <Input placeholder="Range end" value={poolForm.range_end ?? ""} onChange={(e) => setPoolForm({ ...poolForm, range_end: e.target.value })} />
             <Input placeholder="Description" value={poolForm.description ?? ""} onChange={(e) => setPoolForm({ ...poolForm, description: e.target.value })} />
           </div>
+          {poolForm.family === "ipv4" && (
+            <label className="mt-4 flex items-start gap-2 cursor-pointer w-fit max-w-3xl">
+              <input type="checkbox" checked={!!poolForm.nat} onChange={(e) => setPoolForm({ ...poolForm, nat: e.target.checked || undefined })} className="w-4 h-4 mt-0.5" />
+              <span className="text-sm">
+                <span className="font-medium">NAT pool</span>
+                <span className="block text-xs text-muted-foreground">
+                  Private addresses (10/8, 172.16/12, 192.168/16 or 100.64/10) for VMs on NAT plans, sent out through the node&apos;s address. The bridge must hold the gateway address on the node. Use a plain bridge or a libvirt network in route or open mode: a libvirt NAT network rejects connections coming in, so port forwards and hostnames would not reach the VMs.
+                </span>
+              </span>
+            </label>
+          )}
           <div className="flex justify-end gap-3 mt-4">
             <Button type="button" variant="ghost" onClick={() => setShowCreatePool(false)}>Cancel</Button>
             <Button type="submit" disabled={createPool.isPending}>{createPool.isPending && <Loader2 className="w-4 h-4 animate-spin mr-2" />}Create Pool</Button>
@@ -251,6 +262,7 @@ export default function IPPoolsPage() {
                       self-service
                     </Badge>
                   )}
+                  {pool.nat && <Badge variant="secondary" title="Private addresses for VMs on NAT plans">NAT</Badge>}
                 </div>
                 <div className="col-span-2 text-xs text-muted-foreground truncate flex items-center gap-1" title={nodeLabel}>
                   <Server className="w-3 h-3 shrink-0" />

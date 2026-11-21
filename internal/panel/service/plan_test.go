@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/maburvm/panel/internal/panel/repository"
+	"github.com/maburvm/panel/internal/shared/models"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -22,6 +23,7 @@ func setupPlanTestDB(t *testing.T) *gorm.DB {
 		disk INTEGER NOT NULL, bandwidth_mbps INTEGER DEFAULT 0,
 		data_quota_gb INTEGER DEFAULT 0, over_quota_policy TEXT DEFAULT 'throttle', throttle_speed_mbps INTEGER DEFAULT 0,
 		smtp_policy TEXT NOT NULL DEFAULT 'allowed', limits TEXT NOT NULL DEFAULT '{}', price_monthly REAL, price_hourly REAL, currency TEXT NOT NULL DEFAULT '', max_snapshots INTEGER, max_backups INTEGER, max_extra_ipv4 INTEGER, max_extra_ipv6 INTEGER, description TEXT,
+		default_firewall_group_id TEXT, network_type TEXT NOT NULL DEFAULT 'public', nat_ports INTEGER NOT NULL DEFAULT 0, nat_hostnames INTEGER NOT NULL DEFAULT 0,
 		is_active BOOLEAN DEFAULT 1, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, deleted_at DATETIME
 	)`).Error)
@@ -106,4 +108,45 @@ func TestPlanPriceAndAllowances(t *testing.T) {
 		_, err := svc.CreatePlan(ctx, req)
 		require.Error(t, err, name)
 	}
+}
+
+// A plan's network type and default firewall group: a NAT plan gets the
+// default block, only a group for everyone may be a default, and an update
+// that leaves them out keeps them.
+func TestPlanNetworkAndDefaultGroup(t *testing.T) {
+	db := setupPlanTestDB(t)
+	require.NoError(t, db.Exec(`CREATE TABLE firewall_groups (id TEXT PRIMARY KEY, user_id TEXT, name TEXT, description TEXT, created_at DATETIME, updated_at DATETIME)`).Error)
+	require.NoError(t, db.Exec(`INSERT INTO firewall_groups (id, user_id, name) VALUES ('g-everyone', NULL, 'Base'), ('g-customer', 'u1', 'Mine')`).Error)
+	svc := NewPlanService(repository.NewPlanRepository(db))
+	ctx := context.Background()
+	str := func(s string) *string { return &s }
+
+	plan, err := svc.CreatePlan(ctx, &PlanRequest{Name: "Nat", CPU: 1, RAM: 512, Disk: 10, NetworkType: models.PlanNetworkNAT, DefaultFirewallGroupID: str("g-everyone")})
+	require.NoError(t, err)
+	require.Equal(t, models.PlanNetworkNAT, plan.NetworkType)
+	require.Equal(t, DefaultNATPorts, plan.NATPorts)
+	require.Equal(t, "g-everyone", *plan.DefaultFirewallGroupID)
+
+	_, err = svc.CreatePlan(ctx, &PlanRequest{Name: "Other", CPU: 1, RAM: 512, Disk: 10, DefaultFirewallGroupID: str("g-customer")})
+	require.ErrorContains(t, err, "for everyone")
+	_, err = svc.CreatePlan(ctx, &PlanRequest{Name: "Bad", CPU: 1, RAM: 512, Disk: 10, NetworkType: "bridged"})
+	require.Error(t, err)
+	_, err = svc.CreatePlan(ctx, &PlanRequest{Name: "Big", CPU: 1, RAM: 512, Disk: 10, NetworkType: models.PlanNetworkNAT, NATPorts: MaxNATPorts + 1})
+	require.Error(t, err)
+	public, err := svc.CreatePlan(ctx, &PlanRequest{Name: "Public", CPU: 1, RAM: 512, Disk: 10})
+	require.NoError(t, err)
+	require.Equal(t, models.PlanNetworkPublic, public.NetworkType)
+	require.Nil(t, public.DefaultFirewallGroupID)
+
+	kept, err := svc.UpdatePlan(ctx, plan.ID, &PlanRequest{Name: "Nat", CPU: 2, RAM: 512, Disk: 10})
+	require.NoError(t, err)
+	require.Equal(t, models.PlanNetworkNAT, kept.NetworkType, "an update that leaves the network out keeps it")
+	require.Equal(t, "g-everyone", *kept.DefaultFirewallGroupID)
+	cleared, err := svc.UpdatePlan(ctx, plan.ID, &PlanRequest{Name: "Nat", CPU: 2, RAM: 512, Disk: 10, DefaultFirewallGroupID: str("")})
+	require.NoError(t, err)
+	require.Nil(t, cleared.DefaultFirewallGroupID)
+	reread, err := svc.GetPlan(ctx, plan.ID)
+	require.NoError(t, err)
+	require.Nil(t, reread.DefaultFirewallGroupID)
+	require.Equal(t, DefaultNATPorts, reread.NATPorts)
 }

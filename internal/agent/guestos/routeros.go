@@ -233,7 +233,8 @@ func WriteRouterOSAutorun(diskPath, script string) error {
 	// first; version 6 has a single partition.
 	var last string
 	for _, part := range []string{"/dev/sda2", "/dev/sda1"} {
-		out, err := guestfish("--rw", "-a", diskPath, "-m", part, "upload", f.Name(), "/rw/autorun.scr")
+		args := append(append([]string{"--rw"}, DiskArgs(diskPath)...), "-m", part, "upload", f.Name(), "/rw/autorun.scr")
+		out, err := guestfish(args...)
 		if err == nil {
 			return nil
 		}

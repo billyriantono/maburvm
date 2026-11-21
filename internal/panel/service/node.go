@@ -305,6 +305,9 @@ func (s *NodeService) DeleteNode(ctx context.Context, id string, opts *DeleteNod
 	if err := s.repo.Delete(ctx, id); err != nil {
 		return fmt.Errorf("failed to delete node: %w", err)
 	}
+	if hook := NodeRemovedHook; hook != nil {
+		go hook(context.WithoutCancel(ctx), id)
+	}
 
 	return nil
 }

@@ -165,8 +165,8 @@ func DomainBridges(uuidStr string) ([]string, error) {
 	return out, nil
 }
 
-// GetVMPrimaryDiskPath returns the backing file of the VM's first disk (not
-// cdrom) device — the root disk the guest OS lives on.
+// GetVMPrimaryDiskPath returns the backing file or block device of the VM's
+// first disk (not cdrom) device — the root disk the guest OS lives on.
 func GetVMPrimaryDiskPath(uuidStr string) (string, error) {
 	domain, err := domainXML(uuidStr)
 	if err != nil {
@@ -176,6 +176,9 @@ func GetVMPrimaryDiskPath(uuidStr string) (string, error) {
 		if d.Device == "disk" && d.Source != nil && d.Source.File != nil && d.Source.File.File != "" {
 			return d.Source.File.File, nil
 		}
+		if d.Device == "disk" && d.Source != nil && d.Source.Block != nil && d.Source.Block.Dev != "" {
+			return d.Source.Block.Dev, nil
+		}
 	}
-	return "", fmt.Errorf("no file-backed disk found for VM %s", uuidStr)
+	return "", fmt.Errorf("no disk found for VM %s", uuidStr)
 }

@@ -315,8 +315,9 @@ func (s *ImportService) processDiscoveredVM(ctx context.Context, req *ImportVirt
 	vncPort := 5900 + int(time.Now().UnixNano()%100)
 	vncPassword := generateVNCPassword()
 
-	// Calculate disk size from discovered disks
-	totalDiskGB := int(candidate.GetTotalDiskSize())
+	// Calculate disk size from discovered disks. Data disks on block devices
+	// are recorded on their own below, so they are listed and counted once.
+	totalDiskGB, blockDisks := importedDisks(candidate)
 	if totalDiskGB == 0 {
 		totalDiskGB = 20 // Default if can't determine
 	}
@@ -350,6 +351,12 @@ func (s *ImportService) processDiscoveredVM(ctx context.Context, req *ImportVirt
 	// An imported VM arrives with no firewall rules and is reachable on every
 	// port; its first rule must not turn that into default-deny.
 	_ = s.db.WithContext(ctx).Exec("UPDATE vms SET firewall_default = ? WHERE id = ?", models.FirewallDefaultAccept, vm.ID).Error
+	for i := range blockDisks {
+		blockDisks[i].VMID = vm.ID
+		if err := s.db.WithContext(ctx).Create(&blockDisks[i]).Error; err != nil {
+			s.logger.WarnContext(ctx, "failed to record an imported VM's data disk", "vm_id", vm.ID, "path", blockDisks[i].Path, "error", err)
+		}
+	}
 
 	// Create network records for discovered IPs
 	for _, net := range candidate.Networks {
@@ -490,6 +497,29 @@ func (s *ImportService) processDiscoveredVM(ctx context.Context, req *ImportVirt
 	return result
 }
 
+// importedDisks splits a scanned VM's disk sizes: the gigabytes its row
+// counts (every disk but the recorded ones), and its data disks on block
+// devices, recorded like any data disk so they are listed, counted against
+// their pool and detached safely. Only the first disk is the system disk.
+func importedDisks(c *vmimport.ImportCandidate) (int, []models.VMDisk) {
+	const gib = int64(1) << 30
+	var rest int64
+	var data []models.VMDisk
+	first := true
+	for _, d := range c.Disks {
+		if (d.Device != "" && d.Device != "disk") || d.SourceFile == "" {
+			continue
+		}
+		if !first && models.IsBlockDevicePath(d.SourceFile) && d.TargetDev != "" {
+			data = append(data, models.VMDisk{Device: d.TargetDev, SizeGB: int(max((d.Size+gib-1)/gib, 1)), Path: d.SourceFile})
+		} else if d.Size > 0 {
+			rest += d.Size
+		}
+		first = false
+	}
+	return int(rest / gib), data
+}
+
 // remapDiskPaths prepares disk path mappings for the import job
 // Re-maps disk image to new storage location based on DiskAction:
 //   - symlink: Create symlinks to original disk images
@@ -506,6 +536,11 @@ func (s *ImportService) remapDiskPaths(candidate *vmimport.ImportCandidate, req 
 	storagePool := s.resolveStoragePool(req)
 
 	for i, disk := range candidate.Disks {
+		// A block device stays where it is: copying a volume into a file is
+		// not an import, and the domain keeps pointing at it.
+		if models.IsBlockDevicePath(disk.SourceFile) {
+			continue
+		}
 		diskFormat := disk.GetDiskFormatWithFallback()
 		if diskFormat == "" {
 			diskFormat = "qcow2"

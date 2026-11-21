@@ -45,6 +45,10 @@ import { OperationProgress, vmProvisionSteps } from "@/components/operation-prog
 import { useCopy, useFlash } from "@/lib/use-feedback"
 import { CountryFlag } from "@/components/country-flag"
 import { VMLimitsSection } from "@/components/vm-limits"
+import { VMNodeRow } from "@/components/vm-migrate"
+import { VMFirewallGroups } from "@/components/vm-firewall-groups"
+import { VMNATCard } from "@/components/vm-nat"
+import { useVMFirewallGroups } from "@/lib/hooks/use-firewall-groups"
 import { toast } from "sonner"
 
 // --- Utility Components ---
@@ -631,7 +635,7 @@ function describeRetention(p?: BackupRetentionPolicy): string {
   return text.charAt(0).toUpperCase() + text.slice(1)
 }
 
-function BackupScheduleCard({ vmId }: { vmId: string }) {
+function BackupScheduleCard({ vmId, isAdmin }: { vmId: string; isAdmin: boolean }) {
   const confirm = useConfirm()
   const { data: schedules, isLoading, error, refetch } = useBackupSchedules(vmId)
   const save = useCreateBackupSchedule(vmId)
@@ -647,6 +651,7 @@ function BackupScheduleCard({ vmId }: { vmId: string }) {
   const [weekly, setWeekly] = useState("0")
   const [maxAge, setMaxAge] = useState("0")
   const [compression, setCompression] = useState<"gzip" | "zstd" | "none">("gzip")
+  const [fullEvery, setFullEvery] = useState("0")
   const [err, setErr] = useState("")
 
   const startEdit = () => {
@@ -658,6 +663,7 @@ function BackupScheduleCard({ vmId }: { vmId: string }) {
       setWeekly(String(p?.keep_weekly ?? 0))
       setMaxAge(String(p?.max_age_days ?? 0))
       setCompression(current.compression || "gzip")
+      setFullEvery(String(current.full_every_days ?? 0))
     }
     setErr("")
     setEditing(true)
@@ -667,6 +673,7 @@ function BackupScheduleCard({ vmId }: { vmId: string }) {
     const fields: [string, string, number][] = [
       ["Backups to keep", keep, 365], ["Days to keep one a day", daily, 365],
       ["Weeks to keep one a week", weekly, 104], ["Days before a backup is deleted", maxAge, 3650],
+      ...(isAdmin ? [["Full backup every (days)", fullEvery, 31] as [string, string, number]] : []),
     ]
     for (const [name, value, max] of fields) {
       const n = Number(value)
@@ -680,7 +687,7 @@ function BackupScheduleCard({ vmId }: { vmId: string }) {
     }
     const cron = every === "monthly" ? `0 ${hour} 1 * *` : every === "weekly" ? `0 ${hour} * * 0` : `0 ${hour} * * *`
     try {
-      await save.mutateAsync({ schedule: cron, compression, retention_policy: policy })
+      await save.mutateAsync({ schedule: cron, compression, retention_policy: policy, ...(isAdmin ? { full_every_days: Number(fullEvery) } : {}) })
       toast.success("Backup schedule saved")
       setEditing(false)
     } catch (e) {
@@ -758,6 +765,19 @@ function BackupScheduleCard({ vmId }: { vmId: string }) {
             A backup is kept while any of the first three keeps it, and deleted once it is older than the last. 0 means no such limit.
             The newest backup is always kept. A backup can start later than its time when the server is busy or outside the backup window.
           </p>
+          {isAdmin && (
+            <>
+              <div className="flex flex-wrap items-end gap-3">
+                {numberField("bs-full", "Full backup every (days)", fullEvery, setFullEvery)}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                0 makes every backup a full copy. Otherwise backups copy only what changed since the one before, with a full copy at least
+                this often; a node that cannot track changes makes full ones. An incremental backup needs every backup before it back to
+                its full one, so those are kept as long as it is, even past the limits above. Turn it on only for VMs on a node where a
+                chain has been restored once.
+              </p>
+            </>
+          )}
           {err && <p role="alert" className="text-xs text-destructive font-medium">{err}</p>}
           <div className="flex items-center gap-2">
             <Button size="sm" onClick={handleSave} disabled={save.isPending}>
@@ -770,7 +790,7 @@ function BackupScheduleCard({ vmId }: { vmId: string }) {
         <dl className="grid grid-cols-1 sm:grid-cols-4 gap-4 text-sm">
           <div><dt className="text-xs text-muted-foreground">Runs</dt><dd className="font-medium">{parsed ? parsed.text : <span className="font-mono">{current.schedule}</span>}</dd></div>
           <div><dt className="text-xs text-muted-foreground">Keeps</dt><dd className="font-medium">{describeRetention(current.retention_policy)}</dd></div>
-          <div><dt className="text-xs text-muted-foreground">Compression</dt><dd className="font-medium">{COMPRESSION_LABELS[current.compression] ?? current.compression}</dd></div>
+          <div><dt className="text-xs text-muted-foreground">Compression</dt><dd className="font-medium">{COMPRESSION_LABELS[current.compression] ?? current.compression}{current.full_every_days ? `, incremental with a full backup every ${current.full_every_days} days` : ""}</dd></div>
           <div><dt className="text-xs text-muted-foreground">Next run</dt><dd className="font-medium">{current.next_run_at && !current.next_run_at.startsWith("0001") ? formatDate(current.next_run_at) : "Not scheduled yet"}</dd></div>
         </dl>
       ) : (
@@ -1241,6 +1261,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const [secret, setSecret] = useState<{ title: string; value: string } | null>(null)
   const [rebuildDialogOpen, setRebuildDialogOpen] = useState(false)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [deleteImportedVolumes, setDeleteImportedVolumes] = useState(false)
   const [selectedTemplate, setSelectedTemplate] = useState("")
   const [confirmVMName, setConfirmVMName] = useState("")
   const [actionLoading, setActionLoading] = useState<string | null>(null)
@@ -1335,6 +1356,8 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const { data: firewallRules, isLoading: firewallLoading, error: firewallError, refetch: refetchFirewall } = useFirewallRules(vmId)
   const deleteFirewallRule = useDeleteFirewallRule(vmId)
   const { data: firewallStatus } = useFirewallStatus(vmId)
+  const { data: vmGroups } = useVMFirewallGroups(vmId)
+  const groupRuleCount = vmGroups?.reduce((n, g) => n + g.rules.length, 0) ?? 0
   const { data: templates } = useTemplates()
   // Same rule as the create wizard: inactive templates and "/imported"
   // placeholders have no base image, so building from them fails on the node.
@@ -1397,7 +1420,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
 
   const handleDelete = useCallback(async () => {
     try {
-      await deleteVM.mutateAsync(vmId)
+      await deleteVM.mutateAsync({ id: vmId, deleteImportedVolumes })
       setDeleteDialogOpen(false)
       // Follow the delete to the end instead of announcing success and leaving.
       // Accepting the job says nothing about whether the machine was removed:
@@ -1407,7 +1430,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
     } catch (err) {
       toast.error(`Failed to delete VM: ${(err as Error).message}`)
     }
-  }, [deleteVM, vmId, vm?.hostname])
+  }, [deleteVM, vmId, vm?.hostname, deleteImportedVolumes])
 
   const handleAttachISO = useCallback(async () => {
     const url = (manualISOUrl.trim() || selectedISOUrl).trim()
@@ -2242,6 +2265,18 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                     The machine and its disks are destroyed and its addresses go back to the pool. This cannot be undone.
                   </DialogDescription>
                 </DialogHeader>
+                {isAdmin && vm.source_migration && allow("storage:delete") && (
+                  <div className="space-y-1">
+                    <label className="flex items-start gap-2 text-sm">
+                      <input type="checkbox" className="mt-1" checked={deleteImportedVolumes} onChange={(e) => setDeleteImportedVolumes(e.target.checked)} />
+                      <span>Also delete the LVM volumes it was imported with</span>
+                    </label>
+                    <p className="text-xs text-muted-foreground pl-6">
+                      Left unticked, they stay on the node and are listed under their storage pool, where you can delete them later.
+                      Volumes outside a registered LVM pool are never deleted.
+                    </p>
+                  </div>
+                )}
                 <DialogFooter>
                   <Button variant="ghost" onClick={() => setDeleteDialogOpen(false)}>Cancel</Button>
                   <Button variant="destructive" onClick={handleDelete} disabled={deleteVM.isPending}>
@@ -2730,6 +2765,8 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
             {/* Data disks: admin only until billing for extra disks is decided. */}
             {isAdmin && <DisksCard vmId={vmId} />}
 
+            <VMNATCard vmId={vmId} />
+
             <PortForwardsCard vmId={vmId} />
 
             {/* Bandwidth Usage */}
@@ -2835,7 +2872,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
 
         {/* Backups Tab */}
         <TabsContent value="backups">
-          <BackupScheduleCard vmId={vmId} />
+          <BackupScheduleCard vmId={vmId} isAdmin={isAdmin} />
           <div className="bg-card text-card-foreground border rounded-lg p-6">
             <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
               <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
@@ -2860,6 +2897,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                     <div className="min-w-0">
                       <div>
                         <span className="font-semibold">{backup.backup_type === "scheduled" ? "Scheduled backup" : "Manual backup"}</span>
+                        {backup.mode === "incremental" && <span className="text-xs text-muted-foreground ml-2">Incremental</span>}
                         <span className="text-xs text-muted-foreground ml-2">{formatDate(backup.created_at)}</span>
                         {(backup.disks?.length ?? 0) > 1 && <span className="text-xs text-muted-foreground ml-2">{backup.disks!.length} disks</span>}
                       </div>
@@ -2868,6 +2906,12 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                       )}
                       {backup.status === "completed" && backup.error_message && (
                         <p className="mt-0.5 text-xs text-muted-foreground break-words">{backup.error_message}</p>
+                      )}
+                      {backup.mode === "incremental" && backup.status === "completed" && (
+                        <p className="mt-0.5 text-xs text-muted-foreground">Holds what changed since the backup before it, which it needs to be restored.</p>
+                      )}
+                      {isAdmin && backup.mode_note && (
+                        <p className="mt-0.5 text-xs text-muted-foreground break-words">{backup.mode_note}</p>
                       )}
                       {isAdmin && backup.status === "completed" && backup.storage_provider === "node" && (
                         <p className="mt-0.5 text-xs text-muted-foreground">Kept in the node&apos;s own storage, not the backup destination.</p>
@@ -3052,17 +3096,19 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
             <FirewallPolicy
               vm={vm}
               isAdmin={isAdmin}
-              ruleCount={firewallRules?.length ?? 0}
+              ruleCount={(firewallRules?.length ?? 0) + groupRuleCount}
               onDefault={(value) => setFirewallDefault.mutateAsync(value)}
               onSMTP={(blocked) => setSMTPBlocked.mutateAsync(blocked)}
             />
+
+            <VMFirewallGroups vmId={vmId} ownerId={vm.user_id} isAdmin={isAdmin} />
 
             {firewallLoading ? (
               <SectionSkeleton />
             ) : firewallError ? (
               <SectionError message={(firewallError as Error).message} onRetry={() => refetchFirewall()} />
             ) : !firewallRules?.length ? (
-              <SectionEmpty icon={Shield} message="No firewall rules configured." />
+              <SectionEmpty icon={Shield} message={groupRuleCount > 0 ? "No rules of this VM's own. Its groups' rules above apply." : "No firewall rules configured."} />
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full">
@@ -3167,9 +3213,9 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                 <User className="w-4 h-4" />Reassign
               </Button>
             </ActionRow>
-            {/* No Migrate action here: moving a VM between nodes is not
-                reliable yet for disks outside the default directory. */}
-            <ActionRow title="Node" description={<>Runs on <span className="font-medium text-foreground">{allNodes?.find((n) => n.id === vm.node_id)?.name || vm.node_name || "an unnamed node"}</span>.</>} />
+            <VMNodeRow vmId={vm.id} hostname={vm.hostname} nodeId={vm.node_id}
+              nodeName={allNodes?.find((n) => n.id === vm.node_id)?.name || vm.node_name || "an unnamed node"}
+              mayMove={allow("vm:migrate")} />
             <ActionRow title="Clone" description="Create a new VM that starts as a copy of this one.">
               <Button variant="outline" size="sm" onClick={() => setCloneOpen(true)}>
                 <Copy className="w-4 h-4" />Clone

@@ -397,3 +397,45 @@ func TestAdmitNodeVCPU(t *testing.T) {
 	assert.Equal(t, int64(32*1024), alloc.RAMTotalMB)
 	assert.Zero(t, alloc.RAMLimitMB, "no RAM ratio, no RAM limit")
 }
+
+func TestLVMDisksCountInTheirPool(t *testing.T) {
+	ctx := context.Background()
+	db, data, _ := placementDB(t)
+	thin := &models.StoragePool{ID: "pool-thin", Name: "thin", NodeID: "node-1", Path: "vg0/thin", Type: models.PoolTypeLVMThin, Status: "online", TotalSpace: 500 * gib, AvailableSpace: 400 * gib}
+	thick := &models.StoragePool{ID: "pool-thick", Name: "thick", NodeID: "node-1", Path: "vg0", Type: models.PoolTypeLVM, Status: "online", TotalSpace: 800 * gib, AvailableSpace: 300 * gib}
+	require.NoError(t, db.Create(thin).Error)
+	require.NoError(t, db.Create(thick).Error)
+	for _, stmt := range []string{
+		`INSERT INTO vms (id, node_id, resources, storage_pool_id) VALUES ('vm-l', 'node-1', '{"cpu":1,"ram":1024,"disk":40}', 'pool-thin')`,
+		`INSERT INTO vms (id, node_id, resources, storage_pool_id) VALUES ('vm-f', 'node-1', '{"cpu":1,"ram":1024,"disk":10}', 'pool-data')`,
+		// In the VM's own thin pool, though the thick pool shares its volume group.
+		`INSERT INTO vm_disks (id, vm_id, size_gb, path) VALUES ('d1', 'vm-l', 20, '/dev/vg0/maburvm-vm-l-d1')`,
+		// A file VM's imported volume counts in the pool holding its volume group.
+		`INSERT INTO vm_disks (id, vm_id, size_gb, path) VALUES ('d2', 'vm-f', 7, '/dev/vg0/imported-disk1')`,
+		// A device in no registered pool stays with the VM's own pool.
+		`INSERT INTO vm_disks (id, vm_id, size_gb, path) VALUES ('d3', 'vm-f', 3, '/dev/other/x')`,
+	} {
+		require.NoError(t, db.Exec(stmt).Error)
+	}
+	got, err := PoolAllocations(ctx, db, "node-1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(60), got[thin.ID]/gib)
+	assert.Equal(t, int64(7), got[thick.ID]/gib)
+	assert.Equal(t, int64(13), got[data.ID]/gib)
+
+	assert.True(t, PoolHoldsDisk(*thin, "/dev/vg0/x"))
+	assert.False(t, PoolHoldsDisk(*thin, "/dev/vg1/x"))
+	assert.False(t, PoolHoldsDisk(*data, "/dev/data/x"), "a directory pool never holds a device")
+	assert.True(t, PoolHoldsDisk(*data, "/data/x.qcow2"))
+	assert.False(t, PoolHoldsDisk(*data, "/data/sub/x.qcow2"))
+
+	assert.Equal(t, thin.ID, DiskPool(ctx, db, "vm-l", "node-1", "/dev/vg0/maburvm-vm-l-d1").ID, "the VM's own pool first")
+	assert.Nil(t, DiskPool(ctx, db, "vm-f", "node-1", "/dev/other/x"))
+
+	vmL := &models.VM{ID: "vm-l", NodeID: "node-1"}
+	vmF := &models.VM{ID: "vm-f", NodeID: "node-1"}
+	assert.True(t, VMOnBlockStorage(ctx, db, vmL), "system disk in an LVM pool")
+	assert.True(t, VMOnBlockStorage(ctx, db, vmF), "a data disk on a device")
+	require.NoError(t, db.Exec(`DELETE FROM vm_disks WHERE vm_id = 'vm-f'`).Error)
+	assert.False(t, VMOnBlockStorage(ctx, db, vmF))
+}

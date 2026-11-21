@@ -23,6 +23,8 @@ export interface IPPool {
   link_prefix?: string
   /** How many prefixes a delegated pool has handed out (detail view only). */
   delegated_count?: number
+  /** Private addresses for VMs on NAT plans, masqueraded behind the node. */
+  nat?: boolean
   created_at: string
   updated_at: string
 }
@@ -76,6 +78,7 @@ export interface CreateIPPoolRequest {
   description?: string
   delegated_prefix_len?: number
   link_prefix?: string
+  nat?: boolean
 }
 
 // UpdateIPPoolRequest patches an existing pool's editable metadata. Omitted
@@ -90,6 +93,8 @@ export interface UpdateIPPoolRequest {
   delegated_prefix_len?: number
   /** "" clears it. */
   link_prefix?: string
+  /** Changes only while none of the pool's addresses is in use. */
+  nat?: boolean
 }
 
 export interface CreateIPAddressRequest {

@@ -35,6 +35,8 @@ func TestStaffRolePermissionMatrix(t *testing.T) {
 		{"vm:delete", true, true, false, false, false},
 		{"vm:credentials", true, true, false, false, false},
 		{"vm:import", true, true, false, false, false},
+		{"vm:migrate", true, true, false, false, false},
+		{"node:drain", true, true, false, false, false},
 		{"backup:read", true, true, true, false, true},
 		{"backup:update", true, true, false, false, false},
 		{"node:read", true, true, true, false, true},
@@ -74,7 +76,7 @@ func TestStaffRolePermissionMatrix(t *testing.T) {
 	}
 	// A customer is never staff, and never reaches what only staff may.
 	client := GetPermissionsForRole(models.RoleClient)
-	for _, p := range []string{PermStaff, "user:read", "node:read", "network:read", "settings:read", "ops:read", "billing:read", PermImpersonate} {
+	for _, p := range []string{PermStaff, "user:read", "node:read", "network:read", "settings:read", "ops:read", "billing:read", PermImpersonate, "vm:migrate", "node:drain"} {
 		assert.False(t, Can(client, p), "client %s", p)
 	}
 	for _, p := range []string{"vm:power", "vm:rescue", "vm:console", "vm:lifecycle", "vm:credentials"} {

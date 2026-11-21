@@ -31,9 +31,10 @@ func newRestoreFixture(t *testing.T, targetAgent pb.NodeAgentServer) *restoreFix
 	t.Helper()
 	db := setupVMIPAMTestDB(t)
 	for _, stmt := range []string{
-		`CREATE TABLE backups (id TEXT PRIMARY KEY, vm_id TEXT, storage_provider TEXT, storage_path TEXT, backup_type TEXT, status TEXT, size INTEGER DEFAULT 0, compression TEXT, checksum TEXT, error_message TEXT, started_at DATETIME, completed_at DATETIME, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME, disks TEXT DEFAULT '[]', consistency TEXT DEFAULT '')`,
+		`CREATE TABLE backups (id TEXT PRIMARY KEY, vm_id TEXT, storage_provider TEXT, storage_path TEXT, backup_type TEXT, status TEXT, size INTEGER DEFAULT 0, compression TEXT, checksum TEXT, error_message TEXT, started_at DATETIME, completed_at DATETIME, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME, disks TEXT DEFAULT '[]', consistency TEXT DEFAULT '', destination_id TEXT, node_id TEXT, mode TEXT DEFAULT 'full', parent_id TEXT, chain_id TEXT, checkpoint TEXT DEFAULT '', mode_note TEXT DEFAULT '')`,
 		`CREATE TABLE firewall_rules (id TEXT PRIMARY KEY, vm_id TEXT, protocol TEXT, port_range TEXT, action TEXT, direction TEXT, source_ip TEXT, priority INTEGER, icmp_type TEXT NOT NULL DEFAULT '', log BOOLEAN NOT NULL DEFAULT 0, family TEXT NOT NULL DEFAULT '', created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE system_settings (section TEXT PRIMARY KEY, data TEXT, updated_at DATETIME)`,
+		backupDestinationsTable,
 	} {
 		require.NoError(t, db.Exec(stmt).Error)
 	}
@@ -67,7 +68,8 @@ func newRestoreFixture(t *testing.T, targetAgent pb.NodeAgentServer) *restoreFix
 		}
 		return client, ctx, nil
 	}, testAESKey)
-	require.NoError(t, dest.Save(ctx, validDestination()))
+	_, err := dest.Create(ctx, validDestination())
+	require.NoError(t, err)
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	vmRepo, nodeRepo := repository.NewVMRepository(db), repository.NewNodeRepository(db)
@@ -264,8 +266,15 @@ func TestCopyFirewallRulesReplacesTheDefaults(t *testing.T) {
 	require.NoError(t, f.db.Model(&models.FirewallRule{}).Where("vm_id = ?", f.src.ID).Updates(map[string]interface{}{"log": true, "family": "v6"}).Error)
 	require.NoError(t, f.db.Exec(`UPDATE vms SET firewall_default = 'accept' WHERE id = ?`, f.src.ID).Error)
 	require.NoError(t, f.db.Create(&models.VM{ID: dst, UserID: f.src.UserID, NodeID: f.src.NodeID, Hostname: "restored", OSTemplateID: f.src.OSTemplateID}).Error)
+	require.NoError(t, f.db.Create(&models.VMFirewallGroup{VMID: f.src.ID, GroupID: "src-group", Position: models.FirewallGroupBefore, SortOrder: 3}).Error)
+	require.NoError(t, f.db.Create(&models.VMFirewallGroup{VMID: dst, GroupID: "plan-default", Position: models.FirewallGroupAfter, SortOrder: 1}).Error)
 
 	f.svc.copyFirewallRules(ctx, f.src.ID, dst)
+	var links []models.VMFirewallGroup
+	require.NoError(t, f.db.Find(&links, "vm_id = ?", dst).Error)
+	require.Len(t, links, 1, "the original's groups replace the plan's default group")
+	require.Equal(t, "src-group", links[0].GroupID)
+	require.Equal(t, models.FirewallGroupBefore, links[0].Position)
 	var rules []models.FirewallRule
 	require.NoError(t, f.db.Find(&rules, "vm_id = ?", dst).Error)
 	require.Len(t, rules, 1)
@@ -335,7 +344,8 @@ func TestDeleteBackupRemovesTheFileOrKeepsTheRecord(t *testing.T) {
 	t.Run("no destination set: the record stays", func(t *testing.T) {
 		f := newRestoreFixture(t, &storeAgent{})
 		f.svc.objectStore = nil
-		require.NoError(t, f.svc.dest.Clear(ctx))
+		require.NoError(t, f.db.Exec(`DELETE FROM backup_destinations`).Error)
+		f.svc.dest.invalidate()
 		_, err := f.svc.DeleteBackup(ctx, f.backup.ID)
 		require.ErrorIs(t, err, ErrBackupFileKept)
 		require.True(t, exists(f))

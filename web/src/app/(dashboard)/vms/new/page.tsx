@@ -850,15 +850,16 @@ function NewVMForm() {
                   {...register("cpuModel")}
                   className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm"
                 >
-                  <option value="">Default — kvm64 (portable, live-migratable)</option>
-                  <option value="host-passthrough">Host Passthrough (max performance, not migratable)</option>
-                  <option value="host-model">Host Model (near-host features)</option>
+                  <option value="">Default — the node&apos;s own CPU (host passthrough)</option>
+                  <option value="host-passthrough">Host passthrough (the node&apos;s own CPU)</option>
+                  <option value="host-model">Host model (near-host features, moves live between similar CPUs)</option>
                   <option value="qemu64">qemu64 (generic)</option>
                   <option value="Haswell-noTSX">Haswell-noTSX (Intel baseline)</option>
                   <option value="EPYC">EPYC (AMD baseline)</option>
                 </select>
                 <p className="text-xs text-muted-foreground">
-                  Leave default for cross-node live migration. Choose Host Passthrough for best single-node performance.
+                  The node&apos;s own CPU is fastest and runs modern software; such a VM moves live only to a node with the
+                  same CPU, and offline to any node. A named model moves live wherever the destination supports it.
                 </p>
               </div>
 

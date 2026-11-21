@@ -27,6 +27,7 @@ func newSchedulerTestService(t *testing.T) (*BackupService, *gorm.DB) {
 			id TEXT PRIMARY KEY, vm_id TEXT, schedule TEXT, status TEXT,
 			storage_provider TEXT, compression TEXT, retention_policy TEXT,
 			next_run_at DATETIME, last_run_at DATETIME, last_backup_id TEXT,
+			full_every_days INTEGER DEFAULT 0, chain_reset_at DATETIME,
 			created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE vms (id TEXT PRIMARY KEY, user_id TEXT, node_id TEXT, hostname TEXT, deleted_at DATETIME)`,
 		`CREATE TABLE system_settings (section TEXT PRIMARY KEY, data TEXT, updated_at DATETIME)`,

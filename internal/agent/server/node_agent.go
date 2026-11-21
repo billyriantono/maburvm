@@ -30,7 +30,9 @@ import (
 	"github.com/maburvm/panel/internal/agent/domtune"
 	"github.com/maburvm/panel/internal/agent/guestos"
 	"github.com/maburvm/panel/internal/agent/health"
+	"github.com/maburvm/panel/internal/agent/hostproxy"
 	"github.com/maburvm/panel/internal/agent/libvirt"
+	"github.com/maburvm/panel/internal/agent/migration"
 	"github.com/maburvm/panel/internal/agent/network"
 	"github.com/maburvm/panel/internal/agent/storage"
 	"github.com/maburvm/panel/internal/agent/vncproxy"
@@ -83,6 +85,8 @@ type NodeAgentService struct {
 	healthCollector *health.MetricsCollector
 	vncProxy        *vncproxy.Proxy
 	metricsCache    *VMMetricsCache
+	// hostProxy routes NAT VMs' hostnames on the node's publish address.
+	hostProxy *hostproxy.Proxy
 }
 
 // NewNodeAgentService creates a new NodeAgentService with all dependencies
@@ -93,12 +97,17 @@ func NewNodeAgentService(libvirtMgr *libvirt.VMManager, networkMgr *network.Mana
 	// disks, and nothing else would ever remove them.
 	cleanStaleExports()
 
+	publish := func() string { return "" }
+	if networkMgr != nil {
+		publish = networkMgr.NATAddress
+	}
 	return &NodeAgentService{
 		libvirt:         libvirtMgr,
 		networkMgr:      networkMgr,
 		healthCollector: healthCollector,
 		vncProxy:        vncProxy,
 		metricsCache:    NewVMMetricsCache(),
+		hostProxy:       hostproxy.New(publish),
 	}
 }
 
@@ -229,6 +238,7 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 	var err error
 	var state pb.VMState
 	var restored []*pb.BackupDiskFile
+	var kept []*pb.KeptVolume
 
 	switch req.Command {
 	case pb.VMCommandType_VM_COMMAND_TYPE_CREATE:
@@ -271,6 +281,10 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 		err = libvirt.RestartVM(req.VmId)
 		state = pb.VMState_VM_STATE_RUNNING
 	case pb.VMCommandType_VM_COMMAND_TYPE_DESTROY:
+		// Block devices outlive DeleteVM, which removes only files: each is
+		// removed below when it is provably this VM's, or reported as kept.
+		blockDisks, _ := libvirt.BackupDisks(req.VmId)
+		blockDisks = libvirt.UnderOverlays(blockDisks)
 		err = libvirt.DeleteVM(req.VmId)
 		state = pb.VMState_VM_STATE_DESTROYED
 		// A deleted VM leaves the operator's ISOs alone (they are shared) and
@@ -278,6 +292,7 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 		// use goes here.
 		if err == nil {
 			sweepCustomerISOs(0)
+			kept = removeVMVolumes(ctx, req.VmId, blockDisks, lvmPoolsOf(req.GetLvmPools()), req.GetRemoveForeignVolumes())
 		}
 		// Destroying the domain left every host-side rule behind: firewall,
 		// anti-spoof, bandwidth shaping and NAT. That was invisible while
@@ -295,6 +310,7 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 			s.networkMgr.ForgetVM(req.VmId)
 			updateNetworkConfig(netConfigPath(), currentBootID(), req.VmId, nil)
 			clearPendingGuest(req.VmId)
+			_ = s.hostProxy.Set(req.VmId, nil)
 		}
 	case pb.VMCommandType_VM_COMMAND_TYPE_PAUSE:
 		err = libvirt.SuspendVM(req.VmId)
@@ -310,7 +326,7 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 			err = libvirt.ResizeVM(req.VmId, int(req.Config.Resources.Vcpus), int(req.Config.Resources.MemoryMb))
 			// Grow the primary disk too (no-op when unchanged; grow-only).
 			if err == nil && req.Config.Resources.DiskGb > 0 {
-				err = libvirt.ResizeDisk(req.VmId, int(req.Config.Resources.DiskGb))
+				err = libvirt.ResizeDisk(req.VmId, int(req.Config.Resources.DiskGb), growLV(ctx, lvmPoolsOf(req.GetLvmPools())))
 			}
 		} else {
 			err = fmt.Errorf("resources required for RESIZE")
@@ -386,6 +402,7 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 		State:         state,
 		Message:       fmt.Sprintf("Command %v executed successfully", req.Command),
 		RestoredDisks: restored,
+		KeptVolumes:   kept,
 	}, nil
 }
 
@@ -408,7 +425,7 @@ func primaryBridge(cfg *pb.VMConfig) string {
 // leaves the file until the next restart, which is the safe order to get this
 // wrong in.
 func cleanStaleExports() {
-	dirs := map[string]bool{defaultImageDir: true}
+	dirs := map[string]bool{defaultImageDir: true, blockScratchDir(): true}
 	if locations, err := libvirt.DiskLocations(); err == nil {
 		for path := range locations {
 			dirs[path] = true
@@ -714,13 +731,13 @@ func (s *NodeAgentService) applyGuestNetwork(ctx context.Context, vmID string, n
 	if _, err := exec.LookPath("virt-customize"); err != nil {
 		return fmt.Errorf("virt-customize not found (install libguestfs-tools): %w", err)
 	}
-	args := []string{"-a", diskPath, "--no-network",
+	args := append(guestos.DiskArgs(diskPath), "--no-network",
 		"--mkdir", "/etc/systemd/network",
-		"--write", guestNetworkFilePath + ":" + netFile,
-		"--chmod", "0644:" + guestNetworkFilePath,
-		"--write", guestAnnounceUnitPath + ":" + unit,
+		"--write", guestNetworkFilePath+":"+netFile,
+		"--chmod", "0644:"+guestNetworkFilePath,
+		"--write", guestAnnounceUnitPath+":"+unit,
 		"--run-command", "systemctl enable systemd-networkd maburvm-announce.service >/dev/null 2>&1 || true",
-	}
+	)
 	if out, err := exec.Command("virt-customize", args...).CombinedOutput(); err != nil {
 		return fmt.Errorf("virt-customize: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -924,7 +941,7 @@ func injectGuestConfig(diskPath, hostname string, vmCfg libvirt.VMConfig, rootPa
 	}
 
 	// --no-network: the customize appliance needs no outbound network.
-	args := []string{"-a", diskPath, "--no-network"}
+	args := append(guestos.DiskArgs(diskPath), "--no-network")
 
 	// Generate SSH host keys offline. Cloud images ship WITHOUT host keys and
 	// delegate generation to cloud-init's once-per-instance ssh module — which the
@@ -1094,30 +1111,38 @@ func resolveTemplateImage(ref string, store *pb.ObjectStore) (string, error) {
 	// vm://... resolves to a source VM's primary disk for the clone flow (source
 	// must be stopped for a consistent copy):
 	//   vm://<vmId>            → that VM's disk on THIS node (same-node clone)
-	//   vm://<srcNodeIP>/<vmId> → pulled over SSH from the source node (cross-node)
+	//   vm://<srcNodeIP>/<vmId> → pulled from the source node over the migration link
 	if strings.HasPrefix(ref, "vm://") {
 		spec := strings.TrimPrefix(ref, "vm://")
 		if i := strings.IndexByte(spec, '/'); i >= 0 {
 			srcIP, srcID := spec[:i], spec[i+1:]
-			// Both nodes run the same agent, so the source disk lives at the same
-			// default path on the source node. Pull it via scp (requires this node
-			// to have root SSH access to the source node — the same node↔node trust
-			// migration uses).
-			// ponytail: assumes the default directory on the source node; a
-			// source VM in another pool is not found. Ask the source agent for
-			// the path when cross-node clone is wired up properly.
-			srcPath := filepath.Join(defaultImageDir, srcID+".qcow2")
+			if net.ParseIP(srcIP) == nil || !migration.ValidUUID(srcID) {
+				return "", fmt.Errorf("unusable clone source %q", ref)
+			}
+			// The source node finds the disk wherever its pool is, and hands it
+			// over only while the VM is shut off; the link checks its host key.
 			dstPath := filepath.Join(templateCacheDir, "clone-"+srcID+".qcow2")
 			if err := os.MkdirAll(templateCacheDir, 0o755); err != nil {
 				return "", fmt.Errorf("failed to create cache dir %s: %w", templateCacheDir, err)
 			}
-			log.Printf("[NodeAgent] clone: pulling source disk %s from %s", srcPath, srcIP)
-			out, err := exec.Command("scp",
-				"-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes",
-				fmt.Sprintf("root@%s:%s", srcIP, srcPath), dstPath,
-			).CombinedOutput()
+			log.Printf("[NodeAgent] clone: pulling the disk of %s from %s", srcID, srcIP)
+			// Its own name: two copies of the same VM at once must not share a file.
+			part := fmt.Sprintf("%s.%d.part", dstPath, time.Now().UnixNano())
+			if _, err := pullDisk(context.Background(), migrationLayout(), srcIP, srcID, migration.PrimaryDrive, part, nil); err != nil {
+				_ = os.Remove(part)
+				return "", fmt.Errorf("failed to pull the source disk from %s: %w", srcIP, err)
+			}
+			// Its format is not known here and it is probed from now on.
+			info, err := exec.Command("qemu-img", "info", "--output=json", part).Output()
+			if err == nil {
+				err = storage.StandaloneImage(info)
+			}
 			if err != nil {
-				return "", fmt.Errorf("failed to pull source disk from %s: %v (%s)", srcIP, err, strings.TrimSpace(string(out)))
+				_ = os.Remove(part)
+				return "", fmt.Errorf("the disk pulled from %s cannot be copied: %w", srcIP, err)
+			}
+			if err := os.Rename(part, dstPath); err != nil {
+				return "", err
 			}
 			return dstPath, nil
 		}
@@ -1320,12 +1345,24 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 		return fmt.Errorf("this node's agent cannot install %q systems; update the agent", osType)
 	}
 	diskGB := int(cfg.Resources.DiskGb)
-	imageDir, err := imageDirFor(req.GetPoolPath())
+	lvPool, onLVM, err := requestLVMPool(req.GetPoolType(), req.GetPoolPath())
 	if err != nil {
 		return err
 	}
-	diskPath := filepath.Join(imageDir, req.VmId+".qcow2")
-	if _, err := os.Stat(diskPath); err == nil {
+	imageDir, diskPath := defaultImageDir, ""
+	if onLVM {
+		// The disk is a logical volume; the small setup disc stays in the
+		// default directory, where delete finds it.
+		diskPath = "/dev/" + lvPool.VG + "/" + models.LVMDiskName(req.VmId, "vda")
+		if err := clearOrphanLV(context.Background(), lvPool, req.VmId, diskPath); err != nil {
+			return err
+		}
+	} else if imageDir, err = imageDirFor(req.GetPoolPath()); err != nil {
+		return err
+	} else {
+		diskPath = filepath.Join(imageDir, req.VmId+".qcow2")
+	}
+	if _, err := os.Stat(diskPath); err == nil && !onLVM {
 		// No domain uses this file: the check at the top of this function returned
 		// early if one existed, and the claim above rules out a create in flight.
 		// So it is debris from an attempt that died mid-provision — refusing here
@@ -1338,20 +1375,26 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 	}
 
 	qcow := storage.NewQCOW2Manager()
-	if key, once := strings.CutPrefix(imageRef, "s3://"); once && cfg.Metadata[models.ImageOnceKey] != "" {
+	if onLVM {
+		if diskPath, err = provisionLVMDisk(req, imageRef, lvPool, restored); err != nil {
+			return err
+		}
+	} else if key, once := strings.CutPrefix(imageRef, "s3://"); once && cfg.Metadata[models.ImageOnceKey] != "" {
 		// A backup restored as a new VM is used once. It is downloaded beside
 		// the new disk and becomes it, like a restore in place: kept in the
 		// template cache it would sit on the root filesystem for good.
-		client, _, err := objectStoreClient(req.GetObjectStore())
-		if err != nil {
-			return fmt.Errorf("object storage not configured for the backup: %w", err)
-		}
-		partPath := diskPath + ".part"
 		// Not the caller's context: the download goes on when the panel
 		// restarts. Bounded all the same, or a stalled transfer would hold
 		// this VM's create for ever.
 		fetchCtx, cancelFetch := context.WithTimeout(context.Background(), 8*time.Hour)
-		_, err = fetchStoredDisk(fetchCtx, client, key, partPath, cfg.Metadata[models.ImageSHA256Key])
+		client, _, err := backupStore(fetchCtx, req.GetObjectStore())
+		if err != nil {
+			cancelFetch()
+			return fmt.Errorf("the backup destination cannot be used: %w", err)
+		}
+		defer client.Close()
+		partPath := diskPath + ".part"
+		_, err = fetchBackupImage(fetchCtx, client, cfg.GetRestoreLayers(), key, partPath, cfg.Metadata[models.ImageSHA256Key])
 		cancelFetch()
 		if err != nil {
 			return err
@@ -1372,12 +1415,12 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 			return err
 		}
 		// Provision the disk as an independent copy of the template, then grow
-		// it to the requested size.
-		if err := qcow.CloneImage(templatePath, diskPath); err != nil {
+		// it to the requested size. A clone of a raw disk is read as raw.
+		if err := qcow.CloneImageFrom(templatePath, cloneSourceFormat(imageRef), diskPath); err != nil {
 			return fmt.Errorf("failed to provision disk from template: %w", err)
 		}
 	}
-	if diskGB > 0 {
+	if diskGB > 0 && !onLVM {
 		// qcow2 cannot shrink below the image's virtual size without data loss,
 		// and `qemu-img resize` errors on a shrink. If the requested size is
 		// smaller than the template's virtual size, keep the template size
@@ -1408,7 +1451,7 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 	}
 	removeRestored := func() {
 		for _, d := range *restored {
-			_ = os.Remove(d.GetPath())
+			discardNewDisk(req.VmId, d.GetPath())
 		}
 	}
 
@@ -1482,7 +1525,7 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 			err = guestos.WriteRouterOSAutorun(diskPath, script)
 		}
 		if err != nil {
-			_ = os.Remove(diskPath)
+			discardNewDisk(req.VmId, diskPath)
 			removeRestored()
 			return fmt.Errorf("failed to prepare the router for its first boot: %w", err)
 		}
@@ -1522,7 +1565,7 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 	domainUUID, err := libvirt.CreateVM(vmCfg)
 	if err != nil {
 		// Clean up provisioned artifacts if domain definition failed.
-		_ = os.Remove(diskPath)
+		discardNewDisk(req.VmId, diskPath)
 		removeRestored()
 		if seedPath != "" {
 			_ = os.Remove(seedPath)
@@ -1832,7 +1875,7 @@ func (s *NodeAgentService) rebuildVM(req *pb.VMCommandRequest) error {
 	// The seed sits beside the VM's disk, where create put it; writing it to
 	// the default directory left the VM booting its old seed.
 	seedDir := defaultImageDir
-	if disk, derr := libvirt.PrimaryDiskPath(req.VmId); derr == nil {
+	if disk, derr := libvirt.PrimaryDiskPath(req.VmId); derr == nil && !models.IsBlockDevicePath(disk) {
 		seedDir = filepath.Dir(disk)
 	}
 	seedPath := filepath.Join(seedDir, req.VmId+"-seed.iso")
@@ -1939,12 +1982,22 @@ func (s *NodeAgentService) BackupDisk(ctx context.Context, req *pb.BackupDiskReq
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
 
-	disks, err := libvirt.BackupDisks(req.VmId)
+	for _, n := range []string{req.GetCheckpoint(), req.GetIncrementalFrom()} {
+		if n != "" && !storage.ValidCheckpointName(n) {
+			return backupDiskErr(pb.ErrorCode_ERROR_CODE_INVALID_ARGUMENT, fmt.Sprintf("invalid checkpoint name %q", n)), nil
+		}
+	}
+	if req.GetIncrementalFrom() != "" && req.GetCheckpoint() == "" {
+		return backupDiskErr(pb.ErrorCode_ERROR_CODE_INVALID_ARGUMENT, "an incremental backup must create a checkpoint for the next one"), nil
+	}
+
+	all, err := libvirt.BackupDisks(req.VmId)
 	if err != nil {
 		return backupDiskErr(pb.ErrorCode_ERROR_CODE_NOT_FOUND, fmt.Sprintf("primary disk not found: %v", err)), nil
 	}
+	disks := all
 	if !req.GetAllDisks() {
-		disks = disks[:1]
+		disks = all[:1]
 	}
 
 	key := req.DestinationKey
@@ -1954,10 +2007,11 @@ func (s *NodeAgentService) BackupDisk(ctx context.Context, req *pb.BackupDiskReq
 
 	// The store is checked before the export, not after it: an export takes
 	// hours, and one that cannot be uploaded was run for nothing.
-	client, fromRequest, err := objectStoreClient(req.GetObjectStore())
+	client, fromRequest, err := backupStore(ctx, req.GetObjectStore())
 	if err != nil {
-		return backupDiskErr(pb.ErrorCode_ERROR_CODE_INVALID_ARGUMENT, err.Error()), nil
+		return &pb.BackupDiskResponse{Error: storeFailure("the backup destination cannot be used", err)}, nil
 	}
+	defer client.Close()
 	if resp := checkStoreWritable(ctx, client, key); resp != nil {
 		return &pb.BackupDiskResponse{Error: resp}, nil
 	}
@@ -1975,7 +2029,10 @@ func (s *NodeAgentService) BackupDisk(ctx context.Context, req *pb.BackupDiskReq
 	// exporting a large VM whose disk lives on a separate volume would pile tens
 	// of GB onto the OS volume — and filling that takes libvirt and this agent
 	// down with it, which is a far worse outcome than a failed backup.
-	workDir := storage.DataDiskDir("", disks[0].Path, defaultImageDir)
+	workDir := storage.DataDiskDir("", disks[0].Path, blockScratchDir())
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		return backupDiskErr(pb.ErrorCode_ERROR_CODE_INTERNAL, fmt.Sprintf("cannot use %s for the export: %v", workDir, err)), nil
+	}
 	qcowExport := storage.NewQCOW2Manager()
 	kind := "backup"
 	if strings.Contains(req.GetDestinationKey(), "images/") {
@@ -1994,52 +2051,256 @@ func (s *NodeAgentService) BackupDisk(ctx context.Context, req *pb.BackupDiskReq
 	for i, d := range disks {
 		if info, serr := os.Stat(d.Path); serr == nil && info.Mode().IsRegular() {
 			sizes[i] = info.Size()
+		} else if n, derr := storage.DeviceSize(d.Path); d.Block && derr == nil {
+			sizes[i] = n
 		} else if ii, ierr := qcowExport.ImageInfo(d.Path); ierr == nil {
 			sizes[i] = ii.VirtualSize
 		}
 		largest = max(largest, sizes[i])
 	}
-	if cap := storage.Capacity(workDir); cap.Exists && cap.Total > 0 && cap.Available < largest+volumeReserveBytes {
-		return backupDiskErr(pb.ErrorCode_ERROR_CODE_RESOURCE_EXHAUSTED, fmt.Sprintf(
-			"not enough room on %s: %d bytes free, and this export could need up to %d plus a %d reserve. "+
-				"Free space or move the export elsewhere — running it would risk pausing every VM on this volume.",
-			cap.Filesystem, cap.Available, largest, int64(volumeReserveBytes))), nil
+	var total int64
+	for _, n := range sizes {
+		total += n
+	}
+	// The room an export needs is held until the backup ends, so a backup-API
+	// copy (as large as the disks) and another backup started meanwhile do not
+	// both count the same free space.
+	releaseRoom := func() {}
+	defer func() { releaseRoom() }()
+	holdRoom := func(need int64, apiCopy bool) *pb.BackupDiskResponse {
+		releaseRoom()
+		releaseRoom = func() {}
+		cap := storage.Capacity(workDir)
+		if !cap.Exists || cap.Total == 0 {
+			return nil
+		}
+		release, ok := storage.HoldRoom(cap.Filesystem, cap.Available, need, volumeReserveBytes, apiCopy)
+		if !ok {
+			promised := ""
+			if held := storage.HeldRoom(cap.Filesystem); held > 0 {
+				promised = fmt.Sprintf(" (%d of them held by backups running now)", held)
+			}
+			return backupDiskErr(pb.ErrorCode_ERROR_CODE_RESOURCE_EXHAUSTED, fmt.Sprintf(
+				"not enough room on %s: %d bytes free%s, and this export could need up to %d plus a %d reserve. "+
+					"Free space or move the export elsewhere — running it would risk pausing every VM on this volume.",
+				cap.Filesystem, cap.Available, promised, need, int64(volumeReserveBytes)))
+		}
+		releaseRoom = release
+		return nil
 	}
 
+	plan := planBackup(req, disks)
 	consistency := libvirt.ConsistencyStopped
-	hold, herr := libvirt.HoldDisksForBackup(req.VmId, workDir)
-	switch {
-	case herr != nil:
-		// Better a copy flagged as live than no backup at all; the panel says so.
-		log.Printf("[NodeAgent] WARNING: VM %s: no backup snapshot (%v); copying its disks while it runs", req.VmId, herr)
-		consistency = libvirt.ConsistencyLive
-	case hold != nil:
-		consistency = hold.Consistency
-		defer releaseBackupHold(req.VmId, hold)
+	outputs := map[string]string{}
+	if plan.api {
+		// libvirt copies every disk at once; a full copy is then compressed one
+		// disk at a time beside it.
+		need := total
+		if plan.from == "" {
+			need += largest
+		}
+		if resp := holdRoom(need, true); resp != nil {
+			// The overlay route needs room for one compressed disk only.
+			plan = backupPlan{}
+			if req.GetCheckpoint() != "" {
+				plan.note = "Full backup: not enough free space beside the disks for an incremental chain's copy."
+			}
+		}
+	}
+	if plan.api {
+		for _, d := range disks {
+			outputs[d.Target] = filepath.Join(workDir, req.VmId+"-"+d.Target+".backup-api.qcow2")
+		}
+		defer func() {
+			for _, p := range outputs {
+				_ = os.Remove(p)
+			}
+		}()
+		consistency, err = runAPIBackup(ctx, req.VmId, all, disks, outputs, sizes[0], kind, &plan,
+			func(need int64) *pb.BackupDiskResponse { return holdRoom(need, true) })
+		if err != nil {
+			if ctx.Err() != nil {
+				return backupDiskErr(pb.ErrorCode_ERROR_CODE_INTERNAL, err.Error()), nil
+			}
+			log.Printf("[NodeAgent] VM %s: the backup API failed (%v); copying the disks the older way", req.VmId, err)
+			if plan.note == "" {
+				plan.note = fmt.Sprintf("Copied without the backup API, which failed: %v.", err)
+			}
+			plan.api, plan.from, plan.checkpoint = false, "", ""
+		}
+	}
+	if !plan.api {
+		if resp := holdRoom(largest, false); resp != nil {
+			return resp, nil
+		}
+		if running, _ := libvirt.IsRunning(req.VmId); running && libvirt.HasCheckpoints(req.VmId) {
+			// Some libvirt versions refuse the overlay snapshot while any exist.
+			if derr := libvirt.DropCheckpoints(req.VmId); derr != nil {
+				log.Printf("[NodeAgent] VM %s: checkpoints not removed: %v", req.VmId, derr)
+			}
+		}
+		hold, herr := libvirt.HoldDisksForBackup(req.VmId, workDir)
+		switch {
+		case herr != nil:
+			// Better a copy flagged as live than no backup at all; the panel says so.
+			log.Printf("[NodeAgent] WARNING: VM %s: no backup snapshot (%v); copying its disks while it runs", req.VmId, herr)
+			consistency = libvirt.ConsistencyLive
+		case hold != nil:
+			consistency = hold.Consistency
+			defer releaseBackupHold(req.VmId, hold)
+		}
 	}
 
-	out := &pb.BackupDiskResponse{Success: true, UsedRequestStore: fromRequest, Consistency: consistency}
+	out := &pb.BackupDiskResponse{Success: true, UsedRequestStore: fromRequest, Consistency: consistency,
+		Mode: "full", Checkpoint: plan.checkpoint, ModeNote: plan.note}
+	if plan.from != "" {
+		out.Mode = "incremental"
+	}
 	for i, d := range disks {
 		diskKey, exportPath := key, filepath.Join(workDir, req.VmId+"-backup.qcow2")
 		if i > 0 {
 			diskKey, exportPath = storage.ExtraDiskKey(key, d.Target), filepath.Join(workDir, req.VmId+"-"+d.Target+"-backup.qcow2")
 		}
-		file, used, ferr := exportDisk(ctx, client, qcowExport, req.VmId, kind, d, sizes[i], exportPath, diskKey, req.GetCompression())
+		var file *pb.BackupDiskFile
+		var used string
+		var ferr *pb.ErrorResponse
+		switch {
+		case plan.api && plan.from != "":
+			// Only the changed clusters are in it; re-encoding would turn the
+			// zeroed ones into holes that read through to the older backup.
+			used = "none"
+			if err := storage.DetachBacking(outputs[d.Target]); err != nil {
+				ferr = &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: fmt.Sprintf("disk %s: %v", d.Target, err)}
+			} else {
+				file, ferr = uploadExport(ctx, client, qcowExport, outputs[d.Target], diskKey, d.Target)
+			}
+		case plan.api:
+			// The copy may name the live disk as its backing file; read alone,
+			// nothing of the disk as it is now can leak into the backup.
+			if err := storage.DetachBacking(outputs[d.Target]); err != nil {
+				ferr = &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: fmt.Sprintf("disk %s: %v", d.Target, err)}
+			} else {
+				file, used, ferr = exportDisk(ctx, client, qcowExport, req.VmId, kind, storage.DomainDisk{Target: d.Target, Path: outputs[d.Target], Format: "qcow2"},
+					sizes[i], exportPath, diskKey, req.GetCompression())
+			}
+		default:
+			file, used, ferr = exportDisk(ctx, client, qcowExport, req.VmId, kind, d, sizes[i], exportPath, diskKey, req.GetCompression())
+		}
+		if plan.api {
+			_ = os.Remove(outputs[d.Target])
+		}
 		if ferr != nil {
+			if plan.checkpoint != "" {
+				// Merged into the older checkpoint, so the next backup still sees these changes.
+				if derr := libvirt.DeleteCheckpoint(req.VmId, plan.checkpoint); derr != nil {
+					log.Printf("[NodeAgent] VM %s: checkpoint %s of a failed backup kept: %v", req.VmId, plan.checkpoint, derr)
+				}
+			}
 			return &pb.BackupDiskResponse{Error: ferr}, nil
 		}
 		out.Compression = used
 		out.Disks = append(out.Disks, file)
-		log.Printf("[NodeAgent] Backed up VM %s disk %s -> %s (%d bytes, sha256=%s, %s)", req.VmId, d.Target, diskKey, file.SizeBytes, file.Checksum, consistency)
+		log.Printf("[NodeAgent] Backed up VM %s disk %s -> %s (%d bytes, sha256=%s, %s, %s)", req.VmId, d.Target, diskKey, file.SizeBytes, file.Checksum, consistency, out.Mode)
+	}
+	if plan.checkpoint != "" {
+		if err := libvirt.PruneCheckpoints(req.VmId, plan.checkpoint); err != nil {
+			log.Printf("[NodeAgent] VM %s: older checkpoints not removed: %v", req.VmId, err)
+		}
 	}
 	out.ObjectKey, out.SizeBytes, out.Checksum = out.Disks[0].Key, out.Disks[0].SizeBytes, out.Disks[0].Checksum
 	return out, nil
 }
 
+// backupPlan is how a backup is taken.
+type backupPlan struct {
+	api        bool   // libvirt's backup API, instead of overlays
+	from       string // copy only what changed since this checkpoint; "" copies everything
+	checkpoint string // created with the backup; "" makes none
+	note       string // why less was done than was asked
+}
+
+// planBackup decides how to copy a VM. The backup API copies a running VM
+// with no overlay to commit back, and can track changes; it needs a recent
+// libvirt and qcow2 files. It is used only for VMs whose schedule asked for
+// incremental backups (a checkpoint now, or one left by an earlier backup, which
+// an overlay snapshot would have to drop); everything else takes the overlay
+// route, full, as before.
+func planBackup(req *pb.BackupDiskRequest, disks []storage.DomainDisk) backupPlan {
+	var p backupPlan
+	asked := req.GetCheckpoint() != ""
+	if !asked && !libvirt.HasCheckpoints(req.VmId) {
+		return p
+	}
+	if running, err := libvirt.IsRunning(req.VmId); err != nil || !running {
+		if asked {
+			p.note = "The VM was off, so this full backup does not start a chain of incremental ones."
+		}
+		return p
+	}
+	if ok, why := libvirt.IncrementalSupport(); !ok {
+		if asked {
+			p.note = "Full backup: " + why + "."
+		}
+		return p
+	}
+	if ok, why := storage.ChainableDisks(disks); !ok {
+		if asked {
+			p.note = "Full backup: " + why + "."
+		}
+		return p
+	}
+	p.api, p.checkpoint = true, req.GetCheckpoint()
+	if from := req.GetIncrementalFrom(); from != "" {
+		targets := make([]string, len(disks))
+		for i, d := range disks {
+			targets[i] = d.Target
+		}
+		if ok, why := libvirt.CheckpointUsable(req.VmId, from, targets); ok {
+			p.from = from
+		} else {
+			p.note = "Full backup: " + why + "."
+		}
+	}
+	return p
+}
+
+// runAPIBackup runs the backup job. An incremental one that fails (a bitmap
+// lost when the VM was killed, say) is run again as a full one.
+func runAPIBackup(ctx context.Context, vmID string, all, disks []storage.DomainDisk, outputs map[string]string, primaryBytes int64, kind string,
+	plan *backupPlan, roomFor func(int64) *pb.BackupDiskResponse) (string, error) {
+	var total, largest int64
+	for _, d := range disks {
+		n := primaryBytes
+		if info, err := os.Stat(d.Path); err == nil {
+			n = info.Size()
+		}
+		total, largest = total+n, max(largest, n)
+	}
+	run := func() (string, error) {
+		for _, p := range outputs {
+			_ = os.Remove(p) // libvirt creates each output and refuses one that exists
+		}
+		done := storage.TrackExport(vmID, kind, disks[0].Path, outputs[disks[0].Target], primaryBytes)
+		defer done()
+		return libvirt.RunBackup(ctx, vmID, all, outputs, plan.from, plan.checkpoint, nil)
+	}
+	consistency, err := run()
+	if err != nil && plan.from != "" && ctx.Err() == nil {
+		log.Printf("[NodeAgent] VM %s: incremental backup failed (%v); taking a full one", vmID, err)
+		plan.note = fmt.Sprintf("Full backup: the changes since the previous backup could not be read (%v).", err)
+		plan.from = ""
+		if resp := roomFor(total + largest); resp != nil {
+			return "", errors.New(resp.GetError().GetMessage())
+		}
+		consistency, err = run()
+	}
+	return consistency, err
+}
+
 // exportDisk exports one disk to exportPath, uploads it to key and removes
 // the export. The disk's own image is stable here: the VM is off, or writes
-// to a backup overlay.
-func exportDisk(ctx context.Context, client *sharedstorage.Client, q *storage.QCOW2Manager, vmID, kind string, d storage.DomainDisk,
+// to a backup overlay, or d is the backup API's copy.
+func exportDisk(ctx context.Context, client sharedstorage.Store, q *storage.QCOW2Manager, vmID, kind string, d storage.DomainDisk,
 	sourceBytes int64, exportPath, key, compression string) (*pb.BackupDiskFile, string, *pb.ErrorResponse) {
 	_ = os.Remove(exportPath)
 	// Registered before the export, not after it: a failed export leaves a
@@ -2054,27 +2315,33 @@ func exportDisk(ctx context.Context, client *sharedstorage.Client, q *storage.QC
 	// The deadline is derived from the disk's size inside ConvertCompressed;
 	// compression runs at single-digit MiB/s, so a flat ceiling is either
 	// absurd for a small disk or fatal for a large one.
-	used, err := q.ConvertCompressed(d.Path, exportPath, compression)
+	used, err := q.ConvertCompressed(d.Path, d.Format, exportPath, compression)
 	if err != nil {
 		return nil, "", &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: fmt.Sprintf("export of disk %s failed: %v", d.Target, err)}
 	}
+	file, ferr := uploadExport(ctx, client, q, exportPath, key, d.Target)
+	return file, used, ferr
+}
+
+// uploadExport checksums an exported image and uploads it to key.
+func uploadExport(ctx context.Context, client sharedstorage.Store, q *storage.QCOW2Manager, exportPath, key, target string) (*pb.BackupDiskFile, *pb.ErrorResponse) {
 	checksum, size, err := fileSHA256(exportPath)
 	if err != nil {
-		return nil, "", &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: fmt.Sprintf("checksum failed: %v", err)}
+		return nil, &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: fmt.Sprintf("checksum failed: %v", err)}
 	}
-	file := &pb.BackupDiskFile{Target: d.Target, Key: key, SizeBytes: size, Checksum: checksum}
+	file := &pb.BackupDiskFile{Target: target, Key: key, SizeBytes: size, Checksum: checksum}
 	if info, ierr := q.ImageInfo(exportPath); ierr == nil {
 		file.VirtualSizeBytes = info.VirtualSize
 	}
 	f, err := os.Open(exportPath)
 	if err != nil {
-		return nil, "", &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: fmt.Sprintf("open export: %v", err)}
+		return nil, &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: fmt.Sprintf("open export: %v", err)}
 	}
 	defer f.Close()
 	if err := client.Upload(ctx, key, f, size, "application/octet-stream"); err != nil {
-		return nil, "", storeFailure("upload failed", err)
+		return nil, storeFailure("upload failed", err)
 	}
-	return file, used, nil
+	return file, nil
 }
 
 // overlaysRecovered is closed once the disks an interrupted backup left on
@@ -2118,8 +2385,11 @@ func backupDiskErr(code pb.ErrorCode, msg string) *pb.BackupDiskResponse {
 	}
 }
 
-// agentFeatures are reported in GetNodeInfo (see the proto).
-var agentFeatures = []string{"restore_disks"}
+// agentFeatures are reported in GetNodeInfo (see the proto). "backup_targets":
+// SFTP and mounted-path destinations, DeleteBackupFiles. "incremental_backup":
+// checkpoints, and restores of chains of backups. "hostname_proxy": routes
+// VMNetworkConfig.hostname_forwards on ports 80 and 443.
+var agentFeatures = []string{"restore_disks", "lvm_disks", "backup_targets", "incremental_backup", "hostname_proxy"}
 
 // volumeReserveBytes is the room an export or a restore must leave free on the
 // volume it writes to. qemu pauses a VM the moment a write fails, so filling a
@@ -2145,6 +2415,30 @@ func objectStoreClient(store *pb.ObjectStore) (client *sharedstorage.Client, fro
 	return client, true, err
 }
 
+// backupStore opens the destination a request names: an S3 store (the one
+// sent, or this node's own), an SFTP server, or a mounted directory.
+func backupStore(ctx context.Context, store *pb.ObjectStore) (sharedstorage.Store, bool, error) {
+	switch store.GetKind() {
+	case "", sharedstorage.KindS3:
+		c, fromRequest, err := objectStoreClient(store)
+		if err != nil {
+			return nil, fromRequest, &sharedstorage.RefusedError{Err: err}
+		}
+		return c, fromRequest, nil
+	}
+	sftp := store.GetSftp()
+	s, err := sharedstorage.Target{
+		Kind: store.GetKind(),
+		Path: store.GetPath(),
+		SFTP: sharedstorage.SFTPTarget{Host: sftp.GetHost(), Port: int(sftp.GetPort()), User: sftp.GetUser(), Password: sftp.GetPassword(),
+			PrivateKey: sftp.GetPrivateKey(), HostKey: sftp.GetHostKey(), Path: sftp.GetPath()},
+	}.Open(ctx)
+	if err != nil {
+		return nil, true, err
+	}
+	return s, true, nil
+}
+
 // storeFailure reports a failed object-storage call. A store that answered and
 // refused will refuse again; one that could not be reached may be back.
 func storeFailure(what string, err error) *pb.ErrorResponse {
@@ -2157,10 +2451,10 @@ func storeFailure(what string, err error) *pb.ErrorResponse {
 // checkStoreWritable writes a small object beside key and removes it. It
 // returns nil when the store took the write. Failing to read it back or delete
 // it is logged only: credentials that may only write can still back up.
-func checkStoreWritable(ctx context.Context, client *sharedstorage.Client, key string) *pb.ErrorResponse {
+func checkStoreWritable(ctx context.Context, client sharedstorage.Store, key string) *pb.ErrorResponse {
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
-	err := client.Probe(ctx, path.Join(path.Dir(key), ".write-test"))
+	err := sharedstorage.ProbeStore(ctx, client, path.Join(path.Dir(key), ".write-test"))
 	var probe *sharedstorage.ProbeError
 	if err == nil || (errors.As(err, &probe) && probe.Step != sharedstorage.ProbeWrite) {
 		if err != nil {
@@ -2180,23 +2474,76 @@ func (s *NodeAgentService) TestObjectStore(ctx context.Context, req *pb.TestObje
 	if _, authenticated := GetNodeIDFromContext(ctx); !authenticated {
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
-	client, _, err := objectStoreClient(req.GetObjectStore())
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	client, _, err := backupStore(ctx, req.GetObjectStore())
 	if err != nil {
 		return &pb.TestObjectStoreResponse{Error: &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INVALID_ARGUMENT, Message: err.Error()}}, nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, time.Minute)
-	defer cancel()
-	if err := client.Probe(ctx, req.GetKey()); err != nil {
+	defer client.Close()
+	if err := sharedstorage.ProbeStore(ctx, client, req.GetKey()); err != nil {
 		return &pb.TestObjectStoreResponse{Error: storeFailure("test failed", err)}, nil
 	}
+	for _, k := range req.GetExpectKeys() {
+		found, err := client.Exists(ctx, k)
+		if err != nil {
+			return &pb.TestObjectStoreResponse{Error: storeFailure("could not look for "+k, err)}, nil
+		}
+		if !found {
+			return &pb.TestObjectStoreResponse{Error: &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_NOT_FOUND,
+				Message: fmt.Sprintf("%s is not there as this node sees the destination; a disk mounted on one node holds that node's backups only", k)}}, nil
+		}
+	}
 	return &pb.TestObjectStoreResponse{Success: true}, nil
+}
+
+// DeleteBackupFiles removes backup images from a destination the panel cannot
+// reach itself. Only backup images go: a key must name a .qcow2 file under a
+// "backups" folder, inside the destination.
+func (s *NodeAgentService) DeleteBackupFiles(ctx context.Context, req *pb.DeleteBackupFilesRequest) (*pb.DeleteBackupFilesResponse, error) {
+	if len(req.GetKeys()) == 0 {
+		return nil, status.Errorf(codes.InvalidArgument, "keys are required")
+	}
+	if _, authenticated := GetNodeIDFromContext(ctx); !authenticated {
+		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
+	}
+	for _, k := range req.GetKeys() {
+		if !storage.IsBackupImageKey(k) {
+			return &pb.DeleteBackupFilesResponse{Error: &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INVALID_ARGUMENT,
+				Message: fmt.Sprintf("%q is not a backup image", k)}}, nil
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	client, _, err := backupStore(ctx, req.GetObjectStore())
+	if err != nil {
+		return &pb.DeleteBackupFilesResponse{Error: storeFailure("the backup destination cannot be used", err)}, nil
+	}
+	defer client.Close()
+	out := &pb.DeleteBackupFilesResponse{}
+	for _, k := range req.GetKeys() {
+		found, err := client.Exists(ctx, k)
+		if err == nil && found {
+			err = client.Delete(ctx, k)
+		}
+		if err != nil {
+			out.Error = storeFailure("delete failed", err)
+			return out, nil
+		}
+		if found {
+			out.Deleted = append(out.Deleted, k)
+		} else {
+			out.Missing = append(out.Missing, k)
+		}
+	}
+	return out, nil
 }
 
 // fetchStoredDisk downloads a disk image from object storage to tmpPath and
 // checks it against the checksum recorded when it was stored (when one is
 // given). It refuses to start when the volume has no room for the image, and
 // leaves nothing behind when it fails.
-func fetchStoredDisk(ctx context.Context, client *sharedstorage.Client, key, tmpPath, wantSHA256 string) (int64, error) {
+func fetchStoredDisk(ctx context.Context, client sharedstorage.Store, key, tmpPath, wantSHA256 string) (int64, error) {
 	want, err := client.GetSize(ctx, key)
 	if err != nil {
 		return 0, fmt.Errorf("could not read %s from object storage: %w", key, err)
@@ -2237,9 +2584,66 @@ func fetchStoredDisk(ctx context.Context, client *sharedstorage.Client, key, tmp
 	return size, nil
 }
 
+// fetchBackupImage downloads a backup's disk image to tmpPath. For an
+// incremental backup every image under it (layers, the full one first) is
+// downloaded and checked too, and the chain is read into one standalone image.
+// Nothing but tmpPath is left behind.
+func fetchBackupImage(ctx context.Context, client sharedstorage.Store, layers []*pb.BackupLayer, key, tmpPath, wantSHA256 string) (int64, error) {
+	if len(layers) == 0 {
+		return fetchStoredDisk(ctx, client, key, tmpPath, wantSHA256)
+	}
+	chain := append(append([]*pb.BackupLayer(nil), layers...), &pb.BackupLayer{Key: key, Checksum: wantSHA256})
+	var total int64
+	for _, l := range chain {
+		if l.GetChecksum() == "" {
+			return 0, fmt.Errorf("%s has no recorded checksum; the chain cannot be restored safely", l.GetKey())
+		}
+		n, err := client.GetSize(ctx, l.GetKey())
+		if err != nil {
+			return 0, fmt.Errorf("could not read %s from the backup destination: %w", l.GetKey(), err)
+		}
+		total += n
+	}
+	dir := filepath.Dir(tmpPath)
+	if cap := storage.Capacity(dir); cap.Exists && cap.Total > 0 && cap.Available < total+volumeReserveBytes {
+		return 0, fmt.Errorf("not enough room on %s: %d bytes free, and the %d images of this backup need %d plus a %d reserve",
+			cap.Filesystem, cap.Available, len(chain), total, int64(volumeReserveBytes))
+	}
+	files := make([]string, len(chain))
+	defer func() {
+		for _, f := range files {
+			if f != "" {
+				_ = os.Remove(f)
+			}
+		}
+	}()
+	for i, l := range chain {
+		files[i] = fmt.Sprintf("%s.layer%d", tmpPath, i)
+		if _, err := fetchStoredDisk(ctx, client, l.GetKey(), files[i], l.GetChecksum()); err != nil {
+			return 0, fmt.Errorf("image %d of %d (%s): %w", i+1, len(chain), l.GetKey(), err)
+		}
+	}
+	_ = os.Remove(tmpPath)
+	room := func(need int64) error {
+		if cap := storage.Capacity(dir); cap.Exists && cap.Total > 0 && cap.Available < need+volumeReserveBytes {
+			return fmt.Errorf("not enough room on %s: %d bytes free, and the restored disk needs %d plus a %d reserve",
+				cap.Filesystem, cap.Available, need, int64(volumeReserveBytes))
+		}
+		return nil
+	}
+	if err := storage.FlattenChain(ctx, files, tmpPath, room); err != nil {
+		return 0, err
+	}
+	info, err := os.Stat(tmpPath)
+	if err != nil {
+		return 0, err
+	}
+	return info.Size(), nil
+}
+
 // fetchRestoreDisks downloads the data disks of a backup restored as a new VM
 // into dir, each checked against its checksum. On failure nothing is left.
-func fetchRestoreDisks(client *sharedstorage.Client, dir, vmID string, files []*pb.BackupDiskFile) ([]*pb.BackupDiskFile, error) {
+func fetchRestoreDisks(client sharedstorage.Store, dir, vmID string, files []*pb.BackupDiskFile) ([]*pb.BackupDiskFile, error) {
 	var out []*pb.BackupDiskFile
 	undo := func() {
 		for _, d := range out {
@@ -2256,7 +2660,7 @@ func fetchRestoreDisks(client *sharedstorage.Client, dir, vmID string, files []*
 		// Debris from an earlier attempt: no domain uses it yet.
 		_ = os.Remove(path)
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Hour)
-		_, err := fetchStoredDisk(ctx, client, f.GetKey(), part, f.GetChecksum())
+		_, err := fetchBackupImage(ctx, client, f.GetLayers(), f.GetKey(), part, f.GetChecksum())
 		cancel()
 		if err == nil {
 			err = os.Rename(part, path)
@@ -2350,10 +2754,11 @@ func (s *NodeAgentService) RestoreDisk(ctx context.Context, req *pb.RestoreDiskR
 		byTarget[d.Target] = d
 	}
 
-	client, _, err := objectStoreClient(req.GetObjectStore())
+	client, _, err := backupStore(ctx, req.GetObjectStore())
 	if err != nil {
 		return restoreDiskErr(err.Error()), nil
 	}
+	defer client.Close()
 
 	// Download next to each disk (same filesystem => rename is atomic); a
 	// block device's image waits beside the primary disk.
@@ -2370,9 +2775,13 @@ func (s *NodeAgentService) RestoreDisk(ctx context.Context, req *pb.RestoreDiskR
 	var total int64
 	for _, f := range files {
 		d := byTarget[f.GetTarget()]
-		dir := storage.DataDiskDir("", d.Path, storage.DataDiskDir("", have[0].Path, defaultImageDir))
+		dir := storage.DataDiskDir("", d.Path, storage.DataDiskDir("", have[0].Path, blockScratchDir()))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			discard()
+			return restoreDiskErr(fmt.Sprintf("cannot stage disk %s in %s: %v", d.Target, dir, err)), nil
+		}
 		tmp := filepath.Join(dir, req.VmId+"-"+d.Target+"-restore.qcow2")
-		size, err := fetchStoredDisk(ctx, client, f.GetKey(), tmp, f.GetChecksum())
+		size, err := fetchBackupImage(ctx, client, f.GetLayers(), f.GetKey(), tmp, f.GetChecksum())
 		if err != nil {
 			discard()
 			return restoreDiskErr(fmt.Sprintf("disk %s: %v", d.Target, err)), nil
@@ -2433,7 +2842,7 @@ func installRestoredDisk(disk storage.DomainDisk, tmp, stamp string) (bak string
 	case storage.RestoreWriteDevice:
 		ctx, cancel := context.WithTimeout(context.Background(), diskWriteTimeout)
 		defer cancel()
-		if out, err := exec.CommandContext(ctx, "qemu-img", "convert", "-n", "-O", "raw", tmp, disk.Path).CombinedOutput(); err != nil {
+		if out, err := exec.CommandContext(ctx, "qemu-img", "convert", "-n", "-f", "qcow2", "-O", "raw", tmp, disk.Path).CombinedOutput(); err != nil {
 			return "", fmt.Errorf("writing %s failed, and it may now hold part of the backup: %w (%s)", disk.Path, err, strings.TrimSpace(string(out)))
 		}
 		return "", nil
@@ -2472,12 +2881,12 @@ func fitsDevice(image, device string) error {
 	if err != nil {
 		return err
 	}
-	dev, err := q.ImageInfo(device)
+	have, err := storage.DeviceSize(device)
 	if err != nil {
 		return err
 	}
-	if img.VirtualSize > dev.VirtualSize {
-		return fmt.Errorf("the backup is %d bytes and %s holds only %d", img.VirtualSize, device, dev.VirtualSize)
+	if img.VirtualSize > have {
+		return fmt.Errorf("the backup is %d bytes and %s holds only %d", img.VirtualSize, device, have)
 	}
 	return nil
 }
@@ -2498,6 +2907,19 @@ func (s *NodeAgentService) CreateStorageVolume(ctx context.Context, req *pb.Crea
 	}
 	// An empty pool_path means "this node's default image directory" — the node
 	// (not the panel) owns where dir/file volumes live, so callers needn't hardcode it.
+	if pool, onLVM, err := requestLVMPool(req.PoolType, req.PoolPath); err != nil {
+		return createVolumeErr(err.Error()), nil
+	} else if onLVM {
+		if req.SizeGb <= 0 {
+			return createVolumeErr("size_gb must be positive"), nil
+		}
+		dev, err := lvm.Provision(ctx, pool, lvVolumeName(req.Name), req.SizeGb<<30, "", "")
+		if err != nil {
+			return createVolumeErr(err.Error()), nil
+		}
+		log.Printf("[NodeAgent] Provisioned volume %s (%dGB)", dev, req.SizeGb)
+		return &pb.CreateStorageVolumeResponse{Success: true, Path: dev, ActualSizeBytes: req.SizeGb << 30}, nil
+	}
 	poolPath := req.PoolPath
 	if poolPath == "" {
 		poolPath = defaultImageDir
@@ -2515,6 +2937,16 @@ func (s *NodeAgentService) CreateStorageVolume(ctx context.Context, req *pb.Crea
 func (s *NodeAgentService) DeleteStorageVolume(ctx context.Context, req *pb.DeleteStorageVolumeRequest) (*pb.DeleteStorageVolumeResponse, error) {
 	if _, authenticated := GetNodeIDFromContext(ctx); !authenticated {
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
+	}
+	if pool, onLVM, err := requestLVMPool(req.PoolType, req.PoolPath); err != nil {
+		return deleteVolumeErr(err.Error()), nil
+	} else if onLVM {
+		// An operator's explicit delete from the pool: an imported volume
+		// qualifies too, as long as it is in this pool and nothing uses it.
+		if err := removeLV(ctx, "", req.Path, []storage.LVMPool{pool}, true); err != nil {
+			return deleteVolumeErr(err.Error()), nil
+		}
+		return &pb.DeleteStorageVolumeResponse{Success: true}, nil
 	}
 	if err := storage.NewVolumeManager().DeleteVolume(req.PoolType, req.Path); err != nil {
 		return deleteVolumeErr(err.Error()), nil
@@ -2546,6 +2978,23 @@ func (s *NodeAgentService) AttachDisk(ctx context.Context, req *pb.AttachDiskReq
 	}
 	if req.VmId == "" || req.SizeGb <= 0 {
 		return attachDiskErr("vm_id and a positive size_gb are required"), nil
+	}
+	if pool, onLVM, err := requestLVMPool(req.PoolType, req.PoolPath); err != nil {
+		return attachDiskErr(err.Error()), nil
+	} else if onLVM {
+		// The caller's context: a panel that gave up must not find a disk it
+		// never recorded attached to the VM, so a cancelled create is undone.
+		dev, err := lvm.Provision(ctx, pool, lvDataDiskName(req.VmId), req.SizeGb<<30, "", "")
+		if err != nil {
+			return attachDiskErr(fmt.Sprintf("create volume: %v", err)), nil
+		}
+		device, err := libvirt.AttachDisk(req.VmId, dev)
+		if err != nil {
+			discardNewDisk(req.VmId, dev)
+			return attachDiskErr(fmt.Sprintf("attach: %v", err)), nil
+		}
+		log.Printf("[NodeAgent] Attached %dGB volume %s as %s to VM %s", req.SizeGb, dev, device, req.VmId)
+		return &pb.AttachDiskResponse{Success: true, Device: device, Path: dev}, nil
 	}
 	poolPath := req.PoolPath
 	switch req.PoolType {
@@ -2584,6 +3033,26 @@ func (s *NodeAgentService) DetachDisk(ctx context.Context, req *pb.DetachDiskReq
 	if req.VmId == "" || req.Device == "" {
 		return detachDiskErr("vm_id and device are required"), nil
 	}
+	// A logical volume is proven this VM's before it is detached, so a refusal
+	// leaves the VM as it was.
+	var lvPools []storage.LVMPool
+	block := req.DeleteVolume && models.IsBlockDevicePath(req.Path)
+	if block {
+		pool, onLVM, err := requestLVMPool(req.PoolType, req.PoolPath)
+		if err != nil || !onLVM {
+			return detachDiskErr(fmt.Sprintf("%s is a block device; it is deleted only from the LVM pool that holds it", req.Path)), nil
+		}
+		lv, err := lvm.Lookup(ctx, req.Path)
+		if _, serr := os.Stat(req.Path); err != nil && os.IsNotExist(serr) {
+			// Removed by an earlier try whose answer was lost: only the detach is left.
+		} else if err != nil {
+			return detachDiskErr(err.Error()), nil
+		} else if err := storage.CheckOwnership(lv, req.VmId, []storage.LVMPool{pool}, false); err != nil {
+			return detachDiskErr(err.Error()), nil
+		} else {
+			lvPools = []storage.LVMPool{pool}
+		}
+	}
 	if err := libvirt.DetachDisk(req.VmId, req.Device, req.Path); err != nil {
 		// Idempotency: if the device is already gone from the domain, a prior
 		// DetachDisk already detached it (e.g. a retry after a delete-volume
@@ -2595,7 +3064,13 @@ func (s *NodeAgentService) DetachDisk(ctx context.Context, req *pb.DetachDiskReq
 		}
 		log.Printf("[NodeAgent] DetachDisk: device %s already absent on VM %s; treating as detached", req.Device, req.VmId)
 	}
-	if req.DeleteVolume && req.Path != "" {
+	if block {
+		if lvPools != nil {
+			if err := removeDetachedLV(ctx, req.VmId, req.Path, lvPools); err != nil {
+				return detachDiskErr(fmt.Sprintf("detached %s but failed to delete volume %s: %v", req.Device, req.Path, err)), nil
+			}
+		}
+	} else if req.DeleteVolume && req.Path != "" {
 		if err := storage.NewVolumeManager().DeleteVolume(req.PoolType, req.Path); err != nil {
 			// Disk is detached from the domain but its backing volume could not be
 			// removed: report failure so the leak surfaces instead of being silently
@@ -2642,29 +3117,6 @@ func (s *NodeAgentService) UndefineNetwork(ctx context.Context, req *pb.Undefine
 	}
 	log.Printf("[NodeAgent] Undefined network %s", req.Name)
 	return &pb.UndefineNetworkResponse{Success: true}, nil
-}
-
-// MigrateVM live-migrates a domain from this source node to a destination URI.
-func (s *NodeAgentService) MigrateVM(ctx context.Context, req *pb.MigrateVMRequest) (*pb.MigrateVMResponse, error) {
-	if _, authenticated := GetNodeIDFromContext(ctx); !authenticated {
-		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
-	}
-	if req.VmId == "" || req.DestUri == "" {
-		return &pb.MigrateVMResponse{
-			Success: false,
-			Error:   &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: "vm_id and dest_uri are required"},
-		}, nil
-	}
-	log.Printf("[NodeAgent] Migrating VM %s -> %s (live=%v, copy_storage=%v)", req.VmId, req.DestUri, req.Live, req.CopyStorage)
-	if err := libvirt.MigrateVM(req.VmId, req.DestUri, req.Live, req.CopyStorage); err != nil {
-		return &pb.MigrateVMResponse{
-			Success: false,
-			Message: err.Error(),
-			Error:   &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: err.Error()},
-		}, nil
-	}
-	log.Printf("[NodeAgent] Migration of VM %s to %s completed", req.VmId, req.DestUri)
-	return &pb.MigrateVMResponse{Success: true, Message: fmt.Sprintf("migrated %s to %s", req.VmId, req.DestUri)}, nil
 }
 
 // ImportDisk imports a disk image into the node's storage for a VM. The action
@@ -3096,6 +3548,11 @@ func (s *NodeAgentService) CreateSnapshot(ctx context.Context, req *pb.SnapshotR
 
 	switch req.Operation {
 	case pb.SnapshotOperationType_SNAPSHOT_OPERATION_TYPE_CREATE:
+		if disks, derr := libvirt.BackupDisks(req.VmId); derr == nil {
+			if why := storage.SnapshotBlocker(disks); why != "" {
+				return nil, status.Error(codes.FailedPrecondition, why)
+			}
+		}
 		snap, err := libvirt.CreateSnapshot(req.VmId, req.Name, req.Description)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to create snapshot: %v", err)
@@ -3326,6 +3783,7 @@ func (s *NodeAgentService) applyNetworkConfigLocked(ctx context.Context, req *pb
 		}
 		updateNetworkConfig(netConfigPath(), currentBootID(), req.VmId, nil)
 		clearPendingGuest(req.VmId)
+		_ = s.hostProxy.Set(req.VmId, nil)
 		log.Printf("[NodeAgent] VM %s has no address left: host rules removed", req.VmId)
 		return &pb.NetworkConfigResponse{Success: true}, nil
 	}
@@ -3358,6 +3816,13 @@ func (s *NodeAgentService) applyNetworkConfigLocked(ctx context.Context, req *pb
 		req.VmId, d.IP, len(d.ExtraIPs), d.BandwidthMbps, len(d.Rules), d.BlockSMTP)
 
 	resp := &pb.NetworkConfigResponse{Success: true, AppliedInterfaces: req.Config.Interfaces}
+
+	// Hostnames go to the primary address. Not routing them leaves the rest of
+	// the config in force; the panel shows why beside each hostname.
+	if err := s.hostProxy.Set(req.VmId, hostproxy.FromProto(req.Config.GetHostnameForwards(), d.IP)); err != nil {
+		resp.HostnameError = err.Error()
+		log.Printf("[NodeAgent] WARNING: VM %s: hostnames not routed: %v", req.VmId, err)
+	}
 
 	// The addresses changed: the guest must adopt them too. It gets every
 	// address it holds, so adding one never takes the others away.
@@ -3813,7 +4278,7 @@ func (s *NodeAgentService) GetStorageReport(ctx context.Context, req *pb.GetStor
 		}
 	}
 
-	return &pb.GetStorageReportResponse{Success: true, Pools: pools, DiskLocations: locations}, nil
+	return &pb.GetStorageReportResponse{Success: true, Pools: pools, DiskLocations: locations, LvmPools: lvmCapacities(ctx, req.GetLvmPools())}, nil
 }
 
 // GetGuestConnections reports how fast each guest on this node is opening new
@@ -3992,6 +4457,7 @@ func getVMXMLDetails(uuidStr string) (*vmXMLDetails, error) {
 					} `xml:"driver"`
 					Source struct {
 						File string `xml:"file,attr"`
+						Dev  string `xml:"dev,attr"`
 					} `xml:"source"`
 					Target struct {
 						Dev string `xml:"dev,attr"`
@@ -4041,6 +4507,19 @@ func getVMXMLDetails(uuidStr string) (*vmXMLDetails, error) {
 
 		// Extract disks
 		for _, d := range domain.Devices.Disks {
+			if d.Source.File == "" && d.Source.Dev != "" && d.Device == "disk" {
+				// A block device (an LVM volume): measured, never probed.
+				size, _ := storage.DeviceSize(d.Source.Dev)
+				details.disks = append(details.disks, &pb.ScannedDisk{
+					SourceFile: d.Source.Dev,
+					Format:     d.Driver.Type,
+					Device:     d.Device,
+					Bus:        d.Target.Bus,
+					TargetDev:  d.Target.Dev,
+					SizeBytes:  size,
+				})
+				continue
+			}
 			if d.Source.File != "" {
 				// Without a size the panel falls back to a 20GB placeholder.
 				var size int64

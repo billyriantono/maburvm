@@ -204,10 +204,11 @@ func PoolAllocations(ctx context.Context, db *gorm.DB, nodeID string) (map[strin
 		if !known {
 			continue
 		}
-		dir := path.Dir(d.Path)
-		for _, p := range byNode[vmNode[d.VMID]] {
-			if path.Clean(p.Path) == dir {
-				poolID = p.ID
+		if own := poolByID(byNode[vmNode[d.VMID]], poolID); own == nil || !PoolHoldsDisk(*own, d.Path) {
+			for _, p := range byNode[vmNode[d.VMID]] {
+				if PoolHoldsDisk(p, d.Path) {
+					poolID = p.ID
+				}
 			}
 		}
 		if poolID != "" {
@@ -240,6 +241,58 @@ func PoolAllocations(ctx context.Context, db *gorm.DB, nodeID string) (map[strin
 		}
 	}
 	return out, nil
+}
+
+// PoolHoldsDisk reports whether the pool holds the disk at diskPath: a file
+// directly in its directory, or a logical volume in its volume group.
+func PoolHoldsDisk(p models.StoragePool, diskPath string) bool {
+	if models.IsLVMPoolType(p.Type) {
+		return models.LVMPoolHolds(p.Type, p.Path, diskPath)
+	}
+	return !models.IsBlockDevicePath(diskPath) && path.Clean(p.Path) == path.Dir(diskPath)
+}
+
+func poolByID(pools []models.StoragePool, id string) *models.StoragePool {
+	for i := range pools {
+		if pools[i].ID == id {
+			return &pools[i]
+		}
+	}
+	return nil
+}
+
+// DiskPool is the registered pool on the VM's node holding the disk at
+// diskPath, the VM's own pool first; nil when none does.
+func DiskPool(ctx context.Context, db *gorm.DB, vmID, nodeID, diskPath string) *models.StoragePool {
+	if own := VMPool(ctx, db, vmID, nodeID); own != nil && PoolHoldsDisk(*own, diskPath) {
+		return own
+	}
+	var pools []models.StoragePool
+	if db.WithContext(ctx).Where("node_id = ?", nodeID).Find(&pools).Error != nil {
+		return nil
+	}
+	for i := range pools {
+		if PoolHoldsDisk(pools[i], diskPath) {
+			return &pools[i]
+		}
+	}
+	return nil
+}
+
+// VMOnBlockStorage reports a VM with a disk the panel knows is a logical
+// volume: its system disk in an LVM pool, or a data disk on a device. A disk
+// the panel never recorded is caught by the node.
+func VMOnBlockStorage(ctx context.Context, db *gorm.DB, vm *models.VM) bool {
+	var id *string
+	if err := db.WithContext(ctx).Raw("SELECT storage_pool_id FROM vms WHERE id = ?", vm.ID).Scan(&id).Error; err == nil && id != nil && *id != "" {
+		var pool models.StoragePool
+		if db.WithContext(ctx).Where("id = ? AND node_id = ?", *id, vm.NodeID).First(&pool).Error == nil && models.IsLVMPoolType(pool.Type) {
+			return true
+		}
+	}
+	var n int64
+	db.WithContext(ctx).Model(&models.VMDisk{}).Where("vm_id = ? AND path LIKE ?", vm.ID, "/dev/%").Count(&n)
+	return n > 0
 }
 
 // AdmitPoolDisk checks that a pool can take addGB more gigabytes of disk: the

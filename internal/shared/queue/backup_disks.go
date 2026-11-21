@@ -11,10 +11,20 @@ import (
 )
 
 // restoreDisksProto is a backup's data disks as the node is sent them.
-func restoreDisksProto(disks []models.BackupDisk) []*pb.BackupDiskFile {
+func restoreDisksProto(disks []models.BackupDisk, layers map[string][]models.BackupDisk) []*pb.BackupDiskFile {
 	var out []*pb.BackupDiskFile
 	for _, d := range disks {
-		out = append(out, &pb.BackupDiskFile{Target: d.Target, Key: d.Key, Checksum: d.Checksum, VirtualSizeBytes: d.VirtualSize})
+		out = append(out, &pb.BackupDiskFile{Target: d.Target, Key: d.Key, Checksum: d.Checksum, VirtualSizeBytes: d.VirtualSize,
+			Layers: layersProto(layers[d.Target])})
+	}
+	return out
+}
+
+// layersProto is the images an incremental backup's disk is built on.
+func layersProto(layers []models.BackupDisk) []*pb.BackupLayer {
+	var out []*pb.BackupLayer
+	for _, l := range layers {
+		out = append(out, &pb.BackupLayer{Key: l.Key, Checksum: l.Checksum})
 	}
 	return out
 }

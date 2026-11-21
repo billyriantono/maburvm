@@ -6,6 +6,7 @@ import {
 import { api } from '@/lib/api-client'
 import type {
   Backup,
+  BackupOverview,
   BackupSchedule,
   CreateBackupScheduleRequest,
   UpdateBackupScheduleRequest,
@@ -135,5 +136,29 @@ export function useDeleteBackup(vmId: string) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backups', 'list', vmId] })
     },
+  })
+}
+
+export interface BackupOverviewFilter {
+  node_id?: string
+  state?: string
+  q?: string
+  stale_days?: number
+}
+
+// The fleet backup page (staff). Refreshed while backups run.
+export function useBackupOverview(filter: BackupOverviewFilter) {
+  return useQuery<BackupOverview>({
+    queryKey: ['backups', 'overview', filter],
+    queryFn: async () => {
+      const params = new URLSearchParams()
+      for (const [k, v] of Object.entries(filter)) {
+        if (v !== undefined && v !== '') params.set(k, String(v))
+      }
+      const response = await api.get<BackupOverview>(`/api/v1/backups/overview?${params}`)
+      return response.data.data
+    },
+    refetchInterval: 30_000,
+    placeholderData: (prev) => prev,
   })
 }

@@ -140,9 +140,13 @@ func TestExportArgsHonoursCompression(t *testing.T) {
 		"none": {"convert", "-U", "-O", "qcow2", "s", "d"},
 	}
 	for c, want := range cases {
-		if got := ExportArgs(c, "s", "d"); !reflect.DeepEqual(got, want) {
+		if got := ExportArgs(c, "", "s", "d"); !reflect.DeepEqual(got, want) {
 			t.Errorf("ExportArgs(%q) = %v, want %v", c, got, want)
 		}
+	}
+	// A raw disk is read as raw, never probed.
+	if got, want := ExportArgs("none", "raw", "/dev/vg/lv", "d"), []string{"convert", "-U", "-f", "raw", "-O", "qcow2", "/dev/vg/lv", "d"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("ExportArgs(raw) = %v, want %v", got, want)
 	}
 	if !zstdUnsupported([]byte("qemu-img: Invalid parameter 'compression_type'")) {
 		t.Error("a qemu-img without zstd must be recognised")
@@ -175,6 +179,61 @@ func TestRestoreMethodMatchesTheDisk(t *testing.T) {
 	for d, want := range cases {
 		if got := RestoreMethod(d); got != want {
 			t.Errorf("RestoreMethod(%+v) = %s, want %s", d, got, want)
+		}
+	}
+}
+
+func TestDiskDevice(t *testing.T) {
+	bd := DiskDevice("/dev/vg0/maburvm-x-vda", "vda")
+	block, err := bd.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`type="block"`, `<source dev="/dev/vg0/maburvm-x-vda">`, `type="raw"`, `discard="unmap"`, `io="native"`} {
+		if !strings.Contains(block, want) {
+			t.Errorf("block disk lacks %s: %s", want, block)
+		}
+	}
+	fd := DiskDevice("/vm/x.qcow2", "vdb")
+	file, _ := fd.Marshal()
+	if !strings.Contains(file, `type="file"`) || !strings.Contains(file, `type="qcow2"`) || !strings.Contains(file, `dev="vdb"`) {
+		t.Errorf("file disk: %s", file)
+	}
+	// What DomainDisks reads back is what was written.
+	disks, err := DomainDisks("<domain><devices>" + block + "</devices></domain>")
+	if err != nil || len(disks) != 1 || !disks[0].Block || disks[0].Format != "raw" {
+		t.Fatalf("read back %+v %v", disks, err)
+	}
+}
+
+func TestSnapshotBlocker(t *testing.T) {
+	if why := SnapshotBlocker([]DomainDisk{{Target: "vda", Path: "/vm/a.qcow2", Format: "qcow2"}}); why != "" {
+		t.Fatalf("qcow2 refused: %s", why)
+	}
+	if why := SnapshotBlocker([]DomainDisk{{Target: "vda", Path: "/vm/a.qcow2", Format: "qcow2"}, {Target: "vdb", Path: "/dev/vg0/x", Format: "raw", Block: true}}); !strings.Contains(why, "block device") {
+		t.Fatalf("block disk allowed: %q", why)
+	}
+	if why := SnapshotBlocker([]DomainDisk{{Target: "vda", Path: "/vm/a.img", Format: "raw"}}); why == "" {
+		t.Fatal("raw file allowed")
+	}
+}
+
+// A pulled disk that names any other file is refused before it is copied.
+func TestStandaloneImage(t *testing.T) {
+	cases := []struct {
+		info string
+		ok   bool
+	}{
+		{`{"format": "raw", "virtual-size": 1}`, true},
+		{`{"format": "qcow2", "format-specific": {"type": "qcow2", "data": {"compat": "1.1"}}}`, true},
+		{`{"format": "qcow2", "backing-filename": "/dev/vg0/maburvm-x-vda"}`, false},
+		{`{"format": "qcow2", "format-specific": {"type": "qcow2", "data": {"data-file": "/etc/shadow"}}}`, false},
+		{`{"format": "vmdk"}`, false},
+		{`not json`, false},
+	}
+	for _, c := range cases {
+		if err := StandaloneImage([]byte(c.info)); (err == nil) != c.ok {
+			t.Errorf("%s: %v", c.info, err)
 		}
 	}
 }

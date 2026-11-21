@@ -264,7 +264,9 @@ func TestRestoredDataDisksAreRecorded(t *testing.T) {
 	if len(rows) != 1 || rows[0].Device != "vdb" || rows[0].SizeGB != 51 || rows[0].Path != "/vm/x-data-vdb.qcow2" {
 		t.Fatalf("rows = %+v", rows)
 	}
-	if got := restoreDisksProto([]models.BackupDisk{{Target: "vdb", Key: "k", Checksum: "c", VirtualSize: 7}}); len(got) != 1 || got[0].GetKey() != "k" || got[0].GetVirtualSizeBytes() != 7 {
+	if got := restoreDisksProto([]models.BackupDisk{{Target: "vdb", Key: "k", Checksum: "c", VirtualSize: 7}},
+		map[string][]models.BackupDisk{"vdb": {{Key: "full", Checksum: "f"}}}); len(got) != 1 || got[0].GetKey() != "k" || got[0].GetVirtualSizeBytes() != 7 ||
+		len(got[0].GetLayers()) != 1 || got[0].GetLayers()[0].GetKey() != "full" {
 		t.Fatalf("proto = %+v", got)
 	}
 }

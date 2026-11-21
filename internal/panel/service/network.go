@@ -243,15 +243,72 @@ func (s *NetworkService) AddPortForward(ctx context.Context, vmID string, networ
 		req.SourceIP = "0.0.0.0/0"
 	}
 
-	db := s.db.WithContext(ctx)
+	var portForward *models.PortForward
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var err error
+		portForward, err = addPortForwardTx(ctx, tx, vm, networkID, req)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+
+	// Enqueue full network resync (ReplaceAll) so the new DNAT is applied on the host.
+	if err := s.enqueueNetworkResync(ctx, vm); err != nil {
+		slog.Default().Warn("failed to enqueue network resync", "error", err)
+	}
+
+	return &AddPortForwardResponse{PortForward: portForward}, nil
+}
+
+// addPortForwardTx checks and records a forward under the node's port lock,
+// so a NAT VM's new block and a forward never take the same port.
+func addPortForwardTx(ctx context.Context, tx *gorm.DB, vm *models.VM, networkID string, req *AddPortForwardRequest) (*models.PortForward, error) {
+	if err := lockNodePorts(ctx, tx, vm.NodeID); err != nil {
+		return nil, err
+	}
+	db := tx.WithContext(ctx)
+
+	// A NAT VM forwards only ports of its own block, and nobody takes a port
+	// inside another VM's block.
+	block, err := natBlock(ctx, tx, vm.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read the VM's ports: %w", err)
+	}
+	if block != nil && !block.Contains(req.ExternalPort) {
+		return nil, fmt.Errorf("%w: choose one from %d to %d", ErrPortOutsideBlock, block.StartPort, block.EndPort())
+	}
+	var inBlock int64
+	if err := db.Model(&models.NATPortBlock{}).
+		Where("node_id = ? AND vm_id <> ? AND start_port <= ? AND start_port + port_count - 1 >= ?", vm.NodeID, vm.ID, req.ExternalPort, req.ExternalPort).
+		Count(&inBlock).Error; err != nil {
+		return nil, fmt.Errorf("failed to check port: %w", err)
+	}
+	if inBlock > 0 {
+		return nil, ErrPortAlreadyInUse
+	}
+	// The node's hostname router listens on 80 and 443.
+	if req.ExternalPort == 80 || req.ExternalPort == 443 {
+		var routed int64
+		if err := db.Table("vm_hostnames h").Joins("JOIN vms m ON m.id = h.vm_id AND m.deleted_at IS NULL").
+			Where("m.node_id = ? AND h.verified_at IS NOT NULL", vm.NodeID).Count(&routed).Error; err != nil {
+			return nil, fmt.Errorf("failed to check port: %w", err)
+		}
+		if routed > 0 {
+			return nil, ErrPortAlreadyInUse
+		}
+	}
 
 	// Every forward takes a port on the node's one public address away from the
-	// other VMs there, so a VM may only hold so many.
+	// other VMs there, so a VM may only hold so many; a NAT VM its whole block.
 	var held int64
-	if err := db.Model(&models.PortForward{}).Where("vm_id = ?", vmID).Count(&held).Error; err != nil {
+	if err := db.Model(&models.PortForward{}).Where("vm_id = ?", vm.ID).Count(&held).Error; err != nil {
 		return nil, fmt.Errorf("failed to count port forwards: %w", err)
 	}
-	if limit := PortForwardsPerVM(ctx, s.db); held >= int64(limit) {
+	limit := PortForwardsPerVM(ctx, tx)
+	if block != nil {
+		limit = max(limit, 2*block.PortCount) // each port once per protocol
+	}
+	if held >= int64(limit) {
 		return nil, fmt.Errorf("%w: a VM may have at most %d", ErrPortForwardLimit, limit)
 	}
 
@@ -267,9 +324,8 @@ func (s *NetworkService) AddPortForward(ctx context.Context, vmID string, networ
 		return nil, ErrPortAlreadyInUse
 	}
 
-	// Create port forward record
 	portForward := &models.PortForward{
-		VMID:         vmID,
+		VMID:         vm.ID,
 		NetworkID:    networkID,
 		NodeID:       vm.NodeID,
 		ExternalPort: req.ExternalPort,
@@ -283,7 +339,6 @@ func (s *NetworkService) AddPortForward(ctx context.Context, vmID string, networ
 		return nil, fmt.Errorf("validation failed: %v", errs)
 	}
 
-	// Save to database using GORM directly since we don't have a repository
 	if err := db.Create(portForward).Error; err != nil {
 		// Two requests for the same port at once: the unique index decides.
 		if strings.Contains(err.Error(), "idx_port_forwards_node_port") {
@@ -291,13 +346,19 @@ func (s *NetworkService) AddPortForward(ctx context.Context, vmID string, networ
 		}
 		return nil, fmt.Errorf("failed to create port forward: %w", err)
 	}
+	return portForward, nil
+}
 
-	// Enqueue full network resync (ReplaceAll) so the new DNAT is applied on the host.
-	if err := s.enqueueNetworkResync(ctx, vm); err != nil {
-		slog.Default().Warn("failed to enqueue network resync", "error", err)
+// lockNodePorts serialises changes to a node's public ports until the
+// transaction ends (Postgres; a test database has one writer anyway).
+func lockNodePorts(ctx context.Context, tx *gorm.DB, nodeID string) error {
+	if tx.Dialector.Name() != "postgres" {
+		return nil
 	}
-
-	return &AddPortForwardResponse{PortForward: portForward}, nil
+	if err := tx.WithContext(ctx).Exec("SELECT pg_advisory_xact_lock(hashtext(?))", "maburvm-nat-ports:"+nodeID).Error; err != nil {
+		return fmt.Errorf("failed to lock the node's ports: %w", err)
+	}
+	return nil
 }
 
 // RemovePortForward removes a port forwarding rule
@@ -428,7 +489,7 @@ func (s *NetworkService) AddFirewallRule(ctx context.Context, vmID string, req *
 		req.SourceIP = "0.0.0.0/0"
 	}
 
-	held, err := s.firewallRepo.CountByVMID(ctx, vmID)
+	held, err := s.firewallRepo.CountEffectiveByVMID(ctx, vmID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to count firewall rules: %w", err)
 	}
@@ -795,6 +856,57 @@ func (s *NetworkService) ResyncNodeVMs(ctx context.Context, nodeID string) int {
 	return n
 }
 
+// resyncBatch is how many network-config jobs go to the queue in one insert.
+const resyncBatch = 200
+
+// ResyncVMs pushes the full network config of each VM again, queued in
+// batches: a group edit reaches every VM it is attached to. VMs without an
+// address are skipped (their rules apply when they get one). Returns how many
+// jobs were queued.
+func (s *NetworkService) ResyncVMs(ctx context.Context, vmIDs []string) (int, error) {
+	if len(vmIDs) == 0 {
+		return 0, nil
+	}
+	if s.riverClient == nil {
+		return 0, fmt.Errorf("river client not initialized")
+	}
+	var vms []models.VM
+	if err := s.db.WithContext(ctx).Where("id IN ?", vmIDs).Find(&vms).Error; err != nil {
+		return 0, err
+	}
+	queued := 0
+	var batch []river.InsertManyParams
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		if _, err := s.riverClient.InsertMany(ctx, batch); err != nil {
+			return err
+		}
+		queued += len(batch)
+		batch = batch[:0]
+		return nil
+	}
+	for i := range vms {
+		params, ok, err := s.NetworkConfigParams(ctx, &vms[i])
+		if err != nil {
+			return queued, fmt.Errorf("VM %s: %w", vms[i].Hostname, err)
+		}
+		if !ok {
+			continue
+		}
+		batch = append(batch, river.InsertManyParams{Args: queue.VMOperationJob{
+			VMID: vms[i].ID, NodeID: vms[i].NodeID, Operation: queue.VMOpConfigureNetwork, Params: params,
+		}})
+		if len(batch) == resyncBatch {
+			if err := flush(); err != nil {
+				return queued, err
+			}
+		}
+	}
+	return queued, flush()
+}
+
 // SetFirewallDefault sets what the VM's firewall does with inbound traffic no
 // rule matched (models.FirewallDefault*) and sends it to the node.
 func (s *NetworkService) SetFirewallDefault(ctx context.Context, vmID, policy string) error {
@@ -889,14 +1001,45 @@ func (s *NetworkService) enqueueNetworkConfig(ctx context.Context, vm *models.VM
 	if s.riverClient == nil {
 		return fmt.Errorf("river client not initialized")
 	}
+	paramsJSON, err := s.networkConfigParams(ctx, vm, network, pool)
+	if err != nil {
+		return err
+	}
 
+	job := queue.VMOperationJob{
+		VMID:      vm.ID,
+		NodeID:    vm.NodeID,
+		Operation: queue.VMOpConfigureNetwork,
+		Params:    paramsJSON,
+	}
+
+	_, err = s.riverClient.Insert(ctx, job, nil)
+	return err
+}
+
+// NetworkConfigParams returns the VM's full network config as a configure
+// network job carries it; false when the VM has no address to configure.
+func (s *NetworkService) NetworkConfigParams(ctx context.Context, vm *models.VM) ([]byte, bool, error) {
+	network, err := s.networkRepo.GetByVMID(ctx, vm.ID)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	params, err := s.networkConfigParams(ctx, vm, network, nil)
+	return params, err == nil, err
+}
+
+// networkConfigParams builds the job parameters of enqueueNetworkConfig.
+func (s *NetworkService) networkConfigParams(ctx context.Context, vm *models.VM, network *models.Network, pool *models.IPPool) ([]byte, error) {
 	// Always send the complete rule set; ReplaceAll drops anything not present.
 	// On load failure do NOT enqueue: a partial config would wipe the firewall.
 	// The DB change is already persisted; the full state goes out again when
 	// the node next comes back from offline (ResyncNodeVMs) or the VM changes.
-	rules, err := s.firewallRepo.ListByVMID(ctx, vm.ID, 0, 0)
+	rules, err := s.firewallRepo.ListEffectiveByVMID(ctx, vm.ID)
 	if err != nil {
-		return fmt.Errorf("failed to load firewall rules for network config: %w", err)
+		return nil, fmt.Errorf("failed to load firewall rules for network config: %w", err)
 	}
 
 	params := NetworkConfigParams{
@@ -951,17 +1094,7 @@ func (s *NetworkService) enqueueNetworkConfig(ctx context.Context, vm *models.VM
 		}
 	}
 
-	paramsJSON, _ := json.Marshal(params)
-
-	job := queue.VMOperationJob{
-		VMID:      vm.ID,
-		NodeID:    vm.NodeID,
-		Operation: queue.VMOpConfigureNetwork,
-		Params:    paramsJSON,
-	}
-
-	_, err = s.riverClient.Insert(ctx, job, nil)
-	return err
+	return json.Marshal(params)
 }
 
 // enqueueNetworkResync pushes the VM's FULL desired network state (IP, bandwidth,

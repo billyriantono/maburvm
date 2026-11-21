@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -157,7 +158,15 @@ type BackupListItem struct {
 	CreatedAt       time.Time `json:"created_at"`
 	// Why a failed backup failed. Staff only: the text can name storage
 	// endpoints and paths on the node.
-	ErrorMessage string `json:"error_message,omitempty"`
+	ErrorMessage string              `json:"error_message,omitempty"`
+	Disks        []models.BackupDisk `json:"disks"`
+	Consistency  string              `json:"consistency"`
+	// Mode is full or incremental; an incremental one needs ParentID.
+	Mode     string `json:"mode"`
+	ParentID string `json:"parent_id,omitempty"`
+	// ModeNote says why a backup is full when an incremental one was asked
+	// (staff only: it names the node's software).
+	ModeNote string `json:"mode_note,omitempty"`
 }
 
 // ListBackups handles GET /api/vms/:id/backups - List backups
@@ -223,9 +232,15 @@ func (h *BackupHandler) ListBackups(c echo.Context) error {
 			Compression:     backup.Compression,
 			Checksum:        backup.Checksum,
 			CreatedAt:       backup.CreatedAt,
+			Disks:           backup.Disks,
+			Consistency:     backup.Consistency,
+			Mode:            backup.Mode,
+		}
+		if backup.ParentID != nil {
+			items[i].ParentID = *backup.ParentID
 		}
 		if staff {
-			items[i].ErrorMessage = backup.ErrorMessage
+			items[i].ErrorMessage, items[i].ModeNote = backup.ErrorMessage, backup.ModeNote
 		}
 		if backup.StartedAt != nil {
 			items[i].StartedAt = *backup.StartedAt
@@ -351,6 +366,13 @@ func (h *BackupHandler) DeleteBackup(c echo.Context) error {
 	// Delete backup
 	fileNotDeleted, err := h.service.DeleteBackup(c.Request().Context(), backupID)
 	if err != nil {
+		if errors.Is(err, service.ErrBackupHasDependents) {
+			return c.JSON(http.StatusConflict, map[string]interface{}{
+				"error":   "Conflict",
+				"code":    "backup_has_dependents",
+				"message": "This backup cannot be deleted: " + strings.TrimPrefix(err.Error(), service.ErrBackupHasDependents.Error()+": ") + ".",
+			})
+		}
 		if errors.Is(err, service.ErrBackupFileKept) {
 			// Why is for staff: it can name the storage endpoint and bucket.
 			msg := service.ErrBackupFileKept.Error() + ". Try again later."
@@ -551,6 +573,9 @@ type ConfigureScheduleRequest struct {
 	StorageProvider string                        `json:"storage_provider,omitempty"`
 	Compression     string                        `json:"compression,omitempty"`
 	RetentionPolicy *models.BackupRetentionPolicy `json:"retention_policy,omitempty"`
+	// FullEveryDays > 0 makes scheduled backups incremental, with a full one
+	// at least that often; 0 makes every one full. Left out keeps it.
+	FullEveryDays *int `json:"full_every_days,omitempty"`
 }
 
 // ConfigureScheduleResponse represents the response after configuring schedule
@@ -562,6 +587,7 @@ type ConfigureScheduleResponse struct {
 	StorageProvider string                        `json:"storage_provider"`
 	Compression     string                        `json:"compression"`
 	RetentionPolicy *models.BackupRetentionPolicy `json:"retention_policy,omitempty"`
+	FullEveryDays   int                           `json:"full_every_days"`
 	NextRunAt       time.Time                     `json:"next_run_at,omitempty"`
 	LastRunAt       time.Time                     `json:"last_run_at,omitempty"`
 	CreatedAt       time.Time                     `json:"created_at"`
@@ -597,6 +623,12 @@ func (h *BackupHandler) ConfigureSchedule(c echo.Context) error {
 		})
 	}
 
+	// Incremental backups are turned on by staff, once proven on the VM's node;
+	// a customer's save leaves the setting as it is.
+	if !middleware.HasPermission(c, middleware.PermStaff) {
+		req.FullEveryDays = nil
+	}
+
 	// Configure schedule
 	configReq := &service.ConfigureScheduleRequest{
 		VMID:            vmID,
@@ -604,6 +636,7 @@ func (h *BackupHandler) ConfigureSchedule(c echo.Context) error {
 		StorageProvider: req.StorageProvider,
 		Compression:     req.Compression,
 		RetentionPolicy: req.RetentionPolicy,
+		FullEveryDays:   req.FullEveryDays,
 	}
 
 	resp, err := h.service.ConfigureSchedule(c.Request().Context(), configReq)
@@ -617,7 +650,8 @@ func (h *BackupHandler) ConfigureSchedule(c echo.Context) error {
 				"error":   "Not Found",
 				"message": "VM not found",
 			})
-		case errors.Is(err, service.ErrInvalidCronExpression), errors.Is(err, service.ErrInvalidRetention), errors.Is(err, service.ErrInvalidCompression):
+		case errors.Is(err, service.ErrInvalidCronExpression), errors.Is(err, service.ErrInvalidRetention), errors.Is(err, service.ErrInvalidCompression),
+			errors.Is(err, service.ErrInvalidFullEvery):
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{
 				"error":   "Bad Request",
 				"message": err.Error(),
@@ -800,6 +834,7 @@ func mapScheduleResponse(schedule *models.BackupSchedule) ConfigureScheduleRespo
 		StorageProvider: schedule.StorageProvider,
 		Compression:     schedule.Compression,
 		RetentionPolicy: &schedule.RetentionPolicy,
+		FullEveryDays:   schedule.FullEveryDays,
 		CreatedAt:       schedule.CreatedAt,
 		UpdatedAt:       schedule.UpdatedAt,
 	}
@@ -859,4 +894,27 @@ func RegisterBackupRoutes(e *echo.Echo, handler *BackupHandler, db *gorm.DB) {
 
 	// Backup stats route
 	vms.GET("/:id/backup-stats", handler.GetBackupStats, middleware.RequirePermission("backup:read"))
+
+	// The fleet backup page, for staff.
+	fleet := e.Group("/api/v1/backups", middleware.RequireAuth(db), middleware.RequirePermission(middleware.PermStaff))
+	fleet.GET("/overview", func(c echo.Context) error {
+		staleDays, _ := strconv.Atoi(c.QueryParam("stale_days"))
+		if staleDays < 0 || staleDays > 365 {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "stale_days must be between 1 and 365"})
+		}
+		state := c.QueryParam("state")
+		switch state {
+		case "", service.BackupStateFailing, service.BackupStateStale, service.BackupStateUnscheduled, service.BackupStateOK:
+		default:
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "state must be failing, stale, unscheduled or ok"})
+		}
+		o, err := service.FleetBackupOverview(c.Request().Context(), db, service.BackupOverviewFilter{
+			NodeID: c.QueryParam("node_id"), UserID: c.QueryParam("user_id"), State: state,
+			Query: c.QueryParam("q"), StaleDays: staleDays,
+		}, time.Now())
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Could not load the backups"})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": o})
+	}, middleware.RequirePermission("backup:read"))
 }

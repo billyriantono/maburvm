@@ -50,7 +50,35 @@ type Backup struct {
 	// Consistency is how the copy was taken (BackupConsistency*); empty for a
 	// backup made before it was recorded, which was read while the VM ran.
 	Consistency string `json:"consistency" gorm:"type:varchar(20)"`
+
+	// DestinationID is the destination holding the files; nil for a backup in
+	// a node's own storage.
+	DestinationID *string `json:"destination_id,omitempty" gorm:"type:uuid"`
+	// NodeID is the node that wrote it: the one that can reach a directory
+	// mounted on it alone.
+	NodeID *string `json:"node_id,omitempty" gorm:"type:uuid"`
+	// Mode is BackupModeFull or BackupModeIncremental. An incremental one
+	// holds only what changed since ParentID, and needs it to be restored.
+	Mode     string  `json:"mode" gorm:"type:varchar(12);not null;default:full"`
+	ParentID *string `json:"parent_id,omitempty" gorm:"type:uuid"`
+	// ChainID is the full backup a chain starts from (its own ID for a full one).
+	ChainID *string `json:"chain_id,omitempty" gorm:"type:uuid"`
+	// Checkpoint is the libvirt checkpoint the backup left on its VM, which the
+	// next incremental one copies the changes since. Empty: none.
+	Checkpoint string `json:"-" gorm:"type:varchar(100);not null;default:''"`
+	// ModeNote says why a backup is full when an incremental one was asked.
+	ModeNote string `json:"mode_note,omitempty" gorm:"type:text;not null;default:''"`
 }
+
+// Backup modes.
+const (
+	BackupModeFull        = "full"
+	BackupModeIncremental = "incremental"
+)
+
+// BackupCheckpointPrefix starts the name of every checkpoint a backup leaves
+// on its VM; the agent removes only those.
+const BackupCheckpointPrefix = "maburvm-"
 
 // TableName specifies the table name for Backup
 func (Backup) TableName() string {
@@ -107,6 +135,9 @@ func (b *Backup) BeforeCreate(tx *gorm.DB) error {
 	if b.Compression == "" {
 		b.Compression = "gzip"
 	}
+	if b.Mode == "" {
+		b.Mode = BackupModeFull
+	}
 	return nil
 }
 
@@ -159,10 +190,20 @@ type BackupSchedule struct {
 	NextRunAt       *time.Time            `json:"next_run_at,omitempty"`
 	LastRunAt       *time.Time            `json:"last_run_at,omitempty"`
 	LastBackupID    *string               `json:"last_backup_id,omitempty" gorm:"type:uuid"`
-	CreatedAt       time.Time             `json:"created_at" gorm:"not null;default:NOW()"`
-	UpdatedAt       time.Time             `json:"updated_at" gorm:"not null;default:NOW()"`
-	DeletedAt       gorm.DeletedAt        `json:"-" gorm:"index"`
+	// FullEveryDays > 0 makes scheduled backups incremental where the node
+	// can, with a full one at least that often. 0: every one is full.
+	FullEveryDays int `json:"full_every_days" gorm:"not null;default:0"`
+	// ChainResetAt is when the VM's disks were last replaced (restore,
+	// reinstall): no backup from before may be built on.
+	ChainResetAt *time.Time     `json:"-"`
+	CreatedAt    time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
+	UpdatedAt    time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
+	DeletedAt    gorm.DeletedAt `json:"-" gorm:"index"`
 }
+
+// MaxFullEveryDays bounds a chain: every incremental backup in it is
+// downloaded to restore the newest.
+const MaxFullEveryDays = 31
 
 // TableName specifies the table name for BackupSchedule
 func (BackupSchedule) TableName() string {

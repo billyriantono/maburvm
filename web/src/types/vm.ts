@@ -154,7 +154,7 @@ export interface CreateVMRequest {
   requested_ip?: string;   // specific IP within the pool (optional)
   bandwidth_mbps?: number; // network rate cap
   vlan_id?: number;        // 802.1Q VLAN tag
-  cpu_model?: string;      // guest CPU model; empty → node default (kvm64, migratable)
+  cpu_model?: string;      // guest CPU model; empty → host-passthrough (moves live only between identical CPUs)
   user_data?: string;      // first-boot script/recipe (cloud-init), run once per instance
   managed_network_id?: string; // attach to a private VPC / managed network instead of a pool
   vpc_id?: string;         // place in one of the caller's own private networks; also fixes the node

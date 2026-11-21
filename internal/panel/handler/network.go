@@ -394,6 +394,8 @@ func portForwardRefusal(err error) string {
 		return "That host port is already forwarded on this node. Choose another port."
 	case errors.Is(err, service.ErrPortForwardLimit):
 		return "This VM has reached its port forward limit. Remove one before adding another."
+	case errors.Is(err, service.ErrPortOutsideBlock):
+		return err.Error()
 	}
 	return ""
 }
@@ -966,10 +968,7 @@ func (h *NetworkHandler) FirewallStatus(c echo.Context) error {
 // node: the forward is a DNAT on the host's own addresses, so a low port or one
 // the host itself listens on (agent gRPC, libvirt, VNC/SPICE displays, libvirt
 // migration) would take the host's traffic.
-func reservedHostPort(p int) bool {
-	return p < 1024 || p > 65535 || p == 50051 || p == 16509 || p == 16514 ||
-		(p >= 5900 && p <= 6100) || (p >= 49152 && p <= 49215)
-}
+func reservedHostPort(p int) bool { return service.ReservedHostPort(p) }
 
 // RegisterNetworkRoutes registers all network routes with the Echo router
 func RegisterNetworkRoutes(e *echo.Echo, handler *NetworkHandler, db *gorm.DB) {

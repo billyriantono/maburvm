@@ -306,8 +306,9 @@ func (h *StorageHandler) DeleteVolume(c echo.Context) error {
 	}
 
 	if err := h.storageService.DeleteVolume(id); err != nil {
+		// The node says why it kept a volume (a VM still uses it, say).
 		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"error": "failed to delete volume",
+			"error": "failed to delete volume: " + err.Error(),
 		})
 	}
 

@@ -31,6 +31,7 @@ func setupIPAMServiceTestDB(t *testing.T) *gorm.DB {
 		orderable BOOLEAN NOT NULL DEFAULT 0,
 		delegated_prefix_len INTEGER,
 		link_prefix TEXT,
+		nat BOOLEAN NOT NULL DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		deleted_at DATETIME

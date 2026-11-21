@@ -125,6 +125,8 @@ func (h *SnapshotHandler) CreateSnapshot(c echo.Context) error {
 				"error":   "Conflict",
 				"message": "A snapshot operation is already in progress for this VM",
 			})
+		case errors.Is(err, service.ErrSnapshotsNeedQcow2):
+			return c.JSON(http.StatusUnprocessableEntity, map[string]interface{}{"error": "Unprocessable Entity", "message": err.Error()})
 		default:
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
 				"error":   "Internal Server Error",

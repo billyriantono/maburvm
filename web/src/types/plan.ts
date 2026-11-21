@@ -4,6 +4,7 @@ import type { VMLimits } from './vm'
 export type OverQuotaPolicy = 'throttle' | 'overage' | 'suspend'
 /** Whether new VMs on the plan may send mail out on port 25. */
 export type SMTPPolicy = 'allowed' | 'blocked'
+export type PlanNetworkType = 'public' | 'nat'
 
 export interface Plan {
   id: string
@@ -29,6 +30,12 @@ export interface Plan {
   max_extra_ipv4?: number | null
   /** A VM holds one IPv6 at most, so 0 (none may be added) or 1. */
   max_extra_ipv6?: number | null
+  /** Firewall group new VMs get instead of the built-in rules; null keeps those. */
+  default_firewall_group_id?: string | null
+  /** nat: a private address and a block of nat_ports public ports per VM. */
+  network_type?: PlanNetworkType
+  nat_ports?: number
+  nat_hostnames?: number
   description?: string
   is_active: boolean
   created_at: string
@@ -73,6 +80,11 @@ export interface CreatePlanRequest {
   max_backups?: number | null
   max_extra_ipv4?: number | null
   max_extra_ipv6?: number | null
+  /** "" goes back to the built-in rules; left out keeps the plan's choice. */
+  default_firewall_group_id?: string
+  network_type?: PlanNetworkType
+  nat_ports?: number
+  nat_hostnames?: number
   description?: string
   is_active?: boolean
 }

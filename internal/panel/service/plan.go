@@ -55,8 +55,18 @@ type PlanRequest struct {
 	MaxBackups   *int     `json:"max_backups"`
 	MaxExtraIPv4 *int     `json:"max_extra_ipv4"`
 	MaxExtraIPv6 *int     `json:"max_extra_ipv6"`
-	Description  string   `json:"description"`
-	IsActive     *bool    `json:"is_active"`
+	// DefaultFirewallGroupID is a group for everyone that new VMs on the plan
+	// get instead of the built-in rules; "" goes back to those, and leaving it
+	// out keeps the plan's current choice.
+	DefaultFirewallGroupID *string `json:"default_firewall_group_id"`
+	// NetworkType is models.PlanNetwork*; empty keeps the plan's network
+	// settings (public for a new plan). NATPorts (0 is the default block) and
+	// NATHostnames apply to NAT plans.
+	NetworkType  string `json:"network_type"`
+	NATPorts     int    `json:"nat_ports"`
+	NATHostnames int    `json:"nat_hostnames"`
+	Description  string `json:"description"`
+	IsActive     *bool  `json:"is_active"`
 }
 
 // maxPrice bounds a display price, well inside numeric(14,4).
@@ -97,11 +107,24 @@ func (r *PlanRequest) validatePriceAndAllowances() error {
 	return nil
 }
 
-// applyPriceAndAllowances copies the display price and allowances onto plan.
+// applyPriceAndAllowances copies the display price, allowances, default
+// firewall group and network type onto plan.
 func (r *PlanRequest) applyPriceAndAllowances(plan *models.Plan) {
 	plan.PriceMonthly, plan.PriceHourly, plan.Currency = r.PriceMonthly, r.PriceHourly, r.Currency
 	plan.MaxSnapshots, plan.MaxBackups = r.MaxSnapshots, r.MaxBackups
 	plan.MaxExtraIPv4, plan.MaxExtraIPv6 = r.MaxExtraIPv4, r.MaxExtraIPv6
+	if r.DefaultFirewallGroupID != nil {
+		plan.DefaultFirewallGroupID = r.DefaultFirewallGroupID
+		if *r.DefaultFirewallGroupID == "" {
+			plan.DefaultFirewallGroupID = nil
+		}
+	}
+	if r.NetworkType != "" {
+		plan.NetworkType, plan.NATPorts, plan.NATHostnames = r.NetworkType, r.NATPorts, r.NATHostnames
+	}
+	if plan.NetworkType == "" {
+		plan.NetworkType = models.PlanNetworkPublic
+	}
 }
 
 func (r *PlanRequest) validate() error {
@@ -141,7 +164,37 @@ func (r *PlanRequest) validate() error {
 			return err
 		}
 	}
+	switch r.NetworkType {
+	case "", models.PlanNetworkPublic, models.PlanNetworkNAT:
+	default:
+		return fmt.Errorf("network_type must be public or nat")
+	}
+	if r.NetworkType == models.PlanNetworkNAT && r.NATPorts == 0 {
+		r.NATPorts = DefaultNATPorts
+	}
+	if r.NATPorts < 0 || r.NATPorts > MaxNATPorts {
+		return fmt.Errorf("nat_ports must be between 1 and %d", MaxNATPorts)
+	}
+	if r.NATHostnames < 0 || r.NATHostnames > 100 {
+		return fmt.Errorf("nat_hostnames must be between 0 and 100")
+	}
 	return r.validatePriceAndAllowances()
+}
+
+// checkDefaultGroup refuses a default group that is not one for everyone: a
+// customer's group cannot go on other customers' VMs.
+func (s *PlanService) checkDefaultGroup(ctx context.Context, r *PlanRequest) error {
+	if r.DefaultFirewallGroupID == nil || *r.DefaultFirewallGroupID == "" {
+		return nil
+	}
+	ok, err := s.repo.GlobalFirewallGroupExists(ctx, *r.DefaultFirewallGroupID)
+	if err != nil {
+		return fmt.Errorf("failed to check the firewall group: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("default_firewall_group_id must name a firewall group staff manage for everyone")
+	}
+	return nil
 }
 
 // normalizedOverQuotaPolicy returns the request's policy, defaulting to throttle.
@@ -155,6 +208,9 @@ func (r *PlanRequest) normalizedOverQuotaPolicy() string {
 // CreatePlan creates a new plan.
 func (s *PlanService) CreatePlan(ctx context.Context, req *PlanRequest) (*models.Plan, error) {
 	if err := req.validate(); err != nil {
+		return nil, err
+	}
+	if err := s.checkDefaultGroup(ctx, req); err != nil {
 		return nil, err
 	}
 	exists, err := s.repo.NameExists(ctx, req.Name)
@@ -214,6 +270,9 @@ func (s *PlanService) GetPlan(ctx context.Context, id string) (*models.Plan, err
 // UpdatePlan updates an existing plan.
 func (s *PlanService) UpdatePlan(ctx context.Context, id string, req *PlanRequest) (*models.Plan, error) {
 	if err := req.validate(); err != nil {
+		return nil, err
+	}
+	if err := s.checkDefaultGroup(ctx, req); err != nil {
 		return nil, err
 	}
 	plan, err := s.GetPlan(ctx, id)

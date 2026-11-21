@@ -26,6 +26,7 @@ func newPortForwardTestService(t *testing.T) (*NetworkService, *gorm.DB) {
 		external_port INTEGER, internal_port INTEGER, protocol TEXT, source_ip TEXT,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, deleted_at DATETIME
 	)`).Error)
+	createGroupAndNATTables(t, db)
 
 	svc := NewNetworkService(
 		db,

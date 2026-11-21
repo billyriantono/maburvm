@@ -420,6 +420,8 @@ func (s *Server) Start() error {
 		// start, and every VM's rules must be back before those guests do.
 		vpcBridges, rebooted := restoreVPCs(nodeAgentSvc)
 		restoreNetworkConfigs(nodeAgentSvc)
+		restoreHostRoutes(nodeAgentSvc)
+		go nodeAgentSvc.hostProxy.RetryForever(time.Minute)
 		if rebooted && len(vpcBridges) > 0 {
 			go startVPCGuests(vpcBridges)
 		}

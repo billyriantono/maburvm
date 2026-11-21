@@ -155,6 +155,10 @@ func DiskLocations() (map[string]int, error) {
 				continue
 			}
 			for _, disk := range def.Devices.Disks {
+				if disk.Source != nil && disk.Source.Block != nil && strings.TrimSpace(disk.Source.Block.Dev) != "" {
+					out[filepath.Dir(strings.TrimSpace(disk.Source.Block.Dev))]++ // /dev/<vg> for a logical volume
+					continue
+				}
 				if disk.Source == nil || disk.Source.File == nil {
 					continue // network-backed (RBD/iSCSI) disks have no local path
 				}

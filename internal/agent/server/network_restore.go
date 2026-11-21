@@ -13,6 +13,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/maburvm/panel/internal/agent/hostproxy"
 	"github.com/maburvm/panel/internal/agent/libvirt"
 	"github.com/maburvm/panel/internal/agent/netrules"
 	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
@@ -138,6 +139,33 @@ func restoreNetworkConfigs(svc *NodeAgentService) {
 	}
 	updateNetworkConfig(path, bootID, "", nil) // stamp the new boot even if nothing applied
 	log.Printf("[NetworkRestore] restored network config of %d/%d VMs", restored, len(s.Configs))
+}
+
+// restoreHostRoutes gives the hostname router the routes of every saved
+// config. They live in the agent process, so a restart without a reboot (which
+// keeps the iptables rules and replays nothing) would otherwise drop them.
+func restoreHostRoutes(svc *NodeAgentService) {
+	n := 0
+	for vmID, raw := range loadNetworkConfigs(netConfigPath()).Configs {
+		req := &pb.NetworkConfigRequest{}
+		if protojson.Unmarshal(raw, req) != nil || len(req.GetConfig().GetHostnameForwards()) == 0 {
+			continue
+		}
+		primary := ""
+		for _, iface := range req.Config.GetInterfaces() {
+			if iface.GetIpAddress() != "" {
+				primary = iface.GetIpAddress()
+				break
+			}
+		}
+		if err := svc.hostProxy.Set(vmID, hostproxy.FromProto(req.Config.GetHostnameForwards(), primary)); err != nil {
+			log.Printf("[NetworkRestore] WARNING: VM %s: hostnames not routed: %v", vmID, err)
+		}
+		n++
+	}
+	if n > 0 {
+		log.Printf("[NetworkRestore] hostname routes of %d VMs restored", n)
+	}
 }
 
 // A tenant VPC (router namespace, bridge, veths, NAT) is runtime state too:

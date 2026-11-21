@@ -13,17 +13,60 @@ import (
 	"github.com/maburvm/panel/internal/shared/models"
 )
 
-// ObjectStoreHook returns the backup destination saved in the panel, for
-// sending to a node with a backup or a restore. It returns nil when none is
-// saved, and the node then uses the store in its own environment file. The
-// panel sets it at start-up; this package cannot import the panel's services.
-var ObjectStoreHook func(ctx context.Context) (*pb.ObjectStore, error)
+// ObjectStoreHook returns a backup destination saved in the panel (by ID; ""
+// is the default) and its ID, for sending to a node with a backup or a
+// restore. It returns nil when none is saved, and the node then uses the store
+// in its own environment file. The panel sets it at start-up; this package
+// cannot import the panel's services.
+var ObjectStoreHook func(ctx context.Context, destinationID string) (*pb.ObjectStore, string, error)
 
-func panelObjectStore(ctx context.Context) (*pb.ObjectStore, error) {
+func panelObjectStore(ctx context.Context, destinationID string) (*pb.ObjectStore, string, error) {
 	if ObjectStoreHook == nil {
-		return nil, nil
+		return nil, "", nil
 	}
-	return ObjectStoreHook(ctx)
+	return ObjectStoreHook(ctx, destinationID)
+}
+
+// Agent features a request may depend on.
+const (
+	featureBackupTargets     = "backup_targets"
+	featureIncrementalBackup = "incremental_backup"
+)
+
+// needsFeature is the agent feature a node must have to be sent store; "" when
+// every agent understands it.
+func needsFeature(store *pb.ObjectStore) string {
+	if k := store.GetKind(); k != "" && k != "s3" {
+		return featureBackupTargets
+	}
+	return ""
+}
+
+// agentHas asks a node's agent whether it has a feature. An agent too old to
+// say has none.
+func agentHas(ctx context.Context, client pb.NodeAgentClient, node *models.Node, feature string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	info, err := client.GetNodeInfo(agentAuthContext(ctx, node), &pb.GetNodeInfoRequest{})
+	if err != nil && status.Code(err) != codes.Unimplemented {
+		return false, err
+	}
+	for _, f := range info.GetFeatures() {
+		if f == feature {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// resetBackupChain records that a VM's disks were replaced: the next scheduled
+// backup is a full one.
+func resetBackupChain(ctx context.Context, vmID string) {
+	if globalWorkerContext == nil || globalWorkerContext.DB == nil {
+		return
+	}
+	_ = globalWorkerContext.DB.WithContext(ctx).Model(&models.BackupSchedule{}).
+		Where("vm_id = ?", vmID).Update("chain_reset_at", time.Now()).Error
 }
 
 // permanentVMFailure reports an agent's answer to a VM command that another try

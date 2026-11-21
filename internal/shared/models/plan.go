@@ -48,10 +48,18 @@ type Plan struct {
 	Currency     string   `json:"currency" gorm:"column:currency;type:varchar(3);not null;default:''"`
 	// Per-VM allowances, read from the plan whenever one is used, so a change
 	// reaches every VM on the plan at once. nil = no limit, 0 = none.
-	MaxSnapshots *int           `json:"max_snapshots" gorm:"column:max_snapshots"`
-	MaxBackups   *int           `json:"max_backups" gorm:"column:max_backups"`
-	MaxExtraIPv4 *int           `json:"max_extra_ipv4" gorm:"column:max_extra_ipv4"`
-	MaxExtraIPv6 *int           `json:"max_extra_ipv6" gorm:"column:max_extra_ipv6"`
+	MaxSnapshots *int `json:"max_snapshots" gorm:"column:max_snapshots"`
+	MaxBackups   *int `json:"max_backups" gorm:"column:max_backups"`
+	MaxExtraIPv4 *int `json:"max_extra_ipv4" gorm:"column:max_extra_ipv4"`
+	MaxExtraIPv6 *int `json:"max_extra_ipv6" gorm:"column:max_extra_ipv6"`
+	// DefaultFirewallGroupID is the group VMs created on the plan get instead
+	// of the built-in default rules; nil keeps those. Existing VMs keep theirs.
+	DefaultFirewallGroupID *string `json:"default_firewall_group_id" gorm:"column:default_firewall_group_id;type:uuid"`
+	// NetworkType is PlanNetworkPublic or PlanNetworkNAT. A NAT VM gets
+	// NATPorts public ports on its node and may route NATHostnames hostnames.
+	NetworkType  string         `json:"network_type" gorm:"column:network_type;type:varchar(8);not null;default:'public'"`
+	NATPorts     int            `json:"nat_ports" gorm:"column:nat_ports;not null;default:0"`
+	NATHostnames int            `json:"nat_hostnames" gorm:"column:nat_hostnames;not null;default:0"`
 	Description  string         `json:"description,omitempty" gorm:"type:text"`
 	IsActive     bool           `json:"is_active" gorm:"default:true"`
 	CreatedAt    time.Time      `json:"created_at" gorm:"not null;default:NOW()"`

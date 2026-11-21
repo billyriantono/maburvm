@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/maburvm/panel/internal/agent/migration"
 	"github.com/maburvm/panel/internal/agent/preflight"
 	"github.com/maburvm/panel/internal/agent/server"
 	"github.com/maburvm/panel/internal/shared/buildinfo"
@@ -26,6 +27,10 @@ func main() {
 	// The installer runs this at the end; it changes nothing on the host.
 	if len(os.Args) > 1 && os.Args[1] == "--preflight" {
 		os.Exit(runPreflight(os.Args[2:], os.Stdout))
+	}
+	// sshd runs this for another node's migration key (its forced command).
+	if len(os.Args) > 1 && os.Args[1] == migration.ShellCommand {
+		os.Exit(server.RunMigrationShell(os.Getenv("SSH_ORIGINAL_COMMAND"), os.Stdout, os.Stderr))
 	}
 	log.Println("Starting MaburVM Node Agent...")
 	if err := server.Run(); err != nil {

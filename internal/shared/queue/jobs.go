@@ -139,6 +139,16 @@ type BackupJob struct {
 	BackupID        string     `json:"backup_id"`        // Reference to backup record
 	// Scheduled backups start only inside the backup window.
 	Scheduled bool `json:"scheduled,omitempty"`
+	// DestinationID is where the backup goes; empty is the default one (a job
+	// queued before destinations were recorded).
+	DestinationID string `json:"destination_id,omitempty"`
+	// Checkpoint is created with the backup, so the next one can build on it.
+	Checkpoint string `json:"checkpoint,omitempty"`
+	// ParentID and IncrementalFrom (its checkpoint) ask for an incremental
+	// backup on top of that one; ChainID is the full backup its chain starts from.
+	ParentID        string `json:"parent_id,omitempty"`
+	IncrementalFrom string `json:"incremental_from,omitempty"`
+	ChainID         string `json:"chain_id,omitempty"`
 }
 
 // Kind returns the job kind for backup
@@ -203,6 +213,11 @@ type RestoreJob struct {
 	// Disks are every disk of a backup of several; each is restored onto the
 	// VM's disk with the same target. Empty for a backup of the primary only.
 	Disks []models.BackupDisk `json:"disks,omitempty"`
+	// DestinationID is the destination the backup is in; empty is the default.
+	DestinationID string `json:"destination_id,omitempty"`
+	// Layers are, for an incremental backup, the images under each disk (by
+	// target), the full backup's first.
+	Layers map[string][]models.BackupDisk `json:"layers,omitempty"`
 }
 
 func (j RestoreJob) Kind() string { return "restore" }

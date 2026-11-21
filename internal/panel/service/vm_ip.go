@@ -73,7 +73,7 @@ func (s *NetworkService) AssignIPAddress(ctx context.Context, vmID, poolID, requ
 		for i := range pools {
 			// This creates an IPv4 interface. An IPv6 pool is assigned through
 			// the IPv6 action instead; picking one here used to be possible.
-			if pools[i].Family == models.IPFamilyIPv6 {
+			if pools[i].Family == models.IPFamilyIPv6 || pools[i].NAT {
 				continue
 			}
 			candidates = append(candidates, pools[i].ID)

@@ -31,6 +31,8 @@ import {
   FileDown,
   Rocket,
   BellRing,
+  Archive,
+  BrickWall,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useNavDrawer } from "@/components/nav-drawer"
@@ -49,10 +51,12 @@ const navItems: { href: string; label: string; icon: typeof Monitor; perm?: stri
   { href: "/regions", label: "Regions", icon: Globe },
   { href: "/nodes", label: "Nodes", icon: HardDrive, perm: "node:read" },
   { href: "/storage", label: "Storage", icon: Database, perm: "node:read" },
+  { href: "/backups", label: "Backups", icon: Archive, perm: "backup:read" },
   { href: "/isos", label: "ISOs", icon: Folder },
   { href: "/networks", label: "Networks", icon: Zap, perm: "network:read" },
   { href: "/ip-pools", label: "IP Pools", icon: Network, perm: "network:read" },
   { href: "/floating-ips", label: "Floating IPs", icon: Waypoints, perm: "floating_ip:read" },
+  { href: "/firewall-groups", label: "Firewall groups", icon: BrickWall, perm: "firewall_group:read" },
   { href: "/dns", label: "DNS", icon: Globe, perm: "network:read" },
   { href: "/users", label: "Users", icon: Users, perm: "user:read" },
   { href: "/staff-roles", label: "Staff roles", icon: KeySquare },

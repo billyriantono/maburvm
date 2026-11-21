@@ -105,10 +105,10 @@ func (r *storageRepository) UpdatePool(pool *models.StoragePool) error {
 // while the node was being asked.
 func (r *storageRepository) UpdatePoolMeasurement(pool *models.StoragePool) error {
 	return r.db.Model(&models.StoragePool{}).Where("id = ?", pool.ID).
-		Select("total_space", "used_space", "available_space", "status", "updated_at").
+		Select("total_space", "used_space", "available_space", "status", "status_note", "metadata_percent", "updated_at").
 		Updates(&models.StoragePool{
 			TotalSpace: pool.TotalSpace, UsedSpace: pool.UsedSpace, AvailableSpace: pool.AvailableSpace,
-			Status: pool.Status, UpdatedAt: time.Now(),
+			Status: pool.Status, StatusNote: pool.StatusNote, MetadataPercent: pool.MetadataPercent, UpdatedAt: time.Now(),
 		}).Error
 }
 

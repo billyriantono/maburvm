@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"path/filepath"
@@ -30,9 +31,15 @@ func NormalizeCompression(c string) string {
 // ExportArgs is the qemu-img command line exporting source to a standalone
 // qcow2 at dest. -U (force-share) lets it read an image a running qemu holds
 // open: the backing file under a backup overlay, or a live disk when no
-// snapshot could be taken.
-func ExportArgs(compression, source, dest string) []string {
-	args := []string{"convert", "-U", "-O", "qcow2"}
+// snapshot could be taken. format is the disk's own: a raw disk read without it
+// is probed, and a guest that wrote an image header with a backing file into
+// its disk would have a host file copied into the backup.
+func ExportArgs(compression, format, source, dest string) []string {
+	args := []string{"convert", "-U"}
+	if format != "" {
+		args = append(args, "-f", format)
+	}
+	args = append(args, "-O", "qcow2")
 	switch NormalizeCompression(compression) {
 	case CompressionZstd:
 		args = append(args, "-c", "-o", "compression_type=zstd")
@@ -40,6 +47,34 @@ func ExportArgs(compression, source, dest string) []string {
 		args = append(args, "-c")
 	}
 	return append(args, source, dest)
+}
+
+// StandaloneImage says why an image, as `qemu-img info --output=json` reports
+// it when left to guess the format, would read another file, or nil. A copied
+// disk's bytes are the guest's: a raw disk can carry a planted header naming a
+// host file as its backing or data file.
+func StandaloneImage(info []byte) error {
+	var v struct {
+		Format   string `json:"format"`
+		Backing  string `json:"backing-filename"`
+		Specific struct {
+			Data struct {
+				DataFile string `json:"data-file"`
+			} `json:"data"`
+		} `json:"format-specific"`
+	}
+	if err := json.Unmarshal(info, &v); err != nil {
+		return fmt.Errorf("unreadable image information: %w", err)
+	}
+	switch {
+	case v.Format != "raw" && v.Format != "qcow2":
+		return fmt.Errorf("the disk reads as %q; only raw and qcow2 disks are copied", v.Format)
+	case v.Backing != "":
+		return fmt.Errorf("the disk names a backing file (%s)", v.Backing)
+	case v.Specific.Data.DataFile != "":
+		return fmt.Errorf("the disk names a data file (%s)", v.Specific.Data.DataFile)
+	}
+	return nil
 }
 
 // zstdUnsupported reports whether qemu-img refused the zstd option, which a
@@ -95,6 +130,21 @@ func domainDisk(d libvirtxml.DomainDisk) (DomainDisk, bool) {
 		disk.Format = d.Driver.Type
 	}
 	return disk, true
+}
+
+// DiskDevice is the definition of a disk at target backed by path: a raw block
+// device for a /dev path, which gives freed blocks back to a thin pool, and a
+// qcow2 file otherwise.
+func DiskDevice(path, target string) libvirtxml.DomainDisk {
+	d := libvirtxml.DomainDisk{Device: "disk", Target: &libvirtxml.DomainDiskTarget{Dev: target, Bus: "virtio"}}
+	if strings.HasPrefix(path, "/dev/") {
+		d.Driver = &libvirtxml.DomainDiskDriver{Name: "qemu", Type: "raw", Cache: "none", IO: "native", Discard: "unmap", DetectZeros: "unmap"}
+		d.Source = &libvirtxml.DomainDiskSource{Block: &libvirtxml.DomainDiskSourceBlock{Dev: path}}
+		return d
+	}
+	d.Driver = &libvirtxml.DomainDiskDriver{Name: "qemu", Type: "qcow2"}
+	d.Source = &libvirtxml.DomainDiskSource{File: &libvirtxml.DomainDiskSourceFile{File: path}}
+	return d
 }
 
 // OverlayMarker is in the name of every temporary backup overlay. A disk
@@ -260,4 +310,19 @@ func RestoreMethod(d DomainDisk) string {
 	default:
 		return RestoreConvertFile
 	}
+}
+
+// SnapshotBlocker says why the VM's disks cannot take a snapshot, or "".
+// Snapshots live inside qcow2 images; a raw disk or a logical volume has
+// nowhere to keep one, so backups are the way to keep its state.
+func SnapshotBlocker(disks []DomainDisk) string {
+	for _, d := range disks {
+		if d.Block {
+			return fmt.Sprintf("snapshots need qcow2 disks, and disk %s is the block device %s (LVM storage); take a backup instead", d.Target, d.Path)
+		}
+		if d.Format != "qcow2" {
+			return fmt.Sprintf("snapshots need qcow2 disks, and disk %s is %s; take a backup instead", d.Target, d.Format)
+		}
+	}
+	return ""
 }

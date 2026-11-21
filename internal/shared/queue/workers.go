@@ -421,8 +421,14 @@ func (w *VMOperationWorker) run(ctx context.Context, job *river.Job[VMOperationJ
 		return fmt.Errorf("failed to get VM: %w", err)
 	}
 
+	// A move between nodes owns the VM until it ends; after it, the VM's
+	// node is the one to talk to, not the one the job was queued for.
+	if job.Args.Operation != VMOpConfigureNetwork && MigrationActive(ctx, vm.ID) {
+		return river.JobSnooze(30 * time.Second)
+	}
+
 	// Get node details
-	node, err := nodeRepo.GetByID(ctx, job.Args.NodeID)
+	node, err := nodeRepo.GetByID(ctx, currentNode(vm, job.Args.NodeID))
 	if err != nil {
 		w.logger.ErrorContext(ctx, "failed to get node",
 			"error", err,
@@ -492,10 +498,11 @@ func (w *VMOperationWorker) run(ctx context.Context, job *river.Job[VMOperationJ
 	// Where the panel decided this VM's disk should live. Threaded separately
 	// from VMConfig because it describes placement on the node, not the shape of
 	// the machine.
-	var poolPath string
+	var poolPath, poolType string
 	// Set when the disk is a backup in the panel's destination: the node is
 	// then given the destination to read it from.
 	var wantsObjectStore bool
+	var restoreDestination string
 	needsConfig := job.Args.Operation == VMOpCreate || job.Args.Operation == VMOpRebuild ||
 		job.Args.Operation == VMOpResize || job.Args.Operation == VMOpResetPassword ||
 		job.Args.Operation == VMOpAttachISO
@@ -524,14 +531,22 @@ func (w *VMOperationWorker) run(ctx context.Context, job *river.Job[VMOperationJ
 			// leaves the choice to the node, which defaults to its root
 			// filesystem — fine as a fallback, wrong as a destination.
 			PoolPath string `json:"pool_path"`
+			// PoolType is the type of that pool: a directory, or LVM.
+			PoolType string `json:"pool_type"`
 			// ISOSource is ISOSourceOperator when the operator chose the ISO
 			// being attached. Anything else is treated as a customer's URL.
 			ISOSource string `json:"iso_source"`
 			// ObjectStore asks for the panel's backup destination to be sent
 			// along, for a disk restored from a backup kept there.
 			ObjectStore bool `json:"object_store"`
+			// BackupDestinationID names that destination; empty is the default.
+			BackupDestinationID string `json:"backup_destination_id"`
 			// RestoreDisks are a backup's data disks, for a VM restored from it.
 			RestoreDisks []models.BackupDisk `json:"restore_disks"`
+			// RestoreLayers (primary disk) and RestoreDiskLayers (by target) are
+			// the images an incremental backup is built on, the full one first.
+			RestoreLayers     []models.BackupDisk            `json:"restore_layers"`
+			RestoreDiskLayers map[string][]models.BackupDisk `json:"restore_disk_layers"`
 		}
 
 		if err := json.Unmarshal(job.Args.Params, &params); err != nil {
@@ -547,8 +562,8 @@ func (w *VMOperationWorker) run(ctx context.Context, job *river.Job[VMOperationJ
 				return river.JobCancel(fmt.Errorf("the job's password cannot be decrypted: %w", err))
 			}
 			params.RootPassword, params.VNCPassword = root, vncPass
-			poolPath = params.PoolPath
-			wantsObjectStore = params.ObjectStore
+			poolPath, poolType = params.PoolPath, params.PoolType
+			wantsObjectStore, restoreDestination = params.ObjectStore, params.BackupDestinationID
 			metadata := params.Metadata
 			if metadata == nil {
 				metadata = map[string]string{}
@@ -560,7 +575,7 @@ func (w *VMOperationWorker) run(ctx context.Context, job *river.Job[VMOperationJ
 			if params.Hostname != "" {
 				metadata["hostname"] = params.Hostname
 			}
-			// CPU model (empty → the agent defaults to a portable, migratable model).
+			// CPU model (empty → the agent defaults to host-passthrough).
 			if params.CPUModel != "" {
 				metadata["cpu_model"] = params.CPUModel
 			}
@@ -584,14 +599,15 @@ func (w *VMOperationWorker) run(ctx context.Context, job *river.Job[VMOperationJ
 					NetworkBandwidthMbps: int32(params.BandwidthMbps),
 					Limits:               LimitsProto(vm.Limits.WithThrottle(vm.Throttle)),
 				},
-				ImageId:      imageID,
-				SshPublicKey: params.SSHPublicKey,
-				UserData:     params.UserData,
-				Metadata:     metadata,
-				VncEnabled:   true,
-				VncPassword:  params.VNCPassword,
-				RootPassword: params.RootPassword,
-				RestoreDisks: restoreDisksProto(params.RestoreDisks),
+				ImageId:       imageID,
+				SshPublicKey:  params.SSHPublicKey,
+				UserData:      params.UserData,
+				Metadata:      metadata,
+				VncEnabled:    true,
+				VncPassword:   params.VNCPassword,
+				RootPassword:  params.RootPassword,
+				RestoreDisks:  restoreDisksProto(params.RestoreDisks, params.RestoreDiskLayers),
+				RestoreLayers: layersProto(params.RestoreLayers),
 				NetworkConfig: &pb.VMNetworkConfig{
 					Interfaces: []*pb.NetworkInterface{
 						{
@@ -677,9 +693,21 @@ func (w *VMOperationWorker) run(ctx context.Context, job *river.Job[VMOperationJ
 		Config:         vmConfig,
 		TimeoutSeconds: int32(timeout.Seconds()),
 		PoolPath:       poolPath,
+		PoolType:       poolType,
+	}
+	// A logical volume is grown or removed only inside a pool registered here.
+	if command == pb.VMCommandType_VM_COMMAND_TYPE_RESIZE || command == pb.VMCommandType_VM_COMMAND_TYPE_DESTROY {
+		req.LvmPools = nodeLVMPools(ctx, opDB, node.ID)
+	}
+	if command == pb.VMCommandType_VM_COMMAND_TYPE_DESTROY && len(job.Args.Params) > 0 {
+		var p struct {
+			RemoveForeignVolumes bool `json:"remove_foreign_volumes"`
+		}
+		_ = json.Unmarshal(job.Args.Params, &p)
+		req.RemoveForeignVolumes = p.RemoveForeignVolumes
 	}
 	if wantsObjectStore {
-		store, serr := panelObjectStore(ctx)
+		store, _, serr := panelObjectStore(ctx, restoreDestination)
 		if serr != nil {
 			serr = fmt.Errorf("the backup destination saved in the panel cannot be read: %w", serr)
 			// Nothing was downloaded, so a few tries cost nothing.
@@ -835,6 +863,7 @@ func (w *VMOperationWorker) run(ctx context.Context, job *river.Job[VMOperationJ
 		w.detachFloatingIPsOnNode(ctx, client, node, vm.ID)
 
 		stepVMOperation(ctx, opDB, deleteOpID, 2, "Releasing IP & network")
+		keptNote := recordKeptVolumes(ctx, opDB, vm, node.ID, resp.GetKeptVolumes(), w.logger)
 		if err := w.cleanupDeletedVM(ctx, vm.ID); err != nil {
 			w.logger.ErrorContext(ctx, "failed to clean up deleted VM records",
 				"vm_id", vm.ID, "error", err)
@@ -844,7 +873,7 @@ func (w *VMOperationWorker) run(ctx context.Context, job *river.Job[VMOperationJ
 			}
 			return fmt.Errorf("failed to clean up deleted VM records: %w", err)
 		}
-		completeVMOperation(ctx, opDB, deleteOpID, "VM deleted")
+		completeVMOperation(ctx, opDB, deleteOpID, "VM deleted"+keptNote)
 		newStatus = ""
 	case VMOpSuspend:
 		newStatus = models.VMStatusSuspended
@@ -869,6 +898,7 @@ func (w *VMOperationWorker) run(ctx context.Context, job *river.Job[VMOperationJ
 			w.applyPostCreateNetworkConfig(ctx, client, node, vm)
 		}
 		dropSnapshotRecords(ctx, vm.ID, w.logger)
+		resetBackupChain(ctx, vm.ID)
 	case VMOpResize:
 		// A billing package change stops a running VM to resize it; boot it
 		// again here, after the resize, so the start cannot overtake it.
@@ -993,11 +1023,14 @@ func (w *VMOperationWorker) applyPostCreateNetworkConfig(ctx context.Context, cl
 		// No interface → nothing enforceable; rules apply on IP assignment.
 		return
 	}
-	rules, err := repository.NewFirewallRepository(globalWorkerContext.DB).ListByVMID(ctx, vm.ID, 0, 0)
+	rules, err := repository.NewFirewallRepository(globalWorkerContext.DB).ListEffectiveByVMID(ctx, vm.ID)
 	if err != nil {
 		w.logger.WarnContext(ctx, "post-create: failed to load firewall rules", "vm_id", vm.ID, "error", err)
 		return
 	}
+	// A NAT VM's port forwards exist from the start, and are read by the apply.
+	var forwards int64
+	_ = globalWorkerContext.DB.WithContext(ctx).Model(&models.PortForward{}).Where("vm_id = ?", vm.ID).Count(&forwards).Error
 	paramMap := map[string]interface{}{
 		"ip_address":      network.IPAddress,
 		"bandwidth_limit": network.BandwidthLimit,
@@ -1012,7 +1045,7 @@ func (w *VMOperationWorker) applyPostCreateNetworkConfig(ctx context.Context, cl
 		paramMap["ipv6_prefix"] = v6.Prefix
 		paramMap["ipv6_address"] = v6.Address()
 		paramMap["ipv6_gateway"] = models.IPv6LinkLocalGateway
-	} else if len(rules) == 0 && !vm.SMTPBlocked {
+	} else if len(rules) == 0 && !vm.SMTPBlocked && forwards == 0 {
 		// Nothing to enforce, and an empty ReplaceAll would still be a no-op
 		// firewall-wise — skip the round-trip.
 		return
@@ -1088,6 +1121,22 @@ func (w *VMOperationWorker) Timeout(job *river.Job[VMOperationJob]) time.Duratio
 	return 6 * time.Minute
 }
 
+// verifiedHostnames are the hostnames the node routes to the VM.
+func verifiedHostnames(ctx context.Context, db *gorm.DB, vmID string) ([]*pb.HostnameForward, error) {
+	var rows []models.VMHostname
+	if !db.Migrator().HasTable(&models.VMHostname{}) {
+		return nil, nil // a test schema without NAT VMs
+	}
+	if err := db.WithContext(ctx).Where("vm_id = ? AND verified_at IS NOT NULL", vmID).Order("hostname").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]*pb.HostnameForward, 0, len(rows))
+	for _, h := range rows {
+		out = append(out, &pb.HostnameForward{Hostname: h.Hostname, HttpPort: int32(h.HTTPPort), HttpsPort: int32(h.HTTPSPort)})
+	}
+	return out, nil
+}
+
 // netConfigLocks serialises network applies per VM; netConfigDone holds the
 // highest job ID applied per VM.
 var netConfigLocks, netConfigDone sync.Map
@@ -1146,13 +1195,17 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 	// Rules, policy and port forwards are read now, not taken from the job:
 	// the copy in the job is as old as the enqueue. The copy is the fallback.
 	rules := params.FirewallRules
+	var hostnames []*pb.HostnameForward
 	var freshPFs []models.PortForward
 	havePFs := false
 	if globalWorkerContext != nil && globalWorkerContext.DB != nil {
 		db := globalWorkerContext.DB.WithContext(ctx)
-		if fresh, err := repository.NewFirewallRepository(globalWorkerContext.DB).ListByVMID(ctx, vm.ID, 0, 0); err == nil {
-			rules = fresh
+		fresh, err := repository.NewFirewallRepository(globalWorkerContext.DB).ListEffectiveByVMID(ctx, vm.ID)
+		if err != nil {
+			// The job's copy may predate a group change; sending it would undo it.
+			return fmt.Errorf("failed to load the VM's firewall rules: %w", err)
 		}
+		rules = fresh
 		var policy struct {
 			FirewallDefault string
 			SMTPBlocked     bool `gorm:"column:smtp_blocked"`
@@ -1161,6 +1214,11 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 			params.FirewallDefault, params.BlockSMTP = policy.FirewallDefault, policy.SMTPBlocked
 		}
 		havePFs = db.Where("vm_id = ?", vm.ID).Find(&freshPFs).Error == nil
+		if hosts, err := verifiedHostnames(ctx, db, vm.ID); err != nil {
+			return fmt.Errorf("failed to load the VM's hostnames: %w", err)
+		} else {
+			hostnames = hosts
+		}
 	}
 	fwRules := make([]*pb.FirewallRule, 0, len(rules))
 	for _, r := range rules {
@@ -1232,8 +1290,9 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 				IngressRateMbps: int32(params.BandwidthLimit),
 				EgressRateMbps:  int32(params.BandwidthLimit),
 			},
-			FirewallDefault: params.FirewallDefault,
-			BlockSmtp:       params.BlockSMTP,
+			FirewallDefault:  params.FirewallDefault,
+			BlockSmtp:        params.BlockSMTP,
+			HostnameForwards: hostnames,
 		},
 		ReplaceAll:     true,
 		ConfigureGuest: params.ConfigureGuest && params.IPAddress != "",
@@ -1264,6 +1323,14 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 
 	if last, ok := netConfigDone.Load(vm.ID); jobID != 0 && (!ok || last.(int64) < jobID) {
 		netConfigDone.Store(vm.ID, jobID)
+	}
+
+	// Whether the node routes the VM's hostnames is said beside each of them.
+	if len(hostnames) > 0 && globalWorkerContext != nil && globalWorkerContext.DB != nil {
+		if err := globalWorkerContext.DB.WithContext(ctx).Model(&models.VMHostname{}).
+			Where("vm_id = ? AND verified_at IS NOT NULL", vm.ID).Update("node_error", resp.GetHostnameError()).Error; err != nil {
+			w.logger.WarnContext(ctx, "could not record whether the node routes the VM's hostnames", "vm_id", vm.ID, "error", err)
+		}
 	}
 
 	// What the guest did not take is said on the VM's page; a later change it
@@ -1566,7 +1633,10 @@ func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreJob]) er
 	if err != nil {
 		return fail(errors.Is(err, gorm.ErrRecordNotFound), fmt.Errorf("failed to get VM: %w", err))
 	}
-	node, err := globalWorkerContext.NodeRepo.GetByID(ctx, job.Args.NodeID)
+	if MigrationActive(ctx, vm.ID) {
+		return river.JobSnooze(30 * time.Second)
+	}
+	node, err := globalWorkerContext.NodeRepo.GetByID(ctx, currentNode(vm, job.Args.NodeID))
 	if err != nil {
 		return fail(errors.Is(err, gorm.ErrRecordNotFound), fmt.Errorf("failed to get node: %w", err))
 	}
@@ -1575,13 +1645,30 @@ func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreJob]) er
 	}
 	var store *pb.ObjectStore
 	if !job.Args.NodeStore {
-		if store, err = panelObjectStore(ctx); err != nil {
+		if store, _, err = panelObjectStore(ctx, job.Args.DestinationID); err != nil {
 			return fail(false, fmt.Errorf("the backup destination saved in the panel cannot be read: %w", err))
 		}
 	}
 	client, err := w.agentClient.GetClient(node.ID, node.IPAddress)
 	if err != nil {
 		return fail(false, err)
+	}
+	// An older agent would ignore what it does not know: restore an
+	// incremental backup's top alone, or read its own store instead.
+	for _, f := range []struct {
+		need bool
+		name string
+	}{{needsFeature(store) != "", featureBackupTargets}, {len(job.Args.Layers) > 0, featureIncrementalBackup}} {
+		if !f.need {
+			continue
+		}
+		has, ferr := agentHas(ctx, client, node, f.name)
+		if ferr != nil {
+			return fail(false, fmt.Errorf("could not ask node %s what its agent can do: %w", node.Name, ferr))
+		}
+		if !has {
+			return river.JobCancel(fmt.Errorf("the agent on node %s is older than the panel and cannot restore this backup; update it under Nodes and try again", node.Name))
+		}
 	}
 
 	resp, err := client.RestoreDisk(agentAuthContext(ctx, node), restoreDiskRequest(vm.ID, job.Args, store))
@@ -1602,6 +1689,7 @@ func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreJob]) er
 	}
 	// The VM's snapshots lived in the disks just replaced.
 	dropSnapshotRecords(ctx, vm.ID, w.logger)
+	resetBackupChain(ctx, vm.ID)
 
 	w.logger.InfoContext(ctx, "restore completed",
 		"vm_id", vm.ID, "backup_id", job.Args.BackupID, "bytes", resp.BytesRestored)
@@ -1613,10 +1701,10 @@ func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreJob]) er
 // several.
 func restoreDiskRequest(vmID string, job RestoreJob, store *pb.ObjectStore) *pb.RestoreDiskRequest {
 	req := &pb.RestoreDiskRequest{VmId: vmID, SourceKey: job.SourceKey, ExpectedChecksum: job.Checksum, ObjectStore: store}
-	if len(job.Disks) > 1 {
+	if len(job.Disks) > 1 || len(job.Layers) > 0 {
 		req.SourceKey, req.ExpectedChecksum = "", ""
 		for _, d := range job.Disks {
-			req.Disks = append(req.Disks, &pb.BackupDiskFile{Target: d.Target, Key: d.Key, Checksum: d.Checksum})
+			req.Disks = append(req.Disks, &pb.BackupDiskFile{Target: d.Target, Key: d.Key, Checksum: d.Checksum, Layers: layersProto(job.Layers[d.Target])})
 		}
 	}
 	return req
@@ -1728,6 +1816,9 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 		return w.fail(ctx, job, false, fmt.Sprintf("failed to get VM: %v", err))
 	}
 
+	if MigrationActive(ctx, vm.ID) {
+		return river.JobSnooze(time.Minute)
+	}
 	node, err := globalWorkerContext.NodeRepo.GetByID(ctx, vm.NodeID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -1744,7 +1835,7 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 	// send it quietly to whatever the node has in its environment file. Tried
 	// again all the same: nothing has been exported yet, and the reason may be
 	// the database not answering for a moment.
-	store, err := panelObjectStore(ctx)
+	store, destinationID, err := panelObjectStore(ctx, job.Args.DestinationID)
 	if err != nil {
 		return w.fail(ctx, job, false, fmt.Sprintf("the backup destination saved in the panel cannot be read: %v", err))
 	}
@@ -1771,6 +1862,17 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 	client, err := globalWorkerContext.AgentClient.GetClient(node.ID, node.IPAddress)
 	if err != nil {
 		return w.fail(ctx, job, false, err.Error())
+	}
+	// An older agent ignores a destination kind it does not know and would
+	// write to its own storage instead.
+	if f := needsFeature(store); f != "" {
+		has, ferr := agentHas(ctx, client, node, f)
+		if ferr != nil {
+			return w.fail(ctx, job, false, fmt.Sprintf("could not ask node %s what its agent can do: %v", node.Name, ferr))
+		}
+		if !has {
+			return w.fail(ctx, job, true, fmt.Sprintf("the agent on node %s is older than the panel and cannot write to an SFTP server or a mounted directory; update it under Nodes", node.Name))
+		}
 	}
 
 	// Full-disk backup (the only type real flows enqueue) exports every disk
@@ -1817,12 +1919,14 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 	// (the agent has the disk file). The destination travels with the request,
 	// so the node needs no storage keys of its own.
 	backupResp, err := client.BackupDisk(agentAuthContext(ctx, node), &pb.BackupDiskRequest{
-		VmId:           vm.ID,
-		DestinationKey: job.Args.Destination,
-		Compress:       job.Args.Compression != "none",
-		Compression:    job.Args.Compression,
-		AllDisks:       true,
-		ObjectStore:    store,
+		VmId:            vm.ID,
+		DestinationKey:  job.Args.Destination,
+		Compress:        job.Args.Compression != "none",
+		Compression:     job.Args.Compression,
+		AllDisks:        true,
+		ObjectStore:     store,
+		Checkpoint:      job.Args.Checkpoint,
+		IncrementalFrom: job.Args.IncrementalFrom,
 	})
 	if err != nil {
 		return w.fail(ctx, job, permanentDiskFailure(err, nil), fmt.Sprintf("failed to back up disk: %v", err))
@@ -1845,13 +1949,23 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 		completedAt := time.Now()
 		done := completedBackup(backupResp)
 		done.StorageProvider, done.CompletedAt = location, &completedAt
+		if location != models.BackupStoreNode {
+			done.StorageProvider = store.GetKind()
+			if done.StorageProvider == "" {
+				done.StorageProvider = models.BackupStoreDestination
+			}
+			done.DestinationID = &destinationID
+		}
+		done.NodeID = &node.ID
+		chainResult(done, job.Args, backupResp)
 		if len(done.Disks) == 0 && hasDataDisks(ctx, vm.ID) {
 			// An agent that predates whole-VM backups copied the first disk only.
 			done.ErrorMessage = "Only the first disk was backed up: the node's agent is older than the panel. Update it to include the VM's other disks."
 		}
 		if err := globalWorkerContext.DB.WithContext(ctx).
 			Model(&models.Backup{ID: job.Args.BackupID}).
-			Select("status", "storage_provider", "size", "checksum", "error_message", "completed_at", "disks", "consistency", "compression").
+			Select("status", "storage_provider", "size", "checksum", "error_message", "completed_at", "disks", "consistency", "compression",
+				"destination_id", "node_id", "mode", "parent_id", "chain_id", "checkpoint", "mode_note").
 			Updates(done).Error; err != nil {
 			w.logger.WarnContext(ctx, "failed to update completed backup metadata",
 				"backup_id", job.Args.BackupID,
@@ -1916,6 +2030,20 @@ func completedBackup(resp *pb.BackupDiskResponse) *models.Backup {
 		}
 	}
 	return b
+}
+
+// chainResult records what the node made: an incremental backup on the parent
+// asked for, or a full one starting its own chain, with the checkpoint it left.
+func chainResult(done *models.Backup, job BackupJob, resp *pb.BackupDiskResponse) {
+	done.Mode, done.Checkpoint, done.ModeNote = models.BackupModeFull, resp.GetCheckpoint(), resp.GetModeNote()
+	done.ParentID, done.ChainID = nil, &job.BackupID
+	if resp.GetMode() == models.BackupModeIncremental && job.ParentID != "" && job.ChainID != "" {
+		parent, chain := job.ParentID, job.ChainID
+		done.Mode, done.ParentID, done.ChainID = models.BackupModeIncremental, &parent, &chain
+	}
+	if job.Checkpoint != "" && resp.GetMode() == "" {
+		done.ModeNote = "Full backup: the node's agent is older than the panel and makes full backups only. Update it under Nodes."
+	}
 }
 
 // hasDataDisks reports whether the panel knows of disks on the VM besides its
@@ -2821,8 +2949,11 @@ func (w *SnapshotWorker) Work(ctx context.Context, job *river.Job[SnapshotJob]) 
 		return fmt.Errorf("failed to get VM: %w", err)
 	}
 
+	if MigrationActive(ctx, vm.ID) {
+		return river.JobSnooze(30 * time.Second)
+	}
 	// Get node details
-	node, err := nodeRepo.GetByID(ctx, job.Args.NodeID)
+	node, err := nodeRepo.GetByID(ctx, currentNode(vm, job.Args.NodeID))
 	if err != nil {
 		w.logger.ErrorContext(ctx, "failed to get node",
 			"error", err,
@@ -2937,6 +3068,8 @@ func (w *SnapshotWorker) Work(ctx context.Context, job *river.Job[SnapshotJob]) 
 				"vm_id", vm.ID,
 			)
 		}
+		// The node drops its checkpoints on a revert only as far as it can.
+		resetBackupChain(ctx, vm.ID)
 	}
 
 	// Persist snapshot lifecycle state. The row is created 'pending' and nothing

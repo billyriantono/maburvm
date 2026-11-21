@@ -130,6 +130,16 @@ func (r *NetworkRepository) DeleteByVMID(ctx context.Context, vmID string) error
 	if err := r.db.WithContext(ctx).Unscoped().Where("vm_id = ?", vmID).Delete(&models.PortForward{}).Error; err != nil {
 		return err
 	}
+	// So do the NAT port block, hostnames and group attachments (skipped on a
+	// test schema without those tables).
+	for _, table := range []string{"nat_port_blocks", "vm_hostnames", "vm_firewall_groups"} {
+		if !r.db.Migrator().HasTable(table) {
+			continue
+		}
+		if err := r.db.WithContext(ctx).Exec("DELETE FROM "+table+" WHERE vm_id = ?", vmID).Error; err != nil {
+			return err
+		}
+	}
 	return r.db.WithContext(ctx).Unscoped().Where("vm_id = ?", vmID).Delete(&models.Network{}).Error
 }
 

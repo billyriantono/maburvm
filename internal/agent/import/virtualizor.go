@@ -133,6 +133,7 @@ type DiskDriver struct {
 // DiskSource represents disk source configuration
 type DiskSource struct {
 	File   string `xml:"file,attr"`
+	Dev    string `xml:"dev,attr,omitempty"`
 	Pool   string `xml:"pool,attr,omitempty"`
 	Volume string `xml:"volume,attr,omitempty"`
 }
@@ -315,9 +316,11 @@ func extractDiskInfo(candidate *ImportCandidate, domain *LibvirtDomain) {
 			Device: disk.Device,
 		}
 
-		// Extract source file
+		// Extract the source: a file, or a block device such as an LVM volume
 		if disk.Source != nil && disk.Source.File != "" {
 			diskInfo.SourceFile = disk.Source.File
+		} else if disk.Source != nil && disk.Source.Dev != "" && disk.Device == "disk" {
+			diskInfo.SourceFile = disk.Source.Dev
 		}
 
 		// Extract format from driver

@@ -151,12 +151,15 @@ export function useUpdateVM(id: string) {
   })
 }
 
+// deleteImportedVolumes also removes an imported VM's own LVM volumes; an
+// operator's choice, kept and listed under their pool otherwise.
 export function useDeleteVM() {
   const queryClient = useQueryClient()
 
-  return useMutation<void, Error, string>({
-    mutationFn: async (id) => {
-      await api.delete(`/api/v1/vms/${id}`)
+  return useMutation<void, Error, string | { id: string; deleteImportedVolumes?: boolean }>({
+    mutationFn: async (arg) => {
+      const { id, deleteImportedVolumes } = typeof arg === "string" ? { id: arg, deleteImportedVolumes: false } : arg
+      await api.delete(`/api/v1/vms/${id}${deleteImportedVolumes ? "?delete_imported_volumes=true" : ""}`)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['vms', 'list'] })
@@ -374,20 +377,6 @@ export function useVMLimits(id: string) {
     onSuccess: done,
   })
   return { set, apply, throttle, unthrottle }
-}
-
-// useMigrateVM live-migrates a VM to another node.
-export function useMigrateVM(id: string) {
-  const queryClient = useQueryClient()
-  return useMutation<void, Error, { dest_node_id: string; live?: boolean; copy_storage?: boolean }>({
-    mutationFn: async (data) => {
-      await api.post(`/api/v1/vms/${id}/migrate`, data)
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms', 'detail', id] })
-      queryClient.invalidateQueries({ queryKey: ['vms', 'list'] })
-    },
-  })
 }
 
 // useVMMetricsHistory returns persisted samples for the trailing `minutes` window.

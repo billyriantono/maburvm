@@ -753,6 +753,106 @@ checks once the agent is updated.
 The agent no longer needs the panel's database or object storage settings
 (`DB_*`, `S3_*`) in its environment to start; nodes that have them keep working.
 
+### 6.3 Moving VMs between nodes, and draining a node
+
+Staff with **Move VMs to another node** (`vm:migrate`) move a VM from its
+Settings tab; staff with **Drain nodes** (`node:drain`) empty a node from its
+page. Both need the agent of this version on both nodes; an older agent is
+refused with "needs an agent update". A move runs as a background job: a
+running VM moves live (memory and disks copied while it runs, then a pause of
+about a second), a stopped VM moves offline (its disks copied). The VM stays on
+its node until it is seen running on the new one; only then are its network
+rules, console and limits applied there and its old definition and disk files
+removed. A failed or cancelled move leaves the VM where it was and removes only
+the files it prepared on the destination.
+
+What is refused, with the reason shown before anything starts: floating IPs or
+a private network attached (they live on one node), snapshots, an ISO in the
+drive, rescue mode, a backup copying the disks, an address pool not available
+on the destination, a port forward whose port the destination already uses
+(another VM's forward, a NAT VM's ports, or 80/443 when it routes hostnames), a
+NAT VM, a disk on LVM or another block device, storage that is not a directory
+pool, no room under the destination's limits, and, for a live move of a VM with
+the host's own CPU (the default `host-passthrough`), a destination with a
+different CPU; move such a VM offline instead. Without a chosen pool a VM lands
+in the destination's best directory pool, even when its primary pool is LVM. A
+port the destination takes while the VM is copying is dropped from the VM's
+forwards at the switch-over and named in the move's note. A moved VM's next
+scheduled backup is a full one.
+
+**The migration link.** The panel sets this up the first time a VM moves to or
+from a node; nothing is configured by hand. Each agent generates its own key
+(`/var/lib/maburvm/migration/id_ed25519`). Every other node accepts it in
+root's `authorized_keys`, in a block the agent manages, only from that node's
+address, with no shell, pty or forwarding, and only to run the agent's
+`migration-shell` (a libvirt connection, or a stopped VM's disk for an offline
+move). Each node pins the other nodes' SSH host keys, one file per node under
+`/var/lib/maburvm/migration/known_hosts.d/`, and connects with strict host key
+checking through `/usr/bin/maburvm-migration-ssh`. Deleting a node removes its
+key and host keys from every node that is online. Requirements on every node:
+
+- sshd accepts root logins with a key (`PermitRootLogin prohibit-password`, the
+  default) from the other nodes' addresses.
+- One of `virt-ssh-helper` (libvirt 6.8 and later), `socat` or
+  `netcat-openbsd`, which joins an incoming connection to libvirt.
+- For live moves, TCP ports 49152-49215 open between the nodes: QEMU sends the
+  memory and disk copy there directly, **not encrypted**. Keep that traffic on a
+  private network or a VPN between sites, or move VMs offline (the offline copy
+  runs inside the SSH connection).
+
+**Draining** stops new VMs being placed on the node (the same as pausing it),
+plans a destination for every VM (or takes the operator's), moves them one to
+three at a time, gives each VM two tries, and reports what moved and what
+stayed and why. VMs that cannot move keep running on the node. Stop drain
+cancels the moves under way; nothing is lost. The node stays paused for new
+VMs afterwards until it is resumed.
+
+### 6.4 Firewall groups and NAT VPS
+
+**Firewall groups** (Firewall groups in the menu; `firewall_group:read` and
+`firewall_group:update`) are rule sets attached to many VMs. Staff make groups
+for everyone; customers make their own and attach them to their own VMs. A group
+sits before a VM's own rules (they cannot override it) or after them (they can).
+Its rules count toward the per-VM rule limit, and the outbound mail block stays
+above every rule. A plan can name a group for everyone that VMs created on it
+get instead of the built-in rules; VMs that exist are not changed. Editing a
+group queues a network push to every VM it is on. Nothing new is needed on the
+nodes: group rules reach them as ordinary rules.
+
+**NAT VPS.** A VM on a NAT plan gets a private address from a NAT pool on its
+node, a block of public ports on the node's publish address (`MABURVM_NAT_ADDRESS`,
+see the table above), and its first port forwarded to SSH (Remote Desktop on
+Windows). Its owner forwards more ports inside the block only, and may route
+website hostnames to it. To offer NAT on a node:
+
+1. Give a bridge on the node the gateway address of a private range (for
+   example `10.20.0.1/24` on `natbr0`), kept across reboots by the node's own
+   network configuration. Use a plain bridge, or a libvirt network in `route`
+   or `open` mode: a libvirt `nat` network rejects incoming connections, so
+   forwards and hostnames would never reach the VMs. The agent masquerades the
+   private addresses itself.
+2. Under IP Pools, create an IPv4 pool for that range on that node with the
+   bridge and gateway, and tick **NAT pool**. NAT pools are never used for VMs
+   that should get a public address.
+3. On the node's page, set the **NAT ports** range (none until you do; for
+   example 20000-29999). Ports already forwarded and the agent, libvirt and
+   console ports are skipped; keep the range clear of anything else the node
+   listens on, such as SSH on a non-standard port, because a forward on the
+   publish address takes that port's traffic. Nodes without a range are not
+   picked for NAT VMs.
+4. Create a plan with **NAT** as its address, the ports per VM and the number of
+   hostnames.
+
+Hostnames: the agent listens on the publish address's ports 80 and 443 only
+while at least one verified hostname is routed on the node, so those ports must
+be free there (no web server on the node) and open in any firewall in front of
+it. HTTP is routed by its Host header with `X-Forwarded-For` added; HTTPS is
+passed through by its SNI, so certificates stay on the VMs. A customer proves a
+hostname with a TXT record `_maburvm-verify.<hostname>` or by pointing it at the
+publish address; one hostname is routed to one VM. This needs the agent of this
+version: on an older one the panel refuses hostnames with "needs agent update".
+NAT VMs cannot move to another node (their address and ports belong to theirs).
+
 ## 7. TLS & reverse proxy
 
 The production composition publishes **only** the `web` UI on loopback
@@ -1117,13 +1217,34 @@ If using external S3, use your provider's snapshot/versioning.
 ### 9.6 Backups of customers' VMs
 
 Where VM backups are kept is set in the panel: **Settings, System, Backup**.
-It is one S3-compatible bucket (endpoint, region, bucket, optional path prefix,
-access key, secret key, HTTPS on or off). The secret key is stored encrypted
-with the panel's AES key and is never shown again.
+There can be several destinations; new backups go to the default one, and
+every backup records the destination it was made in, so changing the default
+keeps older backups restorable and deletable. A destination is one of:
 
-- The bucket must be reachable from **every node** (they write and read the
-  backups) and from the **panel** (it deletes them, by hand or by a schedule's
-  retention). Use a store outside the panel host and outside the nodes.
+- an **S3-compatible bucket** (endpoint, region, bucket, optional path prefix,
+  access key, secret key, HTTPS on or off);
+- an **SFTP server** (host, port, user, password or private key without a
+  passphrase, directory). Its host key is pinned: paste the line from
+  `ssh-keyscan`, or use **Read from server** and compare the fingerprint
+  with your provider's before saving. A server presenting another key is
+  refused;
+- a **directory on the nodes**: an NFS or CIFS share, or a disk of its own,
+  mounted at the same path on each node that backs up there. A node refuses a
+  directory on its root file system and stops writing when the mount is gone.
+  A disk mounted on one node holds that node's backups only.
+
+Secrets are stored encrypted with the panel's AES key and are never shown
+again. The S3 destination saved before this version becomes the default when
+the panel upgrades.
+
+- An S3 bucket or SFTP server must be reachable from **every node** (they
+  write and read the backups) and from the **panel** (it deletes them, by hand
+  or by a schedule's retention). A directory on the nodes is deleted from
+  through the node that wrote the backup. Use storage outside the panel host
+  and outside the nodes' own disks.
+- SFTP servers and directories need the current agent on every node that uses
+  them; an older one is refused with "needs an agent update" instead of
+  writing to its own storage.
 - **Test destination** on that page connects from the panel and from each
   selected node, writes a small file, reads it back and deletes it. A node
   that answers "Needs an agent update" runs an agent from before this setting:
@@ -1152,8 +1273,33 @@ may take hours for a large disk; the new VM shows as creating until it is done,
 and a panel restart in the meantime does not interrupt it. The original VM and
 the backup are not changed.
 
+**Incremental backups.** Staff can set a VM's schedule to take a full backup
+every N days and, in between, copy only what changed since the backup before
+(customers cannot turn it on). With it set, a running VM on a node with libvirt
+7.2 or newer and QEMU 6.0 or newer, whose disks are all qcow2 files, is copied
+with libvirt's backup API and leaves a checkpoint (a change-tracking bitmap
+inside each disk) for the next backup. Anything else gets a full backup, and
+the backup says why: an older node, a disk on LVM, a VM that was off, a
+checkpoint lost when the VM was killed rather than shut down, or disks replaced
+by a restore, a reinstall, a snapshot revert or a move to another node. Every
+other VM is backed up with temporary overlays exactly as before. The API copy
+needs room beside the disks for the disks' size plus the largest one, held for
+the whole backup so that other backups on the node leave it alone, and falls
+back to overlays when that room is not there. Restoring an incremental backup downloads it with every backup
+it builds on, back to its full one; retention and plan allowances never delete
+a backup another kept one needs, and such a backup cannot be deleted by hand
+before the newer ones. Customer snapshots and their reverts remove the VM's
+checkpoints, so the next backup after one is full.
+
+The **Backups** page in the sidebar lists every VM with its last successful
+backup, its last result, schedule and next run, failing and stale ones first,
+with what each destination holds and how many backups run and wait on each
+node.
+
 After setting a destination, prove it once per node with a throwaway VM: make a
-backup, restore it in place, and restore it as a new VM on another node.
+backup, restore it in place, and restore it as a new VM on another node. For
+incremental backups, take two scheduled backups of a running throwaway VM, write
+some files in between, and restore the second.
 
 ## 10. Static validation
 

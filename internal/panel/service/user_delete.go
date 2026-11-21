@@ -84,6 +84,11 @@ func ReassignUserVMs(ctx context.Context, tx *gorm.DB, fromID, toID string) ([]O
 		UPDATE vms SET user_id = ?, updated_at = NOW() WHERE id IN ?`, toID, ids, toID, ids).Error; err != nil {
 		return nil, fmt.Errorf("move VMs: %w", err)
 	}
+	// The account's firewall groups go with its VMs, so the new owner can
+	// still change or take off what protects them.
+	if err := tx.WithContext(ctx).Exec(`UPDATE firewall_groups SET user_id = ? WHERE user_id = ?`, toID, fromID).Error; err != nil {
+		return nil, fmt.Errorf("move firewall groups: %w", err)
+	}
 	return vms, nil
 }
 

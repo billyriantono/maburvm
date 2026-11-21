@@ -1,0 +1,13 @@
+DROP TABLE IF EXISTS vm_hostnames;
+DROP TABLE IF EXISTS nat_port_blocks;
+ALTER TABLE nodes DROP COLUMN IF EXISTS nat_address;
+ALTER TABLE nodes DROP COLUMN IF EXISTS nat_port_end;
+ALTER TABLE nodes DROP COLUMN IF EXISTS nat_port_start;
+ALTER TABLE ip_pools DROP COLUMN IF EXISTS nat;
+ALTER TABLE plans DROP COLUMN IF EXISTS nat_hostnames;
+ALTER TABLE plans DROP COLUMN IF EXISTS nat_ports;
+ALTER TABLE plans DROP COLUMN IF EXISTS network_type;
+ALTER TABLE plans DROP COLUMN IF EXISTS default_firewall_group_id;
+DROP TABLE IF EXISTS vm_firewall_groups;
+DROP TABLE IF EXISTS firewall_group_rules;
+DROP TABLE IF EXISTS firewall_groups;

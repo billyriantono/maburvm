@@ -23,6 +23,7 @@ import { useCan } from "@/lib/hooks/use-auth"
 import { LimitsFields, NO_LIMITS, limitsProblem, limitsSummary } from "@/components/vm-limits"
 import { PlanRolloutDialog } from "@/components/plan-rollout"
 import { planAllowances, planPrice } from "@/lib/plans"
+import { useFirewallGroups } from "@/lib/hooks/use-firewall-groups"
 
 // An empty number field is "not set" (no price, no limit), never 0.
 const numOrNull = (v: string) => (v.trim() === "" ? null : Number(v))
@@ -46,6 +47,10 @@ const emptyForm: CreatePlanRequest = {
   max_backups: null,
   max_extra_ipv4: null,
   max_extra_ipv6: null,
+  default_firewall_group_id: "",
+  network_type: "public",
+  nat_ports: 20,
+  nat_hostnames: 0,
   description: "",
   is_active: true,
 }
@@ -61,6 +66,7 @@ export default function PlansPage() {
   const createPlan = useCreatePlan()
   const updatePlan = useUpdatePlan()
   const deletePlan = useDeletePlan()
+  const { data: globalGroups } = useFirewallGroups("global", mayEdit && can("firewall_group:read"))
 
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -92,6 +98,10 @@ export default function PlansPage() {
       max_backups: plan.max_backups ?? null,
       max_extra_ipv4: plan.max_extra_ipv4 ?? null,
       max_extra_ipv6: plan.max_extra_ipv6 ?? null,
+      default_firewall_group_id: plan.default_firewall_group_id ?? "",
+      network_type: plan.network_type ?? "public",
+      nat_ports: plan.nat_ports || 20,
+      nat_hostnames: plan.nat_hostnames ?? 0,
       description: plan.description ?? "",
       is_active: plan.is_active,
     })
@@ -280,6 +290,57 @@ export default function PlansPage() {
             </div>
           </div>
           <div className="mt-5 border-t pt-4">
+            <h3 className="text-sm font-medium">Network and firewall</h3>
+            <p className="mb-3 text-xs text-muted-foreground">
+              For VMs created on this plan from now on; existing VMs keep their address and firewall.
+            </p>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
+              <div>
+                <label htmlFor="plan-network" className="mb-1 block text-xs font-medium text-muted-foreground">Address</label>
+                <select
+                  id="plan-network"
+                  value={form.network_type ?? "public"}
+                  onChange={(e) => setForm({ ...form, network_type: e.target.value as CreatePlanRequest["network_type"] })}
+                  className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                >
+                  <option value="public">A public address of its own</option>
+                  <option value="nat">NAT: a private address and public ports</option>
+                </select>
+                {form.network_type === "nat" && (
+                  <p className="mt-1 text-[10px] text-muted-foreground">Needs a NAT pool on the node (IP Pools) and free ports in the node&apos;s NAT range (on the node&apos;s page).</p>
+                )}
+              </div>
+              {form.network_type === "nat" && (<>
+                <div>
+                  <label htmlFor="plan-nat-ports" className="mb-1 block text-xs font-medium text-muted-foreground">Public ports per VM</label>
+                  <Input id="plan-nat-ports" type="number" min={1} max={1000} value={form.nat_ports ?? 20} onChange={(e) => setForm({ ...form, nat_ports: Number(e.target.value) })} />
+                  <p className="mt-1 text-[10px] text-muted-foreground">One block in a row; the first goes to SSH, or Remote Desktop on Windows.</p>
+                </div>
+                <div>
+                  <label htmlFor="plan-nat-hosts" className="mb-1 block text-xs font-medium text-muted-foreground">Hostnames per VM</label>
+                  <Input id="plan-nat-hosts" type="number" min={0} max={100} value={form.nat_hostnames ?? 0} onChange={(e) => setForm({ ...form, nat_hostnames: Number(e.target.value) })} />
+                  <p className="mt-1 text-[10px] text-muted-foreground">Websites routed to the VM on the node&apos;s ports 80 and 443. 0 = none.</p>
+                </div>
+              </>)}
+              <div>
+                <label htmlFor="plan-fw-group" className="mb-1 block text-xs font-medium text-muted-foreground">Firewall for new VMs</label>
+                <select
+                  id="plan-fw-group"
+                  value={form.default_firewall_group_id ?? ""}
+                  onChange={(e) => setForm({ ...form, default_firewall_group_id: e.target.value })}
+                  className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                >
+                  <option value="">Built-in rules (SSH or Remote Desktop, ping, web)</option>
+                  {form.default_firewall_group_id && !globalGroups?.some((g) => g.id === form.default_firewall_group_id) && (
+                    <option value={form.default_firewall_group_id}>The group set now</option>
+                  )}
+                  {(globalGroups ?? []).map((g) => <option key={g.id} value={g.id}>Group: {g.name} ({g.rule_count} rules)</option>)}
+                </select>
+                <p className="mt-1 text-[10px] text-muted-foreground">A group is placed after the VM&apos;s own rules, so customers can still add their own. Groups are under Firewall groups.</p>
+              </div>
+            </div>
+          </div>
+          <div className="mt-5 border-t pt-4">
             <h3 className="text-sm font-medium">CPU and disk limits</h3>
             <p className="mb-3 text-xs text-muted-foreground">
               What each VM on this plan may take from its node, so one busy VM cannot slow down the others. New VMs, and VMs moved to this plan, get these. Changing them leaves existing VMs as they are until you use Apply to VMs; an administrator can also change a VM&apos;s limits on its page.
@@ -352,6 +413,7 @@ export default function PlansPage() {
                 <div className="flex items-center gap-1"><Zap className="w-3 h-3 text-muted-foreground" />{plan.bandwidth_mbps ? `${plan.bandwidth_mbps}` : "∞"}</div>
                 <div className="text-[11px] text-muted-foreground">{plan.data_quota_gb ? `${plan.data_quota_gb}GB·${plan.over_quota_policy[0].toUpperCase()}` : "∞ data"}</div>
                 {plan.smtp_policy === "blocked" && <div className="text-[11px] text-muted-foreground">Port 25 blocked</div>}
+                {plan.default_firewall_group_id && <div className="text-[11px] text-muted-foreground">Firewall: {globalGroups?.find((g) => g.id === plan.default_firewall_group_id)?.name ?? "a group"}</div>}
                 {limitsSummary(plan.limits).map((line) => <div key={line} className="text-[11px] text-muted-foreground">{line}</div>)}
                 {planAllowances(plan).map((line) => <div key={line} className="text-[11px] text-muted-foreground">{line}</div>)}
               </div>

@@ -52,6 +52,8 @@ type CreateIPPoolRequest struct {
 	// LinkPrefix (delegated pools) is the router<->node link /<n> when it lies
 	// inside the pool; it is never handed to a VM.
 	LinkPrefix string `json:"link_prefix,omitempty"`
+	// NAT makes it a pool of private addresses for NAT VMs.
+	NAT bool `json:"nat,omitempty"`
 }
 
 // UpdateIPPoolRequest carries editable metadata for an existing pool. Every
@@ -70,6 +72,8 @@ type UpdateIPPoolRequest struct {
 	// existing prefixes were computed from the old length.
 	DelegatedPrefixLen *int    `json:"delegated_prefix_len,omitempty"`
 	LinkPrefix         *string `json:"link_prefix,omitempty"` // "" clears it
+	// NAT may only change while no address of the pool is in use.
+	NAT *bool `json:"nat,omitempty"`
 }
 
 type CreateIPAddressRequest struct {
@@ -116,7 +120,13 @@ func (s *IPAMService) CreatePool(ctx context.Context, req *CreateIPPoolRequest) 
 		}
 		linkPrefix = &lp
 	}
+	if req.NAT {
+		if err := validateNATPool(family, req.CIDR, req.Orderable); err != nil {
+			return nil, err
+		}
+	}
 	pool := &models.IPPool{
+		NAT:                req.NAT,
 		Name:               req.Name,
 		NodeIDs:            req.NodeIDs,
 		Family:             family,
@@ -184,6 +194,21 @@ func (s *IPAMService) UpdatePool(ctx context.Context, id string, req *UpdateIPPo
 	if req.Orderable != nil {
 		pool.Orderable = *req.Orderable
 	}
+	if req.NAT != nil && *req.NAT != pool.NAT {
+		var used int64
+		if err := s.db.WithContext(ctx).Model(&models.IPAddress{}).Where("pool_id = ? AND vm_id IS NOT NULL", pool.ID).Count(&used).Error; err != nil {
+			return nil, err
+		}
+		if used > 0 {
+			return nil, fmt.Errorf("cannot change whether the pool is NAT while %d of its addresses are in use", used)
+		}
+		pool.NAT = *req.NAT
+	}
+	if pool.NAT {
+		if err := validateNATPool(pool.Family, pool.CIDR, pool.Orderable); err != nil {
+			return nil, err
+		}
+	}
 	if req.DelegatedPrefixLen != nil {
 		if err := validateDelegatedPrefixLen(pool.Family, pool.CIDR, *req.DelegatedPrefixLen); err != nil {
 			return nil, err
@@ -230,6 +255,23 @@ func (s *IPAMService) UpdatePool(ctx context.Context, id string, req *UpdateIPPo
 		pool.NodeIDs = *req.NodeIDs
 	}
 	return pool, nil
+}
+
+// validateNATPool checks a NAT pool is private IPv4 space (RFC 1918 or the
+// shared 100.64.0.0/10) that customers cannot order as floating IPs.
+func validateNATPool(family, cidr string, orderable bool) error {
+	if family != models.IPFamilyIPv4 {
+		return fmt.Errorf("a NAT pool holds IPv4 addresses; give a NAT VM IPv6 from an IPv6 pool")
+	}
+	ip, _, err := net.ParseCIDR(cidr)
+	shared := &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
+	if err != nil || !(ip.IsPrivate() || shared.Contains(ip)) {
+		return fmt.Errorf("a NAT pool needs a private range (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 or 100.64.0.0/10)")
+	}
+	if orderable {
+		return fmt.Errorf("a NAT pool cannot be orderable: its addresses are private")
+	}
+	return nil
 }
 
 // validateBridgeName rejects names that can't be a Linux bridge interface (the

@@ -51,3 +51,11 @@ func (r *PlanRepository) NameExists(ctx context.Context, name string) (bool, err
 	err := r.db.WithContext(ctx).Model(&models.Plan{}).Where("name = ?", name).Count(&count).Error
 	return count > 0, err
 }
+
+// GlobalFirewallGroupExists reports whether id is a firewall group staff
+// manage for everyone.
+func (r *PlanRepository) GlobalFirewallGroupExists(ctx context.Context, id string) (bool, error) {
+	var count int64
+	err := r.db.WithContext(ctx).Model(&models.FirewallGroup{}).Where("id = ? AND user_id IS NULL", id).Count(&count).Error
+	return count > 0, err
+}

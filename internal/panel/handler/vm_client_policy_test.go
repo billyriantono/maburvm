@@ -138,20 +138,19 @@ func TestVMClone_ClientNoDestNodePassesPolicy(t *testing.T) {
 	assert.NotContains(t, rec.Body.String(), "may not select VM network or infrastructure placement")
 }
 
-// TestVMMigrate_ClientDenied verifies a client migration is rejected with the
-// generic 403.
+// TestVMMigrate_ClientDenied verifies a customer cannot move a VM: the routes
+// need vm:migrate, which no customer role holds.
 func TestVMMigrate_ClientDenied(t *testing.T) {
 	db := newVMRouteTestDB(t)
 	owner := seedUser(t, db, models.RoleClient)
 	vmID := seedVM(t, db, owner)
 
-	h := newTestVMHandler(t, db)
 	c, rec := ctxWithUser(t, db, owner, models.RoleClient)
+	c.Get(middleware.UserContextKey).(*middleware.UserContext).Permissions = middleware.GetPermissionsForRole(models.RoleClient)
 	c.SetParamNames("id")
 	c.SetParamValues(vmID)
 	setBody(c, map[string]interface{}{"dest_node_id": uuid.New().String()})
 
-	require.NoError(t, h.MigrateVM(c))
+	require.NoError(t, middleware.RequirePermission("vm:migrate")(NewMigrationHandler(nil).StartMigration)(c))
 	assert.Equal(t, http.StatusForbidden, rec.Code)
-	assert.Contains(t, rec.Body.String(), "may not select VM network or infrastructure placement")
 }

@@ -20,7 +20,8 @@ export function planPrice(p: Priced): string | null {
   return parts.length ? parts.join(" or ") : null
 }
 
-type Allowances = Pick<Plan, "max_snapshots" | "max_backups" | "max_extra_ipv4" | "max_extra_ipv6">
+type Allowances = Pick<Plan, "max_snapshots" | "max_backups" | "max_extra_ipv4" | "max_extra_ipv6"> &
+  Partial<Pick<Plan, "network_type" | "nat_ports" | "nat_hostnames">>
 
 function count(n: number, one: string, many: string): string {
   return n === 0 ? `No ${many}` : `${n} ${n === 1 ? one : many}`
@@ -29,6 +30,10 @@ function count(n: number, one: string, many: string): string {
 /** What each VM on the plan may keep, for the limits that are set. */
 export function planAllowances(p: Allowances): string[] {
   const out: string[] = []
+  if (p.network_type === "nat") {
+    out.push(`Private address with ${p.nat_ports ?? 0} public ports`)
+    out.push(count(p.nat_hostnames ?? 0, "website hostname", "website hostnames"))
+  }
   if (p.max_snapshots != null) out.push(count(p.max_snapshots, "snapshot", "snapshots"))
   if (p.max_backups != null) out.push(count(p.max_backups, "backup", "backups"))
   if (p.max_extra_ipv4 != null) out.push(count(p.max_extra_ipv4, "extra IPv4 address", "extra IPv4 addresses"))

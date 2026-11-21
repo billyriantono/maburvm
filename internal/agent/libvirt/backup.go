@@ -165,6 +165,9 @@ func refuseDuringBackup(dom *libvirt.Domain) error {
 	if storage.OnBackupOverlay(disks) {
 		return ErrBackupRunning
 	}
+	if _, err := dom.BackupGetXMLDesc(0); err == nil {
+		return ErrBackupRunning
+	}
 	return nil
 }
 
@@ -194,6 +197,22 @@ func backupBases(xmlDesc string) []string {
 		}
 		if ov, err := overlayFromFile(d.Target, d.Path); err == nil && !ov.Block {
 			out = append(out, ov.Base)
+		}
+	}
+	return out
+}
+
+// UnderOverlays puts, in place of each disk on a backup overlay, the image
+// under it: a VM deleted mid-backup owns that image, a logical volume included.
+func UnderOverlays(disks []storage.DomainDisk) []storage.DomainDisk {
+	out := make([]storage.DomainDisk, len(disks))
+	for i, d := range disks {
+		out[i] = d
+		if !storage.IsBackupOverlay(d.Path) {
+			continue
+		}
+		if ov, err := overlayFromFile(d.Target, d.Path); err == nil {
+			out[i] = storage.DomainDisk{Target: d.Target, Path: ov.Base, Format: ov.BaseFormat, Block: ov.Block}
 		}
 	}
 	return out
@@ -466,13 +485,16 @@ func overlayFromFile(target, path string) (storage.Overlay, error) {
 // are replaced (reinstall, restore): a snapshot lives inside the image being
 // thrown away, and a record left behind would offer a revert that cannot
 // work. Each is deleted with its data where it can be, and as a record only
-// where not.
+// where not. Backup checkpoints go too: their bitmaps are in the same images.
 func dropSnapshots(dom *libvirt.Domain) error {
+	var errs []error
+	if err := dropCheckpoints(dom); err != nil {
+		errs = append(errs, err)
+	}
 	snaps, err := dom.ListAllSnapshots(0)
 	if err != nil {
-		return fmt.Errorf("failed to list snapshots: %w", err)
+		return errors.Join(append(errs, fmt.Errorf("failed to list snapshots: %w", err))...)
 	}
-	var errs []error
 	for i := range snaps {
 		name, _ := snaps[i].GetName()
 		if err := snaps[i].Delete(0); err != nil {

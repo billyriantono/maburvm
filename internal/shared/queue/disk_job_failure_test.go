@@ -98,7 +98,7 @@ const (
 
 // backupWorkerFixture is a backup worker with a database holding one VM, its
 // node and one pending backup, talking to the given agent.
-func backupWorkerFixture(t *testing.T, agent *backupAgent, store *pb.ObjectStore) (*BackupWorker, *gorm.DB) {
+func backupWorkerFixture(t *testing.T, agent pb.NodeAgentServer, store *pb.ObjectStore) (*BackupWorker, *gorm.DB) {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))),
 		&gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
@@ -108,7 +108,7 @@ func backupWorkerFixture(t *testing.T, agent *backupAgent, store *pb.ObjectStore
 	for _, stmt := range []string{
 		`CREATE TABLE nodes (id TEXT PRIMARY KEY, name TEXT, ip_address TEXT, status TEXT, token TEXT, deleted_at DATETIME)`,
 		`CREATE TABLE vms (id TEXT PRIMARY KEY, user_id TEXT, node_id TEXT, hostname TEXT, os_template_id TEXT, resources TEXT, status TEXT, updated_at DATETIME, deleted_at DATETIME)`,
-		`CREATE TABLE backups (id TEXT PRIMARY KEY, vm_id TEXT, storage_provider TEXT, storage_path TEXT, backup_type TEXT, status TEXT, size INTEGER DEFAULT 0, compression TEXT, checksum TEXT, error_message TEXT, started_at DATETIME, completed_at DATETIME, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME, disks TEXT DEFAULT '[]', consistency TEXT DEFAULT '')`,
+		`CREATE TABLE backups (id TEXT PRIMARY KEY, vm_id TEXT, storage_provider TEXT, storage_path TEXT, backup_type TEXT, status TEXT, size INTEGER DEFAULT 0, compression TEXT, checksum TEXT, error_message TEXT, started_at DATETIME, completed_at DATETIME, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME, disks TEXT DEFAULT '[]', consistency TEXT DEFAULT '', destination_id TEXT, node_id TEXT, mode TEXT DEFAULT 'full', parent_id TEXT, chain_id TEXT, checkpoint TEXT DEFAULT '', mode_note TEXT DEFAULT '')`,
 		`INSERT INTO nodes (id, name, ip_address, status, token) VALUES ('` + testNodeID + `', 'node-1', '192.0.2.10', 'active', 'tok')`,
 		`INSERT INTO vms (id, user_id, node_id, hostname, os_template_id, resources, status) VALUES ('` + testVMID + `', 'u', '` + testNodeID + `', 'h', 't', '{"cpu":1,"ram":512,"disk":10}', 'running')`,
 		`INSERT INTO backups (id, vm_id, storage_provider, storage_path, status) VALUES ('` + testBackupID + `', '` + testVMID + `', 's3', 'backups/x.qcow2', 'pending')`,
@@ -133,7 +133,7 @@ func backupWorkerFixture(t *testing.T, agent *backupAgent, store *pb.ObjectStore
 
 	prevCtx, prevHook := globalWorkerContext, ObjectStoreHook
 	SetWorkerContext(&WorkerContext{DB: db, VMRepo: repository.NewVMRepository(db), NodeRepo: repository.NewNodeRepository(db), AgentClient: agents})
-	ObjectStoreHook = func(context.Context) (*pb.ObjectStore, error) { return store, nil }
+	ObjectStoreHook = func(context.Context, string) (*pb.ObjectStore, string, error) { return store, "dest-1", nil }
 	t.Cleanup(func() {
 		globalWorkerContext, ObjectStoreHook = prevCtx, prevHook
 		conn.Close()
@@ -257,7 +257,9 @@ func TestBackupRecordsWhereTheFileWent(t *testing.T) {
 func TestBackupStopsWhenTheDestinationCannotBeRead(t *testing.T) {
 	agent := &backupAgent{resp: &pb.BackupDiskResponse{Success: true}}
 	w, db := backupWorkerFixture(t, agent, nil)
-	ObjectStoreHook = func(context.Context) (*pb.ObjectStore, error) { return nil, errors.New("cannot decrypt") }
+	ObjectStoreHook = func(context.Context, string) (*pb.ObjectStore, string, error) {
+		return nil, "", errors.New("cannot decrypt")
+	}
 
 	// Tried again, because the cause may be the database not answering for a
 	// moment and nothing has been exported; then it fails with its reason.

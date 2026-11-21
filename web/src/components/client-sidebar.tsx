@@ -12,6 +12,7 @@ import {
   KeyRound,
   KeySquare,
   User as UserIcon,
+  BrickWall,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useNavDrawer } from "@/components/nav-drawer"
@@ -29,6 +30,7 @@ const navItems = [
   { href: "/client/images", label: "Images", icon: Layers },
   { href: "/client/vpcs", label: "Private Networks", icon: Boxes },
   { href: "/client/floating-ips", label: "Floating IPs", icon: Network },
+  { href: "/client/firewall-groups", label: "Firewall groups", icon: BrickWall },
   { href: "/client/order", label: "Order VM", icon: PlusCircle },
 ]
 

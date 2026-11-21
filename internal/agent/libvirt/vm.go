@@ -1,6 +1,7 @@
 package libvirt
 
 import (
+	"context"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -40,9 +41,9 @@ type VMConfig struct {
 	// domain so later operations know what is inside.
 	OSType    string
 	OSVariant string
-	// CPUModel selects the guest CPU. Empty defaults to a portable, live-migratable
-	// model ("kvm64"); "host-model"/"host-passthrough" maximize performance but
-	// reduce cross-host migratability; any other value is used as a custom model.
+	// CPUModel selects the guest CPU. Empty is host-passthrough (see
+	// buildDomainCPU); "host-model" is accepted as a mode; any other value is
+	// used as a custom model.
 	CPUModel string
 
 	// Network interface configuration
@@ -121,12 +122,9 @@ func NewVMManager() *VMManager {
 	}
 }
 
-// generateDomainXML creates a libvirt domain XML configuration using libvirtxml
-// buildDomainCPU returns the <cpu> element for a guest. An empty model defaults
-// to "kvm64" — a portable baseline that live-migrates across heterogeneous hosts
-// (used when the user doesn't pick a CPU model). "host-model"
-// and "host-passthrough" maximize performance but reduce migratability; any other
-// value is treated as a named custom model.
+// buildDomainCPU returns the <cpu> element for a guest. An empty model is
+// host-passthrough (see below); "host-model" and "host-passthrough" are passed
+// as modes; any other value is treated as a named custom model.
 func buildDomainCPU(model string) *libvirtxml.DomainCPU {
 	switch model {
 	case "host-model":
@@ -138,8 +136,8 @@ func buildDomainCPU(model string) *libvirtxml.DomainCPU {
 		// Default to host-passthrough, not an ancient baseline model: kvm64/qemu64
 		// lack x86-64-v2 (SSE4.2/AVX...), and modern software SIGILLs on them —
 		// MongoDB 7 core-dumps, mysql:9 aborts with "CPU does not support
-		// x86-64-v2". Live migration is not part of this platform's flows, so
-		// pinning the guest to the host CPU costs nothing.
+		// x86-64-v2". The cost: such a VM moves live only to a node with the same
+		// CPU; offline it moves anywhere.
 		return &libvirtxml.DomainCPU{Mode: "host-passthrough"}
 	}
 	return &libvirtxml.DomainCPU{
@@ -194,24 +192,10 @@ func generateDomainXML(config VMConfig) (string, error) {
 	// routed prefix (see nwfilter_ipv6.go).
 	iface.FilterRef = InterfaceFilterRef(config.AntiSpoofing, config.IPAddress, config.MACAddress, config.IPv6Prefix)
 
-	// Primary disk (the cloned template image).
-	disks := []libvirtxml.DomainDisk{
-		{
-			Device: "disk",
-			Driver: &libvirtxml.DomainDiskDriver{Name: "qemu", Type: "qcow2"},
-			Source: &libvirtxml.DomainDiskSource{
-				File: &libvirtxml.DomainDiskSourceFile{File: config.DiskPath},
-			},
-			Target: &libvirtxml.DomainDiskTarget{Dev: "vda", Bus: "virtio"},
-		},
-	}
+	// Primary disk (the cloned template image): a qcow2 file, or a logical volume.
+	disks := []libvirtxml.DomainDisk{storage.DiskDevice(config.DiskPath, "vda")}
 	for _, d := range config.ExtraDisks {
-		disk := libvirtxml.DomainDisk{
-			Device: "disk",
-			Driver: &libvirtxml.DomainDiskDriver{Name: "qemu", Type: "qcow2"},
-			Source: &libvirtxml.DomainDiskSource{File: &libvirtxml.DomainDiskSourceFile{File: d.Path}},
-			Target: &libvirtxml.DomainDiskTarget{Dev: d.Target, Bus: "virtio"},
-		}
+		disk := storage.DiskDevice(d.Path, d.Target)
 		domtune.Discard(disk.Driver)
 		disks = append(disks, disk)
 	}
@@ -877,7 +861,10 @@ func DetachISO(uuidStr string) error {
 // when only CPU/RAM changed. A running VM is resized live via QEMU; a stopped VM
 // has its qcow2 file resized directly. The guest still has to grow its partition
 // and filesystem (cloud images do this automatically via growpart on boot).
-func ResizeDisk(uuidStr string, diskGB int) error {
+//
+// A primary disk on a block device is grown by growBlock (a logical volume's
+// lvextend); nil refuses it. qemu is then told the new size if it runs.
+func ResizeDisk(uuidStr string, diskGB int, growBlock func(dev string, want int64) error) error {
 	if _, err := uuid.Parse(uuidStr); err != nil {
 		return fmt.Errorf("invalid UUID format: %w", err)
 	}
@@ -895,33 +882,53 @@ func ResizeDisk(uuidStr string, diskGB int) error {
 		if err != nil {
 			return fmt.Errorf("failed to get domain XML: %w", err)
 		}
-		var domain libvirtxml.Domain
-		if err := xml.Unmarshal([]byte(xmlDesc), &domain); err != nil {
-			return fmt.Errorf("failed to parse domain XML: %w", err)
+		disks, err := storage.DomainDisks(xmlDesc)
+		if err != nil {
+			return err
 		}
-		var path, target string
-		if domain.Devices != nil {
-			for _, d := range domain.Devices.Disks {
-				if d.Device == "disk" && d.Target != nil {
-					target = d.Target.Dev
-					if d.Source != nil && d.Source.File != nil {
-						path = d.Source.File.File
-					}
-					break
-				}
-			}
-		}
-		if target == "" || path == "" {
+		if len(disks) == 0 {
 			return fmt.Errorf("no resizable primary disk found")
 		}
-
+		path, target := disks[0].Path, disks[0].Target
 		want := int64(diskGB) * 1024 * 1024 * 1024
+		running := false
+		if state, _, _ := dom.GetState(); state == libvirt.DOMAIN_RUNNING {
+			running = true
+		}
+
+		// The overlay is a file over the disk's own image: grown alone, its
+		// commit back into a logical volume could not fit.
+		if err := refuseDuringBackup(dom); err != nil {
+			return err
+		}
+		if disks[0].Block {
+			if have, serr := storage.DeviceSize(path); serr == nil && want <= have {
+				return nil
+			}
+			if growBlock == nil {
+				return fmt.Errorf("the disk is the block device %s, which cannot be resized here", path)
+			}
+			if err := growBlock(path, want); err != nil {
+				return err
+			}
+			if running {
+				have, serr := storage.DeviceSize(path)
+				if serr != nil {
+					return serr
+				}
+				if err := dom.BlockResize(target, uint64(have), libvirt.DOMAIN_BLOCK_RESIZE_BYTES); err != nil {
+					return fmt.Errorf("the volume was grown, but the running VM was not told: %w; it sees the new size after a stop and start", err)
+				}
+			}
+			return nil
+		}
+
 		// Grow-only + idempotent: skip when already at/above the requested size.
 		if info, ierr := storage.NewQCOW2Manager().ImageInfo(path); ierr == nil && want <= info.VirtualSize {
 			return nil
 		}
 
-		if state, _, _ := dom.GetState(); state == libvirt.DOMAIN_RUNNING {
+		if running {
 			if err := dom.BlockResize(target, uint64(want), libvirt.DOMAIN_BLOCK_RESIZE_BYTES); err != nil {
 				return fmt.Errorf("failed to live-resize disk: %w", err)
 			}
@@ -985,12 +992,7 @@ func AttachDisk(uuidStr, diskPath string) (string, error) {
 			return fmt.Errorf("no free virtio disk slot available")
 		}
 
-		disk := libvirtxml.DomainDisk{
-			Device: "disk",
-			Driver: &libvirtxml.DomainDiskDriver{Name: "qemu", Type: "qcow2"},
-			Source: &libvirtxml.DomainDiskSource{File: &libvirtxml.DomainDiskSourceFile{File: diskPath}},
-			Target: &libvirtxml.DomainDiskTarget{Dev: device, Bus: "virtio"},
-		}
+		disk := storage.DiskDevice(diskPath, device)
 		domtune.Discard(disk.Driver)
 		// The VM's disk caps go on the new disk too, or it would be a way round them.
 		var existing []libvirtxml.DomainDisk
@@ -1041,7 +1043,16 @@ func DetachDisk(uuidStr, device, diskPath string) error {
 		if err := refuseDuringBackup(dom); err != nil {
 			return err
 		}
-		diskXML := fmt.Sprintf(`<disk type='file' device='disk'><driver name='qemu' type='qcow2'/><source file='%s'/><target dev='%s' bus='virtio'/></disk>`, diskPath, device)
+		// A checkpoint over the disk could hold up the detach; the next backup
+		// covers other disks anyway, so it is a full one.
+		if err := dropCheckpoints(dom); err != nil {
+			log.Printf("[Disk] VM %s: backup checkpoints not removed: %v", uuidStr, err)
+		}
+		disk := storage.DiskDevice(diskPath, device)
+		diskXML, err := disk.Marshal()
+		if err != nil {
+			return fmt.Errorf("failed to describe the disk: %w", err)
+		}
 		flags := libvirt.DOMAIN_DEVICE_MODIFY_CONFIG
 		if state, _, _ := dom.GetState(); state == libvirt.DOMAIN_RUNNING {
 			flags |= libvirt.DOMAIN_DEVICE_MODIFY_LIVE
@@ -1076,44 +1087,6 @@ func SuspendVM(uuidStr string) error {
 		}
 		if err := dom.Suspend(); err != nil {
 			return fmt.Errorf("failed to suspend domain: %w", err)
-		}
-		return nil
-	})
-}
-
-// MigrateVM live-migrates a domain to a destination libvirt URI using
-// peer-to-peer migration (the source daemon drives the transfer). The domain is
-// persisted on the destination and undefined on the source on success.
-//
-// destURI example: "qemu+ssh://root@203.0.113.131/system".
-// When copyStorage is true, full block migration is used (no shared storage).
-func MigrateVM(uuidStr, destURI string, live, copyStorage bool) error {
-	if _, err := uuid.Parse(uuidStr); err != nil {
-		return fmt.Errorf("invalid UUID format: %w", err)
-	}
-	if destURI == "" {
-		return fmt.Errorf("destination URI is required")
-	}
-	return WithConnection(func(conn *libvirt.Connect) error {
-		dom, err := conn.LookupDomainByUUIDString(uuidStr)
-		if err != nil {
-			return fmt.Errorf("domain not found: %w", err)
-		}
-		defer dom.Free()
-
-		flags := libvirt.MIGRATE_PEER2PEER | libvirt.MIGRATE_PERSIST_DEST | libvirt.MIGRATE_UNDEFINE_SOURCE
-		if live {
-			flags |= libvirt.MIGRATE_LIVE
-		}
-		if copyStorage {
-			// Full block migration: copy the disk(s) to the destination since
-			// the nodes do not share storage.
-			flags |= libvirt.MIGRATE_NON_SHARED_DISK
-		}
-
-		params := &libvirt.DomainMigrateParameters{}
-		if err := dom.MigrateToURI3(destURI, params, flags); err != nil {
-			return fmt.Errorf("migration to %s failed: %w", destURI, err)
 		}
 		return nil
 	})
@@ -1338,6 +1311,9 @@ func DiskSourceFiles() (map[string]bool, error) {
 					if disk.Source != nil && disk.Source.File != nil && disk.Source.File.File != "" {
 						out[filepath.Clean(disk.Source.File.File)] = true
 					}
+					if disk.Source != nil && disk.Source.Block != nil && disk.Source.Block.Dev != "" {
+						out[filepath.Clean(disk.Source.Block.Dev)] = true
+					}
 				}
 			}
 		}
@@ -1346,8 +1322,8 @@ func DiskSourceFiles() (map[string]bool, error) {
 	return out, err
 }
 
-// PrimaryDiskPath returns the source file path of the VM's primary disk
-// (the device='disk' entry, not cdrom/seed images).
+// PrimaryDiskPath returns the source of the VM's primary disk (the
+// device='disk' entry, not cdrom/seed images): a file, or a block device.
 func PrimaryDiskPath(uuidStr string) (string, error) {
 	if _, err := uuid.Parse(uuidStr); err != nil {
 		return "", fmt.Errorf("invalid UUID format: %w", err)
@@ -1371,6 +1347,10 @@ func PrimaryDiskPath(uuidStr string) (string, error) {
 			for _, disk := range domain.Devices.Disks {
 				if disk.Device == "disk" && disk.Source != nil && disk.Source.File != nil && disk.Source.File.File != "" {
 					path = disk.Source.File.File
+					return nil
+				}
+				if disk.Device == "disk" && disk.Source != nil && disk.Source.Block != nil && disk.Source.Block.Dev != "" {
+					path = disk.Source.Block.Dev
 					return nil
 				}
 			}
@@ -1543,6 +1523,9 @@ func primaryDiskFromXML(xmlDesc string) string {
 	for _, d := range domain.Devices.Disks {
 		if d.Device == "disk" && d.Source != nil && d.Source.File != nil && d.Source.File.File != "" {
 			return d.Source.File.File
+		}
+		if d.Device == "disk" && d.Source != nil && d.Source.Block != nil && d.Source.Block.Dev != "" {
+			return d.Source.Block.Dev
 		}
 	}
 	return ""
@@ -1862,6 +1845,12 @@ func RebuildVM(uuidStr string, templatePath string, prepare func(diskPath string
 			return err
 		}
 
+		if cur, xerr := dom.GetXMLDesc(0); xerr == nil {
+			if disks, derr := storage.DomainDisks(cur); derr == nil && len(disks) > 0 && disks[0].Block {
+				return rebuildOnDevice(dom, conn, wasRunning, disks[0].Path, templatePath, prepare)
+			}
+		}
+
 		// Stop the VM if running
 		if wasRunning {
 			if err := dom.Destroy(); err != nil {
@@ -1947,6 +1936,47 @@ func RebuildVM(uuidStr string, templatePath string, prepare func(diskPath string
 	})
 }
 
+// rebuildOnDevice reinstalls a VM whose disk is a block device: the template
+// is written over the device in place. There is no second volume to fall back
+// on, so the size is checked before anything is stopped, and a failed write
+// leaves the disk half written and says so.
+func rebuildOnDevice(dom *libvirt.Domain, conn *libvirt.Connect, wasRunning bool, dev, templatePath string, prepare func(string) error) error {
+	info, err := storage.NewQCOW2Manager().ImageInfo(templatePath)
+	if err != nil {
+		return fmt.Errorf("could not read the template: %w", err)
+	}
+	have, err := storage.DeviceSize(dev)
+	if err != nil {
+		return fmt.Errorf("could not measure %s: %w", dev, err)
+	}
+	if info.VirtualSize > have {
+		return fmt.Errorf("the template needs a %d-byte disk and this VM's disk %s holds %d; grow the disk first", info.VirtualSize, dev, have)
+	}
+	if wasRunning {
+		if err := dom.Destroy(); err != nil {
+			return fmt.Errorf("failed to stop domain for rebuild: %w", err)
+		}
+	}
+	if err := dropSnapshots(dom); err != nil {
+		log.Printf("[Rebuild] some snapshots could not be removed: %v", err)
+	}
+	if err := storage.NewLVM().WriteImage(context.Background(), templatePath, "", dev, false); err != nil {
+		return fmt.Errorf("writing the template onto %s failed, and it may now hold part of it: %w", dev, err)
+	}
+	if prepare != nil {
+		if err := prepare(dev); err != nil {
+			return fmt.Errorf("failed to prepare the rebuilt disk: %w", err)
+		}
+	}
+	if wasRunning {
+		freeConsolePort(conn, dom)
+		if err := dom.Create(); err != nil {
+			return fmt.Errorf("failed to restart domain after rebuild: %w", err)
+		}
+	}
+	return nil
+}
+
 // String returns the string representation of VMStatus
 func (s VMStatus) String() string {
 	return string(s)
@@ -1986,6 +2016,11 @@ func CreateSnapshot(uuidStr, name, description string) (*VMSnapshot, error) {
 		// It would be stored in the overlay, which is committed and removed.
 		if err := refuseDuringBackup(dom); err != nil {
 			return err
+		}
+		// Older libvirt refuses a snapshot while checkpoints exist; the next
+		// backup is then a full one.
+		if err := dropCheckpoints(dom); err != nil {
+			log.Printf("[Snapshot] VM %s: backup checkpoints not removed: %v", uuidStr, err)
 		}
 
 		snapshotXML := fmt.Sprintf(`
@@ -2105,6 +2140,11 @@ func RestoreSnapshot(uuidStr, snapshotName string) error {
 		}
 		defer snap.Free()
 
+		// A revert changes the disks behind the bitmaps' back: the next backup
+		// must be a full one.
+		if err := dropCheckpoints(dom); err != nil {
+			log.Printf("[Snapshot] VM %s: backup checkpoints not removed: %v", uuidStr, err)
+		}
 		if err := snap.RevertToSnapshot(libvirt.DOMAIN_SNAPSHOT_REVERT_RUNNING); err != nil {
 			return fmt.Errorf("failed to revert to snapshot: %w", err)
 		}

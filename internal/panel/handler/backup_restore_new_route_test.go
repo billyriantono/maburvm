@@ -29,7 +29,7 @@ func TestRestoreAsNewIsForAdministrators(t *testing.T) {
 		os.Setenv("AES_KEY", "0123456789abcdef0123456789abcdef")
 	}
 	db := newAuthRouteTestDB(t)
-	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS backups (id TEXT PRIMARY KEY, vm_id TEXT, storage_provider TEXT, storage_path TEXT, backup_type TEXT, status TEXT, size INTEGER DEFAULT 0, compression TEXT, checksum TEXT, error_message TEXT, started_at DATETIME, completed_at DATETIME, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME, disks TEXT DEFAULT '[]', consistency TEXT DEFAULT '')`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS backups (id TEXT PRIMARY KEY, vm_id TEXT, storage_provider TEXT, storage_path TEXT, backup_type TEXT, status TEXT, size INTEGER DEFAULT 0, compression TEXT, checksum TEXT, error_message TEXT, started_at DATETIME, completed_at DATETIME, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME, disks TEXT DEFAULT '[]', consistency TEXT DEFAULT '', destination_id TEXT, node_id TEXT, mode TEXT DEFAULT 'full', parent_id TEXT, chain_id TEXT, checkpoint TEXT DEFAULT '', mode_note TEXT DEFAULT '')`).Error)
 
 	svc := service.NewBackupService(db, repository.NewBackupRepository(db), repository.NewBackupScheduleRepository(db),
 		repository.NewVMRepository(db), repository.NewNodeRepository(db), nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))

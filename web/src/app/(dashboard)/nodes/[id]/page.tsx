@@ -43,6 +43,8 @@ import { NodeAllocationCard } from "@/components/node-allocation"
 import { NodeInstallCommand } from "@/components/node-install-command"
 import { NodePreflight } from "@/components/node-preflight"
 import { NodeAgentSettings } from "@/components/node-agent-settings"
+import { NodeDrain } from "@/components/node-drain"
+import { NodeNATPorts } from "@/components/node-nat-ports"
 
 // Resource gauge component
 function ResourceGauge({ value, label, detail, icon: Icon, color }: { value: number; label: string; detail?: string; icon: React.ElementType; color: string }) {
@@ -507,7 +509,9 @@ export default function NodeDetailPage() {
           <NodeAllocationCard node={node} />
           <NodeStoragePools nodeId={node.id} />
           <NodePreflight nodeId={node.id} />
+          <NodeNATPorts nodeId={node.id} />
           <NodeAgentSettings nodeId={node.id} online={node.status === "active" || node.status === "maintenance"} />
+          <NodeDrain nodeId={node.id} nodeName={node.name} />
 
           {/* Node Details */}
           <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm mb-6">

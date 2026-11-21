@@ -131,6 +131,8 @@ func GetPermissionsForRole(role models.UserRole) []string {
 			// subnets without interfering, so nothing about another tenant's
 			// topology is exposed.
 			"vpc:read", "vpc:create", "vpc:delete",
+			// Firewall groups: the handlers show and change only the caller's own.
+			"firewall_group:read", "firewall_group:update",
 			// NOTE: no "network:read". That permission gates GLOBAL, un-tenant-filtered
 			// IPAM (/ipam/pools/*) and DNS reads, which would let any client enumerate
 			// every tenant's IP↔VM↔node↔rDNS mapping. A client's own VM interfaces are

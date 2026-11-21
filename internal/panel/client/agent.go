@@ -1098,10 +1098,12 @@ type DiskLocation struct {
 	DiskCount int
 }
 
-// StorageReport is what a node knows about its own storage.
+// StorageReport is what a node knows about its own storage. LVMPools is
+// empty from an agent that predates LVM pools.
 type StorageReport struct {
 	Pools         []PoolCapacity
 	DiskLocations []DiskLocation
+	LVMPools      []*pb.LVMPoolCapacity
 }
 
 // GetStorageReport measures each pool path on the node and reports where its
@@ -1110,7 +1112,7 @@ type StorageReport struct {
 // Paths are measured individually because pools on one node routinely sit on
 // different filesystems — deriving them all from the node's root filesystem is
 // the bug this replaces.
-func (c *AgentClient) GetStorageReport(ctx context.Context, nodeID string, paths []string) (*StorageReport, error) {
+func (c *AgentClient) GetStorageReport(ctx context.Context, nodeID string, paths []string, lvmPools []*pb.LVMPool) (*StorageReport, error) {
 	node, err := c.getNodeInfo(nodeID)
 	if err != nil {
 		return nil, err
@@ -1118,14 +1120,14 @@ func (c *AgentClient) GetStorageReport(ctx context.Context, nodeID string, paths
 
 	var out *StorageReport
 	err = c.executeWithRetry(ctx, node, func(ctx context.Context, client pb.NodeAgentClient) error {
-		resp, err := client.GetStorageReport(ctx, &pb.GetStorageReportRequest{Paths: paths})
+		resp, err := client.GetStorageReport(ctx, &pb.GetStorageReportRequest{Paths: paths, LvmPools: lvmPools})
 		if err != nil {
 			return err
 		}
 		if !resp.Success {
 			return fmt.Errorf("GetStorageReport failed: %s", resp.Error.GetMessage())
 		}
-		report := &StorageReport{}
+		report := &StorageReport{LVMPools: resp.GetLvmPools()}
 		for _, p := range resp.GetPools() {
 			report.Pools = append(report.Pools, PoolCapacity{
 				Path:       p.GetPath(),

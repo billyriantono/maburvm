@@ -487,7 +487,7 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 				"error":   "Conflict",
 				"message": "The selected IP pool has no free addresses left.",
 			})
-		case errors.Is(err, service.ErrNoUsablePool):
+		case errors.Is(err, service.ErrNoUsablePool), errors.Is(err, service.ErrNoNATPool), errors.Is(err, service.ErrNATPortsExhausted):
 			return c.JSON(http.StatusConflict, map[string]interface{}{
 				"error":   "Conflict",
 				"message": err.Error(),
@@ -1123,10 +1123,19 @@ func (h *VMHandler) DeleteVM(c echo.Context) error {
 	// An operator deletes any VM; an owner only what the service layer's rule
 	// for owners allows.
 	var err error
+	// Removing an imported VM's own logical volumes too is storage an operator
+	// deletes on purpose, so it needs the right to delete storage.
+	removeImported := c.QueryParam("delete_imported_volumes") == "true"
 	if userCtx, ok := middleware.GetUserContext(c); ok && userCtx.Role != models.RoleAdmin {
+		removeImported = false // an owner's delete never takes them
 		err = h.service.DeleteVMByOwner(c.Request().Context(), id, userCtx.ID.String())
+	} else if removeImported && (!ok || !userCtx.Can("storage:delete")) {
+		return c.JSON(http.StatusForbidden, map[string]interface{}{
+			"error":   "Forbidden",
+			"message": "Deleting an imported VM's volumes needs the permission to delete storage.",
+		})
 	} else {
-		err = h.service.DeleteVM(c.Request().Context(), id)
+		err = h.service.DeleteVMWithVolumes(c.Request().Context(), id, removeImported)
 	}
 	if err != nil {
 		switch {
@@ -1141,6 +1150,8 @@ func (h *VMHandler) DeleteVM(c echo.Context) error {
 				"error":   "Not Found",
 				"message": "VM not found",
 			})
+		case errors.Is(err, service.ErrVMMigrating):
+			return c.JSON(http.StatusConflict, map[string]interface{}{"error": "Conflict", "message": err.Error()})
 		default:
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
 				"error":   "Internal Server Error",
@@ -1149,7 +1160,11 @@ func (h *VMHandler) DeleteVM(c echo.Context) error {
 		}
 	}
 
-	h.logVMActivity(c, id, "vm.delete", map[string]any{"hostname": deletedHostname})
+	details := map[string]any{"hostname": deletedHostname}
+	if removeImported {
+		details["delete_imported_volumes"] = true
+	}
+	h.logVMActivity(c, id, "vm.delete", details)
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "VM deletion initiated",
@@ -1271,6 +1286,8 @@ func (h *VMHandler) handleLifecycleCommand(c echo.Context, command service.Lifec
 				"error":   "Bad Request",
 				"message": err.Error(),
 			})
+		case errors.Is(err, service.ErrVMMigrating):
+			return c.JSON(http.StatusConflict, map[string]interface{}{"error": "Conflict", "message": err.Error()})
 		default:
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
 				"error":   "Internal Server Error",
@@ -1943,57 +1960,6 @@ func (h *VMHandler) UnrescueVM(c echo.Context) error {
 	})
 }
 
-// MigrateVM handles POST /api/vms/:id/migrate - Live-migrate a VM to another node.
-// Body: {dest_node_id, live?, copy_storage?}. copy_storage defaults to true
-// (the nodes do not share storage).
-func (h *VMHandler) MigrateVM(c echo.Context) error {
-	id := c.Param("id")
-	if !h.authorizeVM(c, id) {
-		return nil
-	}
-	var req struct {
-		DestNodeID  string `json:"dest_node_id"`
-		Live        *bool  `json:"live"`
-		CopyStorage *bool  `json:"copy_storage"`
-	}
-	if err := c.Bind(&req); err != nil || req.DestNodeID == "" {
-		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "dest_node_id is required"})
-	}
-
-	// Gate-1: migration is an admin-only operation. A client cannot choose a
-	// destination node (or initiate a migration at all); reject before the
-	// service runs.
-	if isClientRole(c) {
-		return clientNetworkSelectionDenied(c)
-	}
-	live := true
-	if req.Live != nil {
-		live = *req.Live
-	}
-	copyStorage := true
-	if req.CopyStorage != nil {
-		copyStorage = *req.CopyStorage
-	}
-
-	err := h.service.MigrateVM(c.Request().Context(), &service.MigrateVMRequest{
-		VMID:        id,
-		DestNodeID:  req.DestNodeID,
-		Live:        live,
-		CopyStorage: copyStorage,
-	})
-	if err != nil {
-		switch {
-		case errors.Is(err, service.ErrVMNotFound):
-			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
-		case errors.Is(err, service.ErrNodeNotFound):
-			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "Destination node not found"})
-		default:
-			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Migration Failed", "message": err.Error()})
-		}
-	}
-	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "VM migrated to destination node"})
-}
-
 // RegisterVMRoutes registers all VM routes with the Echo router
 func RegisterVMRoutes(e *echo.Echo, handler *VMHandler, db *gorm.DB) {
 	// Wire the audit repo so lifecycle actions are recorded to audit_logs and the
@@ -2048,7 +2014,6 @@ func RegisterVMRoutes(e *echo.Echo, handler *VMHandler, db *gorm.DB) {
 		lifecycle.POST("/reset-password", handler.ResetPasswordVM)
 		lifecycle.POST("/iso/attach", handler.AttachISOVM)
 		lifecycle.POST("/iso/detach", handler.DetachISOVM)
-		lifecycle.POST("/migrate", handler.MigrateVM)
 		lifecycle.POST("/clone", handler.CloneVM)
 	}
 

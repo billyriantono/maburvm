@@ -629,6 +629,16 @@ func (s *Server) setupVMRoutes(g *echo.Group) {
 
 	handler.RegisterVMRoutes(s.echo, vmHandler, s.db)
 
+	// Moving VMs between nodes and draining nodes, as background jobs.
+	migrations := service.NewMigrationService(s.db, vmService,
+		service.NewNetworkService(s.db, repository.NewNetworkRepository(s.db), repository.NewFirewallRepository(s.db), vmRepo, nodeRepo, s.riverClient),
+		s.alertsInstance(), s.riverClient, logger)
+	queue.MigrationHook = migrations.RunMigrationJob
+	queue.DrainHook = migrations.RunDrainJob
+	service.NodeRemovedHook = migrations.RevokeNode
+	vmService.SetLinkEnsurer(migrations.EnsureLink)
+	handler.RegisterMigrationRoutes(s.echo, handler.NewMigrationHandler(migrations), s.db)
+
 	// Floating (elastic) IPs: host-side 1:1-NATed addresses that move between VMs
 	// on a node and outlive the VM they were attached to. Shares VMService for its
 	// agent connections and IPAM access.
@@ -726,6 +736,11 @@ func (s *Server) setupNetworkRoutes() {
 	networkService.SetIPAMService(service.NewIPAMService(s.db, repository.NewIPAMRepository(s.db)))
 	networkHandler := handler.NewNetworkHandler(networkService, authz.NewAuthorizer(s.db))
 	handler.RegisterNetworkRoutes(s.echo, networkHandler, s.db)
+	// Firewall groups, and NAT VMs' public ports and hostnames.
+	handler.RegisterFirewallGroupRoutes(s.echo,
+		handler.NewFirewallGroupHandler(service.NewFirewallGroupService(s.db, networkService), authz.NewAuthorizer(s.db)), s.db)
+	natVMs := service.NewVMService(s.db, vmRepo, nodeRepo, repository.NewTemplateRepository(s.db), s.riverClient, slog.Default())
+	handler.RegisterNATRoutes(s.echo, handler.NewNATHandler(service.NewNATService(s.db, networkService, natVMs), authz.NewAuthorizer(s.db)), s.db)
 
 	// Standalone /api/v1/networks endpoint: administrator-defined virtual networks
 	// (bridge/NAT/isolated) — persisted, not phantom. Per-VM IPs live under IP Pools.
@@ -2293,45 +2308,71 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "The nameserver answered"})
 	})
 
-	// Backup destination (admin-only). The secret key goes in and never comes
-	// back out: responses say only whether one is stored.
+	// Backup destinations (settings permissions: GET reads, the rest change).
+	// Secrets go in and never come back out: responses say only whether one is
+	// stored.
 	backupDest := s.backupDestinationInstance()
 	backupDestError := func(c echo.Context, err error) error {
-		if errors.Is(err, service.ErrBackupDestinationInvalid) || errors.Is(err, service.ErrBackupDestinationUnreadable) {
+		switch {
+		case errors.Is(err, service.ErrBackupDestinationNotFound):
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "Backup destination not found"})
+		case errors.Is(err, service.ErrBackupDestinationInUse):
+			msg := strings.TrimPrefix(err.Error(), service.ErrBackupDestinationInUse.Error()+": ")
+			return c.JSON(http.StatusConflict, map[string]interface{}{"error": "Conflict", "message": upperFirst(msg)})
+		case errors.Is(err, service.ErrBackupDestinationInvalid) || errors.Is(err, service.ErrBackupDestinationUnreadable):
 			msg := strings.TrimPrefix(err.Error(), service.ErrBackupDestinationInvalid.Error()+": ")
-			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": strings.ToUpper(msg[:1]) + msg[1:]})
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": upperFirst(msg)})
 		}
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to save the backup destination"})
 	}
-	backupDestStatus := func(c echo.Context) error {
-		st, err := backupDest.Status(c.Request().Context())
+	sys.GET("/backup-destinations", func(c echo.Context) error {
+		list, err := backupDest.List(c.Request().Context())
 		if err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to load the backup destination"})
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to load the backup destinations"})
 		}
-		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": st})
-	}
-	sys.GET("/backup-destination", backupDestStatus)
-	sys.PUT("/backup-destination", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": list})
+	})
+	sys.POST("/backup-destinations", func(c echo.Context) error {
 		var req service.BackupDestinationInput
 		if err := c.Bind(&req); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request body"})
 		}
-		if err := backupDest.Save(c.Request().Context(), req); err != nil {
+		v, err := backupDest.Create(c.Request().Context(), req)
+		if err != nil {
 			return backupDestError(c, err)
 		}
-		return backupDestStatus(c)
+		return c.JSON(http.StatusCreated, map[string]interface{}{"success": true, "data": v})
 	})
-	sys.DELETE("/backup-destination", func(c echo.Context) error {
-		if err := backupDest.Clear(c.Request().Context()); err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to remove the backup destination"})
+	sys.PUT("/backup-destinations/:id", func(c echo.Context) error {
+		var req service.BackupDestinationInput
+		if err := c.Bind(&req); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request body"})
 		}
-		return backupDestStatus(c)
+		v, err := backupDest.Update(c.Request().Context(), c.Param("id"), req)
+		if err != nil {
+			return backupDestError(c, err)
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": v})
+	})
+	sys.POST("/backup-destinations/:id/default", func(c echo.Context) error {
+		if err := backupDest.SetDefault(c.Request().Context(), c.Param("id")); err != nil {
+			return backupDestError(c, err)
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "New backups go to this destination"})
+	})
+	sys.DELETE("/backup-destinations/:id", func(c echo.Context) error {
+		if err := backupDest.Delete(c.Request().Context(), c.Param("id")); err != nil {
+			return backupDestError(c, err)
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "Backup destination removed"})
 	})
 	// Test the form's current values, unsaved, from the panel and from each
-	// chosen node: they reach the store over different networks.
-	sys.POST("/backup-destination/test", func(c echo.Context) error {
+	// chosen node: they reach the store over different networks. id is the
+	// destination being edited, whose saved secret is used when none is typed.
+	sys.POST("/backup-destinations/test", func(c echo.Context) error {
 		var req struct {
 			service.BackupDestinationInput
+			ID      string   `json:"id"`
 			NodeIDs []string `json:"node_ids"`
 		}
 		if err := c.Bind(&req); err != nil {
@@ -2343,11 +2384,29 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 				return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to load the nodes"})
 			}
 		}
-		results, err := backupDest.Test(c.Request().Context(), req.BackupDestinationInput, nodes)
+		results, err := backupDest.Test(c.Request().Context(), req.ID, req.BackupDestinationInput, nodes)
 		if err != nil {
 			return backupDestError(c, err)
 		}
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{"results": results}})
+	})
+	// Read the key an SFTP server presents, for the operator to compare and pin.
+	sys.POST("/backup-destinations/scan-host-key", func(c echo.Context) error {
+		var req struct {
+			Host string `json:"host"`
+			Port int    `json:"port"`
+		}
+		if err := c.Bind(&req); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request body"})
+		}
+		line, fp, err := backupDest.ScanHostKey(c.Request().Context(), req.Host, req.Port)
+		if errors.Is(err, service.ErrBackupDestinationInvalid) {
+			return backupDestError(c, err)
+		}
+		if err != nil {
+			return c.JSON(http.StatusBadGateway, map[string]interface{}{"error": "Bad Gateway", "message": upperFirst(err.Error())})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]string{"host_key": line, "fingerprint": fp}})
 	})
 
 	// POST /settings/system/email/test — send a test email with the given SMTP

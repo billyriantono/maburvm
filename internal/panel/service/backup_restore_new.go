@@ -7,8 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"gorm.io/gorm"
 
 	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
@@ -20,20 +18,33 @@ import (
 type RestoreSource struct {
 	// SHA256 is the checksum recorded when the backup was taken.
 	SHA256 string
-	// InDestination is true when the file is in the panel's backup destination,
-	// which the node is then sent. False leaves the node to its own storage.
+	// InDestination is true when the file is in a backup destination
+	// (DestinationID; "" is the default), which the node is then sent. False
+	// leaves the node to its own storage.
 	InDestination bool
+	DestinationID string
 	// DataDisks are the backup's disks after the primary one, attached to the
 	// new VM before its first boot.
 	DataDisks []models.BackupDisk
+	// Layers are, for an incremental backup, the images under each disk (by
+	// target), the full backup's first; PrimaryTarget names the first disk.
+	Layers        map[string][]models.BackupDisk
+	PrimaryTarget string
 }
 
 // apply adds what the create worker and the node need to know to the job.
 func (r *RestoreSource) apply(params map[string]interface{}) {
 	params["metadata"] = map[string]string{models.ImageOnceKey: "1", models.ImageSHA256Key: r.SHA256}
 	params["object_store"] = r.InDestination
+	if r.DestinationID != "" {
+		params["backup_destination_id"] = r.DestinationID
+	}
 	if len(r.DataDisks) > 0 {
 		params["restore_disks"] = r.DataDisks
+	}
+	if len(r.Layers) > 0 {
+		params["restore_layers"] = r.Layers[r.PrimaryTarget]
+		params["restore_disk_layers"] = r.Layers
 	}
 }
 
@@ -41,25 +52,25 @@ func (r *RestoreSource) apply(params map[string]interface{}) {
 // every disk of a backup.
 const featureRestoreDisks = "restore_disks"
 
-// checkRestoresDisks refuses a node whose agent would silently leave out a
-// backup's data disks.
-func (s *BackupService) checkRestoresDisks(ctx context.Context, node *models.Node) error {
+// checkAgentFeature refuses a node whose agent would silently do less than
+// asked: leave out a backup's data disks, or restore an incremental backup's
+// changes without what they are built on.
+// refusal names the node with %s.
+func (s *BackupService) checkAgentFeature(ctx context.Context, node *models.Node, feature, refusal string) error {
 	client, authCtx, err := s.vmService.AgentFor(ctx, node.ID)
 	if err != nil {
 		return err
 	}
 	infoCtx, cancel := context.WithTimeout(authCtx, 30*time.Second)
 	defer cancel()
-	info, err := client.GetNodeInfo(infoCtx, &pb.GetNodeInfoRequest{})
-	if err != nil && status.Code(err) != codes.Unimplemented {
+	features, err := nodeFeatures(infoCtx, client)
+	if err != nil {
 		return fmt.Errorf("could not ask node %s what its agent can do: %w", node.Name, err)
 	}
-	for _, f := range info.GetFeatures() {
-		if f == featureRestoreDisks {
-			return nil
-		}
+	if hasFeature(features, feature) {
+		return nil
 	}
-	return fmt.Errorf("this backup has more than one disk, and the agent on node %s is too old to restore them all; update it first", node.Name)
+	return fmt.Errorf(refusal+"; update it first", node.Name)
 }
 
 // AgentFor returns a client for a node's agent and the context that
@@ -125,36 +136,64 @@ func (s *BackupService) RestoreAsNewVM(ctx context.Context, req *RestoreAsNewReq
 		return nil, fmt.Errorf("failed to get node: %w", err)
 	}
 
+	chain, layers, err := s.restoreChain(ctx, backup)
+	if err != nil {
+		return nil, err
+	}
+
 	// Where the file is. A node's own storage is often the destination's
 	// bucket: when the file is found there any node can be sent it, and the
 	// checksum guards against a different file under the same name.
 	inDestination := backup.StorageProvider != models.BackupStoreNode
-	if store, serr := s.destinationStore(ctx); serr == nil && store != nil {
-		lookCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		found, lerr := store.Exists(lookCtx, backup.StoragePath)
-		cancel()
-		switch {
-		case lerr != nil:
-			// The panel not reaching the store says nothing about the node.
-		case found:
-			inDestination = true
-		case inDestination:
-			return nil, errors.New("this backup's file is not in the backup destination; if the bucket or endpoint was changed since it was made, the file is still in the old one")
+	dest, err := s.destinationOf(ctx, backup)
+	if err != nil {
+		return nil, err
+	}
+	destinationID := ""
+	if dest != nil {
+		if st, done, oerr := s.panelStore(ctx, dest); oerr == nil {
+			lookCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			found, lerr := st.Exists(lookCtx, backup.StoragePath)
+			cancel()
+			done()
+			switch {
+			case lerr != nil:
+				// The panel not reaching the store says nothing about the node.
+			case found:
+				inDestination = true
+			case inDestination:
+				return nil, errors.New("this backup's file is not in the backup destination; if the bucket, server or path was changed since it was made, the file is still in the old one")
+			}
 		}
+	}
+	if inDestination {
+		if dest == nil {
+			return nil, errors.New("no backup destination is set")
+		}
+		destinationID = dest.ID
 	}
 	// Ask the node to prove it can read that storage before anything is created
 	// on it: an agent too old to check a download, or a node that cannot reach
 	// the store, would otherwise leave a VM that never gets its disk.
-	if err := s.dest.CheckNode(ctx, node, inDestination); err != nil {
+	if err := s.dest.CheckNode(ctx, node, destinationID, restoreKeys(chain)...); err != nil {
 		return nil, err
 	}
 	if len(backup.DataDisks()) > 0 {
-		if err := s.checkRestoresDisks(ctx, node); err != nil {
+		if err := s.checkAgentFeature(ctx, node, featureRestoreDisks, "this backup has more than one disk, and the agent on node %s is too old to restore them all"); err != nil {
+			return nil, err
+		}
+	}
+	if len(chain) > 1 {
+		if err := s.checkAgentFeature(ctx, node, featureIncrementalBackup, "this is an incremental backup, and the agent on node %s is too old to restore one"); err != nil {
 			return nil, err
 		}
 	}
 
 	create := restoreCreateRequest(backup, src, req, inDestination)
+	create.Restore.DestinationID, create.Restore.Layers = destinationID, layers
+	if len(backup.Disks) > 0 {
+		create.Restore.PrimaryTarget = backup.Disks[0].Target
+	}
 	if len(create.Hostname) > 100 {
 		return nil, fmt.Errorf("hostname %q is too long; give the new VM a shorter one", create.Hostname)
 	}
@@ -214,6 +253,22 @@ func (s *BackupService) copyFirewallRules(ctx context.Context, srcID, dstID stri
 		if err := tx.Where("vm_id = ?", dstID).Delete(&models.FirewallRule{}).Error; err != nil {
 			return err
 		}
+		// Its firewall groups come with it, in place of a plan's default group.
+		var links []models.VMFirewallGroup
+		if err := tx.Where("vm_id = ?", srcID).Find(&links).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("vm_id = ?", dstID).Delete(&models.VMFirewallGroup{}).Error; err != nil {
+			return err
+		}
+		for i := range links {
+			links[i].VMID, links[i].CreatedAt = dstID, time.Time{}
+		}
+		if len(links) > 0 {
+			if err := tx.Create(&links).Error; err != nil {
+				return err
+			}
+		}
 		if len(rules) == 0 {
 			return nil
 		}
@@ -229,4 +284,13 @@ func (s *BackupService) copyFirewallRules(ctx context.Context, srcID, dstID stri
 		s.logger.WarnContext(ctx, "could not copy the original VM's firewall rules to the restored VM; it has the defaults",
 			"source_vm_id", srcID, "vm_id", dstID, "error", err)
 	}
+}
+
+// restoreKeys are every file a restore of chain downloads.
+func restoreKeys(chain []models.Backup) []string {
+	var keys []string
+	for _, b := range chain {
+		keys = append(keys, b.StorageKeys()...)
+	}
+	return keys
 }

@@ -55,17 +55,6 @@ func TestNormalizePoolType(t *testing.T) {
 	}
 }
 
-func TestLVCreateArgs(t *testing.T) {
-	got := lvCreateArgs("vg0", "data1", 10)
-	want := []string{"-L", "10G", "-n", "data1", "vg0"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("lvCreateArgs = %v, want %v", got, want)
-	}
-	if p := lvDevicePath("vg0", "data1"); p != "/dev/vg0/data1" {
-		t.Fatalf("lvDevicePath = %q", p)
-	}
-}
-
 func TestZFSCreateArgs(t *testing.T) {
 	got := zfsCreateArgs("tank", "data1", 20)
 	want := []string{"create", "-V", "20G", "tank/data1"}
@@ -93,9 +82,12 @@ func TestVolumeManagerDeleteGuards(t *testing.T) {
 	if err := m.DeleteVolume("dir", "/etc/passwd"); err == nil {
 		t.Error("expected guard error deleting a non-volume file")
 	}
-	// lvm: must be a /dev device path.
-	if err := m.DeleteVolume("lvm", "relative/path"); err == nil {
-		t.Error("expected guard error for non-device lvm path")
+	// lvm: never here; LVM proves a volume is a registered pool's first.
+	if err := m.DeleteVolume("lvm", "/dev/sda"); err == nil {
+		t.Error("expected lvm delete to be refused")
+	}
+	if _, _, err := m.CreateVolume("lvmthin", "vg0", "v", "", 10); err == nil {
+		t.Error("expected lvm create to be refused")
 	}
 	// zfs: must be under /dev/zvol/.
 	if err := m.DeleteVolume("zfs", "/dev/sda"); err == nil {

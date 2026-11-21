@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/maburvm/panel/internal/panel/client"
 	"github.com/maburvm/panel/internal/panel/repository"
+	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 	"github.com/maburvm/panel/internal/shared/models"
 	"github.com/riverqueue/river"
 	"gorm.io/gorm"
@@ -443,6 +444,13 @@ func (c *MetricsCollector) recordPoll(ctx context.Context, node *models.Node, m 
 			Where("id = ? AND firewall_enforcement <> ?", nodeID, stored).
 			Update("firewall_enforcement", stored).Error; err != nil {
 			c.logger.Warn("metrics collector: persist node firewall state failed", "node_id", nodeID, "error", err)
+		}
+		// The address NAT VMs' ports answer on, shown to their owners and used
+		// to verify their hostnames.
+		if err := c.db.WithContext(ctx).Table("nodes").
+			Where("id = ? AND nat_address <> ?", nodeID, m.NATAddress).
+			Update("nat_address", m.NATAddress).Error; err != nil {
+			c.logger.Warn("metrics collector: persist node NAT address failed", "node_id", nodeID, "error", err)
 		}
 		c.syncGuestPending(ctx, nodeID, m.GuestNetworkPending)
 		c.noteRepairs(ctx, node, m)
@@ -933,7 +941,14 @@ func (c *MetricsCollector) syncStoragePools(ctx context.Context, node *models.No
 
 	paths := make([]string, 0, len(pools)+1)
 	seen := map[string]bool{}
+	var lvmPools []*pb.LVMPool
 	for i := range pools {
+		if models.IsLVMPoolType(pools[i].Type) {
+			if vg, thin, err := models.SplitLVMPoolPath(pools[i].Type, pools[i].Path); err == nil {
+				lvmPools = append(lvmPools, &pb.LVMPool{Vg: vg, ThinPool: thin})
+			}
+			continue
+		}
 		if p := pools[i].Path; p != "" && !seen[p] {
 			paths = append(paths, p)
 			seen[p] = true
@@ -946,7 +961,7 @@ func (c *MetricsCollector) syncStoragePools(ctx context.Context, node *models.No
 	}
 
 	rctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	report, err := c.nodeService.AgentClient().GetStorageReport(rctx, node.ID, paths)
+	report, err := c.nodeService.AgentClient().GetStorageReport(rctx, node.ID, paths, lvmPools)
 	cancel()
 	if err != nil {
 		c.logger.Warn("storage sync: report failed", "node_id", node.ID, "error", err)
@@ -957,8 +972,23 @@ func (c *MetricsCollector) syncStoragePools(ctx context.Context, node *models.No
 	for _, p := range report.Pools {
 		byPath[p.Path] = p
 	}
+	byLVM := make(map[string]*pb.LVMPoolCapacity, len(report.LVMPools))
+	for _, p := range report.LVMPools {
+		byLVM[p.GetVg()+"/"+p.GetThinPool()] = p
+	}
 
 	for i := range pools {
+		if models.IsLVMPoolType(pools[i].Type) {
+			measureLVMPool(&pools[i], byLVM)
+			if err := c.storageRepo.UpdatePoolMeasurement(&pools[i]); err != nil {
+				c.logger.Error("storage sync: update pool failed", "pool_id", pools[i].ID, "error", err)
+			}
+			if pools[i].Status == "online" {
+				c.alertPool(ctx, node, &pools[i])
+				c.alertThinMetadata(ctx, node, &pools[i])
+			}
+			continue
+		}
 		cap, ok := byPath[pools[i].Path]
 		if !ok {
 			continue
@@ -968,6 +998,7 @@ func (c *MetricsCollector) syncStoragePools(ctx context.Context, node *models.No
 		// and invite an operator to place VMs on storage that is not there.
 		if !cap.Exists {
 			pools[i].Status = "degraded"
+			pools[i].StatusNote = "The directory does not exist on the node."
 			if err := c.storageRepo.UpdatePoolMeasurement(&pools[i]); err != nil {
 				c.logger.Error("storage sync: update pool failed", "pool_id", pools[i].ID, "error", err)
 			}
@@ -977,6 +1008,7 @@ func (c *MetricsCollector) syncStoragePools(ctx context.Context, node *models.No
 		pools[i].UsedSpace = cap.Used
 		pools[i].AvailableSpace = cap.Available
 		pools[i].Status = "online"
+		pools[i].StatusNote = ""
 		if err := c.storageRepo.UpdatePoolMeasurement(&pools[i]); err != nil {
 			c.logger.Error("storage sync: update pool failed", "pool_id", pools[i].ID, "error", err)
 		}
@@ -1007,6 +1039,64 @@ func (c *MetricsCollector) syncStoragePools(ctx context.Context, node *models.No
 	c.warnUnregisteredStorage(node, pools, report.DiskLocations)
 }
 
+// measureLVMPool applies what the node reported for an LVM pool. A pool the
+// node did not report, or reported unusable, is degraded with the reason: it
+// takes no new disks until the node says it can.
+func measureLVMPool(p *models.StoragePool, byLVM map[string]*pb.LVMPoolCapacity) {
+	p.MetadataPercent = nil
+	vg, thin, err := models.SplitLVMPoolPath(p.Type, p.Path)
+	if err != nil {
+		p.Status, p.StatusNote = "degraded", err.Error()
+		return
+	}
+	c, ok := byLVM[vg+"/"+thin]
+	switch {
+	case !ok:
+		p.Status, p.StatusNote = "degraded", "This node's agent cannot use LVM pools yet; update it under Settings, System."
+		return
+	case !c.GetExists():
+		p.Status, p.StatusNote = "degraded", c.GetError()
+		return
+	}
+	p.TotalSpace, p.UsedSpace, p.AvailableSpace = c.GetTotalBytes(), c.GetUsedBytes(), c.GetAvailableBytes()
+	if thin != "" {
+		meta := c.GetMetadataPercent()
+		p.MetadataPercent = &meta
+	}
+	if c.GetError() != "" {
+		p.Status, p.StatusNote = "degraded", c.GetError()
+		return
+	}
+	p.Status, p.StatusNote = "online", ""
+}
+
+// Thin pool metadata levels. Metadata fills on its own schedule, and when it
+// is full every thin volume in the pool stops taking writes.
+const (
+	thinMetadataWarnPercent     = 75
+	thinMetadataCriticalPercent = 90
+)
+
+// alertThinMetadata raises or clears a thin pool's metadata alert.
+func (c *MetricsCollector) alertThinMetadata(ctx context.Context, node *models.Node, p *models.StoragePool) {
+	if c.alerts == nil || p.MetadataPercent == nil {
+		return
+	}
+	key := "pool_metadata:" + p.ID
+	severity := poolAlertSeverity(int64(*p.MetadataPercent*100), 10000, thinMetadataWarnPercent, thinMetadataCriticalPercent)
+	if severity == "" {
+		c.alerts.Clear(ctx, key)
+		return
+	}
+	c.alerts.Raise(ctx, AlertInput{
+		Key: key, Kind: models.AlertKindStoragePool, Severity: severity,
+		Title: fmt.Sprintf("Thin pool %s on %s has used %.0f%% of its metadata", p.Name, node.Name, *p.MetadataPercent),
+		Detail: "When a thin pool's metadata is full, every VM disk in it stops taking writes, however much data space is free. " +
+			"Grow it on the node (lvextend --poolmetadatasize) before it fills.",
+		ResourceType: "storage_pool", ResourceID: p.ID, ResourceName: p.Name,
+	})
+}
+
 // warnUnregisteredStorage logs directories holding domain disks that no pool
 // covers.
 //
@@ -1021,6 +1111,10 @@ func (c *MetricsCollector) warnUnregisteredStorage(node *models.Node, pools []mo
 	}
 	covered := make(map[string]bool, len(pools))
 	for i := range pools {
+		if vg, _, err := models.SplitLVMPoolPath(pools[i].Type, pools[i].Path); err == nil {
+			covered["/dev/"+vg] = true
+			continue
+		}
 		covered[strings.TrimSuffix(pools[i].Path, "/")] = true
 	}
 	for _, loc := range locations {

@@ -126,6 +126,12 @@ func (q *QCOW2Manager) ResizeImage(path string, newSizeGB int) error {
 
 // CloneImage creates an independent copy of a QCOW2 image
 func (q *QCOW2Manager) CloneImage(source string, dest string) error {
+	return q.CloneImageFrom(source, "", dest)
+}
+
+// CloneImageFrom is CloneImage reading source as format; "" probes it, which
+// only a trusted template may be.
+func (q *QCOW2Manager) CloneImageFrom(source, format, dest string) error {
 	// Verify source exists
 	if _, err := os.Stat(source); err != nil {
 		return fmt.Errorf("source image not found: %s", source)
@@ -146,7 +152,11 @@ func (q *QCOW2Manager) CloneImage(source string, dest string) error {
 	defer cancel()
 
 	// Use convert to create an independent copy with -O qcow2
-	cmd := exec.CommandContext(ctx, q.qemuImgPath, "convert", "-O", "qcow2", source, dest)
+	args := []string{"convert"}
+	if format != "" {
+		args = append(args, "-f", format)
+	}
+	cmd := exec.CommandContext(ctx, q.qemuImgPath, append(args, "-O", "qcow2", source, dest)...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to clone QCOW2 image: %w (output: %s)", err, string(output))
@@ -191,16 +201,16 @@ func exportTimeout(sourceBytes int64) time.Duration {
 // The deadline is derived from the source size rather than taken from the
 // manager's flat timeout, because compression throughput is roughly constant
 // and the work is not.
-func (q *QCOW2Manager) ConvertCompressed(source, dest, compression string) (string, error) {
+func (q *QCOW2Manager) ConvertCompressed(source, format, dest, compression string) (string, error) {
 	info, err := os.Stat(source)
 	if err != nil {
 		return "", fmt.Errorf("source image not found: %s", source)
 	}
 	size := info.Size()
 	if !info.Mode().IsRegular() {
-		// A block device stats as 0 bytes; its size is what qemu-img reports.
-		if ii, ierr := q.ImageInfo(source); ierr == nil {
-			size = ii.VirtualSize
+		// A block device stats as 0 bytes.
+		if n, serr := DeviceSize(source); serr == nil {
+			size = n
 		}
 	}
 	dir := filepath.Dir(dest)
@@ -215,7 +225,7 @@ func (q *QCOW2Manager) ConvertCompressed(source, dest, compression string) (stri
 	}
 	used := NormalizeCompression(compression)
 	for {
-		output, err := q.runExport(deadline, ExportArgs(used, source, dest))
+		output, err := q.runExport(deadline, ExportArgs(used, format, source, dest))
 		if err == nil {
 			return used, nil
 		}
