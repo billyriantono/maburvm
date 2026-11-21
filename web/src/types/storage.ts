@@ -2,7 +2,9 @@
 export interface StoragePool {
   id: string;
   name: string;
-  type: string; // "dir", "lvm" (path is a volume group) or "lvmthin" (path is "vg/thinpool")
+  // "dir", "lvm" (path is a volume group), "lvmthin" (path is "vg/thinpool") or
+  // "rbd" (a node's part of an RBD pool; path is "pool" or "pool/namespace").
+  type: string;
   status: 'online' | 'offline' | 'degraded';
   total_space: number; // bytes
   used_space: number; // bytes
@@ -35,15 +37,20 @@ export interface StoragePool {
 }
 
 // SharedPool is storage several nodes see at the same path: an NFS export the
-// nodes' agents mount, or a directory the operator mounts on each node.
+// nodes' agents mount, a directory the operator mounts on each node, or (kind
+// rbd) an RBD pool of a registered Ceph cluster.
 export interface SharedPool {
   id: string;
   name: string;
-  kind: 'nfs' | 'mounted';
+  kind: 'nfs' | 'mounted' | 'rbd';
   path: string;
   nfs_server: string;
   nfs_export: string;
   mount_options: string;
+  // Kind rbd: the cluster, and the RBD pool and namespace in it.
+  ceph_cluster_id?: string;
+  rbd_pool: string;
+  rbd_namespace: string;
   // Capacity of the storage, counted once however many nodes mount it.
   total_space: number;
   used_space: number;
@@ -62,15 +69,69 @@ export interface SharedPoolMember {
   status: 'online' | 'offline' | 'degraded';
   status_note: string;
   is_primary: boolean;
+  // The storage tier of the node's row; "" for none.
+  tier: string;
 }
 
 export interface CreateSharedPoolRequest {
   name: string;
-  kind: 'nfs' | 'mounted';
+  kind: 'nfs' | 'mounted' | 'rbd';
   path?: string;
   nfs_server?: string;
   nfs_export?: string;
   mount_options?: string;
+  ceph_cluster_id?: string;
+  rbd_pool?: string;
+  rbd_namespace?: string;
+}
+
+// CephCluster is an existing Ceph cluster staff registered. Its key is
+// write-only: no answer carries it.
+export interface CephCluster {
+  id: string;
+  name: string;
+  monitors: string; // comma-separated host or host:port
+  client_id: string;
+  fsid: string;
+  // As the last node to answer reported them. health is "" before any has.
+  health: '' | 'HEALTH_OK' | 'HEALTH_WARN' | 'HEALTH_ERR';
+  health_summary: string;
+  total_bytes: number;
+  used_bytes: number;
+  available_bytes: number;
+  checked_at: string | null;
+  nodes: CephClusterNode[];
+  pools: CephClusterPool[];
+}
+
+export interface CephClusterNode {
+  node_id: string;
+  node_name: string;
+  // ok; unreachable (the node cannot reach the cluster); mismatch (it reaches
+  // another cluster); degraded (something on the node is wrong).
+  status: 'ok' | 'unreachable' | 'mismatch' | 'degraded';
+  status_note: string;
+  checked_at: string | null;
+}
+
+// One RBD pool of the cluster (a shared pool of kind rbd), measured once.
+export interface CephClusterPool {
+  id: string;
+  name: string;
+  rbd_pool: string;
+  rbd_namespace: string;
+  total_space: number;
+  used_space: number;
+  available_space: number;
+}
+
+export interface CephClusterRequest {
+  name: string;
+  monitors: string;
+  client_id: string;
+  // Empty on a change keeps the stored key.
+  client_key: string;
+  fsid?: string;
 }
 
 // StorageVolume represents a storage volume (disk image) in a pool

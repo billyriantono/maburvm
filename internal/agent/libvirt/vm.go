@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/maburvm/panel/internal/agent/ceph"
 	"github.com/maburvm/panel/internal/agent/console"
 	"github.com/maburvm/panel/internal/agent/domtune"
 	"github.com/maburvm/panel/internal/agent/guestos"
@@ -192,9 +193,16 @@ func generateDomainXML(config VMConfig) (string, error) {
 	// routed prefix (see nwfilter_ipv6.go).
 	iface.FilterRef = InterfaceFilterRef(config.AntiSpoofing, config.IPAddress, config.MACAddress, config.IPv6Prefix)
 
-	// Primary disk (the cloned template image): a qcow2 file, or a logical volume.
+	// Primary disk (the cloned template image): a qcow2 file, a logical volume,
+	// or an image on RBD.
+	if err := storage.CheckDiskSource(config.DiskPath); err != nil {
+		return "", err
+	}
 	disks := []libvirtxml.DomainDisk{storage.DiskDevice(config.DiskPath, "vda")}
 	for _, d := range config.ExtraDisks {
+		if err := storage.CheckDiskSource(d.Path); err != nil {
+			return "", err
+		}
 		disk := storage.DiskDevice(d.Path, d.Target)
 		domtune.Discard(disk.Driver)
 		disks = append(disks, disk)
@@ -407,7 +415,7 @@ func CreateVM(config VMConfig) (string, error) {
 		// its VMs back up automatically (libvirt writes a symlink under
 		// /etc/libvirt/qemu/autostart/). Best-effort: a failure here doesn't fail
 		// provisioning.
-		if serr := dom.SetAutostart(true); serr != nil {
+		if serr := startWithNode(dom, true); serr != nil {
 			log.Printf("warning: failed to enable autostart for domain %s: %v", config.Name, serr)
 		}
 
@@ -796,14 +804,17 @@ func nextFreeVirtioTarget(domain *libvirtxml.Domain) string {
 	return ""
 }
 
-// AttachDisk attaches an existing qcow2 image to the domain as the next free
-// virtio target. It persists to the domain config and, when the VM is running,
+// AttachDisk attaches an existing disk (a qcow2 image, a logical volume or an
+// image on RBD) to the domain as the next free virtio target. It persists to the domain config and, when the VM is running,
 // hot-plugs it live. Returns the assigned target device (e.g. "vdb").
 func AttachDisk(uuidStr, diskPath string) (string, error) {
 	if _, err := uuid.Parse(uuidStr); err != nil {
 		return "", fmt.Errorf("invalid UUID format: %w", err)
 	}
-	if _, err := os.Stat(diskPath); err != nil {
+	if err := storage.CheckDiskSource(diskPath); err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(diskPath); err != nil && !ceph.IsPath(diskPath) {
 		return "", fmt.Errorf("disk image not found at %s: %w", diskPath, err)
 	}
 	var device string
@@ -1135,8 +1146,8 @@ func ownedDiskPaths(xmlDesc string) []string {
 	return paths
 }
 
-// DiskSourceFiles returns every file some domain on this node uses as a disk or
-// CD image, in its saved or its running configuration.
+// DiskSourceFiles returns every file, device and RBD image some domain on this
+// node uses as a disk or CD image, in its saved or its running configuration.
 //
 // Callers delete what is not listed, so a domain that cannot be read fails the
 // whole call instead of being skipped.
@@ -1172,6 +1183,10 @@ func DiskSourceFiles() (map[string]bool, error) {
 					if disk.Source != nil && disk.Source.Block != nil && disk.Source.Block.Dev != "" {
 						out[filepath.Clean(disk.Source.Block.Dev)] = true
 					}
+					// An image on RBD, by its disk path as it is.
+					if p, ok := ceph.DiskPath(&disk); ok {
+						out[p] = true
+					}
 				}
 			}
 		}
@@ -1181,7 +1196,8 @@ func DiskSourceFiles() (map[string]bool, error) {
 }
 
 // PrimaryDiskPath returns the source of the VM's primary disk (the
-// device='disk' entry, not cdrom/seed images): a file, or a block device.
+// device='disk' entry, not cdrom/seed images): a file, a block device, or
+// the disk path of an image on RBD.
 func PrimaryDiskPath(uuidStr string) (string, error) {
 	if _, err := uuid.Parse(uuidStr); err != nil {
 		return "", fmt.Errorf("invalid UUID format: %w", err)
@@ -1209,6 +1225,10 @@ func PrimaryDiskPath(uuidStr string) (string, error) {
 				}
 				if disk.Device == "disk" && disk.Source != nil && disk.Source.Block != nil && disk.Source.Block.Dev != "" {
 					path = disk.Source.Block.Dev
+					return nil
+				}
+				if p, ok := ceph.DiskPath(&disk); ok && disk.Device == "disk" {
+					path = p
 					return nil
 				}
 			}
@@ -1372,7 +1392,8 @@ func GetVMInfo(uuidStr string) (*VMInfo, error) {
 	return &info, nil
 }
 
-// primaryDiskFromXML returns the source file of the first device='disk' entry.
+// primaryDiskFromXML returns the first device='disk' entry as GetBlockInfo
+// takes it: its source file or device, or its target for an image on RBD.
 func primaryDiskFromXML(xmlDesc string) string {
 	var domain libvirtxml.Domain
 	if err := xml.Unmarshal([]byte(xmlDesc), &domain); err != nil || domain.Devices == nil {
@@ -1384,6 +1405,10 @@ func primaryDiskFromXML(xmlDesc string) string {
 		}
 		if d.Device == "disk" && d.Source != nil && d.Source.Block != nil && d.Source.Block.Dev != "" {
 			return d.Source.Block.Dev
+		}
+		// An image on RBD has no path libvirt knows; its target names it.
+		if _, ok := ceph.DiskPath(&d); ok && d.Device == "disk" && d.Target != nil {
+			return d.Target.Dev
 		}
 	}
 	return ""
@@ -1706,6 +1731,8 @@ func RebuildVM(uuidStr string, templatePath string, prepare func(diskPath string
 		if cur, xerr := dom.GetXMLDesc(0); xerr == nil {
 			if disks, derr := storage.DomainDisks(cur); derr == nil && len(disks) > 0 && disks[0].Block {
 				return rebuildOnDevice(dom, conn, wasRunning, disks[0].Path, templatePath, prepare)
+			} else if derr == nil && len(disks) > 0 && disks[0].RBD {
+				return rebuildOnRBD(dom, conn, wasRunning, disks[0].Path, templatePath, prepare)
 			}
 		}
 
@@ -1825,6 +1852,64 @@ func rebuildOnDevice(dom *libvirt.Domain, conn *libvirt.Connect, wasRunning bool
 		if err := prepare(dev); err != nil {
 			return fmt.Errorf("failed to prepare the rebuilt disk: %w", err)
 		}
+	}
+	if wasRunning {
+		freeConsolePort(conn, dom)
+		if err := dom.Create(); err != nil {
+			return fmt.Errorf("failed to restart domain after rebuild: %w", err)
+		}
+	}
+	return nil
+}
+
+// RBDScratchDir is where a disk bound for RBD is prepared as a local file
+// first; the agent points it at its template cache.
+var RBDScratchDir = "/var/lib/libvirt/templates"
+
+// rebuildOnRBD reinstalls a VM whose disk is an image on RBD. The template is
+// copied to a local file and prepared there, as libguestfs works on files;
+// the image then takes its contents by a swap (ceph.Image.ReplaceWith), so a
+// failure leaves the VM the disk it had. The image keeps its size, and its
+// RBD snapshots go with the old contents.
+func rebuildOnRBD(dom *libvirt.Domain, conn *libvirt.Connect, wasRunning bool, diskPath, templatePath string, prepare func(string) error) error {
+	img, err := ceph.OpenImage(diskPath)
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	have, err := img.Size(ctx)
+	if err != nil {
+		return fmt.Errorf("could not measure the VM's disk: %w", err)
+	}
+	info, err := storage.NewQCOW2Manager().ImageInfo(templatePath)
+	if err != nil {
+		return fmt.Errorf("could not read the template: %w", err)
+	}
+	if info.VirtualSize > have {
+		return fmt.Errorf("the template needs a %d-byte disk and this VM's disk holds %d; grow the disk first", info.VirtualSize, have)
+	}
+	if err := os.MkdirAll(RBDScratchDir, 0o755); err != nil {
+		return err
+	}
+	name, _ := dom.GetUUIDString()
+	scratch := filepath.Join(RBDScratchDir, name+"-rebuild.qcow2")
+	_ = os.Remove(scratch)
+	defer os.Remove(scratch)
+	if err := storage.NewQCOW2Manager().CloneImage(templatePath, scratch); err != nil {
+		return fmt.Errorf("failed to copy template: %w", err)
+	}
+	if prepare != nil {
+		if err := prepare(scratch); err != nil {
+			return fmt.Errorf("failed to prepare the rebuilt disk: %w", err)
+		}
+	}
+	if wasRunning {
+		if err := dom.Destroy(); err != nil {
+			return fmt.Errorf("failed to stop domain for rebuild: %w", err)
+		}
+	}
+	if err := img.ReplaceWith(ctx, scratch, "qcow2", have); err != nil {
+		return fmt.Errorf("the new system could not be written to the VM's disk, which is as it was: %w", err)
 	}
 	if wasRunning {
 		freeConsolePort(conn, dom)

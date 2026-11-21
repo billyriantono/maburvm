@@ -213,6 +213,12 @@ func (q *QCOW2Manager) ConvertCompressed(source, format, dest, compression strin
 			size = n
 		}
 	}
+	return q.ExportCompressed(source, size, format, dest, compression)
+}
+
+// ExportCompressed is ConvertCompressed for a source qemu-img opens that is
+// not a local file (a snapshot of an image on RBD); size is the source's.
+func (q *QCOW2Manager) ExportCompressed(source string, size int64, format, dest, compression string) (string, error) {
 	dir := filepath.Dir(dest)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create directory %s: %w", dir, err)

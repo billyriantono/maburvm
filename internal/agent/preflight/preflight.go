@@ -60,6 +60,10 @@ type Facts struct {
 	// TPM emulator, and the reserved huge page pool in MiB.
 	UEFI, SecureBoot, TPM bool
 	HugepagesMiB          int64
+
+	// LibvirtSecrets: libvirt's secret driver answered, so it can hold a Ceph
+	// cluster's key.
+	LibvirtSecrets bool
 }
 
 // BridgeFacts is one bridge the panel attaches VMs to.
@@ -191,6 +195,7 @@ func Evaluate(f Facts) []Check {
 
 	out = append(out, evalTools(f.Tools)...)
 	out = append(out, evalOptionalHardware(f)...)
+	out = append(out, evalCeph(f)...)
 
 	switch f.TimeSynced {
 	case "yes":
@@ -226,6 +231,25 @@ func evalOptionalHardware(f Facts) []Check {
 		huge.Detail = "Optional, none reserved: VMs with huge pages cannot run on this node. Reserve them with vm.nr_hugepages in /etc/sysctl.d, sized for those VMs."
 	}
 	return []Check{fw, tpm, huge}
+}
+
+// evalCeph reports what a node needs before a Ceph cluster can be enabled on
+// it. All optional: a node that uses none passes, and each says what it rules
+// out.
+func evalCeph(f Facts) []Check {
+	cli := pass("ceph_cli", "Ceph client", "ceph and rbd are installed.")
+	if !f.Tools["ceph"] || !f.Tools["rbd"] {
+		cli.Detail = "Optional, not installed: a Ceph cluster cannot be enabled on this node. Install ceph-common to use one."
+	}
+	drv := pass("qemu_rbd", "QEMU RBD driver", "qemu-img supports rbd: VM disks can be on a Ceph cluster.")
+	if !contains(f.QemuImgFormats, "rbd") {
+		drv.Detail = "Optional, not installed: QEMU on this node cannot open disks on a Ceph cluster. Install qemu-block-extra (qemu-kvm-block-rbd on the RHEL family) to use one."
+	}
+	sec := pass("libvirt_secrets", "libvirt secrets", "libvirt stores secrets: it can hold a Ceph cluster's key for QEMU.")
+	if !f.LibvirtSecrets {
+		sec.Detail = "Optional, not available: libvirt's secret driver did not answer, so it cannot hold a Ceph cluster's key. Install libvirt-daemon-driver-secret (on hosts with modular daemons, start virtsecretd) to use one."
+	}
+	return []Check{cli, drv, sec}
 }
 
 func evalBridge(b BridgeFacts) Check {

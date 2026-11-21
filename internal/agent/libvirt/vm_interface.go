@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/maburvm/panel/internal/agent/ceph"
 	"libvirt.org/go/libvirt"
 	"libvirt.org/go/libvirtxml"
 )
@@ -190,8 +191,8 @@ func DomainBridges(uuidStr string) ([]string, error) {
 	return out, nil
 }
 
-// GetVMPrimaryDiskPath returns the backing file or block device of the VM's
-// first disk (not cdrom) device — the root disk the guest OS lives on.
+// GetVMPrimaryDiskPath returns the backing file, block device or RBD disk
+// path of the VM's first disk (not cdrom) device — the root disk the guest OS lives on.
 func GetVMPrimaryDiskPath(uuidStr string) (string, error) {
 	domain, err := domainXML(uuidStr)
 	if err != nil {
@@ -203,6 +204,9 @@ func GetVMPrimaryDiskPath(uuidStr string) (string, error) {
 		}
 		if d.Device == "disk" && d.Source != nil && d.Source.Block != nil && d.Source.Block.Dev != "" {
 			return d.Source.Block.Dev, nil
+		}
+		if p, ok := ceph.DiskPath(&d); ok && d.Device == "disk" {
+			return p, nil
 		}
 	}
 	return "", fmt.Errorf("no disk found for VM %s", uuidStr)

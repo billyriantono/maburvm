@@ -21,6 +21,7 @@ and database queries with `$DC exec postgres psql -U maburvm -d maburvm`
 7. [Lost access to the Owner account](#7-lost-access-to-the-owner-account)
 8. [A VM that keeps crashing, or a guest agent that does not answer](#8-a-vm-that-keeps-crashing-or-a-guest-agent-that-does-not-answer)
 9. [Shared pool not usable on a node](#9-shared-pool-not-usable-on-a-node)
+10. [Attaching an existing Ceph cluster](#10-attaching-an-existing-ceph-cluster)
 
 ## 1. Node down
 
@@ -478,3 +479,243 @@ the mount hides them.
 
 **Do not** remove and re-add the node to "reset" it while VMs on it have disks
 in the pool: removal is refused for that reason.
+
+## 10. Attaching an existing Ceph cluster
+
+MaburVM attaches to a Ceph cluster you already run and manage. It is a
+client: it reads the cluster's health and capacity and uses RBD pools you
+name. It is opt-in per cluster and per node; installs without Ceph are not
+affected.
+
+VM disks can then be placed in those RBD pools; what works on such a VM and
+what is refused is in 10.7 and in the admin guide, section 4.8.
+
+**What MaburVM does not do.** It does not bootstrap a cluster (there is no
+cephadm wizard), add or remove monitors or OSDs, create pools or placement
+groups, change CRUSH rules, create users or change their caps, repair a
+degraded cluster, or upgrade Ceph. `HEALTH_WARN` and `HEALTH_ERR` are shown
+and alerted; fixing them is the cluster administrator's work.
+
+### 10.1 What the cluster must provide
+
+| Need | Detail |
+|---|---|
+| Version | Nautilus (14.2) or later. Only `ceph status`, `ceph df`, `rbd`, `qemu-img` and libvirt's RBD network disks are used. Luminous (12.2) answers too, without namespaces. Install a `ceph-common` on the nodes that is close to the cluster's release. A pool with a namespace also needs QEMU 5.0 and libvirt 6.8 or later on the nodes. |
+| A dedicated RBD pool | One pool for MaburVM's images (or a namespace in a pool), with the `rbd` application enabled. Do not share it with images other systems manage. |
+| A cephx user | A user of its own with the `rbd` profile on that pool. Never the admin key. |
+| Network | Every node the cluster is enabled on reaches all monitors (TCP 3300, and 6789 for the older protocol) and all OSDs (TCP 6800-7300) on the cluster's public network. Ceph expects LAN latency: enable a cluster only on nodes in its own site. |
+| RBD features | Leave the default set on new images: `layering`, `exclusive-lock`, `object-map`, `fast-diff`, `deep-flatten`. `exclusive-lock` lets one client write an image at a time and is needed by `object-map` and `fast-diff`, which make usage, snapshot and copy operations fast. The `rbd` profile on the monitors allows a client to blocklist a dead lock holder, which taking over its lock needs: recovering a VM from a failed node depends on it (10.8). |
+| Time | Clocks in sync between nodes and monitors (cephx tickets expire). |
+
+### 10.2 Prepare the cluster
+
+On a host with the cluster's admin keyring:
+
+```bash
+# A pool for VM images, with the rbd application enabled. Add a placement
+# group count after the name on releases that ask for one.
+ceph osd pool create maburvm-vms
+rbd pool init maburvm-vms
+
+# Optional: a namespace, to keep these images apart inside a shared pool.
+rbd namespace create --pool maburvm-vms --namespace panel
+
+# A user that can use only this pool.
+ceph auth get-or-create client.maburvm \
+  mon 'profile rbd' \
+  osd 'profile rbd pool=maburvm-vms' \
+  mgr 'profile rbd pool=maburvm-vms'
+# With a namespace: osd 'profile rbd pool=maburvm-vms namespace=panel'
+
+# What to type into the panel:
+ceph mon dump                           # the monitors: use each one's address
+ceph auth get-key client.maburvm; echo  # the key
+ceph fsid                               # optional, pins the cluster
+```
+
+If your cluster overrides the default image features, set them back for this
+client: `ceph config set client.maburvm rbd_default_features 61`.
+
+The `rbd` profile on the monitors lets the client read the cluster's status
+and usage (`ceph status`, `ceph df`), which is where the panel's health and
+capacity figures come from. A client that may not read usage still works;
+capacity then shows as not reported.
+
+### 10.3 Prepare each node
+
+```bash
+# Debian, Ubuntu
+apt install ceph-common qemu-block-extra
+# RHEL family
+dnf install ceph-common qemu-kvm-block-rbd
+```
+
+Then open the node's page, **Host checks**, **Check now**: "Ceph client",
+"QEMU RBD driver" and "libvirt secrets" must no longer say "Optional, not
+installed". Check the network from the node: `nc -vz <monitor> 3300` (or
+`6789`) for each monitor.
+
+A node that will hold VMs on RBD also needs free room in its template cache
+directory (`/var/lib/libvirt/templates`, or `TEMPLATE_CACHE_DIR`): a new or
+reinstalled disk is prepared there as a file before it is imported, and a
+backup's compressed copy waits there to be uploaded. Allow the size of your
+largest template plus the largest disk you back up.
+
+The node needs nothing in `/etc/ceph`. MaburVM keeps its own conf and keyring
+under `/var/lib/maburvm/ceph/<cluster id>/` and never reads or writes
+`/etc/ceph`, so a node that is also a Ceph host keeps its own configuration.
+
+### 10.4 Register in the panel
+
+1. **Storage, Add Ceph cluster**: name, monitor addresses separated by
+   commas, client id (`maburvm`, without `client.`), the key, and optionally
+   the fsid. Nothing happens on any node yet.
+2. On the cluster's card, **Enable** on each node that reaches the cluster.
+   The node writes the conf and keyring, defines the libvirt secret, and reads
+   the cluster's fsid and health. The first node's fsid is recorded; a later
+   node that reports another is refused.
+3. **Add shared pool**, kind **RBD pool of a Ceph cluster**: choose the
+   cluster and type the pool (`maburvm-vms`) and the namespace if you made
+   one. Every node the cluster is enabled on must be able to list the pool's
+   images; a pool none can list is refused with the reason.
+4. Check the card: health, raw capacity, the pool's use, and "Reaches the
+   cluster" on every node.
+
+### 10.5 When a node cannot use the cluster
+
+**Shows as:** a critical "Node <node> cannot use Ceph cluster <name>" or
+"Shared pool <name> is not usable on <node>" alert, and the reason on the
+cluster's card.
+
+Run the agent's own check by hand on the node (it uses the same files):
+
+```bash
+D=/var/lib/maburvm/ceph/<cluster id>
+ceph --conf $D/ceph.conf --keyring $D/keyring --id maburvm --connect-timeout 10 status
+rbd  --conf $D/ceph.conf --keyring $D/keyring --id maburvm ls --pool maburvm-vms
+virsh secret-list          # the cluster's id, usage ceph maburvm-ceph-<id>
+```
+
+| Reason shown | Usual cause and fix |
+|---|---|
+| "did not answer ... within 12s" | The node does not reach the monitors or the OSDs: routing, a firewall, a monitor address that changed. Fix the network, or **Edit** the cluster with the new monitor addresses. |
+| "ceph is not installed" | Install `ceph-common` (10.3). |
+| `ceph: Error EACCES: access denied` | The user's monitor caps do not allow reading the cluster's status. Give it `mon 'profile rbd'` (10.2). |
+| `rbd: ... (1) Operation not permitted` or `(13) Permission denied` | The user's caps do not cover the pool or namespace. Fix them with `ceph auth caps`, then **Check now**. |
+| `rbd: error opening pool ...: (2) No such file or directory` | The pool was renamed or removed on the cluster. |
+| "reaches another cluster (fsid ...)" | The node's monitors belong to a different cluster. Correct the monitor list; never mix clusters under one record. |
+| "no longer holds the cluster's secret" | libvirt's secret was removed. **Check now** on the card defines it again. |
+| Authentication errors after a key rotation | **Edit** the cluster and paste the new key. Each node proves it before replacing the old one. |
+| "needs an agent update" | Update the node's agent (Settings, System). |
+
+VMs already running keep their open disks while the cluster itself is
+reachable from QEMU. The panel changes nothing on a node while it shows a
+problem; it only reports.
+
+**`HEALTH_ERR`** is the cluster's own state, read through whichever node
+answered last. Look at the checks listed on the card and repair the cluster
+with its own tools; the alert closes when the cluster leaves `HEALTH_ERR`.
+
+### 10.6 Detaching
+
+In this order: move or delete the VMs with disks on the cluster; delete the
+RBD pools on the Storage page (records only, images stay); **Disable** the
+cluster on each node (removes the conf, keyring and libvirt secret there;
+refused while a VM on the node still uses the cluster); then unregister the
+cluster. Afterwards remove the cephx user on the cluster with
+`ceph auth del client.maburvm` if nothing else uses it.
+
+### 10.7 VM disks on an RBD pool
+
+A pool takes VMs only where you choose it: **Use for new VMs** on a node's
+row of the pool's card, a storage tier on the pool, or the pool named when a
+VM is created. Try the first VM on a pool with a throwaway VM.
+
+What the node does, with the commands to look at it by hand
+(`R="--conf $D/ceph.conf --keyring $D/keyring --id maburvm"` as in 10.5):
+
+| Operation | On the cluster | Look |
+|---|---|---|
+| Create | The disk is built as a file in the template cache directory, imported as `maburvm-<vm id>-vda.new` with `qemu-img convert`, grown to the plan's size and renamed to `maburvm-<vm id>-vda`. An image of that name already there is refused, never replaced. | `rbd $R ls --pool maburvm-vms`, `rbd $R info maburvm-vms/maburvm-<vm id>-vda` |
+| Data disk | `maburvm-<vm id>-d<tag>`, created empty. | |
+| Snapshot | `mvm-<name>` on each of the VM's images. | `rbd $R snap ls maburvm-vms/<image>` |
+| Backup | `maburvm-backup` on each image while the copy is read, then removed. One left by an agent that stopped is removed by the next backup. | |
+| Reinstall, restore | A second image `<image>.new` is written, the image is renamed `<image>.old`, the new one takes its name, and `.old` is removed with its snapshots. | |
+| Delete | `rbd snap purge`, `rbd rm`, only once `rbd status` lists no watcher. A VM just powered off is still listed for about 30 seconds and is waited for, up to 45; an image still open then is kept. | `rbd $R status maburvm-vms/<image>` |
+
+**Refused, with the reason shown:** a snapshot with the memory of a running
+VM; an incremental backup (a full one is made instead); moving a disk to or
+from an RBD pool; moving a VM to a node without the pool; cloning a VM whose
+disks are on RBD; a password reset or a router's change written to the disk
+while the VM is stopped; volumes that belong to no VM; a data disk on a
+different kind of storage than the VM's system disk.
+
+**An image is left behind.** A delete keeps an image another client has open
+and says so in the delete's record ("RBD image(s) kept in the Ceph pool").
+The panel does not list images in a pool. Once you know nothing uses it
+(`rbd status` shows no watcher, and no VM in the panel has that id):
+
+```bash
+rbd $R snap purge maburvm-vms/maburvm-<vm id>-vda
+rbd $R rm maburvm-vms/maburvm-<vm id>-vda
+```
+
+The same goes for `*.new` and `*.old` images: they are left only by an agent
+that stopped in the middle of a create, reinstall or restore. If an image
+exists only as `<image>.old`, it is the VM's whole disk and the next
+reinstall or restore puts it back; to do it by hand, `rbd rename` it to its
+name without `.old`.
+
+**"The RBD image ... exists already" on create.** A VM with the same id
+already has a disk in the pool: a create that died after the import, or a VM
+being restored from a backup into the pool its old disks are still in.
+Remove the image as above if it is debris; otherwise recover the VM on its
+own disks instead (10.8).
+
+**A VM does not start, "secret not found" or "error connecting".** libvirt
+lost the cluster's secret, or QEMU on the node cannot reach the monitors or
+lacks the RBD driver. **Check now** on the cluster's card defines the secret
+again and names the problem; see 10.3 for the driver.
+
+### 10.8 Recovering VMs on RBD from a failed node
+
+Section 1 applies. A VM whose disks are all on RBD is recovered on its own
+disks ("shared" in the plan) onto any node that has the pool online. Before
+the new node defines the VM it:
+
+1. breaks every lock the failed node's QEMU holds on the VM's images
+   (`rbd lock rm`), which first puts that client on the cluster's blocklist;
+2. puts any client that still has an image open without a lock on the
+   blocklist (`ceph osd blocklist add`).
+
+A VM still running on the failed node (the node was cut off from the panel
+but not from Ceph) then gets I/O errors and cannot write the disk the new
+node is about to use. Both steps need `mon 'profile rbd'` on the cephx user.
+If the cluster refuses, the VM is **not** defined, and the recovery says so:
+fix the caps (`ceph auth caps client.maburvm mon 'profile rbd' ...`) and run
+it again.
+
+A blocklist covers the QEMU that was running, not one started later. So a VM
+on RBD is never started by libvirt at boot (its libvirt autostart stays off;
+the agent keeps the flag in `rbd-autostart.json` in its data directory). After
+a boot the agent starts those VMs itself, and every start of a stopped VM on
+RBD (Start, Restart, a crash restart) is refused while any client has one of
+its images open, naming the client: a VM recovered elsewhere and running there
+is never started a second time on the returned node.
+
+A blocklist entry expires (one hour by default,
+`mon_osd_blocklist_default_expire`). Before the failed node is brought back
+onto the network, power it off or make sure its VMs are not running: when it
+returns, the panel tells its agent which VMs live elsewhere and the agent
+never starts them, but a QEMU that kept running through the outage is not
+stopped by the panel (section 1, "When a recovered-from node comes back").
+
+The VM's cloud-init disc was a file on the failed node. For a VM made from a
+template the new node writes it again with the same instance id and the VM's
+addresses, so cloud-init treats the system as the one it already set up. A VM
+installed from an ISO never had one and gets none. Snapshots are RBD
+snapshots of the images and are kept.
+
+To see what holds an image: `rbd $R lock ls maburvm-vms/<image>`,
+`rbd $R status maburvm-vms/<image>`, and `ceph osd blocklist ls` with the
+cluster's admin key.

@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/maburvm/panel/internal/agent/ceph"
 	"github.com/maburvm/panel/internal/agent/hwprofile"
 	"github.com/maburvm/panel/internal/agent/libvirt"
 	"github.com/maburvm/panel/internal/agent/migration"
@@ -191,13 +192,22 @@ func (s *NodeAgentService) PrepareMigrationTarget(ctx context.Context, req *pb.P
 	if err != nil {
 		return fail(err)
 	}
+	// A VM whose disks are all on RBD lands on the same pool: nothing is made
+	// for its disks here, only its setup disc, in the default directory.
+	onRBD := req.PoolType == models.PoolTypeRBD
 	var problems []string
+	if onRBD {
+		problems = rbdMigrationProblems(req.PoolType, req.PoolPath, len(req.Disks))
+	}
 	paths := map[string]string{}
 	var planned []string
 	var needLV int64
 	for _, d := range req.Disks {
 		if !migration.ValidTarget(d.Target) {
 			return fail(fmt.Errorf("unusable drive %q", d.Target))
+		}
+		if onRBD {
+			continue // refused above: nothing is made in an RBD pool here
 		}
 		if onLVM {
 			// A volume of the VM's own, named and tagged as MaburVM names and
@@ -223,7 +233,7 @@ func (s *NodeAgentService) PrepareMigrationTarget(ctx context.Context, req *pb.P
 		// On an LVM pool the setup disc stays in the default directory, where
 		// a create puts it too.
 		seedDir := req.PoolPath
-		if onLVM {
+		if onLVM || onRBD {
 			seedDir = defaultImageDir
 		}
 		p, err := migration.TargetPath(seedDir, req.SeedFileName)
@@ -239,7 +249,9 @@ func (s *NodeAgentService) PrepareMigrationTarget(ctx context.Context, req *pb.P
 	} else if found {
 		problems = append(problems, "the VM is already defined on this node")
 	}
-	if onLVM {
+	if onRBD {
+		// Checked above; there is no directory to look at.
+	} else if onLVM {
 		problems = append(problems, lvmTargetProblems(ctx, lvPool, needLV, req.ScratchBytesNeeded)...)
 	} else if fi, err := os.Stat(req.PoolPath); err != nil || !fi.IsDir() {
 		problems = append(problems, fmt.Sprintf("the pool directory %s does not exist on this node", req.PoolPath))
@@ -349,7 +361,7 @@ func (s *NodeAgentService) PrepareMigrationTarget(ctx context.Context, req *pb.P
 func diskMaps(in []*pb.MigrationDiskMap) (dests map[string]migration.Dest, err error) {
 	dests = map[string]migration.Dest{}
 	for _, d := range in {
-		if !migration.ValidTarget(d.Target) || !filepath.IsAbs(d.DestPath) || filepath.Clean(d.DestPath) != d.DestPath {
+		if !migration.ValidTarget(d.Target) || !migration.DestOK(d.DestPath, d.Copy) {
 			return nil, fmt.Errorf("unusable drive mapping %q -> %q", d.Target, d.DestPath)
 		}
 		if f := d.DestFormat; f != "" && f != "raw" && f != "qcow2" {
@@ -443,8 +455,17 @@ func (s *NodeAgentService) MigrateVM(ctx context.Context, req *pb.MigrateVMReque
 }
 
 // sharedDiskHere checks a disk a move leaves where it is: a file in a shared
-// pool this node is a member of, mounted and holding the file right now.
+// pool this node is a member of, mounted and holding the file right now, or
+// an image on RBD this node reaches.
 func sharedDiskHere(p string) error {
+	if ceph.IsPath(p) {
+		// An image on RBD: this node must reach its cluster and see it.
+		img, err := ceph.OpenImage(p)
+		if err == nil {
+			_, err = img.Size(context.Background())
+		}
+		return err
+	}
 	if _, ok := storage.SharedPoolAt(p); !ok {
 		return fmt.Errorf("%s is not in a shared pool this node is a member of, so it cannot be used without a copy", p)
 	}

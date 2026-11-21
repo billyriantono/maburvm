@@ -188,7 +188,8 @@ func (s *SnapshotService) runSchedule(ctx context.Context, sch *models.SnapshotS
 	}
 	// Nothing is removed to make room for a snapshot that cannot be taken now:
 	// pruning first lost one snapshot per run for as long as that lasted.
-	diskOnly := sch.DiskOnly && vm.Status == models.VMStatusRunning
+	// Disks on RBD are snapshotted without the memory whatever the schedule says.
+	diskOnly := (sch.DiskOnly || VMOnRBD(ctx, s.db, vm)) && vm.Status == models.VMStatusRunning
 	if err := s.snapshotRefusal(ctx, vm, diskOnly); err != nil {
 		return false, err
 	}

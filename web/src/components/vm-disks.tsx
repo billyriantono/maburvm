@@ -55,7 +55,8 @@ export function VMDisksCard({ vmId, nodeId, systemDiskGB, running, canMove }: {
   const [moving, setMoving] = useState<DiskRow | null>(null)
   const [destPool, setDestPool] = useState("")
 
-  const nodePools = (pools ?? []).filter((p) => p.node_id === nodeId && p.status === "online")
+  // Where a disk can be moved to: a disk is not moved into or out of an RBD pool.
+  const nodePools = (pools ?? []).filter((p) => p.node_id === nodeId && p.status === "online" && p.type !== "rbd")
   const active = (moves ?? []).find((m) => m.status === "queued" || m.status === "running")
   const latest = (moves ?? [])[0]
   const rows: DiskRow[] = [

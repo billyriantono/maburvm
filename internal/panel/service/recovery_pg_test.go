@@ -41,6 +41,9 @@ func (f *fakeNode) ExecuteVMCommand(_ context.Context, req *pb.VMCommandRequest)
 			return fail(f.failAdopt)
 		}
 		f.vms[req.VmId] = &fakeVM{state: "shutoff", pool: path.Dir(req.AdoptDisks[0].Path), cache: "none"}
+		if p := req.AdoptDisks[0].Path; models.IsRBDPath(p) {
+			f.vms[req.VmId].rbd = p[:strings.LastIndex(p, "/")]
+		}
 	case pb.VMCommandType_VM_COMMAND_TYPE_CREATE:
 		f.calls = append(f.calls, "create")
 		f.vms[req.VmId] = &fakeVM{state: "running", pool: req.PoolPath}

@@ -65,6 +65,32 @@ locking (NFSv4, or `lockd` for v3). For a directory you mount yourself, mount
 it at the same path on every member node and make it mount at boot before
 libvirt starts.
 
+**Ceph (optional).** A node uses a Ceph cluster only when staff enable one on
+it (admin guide, section 4.8); nothing is installed or written otherwise. Such
+a node needs:
+
+- `ceph-common` (the `ceph` and `rbd` commands; the agent runs them with its
+  own conf and keyring, and is not linked against Ceph libraries);
+- QEMU's RBD driver: `qemu-block-extra` on Debian and Ubuntu,
+  `qemu-kvm-block-rbd` on the RHEL family. A QEMU built with modules lists
+  `rbd` in `qemu-img --help` even without that package, so the host check
+  also looks for its `block-rbd.so` module;
+- libvirt's secret driver, part of the usual libvirt packages (on hosts with
+  modular daemons, `virtsecretd` must run). libvirt's RBD storage pool driver
+  is **not** needed: MaburVM does not use libvirt storage pools.
+
+A node that holds VMs with disks on RBD also needs free room in the template
+cache directory (`TEMPLATE_CACHE_DIR`, default `/var/lib/libvirt/templates`):
+a new disk is prepared there as a file before it is imported into the pool,
+and a backup's copy waits there for its upload. QEMU is given the monitors
+and the key through libvirt, so it needs no access to the agent's files.
+
+The host checks show the three as "Ceph client", "QEMU RBD driver" and
+"libvirt secrets"; they are optional and never fail a node. The node must
+reach the cluster's monitors (TCP 3300 and 6789) and OSDs (TCP 6800-7300) on
+the cluster's public network. The cluster's side is in
+[runbooks.md](runbooks.md#10-attaching-an-existing-ceph-cluster).
+
 **DHCP for IP pools.** A pool with DHCP turned on is served by `dnsmasq`
 (`dnsmasq-base` on Debian and Ubuntu, usually present with libvirt; `dnsmasq` on
 the RHEL family), version 2.81 or later. The agent runs one per bridge with
@@ -199,7 +225,9 @@ Kept by the agent while it runs:
 | Speed limits on VM interfaces | tc and libvirt interface bandwidth |
 | IPv6 routes and neighbour entries for routed prefixes, and NDP proxy entries for each guest's `::1` and further addresses | on the bridge |
 | The shared pools the node is a member of, and a mount unit per NFS pool (written when staff add the node to the pool, removed when they take it out) | `/var/lib/maburvm/shared-pools.json`, `/etc/systemd/system/var-lib-maburvm-pools-<pool id>.mount`, mounted at `/var/lib/maburvm/pools/<pool id>` |
+| Per Ceph cluster enabled on the node: a minimal conf, a keyring (mode 0600) and the client's name; and a libvirt secret of usage type `ceph` whose UUID is the cluster's id (written when staff enable the cluster on the node, removed when they disable it). `/etc/ceph` is never touched | `/var/lib/maburvm/ceph/<cluster id>/` (`ceph.conf`, `keyring`, `cluster.json`); `virsh secret-list` |
 | The VMs that were recovered onto other nodes while this one was down, which the agent never starts again (written when the panel tells the returned node; a VM leaves the list when staff remove its old copy) | `/var/lib/maburvm/fenced-vms.json` |
+| The VMs with disks on Ceph RBD that start with the node. libvirt's autostart stays off for them; after a boot the agent starts each one only when no other node has its images open | `/var/lib/maburvm/rbd-autostart.json` |
 | Quarantined guests | `/etc/maburvm/quarantine` |
 | Null-routed addresses | `/etc/maburvm/nullroutes` (address and expiry; the agent lifts each when it expires) |
 | Downloaded templates, clone copies, scratch space for disks on LVM, customer ISOs | `TEMPLATE_CACHE_DIR` (`/var/lib/libvirt/templates`), customer ISOs in its `customer-iso` directory |

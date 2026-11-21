@@ -520,15 +520,30 @@ func apiRoutes() []*apiRoute {
 				note("Storage several nodes see at the same path. Each pool is listed once, with its member nodes; capacity and allocation count the storage once."),
 			post("/api/v1/storage/shared-pools", "Add a shared storage pool").can("storage:create").in(models.SharedStoragePool{}).
 				code(http.StatusCreated).out(ok(models.SharedStoragePool{})).
-				note("`kind` is `nfs` (`nfs_server`, `nfs_export`, optional `mount_options`; each member's agent mounts it under `/var/lib/maburvm/pools/<id>`) or `mounted` (`path`, a directory you mount yourself at the same path on every member). No node is touched until one is added as a member."),
+				note("`kind` is `nfs` (`nfs_server`, `nfs_export`, optional `mount_options`; each member's agent mounts it under `/var/lib/maburvm/pools/<id>`), `mounted` (`path`, a directory you mount yourself at the same path on every member) or `rbd` (`ceph_cluster_id`, `rbd_pool`, optional `rbd_namespace`: an RBD pool of a registered Ceph cluster). No node is touched until one is added as a member. The members of an `rbd` pool are the nodes its cluster is enabled on: they are added by the panel, each once it has listed the pool's images, and the pool is refused when no node that answers can."),
 			del("/api/v1/storage/shared-pools/:id", "Remove a shared storage pool").can("storage:delete").code(http.StatusNoContent).
-				note("Refused while it has members. Files in it are not removed."),
+				note("Refused while it has members. Files in it are not removed. An `rbd` pool is refused while a VM or a volume is in it; its members go with it, and its images on the cluster stay."),
 			post("/api/v1/storage/shared-pools/:id/members", "Add a node to a shared pool").can("storage:update").in(obj("node_id", tStr)).out(okMsg).
 				note("The node mounts the pool (kind `nfs`) and must read back a random token file a member writes there, and have its own read back. A node that does not see the same storage is taken out again and refused with the reason."),
 			del("/api/v1/storage/shared-pools/:id/members/:nodeId", "Remove a node from a shared pool").can("storage:update").code(http.StatusNoContent).
 				note("Refused while a VM on that node has a disk in the pool. An `nfs` pool is unmounted there."),
 			post("/api/v1/storage/shared-pools/:id/check", "Check a shared pool's members now").can("storage:update").out(ok(obj())).
 				note("`data` maps each member node's id to what is wrong with it; an empty string passes. A member that fails takes no new disks until its node reports the storage back."),
+			get("/api/v1/storage/ceph-clusters", "List Ceph clusters").can("node:read").out(okList(service.CephClusterView{})).
+				note("Existing Ceph clusters staff registered, each with its health (`HEALTH_OK`, `HEALTH_WARN`, `HEALTH_ERR` and the checks behind it), raw capacity, the nodes it is enabled on (`status` is `ok`, `unreachable`, `mismatch` or `degraded`, with the reason) and its RBD pools, measured once. The cluster's key is never in an answer."),
+			post("/api/v1/storage/ceph-clusters", "Register a Ceph cluster").can("storage:create").in(service.CephClusterInput{}).
+				code(http.StatusCreated).out(ok(models.CephCluster{})).
+				note("`monitors` is a comma-separated list of host or host:port; `client_id` the cephx user without `client.`; `client_key` its key as `ceph auth get-key` prints it, stored encrypted and never returned. `fsid` is optional: left empty, the first node to reach the cluster records it. No node is touched until the cluster is enabled on one."),
+			put("/api/v1/storage/ceph-clusters/:id", "Change a Ceph cluster").can("storage:update").in(service.CephClusterInput{}).out(ok(models.CephCluster{})).
+				note("An empty `client_key` keeps the stored key. New monitors, client id or key are sent to the nodes the cluster is enabled on, which prove them before using them; when the first node to answer refuses them, nothing is changed."),
+			del("/api/v1/storage/ceph-clusters/:id", "Unregister a Ceph cluster").can("storage:delete").code(http.StatusNoContent).
+				note("Refused while an RBD pool is on it or it is enabled on a node. Nothing on the cluster is removed."),
+			post("/api/v1/storage/ceph-clusters/:id/nodes", "Enable a Ceph cluster on a node").can("storage:update").in(obj("node_id", tStr)).out(okMsg).
+				note("The node's agent writes a minimal ceph.conf and a keyring (mode 0600) under its own data directory, defines a libvirt secret for the key, and reads the cluster's fsid and health with them. The first node's fsid is recorded; a node that reaches another cluster is taken out again and refused. The node then gets its part of each RBD pool of the cluster."),
+			del("/api/v1/storage/ceph-clusters/:id/nodes/:nodeId", "Disable a Ceph cluster on a node").can("storage:update").code(http.StatusNoContent).
+				note("Removes the conf, keyring and libvirt secret from the node. Refused while a VM on that node has a disk on the cluster."),
+			post("/api/v1/storage/ceph-clusters/:id/check", "Check a Ceph cluster on its nodes now").can("storage:update").out(ok(obj())).
+				note("Sends the cluster's settings to each node again (restoring a lost keyring or libvirt secret) and reads health, capacity and each RBD pool there. `data` maps each node's id to what is wrong with it; an empty string passes."),
 		),
 		group("Templates and plans",
 			get("/api/v1/templates", "List templates").can("signed-in").q("include_nodes").out(handler.SuccessResponse{}).

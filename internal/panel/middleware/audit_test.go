@@ -163,7 +163,7 @@ func TestAuditRecordsSSOCallback(t *testing.T) {
 
 // The panel settings form and the first-run form carry credentials.
 func TestAuditRedactsPanelSettingSecrets(t *testing.T) {
-	for _, k := range []string{"billingApiKey", "billingWebhookSecret", "metricsToken", "oidcClientSecret", "token", "password"} {
+	for _, k := range []string{"billingApiKey", "billingWebhookSecret", "metricsToken", "oidcClientSecret", "token", "password", "client_key"} {
 		if !isSensitiveField(k) {
 			t.Fatalf("%s must be redacted in the audit log", k)
 		}

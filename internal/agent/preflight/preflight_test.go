@@ -227,6 +227,63 @@ func TestOptionalHardwareSaysWhatIsMissing(t *testing.T) {
 	}
 }
 
+func TestCephChecksAreOptional(t *testing.T) {
+	f := healthy() // a node with no Ceph client at all
+	checks := Evaluate(f)
+	if w := Worst(checks); w != Pass {
+		t.Fatalf("a node without Ceph must still pass, got %s", w)
+	}
+	for id, word := range map[string]string{"ceph_cli": "ceph-common", "qemu_rbd": "qemu-block-extra", "libvirt_secrets": "secret"} {
+		if c := byID(t, checks, id); c.Status != Pass || !strings.HasPrefix(c.Detail, "Optional") || !strings.Contains(c.Detail, word) {
+			t.Errorf("%s: %+v", id, c)
+		}
+	}
+	f.Tools["ceph"], f.Tools["rbd"] = true, true
+	f.QemuImgFormats = append(f.QemuImgFormats, "rbd")
+	f.LibvirtSecrets = true
+	checks = Evaluate(f)
+	for _, id := range []string{"ceph_cli", "qemu_rbd", "libvirt_secrets"} {
+		if c := byID(t, checks, id); c.Status != Pass || strings.Contains(c.Detail, "Optional") {
+			t.Errorf("%s: %+v", id, c)
+		}
+	}
+	f.Tools["rbd"] = false
+	if c := byID(t, Evaluate(f), "ceph_cli"); !strings.HasPrefix(c.Detail, "Optional") {
+		t.Errorf("ceph without rbd is not a usable client: %+v", c)
+	}
+}
+
+// A QEMU built with modules lists rbd whether or not the module is there.
+func TestRBDNeedsItsModuleWhenQEMUHasModules(t *testing.T) {
+	listed := []string{"raw", "qcow2", "rbd"}
+	glob := func(files ...string) func(string) ([]string, error) {
+		return func(pat string) ([]string, error) {
+			var out []string
+			for _, f := range files {
+				if ok, _ := filepath.Match(pat, f); ok {
+					out = append(out, f)
+				}
+			}
+			return out, nil
+		}
+	}
+	for name, tc := range map[string]struct {
+		files []string
+		rbd   bool
+	}{
+		"built in, no modules":      {nil, true},
+		"Ubuntu with block-extra":   {[]string{"/usr/lib/x86_64-linux-gnu/qemu/block-curl.so", "/usr/lib/x86_64-linux-gnu/qemu/block-rbd.so"}, true},
+		"Ubuntu without it":         {[]string{"/usr/lib/x86_64-linux-gnu/qemu/block-curl.so"}, false},
+		"RHEL without the rbd part": {[]string{"/usr/lib64/qemu-kvm/block-curl.so"}, false},
+		"RHEL with it":              {[]string{"/usr/lib64/qemu-kvm/block-rbd.so"}, true},
+	} {
+		got := dropMissingModules(append([]string{}, listed...), glob(tc.files...))
+		if contains(got, "rbd") != tc.rbd || !contains(got, "qcow2") {
+			t.Errorf("%s: formats = %v", name, got)
+		}
+	}
+}
+
 func TestVLANBridgesAndDHCP(t *testing.T) {
 	f := healthy()
 	f.VLANBridges = []netrules.VLANBridgeState{{Bridge: "br1", Uplink: "bond0"}, {Bridge: "br2", Uplink: "eth3", Problem: "eth3 is not a port of br2"}}

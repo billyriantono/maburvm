@@ -4,9 +4,12 @@ import (
 	"encoding/xml"
 	"fmt"
 	"net"
+	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/maburvm/panel/internal/agent/ceph"
+	"github.com/maburvm/panel/internal/shared/models"
 	"libvirt.org/go/libvirtxml"
 )
 
@@ -56,6 +59,9 @@ func Drives(domXML string) ([]Drive, error) {
 				dr.SourceType, dr.Path = "block", s.Block.Dev
 			case s.Network != nil:
 				dr.SourceType = "network"
+				// An image on RBD is named by its disk path; it is shared
+				// storage, and a move never copies it.
+				dr.Path, _ = ceph.DiskPath(&d)
 			case s.Volume != nil:
 				dr.SourceType = "volume"
 			}
@@ -117,6 +123,16 @@ type Dest struct {
 	Format string
 }
 
+// DestOK reports a place a move may name for a drive: a clean absolute path,
+// or, for a drive that is not copied, an image on RBD, which stays where it is.
+func DestOK(p string, copied bool) bool {
+	if ceph.IsPath(p) {
+		_, err := models.ParseRBDPath(p)
+		return err == nil && !copied
+	}
+	return filepath.IsAbs(p) && filepath.Clean(p) == p
+}
+
 // RewriteForTarget returns the domain with each drive in paths moved to its
 // path on the destination, and its console on a port the destination picks
 // (a fixed port may be taken there). Every target in paths must exist.
@@ -146,6 +162,15 @@ func RewriteDisks(domXML string, dests map[string]Dest) (string, error) {
 		}
 		dst, ok := dests[d.Target.Dev]
 		if !ok {
+			continue
+		}
+		// An image on RBD stays where it is: the destination reaches the same
+		// cluster and opens the same image.
+		if p, ok := ceph.DiskPath(d); ok {
+			if dst.Path != p {
+				return "", fmt.Errorf("drive %s is an image on Ceph RBD, which is not copied by a move", d.Target.Dev)
+			}
+			done[d.Target.Dev] = true
 			continue
 		}
 		if d.Source == nil || (d.Source.File == nil && d.Source.Block == nil) {

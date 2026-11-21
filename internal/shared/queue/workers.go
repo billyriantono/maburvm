@@ -3251,6 +3251,17 @@ func NewSnapshotWorker(logger *slog.Logger) *SnapshotWorker {
 	return w
 }
 
+// Timeout gives a revert the time a disk restore gets: rolling disks on Ceph
+// RBD back to a snapshot takes as long as the disks are large, and the node
+// carries it to its end whether or not the panel still waits. Other
+// operations keep the queue's default (0).
+func (w *SnapshotWorker) Timeout(job *river.Job[SnapshotJob]) time.Duration {
+	if job.Args.Operation == SnapshotOpRestore {
+		return 8 * time.Hour
+	}
+	return 0
+}
+
 // Work runs a snapshot operation. A snapshot whose taking failed for good is
 // marked failed: left pending, it would read as still being taken and refuse
 // every later snapshot of the VM.

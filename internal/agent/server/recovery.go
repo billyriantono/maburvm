@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/maburvm/panel/internal/agent/ceph"
+	"github.com/maburvm/panel/internal/agent/cloudinit"
 	"github.com/maburvm/panel/internal/agent/guestos"
 	"github.com/maburvm/panel/internal/agent/libvirt"
 	"github.com/maburvm/panel/internal/agent/migration"
@@ -19,7 +22,8 @@ import (
 // Recovering a failed node's VMs on other nodes.
 //
 // On the node a VM is recovered onto: ADOPT defines it on its existing disks
-// in a shared pool. On the node it was recovered from, once that node is
+// in a shared pool. Disks on Ceph RBD are first taken away from the failed
+// node (adoptRBDDisk). On the node it was recovered from, once that node is
 // back: the panel sends the VMs that live elsewhere now (SetFencedVMs), and
 // this agent never starts one again. Nothing here acts on its own.
 
@@ -61,11 +65,14 @@ func (s *NodeAgentService) adoptVM(req *pb.VMCommandRequest) error {
 		if i > 0 && !validDataTarget(d.GetTarget()) {
 			return fmt.Errorf("%q is not a data disk target", d.GetTarget())
 		}
+		if inUse[cleanDiskPath(d.GetPath())] {
+			return fmt.Errorf("%s is a disk of another VM on this node", d.GetPath())
+		}
+		if ceph.IsPath(d.GetPath()) {
+			continue // checked and fenced below, once every disk has passed
+		}
 		if err := storage.CheckAdoptDisk(req.VmId, d.GetTarget(), d.GetPath()); err != nil {
 			return err
-		}
-		if inUse[filepath.Clean(d.GetPath())] {
-			return fmt.Errorf("%s is a disk of another VM on this node", d.GetPath())
 		}
 	}
 	osType, _ := models.SplitGuestImageRef(cfg.ImageId)
@@ -76,13 +83,35 @@ func (s *NodeAgentService) adoptVM(req *pb.VMCommandRequest) error {
 	if err != nil {
 		return err
 	}
+	// An image on RBD is taken away from the failed node only now, after the
+	// last refusal, so a refusal has fenced nothing.
+	for _, d := range disks {
+		if ceph.IsPath(d.GetPath()) {
+			if err := adoptRBDDisk(context.Background(), req.VmId, d.GetTarget(), d.GetPath()); err != nil {
+				return err
+			}
+		}
+	}
 	vmCfg := vmConfigFor(req, cfg, osType, hw, pinned, firmware)
-	vmCfg.DiskPath = filepath.Clean(disks[0].GetPath())
+	vmCfg.DiskPath = cleanDiskPath(disks[0].GetPath())
 	for _, d := range disks[1:] {
-		vmCfg.ExtraDisks = append(vmCfg.ExtraDisks, libvirt.ExtraDisk{Target: d.GetTarget(), Path: filepath.Clean(d.GetPath())})
+		vmCfg.ExtraDisks = append(vmCfg.ExtraDisks, libvirt.ExtraDisk{Target: d.GetTarget(), Path: cleanDiskPath(d.GetPath())})
 	}
 	// Its setup disc sits beside its disk; a VM made without one has none.
-	seed := filepath.Join(filepath.Dir(vmCfg.DiskPath), req.VmId+"-seed.iso")
+	seed := filepath.Join(diskDir(vmCfg.DiskPath, defaultImageDir), req.VmId+"-seed.iso")
+	if ceph.IsPath(vmCfg.DiskPath) && cfg.GetMetadata()[models.AdoptSeedKey] != "" {
+		// The disc of a VM on RBD was on the failed node. It is written again
+		// with the same instance id, so cloud-init sees the system it already
+		// set up and changes nothing; it carries no password or key.
+		if err := cloudinit.GenerateSeedISO(cloudinit.Config{
+			InstanceID: req.VmId, Hostname: cmp.Or(cfg.GetMetadata()["hostname"], req.VmId), MACAddress: vmCfg.MACAddress,
+			IPAddress: vmCfg.IPAddress, Prefix: vmCfg.Netmask, Gateway: vmCfg.Gateway, Nameservers: vmCfg.DNS,
+			IPv6Address: vmCfg.IPv6Address, IPv6Gateway: vmCfg.IPv6Gateway, IPv6DNS: vmCfg.IPv6DNS,
+			Windows: osType == guestos.Windows,
+		}, seed); err != nil {
+			log.Printf("[Recovery] VM %s: its setup disc was not written again (%v); it boots without one", req.VmId, err)
+		}
+	}
 	if fi, err := os.Stat(seed); err == nil && fi.Mode().IsRegular() {
 		vmCfg.CloudInitISOPath = seed
 	}
@@ -168,7 +197,10 @@ func (s *NodeAgentService) fenceVM(id string) *pb.FencedVM {
 	for _, d := range libvirt.UnderOverlays(disks) {
 		fd := &pb.FencedDisk{Target: d.Target, Path: d.Path}
 		_, fd.Shared = storage.SharedPoolAt(d.Path)
-		if d.Block {
+		if d.RBD {
+			// The image is the disk the VM runs on now: never this node's copy.
+			fd.Shared = true
+		} else if d.Block {
 			fd.SizeBytes, _ = storage.DeviceSize(d.Path)
 		} else if fi, err := os.Stat(d.Path); err == nil {
 			fd.SizeBytes = fi.Size()

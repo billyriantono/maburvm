@@ -21,7 +21,7 @@ function resourceLink(a: Alert): string | null {
   if (!a.resource_id) return null
   if (a.resource_type === "node") return `/nodes/${a.resource_id}`
   if (a.resource_type === "vm") return `/vms/${a.resource_id}`
-  if (a.resource_type === "storage_pool") return "/storage"
+  if (a.resource_type === "storage_pool" || a.resource_type === "ceph_cluster") return "/storage"
   return null
 }
 
@@ -109,7 +109,7 @@ export default function AlertsPage() {
                   <div className="flex shrink-0 items-center gap-3 self-center">
                     {link && (
                       <Link href={link} className="text-sm font-medium underline underline-offset-4">
-                        Open {a.resource_type === "storage_pool" ? "storage" : a.resource_name || a.resource_type}
+                        Open {a.resource_type === "storage_pool" || a.resource_type === "ceph_cluster" ? "storage" : a.resource_name || a.resource_type}
                       </Link>
                     )}
                     {a.state === "firing" && (

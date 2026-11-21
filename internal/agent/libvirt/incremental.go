@@ -182,6 +182,35 @@ func fsThaw(dom *libvirt.Domain) error {
 	return err
 }
 
+// FreezeGuest freezes a running VM's file systems through its guest agent, so
+// a snapshot taken by the storage holds them whole. thaw must be called, and
+// soon: a frozen guest hangs on its next write.
+func FreezeGuest(uuidStr string) (thawGuest func(), err error) {
+	err = WithConnection(func(conn *libvirt.Connect) error {
+		dom, err := conn.LookupDomainByUUIDString(uuidStr)
+		if err != nil {
+			return fmt.Errorf("domain not found: %w", err)
+		}
+		defer dom.Free()
+		return fsFreeze(dom)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return func() {
+		_ = WithConnection(func(conn *libvirt.Connect) error {
+			dom, err := conn.LookupDomainByUUIDString(uuidStr)
+			if err != nil {
+				log.Printf("[Backup] WARNING: VM %s: its file systems may still be frozen: %v", uuidStr, err)
+				return nil
+			}
+			defer dom.Free()
+			thaw(dom, uuidStr)
+			return nil
+		})
+	}, nil
+}
+
 // thaw unfreezes the guest; one left frozen hangs on its next write.
 func thaw(dom *libvirt.Domain, uuidStr string) {
 	var err error

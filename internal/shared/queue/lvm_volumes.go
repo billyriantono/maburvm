@@ -40,8 +40,19 @@ func recordKeptVolumes(ctx context.Context, db *gorm.DB, vm *models.VM, nodeID s
 	if len(kept) == 0 {
 		return ""
 	}
-	listed := 0
+	listed, images := 0, 0
+	imageWhy := ""
 	for _, k := range kept {
+		// An image on RBD is kept when another client has it open (the VM
+		// still runs on another node) or the cluster did not answer. It stays
+		// in its Ceph pool; nothing in the panel lists or removes it.
+		if models.IsRBDPath(k.GetPath()) {
+			images++
+			imageWhy = k.GetReason()
+			logger.WarnContext(ctx, "a deleted VM's RBD image was kept in its pool; remove it with rbd once nothing uses it",
+				"vm_id", vm.ID, "path", k.GetPath(), "reason", k.GetReason())
+			continue
+		}
 		poolID := ""
 		if db != nil && k.GetVg() != "" {
 			typ, path := models.PoolTypeLVM, k.GetVg()
@@ -70,10 +81,17 @@ func recordKeptVolumes(ctx context.Context, db *gorm.DB, vm *models.VM, nodeID s
 		}
 		listed++
 	}
-	if listed == 0 {
-		return fmt.Sprintf("; %d block device(s) kept on the node outside any storage pool", len(kept))
+	note := ""
+	if images > 0 {
+		note = fmt.Sprintf("; %d RBD image(s) kept in the Ceph pool (%s)", images, imageWhy)
 	}
-	return fmt.Sprintf("; %d volume(s) kept, listed under their storage pool", listed)
+	switch {
+	case listed > 0:
+		note += fmt.Sprintf("; %d volume(s) kept, listed under their storage pool", listed)
+	case len(kept) > images:
+		note += fmt.Sprintf("; %d block device(s) kept on the node outside any storage pool", len(kept)-images)
+	}
+	return note
 }
 
 // keptVolumeName names a kept volume after the VM it belonged to.

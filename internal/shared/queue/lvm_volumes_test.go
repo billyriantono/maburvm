@@ -80,4 +80,14 @@ func TestRecordKeptVolumes(t *testing.T) {
 	if recordKeptVolumes(ctx, db, vm, "n1", nil, log) != "" {
 		t.Fatal("nothing kept, nothing said")
 	}
+	// An image on RBD another node still has open stays in its Ceph pool: the
+	// delete's record says so and why, and it is not listed as a volume.
+	image := []*pb.KeptVolume{{Path: "rbd://11111111-2222-3333-4444-555555555555/vms/maburvm-vm-1-vda", Target: "vda", Reason: "open on 10.0.0.9:0/1"}}
+	if note := recordKeptVolumes(ctx, db, vm, "n1", image, log); !strings.Contains(note, "1 RBD image(s) kept in the Ceph pool (open on 10.0.0.9:0/1)") || strings.Contains(note, "block device") {
+		t.Fatalf("note = %q", note)
+	}
+	db.Model(&models.StorageVolume{}).Count(&n)
+	if n != 2 {
+		t.Fatalf("an image was listed as a volume: %d rows", n)
+	}
 }

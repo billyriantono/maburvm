@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/maburvm/panel/internal/agent/ceph"
 	"libvirt.org/go/libvirtxml"
 )
 
@@ -87,12 +88,13 @@ func zstdUnsupported(output []byte) bool {
 // DomainDisk is one disk device of a domain definition.
 type DomainDisk struct {
 	Target string // vda, vdb...
-	Path   string // a file, or a block device
+	Path   string // a file, a block device, or an image on RBD (models.RBDImage.Path)
 	Format string // the driver type: qcow2, raw
 	Block  bool
+	RBD    bool
 }
 
-// DomainDisks lists a domain's disks (device "disk" with a file or block
+// DomainDisks lists a domain's disks (device "disk" with a file, block or RBD
 // source), in definition order; the first is the primary one. CD drives and
 // the setup disc are not disks.
 func DomainDisks(domainXML string) ([]DomainDisk, error) {
@@ -123,7 +125,11 @@ func domainDisk(d libvirtxml.DomainDisk) (DomainDisk, bool) {
 	case d.Source.Block != nil && d.Source.Block.Dev != "":
 		disk.Path, disk.Block = d.Source.Block.Dev, true
 	default:
-		return DomainDisk{}, false
+		p, ok := ceph.DiskPath(&d)
+		if !ok {
+			return DomainDisk{}, false
+		}
+		disk.Path, disk.RBD = p, true
 	}
 	disk.Format = "raw"
 	if d.Driver != nil && d.Driver.Type != "" {
@@ -133,8 +139,11 @@ func domainDisk(d libvirtxml.DomainDisk) (DomainDisk, bool) {
 }
 
 // DiskDevice is the definition of a disk at target backed by path: a raw block
-// device for a /dev path, which gives freed blocks back to a thin pool, and a
-// qcow2 file otherwise. A file in a shared pool bypasses the host cache.
+// device for a /dev path, which gives freed blocks back to a thin pool, a raw
+// network disk for an image on RBD, and a qcow2 file otherwise. A file in a
+// shared pool bypasses the host cache, and so does an image on RBD: every
+// node's QEMU must see what another wrote. Check an RBD path with
+// CheckDiskSource first: without its cluster the source names no monitor.
 func DiskDevice(path, target string) libvirtxml.DomainDisk {
 	d := libvirtxml.DomainDisk{Device: "disk", Target: &libvirtxml.DomainDiskTarget{Dev: target, Bus: "virtio"}}
 	if strings.HasPrefix(path, "/dev/") {
@@ -142,10 +151,28 @@ func DiskDevice(path, target string) libvirtxml.DomainDisk {
 		d.Source = &libvirtxml.DomainDiskSource{Block: &libvirtxml.DomainDiskSourceBlock{Dev: path}}
 		return d
 	}
+	if ceph.IsPath(path) {
+		d.Driver = &libvirtxml.DomainDiskDriver{Name: "qemu", Type: "raw", Cache: "none", Discard: "unmap", DetectZeros: "unmap"}
+		d.Source = &libvirtxml.DomainDiskSource{Network: &libvirtxml.DomainDiskSourceNetwork{Protocol: "rbd"}}
+		if img, err := ceph.OpenImage(path); err == nil {
+			d.Source = img.DiskSource()
+		}
+		return d
+	}
 	d.Driver = &libvirtxml.DomainDiskDriver{Name: "qemu", Type: "qcow2"}
 	d.Source = &libvirtxml.DomainDiskSource{File: &libvirtxml.DomainDiskSourceFile{File: path}}
 	sharedDiskDriver(&d)
 	return d
+}
+
+// CheckDiskSource says why a disk at path cannot be defined on this node: an
+// image on RBD needs its cluster enabled here. Files and devices pass.
+func CheckDiskSource(path string) error {
+	if !ceph.IsPath(path) {
+		return nil
+	}
+	_, err := ceph.OpenImage(path)
+	return err
 }
 
 // OverlayMarker is in the name of every temporary backup overlay. A disk
@@ -200,6 +227,9 @@ func BackupSnapshot(domainXML, dir, vmID string, stamp int64) (string, []Overlay
 			if !ok || d.ReadOnly != nil {
 				fmt.Fprintf(&b, "<disk name=%s snapshot=\"no\"/>", xmlAttr(d.Target.Dev))
 				continue
+			}
+			if disk.RBD {
+				return "", nil, fmt.Errorf("disk %s is on Ceph RBD, which is backed up from an RBD snapshot, not from an overlay", disk.Target)
 			}
 			if IsBackupOverlay(disk.Path) {
 				return "", nil, fmt.Errorf("disk %s is still on the overlay of an earlier backup (%s)", disk.Target, disk.Path)
@@ -299,11 +329,14 @@ const (
 	RestoreRename      = "rename"       // a qcow2 file: the downloaded image becomes it
 	RestoreConvertFile = "convert-file" // a raw file: converted beside it, then swapped in
 	RestoreWriteDevice = "write-device" // a block device: written over, in place
+	RestoreReplaceRBD  = "replace-rbd"  // an image on RBD: imported beside it, then swapped in
 )
 
 // RestoreMethod picks how a backup image replaces the disk.
 func RestoreMethod(d DomainDisk) string {
 	switch {
+	case d.RBD:
+		return RestoreReplaceRBD
 	case d.Block:
 		return RestoreWriteDevice
 	case d.Format == "qcow2":
@@ -313,11 +346,16 @@ func RestoreMethod(d DomainDisk) string {
 	}
 }
 
-// SnapshotBlocker says why the VM's disks cannot take a snapshot, or "".
-// Snapshots live inside qcow2 images; a raw disk or a logical volume has
-// nowhere to keep one, so backups are the way to keep its state.
+// SnapshotBlocker says why the VM's disks cannot take a snapshot inside their
+// images, or "". Such snapshots live in qcow2 images; a raw disk or a logical
+// volume has nowhere to keep one, so backups are the way to keep its state.
+// A VM whose disks are all on RBD never gets here: its snapshots are RBD
+// snapshots (see OnRBD).
 func SnapshotBlocker(disks []DomainDisk) string {
 	for _, d := range disks {
+		if d.RBD {
+			return fmt.Sprintf("disk %s is on Ceph RBD and the VM's other disks are not; a snapshot needs all of a VM's disks on one kind of storage", d.Target)
+		}
 		if d.Block {
 			return fmt.Sprintf("snapshots need qcow2 disks, and disk %s is the block device %s (LVM storage); take a backup instead", d.Target, d.Path)
 		}
@@ -327,3 +365,19 @@ func SnapshotBlocker(disks []DomainDisk) string {
 	}
 	return ""
 }
+
+// OnRBD sorts a VM's disks by where they live: all reports every disk on
+// RBD, any at least one. A VM with both kinds is refused by the operations
+// that must treat its disks as one (snapshots, backups).
+func OnRBD(disks []DomainDisk) (all, any bool) {
+	all = len(disks) > 0
+	for _, d := range disks {
+		any = any || d.RBD
+		all = all && d.RBD
+	}
+	return all, any
+}
+
+// MixedStorage is the refusal of an operation that needs all of a VM's disks
+// on one kind of storage.
+const MixedStorage = "this VM has disks on Ceph RBD and disks on the node's own storage; %s needs all of them on one kind of storage"

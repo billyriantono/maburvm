@@ -62,7 +62,7 @@ func ValidCheckpointName(n string) bool { return checkpointName.MatchString(n) }
 // bitmap is stored in a qcow2 image, so a raw file or a logical volume cannot.
 func ChainableDisks(disks []DomainDisk) (bool, string) {
 	for _, d := range disks {
-		if d.Block || d.Format != "qcow2" {
+		if d.RBD || d.Block || d.Format != "qcow2" {
 			return false, fmt.Sprintf("disk %s is %s, and only qcow2 files can track changes", d.Target, describeDisk(d))
 		}
 	}
@@ -70,6 +70,9 @@ func ChainableDisks(disks []DomainDisk) (bool, string) {
 }
 
 func describeDisk(d DomainDisk) string {
+	if d.RBD {
+		return "an image on Ceph RBD"
+	}
 	if d.Block {
 		return "a block device"
 	}

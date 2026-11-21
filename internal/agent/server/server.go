@@ -435,6 +435,9 @@ func (s *Server) Start() error {
 	go evictTemplateCacheForever()
 	go nodeAgentSvc.watchCrashes(context.Background())
 	go recoverBackupOverlays()
+	// After the network restore above: VMs on RBD start with the node here,
+	// not through libvirt (see ceph.SetStartsWithNode).
+	go startRBDGuests()
 
 	s.started = true
 

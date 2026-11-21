@@ -666,7 +666,12 @@ func (s *Server) setupVMRoutes(g *echo.Group) {
 	handler.RegisterMigrationRoutes(s.echo, handler.NewMigrationHandler(migrations), s.db)
 	handler.RegisterRecoveryRoutes(s.echo, migrations, s.db)
 	// Storage several nodes share; a move between its members copies no disk.
-	handler.RegisterSharedPoolRoutes(s.echo, service.NewSharedPoolService(s.db, vmService), s.db)
+	sharedPools := service.NewSharedPoolService(s.db, vmService)
+	sharedPools.SetAlerts(s.alertsInstance())
+	handler.RegisterSharedPoolRoutes(s.echo, sharedPools, s.db)
+	// Existing Ceph clusters staff register and enable on nodes. Nothing is
+	// done on a node until then.
+	handler.RegisterCephRoutes(s.echo, service.NewCephService(s.db, vmService, s.alertsInstance()), s.db)
 
 	// Several VMs at once from the admin list; a VM's delete lock and tags,
 	// and staff notes on VMs and accounts.

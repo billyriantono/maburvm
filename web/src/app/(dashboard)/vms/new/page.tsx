@@ -682,7 +682,7 @@ function NewVMForm() {
                     <option value="">Automatic</option>
                     {(storagePools ?? []).filter((p) => p.node_id === watchedValues.nodeId && p.status === "online").map((p) => (
                       <option key={p.id} value={p.id}>
-                        {p.name}{p.tier ? ` (${p.tier})` : ""}, {Math.floor(p.available_space / 1073741824)} GB free
+                        {p.name}{p.type === "rbd" ? " (Ceph RBD)" : ""}{p.tier ? ` (${p.tier})` : ""}, {Math.floor(p.available_space / 1073741824)} GB free
                       </option>
                     ))}
                   </select>

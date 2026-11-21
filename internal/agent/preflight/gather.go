@@ -64,6 +64,8 @@ func Gather(ctx context.Context, o Options) Facts {
 			}
 		} else {
 			f.LibvirtVersion, f.QEMUVersion = parseVirshVersion(out)
+			_, err := run(ctx, "virsh", "-c", uri, "secret-list") // read-only
+			f.LibvirtSecrets = err == nil
 		}
 	}
 
@@ -75,7 +77,7 @@ func Gather(ctx context.Context, o Options) Facts {
 			f.QemuImg = "(unknown version)"
 		}
 		if out, err := run(ctx, "qemu-img", "--help"); err == nil {
-			f.QemuImgFormats = parseQemuImgFormats(out)
+			f.QemuImgFormats = dropMissingModules(parseQemuImgFormats(out), filepath.Glob)
 		}
 	}
 
@@ -103,7 +105,7 @@ func Gather(ctx context.Context, o Options) Facts {
 	}
 
 	f.Tools = map[string]bool{}
-	for _, name := range ToolNames() {
+	for _, name := range append(ToolNames(), "ceph", "rbd") {
 		_, err := exec.LookPath(name)
 		f.Tools[name] = err == nil
 	}
@@ -235,6 +237,35 @@ func parseQemuImgFormats(out string) []string {
 		}
 	}
 	return nil
+}
+
+// qemuModuleGlobs find QEMU's block driver modules: Debian and Ubuntu,
+// RHEL and Fedora, then Arch.
+var qemuModuleGlobs = []string{"/usr/lib/*/qemu/block-*.so", "/usr/lib64/qemu*/block-*.so", "/usr/lib/qemu/block-*.so"}
+
+// dropMissingModules removes rbd when QEMU is built with modules but the rbd
+// one is not installed: qemu-img lists a module's format either way.
+func dropMissingModules(formats []string, glob func(string) ([]string, error)) []string {
+	var mods []string
+	for _, pat := range qemuModuleGlobs {
+		m, _ := glob(pat)
+		mods = append(mods, m...)
+	}
+	if len(mods) == 0 {
+		return formats // no modules: the drivers are built in
+	}
+	for _, m := range mods {
+		if filepath.Base(m) == "block-rbd.so" {
+			return formats
+		}
+	}
+	out := formats[:0:0]
+	for _, f := range formats {
+		if f != "rbd" {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 func firstLine(s string) string {

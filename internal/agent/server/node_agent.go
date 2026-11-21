@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/maburvm/panel/internal/agent/agentenv"
+	"github.com/maburvm/panel/internal/agent/ceph"
 	"github.com/maburvm/panel/internal/agent/cloudinit"
 	"github.com/maburvm/panel/internal/agent/dhcp"
 	"github.com/maburvm/panel/internal/agent/domtune"
@@ -314,7 +315,7 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 		// A restart boots a stopped VM, which must wait for work on its disks.
 		if st, _ := libvirt.GetVMStatus(req.VmId); st != libvirt.VMStatusRunning && migrations.Busy(req.VmId) {
 			err = errDisksBusy
-		} else {
+		} else if err = rbdFreeToStart(req.VmId); err == nil {
 			err = libvirt.RestartVM(req.VmId)
 		}
 		state = pb.VMState_VM_STATE_RUNNING
@@ -331,6 +332,8 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 		if err == nil {
 			sweepCustomerISOs(0)
 			kept = removeVMVolumes(ctx, req.VmId, blockDisks, lvmPoolsOf(req.GetLvmPools()), req.GetRemoveForeignVolumes())
+			// Images on RBD likewise; one another node still has open is kept.
+			kept = append(kept, removeVMImages(context.WithoutCancel(ctx), req.VmId, blockDisks)...)
 		}
 		// Destroying the domain left every host-side rule behind: firewall,
 		// anti-spoof, bandwidth shaping and NAT. That was invisible while
@@ -505,6 +508,13 @@ func cleanStaleExports() {
 		matches, err := filepath.Glob(filepath.Join(dir, "*-backup.qcow2"))
 		if err != nil {
 			continue
+		}
+		if dir == blockScratchDir() {
+			// Disks that were being prepared for an RBD pool (rbd_disks.go).
+			for _, pattern := range []string{"*-rbd.qcow2", "*-rebuild.qcow2"} {
+				more, _ := filepath.Glob(filepath.Join(dir, pattern))
+				matches = append(matches, more...)
+			}
 		}
 		for _, path := range matches {
 			info, err := os.Stat(path)
@@ -812,6 +822,9 @@ func (s *NodeAgentService) applyGuestNetwork(ctx context.Context, vmID string, n
 	if err != nil {
 		return err
 	}
+	if ceph.IsPath(diskPath) {
+		return &guestNotApplied{pending: true, msg: "The VM is off and its disk is on Ceph RBD, which the node cannot edit from outside the guest, so its new addresses are set when it is next started from the panel and its guest agent answers."}
+	}
 	if _, err := exec.LookPath("virt-customize"); err != nil {
 		return fmt.Errorf("virt-customize not found (install libguestfs-tools): %w", err)
 	}
@@ -937,6 +950,17 @@ func (s *NodeAgentService) runRouterOSScript(ctx context.Context, vmID, script s
 		return err
 	}
 	running := info.Status == libvirt.VMStatusRunning
+	// A router takes a change it cannot take live from a script on its disk,
+	// which cannot be written when the disk is on RBD.
+	diskPath, err := libvirt.GetVMPrimaryDiskPath(vmID)
+	if err != nil {
+		return err
+	}
+	if !running {
+		if err := noHostEdit(diskPath, "a stopped router cannot be given the change; start it and try again"); err != nil {
+			return err
+		}
+	}
 	if running {
 		_, liveErr := guestos.RouterOSExec(info.Name, script, 30*time.Second)
 		if liveErr == nil {
@@ -945,6 +969,10 @@ func (s *NodeAgentService) runRouterOSScript(ctx context.Context, vmID, script s
 		}
 		if ctx.Err() != nil {
 			return fmt.Errorf("the router did not accept the change live and the caller gave up; VM left running: %w", ctx.Err())
+		}
+		if err := noHostEdit(diskPath, "the change cannot be written for the router's next boot either; make it from the router's own console"); err != nil {
+			log.Printf("[NodeAgent] router %s did not take the change live (%v); its disk is on RBD, router left running", vmID, liveErr)
+			return &guestNotApplied{msg: "The router did not take the change through its guest agent, and " + err.Error() + ". Nothing was restarted."}
 		}
 		if !restart {
 			log.Printf("[NodeAgent] router %s did not take the change live (%v); left pending, router left running", vmID, liveErr)
@@ -967,10 +995,6 @@ func (s *NodeAgentService) runRouterOSScript(ctx context.Context, vmID, script s
 			}
 			waitVMStatus(vmID, libvirt.VMStatusStopped, 15*time.Second)
 		}
-	}
-	diskPath, err := libvirt.GetVMPrimaryDiskPath(vmID)
-	if err != nil {
-		return err
 	}
 	if err := guestos.WriteRouterOSAutorun(diskPath, script); err != nil {
 		return err
@@ -998,6 +1022,9 @@ func startVM(vmID string) error {
 	}
 	if migrations.Busy(vmID) {
 		return errDisksBusy
+	}
+	if err := rbdFreeToStart(vmID); err != nil {
+		return err
 	}
 	return libvirt.StartVM(vmID)
 }
@@ -1330,6 +1357,9 @@ func resolveTemplateImage(ref string, store *pb.ObjectStore, wantSHA string) (st
 		if perr != nil {
 			path = filepath.Join(defaultImageDir, spec+".qcow2")
 		}
+		if ceph.IsPath(path) {
+			return "", fmt.Errorf("the source VM's disk is on Ceph RBD, and such a VM is not cloned yet; back it up and restore the backup as a new VM")
+		}
 		if _, err := os.Stat(path); err != nil {
 			return "", fmt.Errorf("source VM disk not found at %s: %w", path, err)
 		}
@@ -1648,8 +1678,26 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 	if err != nil {
 		return err
 	}
+	rbdPool, onRBD, err := requestRBDPool(req.GetPoolType(), req.GetPoolPath())
+	if err != nil {
+		return err
+	}
 	imageDir, diskPath := defaultImageDir, ""
-	if onLVM {
+	if onRBD {
+		// Refused now, before a template is fetched, when the VM's image is
+		// already in the pool.
+		if _, err := freeRBDImage(context.Background(), rbdPool, models.RBDDiskName(req.VmId, "vda")); err != nil {
+			return err
+		}
+		// The disk is made as a local file, prepared there, and imported into
+		// the pool right before the VM is defined (see rbd_disks.go). Its small
+		// setup disc stays in the default directory.
+		if err := os.MkdirAll(blockScratchDir(), 0o755); err != nil {
+			return err
+		}
+		diskPath = filepath.Join(blockScratchDir(), req.VmId+"-rbd.qcow2")
+		defer os.Remove(diskPath)
+	} else if onLVM {
 		// The disk is a logical volume; the small setup disc stays in the
 		// default directory, where delete finds it.
 		diskPath = "/dev/" + lvPool.VG + "/" + models.LVMDiskName(req.VmId, "vda")
@@ -1679,7 +1727,11 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 	}
 
 	qcow := storage.NewQCOW2Manager()
-	if blank && onLVM {
+	if blank && onRBD {
+		if diskPath, err = newRBDImage(context.Background(), rbdPool, models.RBDDiskName(req.VmId, "vda"), "", int64(diskGB)<<30); err != nil {
+			return fmt.Errorf("failed to create the empty disk: %w", err)
+		}
+	} else if blank && onLVM {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Hour)
 		diskPath, err = lvm.Provision(ctx, lvPool, models.LVMDiskName(req.VmId, "vda"), int64(diskGB)<<30, "", "")
 		cancel()
@@ -1718,7 +1770,14 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 			_ = os.Remove(partPath)
 			return fmt.Errorf("failed to install the restored disk: %w", err)
 		}
-		extra, err := fetchRestoreDisks(client, imageDir, req.VmId, cfg.GetRestoreDisks())
+		restoreDir := imageDir
+		if onRBD {
+			restoreDir = blockScratchDir()
+		}
+		extra, err := fetchRestoreDisks(client, restoreDir, req.VmId, cfg.GetRestoreDisks())
+		if err == nil && onRBD {
+			extra, err = importRestoredToRBD(context.Background(), rbdPool, req.VmId, extra)
+		}
 		if err != nil {
 			_ = os.Remove(diskPath)
 			return err
@@ -1728,6 +1787,11 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 		templatePath, err := resolveTemplateImage(imageRef, req.GetObjectStore(), cfg.GetMetadata()[models.ImageSHA256Key])
 		if err != nil {
 			return err
+		}
+		if onRBD {
+			if err := scratchRoomFor(templatePath); err != nil {
+				return err
+			}
 		}
 		// Provision the disk as an independent copy of the template, then grow
 		// it to the requested size. A clone of a raw disk is read as raw.
@@ -1830,6 +1894,21 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 		if err := injectGuestConfig(diskPath, hostname, vmCfg, cfg.RootPassword, cfg.SshPublicKey, cfg.UserData); err != nil {
 			log.Printf("[NodeAgent] guest config injection failed for VM %s (guest may lack static networking): %v", req.VmId, err)
 		}
+	}
+
+	if onRBD && !blank {
+		// Prepared: now it becomes the VM's image in the pool.
+		prepared := diskPath
+		diskPath, err = newRBDImage(context.Background(), rbdPool, models.RBDDiskName(req.VmId, "vda"), prepared, int64(diskGB)<<30)
+		_ = os.Remove(prepared)
+		if err != nil {
+			removeRestored()
+			if seedPath != "" {
+				_ = os.Remove(seedPath)
+			}
+			return fmt.Errorf("failed to put the disk into the Ceph pool: %w", err)
+		}
+		vmCfg.DiskPath = diskPath
 	}
 
 	domainUUID, err := libvirt.CreateVM(vmCfg)
@@ -2180,8 +2259,14 @@ func (s *NodeAgentService) rebuildVM(req *pb.VMCommandRequest) error {
 	// The seed sits beside the VM's disk, where create put it; writing it to
 	// the default directory left the VM booting its old seed.
 	seedDir := defaultImageDir
-	if disk, derr := libvirt.PrimaryDiskPath(req.VmId); derr == nil && !models.IsBlockDevicePath(disk) {
-		seedDir = filepath.Dir(disk)
+	if disk, derr := libvirt.PrimaryDiskPath(req.VmId); derr == nil {
+		seedDir = diskDir(disk, defaultImageDir)
+		// A disk on RBD is prepared as a file first, which needs the room.
+		if ceph.IsPath(disk) {
+			if err := scratchRoomFor(templatePath); err != nil {
+				return err
+			}
+		}
 	}
 	seedPath := filepath.Join(seedDir, req.VmId+"-seed.iso")
 	// An unmounted shared pool is the local disk underneath: the new disk and
@@ -2319,6 +2404,12 @@ func (s *NodeAgentService) BackupDisk(ctx context.Context, req *pb.BackupDiskReq
 	if !req.GetAllDisks() {
 		disks = all[:1]
 	}
+	// Disks on RBD are copied from RBD snapshots, the others from overlays or
+	// the backup API: one backup takes one route.
+	onRBD, anyRBD := storage.OnRBD(disks)
+	if anyRBD && !onRBD {
+		return backupDiskErr(pb.ErrorCode_ERROR_CODE_INVALID_ARGUMENT, fmt.Sprintf(storage.MixedStorage, "a backup")), nil
+	}
 
 	key := req.DestinationKey
 	if key == "" {
@@ -2371,6 +2462,8 @@ func (s *NodeAgentService) BackupDisk(ctx context.Context, req *pb.BackupDiskReq
 	for i, d := range disks {
 		if info, serr := os.Stat(d.Path); serr == nil && info.Mode().IsRegular() {
 			sizes[i] = info.Size()
+		} else if d.RBD {
+			sizes[i] = rbdDiskSize(ctx, d.Path)
 		} else if n, derr := storage.DeviceSize(d.Path); d.Block && derr == nil {
 			sizes[i] = n
 		} else if ii, ierr := qcowExport.ImageInfo(d.Path); ierr == nil {
@@ -2412,6 +2505,20 @@ func (s *NodeAgentService) BackupDisk(ctx context.Context, req *pb.BackupDiskReq
 	plan := planBackup(req, disks)
 	consistency := libvirt.ConsistencyStopped
 	outputs := map[string]string{}
+	if onRBD {
+		// planBackup already said why this is a full backup, when one with a
+		// chain was asked for.
+		plan.api, plan.from, plan.checkpoint = false, "", ""
+		if resp := holdRoom(largest, false); resp != nil {
+			return resp, nil
+		}
+		release, c, herr := holdRBDForBackup(ctx, req.VmId, disks)
+		if herr != nil {
+			return backupDiskErr(pb.ErrorCode_ERROR_CODE_INTERNAL, fmt.Sprintf("the disks could not be snapshotted for the backup: %v", herr)), nil
+		}
+		defer release()
+		consistency = c
+	}
 	if plan.api {
 		// libvirt copies every disk at once; a full copy is then compressed one
 		// disk at a time beside it.
@@ -2449,7 +2556,7 @@ func (s *NodeAgentService) BackupDisk(ctx context.Context, req *pb.BackupDiskReq
 			plan.api, plan.from, plan.checkpoint = false, "", ""
 		}
 	}
-	if !plan.api {
+	if !plan.api && !onRBD {
 		if resp := holdRoom(largest, false); resp != nil {
 			return resp, nil
 		}
@@ -2635,7 +2742,17 @@ func exportDisk(ctx context.Context, client sharedstorage.Store, q *storage.QCOW
 	// The deadline is derived from the disk's size inside ConvertCompressed;
 	// compression runs at single-digit MiB/s, so a flat ceiling is either
 	// absurd for a small disk or fatal for a large one.
-	used, err := q.ConvertCompressed(d.Path, d.Format, exportPath, compression)
+	var used string
+	var err error
+	if d.RBD {
+		// Read from the backup's RBD snapshot, which does not change.
+		var src string
+		if src, err = rbdExportSource(d.Path); err == nil {
+			used, err = q.ExportCompressed(src, sourceBytes, "raw", exportPath, compression)
+		}
+	} else {
+		used, err = q.ConvertCompressed(d.Path, d.Format, exportPath, compression)
+	}
 	if err != nil {
 		return nil, "", &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: fmt.Sprintf("export of disk %s failed: %v", d.Target, err)}
 	}
@@ -3142,6 +3259,12 @@ func (s *NodeAgentService) RestoreDisk(ctx context.Context, req *pb.RestoreDiskR
 		}
 		ready = append(ready, staged{disk: d, tmp: tmp})
 		total += size
+		if d.RBD {
+			if err := storage.CheckDiskSource(d.Path); err != nil {
+				discard()
+				return restoreDiskErr(fmt.Sprintf("disk %s: %v", d.Target, err)), nil
+			}
+		}
 		if d.Block {
 			if err := fitsDevice(tmp, d.Path); err != nil {
 				discard()
@@ -3151,7 +3274,8 @@ func (s *NodeAgentService) RestoreDisk(ctx context.Context, req *pb.RestoreDiskR
 	}
 	// Files first: they can be put back if a later disk fails. A device is
 	// written in place and cannot.
-	sort.SliceStable(ready, func(i, j int) bool { return !ready[i].disk.Block && ready[j].disk.Block })
+	inPlace := func(d storage.DomainDisk) bool { return d.Block || d.RBD }
+	sort.SliceStable(ready, func(i, j int) bool { return !inPlace(ready[i].disk) && inPlace(ready[j].disk) })
 
 	// Again now, right before the swap: the downloads took a while.
 	if why := notShutOff(req.VmId); why != "" {
@@ -3199,6 +3323,13 @@ func (s *NodeAgentService) RestoreDisk(ctx context.Context, req *pb.RestoreDiskR
 // every disk is in place.
 func installRestoredDisk(disk storage.DomainDisk, tmp, stamp string) (bak string, err error) {
 	switch storage.RestoreMethod(disk) {
+	case storage.RestoreReplaceRBD:
+		ctx, cancel := context.WithTimeout(context.Background(), diskWriteTimeout)
+		defer cancel()
+		if err := restoreOntoRBD(ctx, disk.Path, tmp); err != nil {
+			return "", fmt.Errorf("the backup could not be written to %s: %w", disk.Path, err)
+		}
+		return "", nil
 	case storage.RestoreWriteDevice:
 		ctx, cancel := context.WithTimeout(context.Background(), diskWriteTimeout)
 		defer cancel()
@@ -3282,6 +3413,11 @@ func (s *NodeAgentService) CreateStorageVolume(ctx context.Context, req *pb.Crea
 	}
 	// An empty pool_path means "this node's default image directory" — the node
 	// (not the panel) owns where dir/file volumes live, so callers needn't hardcode it.
+	// A volume that belongs to no VM is not made in an RBD pool: a VM's data
+	// disks are (AttachDisk).
+	if req.PoolType == models.PoolTypeRBD {
+		return createVolumeErr("volumes that belong to no VM are not made in a Ceph RBD pool; add a disk to a VM instead"), nil
+	}
 	if pool, onLVM, err := requestLVMPool(req.PoolType, req.PoolPath); err != nil {
 		return createVolumeErr(err.Error()), nil
 	} else if onLVM {
@@ -3354,6 +3490,33 @@ func (s *NodeAgentService) AttachDisk(ctx context.Context, req *pb.AttachDiskReq
 	if req.VmId == "" || req.SizeGb <= 0 {
 		return attachDiskErr("vm_id and a positive size_gb are required"), nil
 	}
+	// A VM's disks stay on one kind of storage: its snapshots and backups
+	// treat them as one. A VM on RBD takes its data disks beside its own.
+	primary, _ := libvirt.PrimaryDiskPath(req.VmId)
+	ref, onRBD, err := requestRBDPool(req.PoolType, req.PoolPath)
+	switch {
+	case err != nil:
+		return attachDiskErr(err.Error()), nil
+	case onRBD && primary != "" && !ceph.IsPath(primary):
+		return attachDiskErr("the VM's system disk is on the node's own storage, so a data disk on Ceph RBD is refused: " + fmt.Sprintf(storage.MixedStorage, "a snapshot or backup")), nil
+	case !onRBD && ceph.IsPath(primary) && req.PoolPath != "":
+		return attachDiskErr("the VM's system disk is on Ceph RBD, so its data disks go in the same pool, not on the node's own storage"), nil
+	case !onRBD && ceph.IsPath(primary):
+		ref, onRBD = poolOfRBDDisk(primary), true
+	}
+	if onRBD {
+		p, err := newRBDImage(ctx, ref, rbdDataDiskName(req.VmId), "", req.SizeGb<<30)
+		if err != nil {
+			return attachDiskErr(fmt.Sprintf("create volume: %v", err)), nil
+		}
+		device, err := libvirt.AttachDisk(req.VmId, p)
+		if err != nil {
+			discardNewDisk(req.VmId, p)
+			return attachDiskErr(fmt.Sprintf("attach: %v", err)), nil
+		}
+		log.Printf("[NodeAgent] Attached %dGB image %s as %s to VM %s", req.SizeGb, p, device, req.VmId)
+		return &pb.AttachDiskResponse{Success: true, Device: device, Path: p}, nil
+	}
 	if pool, onLVM, err := requestLVMPool(req.PoolType, req.PoolPath); err != nil {
 		return attachDiskErr(err.Error()), nil
 	} else if onLVM {
@@ -3379,7 +3542,6 @@ func (s *NodeAgentService) AttachDisk(ctx context.Context, req *pb.AttachDiskReq
 		}
 		// Beside the VM's own disk when the panel names no pool, not on the
 		// root filesystem. An unreadable domain just leaves primary empty.
-		primary, _ := libvirt.PrimaryDiskPath(req.VmId)
 		poolPath = storage.DataDiskDir(req.PoolPath, primary, defaultImageDir)
 	default:
 		if poolPath == "" {
@@ -3410,6 +3572,17 @@ func (s *NodeAgentService) DetachDisk(ctx context.Context, req *pb.DetachDiskReq
 	}
 	// A logical volume is proven this VM's before it is detached, so a refusal
 	// leaves the VM as it was.
+	// An image on RBD likewise: only one MaburVM made for this VM is deleted.
+	onRBD := req.DeleteVolume && ceph.IsPath(req.Path)
+	if onRBD {
+		img, err := ceph.OpenImage(req.Path)
+		if err != nil {
+			return detachDiskErr(err.Error()), nil
+		}
+		if !models.OwnsRBDName(req.VmId, img.Name) {
+			return detachDiskErr(fmt.Sprintf("%s was not created by MaburVM for this VM; detach it without deleting it", img.Spec())), nil
+		}
+	}
 	var lvPools []storage.LVMPool
 	block := req.DeleteVolume && models.IsBlockDevicePath(req.Path)
 	if block {
@@ -3439,7 +3612,13 @@ func (s *NodeAgentService) DetachDisk(ctx context.Context, req *pb.DetachDiskReq
 		}
 		log.Printf("[NodeAgent] DetachDisk: device %s already absent on VM %s; treating as detached", req.Device, req.VmId)
 	}
-	if block {
+	if onRBD {
+		// A running guest lets go of an unplugged disk in its own time; Remove
+		// waits for that, and leaves an image that stays open.
+		if why := removeOwnedImage(ctx, req.VmId, req.Path); why != "" {
+			return detachDiskErr(fmt.Sprintf("detached %s but failed to delete volume %s: %s", req.Device, req.Path, why)), nil
+		}
+	} else if block {
 		if lvPools != nil {
 			if err := removeDetachedLV(ctx, req.VmId, req.Path, lvPools); err != nil {
 				return detachDiskErr(fmt.Sprintf("detached %s but failed to delete volume %s: %v", req.Device, req.Path, err)), nil
@@ -3503,6 +3682,10 @@ func (s *NodeAgentService) ImportDisk(ctx context.Context, req *pb.DiskImportReq
 	}
 	if req.SourcePath == "" || req.TargetPath == "" {
 		return importDiskErr(req.VmId, "source_path and target_path are required"), nil
+	}
+	// A pool that is not a directory (an RBD pool) gives no absolute path.
+	if !filepath.IsAbs(req.TargetPath) {
+		return importDiskErr(req.VmId, fmt.Sprintf("%s is not a path in a directory pool; an imported disk goes into a directory pool", req.TargetPath)), nil
 	}
 	if _, err := os.Stat(req.SourcePath); err != nil {
 		return importDiskErr(req.VmId, fmt.Sprintf("source image not found: %s", req.SourcePath)), nil
@@ -3933,6 +4116,13 @@ func (s *NodeAgentService) CreateSnapshot(ctx context.Context, req *pb.SnapshotR
 
 	log.Printf("[NodeAgent] Snapshot operation %v on VM %s from node %s", req.Operation, req.VmId, nodeID)
 	s.crashes.Hold(req.VmId)
+
+	// Disks on RBD hold no snapshot inside them: theirs are RBD snapshots.
+	if disks, derr := libvirt.BackupDisks(req.VmId); derr == nil {
+		if all, _ := storage.OnRBD(disks); all {
+			return s.snapshotOnRBD(ctx, req, disks)
+		}
+	}
 
 	switch req.Operation {
 	case pb.SnapshotOperationType_SNAPSHOT_OPERATION_TYPE_CREATE:

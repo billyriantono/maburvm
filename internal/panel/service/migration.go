@@ -509,8 +509,9 @@ func (m *MigrationService) sourceFacts(ctx context.Context, req MigrationRequest
 			}
 			continue
 		}
-		if d.SourceType != "file" && d.SourceType != "block" {
-			block("disk %s is a %s volume; only disks kept as files or logical volumes can move", d.Target, d.SourceType)
+		// An image on Ceph RBD is neither, and moves by staying where it is.
+		if d.SourceType != "file" && d.SourceType != "block" && !models.IsRBDPath(d.Path) {
+			block("disk %s is a %s volume; only disks kept as files, logical volumes or Ceph RBD images can move", d.Target, d.SourceType)
 			continue
 		}
 		if d.SourceType == "block" && d.Format != "raw" {
@@ -572,7 +573,8 @@ func (m *MigrationService) recordBlockers(ctx context.Context, vm *models.VM, bl
 		block("an ISO is mounted in the VM; unmount it first")
 	}
 	var snaps int64
-	if m.db.WithContext(ctx).Model(&models.Snapshot{}).Where("vm_id = ?", vm.ID).Count(&snaps).Error == nil && snaps > 0 {
+	// Snapshots of disks on RBD are in the images, which stay where they are.
+	if m.db.WithContext(ctx).Model(&models.Snapshot{}).Where("vm_id = ?", vm.ID).Count(&snaps).Error == nil && snaps > 0 && !VMOnRBD(ctx, m.db, vm) {
 		block("the VM has %d snapshots; snapshots cannot move with it, so delete them first", snaps)
 	}
 }
@@ -839,9 +841,20 @@ func (m *MigrationService) destinationChecks(ctx context.Context, f *srcFacts, d
 	if len(stay) > 0 {
 		m.sharedChecks(ctx, f, dst, stay, env, chk)
 	}
+	// A disk on Ceph RBD moves only by staying where it is: the destination
+	// must reach the same pool. Nothing is copied out of Ceph or into it.
+	for _, d := range f.disks {
+		if models.IsRBDPath(d.Path) && !stays[d.Target] {
+			chk.block("disk %s is in a Ceph RBD pool that node %s does not have online; enable the cluster on that node (Storage) to move the VM there without a copy", d.Target, dst.Name)
+		}
+	}
 	if pool != nil {
 		chk.DestPoolID, chk.DestPoolName, chk.DestPoolPath = pool.ID, pool.Name, pool.Path
-		if pool.Type != "" && pool.Type != "dir" && pool.Type != "file" && !models.IsLVMPoolType(pool.Type) {
+		if pool.Type == models.PoolTypeRBD {
+			if !chk.CopyFree {
+				chk.block("storage pool %s is a Ceph RBD pool, and a move does not copy disks into one; only a VM whose disks are in it already can land on it", pool.Name)
+			}
+		} else if pool.Type != "" && pool.Type != "dir" && pool.Type != "file" && !models.IsLVMPoolType(pool.Type) {
 			chk.block("storage pool %s is %s storage, which holds no VM disks", pool.Name, pool.Type)
 		}
 		if pool.Status != "online" {
@@ -1102,6 +1115,14 @@ func (m *MigrationService) targetRequest(f *srcFacts, pool *models.StoragePool, 
 	onLVM := models.IsLVMPoolType(pool.Type)
 	if onLVM {
 		req.PoolType = pool.Type
+	}
+	if pool.Type == models.PoolTypeRBD {
+		// The node is told which cluster; a pool it cannot be told of reaches
+		// it as an RBD pool with no cluster, which it refuses.
+		req.PoolType = models.PoolTypeRBD
+		if m.db != nil {
+			_, req.PoolPath, _ = AgentPoolRef(context.Background(), m.db, pool)
+		}
 	}
 	if f.info != nil {
 		req.Bridges = f.info.Bridges

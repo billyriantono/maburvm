@@ -94,6 +94,9 @@ func planDiskMove(ctx context.Context, req *pb.MoveVMDiskRequest) (*diskMove, er
 	if err != nil {
 		return nil, err
 	}
+	if disk.RBD || req.DestPoolType == models.PoolTypeRBD {
+		return nil, errRBDMove
+	}
 	if storage.IsBackupOverlay(disk.Path) || libvirt.RefuseDuringBackup(req.VmId) != nil {
 		return nil, errors.New("a backup is copying the VM's disks; try again when it has finished")
 	}

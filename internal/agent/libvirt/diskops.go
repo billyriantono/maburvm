@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/maburvm/panel/internal/agent/ceph"
 	"github.com/maburvm/panel/internal/agent/storage"
 	"libvirt.org/go/libvirt"
 	"libvirt.org/go/libvirtxml"
@@ -149,6 +150,34 @@ func ResizeDiskTarget(uuidStr, target string, diskGB int, growBlock func(dev str
 		// commit back could not fit.
 		if err := refuseDuringBackup(dom); err != nil {
 			return err
+		}
+		if disk.RBD {
+			// QEMU grows the image of a running VM itself; a stopped VM's is
+			// grown with rbd. Neither ever shrinks one.
+			img, err := ceph.OpenImage(disk.Path)
+			if err != nil {
+				return err
+			}
+			have, err := img.Size(context.Background())
+			if err != nil {
+				return fmt.Errorf("could not measure disk %s: %w", disk.Target, err)
+			}
+			if want <= have {
+				size = have
+				return nil
+			}
+			if running {
+				if err := dom.BlockResize(disk.Target, uint64(want), libvirt.DOMAIN_BLOCK_RESIZE_BYTES); err != nil {
+					return fmt.Errorf("failed to live-resize disk: %w", err)
+				}
+				size, live = want, true
+				return nil
+			}
+			if err := img.Grow(context.Background(), want); err != nil {
+				return fmt.Errorf("failed to resize disk image: %w", err)
+			}
+			size = want
+			return nil
 		}
 		if disk.Block {
 			if have, serr := storage.DeviceSize(disk.Path); serr == nil && want <= have {

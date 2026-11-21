@@ -304,6 +304,9 @@ func (s *VMService) StartDiskMove(ctx context.Context, vmID, device, destPoolID,
 	if source != nil && source.ID == dest.ID {
 		return nil, fmt.Errorf("%w: the disk is already in %s", ErrInvalidStoragePool, dest.Name)
 	}
+	if dest.Type == models.PoolTypeRBD || (source != nil && source.Type == models.PoolTypeRBD) || models.IsRBDPath(sourcePath) {
+		return nil, fmt.Errorf("%w: a disk is not moved between a Ceph RBD pool and another pool yet; back the VM up and restore the backup as a new VM on the other storage", ErrInvalidStoragePool)
+	}
 	if dest.Type != "" && dest.Type != PoolTypeDir && !models.IsLVMPoolType(dest.Type) {
 		return nil, fmt.Errorf("%w: storage pool %s is %s storage, which holds no VM disks", ErrInvalidStoragePool, dest.Name, dest.Type)
 	}

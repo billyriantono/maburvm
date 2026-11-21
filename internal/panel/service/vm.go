@@ -990,9 +990,16 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 	// land on the OS volume no matter what storage the operator provisioned, and
 	// filling that volume takes libvirt and the agent down with it.
 	if diskPool != nil {
-		params["pool_path"] = diskPool.Path
-		if models.IsLVMPoolType(diskPool.Type) {
-			params["pool_type"] = diskPool.Type
+		poolType, poolPath, rerr := AgentPoolRef(ctx, s.db, diskPool)
+		if rerr != nil {
+			if delErr := s.cleanupVMAllocation(ctx, vm.ID, true); delErr != nil {
+				s.logger.ErrorContext(ctx, "failed to roll back VM creation after its pool could not be named", "vm_id", vm.ID, "error", delErr)
+			}
+			return nil, rerr
+		}
+		params["pool_path"] = poolPath
+		if poolType != "" {
+			params["pool_type"] = poolType
 		}
 	}
 	if len(metadata) > 0 {
@@ -1246,6 +1253,9 @@ func (s *VMService) CloneVM(ctx context.Context, req *CloneVMRequest) (*CreateVM
 	}
 	if src.Status == models.VMStatusRunning {
 		return nil, fmt.Errorf("source VM must be stopped before cloning")
+	}
+	if VMOnRBD(ctx, s.db, src) {
+		return nil, fmt.Errorf("a VM whose disks are on Ceph RBD is not cloned yet; back it up and restore the backup as a new VM")
 	}
 	if err := vmBusy(ctx, s.db, src.ID); err != nil {
 		return nil, err
@@ -1994,12 +2004,9 @@ func (s *VMService) AttachDisk(ctx context.Context, vmID string, sizeGB int) (*m
 		return nil, fmt.Errorf("%w: storage pool %s has %d GB free, and a %d GB disk needs that much plus %d GB kept free",
 			ErrNodeCapacityExceeded, pool.Name, pool.AvailableSpace/bytesPerGB, sizeGB, diskHeadroomBytes/bytesPerGB)
 	}
-	poolPath, poolType := "", ""
-	if pool != nil {
-		poolPath = pool.Path
-		if models.IsLVMPoolType(pool.Type) {
-			poolType = pool.Type
-		}
+	poolType, poolPath, err := AgentPoolRef(ctx, s.db, pool)
+	if err != nil {
+		return nil, err
 	}
 
 	// 1) Reserve capacity (per-user admission lock + disk quota evaluation +
@@ -2929,6 +2936,10 @@ func (s *VMService) ResetPassword(ctx context.Context, req *VMResetPasswordReque
 		switch {
 		case kind == models.OSTypeWindows:
 			return nil, fmt.Errorf("Windows takes a new password only while it runs with its guest agent: start the VM, wait until it has finished starting, then reset the password")
+		case VMOnRBD(ctx, s.db, vm):
+			// A stopped VM's password is written onto its disk as a file, which
+			// an image on RBD is not.
+			return nil, fmt.Errorf("this VM's disk is on Ceph RBD, which its node cannot edit while the VM is stopped: start the VM, wait until it has finished starting, then reset the password")
 		case kind == models.OSTypeRouterOS:
 			method, message = PasswordAtStart, "The router takes the new password when it next starts."
 		case !s.nodeHasFeature(ctx, vm.NodeID, models.FeatureOfflinePassword):

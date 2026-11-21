@@ -189,7 +189,9 @@ type recoveryFacts struct {
 	onShared map[string]bool
 	// localWhy says why the VM is not recovered from shared storage.
 	localWhy string
-	backup   *models.Backup
+	// onRBD is a VM whose system disk is an image in an RBD pool.
+	onRBD  bool
+	backup *models.Backup
 }
 
 // recoveryEnv carries what one plan has asked the nodes and promised them.
@@ -269,6 +271,14 @@ func (m *MigrationService) recoveryFactsOf(ctx context.Context, vm *models.VM, s
 	var own *string
 	m.db.WithContext(ctx).Raw("SELECT storage_pool_id FROM vms WHERE id = ?", vm.ID).Scan(&own)
 	switch p := poolByID(pools, ptrString(own)); {
+	case p != nil && p.Type == models.PoolTypeRBD:
+		// An image of the pool, named as a create names it.
+		if _, ref, rerr := AgentPoolRef(ctx, m.db, p); rerr != nil {
+			f.localWhy = rerr.Error()
+		} else {
+			drives = append(drives, &pb.AdoptDisk{Target: systemDiskTarget, Path: ref + "/" + models.RBDDiskName(vm.ID, systemDiskTarget)})
+			f.onRBD = true
+		}
 	case p != nil && !models.IsLVMPoolType(p.Type):
 		drives = append(drives, &pb.AdoptDisk{Target: systemDiskTarget, Path: path.Join(p.Path, vm.ID+".qcow2")})
 	case ptrString(own) == "":
@@ -324,7 +334,8 @@ func (m *MigrationService) recoveryFactsOf(ctx context.Context, vm *models.VM, s
 		warn("it boots with UEFI: its firmware settings start fresh, so it boots its disk's default boot loader")
 	}
 	var snaps int64
-	if m.db.WithContext(ctx).Model(&models.Snapshot{}).Where("vm_id = ?", vm.ID).Count(&snaps).Error == nil && snaps > 0 {
+	// Snapshots of disks on RBD are in the pool with the disks, and stay usable.
+	if !f.onRBD && m.db.WithContext(ctx).Model(&models.Snapshot{}).Where("vm_id = ?", vm.ID).Count(&snaps).Error == nil && snaps > 0 {
 		warn("its %d snapshots cannot be used on another node; their records are removed", snaps)
 	}
 	if vm.RescueMode {
@@ -1058,10 +1069,11 @@ func (m *MigrationService) finishMove(ctx context.Context, row *models.VMRecover
 // backup's.
 func (m *MigrationService) recoveryParams(ctx context.Context, vm *models.VM, pool *models.StoragePool, backup *models.Backup, restore *RestoreSource) (json.RawMessage, error) {
 	// The kind of system, from the template's record even when it was removed.
-	var osType string
-	if err := m.db.WithContext(ctx).Raw("SELECT COALESCE(os_type, '') FROM os_templates WHERE id = ?", vm.OSTemplateID).Scan(&osType).Error; err != nil {
+	var tpl struct{ OSType, Kind string }
+	if err := m.db.WithContext(ctx).Raw("SELECT COALESCE(os_type, '') AS os_type, COALESCE(kind, '') AS kind FROM os_templates WHERE id = ?", vm.OSTemplateID).Scan(&tpl).Error; err != nil {
 		return nil, fmt.Errorf("the VM's template record cannot be read, so its kind of system is not known: %w", err)
 	}
+	osType := tpl.OSType
 	ip, gateway, bridge, prefix, vlan := m.vms.primaryNetworkConfig(ctx, vm.ID)
 	// Dedicated cores are the failed node's own.
 	hw := vm.Hardware
@@ -1098,13 +1110,26 @@ func (m *MigrationService) recoveryParams(ctx context.Context, vm *models.VM, po
 	if p, perr := vmIPv6Prefix(ctx, m.db, vm.ID); perr == nil && p != nil {
 		params["ipv6_prefix"], params["ipv6_address"], params["ipv6_gateway"] = p.Prefix, p.Address(), models.IPv6LinkLocalGateway
 	}
+	meta := map[string]string{}
 	if hw.Firmware == models.FirmwareUEFI {
-		params["metadata"] = map[string]string{models.FirmwareKey: models.FirmwareUEFI}
+		meta[models.FirmwareKey] = models.FirmwareUEFI
+	}
+	// The setup disc of a VM on RBD was on the failed node; one made from a
+	// template had one, and the node writes it again.
+	if backup == nil && pool != nil && pool.Type == models.PoolTypeRBD && tpl.Kind != models.TemplateKindISO {
+		meta[models.AdoptSeedKey] = "1"
+	}
+	if len(meta) > 0 {
+		params["metadata"] = meta
 	}
 	if pool != nil && backup != nil {
-		params["pool_path"] = pool.Path
-		if models.IsLVMPoolType(pool.Type) {
-			params["pool_type"] = pool.Type
+		poolType, poolPath, err := AgentPoolRef(ctx, m.db, pool)
+		if err != nil {
+			return nil, err
+		}
+		params["pool_path"] = poolPath
+		if poolType != "" {
+			params["pool_type"] = poolType
 		}
 	}
 	if restore != nil {
@@ -1248,8 +1273,12 @@ func (m *MigrationService) moveRecovered(ctx context.Context, row *models.VMReco
 			if err := tx.Table("vms").Where("id = ?", vm.ID).Updates(map[string]interface{}{"rescue_mode": false, "rescue_kind": "", "attached_iso": ""}).Error; err != nil {
 				return err
 			}
-			if err := tx.Where("vm_id = ?", vm.ID).Delete(&models.Snapshot{}).Error; err != nil {
-				return err
+			// Snapshots of a VM brought back on its own disks on RBD are RBD
+			// snapshots of those disks: they came along.
+			if keeps := row.Method == models.RecoveryShared && pool != nil && pool.Type == models.PoolTypeRBD; !keeps {
+				if err := tx.Where("vm_id = ?", vm.ID).Delete(&models.Snapshot{}).Error; err != nil {
+					return err
+				}
 			}
 			var disks []models.VMDisk
 			if err := tx.Where("vm_id = ?", vm.ID).Find(&disks).Error; err != nil {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/maburvm/panel/internal/agent/ceph"
 	"github.com/maburvm/panel/internal/agent/migration"
 	"github.com/maburvm/panel/internal/agent/storage"
 	"libvirt.org/go/libvirt"
@@ -113,6 +114,12 @@ func MigrationInfo(uuidStr string, payload bool) (*MigrationVM, error) {
 						return fmt.Errorf("drive %s: %w", d.Target, err)
 					}
 					md.VirtualSize, md.BackingFile = info.VirtualSize, info.BackingFile
+				}
+			}
+			if d.SourceType == "network" && d.Device == "disk" && d.Path != "" {
+				// An image on RBD: its size is the disk, and none of it is copied.
+				if img, err := ceph.OpenImage(d.Path); err == nil {
+					md.VirtualSize, _ = img.Size(context.Background())
 				}
 			}
 			if d.SourceType == "block" && d.Device == "disk" && d.Path != "" {
@@ -290,7 +297,7 @@ func LiveMigrate(ctx context.Context, uuidStr, destURI, dataURI string, disks []
 				}
 				// Until the panel removes it, the copy left here must not boot
 				// with the node and run the VM twice.
-				if serr := dom.SetAutostart(false); serr != nil {
+				if serr := startWithNode(dom, false); serr != nil {
 					log.Printf("[Migrate] WARNING: %s moved but its old definition here still starts on boot: %v", uuidStr, serr)
 				}
 				return nil
@@ -319,7 +326,7 @@ func DefineMigrated(domXML string) error {
 			return fmt.Errorf("failed to define the VM: %w", err)
 		}
 		defer dom.Free()
-		if err := dom.SetAutostart(true); err != nil {
+		if err := startWithNode(dom, true); err != nil {
 			log.Printf("[Migrate] WARNING: defined VM does not start on boot: %v", err)
 		}
 		return nil
@@ -347,7 +354,7 @@ func ConfirmArrived(uuidStr string) (string, error) {
 			return err
 		}
 		state = stateName(s)
-		if err := dom.SetAutostart(true); err != nil {
+		if err := startWithNode(dom, true); err != nil {
 			log.Printf("[Migrate] WARNING: %s does not start on boot here: %v", uuidStr, err)
 		}
 		// A disk that arrived in a shared pool bypasses the host cache from the
@@ -449,9 +456,28 @@ func SetAutostart(uuidStr string, on bool) (found bool, err error) {
 		}
 		defer dom.Free()
 		found = true
-		return dom.SetAutostart(on)
+		return startWithNode(dom, on)
 	})
 	return found, err
+}
+
+// startWithNode turns a domain's start with the node on or off. A VM with a
+// disk on RBD is never autostarted by libvirt, which would start it before
+// anything checks that no other node runs it; the agent starts it instead
+// (ceph.SetStartsWithNode).
+func startWithNode(dom *libvirt.Domain, on bool) error {
+	onRBD := false
+	if x, err := dom.GetXMLDesc(libvirt.DOMAIN_XML_INACTIVE); err == nil {
+		if disks, err := storage.DomainDisks(x); err == nil {
+			_, onRBD = storage.OnRBD(disks)
+		}
+	}
+	if id, err := dom.GetUUIDString(); err == nil {
+		if err := ceph.SetStartsWithNode(id, on && onRBD); err != nil {
+			return err
+		}
+	}
+	return dom.SetAutostart(on && !onRBD)
 }
 
 // UndefineStopped removes the definition of a VM that is shut off, and nothing

@@ -1,7 +1,66 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api-client'
 import type { CreateStoragePoolRequest, CreateStorageVolumeRequest, StoragePool, StorageVolume } from '@/types'
-import type { CreateSharedPoolRequest, OrphanDisk, SharedPool } from '@/types/storage'
+import type { CephCluster, CephClusterRequest, CreateSharedPoolRequest, OrphanDisk, SharedPool } from '@/types/storage'
+
+// Calls that ask nodes (a Ceph cluster on each, or a shared pool's members)
+// wait on them; the panel bounds each node, not the whole call. 180 s is the
+// web proxy's own limit (next.config proxyTimeout).
+const askNodes = { timeout: 180_000 }
+
+// Ceph clusters: existing clusters staff register and enable on nodes. A
+// change also changes the RBD pools' members, so every storage query is
+// refreshed.
+export function useCephClusters() {
+  return useQuery<CephCluster[]>({
+    queryKey: ['storage', 'ceph-clusters'],
+    queryFn: async () => {
+      const response = await api.get<CephCluster[]>('/api/v1/storage/ceph-clusters')
+      return response.data.data ?? []
+    },
+    // Health is read on the nodes about once a minute.
+    refetchInterval: 60_000,
+  })
+}
+
+export type CephClusterChange =
+  | { op: 'create'; cluster: CephClusterRequest }
+  | { op: 'update'; id: string; cluster: CephClusterRequest }
+  | { op: 'delete'; id: string }
+  | { op: 'enable-node'; id: string; nodeId: string }
+  | { op: 'disable-node'; id: string; nodeId: string }
+
+export function useChangeCephCluster() {
+  const queryClient = useQueryClient()
+  return useMutation<void, Error, CephClusterChange>({
+    mutationFn: async (c) => {
+      const base = '/api/v1/storage/ceph-clusters'
+      if (c.op === 'create') await api.post(base, c.cluster)
+      else if (c.op === 'update') await api.put(`${base}/${c.id}`, c.cluster, askNodes)
+      else if (c.op === 'delete') await api.delete(`${base}/${c.id}`)
+      else if (c.op === 'enable-node') await api.post(`${base}/${c.id}/nodes`, { node_id: c.nodeId }, askNodes)
+      else await api.delete(`${base}/${c.id}/nodes/${c.nodeId}`, askNodes)
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['storage'] })
+    },
+  })
+}
+
+// useCheckCephCluster asks every node the cluster is enabled on, now; the
+// answer maps node ids to what is wrong ("" passes).
+export function useCheckCephCluster() {
+  const queryClient = useQueryClient()
+  return useMutation<Record<string, string>, Error, string>({
+    mutationFn: async (id) => {
+      const response = await api.post<Record<string, string>>(`/api/v1/storage/ceph-clusters/${id}/check`, undefined, askNodes)
+      return response.data.data ?? {}
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['storage'] })
+    },
+  })
+}
 
 // Shared pools: storage several nodes mount. Every change also changes the
 // member rows in the pool list.
@@ -26,7 +85,7 @@ export function useChangeSharedPool() {
   return useMutation<void, Error, SharedPoolChange>({
     mutationFn: async (c) => {
       const base = '/api/v1/storage/shared-pools'
-      if (c.op === 'create') await api.post(base, c.pool)
+      if (c.op === 'create') await api.post(base, c.pool, askNodes)
       else if (c.op === 'delete') await api.delete(`${base}/${c.id}`)
       else if (c.op === 'add-node') await api.post(`${base}/${c.id}/members`, { node_id: c.nodeId })
       else await api.delete(`${base}/${c.id}/members/${c.nodeId}`)
@@ -43,7 +102,7 @@ export function useCheckSharedPool() {
   const queryClient = useQueryClient()
   return useMutation<Record<string, string>, Error, string>({
     mutationFn: async (id) => {
-      const response = await api.post<Record<string, string>>(`/api/v1/storage/shared-pools/${id}/check`)
+      const response = await api.post<Record<string, string>>(`/api/v1/storage/shared-pools/${id}/check`, undefined, askNodes)
       return response.data.data ?? {}
     },
     onSettled: () => {

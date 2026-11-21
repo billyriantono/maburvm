@@ -274,6 +274,13 @@ service NodeAgent {
   rpc SetSharedPool(SetSharedPoolRequest) returns (SetSharedPoolResponse);
   rpc SharedPoolToken(SharedPoolTokenRequest) returns (SharedPoolTokenResponse);
 
+  // Ceph: SetCephCluster gives this node access to an existing cluster staff
+  // registered (or takes it away); CephStatus reads the cluster's health and
+  // capacity and checks RBD pools with that access. Nothing here runs on its
+  // own, and no VM or pool that does not use Ceph is touched.
+  rpc SetCephCluster(SetCephClusterRequest) returns (SetCephClusterResponse);
+  rpc CephStatus(CephStatusRequest) returns (CephStatusResponse);
+
   // SetFencedVMs replaces the list of VMs that were recovered onto another
   // node while this one was down ("vm_recovery" feature). The agent never
   // starts one and turns its autostart off; it does not stop one that runs.
@@ -3046,6 +3053,85 @@ message SharedPoolTokenResponse {
   ErrorResponse error = 2;
   bool exists = 3;
   string content = 4;
+}
+
+// ============================================================================
+// Ceph clusters
+// ============================================================================
+
+// SetCephClusterRequest enables a cluster on this node: the agent writes a
+// minimal ceph.conf and a keyring (mode 0600) under its own data directory
+// (never /etc/ceph), defines a libvirt secret of usage type ceph whose UUID is
+// cluster_id, and proves the access by reading the cluster's fsid and health.
+// Sent again it replaces the settings, after proving the new ones.
+message SetCephClusterRequest {
+  string cluster_id = 1;
+  // monitors are host or host:port.
+  repeated string monitors = 2;
+  // client_id is the cephx user without "client."; key is its key as
+  // `ceph auth get-key` prints it. The agent never logs the key and never
+  // puts it on a command line.
+  string client_id = 3;
+  string key = 4;
+  // remove deletes the conf, the keyring and the libvirt secret. Refused
+  // while a VM defined on this node has a disk that uses the secret.
+  bool remove = 5;
+  // fsid, when set, is the cluster these settings must lead to. A node that
+  // reaches a cluster with another fsid refuses and changes nothing.
+  string fsid = 6;
+}
+
+message SetCephClusterResponse {
+  bool success = 1;
+  ErrorResponse error = 2;
+  // fsid is the id of the cluster this node reached.
+  string fsid = 3;
+}
+
+// CephRBDPool names an RBD pool and, optionally, a namespace in it.
+message CephRBDPool {
+  string pool = 1;
+  string namespace = 2;
+}
+
+message CephStatusRequest {
+  string cluster_id = 1;
+  // pools are checked by listing their images, and measured.
+  repeated CephRBDPool pools = 2;
+}
+
+message CephPoolStatus {
+  string pool = 1;
+  string namespace = 2;
+  // error is why this node cannot use the pool; "" when it can.
+  string error = 3;
+  // measured is false when the client may not read the cluster's usage.
+  // used_bytes is what is stored in the whole pool, available_bytes what can
+  // still be stored there.
+  bool measured = 4;
+  int64 used_bytes = 5;
+  int64 available_bytes = 6;
+}
+
+// CephStatusResponse is the cluster as this node sees it. success false means
+// the node could not reach the cluster (or it is not enabled here); the error
+// says why.
+message CephStatusResponse {
+  bool success = 1;
+  ErrorResponse error = 2;
+  string fsid = 3;
+  // health is HEALTH_OK, HEALTH_WARN or HEALTH_ERR; health_summary the checks
+  // that are not OK, one per line.
+  string health = 4;
+  string health_summary = 5;
+  // Raw capacity of the cluster; all 0 when the client may not read it.
+  int64 total_bytes = 6;
+  int64 used_bytes = 7;
+  int64 available_bytes = 8;
+  repeated CephPoolStatus pools = 9;
+  // problem is something wrong on this node that does not stop the reading,
+  // such as libvirt no longer holding the cluster's secret.
+  string problem = 10;
 }
 
 // ============================================================================

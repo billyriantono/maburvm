@@ -92,6 +92,9 @@ type fakeVM struct {
 	cache string
 	// backing is the image vda is built on, "" for none.
 	backing string
+	// rbd, when set, is the RBD pool (models.RBDPoolRef) the VM's disks are
+	// images of; its setup disc is then a file on the node.
+	rbd string
 }
 
 // fakeNode is a node agent that moves VMs between fakes at once.
@@ -131,9 +134,11 @@ type fakeNode struct {
 	// prepared, maps and kept are the last prepare's disks, the last move's
 	// drive maps and the paths the last source clean-up was told to keep.
 	prepared []*pb.MigrationTargetDisk
-	maps     []*pb.MigrationDiskMap
-	kept     []string
-	orphans  []*pb.OrphanDisk
+	// preparedPool is the pool type and path of the last prepare.
+	preparedPool string
+	maps         []*pb.MigrationDiskMap
+	kept         []string
+	orphans      []*pb.OrphanDisk
 
 	// Recovery (recovery_pg_test.go): the commands received, the VMs the node
 	// was told live elsewhere, why an ADOPT is refused, and a hook run as a
@@ -227,6 +232,13 @@ func (f *fakeNode) GetMigrationInfo(_ context.Context, req *pb.GetMigrationInfoR
 			{Target: "vdb", Device: "disk", Path: vm.pool + "/" + req.VmId + "-vdb.qcow2", Format: "qcow2", SourceType: "file", VirtualSizeBytes: 10 << 30, FileSizeBytes: 1 << 30, Cache: vm.cache},
 			{Target: "sda", Device: "cdrom", Path: vm.pool + "/" + req.VmId + "-seed.iso", Format: "raw", SourceType: "file", Readonly: true, Seed: true, FileSizeBytes: 4096},
 		}
+		if vm.rbd != "" {
+			r.Disks = []*pb.MigrationDiskInfo{
+				{Target: "vda", Device: "disk", Path: vm.rbd + "/" + models.RBDDiskName(req.VmId, "vda"), Format: "raw", SourceType: "network", VirtualSizeBytes: 20 << 30, Cache: "none"},
+				{Target: "vdb", Device: "disk", Path: vm.rbd + "/" + models.RBDDiskName(req.VmId, "d1"), Format: "raw", SourceType: "network", VirtualSizeBytes: 10 << 30, Cache: "none"},
+				{Target: "sda", Device: "cdrom", Path: "/var/lib/libvirt/images/" + req.VmId + "-seed.iso", Format: "raw", SourceType: "file", Readonly: true, Seed: true, FileSizeBytes: 4096},
+			}
+		}
 		if req.IncludePayload {
 			r.SeedImage, r.DomainXml = []byte("seed"), "<domain/>"
 		}
@@ -245,7 +257,7 @@ func (f *fakeNode) PrepareMigrationTarget(_ context.Context, req *pb.PrepareMigr
 	if !req.DryRun {
 		f.record("prepare")
 		f.mu.Lock()
-		f.prepared = req.Disks
+		f.prepared, f.preparedPool = req.Disks, req.PoolType+" "+req.PoolPath
 		f.mu.Unlock()
 	}
 	paths := map[string]string{}
@@ -267,10 +279,10 @@ func landPool(maps []*pb.MigrationDiskMap, def string) string {
 func (f *fakeNode) land(vmID, state string, maps []*pb.MigrationDiskMap) {
 	f.mu.Lock()
 	f.vms[vmID].state = "shutoff"
-	cache := f.vms[vmID].cache
+	cache, rbd := f.vms[vmID].cache, f.vms[vmID].rbd
 	f.mu.Unlock()
 	f.peer.mu.Lock()
-	f.peer.vms[vmID] = &fakeVM{state: state, pool: landPool(maps, f.peer.pool), cache: cache}
+	f.peer.vms[vmID] = &fakeVM{state: state, pool: landPool(maps, f.peer.pool), cache: cache, rbd: rbd}
 	f.peer.mu.Unlock()
 }
 

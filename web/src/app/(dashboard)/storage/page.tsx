@@ -34,6 +34,7 @@ import { useConfirm } from "@/components/confirm-provider"
 import { toast } from "sonner"
 import { PoolAllocation } from "@/components/pool-allocation"
 import { AddSharedPoolDialog, SharedPools } from "@/components/shared-pools"
+import { CephClusterDialog, CephClusters } from "@/components/ceph-clusters"
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B"
@@ -277,6 +278,7 @@ export default function StorageListPage() {
   const [newPool, setNewPool] = useState(emptyPool)
   const [volumesPool, setVolumesPool] = useState<StoragePool | null>(null)
   const [showAddShared, setShowAddShared] = useState(false)
+  const [showAddCeph, setShowAddCeph] = useState(false)
 
   // A node's part of a shared pool is shown once, under the shared pool.
   const filteredPools = pools?.filter(pool => !pool.shared_pool_id && (
@@ -410,8 +412,9 @@ export default function StorageListPage() {
             {stats.totalPools} pools
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Link href="/storage/orphans"><Button variant="outline">Orphaned disks</Button></Link>
+          <Button variant="outline" onClick={() => setShowAddCeph(true)}>Add Ceph cluster</Button>
           <Button variant="outline" onClick={() => setShowAddShared(true)}>Add shared pool</Button>
           <Button className="gap-2" onClick={() => setShowAddPool(true)}>
             <Plus className="w-4 h-4" />
@@ -499,6 +502,7 @@ export default function StorageListPage() {
         </div>
       </div>
 
+      <CephClusters nodes={nodes ?? []} />
       <SharedPools nodes={nodes ?? []} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -746,6 +750,7 @@ export default function StorageListPage() {
       </Dialog>
 
       <AddSharedPoolDialog open={showAddShared} onOpenChange={setShowAddShared} />
+      <CephClusterDialog open={showAddCeph} onOpenChange={setShowAddCeph} />
 
       <VolumesDialog pool={volumesPool} onClose={() => setVolumesPool(null)} />
     </div>

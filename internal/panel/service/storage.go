@@ -287,6 +287,9 @@ func (s *storageService) CreateVolume(volume *models.StorageVolume) error {
 		if err := lvmPoolUsable(pool); err != nil {
 			return err
 		}
+		if pool.Type == models.PoolTypeRBD {
+			return fmt.Errorf("%w: %s is an RBD pool, where volumes that belong to no VM are not made; add a disk to a VM instead", ErrInvalidStoragePool, pool.Name)
+		}
 		if models.IsLVMPoolType(pool.Type) {
 			volume.Format = "raw"
 		}

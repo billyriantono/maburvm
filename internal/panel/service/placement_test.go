@@ -219,6 +219,32 @@ func TestVMPool(t *testing.T) {
 	assert.Nil(t, VMPool(ctx, db, "vm-c", "node-without-pools"))
 }
 
+// An RBD pool takes new VMs by default only when staff made it the node's
+// pool for new VMs. A VM with no pool on record is on the node's own storage.
+func TestRBDPoolIsChosenNotGuessed(t *testing.T) {
+	ctx := context.Background()
+	db, data, local := placementDB(t)
+	rbd := &models.StoragePool{ID: "pool-rbd", Name: "ceph", NodeID: "node-1", Path: "vms", Type: models.PoolTypeRBD, Status: "online", TotalSpace: 9000 * gib, AvailableSpace: 8000 * gib}
+	require.NoError(t, db.Create(rbd).Error)
+	require.NoError(t, db.Exec(`INSERT INTO vms (id, node_id, storage_pool_id) VALUES ('vm-old', 'node-1', NULL), ('vm-ceph', 'node-1', 'pool-rbd')`).Error)
+
+	assert.Equal(t, data.ID, PrimaryPool(ctx, db, "node-1").ID, "the node's primary pool stays the default")
+	require.NoError(t, db.Model(&models.StoragePool{}).Where("id = ?", data.ID).Update("is_primary", false).Error)
+	assert.Equal(t, local.ID, PrimaryPool(ctx, db, "node-1").ID, "the roomiest pool being on Ceph makes it nobody's choice")
+	assert.Equal(t, rbd.ID, pickPool([]models.StoragePool{*rbd}).ID, "among the pools of a plan's tier (NodeDiskPool) it is picked like any other")
+
+	require.NoError(t, db.Model(&models.StoragePool{}).Where("id = ?", rbd.ID).Update("is_primary", true).Error)
+	assert.Equal(t, rbd.ID, PrimaryPool(ctx, db, "node-1").ID, "made the pool for new VMs, it is")
+	assert.Equal(t, local.ID, VMPool(ctx, db, "vm-old", "node-1").ID, "a VM with no pool on record is on the node's own storage")
+	assert.Equal(t, rbd.ID, VMPool(ctx, db, "vm-ceph", "node-1").ID)
+
+	disk := "rbd://11111111-2222-3333-4444-555555555555/vms/maburvm-vm-ceph-vda"
+	assert.True(t, PoolHoldsDisk(*rbd, disk))
+	assert.False(t, PoolHoldsDisk(*local, disk), "an image is in no directory")
+	assert.False(t, PoolHoldsDisk(*rbd, "/var/lib/libvirt/images/vm-old.qcow2"))
+	assert.Equal(t, rbd.ID, DiskPool(ctx, db, "vm-old", "node-1", disk).ID)
+}
+
 // Two primaries on one node: the roomiest wins whatever order the rows come in.
 func TestPickPoolWithTwoPrimaries(t *testing.T) {
 	root := models.StoragePool{ID: "a-root", NodeID: "node-1", Path: DefaultNodeImageDir, IsPrimary: true, AvailableSpace: 60 * gib}

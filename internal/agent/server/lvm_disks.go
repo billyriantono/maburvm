@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maburvm/panel/internal/agent/ceph"
 	"github.com/maburvm/panel/internal/agent/libvirt"
 	"github.com/maburvm/panel/internal/agent/storage"
 	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
@@ -118,8 +119,16 @@ func removeLV(ctx context.Context, vmID, dev string, pools []storage.LVMPool, al
 }
 
 // discardNewDisk removes a disk a create or attach made before it failed: a
-// file, or a logical volume MaburVM created for the VM.
+// file, or a logical volume or RBD image MaburVM created for the VM.
 func discardNewDisk(vmID, path string) {
+	if ceph.IsPath(path) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if why := removeOwnedImage(ctx, vmID, path); why != "" {
+			log.Printf("[NodeAgent] WARNING: left %s in place after a failed create: %s", path, why)
+		}
+		return
+	}
 	if !models.IsBlockDevicePath(path) {
 		_ = os.Remove(path)
 		return

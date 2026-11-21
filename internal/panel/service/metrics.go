@@ -218,6 +218,9 @@ type MetricsCollector struct {
 	// pendingAbsent holds VMs marked as waiting for an address change that
 	// their node did not list in the last check; a second miss clears them.
 	pendingAbsent map[string]bool
+
+	// cephPolls holds the nodes whose Ceph check is still running.
+	cephPolls sync.Map
 }
 
 // repairTrack is what the collector remembers of one node's repair count.
@@ -664,6 +667,7 @@ func (c *MetricsCollector) collectOnce(ctx context.Context) {
 		// Keep each node's default storage pool present and its capacity
 		// live from the node's real disk, so /storage reflects the node.
 		c.syncStoragePools(ctx, byID[nodeID])
+		c.pollCeph(ctx, byID[nodeID])
 
 		// Reconcile DB VM status against reality, so a VM started, stopped or
 		// crashed out of band is reflected in the panel (otherwise status only
@@ -1085,6 +1089,9 @@ func (c *MetricsCollector) syncStoragePools(ctx context.Context, node *models.No
 	seen := map[string]bool{}
 	var lvmPools []*pb.LVMPool
 	for i := range pools {
+		if pools[i].Type == models.PoolTypeRBD {
+			continue // no directory on the node: measured with its cluster (pollCeph)
+		}
 		if models.IsLVMPoolType(pools[i].Type) {
 			if vg, thin, err := models.SplitLVMPoolPath(pools[i].Type, pools[i].Path); err == nil {
 				lvmPools = append(lvmPools, &pb.LVMPool{Vg: vg, ThinPool: thin})
@@ -1120,6 +1127,9 @@ func (c *MetricsCollector) syncStoragePools(ctx context.Context, node *models.No
 	}
 
 	for i := range pools {
+		if pools[i].Type == models.PoolTypeRBD {
+			continue
+		}
 		if models.IsLVMPoolType(pools[i].Type) {
 			measureLVMPool(&pools[i], byLVM)
 			if err := c.storageRepo.UpdatePoolMeasurement(&pools[i]); err != nil {
@@ -1201,20 +1211,54 @@ func (c *MetricsCollector) syncStoragePools(ctx context.Context, node *models.No
 // alertSharedMount raises, or with no problem clears, the alert of a shared
 // pool that is not mounted on one of its member nodes.
 func (c *MetricsCollector) alertSharedMount(ctx context.Context, node *models.Node, p *models.StoragePool, problem string) {
-	if c.alerts == nil || p.SharedPoolID == nil {
+	alertSharedMember(ctx, c.alerts, node, p, problem)
+}
+
+// alertSharedMember is alertSharedMount for any caller: p is the node's row
+// for the shared pool.
+func alertSharedMember(ctx context.Context, alerts *AlertService, node *models.Node, p *models.StoragePool, problem string) {
+	if alerts == nil || p.SharedPoolID == nil {
 		return
 	}
 	key := "pool_shared:" + p.ID
 	if problem == "" {
-		c.alerts.Clear(ctx, key)
+		alerts.Clear(ctx, key)
 		return
 	}
-	c.alerts.Raise(ctx, AlertInput{
+	alerts.Raise(ctx, AlertInput{
 		Key: key, Kind: models.AlertKindStoragePool, Severity: models.AlertSeverityCritical,
 		Title:        fmt.Sprintf("Shared pool %s is not usable on %s", p.Name, node.Name),
-		Detail:       problem + " VMs on this node with disks in the pool cannot start, and no new disk is placed there, until it is mounted again.",
+		Detail:       problem + " VMs on this node with disks in the pool cannot start, and no new disk is placed there, until it is usable again.",
 		ResourceType: "storage_pool", ResourceID: p.ID, ResourceName: p.Name,
 	})
+}
+
+// pollCeph checks the Ceph clusters enabled on a node, beside the node's
+// other work: a cluster that answers slowly holds up nothing else, and a
+// check still running when the next tick comes is not started twice. A fleet
+// without Ceph pays one small query per node.
+func (c *MetricsCollector) pollCeph(ctx context.Context, node *models.Node) {
+	if c.vmService == nil {
+		return
+	}
+	svc := NewCephService(c.db, c.vmService, c.alerts)
+	if !svc.EnabledOn(ctx, node.ID) {
+		return
+	}
+	if _, running := c.cephPolls.LoadOrStore(node.ID, true); running {
+		return
+	}
+	go func() {
+		defer c.cephPolls.Delete(node.ID)
+		defer func() {
+			if p := recover(); p != nil {
+				c.logger.Error("metrics collector: a Ceph check panicked", "node_id", node.ID, "panic", p)
+			}
+		}()
+		pctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+		defer cancel()
+		svc.Poll(pctx, node)
+	}()
 }
 
 // measureLVMPool applies what the node reported for an LVM pool. A pool the

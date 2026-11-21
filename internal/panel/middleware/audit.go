@@ -26,6 +26,8 @@ var (
 		"authorization", "cookie", "ticket", "user_data", "userdata", "cloud_init", "cloudinit",
 		// A chat webhook URL is itself the credential (alerts keep it encrypted).
 		"webhook_url", "webhookurl",
+		// A Ceph cluster's cephx key.
+		"client_key", "clientkey",
 	}
 	// sensitiveExact are names too short to match as substrings.
 	sensitiveExact = map[string]bool{"code": true, "otp": true, "key": true, "pin": true}

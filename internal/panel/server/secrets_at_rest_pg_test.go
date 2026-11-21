@@ -25,6 +25,7 @@ func TestSealSecretsAtRestOnPostgres(t *testing.T) {
 		`CREATE TABLE import_sources (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), api_key text NOT NULL DEFAULT '', api_pass text NOT NULL DEFAULT '')`,
 		`INSERT INTO import_sources (api_key, api_pass) VALUES ('source-key', 'source-pass')`,
 		`CREATE TABLE webhook_endpoints (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), secret text NOT NULL DEFAULT '')`,
+		`CREATE TABLE ceph_clusters (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), client_key text NOT NULL DEFAULT '')`,
 	} {
 		require.NoError(t, db.Exec(ddl).Error)
 	}

@@ -283,6 +283,9 @@ func resetPasswordOffline(vmID, user, password string) error {
 	if err != nil {
 		return err
 	}
+	if err := noHostEdit(disk, "a password is set only while the VM runs with its guest agent: start the VM, wait for it to finish starting, then try again"); err != nil {
+		return err
+	}
 	f, err := os.CreateTemp("", "maburvm-pw-*")
 	if err != nil {
 		return err
@@ -342,10 +345,7 @@ func (s *NodeAgentService) enterRescue(req *pb.VMCommandRequest) error {
 	if err != nil {
 		return err
 	}
-	dir := defaultImageDir
-	if !models.IsBlockDevicePath(primary) {
-		dir = filepath.Dir(primary)
-	}
+	dir := diskDir(primary, defaultImageDir)
 	// Not into an unmounted shared pool: that is the local disk underneath.
 	if err := storage.CheckSharedDir(dir); err != nil {
 		return err

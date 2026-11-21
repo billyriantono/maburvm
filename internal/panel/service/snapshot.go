@@ -34,6 +34,10 @@ var (
 	// ErrSnapshotsNeedQcow2 refuses a snapshot of a VM with a disk on a logical
 	// volume: snapshots live inside qcow2 images. Backups still work.
 	ErrSnapshotsNeedQcow2 = errors.New("snapshots need qcow2 disks, and this VM has a disk on LVM storage; take a backup instead")
+	// Disks on Ceph RBD take RBD snapshots: the disks, never the memory, named
+	// as RBD names its snapshots. (Any snapshot is restored with the VM off.)
+	ErrSnapshotRBDMemory = errors.New("this VM's disks are on Ceph RBD, where a snapshot holds the disks and not the memory; take a disk-only snapshot, or stop the VM first")
+	ErrSnapshotRBDName   = errors.New("this VM's disks are on Ceph RBD, where a snapshot's name is made of letters, digits, dots, dashes and underscores")
 	// ErrSnapshotOptionsUnsupported refuses a disk-only or quiesced snapshot on
 	// a node whose agent cannot take one.
 	ErrSnapshotOptionsUnsupported = errors.New("this VM's node needs an agent update before it takes disk-only or quiesced snapshots")
@@ -116,6 +120,8 @@ func (s *SnapshotService) snapshotRefusal(ctx context.Context, vm *models.VM, di
 	switch {
 	case VMOnBlockStorage(ctx, s.db, vm):
 		return ErrSnapshotsNeedQcow2
+	case !diskOnly && vm.Status != models.VMStatusStopped && VMOnRBD(ctx, s.db, vm):
+		return ErrSnapshotRBDMemory
 	case vm.RescueMode && vm.RescueKind == models.RescueKindImage:
 		return ErrSnapshotInRescue
 	case diskOnly && !s.nodeCan(ctx, vm.NodeID, models.FeatureSnapshotOptions):
@@ -150,6 +156,9 @@ func (s *SnapshotService) CreateSnapshot(ctx context.Context, req *CreateSnapsho
 	}
 	if err := s.snapshotRefusal(ctx, vm, req.DiskOnly); err != nil {
 		return nil, err
+	}
+	if !models.ValidRBDSnapshotName(req.Name) && VMOnRBD(ctx, s.db, vm) {
+		return nil, ErrSnapshotRBDName
 	}
 
 	// Check if snapshot name already exists for this VM
@@ -414,7 +423,6 @@ func (s *SnapshotService) RestoreSnapshot(ctx context.Context, req *RestoreSnaps
 	if err := restoreRefusal(ctx, s.db, vm); err != nil {
 		return nil, err
 	}
-
 	// Prepare restore params
 	params := map[string]interface{}{
 		"snapshot_name": snapshot.Name,

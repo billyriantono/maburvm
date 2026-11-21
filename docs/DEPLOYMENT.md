@@ -1444,6 +1444,12 @@ pool's capacity and free space on the node every minute; they are not set by
 hand. The pool marked for new VMs is where that node creates disks, and a VM's
 extra disks are created beside its own.
 
+An existing Ceph cluster can be attached as a client (register it, enable it
+on the nodes that reach it, add its RBD pools): see the
+[admin guide, section 4.8](admin-guide.md#48-ceph-clusters-and-rbd-pools) and
+the [runbook](runbooks.md#10-attaching-an-existing-ceph-cluster). MaburVM does
+not install or manage the cluster.
+
 Disks are thin: a 100 GB disk takes a few GB on the day it is created and grows
 as the guest writes. So a pool can be promised more disk than it holds, and it
 fills later, without a new order. A pool that fills pauses every VM on it. The
@@ -1793,6 +1799,11 @@ Some changes are not undone by going back:
 - **Migration 065 down** removes the per-node column from port forwards but
   does not put back the fleet-wide unique index: forwards made since may share
   a port across nodes, and the index would not build.
+- **Migration 095 down** (Ceph clusters) is refused while a VM has a disk on an
+  RBD pool, since an older panel would take the image for a file: move or
+  delete those VMs first. It then removes the RBD pools' records; the images
+  stay on the cluster. Restoring a dump from before 095 forgets VMs made on RBD
+  since, and their images stay on the cluster too.
 - **Data a newer version wrote** is dropped by a down migration that removes its
   table or column. Restoring the dump loses everything written after it.
 - **Panel settings saved on the Settings, System, Panel page** are read only by

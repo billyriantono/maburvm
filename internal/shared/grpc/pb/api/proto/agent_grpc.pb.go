@@ -71,6 +71,8 @@ const (
 	NodeAgent_DeleteOrphanDisk_FullMethodName       = "/agent.NodeAgent/DeleteOrphanDisk"
 	NodeAgent_SetSharedPool_FullMethodName          = "/agent.NodeAgent/SetSharedPool"
 	NodeAgent_SharedPoolToken_FullMethodName        = "/agent.NodeAgent/SharedPoolToken"
+	NodeAgent_SetCephCluster_FullMethodName         = "/agent.NodeAgent/SetCephCluster"
+	NodeAgent_CephStatus_FullMethodName             = "/agent.NodeAgent/CephStatus"
 	NodeAgent_SetFencedVMs_FullMethodName           = "/agent.NodeAgent/SetFencedVMs"
 	NodeAgent_RemoveFencedVM_FullMethodName         = "/agent.NodeAgent/RemoveFencedVM"
 	NodeAgent_PutImage_FullMethodName               = "/agent.NodeAgent/PutImage"
@@ -290,6 +292,12 @@ type NodeAgentClient interface {
 	// nodes see the same storage.
 	SetSharedPool(ctx context.Context, in *SetSharedPoolRequest, opts ...grpc.CallOption) (*SetSharedPoolResponse, error)
 	SharedPoolToken(ctx context.Context, in *SharedPoolTokenRequest, opts ...grpc.CallOption) (*SharedPoolTokenResponse, error)
+	// Ceph: SetCephCluster gives this node access to an existing cluster staff
+	// registered (or takes it away); CephStatus reads the cluster's health and
+	// capacity and checks RBD pools with that access. Nothing here runs on its
+	// own, and no VM or pool that does not use Ceph is touched.
+	SetCephCluster(ctx context.Context, in *SetCephClusterRequest, opts ...grpc.CallOption) (*SetCephClusterResponse, error)
+	CephStatus(ctx context.Context, in *CephStatusRequest, opts ...grpc.CallOption) (*CephStatusResponse, error)
 	// SetFencedVMs replaces the list of VMs that were recovered onto another
 	// node while this one was down ("vm_recovery" feature). The agent never
 	// starts one and turns its autostart off; it does not stop one that runs.
@@ -859,6 +867,26 @@ func (c *nodeAgentClient) SharedPoolToken(ctx context.Context, in *SharedPoolTok
 	return out, nil
 }
 
+func (c *nodeAgentClient) SetCephCluster(ctx context.Context, in *SetCephClusterRequest, opts ...grpc.CallOption) (*SetCephClusterResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetCephClusterResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_SetCephCluster_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeAgentClient) CephStatus(ctx context.Context, in *CephStatusRequest, opts ...grpc.CallOption) (*CephStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CephStatusResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_CephStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *nodeAgentClient) SetFencedVMs(ctx context.Context, in *SetFencedVMsRequest, opts ...grpc.CallOption) (*SetFencedVMsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SetFencedVMsResponse)
@@ -1124,6 +1152,12 @@ type NodeAgentServer interface {
 	// nodes see the same storage.
 	SetSharedPool(context.Context, *SetSharedPoolRequest) (*SetSharedPoolResponse, error)
 	SharedPoolToken(context.Context, *SharedPoolTokenRequest) (*SharedPoolTokenResponse, error)
+	// Ceph: SetCephCluster gives this node access to an existing cluster staff
+	// registered (or takes it away); CephStatus reads the cluster's health and
+	// capacity and checks RBD pools with that access. Nothing here runs on its
+	// own, and no VM or pool that does not use Ceph is touched.
+	SetCephCluster(context.Context, *SetCephClusterRequest) (*SetCephClusterResponse, error)
+	CephStatus(context.Context, *CephStatusRequest) (*CephStatusResponse, error)
 	// SetFencedVMs replaces the list of VMs that were recovered onto another
 	// node while this one was down ("vm_recovery" feature). The agent never
 	// starts one and turns its autostart off; it does not stop one that runs.
@@ -1310,6 +1344,12 @@ func (UnimplementedNodeAgentServer) SetSharedPool(context.Context, *SetSharedPoo
 }
 func (UnimplementedNodeAgentServer) SharedPoolToken(context.Context, *SharedPoolTokenRequest) (*SharedPoolTokenResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SharedPoolToken not implemented")
+}
+func (UnimplementedNodeAgentServer) SetCephCluster(context.Context, *SetCephClusterRequest) (*SetCephClusterResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetCephCluster not implemented")
+}
+func (UnimplementedNodeAgentServer) CephStatus(context.Context, *CephStatusRequest) (*CephStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CephStatus not implemented")
 }
 func (UnimplementedNodeAgentServer) SetFencedVMs(context.Context, *SetFencedVMsRequest) (*SetFencedVMsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetFencedVMs not implemented")
@@ -2243,6 +2283,42 @@ func _NodeAgent_SharedPoolToken_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NodeAgent_SetCephCluster_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetCephClusterRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).SetCephCluster(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_SetCephCluster_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).SetCephCluster(ctx, req.(*SetCephClusterRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeAgent_CephStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CephStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).CephStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_CephStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).CephStatus(ctx, req.(*CephStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _NodeAgent_SetFencedVMs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SetFencedVMsRequest)
 	if err := dec(in); err != nil {
@@ -2520,6 +2596,14 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SharedPoolToken",
 			Handler:    _NodeAgent_SharedPoolToken_Handler,
+		},
+		{
+			MethodName: "SetCephCluster",
+			Handler:    _NodeAgent_SetCephCluster_Handler,
+		},
+		{
+			MethodName: "CephStatus",
+			Handler:    _NodeAgent_CephStatus_Handler,
 		},
 		{
 			MethodName: "SetFencedVMs",

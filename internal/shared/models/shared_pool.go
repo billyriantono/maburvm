@@ -13,7 +13,7 @@ import (
 // Kinds of shared storage pool. An nfs pool is mounted by each member's agent
 // at SharedPoolMountPath; a mounted pool is a directory the operator mounts at
 // the same path on every member (NFS, CephFS, GlusterFS, any cluster file
-// system).
+// system). SharedPoolRBD (ceph.go) is an RBD pool of a Ceph cluster.
 const (
 	SharedPoolNFS     = "nfs"
 	SharedPoolMounted = "mounted"
@@ -39,16 +39,21 @@ const sharedPoolMountRoot = "/var/lib/maburvm/pools"
 // member node has its own storage_pools row (StoragePool.SharedPoolID), so
 // everything that works on a node's pool works on a member.
 type SharedStoragePool struct {
-	ID           string         `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	Name         string         `json:"name" gorm:"type:varchar(100);not null"`
-	Kind         string         `json:"kind" gorm:"type:varchar(16);not null;default:mounted"`
-	Path         string         `json:"path" gorm:"type:varchar(255);not null"`
-	NFSServer    string         `json:"nfs_server" gorm:"column:nfs_server;type:varchar(255);not null;default:''"`
-	NFSExport    string         `json:"nfs_export" gorm:"column:nfs_export;type:varchar(255);not null;default:''"`
-	MountOptions string         `json:"mount_options" gorm:"type:varchar(255);not null;default:''"`
-	CreatedAt    time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
-	UpdatedAt    time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
-	DeletedAt    gorm.DeletedAt `json:"-" gorm:"index"`
+	ID           string `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	Name         string `json:"name" gorm:"type:varchar(100);not null"`
+	Kind         string `json:"kind" gorm:"type:varchar(16);not null;default:mounted"`
+	Path         string `json:"path" gorm:"type:varchar(255);not null"`
+	NFSServer    string `json:"nfs_server" gorm:"column:nfs_server;type:varchar(255);not null;default:''"`
+	NFSExport    string `json:"nfs_export" gorm:"column:nfs_export;type:varchar(255);not null;default:''"`
+	MountOptions string `json:"mount_options" gorm:"type:varchar(255);not null;default:''"`
+	// Kind rbd: the registered Ceph cluster, and the RBD pool and optional
+	// namespace in it. Path is then RBDPoolPath.
+	CephClusterID *string        `json:"ceph_cluster_id,omitempty" gorm:"column:ceph_cluster_id;type:uuid"`
+	RBDPool       string         `json:"rbd_pool" gorm:"column:rbd_pool;type:varchar(128);not null;default:''"`
+	RBDNamespace  string         `json:"rbd_namespace" gorm:"column:rbd_namespace;type:varchar(128);not null;default:''"`
+	CreatedAt     time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
+	UpdatedAt     time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
+	DeletedAt     gorm.DeletedAt `json:"-" gorm:"index"`
 }
 
 func (SharedStoragePool) TableName() string { return "shared_storage_pools" }

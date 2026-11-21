@@ -11,14 +11,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"google.golang.org/grpc/metadata"
 	"gorm.io/gorm"
 
 	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 	"github.com/maburvm/panel/internal/shared/models"
 )
 
-// Shared storage pools: storage several nodes see at the same path. The
+// Shared storage pools: storage several nodes see at the same path, or (kind
+// rbd, see ceph.go) one RBD pool of a Ceph cluster. The
 // record groups one ordinary storage_pools row per member node, so placement,
 // admission, disks and moves work on a member as on any pool of that node.
 // Nothing here acts on its own: a node mounts or joins only when staff add it.
@@ -52,20 +52,25 @@ func lockMembers(poolID string) (unlock func()) {
 // SharedPoolService manages shared pools and proves that members really see
 // the same storage.
 type SharedPoolService struct {
-	db    *gorm.DB
-	agent func(ctx context.Context, node *models.Node) (pb.NodeAgentClient, context.Context, error)
+	db     *gorm.DB
+	agent  func(ctx context.Context, node *models.Node) (pb.NodeAgentClient, context.Context, error)
+	alerts *AlertService
 }
 
 // NewSharedPoolService builds the service on the VM service's node connections.
 func NewSharedPoolService(db *gorm.DB, vms *VMService) *SharedPoolService {
-	return &SharedPoolService{db: db, agent: func(ctx context.Context, node *models.Node) (pb.NodeAgentClient, context.Context, error) {
-		client, err := vms.getAgentClient(ctx, node.ID)
-		if err != nil {
-			return nil, ctx, fmt.Errorf("node %s cannot be reached: %w", node.Name, err)
-		}
-		return client, metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+node.Token, "x-node-id", node.ID), nil
-	}}
+	return &SharedPoolService{db: db, agent: nodeAgent(vms)}
 }
+
+// ceph is the Ceph service on the same database and node connections: an
+// RBD pool's members are kept by the cluster, not added one by one.
+func (s *SharedPoolService) ceph() *CephService {
+	return &CephService{db: s.db, agent: s.agent, alerts: s.alerts}
+}
+
+// SetAlerts has changes made here (an RBD pool's first check) raise and
+// clear the same alerts the storage sync does.
+func (s *SharedPoolService) SetAlerts(a *AlertService) { s.alerts = a }
 
 // SharedPoolMember is one node of a shared pool.
 type SharedPoolMember struct {
@@ -76,6 +81,9 @@ type SharedPoolMember struct {
 	Status     string `json:"status"`
 	StatusNote string `json:"status_note"`
 	IsPrimary  bool   `json:"is_primary"`
+	// Tier is the storage tier of the node's row: a plan naming it puts its
+	// VMs on that node in this pool.
+	Tier string `json:"tier"`
 }
 
 // SharedPoolView is a shared pool with its members and its capacity, counted
@@ -156,7 +164,7 @@ func (s *SharedPoolService) List(ctx context.Context) ([]SharedPoolView, error) 
 		measured := false
 		for _, r := range rows {
 			v.Members = append(v.Members, SharedPoolMember{PoolID: r.ID, NodeID: r.NodeID, NodeName: names[r.NodeID],
-				Status: r.Status, StatusNote: r.StatusNote, IsPrimary: r.IsPrimary})
+				Status: r.Status, StatusNote: r.StatusNote, IsPrimary: r.IsPrimary, Tier: r.Tier})
 			// Every member measures the same storage: one online reading is it.
 			if !measured && r.Status == "online" {
 				v.TotalSpace, v.UsedSpace, v.AvailableSpace, measured = r.TotalSpace, r.UsedSpace, r.AvailableSpace, true
@@ -175,16 +183,28 @@ func (s *SharedPoolService) List(ctx context.Context) ([]SharedPoolView, error) 
 	return out, nil
 }
 
-// Create records a shared pool. No node is touched until one is added.
+// Create records a shared pool. No node is touched until one is added; an
+// RBD pool is checked on, and given to, the nodes its cluster is enabled on.
 func (s *SharedPoolService) Create(ctx context.Context, in models.SharedStoragePool) (*models.SharedStoragePool, error) {
 	p := models.SharedStoragePool{
 		ID: uuid.New().String(), Name: strings.TrimSpace(in.Name), Kind: strings.TrimSpace(in.Kind),
 		NFSServer: strings.TrimSpace(in.NFSServer), NFSExport: strings.TrimSpace(in.NFSExport),
-		MountOptions: strings.ReplaceAll(strings.TrimSpace(in.MountOptions), " ", ""),
+		MountOptions:  strings.ReplaceAll(strings.TrimSpace(in.MountOptions), " ", ""),
+		CephClusterID: in.CephClusterID, RBDPool: strings.TrimSpace(in.RBDPool), RBDNamespace: strings.TrimSpace(in.RBDNamespace),
 	}
 	if p.Name == "" || len(p.Name) > 100 {
 		return nil, refuseShared("a name of up to 100 characters is required")
 	}
+	if p.Kind == models.SharedPoolRBD {
+		if taken, err := s.nameTaken(ctx, p.Name); err != nil || taken != nil {
+			return nil, firstErr(err, taken)
+		}
+		if err := s.ceph().createRBDPool(ctx, &p); err != nil {
+			return nil, err
+		}
+		return &p, nil
+	}
+	p.CephClusterID, p.RBDPool, p.RBDNamespace = nil, "", ""
 	if p.Kind == models.SharedPoolMounted {
 		p.NFSServer, p.NFSExport, p.MountOptions = "", "", ""
 	}
@@ -193,13 +213,10 @@ func (s *SharedPoolService) Create(ctx context.Context, in models.SharedStorageP
 		return nil, refuseShared("%v", err)
 	}
 	p.Path = dir
+	if taken, err := s.nameTaken(ctx, p.Name); err != nil || taken != nil {
+		return nil, firstErr(err, taken)
+	}
 	var n int64
-	if err := s.db.WithContext(ctx).Model(&models.SharedStoragePool{}).Where("name = ?", p.Name).Count(&n).Error; err != nil {
-		return nil, err
-	}
-	if n > 0 {
-		return nil, refuseShared("a shared pool named %q already exists", p.Name)
-	}
 	if p.Kind == models.SharedPoolMounted {
 		if err := s.db.WithContext(ctx).Model(&models.SharedStoragePool{}).Where("path = ?", p.Path).Count(&n).Error; err != nil {
 			return nil, err
@@ -214,13 +231,39 @@ func (s *SharedPoolService) Create(ctx context.Context, in models.SharedStorageP
 	return &p, nil
 }
 
+// nameTaken returns the refusal for a shared pool name already in use.
+func (s *SharedPoolService) nameTaken(ctx context.Context, name string) (refusal, err error) {
+	var n int64
+	if err := s.db.WithContext(ctx).Model(&models.SharedStoragePool{}).Where("name = ?", name).Count(&n).Error; err != nil {
+		return nil, err
+	}
+	if n > 0 {
+		return refuseShared("a shared pool named %q already exists", name), nil
+	}
+	return nil, nil
+}
+
+func firstErr(errs ...error) error {
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Delete removes a shared pool that has no members left. Files in it stay.
+// An RBD pool's members go with it, once no VM or volume is in the pool;
+// its images on the cluster stay.
 func (s *SharedPoolService) Delete(ctx context.Context, id string) error {
 	p, err := s.pool(ctx, id)
 	if err != nil {
 		return err
 	}
 	defer lockMembers(p.ID)()
+	if p.Kind == models.SharedPoolRBD {
+		return s.ceph().deleteRBDPool(ctx, p)
+	}
 	rows, err := s.members(ctx, p.ID)
 	if err != nil {
 		return err
@@ -305,6 +348,15 @@ func (s *SharedPoolService) ProveBetween(ctx context.Context, sharedPoolID strin
 	if err != nil {
 		return err
 	}
+	if p.Kind == models.SharedPoolRBD {
+		// Both reach the pool's cluster (one fsid) and list the pool.
+		for _, n := range []*models.Node{a, b} {
+			if problem := s.ceph().rbdMemberProblem(ctx, p, n); problem != "" {
+				return errors.New(problem)
+			}
+		}
+		return nil
+	}
 	rows, err := s.members(ctx, p.ID)
 	if err != nil {
 		return err
@@ -334,8 +386,10 @@ func (s *SharedPoolService) ProveBetween(ctx context.Context, sharedPoolID strin
 // pool). "" when it can. The storage sync asks every minute.
 func (s *SharedPoolService) MemberProblem(ctx context.Context, sharedPoolID string, node *models.Node) string {
 	p, err := s.pool(ctx, sharedPoolID)
-	if err != nil {
-		return "" // the pool's record is gone; nothing to hold the node to
+	if err != nil || p.Kind == models.SharedPoolRBD {
+		// The pool's record is gone: nothing to hold the node to. An RBD
+		// pool's members are checked with their cluster (CephService.Poll).
+		return ""
 	}
 	// A node that did not answer just now has not said the storage is gone.
 	if err := s.markerOK(ctx, p, node); err != nil && !errors.Is(err, errNoAnswer) {
@@ -376,6 +430,9 @@ func (s *SharedPoolService) AddMember(ctx context.Context, poolID, nodeID string
 	p, err := s.pool(ctx, poolID)
 	if err != nil {
 		return err
+	}
+	if p.Kind == models.SharedPoolRBD {
+		return refuseShared("%s is an RBD pool: its members are the nodes its Ceph cluster is enabled on. Enable the cluster on the node instead", p.Name)
 	}
 	node, err := s.node(ctx, nodeID)
 	if err != nil {
@@ -482,6 +539,9 @@ func (s *SharedPoolService) RemoveMember(ctx context.Context, poolID, nodeID str
 	if err != nil {
 		return err
 	}
+	if p.Kind == models.SharedPoolRBD {
+		return refuseShared("%s is an RBD pool: its members are the nodes its Ceph cluster is enabled on. Disable the cluster on the node instead", p.Name)
+	}
 	defer lockMembers(p.ID)()
 	var row models.StoragePool
 	if err := s.db.WithContext(ctx).Where("shared_pool_id = ? AND node_id = ?", p.ID, nodeID).First(&row).Error; err != nil {
@@ -526,11 +586,31 @@ func (s *SharedPoolService) Check(ctx context.Context, poolID string) (map[strin
 	if err != nil {
 		return nil, err
 	}
+	out := map[string]string{}
+	if p.Kind == models.SharedPoolRBD {
+		// The cluster is checked on every node it is enabled on; each node's
+		// verdict on this pool is then on its member row.
+		if p.CephClusterID == nil {
+			return out, nil
+		}
+		if out, err = s.ceph().Check(ctx, *p.CephClusterID); err != nil {
+			return nil, err
+		}
+		rows, err := s.members(ctx, p.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range rows {
+			if out[r.NodeID] == "" && r.Status != "online" {
+				out[r.NodeID] = firstNonEmpty(r.StatusNote, "the node has not checked the pool yet")
+			}
+		}
+		return out, nil
+	}
 	rows, err := s.members(ctx, p.ID)
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]string{}
 	var writer *models.Node
 	var readers []models.StoragePool
 	nodes := map[string]*models.Node{}

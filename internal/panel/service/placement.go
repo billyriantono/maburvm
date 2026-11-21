@@ -43,7 +43,42 @@ func PrimaryPool(ctx context.Context, db *gorm.DB, nodeID string) *models.Storag
 		Find(&pools).Error; err != nil {
 		return nil
 	}
-	return pickPool(pools)
+	// An RBD pool takes new VMs by default only when staff made it the pool
+	// for new VMs: being the roomiest is not a choice anyone made.
+	if p := pickPool(pools); p == nil || p.Type != models.PoolTypeRBD || p.IsPrimary {
+		return p
+	}
+	return pickPool(ownPools(pools))
+}
+
+// ownPools are the pools on a node's own storage: all but its RBD pools.
+func ownPools(pools []models.StoragePool) []models.StoragePool {
+	var out []models.StoragePool
+	for _, p := range pools {
+		if p.Type != models.PoolTypeRBD {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// AgentPoolRef is a pool as a node's agent is told of it: the pool type ("" is
+// a directory) and the pool path. An RBD pool's path names its cluster too
+// (models.RBDPoolRef), which the pool's own row does not carry.
+func AgentPoolRef(ctx context.Context, db *gorm.DB, p *models.StoragePool) (poolType, poolPath string, err error) {
+	switch {
+	case p == nil:
+		return "", "", nil
+	case models.IsLVMPoolType(p.Type):
+		return p.Type, p.Path, nil
+	case p.Type != models.PoolTypeRBD:
+		return "", p.Path, nil
+	}
+	var sp models.SharedStoragePool
+	if p.SharedPoolID == nil || db.WithContext(ctx).Where("id = ?", *p.SharedPoolID).First(&sp).Error != nil || sp.CephClusterID == nil {
+		return "", "", fmt.Errorf("storage pool %s is an RBD pool whose Ceph cluster the panel has no record of", p.Name)
+	}
+	return models.PoolTypeRBD, models.RBDPoolRef(*sp.CephClusterID, sp.RBDPool, sp.RBDNamespace), nil
 }
 
 // pickPool applies PrimaryPool's order of preference to a node's pools.
@@ -86,9 +121,9 @@ func pickPool(pools []models.StoragePool) *models.StoragePool {
 		return fallback
 	}
 
-	roomiest := &pools[0]
+	var roomiest *models.StoragePool
 	for i := range pools {
-		if roomier(&pools[i], roomiest) {
+		if roomiest == nil || roomier(&pools[i], roomiest) {
 			roomiest = &pools[i]
 		}
 	}
@@ -115,7 +150,13 @@ func VMPool(ctx context.Context, db *gorm.DB, vmID, nodeID string) *models.Stora
 			return &pool
 		}
 	}
-	return PrimaryPool(ctx, db, nodeID)
+	// A VM with no pool on record was made before pools were recorded: on the
+	// node's own storage, never in an RBD pool.
+	var pools []models.StoragePool
+	if err := db.WithContext(ctx).Where("node_id = ? AND status = ?", nodeID, "online").Find(&pools).Error; err != nil {
+		return nil
+	}
+	return pickPool(ownPools(pools))
 }
 
 // PoolFits reports whether a pool's real free space can hold a disk of the
@@ -254,7 +295,7 @@ func poolAllocations(ctx context.Context, db *gorm.DB, nodeID string) (map[strin
 		if poolID == "" {
 			p, ok := picked[vm.NodeID]
 			if !ok {
-				p = pickPool(byNode[vm.NodeID])
+				p = pickPool(ownPools(byNode[vm.NodeID])) // as VMPool guesses
 				picked[vm.NodeID] = p
 			}
 			if p != nil {
@@ -322,12 +363,27 @@ func poolAllocations(ctx context.Context, db *gorm.DB, nodeID string) (map[strin
 }
 
 // PoolHoldsDisk reports whether the pool holds the disk at diskPath: a file
-// directly in its directory, or a logical volume in its volume group.
+// directly in its directory, a logical volume in its volume group, or an
+// image in its RBD pool.
 func PoolHoldsDisk(p models.StoragePool, diskPath string) bool {
+	if p.Type == models.PoolTypeRBD || models.IsRBDPath(diskPath) {
+		return p.Type == models.PoolTypeRBD && models.RBDPoolHolds(p.Path, diskPath)
+	}
 	if models.IsLVMPoolType(p.Type) {
 		return models.LVMPoolHolds(p.Type, p.Path, diskPath)
 	}
 	return !models.IsBlockDevicePath(diskPath) && path.Clean(p.Path) == path.Dir(diskPath)
+}
+
+// VMOnRBD reports a VM whose system disk is in an RBD pool. Its data disks
+// are there too: a node refuses to mix the two kinds of storage in one VM.
+func VMOnRBD(ctx context.Context, db *gorm.DB, vm *models.VM) bool {
+	// Ids are compared as text: older installs hold some as varchar.
+	var n int64
+	db.WithContext(ctx).Raw(`SELECT COUNT(*) FROM vms v JOIN storage_pools p ON CAST(p.id AS TEXT) = CAST(v.storage_pool_id AS TEXT)
+		WHERE CAST(v.id AS TEXT) = ? AND CAST(p.node_id AS TEXT) = CAST(v.node_id AS TEXT) AND p.type = ? AND p.deleted_at IS NULL`,
+		vm.ID, models.PoolTypeRBD).Scan(&n)
+	return n > 0
 }
 
 func poolByID(pools []models.StoragePool, id string) *models.StoragePool {

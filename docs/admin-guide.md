@@ -97,7 +97,9 @@ the host and changes nothing. Three lines are optional hardware and always
 pass, saying what is missing: UEFI firmware (OVMF, with or without Secure Boot
 firmware and keys), the TPM emulator (swtpm) and reserved huge pages. A VM that
 needs one is placed only on a node that has it, and refused with that reason
-otherwise.
+otherwise. Three more are optional and always pass too, for nodes that will
+use a Ceph cluster (section 4.8): the Ceph client (`ceph` and `rbd`), QEMU's
+RBD driver, and libvirt's secret store.
 
 ### 3.3 The node page
 
@@ -159,6 +161,7 @@ its migration key from every other node that is online.
 | Directory | a directory on the node | qcow2 files, thin | ZFS datasets, NFS exports and CephFS work by mounting them on the node and registering the mount point. Storage that several nodes mount is better added as a shared pool (section 4.7). |
 | LVM volume group | the volume group | raw logical volumes | Each disk takes its full size from the group when it is created. |
 | LVM thin pool | `vg/thinpool` | thin logical volumes | Disks take space as they are written; watch data **and metadata** use (the Storage page shows both). A full metadata area stops every thin volume. |
+| RBD pool (shared) | `pool` or `pool/namespace` of a registered Ceph cluster | raw RBD images, thin | Added as a shared pool, not per node (section 4.8). |
 
 Whatever you name must already exist on the node, and a volume group or thin
 pool must not hold the node's own system; the node reports why it cannot use a
@@ -320,6 +323,113 @@ For live moves without a copy libvirt must recognise the file system as
 shared. It knows NFS, CephFS, GlusterFS, GFS2, OCFS2 and a few more; for any
 other, list its mount point under `shared_filesystems` in
 `/etc/libvirt/qemu.conf` on each node.
+
+### 4.8 Ceph clusters and RBD pools
+
+MaburVM can be a **client of a Ceph cluster you already run**. It does not
+install, grow, repair or upgrade a cluster, and it does nothing with Ceph on
+any node until you enable a cluster there. Installs without Ceph are not
+affected. What the cluster and the nodes need, with the commands, is in
+[runbooks.md, Attaching an existing Ceph cluster](runbooks.md#10-attaching-an-existing-ceph-cluster).
+
+**Storage, Add Ceph cluster** (`storage:create`) registers a cluster: a name,
+the monitor addresses, the cephx client id (without `client.`) and its key,
+and optionally the cluster's fsid. The key is stored encrypted with the
+panel's AES key, is never shown again, is not in any API answer and is
+redacted in the audit log. Use a client with the `rbd` profile on the pools
+you will use, not the admin key.
+
+**Enable** on the cluster's card (`storage:update`) gives one node access:
+
+1. The node's agent writes a minimal `ceph.conf` and a keyring (mode 0600)
+   under `/var/lib/maburvm/ceph/<cluster id>/`. `/etc/ceph` is never touched.
+2. It defines a libvirt secret (usage type `ceph`) holding the key. Its UUID
+   is the cluster's id, the same on every node.
+3. It proves the access by reading the cluster's fsid and health with that
+   id and key.
+
+The first node's fsid is recorded (unless you gave one); **every later node
+must report the same fsid**. A node whose monitors lead to another cluster is
+taken out again and refused with both fsids, as is a node that cannot reach
+the cluster at all.
+
+**RBD pools.** **Add shared pool**, kind **RBD pool of a Ceph cluster**: the
+cluster, the RBD pool's name, and optionally a namespace. The pool must
+already exist on the cluster. It is a shared pool (section 4.7) whose members
+are simply the nodes the cluster is enabled on: you do not add or remove
+nodes on its card. Each node proves it can use the pool by listing its
+images, and a pool no answering node can list is refused with what `rbd`
+said (a mistyped name, missing caps). The pool is shown once, with its
+capacity counted once, whatever the number of nodes.
+
+**VM disks on an RBD pool.** A VM's system disk and data disks can be images
+in an RBD pool. The pool is used only where you choose it:
+
+- **Use for new VMs** on a node's row of the pool's card makes it that node's
+  pool for new VMs;
+- a storage tier on the pool (**Tier** on its card; section 4.2) sends a
+  plan's VMs to it. The tier is set on every node that uses the pool at that
+  moment: set it again after enabling the cluster on another node;
+- staff can name it in the **Storage pool** list when creating a VM.
+
+It is never picked just because it has the most free space. Room is checked
+as for any pool: the disk must fit in what the Ceph pool can still store, plus
+the headroom, and the allocation ratio applies (section 4.6). Capacity is the
+Ceph pool's own figure, so space held by snapshots counts as used.
+
+Each disk is a raw image named `maburvm-<vm id>-<disk>`, opened by QEMU
+through libvirt with the cluster's monitors and the libvirt secret (the key
+is in no VM definition), without the host's cache, and giving freed blocks
+back to the pool. A VM's data disks go in the same pool as its system disk: a
+VM never has disks on both Ceph and a node's own storage.
+
+| On a VM whose disks are on RBD | What happens |
+|---|---|
+| Create, reinstall | The image is prepared as a file on the node (in the template cache directory), then imported. A reinstall writes a second image and swaps it in, so a failure leaves the disk as it was. Its snapshots go with the old system. |
+| Delete | The images and their snapshots are removed, unless another client still has an image open (the VM still runs on another node): that image is kept and the delete's record says so. |
+| Start, start with the node | Refused while another client has one of the VM's images open, naming it: the VM runs on another node, and two copies would corrupt the disk. libvirt does not start these VMs at boot; the agent starts those set to start with the node, after the same check. |
+| Grow a disk | Works running or stopped. Disks never shrink. |
+| Snapshots | RBD snapshots of every disk. They hold the disks, not the memory: for a running VM choose **Disks only** (with **Freeze the filesystems first** to quiesce the guest). Schedules take disk-only snapshots by themselves. Names use letters, digits, dots, dashes and underscores. Restoring needs the VM stopped, as for every snapshot. |
+| Backups | Full copies, read from a temporary RBD snapshot taken with the guest's file systems frozen when its agent answers. A schedule set to incremental makes full backups and says why. Restore writes a second image and swaps it in. |
+| Move to another node, drain | No disk is copied: the destination must have the cluster enabled and the pool online. A node without it is refused. Snapshots go with the VM and do not stop the move. |
+| Recover from a failed node (10.1) | On its own disks, on any node with the pool. The new node first breaks the failed node's locks on the images and puts it on the cluster's blocklist, so a VM still alive there cannot write. Snapshots are kept. |
+| Rescue, console, CPU and disk limits, hardware, ISO, firewall, network | As for any VM. The rescue system's own disk is a file on the node. |
+| Add, remove a data disk | In the same RBD pool. |
+| Move a disk to another pool | Refused, to and from RBD. Back the VM up and restore it as a new VM on the other storage. |
+| Clone | Refused for a source on RBD. A VM on a node's own storage can be cloned onto an RBD pool. |
+| Reset a password while stopped | Refused: the node cannot edit an image from outside. Start the VM; the guest agent sets it. An address change made while the VM is off is applied at its next start the same way. |
+| A router (RouterOS) | Created and reinstalled like any VM. A change it does not take through its guest agent cannot be written for its next boot. |
+| Volumes that belong to no VM | Not made in an RBD pool. |
+
+**Health and capacity** are read on the nodes about once a minute, each read
+bounded to seconds so a slow cluster never holds up a node's other work. The
+card shows:
+
+- the cluster's health (`HEALTH_OK`, `HEALTH_WARN`, `HEALTH_ERR`) with the
+  checks behind a warning or an error;
+- raw capacity, and per RBD pool what is stored and what can still be stored
+  (from `ceph df`; shown as not reported when the client may not read it);
+- each node: reaches the cluster, cannot reach it, reaches another cluster,
+  or needs attention (libvirt lost the secret), with the reason.
+
+A critical alert (kind Storage pool) is raised when the cluster reports
+`HEALTH_ERR`, when a node cannot use the cluster, and when a node cannot use
+an RBD pool. A warning is shown on the card only. **Check now** asks every
+node at once and sends the cluster's settings again first, which puts back a
+keyring or a libvirt secret a node lost.
+
+**Edit** changes the name, monitors, client id or key (an empty key keeps the
+stored one). New access settings are sent to the cluster's nodes, and each
+proves them before replacing the ones it has; when the first node to answer
+refuses them, nothing is changed anywhere.
+
+**Disable** on a node's row removes the conf, keyring and libvirt secret from
+that node and takes it out of the cluster's RBD pools. It is refused while a
+VM on that node has a disk on the cluster, by the panel's records and by the
+node's own look at its VMs. **Deleting an RBD pool** removes only its record
+and is refused while a VM or volume is in it. **Unregistering a cluster** is
+refused while it has an RBD pool or is enabled on a node. None of these
+removes anything on the cluster.
 
 ## 5. Networking
 
@@ -938,8 +1048,8 @@ keep. A VM can have several. Customers set their own, within their plan's
 Staff can set **Full backup every N days**: in between, a running VM on a node
 with libvirt 7.2+ and QEMU 6.0+, whose disks are all qcow2 files, copies only
 what changed since the previous backup. Anything else, or a broken chain, gets
-a full backup and the backup says why: an older node, a disk on LVM, a VM that
-was off, a lost checkpoint, disks replaced by a restore, reinstall, snapshot
+a full backup and the backup says why: an older node, a disk on LVM or on Ceph
+RBD, a VM that was off, a lost checkpoint, disks replaced by a restore, reinstall, snapshot
 revert or move, a changed destination, or a chain at its longest (40). Manual
 backups are always full. Retention and allowances never delete a backup that a
 kept incremental one builds on, and such a backup cannot be deleted by hand
@@ -966,7 +1076,8 @@ place, restore as new on another node.
 ### 9.4 Snapshots and images
 
 **Snapshots** are kept by libvirt next to the VM's disk and revert it in
-place; they are not backups. VMs on LVM cannot take them, and a VM with
+place; they are not backups. A VM on Ceph RBD takes RBD snapshots instead:
+its disks without its memory (section 4.8). VMs on LVM cannot take them, and a VM with
 snapshots cannot move.
 
 - A snapshot of a running VM saves its memory too, and pauses it while the
@@ -1071,15 +1182,15 @@ The card lists the node's VMs and, for each, the nodes it could go to and how:
 
 | The VM's disks | What recovery does |
 |---|---|
-| All in a shared pool (section 4.7) that the other node is a healthy member of | Defines the VM there from the panel's record, on the same disk files. Nothing is created or copied. It is started if **Start it** is ticked, which it is for a VM that was running. |
+| All in a shared pool (section 4.7) that the other node is a healthy member of | Defines the VM there from the panel's record, on the same disk files. Nothing is created or copied. It is started if **Start it** is ticked, which it is for a VM that was running. For disks on Ceph RBD (section 4.8) the other node first breaks the failed node's locks on the images and puts it on the cluster's blocklist, the VM's snapshots stay, and its cloud-init disc is written again. |
 | On the failed node's own storage | Restores its newest finished backup onto the other node and starts it. What was written after that backup is not in it. |
 | On the node's own storage, no finished backup | Listed as not recoverable, with the reason. |
 
 Either way it stays **the same VM**: same record, owner, plan, firewall rules,
 limits, port forwards and backups. A NAT VM gets a port block on the new node,
 as in a move. Not carried over, and said in the plan: dedicated CPU cores
-(turn them on again afterwards), snapshots, a virtual TPM's keys, UEFI
-settings, rescue mode, and a disc in the drive.
+(turn them on again afterwards), snapshots (kept only for disks on Ceph RBD), a
+virtual TPM's keys, UEFI settings, rescue mode, and a disc in the drive.
 
 **Addresses.** A VM is only recovered with its address onto a node its address
 pool is available on (section 5.1), floating IPs included. Nodes in different
@@ -1129,7 +1240,9 @@ record is never moved back by itself.
 
 The first minute is the gap: libvirt starts its autostart VMs at boot, before
 the panel can reach the agent. For a VM on shared storage the image lock stops
-the second copy. For a VM restored from a backup, the old copy boots with the
+the second copy. A VM on Ceph RBD is not started by libvirt at all: the agent
+starts it after boot only when no other node has its images open. For a VM
+restored from a backup, the old copy boots with the
 same address. If you can, bring the node back with its VM network unplugged,
 or remove the recovered VMs' files from `/etc/libvirt/qemu/autostart/` (named
 after the VM ids listed on the card) before libvirt starts.
@@ -1158,7 +1271,7 @@ there, alerts are only listed.
 |---|---|
 | Node offline | the agent port stops answering for the set number of checks |
 | Node not reporting | the port answers but the agent sends no figures |
-| Storage pool | a pool passes its alert level (warning) or the critical level |
+| Storage pool | a pool passes its alert level (warning) or the critical level; a shared pool is not usable on a member node; a Ceph cluster reports `HEALTH_ERR`, or a node cannot use it (section 4.8) |
 | Node not filtering guest traffic | a node reports bridge netfilter off |
 | Backup failed | a backup fails with no retry left |
 | Job failed | any other background job fails for good |

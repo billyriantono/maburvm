@@ -10,6 +10,11 @@ const FeatureVMRecovery = "vm_recovery"
 // exist already, so there is no image.
 const AdoptImageRef = "adopt:"
 
+// AdoptSeedKey, in an ADOPT command's metadata, asks the node to write the
+// VM's cloud-init disc again: the VM was made from a template (it had one)
+// and its disks are on RBD, so the disc stayed on the failed node.
+const AdoptSeedKey = "adopt_seed"
+
 // How a VM is recovered from a node that went down.
 const (
 	// RecoveryShared defines the VM on another member of its shared pool, on

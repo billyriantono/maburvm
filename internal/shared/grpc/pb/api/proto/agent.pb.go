@@ -13868,6 +13868,482 @@ func (x *SharedPoolTokenResponse) GetContent() string {
 	return ""
 }
 
+// SetCephClusterRequest enables a cluster on this node: the agent writes a
+// minimal ceph.conf and a keyring (mode 0600) under its own data directory
+// (never /etc/ceph), defines a libvirt secret of usage type ceph whose UUID is
+// cluster_id, and proves the access by reading the cluster's fsid and health.
+// Sent again it replaces the settings, after proving the new ones.
+type SetCephClusterRequest struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	ClusterId string                 `protobuf:"bytes,1,opt,name=cluster_id,json=clusterId,proto3" json:"cluster_id,omitempty"`
+	// monitors are host or host:port.
+	Monitors []string `protobuf:"bytes,2,rep,name=monitors,proto3" json:"monitors,omitempty"`
+	// client_id is the cephx user without "client."; key is its key as
+	// `ceph auth get-key` prints it. The agent never logs the key and never
+	// puts it on a command line.
+	ClientId string `protobuf:"bytes,3,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
+	Key      string `protobuf:"bytes,4,opt,name=key,proto3" json:"key,omitempty"`
+	// remove deletes the conf, the keyring and the libvirt secret. Refused
+	// while a VM defined on this node has a disk that uses the secret.
+	Remove bool `protobuf:"varint,5,opt,name=remove,proto3" json:"remove,omitempty"`
+	// fsid, when set, is the cluster these settings must lead to. A node that
+	// reaches a cluster with another fsid refuses and changes nothing.
+	Fsid          string `protobuf:"bytes,6,opt,name=fsid,proto3" json:"fsid,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetCephClusterRequest) Reset() {
+	*x = SetCephClusterRequest{}
+	mi := &file_api_proto_agent_proto_msgTypes[159]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetCephClusterRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetCephClusterRequest) ProtoMessage() {}
+
+func (x *SetCephClusterRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_agent_proto_msgTypes[159]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetCephClusterRequest.ProtoReflect.Descriptor instead.
+func (*SetCephClusterRequest) Descriptor() ([]byte, []int) {
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{159}
+}
+
+func (x *SetCephClusterRequest) GetClusterId() string {
+	if x != nil {
+		return x.ClusterId
+	}
+	return ""
+}
+
+func (x *SetCephClusterRequest) GetMonitors() []string {
+	if x != nil {
+		return x.Monitors
+	}
+	return nil
+}
+
+func (x *SetCephClusterRequest) GetClientId() string {
+	if x != nil {
+		return x.ClientId
+	}
+	return ""
+}
+
+func (x *SetCephClusterRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *SetCephClusterRequest) GetRemove() bool {
+	if x != nil {
+		return x.Remove
+	}
+	return false
+}
+
+func (x *SetCephClusterRequest) GetFsid() string {
+	if x != nil {
+		return x.Fsid
+	}
+	return ""
+}
+
+type SetCephClusterResponse struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Success bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Error   *ErrorResponse         `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	// fsid is the id of the cluster this node reached.
+	Fsid          string `protobuf:"bytes,3,opt,name=fsid,proto3" json:"fsid,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetCephClusterResponse) Reset() {
+	*x = SetCephClusterResponse{}
+	mi := &file_api_proto_agent_proto_msgTypes[160]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetCephClusterResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetCephClusterResponse) ProtoMessage() {}
+
+func (x *SetCephClusterResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_agent_proto_msgTypes[160]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetCephClusterResponse.ProtoReflect.Descriptor instead.
+func (*SetCephClusterResponse) Descriptor() ([]byte, []int) {
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{160}
+}
+
+func (x *SetCephClusterResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *SetCephClusterResponse) GetError() *ErrorResponse {
+	if x != nil {
+		return x.Error
+	}
+	return nil
+}
+
+func (x *SetCephClusterResponse) GetFsid() string {
+	if x != nil {
+		return x.Fsid
+	}
+	return ""
+}
+
+// CephRBDPool names an RBD pool and, optionally, a namespace in it.
+type CephRBDPool struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Pool          string                 `protobuf:"bytes,1,opt,name=pool,proto3" json:"pool,omitempty"`
+	Namespace     string                 `protobuf:"bytes,2,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CephRBDPool) Reset() {
+	*x = CephRBDPool{}
+	mi := &file_api_proto_agent_proto_msgTypes[161]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CephRBDPool) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CephRBDPool) ProtoMessage() {}
+
+func (x *CephRBDPool) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_agent_proto_msgTypes[161]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CephRBDPool.ProtoReflect.Descriptor instead.
+func (*CephRBDPool) Descriptor() ([]byte, []int) {
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{161}
+}
+
+func (x *CephRBDPool) GetPool() string {
+	if x != nil {
+		return x.Pool
+	}
+	return ""
+}
+
+func (x *CephRBDPool) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+type CephStatusRequest struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	ClusterId string                 `protobuf:"bytes,1,opt,name=cluster_id,json=clusterId,proto3" json:"cluster_id,omitempty"`
+	// pools are checked by listing their images, and measured.
+	Pools         []*CephRBDPool `protobuf:"bytes,2,rep,name=pools,proto3" json:"pools,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CephStatusRequest) Reset() {
+	*x = CephStatusRequest{}
+	mi := &file_api_proto_agent_proto_msgTypes[162]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CephStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CephStatusRequest) ProtoMessage() {}
+
+func (x *CephStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_agent_proto_msgTypes[162]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CephStatusRequest.ProtoReflect.Descriptor instead.
+func (*CephStatusRequest) Descriptor() ([]byte, []int) {
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{162}
+}
+
+func (x *CephStatusRequest) GetClusterId() string {
+	if x != nil {
+		return x.ClusterId
+	}
+	return ""
+}
+
+func (x *CephStatusRequest) GetPools() []*CephRBDPool {
+	if x != nil {
+		return x.Pools
+	}
+	return nil
+}
+
+type CephPoolStatus struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Pool      string                 `protobuf:"bytes,1,opt,name=pool,proto3" json:"pool,omitempty"`
+	Namespace string                 `protobuf:"bytes,2,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	// error is why this node cannot use the pool; "" when it can.
+	Error string `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
+	// measured is false when the client may not read the cluster's usage.
+	// used_bytes is what is stored in the whole pool, available_bytes what can
+	// still be stored there.
+	Measured       bool  `protobuf:"varint,4,opt,name=measured,proto3" json:"measured,omitempty"`
+	UsedBytes      int64 `protobuf:"varint,5,opt,name=used_bytes,json=usedBytes,proto3" json:"used_bytes,omitempty"`
+	AvailableBytes int64 `protobuf:"varint,6,opt,name=available_bytes,json=availableBytes,proto3" json:"available_bytes,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *CephPoolStatus) Reset() {
+	*x = CephPoolStatus{}
+	mi := &file_api_proto_agent_proto_msgTypes[163]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CephPoolStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CephPoolStatus) ProtoMessage() {}
+
+func (x *CephPoolStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_agent_proto_msgTypes[163]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CephPoolStatus.ProtoReflect.Descriptor instead.
+func (*CephPoolStatus) Descriptor() ([]byte, []int) {
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{163}
+}
+
+func (x *CephPoolStatus) GetPool() string {
+	if x != nil {
+		return x.Pool
+	}
+	return ""
+}
+
+func (x *CephPoolStatus) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *CephPoolStatus) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *CephPoolStatus) GetMeasured() bool {
+	if x != nil {
+		return x.Measured
+	}
+	return false
+}
+
+func (x *CephPoolStatus) GetUsedBytes() int64 {
+	if x != nil {
+		return x.UsedBytes
+	}
+	return 0
+}
+
+func (x *CephPoolStatus) GetAvailableBytes() int64 {
+	if x != nil {
+		return x.AvailableBytes
+	}
+	return 0
+}
+
+// CephStatusResponse is the cluster as this node sees it. success false means
+// the node could not reach the cluster (or it is not enabled here); the error
+// says why.
+type CephStatusResponse struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Success bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Error   *ErrorResponse         `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	Fsid    string                 `protobuf:"bytes,3,opt,name=fsid,proto3" json:"fsid,omitempty"`
+	// health is HEALTH_OK, HEALTH_WARN or HEALTH_ERR; health_summary the checks
+	// that are not OK, one per line.
+	Health        string `protobuf:"bytes,4,opt,name=health,proto3" json:"health,omitempty"`
+	HealthSummary string `protobuf:"bytes,5,opt,name=health_summary,json=healthSummary,proto3" json:"health_summary,omitempty"`
+	// Raw capacity of the cluster; all 0 when the client may not read it.
+	TotalBytes     int64             `protobuf:"varint,6,opt,name=total_bytes,json=totalBytes,proto3" json:"total_bytes,omitempty"`
+	UsedBytes      int64             `protobuf:"varint,7,opt,name=used_bytes,json=usedBytes,proto3" json:"used_bytes,omitempty"`
+	AvailableBytes int64             `protobuf:"varint,8,opt,name=available_bytes,json=availableBytes,proto3" json:"available_bytes,omitempty"`
+	Pools          []*CephPoolStatus `protobuf:"bytes,9,rep,name=pools,proto3" json:"pools,omitempty"`
+	// problem is something wrong on this node that does not stop the reading,
+	// such as libvirt no longer holding the cluster's secret.
+	Problem       string `protobuf:"bytes,10,opt,name=problem,proto3" json:"problem,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CephStatusResponse) Reset() {
+	*x = CephStatusResponse{}
+	mi := &file_api_proto_agent_proto_msgTypes[164]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CephStatusResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CephStatusResponse) ProtoMessage() {}
+
+func (x *CephStatusResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_agent_proto_msgTypes[164]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CephStatusResponse.ProtoReflect.Descriptor instead.
+func (*CephStatusResponse) Descriptor() ([]byte, []int) {
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{164}
+}
+
+func (x *CephStatusResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *CephStatusResponse) GetError() *ErrorResponse {
+	if x != nil {
+		return x.Error
+	}
+	return nil
+}
+
+func (x *CephStatusResponse) GetFsid() string {
+	if x != nil {
+		return x.Fsid
+	}
+	return ""
+}
+
+func (x *CephStatusResponse) GetHealth() string {
+	if x != nil {
+		return x.Health
+	}
+	return ""
+}
+
+func (x *CephStatusResponse) GetHealthSummary() string {
+	if x != nil {
+		return x.HealthSummary
+	}
+	return ""
+}
+
+func (x *CephStatusResponse) GetTotalBytes() int64 {
+	if x != nil {
+		return x.TotalBytes
+	}
+	return 0
+}
+
+func (x *CephStatusResponse) GetUsedBytes() int64 {
+	if x != nil {
+		return x.UsedBytes
+	}
+	return 0
+}
+
+func (x *CephStatusResponse) GetAvailableBytes() int64 {
+	if x != nil {
+		return x.AvailableBytes
+	}
+	return 0
+}
+
+func (x *CephStatusResponse) GetPools() []*CephPoolStatus {
+	if x != nil {
+		return x.Pools
+	}
+	return nil
+}
+
+func (x *CephStatusResponse) GetProblem() string {
+	if x != nil {
+		return x.Problem
+	}
+	return ""
+}
+
 type SetFencedVMsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// vm_ids is the whole list; a VM left out is no longer fenced.
@@ -13878,7 +14354,7 @@ type SetFencedVMsRequest struct {
 
 func (x *SetFencedVMsRequest) Reset() {
 	*x = SetFencedVMsRequest{}
-	mi := &file_api_proto_agent_proto_msgTypes[159]
+	mi := &file_api_proto_agent_proto_msgTypes[165]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13890,7 +14366,7 @@ func (x *SetFencedVMsRequest) String() string {
 func (*SetFencedVMsRequest) ProtoMessage() {}
 
 func (x *SetFencedVMsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_agent_proto_msgTypes[159]
+	mi := &file_api_proto_agent_proto_msgTypes[165]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13903,7 +14379,7 @@ func (x *SetFencedVMsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetFencedVMsRequest.ProtoReflect.Descriptor instead.
 func (*SetFencedVMsRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_agent_proto_rawDescGZIP(), []int{159}
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{165}
 }
 
 func (x *SetFencedVMsRequest) GetVmIds() []string {
@@ -13928,7 +14404,7 @@ type FencedVM struct {
 
 func (x *FencedVM) Reset() {
 	*x = FencedVM{}
-	mi := &file_api_proto_agent_proto_msgTypes[160]
+	mi := &file_api_proto_agent_proto_msgTypes[166]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13940,7 +14416,7 @@ func (x *FencedVM) String() string {
 func (*FencedVM) ProtoMessage() {}
 
 func (x *FencedVM) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_agent_proto_msgTypes[160]
+	mi := &file_api_proto_agent_proto_msgTypes[166]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13953,7 +14429,7 @@ func (x *FencedVM) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FencedVM.ProtoReflect.Descriptor instead.
 func (*FencedVM) Descriptor() ([]byte, []int) {
-	return file_api_proto_agent_proto_rawDescGZIP(), []int{160}
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{166}
 }
 
 func (x *FencedVM) GetVmId() string {
@@ -13997,7 +14473,7 @@ type FencedDisk struct {
 
 func (x *FencedDisk) Reset() {
 	*x = FencedDisk{}
-	mi := &file_api_proto_agent_proto_msgTypes[161]
+	mi := &file_api_proto_agent_proto_msgTypes[167]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14009,7 +14485,7 @@ func (x *FencedDisk) String() string {
 func (*FencedDisk) ProtoMessage() {}
 
 func (x *FencedDisk) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_agent_proto_msgTypes[161]
+	mi := &file_api_proto_agent_proto_msgTypes[167]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14022,7 +14498,7 @@ func (x *FencedDisk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FencedDisk.ProtoReflect.Descriptor instead.
 func (*FencedDisk) Descriptor() ([]byte, []int) {
-	return file_api_proto_agent_proto_rawDescGZIP(), []int{161}
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{167}
 }
 
 func (x *FencedDisk) GetTarget() string {
@@ -14064,7 +14540,7 @@ type SetFencedVMsResponse struct {
 
 func (x *SetFencedVMsResponse) Reset() {
 	*x = SetFencedVMsResponse{}
-	mi := &file_api_proto_agent_proto_msgTypes[162]
+	mi := &file_api_proto_agent_proto_msgTypes[168]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14076,7 +14552,7 @@ func (x *SetFencedVMsResponse) String() string {
 func (*SetFencedVMsResponse) ProtoMessage() {}
 
 func (x *SetFencedVMsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_agent_proto_msgTypes[162]
+	mi := &file_api_proto_agent_proto_msgTypes[168]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14089,7 +14565,7 @@ func (x *SetFencedVMsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetFencedVMsResponse.ProtoReflect.Descriptor instead.
 func (*SetFencedVMsResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_agent_proto_rawDescGZIP(), []int{162}
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{168}
 }
 
 func (x *SetFencedVMsResponse) GetSuccess() bool {
@@ -14126,7 +14602,7 @@ type RemoveFencedVMRequest struct {
 
 func (x *RemoveFencedVMRequest) Reset() {
 	*x = RemoveFencedVMRequest{}
-	mi := &file_api_proto_agent_proto_msgTypes[163]
+	mi := &file_api_proto_agent_proto_msgTypes[169]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14138,7 +14614,7 @@ func (x *RemoveFencedVMRequest) String() string {
 func (*RemoveFencedVMRequest) ProtoMessage() {}
 
 func (x *RemoveFencedVMRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_agent_proto_msgTypes[163]
+	mi := &file_api_proto_agent_proto_msgTypes[169]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14151,7 +14627,7 @@ func (x *RemoveFencedVMRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveFencedVMRequest.ProtoReflect.Descriptor instead.
 func (*RemoveFencedVMRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_agent_proto_rawDescGZIP(), []int{163}
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{169}
 }
 
 func (x *RemoveFencedVMRequest) GetVmId() string {
@@ -14187,7 +14663,7 @@ type RemoveFencedVMResponse struct {
 
 func (x *RemoveFencedVMResponse) Reset() {
 	*x = RemoveFencedVMResponse{}
-	mi := &file_api_proto_agent_proto_msgTypes[164]
+	mi := &file_api_proto_agent_proto_msgTypes[170]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14199,7 +14675,7 @@ func (x *RemoveFencedVMResponse) String() string {
 func (*RemoveFencedVMResponse) ProtoMessage() {}
 
 func (x *RemoveFencedVMResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_agent_proto_msgTypes[164]
+	mi := &file_api_proto_agent_proto_msgTypes[170]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14212,7 +14688,7 @@ func (x *RemoveFencedVMResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveFencedVMResponse.ProtoReflect.Descriptor instead.
 func (*RemoveFencedVMResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_agent_proto_rawDescGZIP(), []int{164}
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{170}
 }
 
 func (x *RemoveFencedVMResponse) GetSuccess() bool {
@@ -15371,7 +15847,48 @@ const file_api_proto_agent_proto_rawDesc = "" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12*\n" +
 	"\x05error\x18\x02 \x01(\v2\x14.agent.ErrorResponseR\x05error\x12\x16\n" +
 	"\x06exists\x18\x03 \x01(\bR\x06exists\x12\x18\n" +
-	"\acontent\x18\x04 \x01(\tR\acontent\",\n" +
+	"\acontent\x18\x04 \x01(\tR\acontent\"\xad\x01\n" +
+	"\x15SetCephClusterRequest\x12\x1d\n" +
+	"\n" +
+	"cluster_id\x18\x01 \x01(\tR\tclusterId\x12\x1a\n" +
+	"\bmonitors\x18\x02 \x03(\tR\bmonitors\x12\x1b\n" +
+	"\tclient_id\x18\x03 \x01(\tR\bclientId\x12\x10\n" +
+	"\x03key\x18\x04 \x01(\tR\x03key\x12\x16\n" +
+	"\x06remove\x18\x05 \x01(\bR\x06remove\x12\x12\n" +
+	"\x04fsid\x18\x06 \x01(\tR\x04fsid\"r\n" +
+	"\x16SetCephClusterResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12*\n" +
+	"\x05error\x18\x02 \x01(\v2\x14.agent.ErrorResponseR\x05error\x12\x12\n" +
+	"\x04fsid\x18\x03 \x01(\tR\x04fsid\"?\n" +
+	"\vCephRBDPool\x12\x12\n" +
+	"\x04pool\x18\x01 \x01(\tR\x04pool\x12\x1c\n" +
+	"\tnamespace\x18\x02 \x01(\tR\tnamespace\"\\\n" +
+	"\x11CephStatusRequest\x12\x1d\n" +
+	"\n" +
+	"cluster_id\x18\x01 \x01(\tR\tclusterId\x12(\n" +
+	"\x05pools\x18\x02 \x03(\v2\x12.agent.CephRBDPoolR\x05pools\"\xbc\x01\n" +
+	"\x0eCephPoolStatus\x12\x12\n" +
+	"\x04pool\x18\x01 \x01(\tR\x04pool\x12\x1c\n" +
+	"\tnamespace\x18\x02 \x01(\tR\tnamespace\x12\x14\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\x12\x1a\n" +
+	"\bmeasured\x18\x04 \x01(\bR\bmeasured\x12\x1d\n" +
+	"\n" +
+	"used_bytes\x18\x05 \x01(\x03R\tusedBytes\x12'\n" +
+	"\x0favailable_bytes\x18\x06 \x01(\x03R\x0eavailableBytes\"\xdd\x02\n" +
+	"\x12CephStatusResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12*\n" +
+	"\x05error\x18\x02 \x01(\v2\x14.agent.ErrorResponseR\x05error\x12\x12\n" +
+	"\x04fsid\x18\x03 \x01(\tR\x04fsid\x12\x16\n" +
+	"\x06health\x18\x04 \x01(\tR\x06health\x12%\n" +
+	"\x0ehealth_summary\x18\x05 \x01(\tR\rhealthSummary\x12\x1f\n" +
+	"\vtotal_bytes\x18\x06 \x01(\x03R\n" +
+	"totalBytes\x12\x1d\n" +
+	"\n" +
+	"used_bytes\x18\a \x01(\x03R\tusedBytes\x12'\n" +
+	"\x0favailable_bytes\x18\b \x01(\x03R\x0eavailableBytes\x12+\n" +
+	"\x05pools\x18\t \x03(\v2\x15.agent.CephPoolStatusR\x05pools\x12\x18\n" +
+	"\aproblem\x18\n" +
+	" \x01(\tR\aproblem\",\n" +
 	"\x13SetFencedVMsRequest\x12\x15\n" +
 	"\x06vm_ids\x18\x01 \x03(\tR\x05vmIds\"x\n" +
 	"\bFencedVM\x12\x13\n" +
@@ -15498,7 +16015,7 @@ const file_api_proto_agent_proto_rawDesc = "" +
 	"\x0fNIC_ACTION_LIST\x10\x01\x12\x15\n" +
 	"\x11NIC_ACTION_ATTACH\x10\x02\x12\x15\n" +
 	"\x11NIC_ACTION_DETACH\x10\x03\x12\x16\n" +
-	"\x12NIC_ACTION_SET_MAC\x10\x042\x8e\"\n" +
+	"\x12NIC_ACTION_SET_MAC\x10\x042\xa0#\n" +
 	"\tNodeAgent\x12G\n" +
 	"\fRegisterNode\x12\x1a.agent.RegisterNodeRequest\x1a\x1b.agent.RegisterNodeResponse\x12B\n" +
 	"\tHeartbeat\x12\x17.agent.HeartbeatRequest\x1a\x18.agent.HeartbeatResponse(\x010\x01\x12E\n" +
@@ -15556,7 +16073,10 @@ const file_api_proto_agent_proto_rawDesc = "" +
 	"\x0fListOrphanDisks\x12\x1d.agent.ListOrphanDisksRequest\x1a\x1e.agent.ListOrphanDisksResponse\x12S\n" +
 	"\x10DeleteOrphanDisk\x12\x1e.agent.DeleteOrphanDiskRequest\x1a\x1f.agent.DeleteOrphanDiskResponse\x12J\n" +
 	"\rSetSharedPool\x12\x1b.agent.SetSharedPoolRequest\x1a\x1c.agent.SetSharedPoolResponse\x12P\n" +
-	"\x0fSharedPoolToken\x12\x1d.agent.SharedPoolTokenRequest\x1a\x1e.agent.SharedPoolTokenResponse\x12G\n" +
+	"\x0fSharedPoolToken\x12\x1d.agent.SharedPoolTokenRequest\x1a\x1e.agent.SharedPoolTokenResponse\x12M\n" +
+	"\x0eSetCephCluster\x12\x1c.agent.SetCephClusterRequest\x1a\x1d.agent.SetCephClusterResponse\x12A\n" +
+	"\n" +
+	"CephStatus\x12\x18.agent.CephStatusRequest\x1a\x19.agent.CephStatusResponse\x12G\n" +
 	"\fSetFencedVMs\x12\x1a.agent.SetFencedVMsRequest\x1a\x1b.agent.SetFencedVMsResponse\x12M\n" +
 	"\x0eRemoveFencedVM\x12\x1c.agent.RemoveFencedVMRequest\x1a\x1d.agent.RemoveFencedVMResponse\x128\n" +
 	"\bPutImage\x12\x11.agent.ImageChunk\x1a\x17.agent.PutImageResponse(\x01\x12G\n" +
@@ -15576,7 +16096,7 @@ func file_api_proto_agent_proto_rawDescGZIP() []byte {
 }
 
 var file_api_proto_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 12)
-var file_api_proto_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 170)
+var file_api_proto_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 176)
 var file_api_proto_agent_proto_goTypes = []any{
 	(VMCommandType)(0),                     // 0: agent.VMCommandType
 	(DiskStorageDisposition)(0),            // 1: agent.DiskStorageDisposition
@@ -15749,32 +16269,38 @@ var file_api_proto_agent_proto_goTypes = []any{
 	(*SetSharedPoolResponse)(nil),          // 168: agent.SetSharedPoolResponse
 	(*SharedPoolTokenRequest)(nil),         // 169: agent.SharedPoolTokenRequest
 	(*SharedPoolTokenResponse)(nil),        // 170: agent.SharedPoolTokenResponse
-	(*SetFencedVMsRequest)(nil),            // 171: agent.SetFencedVMsRequest
-	(*FencedVM)(nil),                       // 172: agent.FencedVM
-	(*FencedDisk)(nil),                     // 173: agent.FencedDisk
-	(*SetFencedVMsResponse)(nil),           // 174: agent.SetFencedVMsResponse
-	(*RemoveFencedVMRequest)(nil),          // 175: agent.RemoveFencedVMRequest
-	(*RemoveFencedVMResponse)(nil),         // 176: agent.RemoveFencedVMResponse
-	nil,                                    // 177: agent.RegisterNodeRequest.LabelsEntry
-	nil,                                    // 178: agent.VMConfig.MetadataEntry
-	nil,                                    // 179: agent.ErrorResponse.DetailsEntry
-	nil,                                    // 180: agent.GetNodeInfoResponse.AgentSettingsEntry
-	nil,                                    // 181: agent.PrepareMigrationTargetResponse.PathsEntry
-	(*durationpb.Duration)(nil),            // 182: google.protobuf.Duration
-	(*timestamppb.Timestamp)(nil),          // 183: google.protobuf.Timestamp
+	(*SetCephClusterRequest)(nil),          // 171: agent.SetCephClusterRequest
+	(*SetCephClusterResponse)(nil),         // 172: agent.SetCephClusterResponse
+	(*CephRBDPool)(nil),                    // 173: agent.CephRBDPool
+	(*CephStatusRequest)(nil),              // 174: agent.CephStatusRequest
+	(*CephPoolStatus)(nil),                 // 175: agent.CephPoolStatus
+	(*CephStatusResponse)(nil),             // 176: agent.CephStatusResponse
+	(*SetFencedVMsRequest)(nil),            // 177: agent.SetFencedVMsRequest
+	(*FencedVM)(nil),                       // 178: agent.FencedVM
+	(*FencedDisk)(nil),                     // 179: agent.FencedDisk
+	(*SetFencedVMsResponse)(nil),           // 180: agent.SetFencedVMsResponse
+	(*RemoveFencedVMRequest)(nil),          // 181: agent.RemoveFencedVMRequest
+	(*RemoveFencedVMResponse)(nil),         // 182: agent.RemoveFencedVMResponse
+	nil,                                    // 183: agent.RegisterNodeRequest.LabelsEntry
+	nil,                                    // 184: agent.VMConfig.MetadataEntry
+	nil,                                    // 185: agent.ErrorResponse.DetailsEntry
+	nil,                                    // 186: agent.GetNodeInfoResponse.AgentSettingsEntry
+	nil,                                    // 187: agent.PrepareMigrationTargetResponse.PathsEntry
+	(*durationpb.Duration)(nil),            // 188: google.protobuf.Duration
+	(*timestamppb.Timestamp)(nil),          // 189: google.protobuf.Timestamp
 }
 var file_api_proto_agent_proto_depIdxs = []int32{
 	22,  // 0: agent.RegisterNodeRequest.total_resources:type_name -> agent.VMResources
-	177, // 1: agent.RegisterNodeRequest.labels:type_name -> agent.RegisterNodeRequest.LabelsEntry
-	182, // 2: agent.RegisterNodeResponse.refresh_interval:type_name -> google.protobuf.Duration
-	182, // 3: agent.RegisterNodeResponse.metrics_interval:type_name -> google.protobuf.Duration
-	183, // 4: agent.HeartbeatRequest.timestamp:type_name -> google.protobuf.Timestamp
+	183, // 1: agent.RegisterNodeRequest.labels:type_name -> agent.RegisterNodeRequest.LabelsEntry
+	188, // 2: agent.RegisterNodeResponse.refresh_interval:type_name -> google.protobuf.Duration
+	188, // 3: agent.RegisterNodeResponse.metrics_interval:type_name -> google.protobuf.Duration
+	189, // 4: agent.HeartbeatRequest.timestamp:type_name -> google.protobuf.Timestamp
 	22,  // 5: agent.HeartbeatRequest.available_resources:type_name -> agent.VMResources
 	21,  // 6: agent.HeartbeatRequest.system_load:type_name -> agent.SystemLoad
 	19,  // 7: agent.HeartbeatRequest.vm_bandwidth_usage:type_name -> agent.VMBandwidthReport
 	16,  // 8: agent.SetNullRouteResponse.null_routes:type_name -> agent.NullRoute
 	60,  // 9: agent.SetNullRouteResponse.error:type_name -> agent.ErrorResponse
-	183, // 10: agent.HeartbeatResponse.timestamp:type_name -> google.protobuf.Timestamp
+	189, // 10: agent.HeartbeatResponse.timestamp:type_name -> google.protobuf.Timestamp
 	23,  // 11: agent.VMResources.limits:type_name -> agent.VMLimits
 	23,  // 12: agent.SetVMLimitsRequest.limits:type_name -> agent.VMLimits
 	25,  // 13: agent.SetVMHardwareRequest.hardware:type_name -> agent.VMHardware
@@ -15794,16 +16320,16 @@ var file_api_proto_agent_proto_depIdxs = []int32{
 	22,  // 27: agent.VMConfig.resources:type_name -> agent.VMResources
 	48,  // 28: agent.VMConfig.network_config:type_name -> agent.VMNetworkConfig
 	56,  // 29: agent.VMConfig.storage_config:type_name -> agent.StorageConfig
-	178, // 30: agent.VMConfig.metadata:type_name -> agent.VMConfig.MetadataEntry
+	184, // 30: agent.VMConfig.metadata:type_name -> agent.VMConfig.MetadataEntry
 	68,  // 31: agent.VMConfig.restore_disks:type_name -> agent.BackupDiskFile
 	69,  // 32: agent.VMConfig.restore_layers:type_name -> agent.BackupLayer
 	25,  // 33: agent.VMConfig.hardware:type_name -> agent.VMHardware
 	2,   // 34: agent.VMStatusResponse.state:type_name -> agent.VMState
 	37,  // 35: agent.VMStatusResponse.current_resources:type_name -> agent.VMResourceUsage
-	183, // 36: agent.VMStatusResponse.last_state_change:type_name -> google.protobuf.Timestamp
+	189, // 36: agent.VMStatusResponse.last_state_change:type_name -> google.protobuf.Timestamp
 	22,  // 37: agent.VMStatusResponse.configured_resources:type_name -> agent.VMResources
 	3,   // 38: agent.VMMetricsRequest.metric_types:type_name -> agent.MetricType
-	183, // 39: agent.VMMetricsResponse.timestamp:type_name -> google.protobuf.Timestamp
+	189, // 39: agent.VMMetricsResponse.timestamp:type_name -> google.protobuf.Timestamp
 	40,  // 40: agent.VMMetricsResponse.cpu:type_name -> agent.CPUMetrics
 	41,  // 41: agent.VMMetricsResponse.memory:type_name -> agent.MemoryMetrics
 	42,  // 42: agent.VMMetricsResponse.disk:type_name -> agent.DiskMetrics
@@ -15814,7 +16340,7 @@ var file_api_proto_agent_proto_depIdxs = []int32{
 	47,  // 47: agent.SnapshotResponse.snapshot:type_name -> agent.SnapshotInfo
 	47,  // 48: agent.SnapshotResponse.snapshots:type_name -> agent.SnapshotInfo
 	60,  // 49: agent.SnapshotResponse.error:type_name -> agent.ErrorResponse
-	183, // 50: agent.SnapshotInfo.created_at:type_name -> google.protobuf.Timestamp
+	189, // 50: agent.SnapshotInfo.created_at:type_name -> google.protobuf.Timestamp
 	2,   // 51: agent.SnapshotInfo.vm_state:type_name -> agent.VMState
 	51,  // 52: agent.VMNetworkConfig.interfaces:type_name -> agent.NetworkInterface
 	52,  // 53: agent.VMNetworkConfig.firewall_rules:type_name -> agent.FirewallRule
@@ -15831,13 +16357,13 @@ var file_api_proto_agent_proto_depIdxs = []int32{
 	57,  // 64: agent.StorageConfig.additional_volumes:type_name -> agent.DiskConfig
 	8,   // 65: agent.DiskConfig.format:type_name -> agent.DiskFormat
 	9,   // 66: agent.DiskConfig.backend:type_name -> agent.StorageBackend
-	183, // 67: agent.VNCProxyResponse.expires_at:type_name -> google.protobuf.Timestamp
+	189, // 67: agent.VNCProxyResponse.expires_at:type_name -> google.protobuf.Timestamp
 	60,  // 68: agent.VNCProxyResponse.error:type_name -> agent.ErrorResponse
 	10,  // 69: agent.ErrorResponse.code:type_name -> agent.ErrorCode
-	179, // 70: agent.ErrorResponse.details:type_name -> agent.ErrorResponse.DetailsEntry
+	185, // 70: agent.ErrorResponse.details:type_name -> agent.ErrorResponse.DetailsEntry
 	63,  // 71: agent.GetNodeInfoResponse.os_info:type_name -> agent.OSInfo
 	64,  // 72: agent.GetNodeInfoResponse.cpu_info:type_name -> agent.CPUInfo
-	180, // 73: agent.GetNodeInfoResponse.agent_settings:type_name -> agent.GetNodeInfoResponse.AgentSettingsEntry
+	186, // 73: agent.GetNodeInfoResponse.agent_settings:type_name -> agent.GetNodeInfoResponse.AgentSettingsEntry
 	60,  // 74: agent.GetNodeInfoResponse.error:type_name -> agent.ErrorResponse
 	60,  // 75: agent.DiskImportResponse.error:type_name -> agent.ErrorResponse
 	72,  // 76: agent.BackupDiskRequest.object_store:type_name -> agent.ObjectStore
@@ -15880,7 +16406,7 @@ var file_api_proto_agent_proto_depIdxs = []int32{
 	109, // 113: agent.ScannedVM.networks:type_name -> agent.ScannedNetwork
 	60,  // 114: agent.FloatingIPResponse.error:type_name -> agent.ErrorResponse
 	60,  // 115: agent.VPCResponse.error:type_name -> agent.ErrorResponse
-	183, // 116: agent.ExportProgress.started_at:type_name -> google.protobuf.Timestamp
+	189, // 116: agent.ExportProgress.started_at:type_name -> google.protobuf.Timestamp
 	118, // 117: agent.GetExportProgressResponse.exports:type_name -> agent.ExportProgress
 	60,  // 118: agent.GetExportProgressResponse.error:type_name -> agent.ErrorResponse
 	60,  // 119: agent.SetConsoleAccessResponse.error:type_name -> agent.ErrorResponse
@@ -15894,7 +16420,7 @@ var file_api_proto_agent_proto_depIdxs = []int32{
 	60,  // 127: agent.SetMigrationPeersResponse.error:type_name -> agent.ErrorResponse
 	136, // 128: agent.PrepareMigrationTargetRequest.disks:type_name -> agent.MigrationTargetDisk
 	60,  // 129: agent.PrepareMigrationTargetResponse.error:type_name -> agent.ErrorResponse
-	181, // 130: agent.PrepareMigrationTargetResponse.paths:type_name -> agent.PrepareMigrationTargetResponse.PathsEntry
+	187, // 130: agent.PrepareMigrationTargetResponse.paths:type_name -> agent.PrepareMigrationTargetResponse.PathsEntry
 	129, // 131: agent.PullMigratedVMRequest.disks:type_name -> agent.MigrationDiskMap
 	60,  // 132: agent.PullMigratedVMResponse.error:type_name -> agent.ErrorResponse
 	60,  // 133: agent.AbortMigrationResponse.error:type_name -> agent.ErrorResponse
@@ -15919,130 +16445,138 @@ var file_api_proto_agent_proto_depIdxs = []int32{
 	165, // 152: agent.SetVLANBridgesResponse.bridges:type_name -> agent.VLANBridgeStatus
 	60,  // 153: agent.SetSharedPoolResponse.error:type_name -> agent.ErrorResponse
 	60,  // 154: agent.SharedPoolTokenResponse.error:type_name -> agent.ErrorResponse
-	173, // 155: agent.FencedVM.disks:type_name -> agent.FencedDisk
-	60,  // 156: agent.SetFencedVMsResponse.error:type_name -> agent.ErrorResponse
-	172, // 157: agent.SetFencedVMsResponse.vms:type_name -> agent.FencedVM
-	31,  // 158: agent.RemoveFencedVMRequest.lvm_pools:type_name -> agent.LVMPool
-	60,  // 159: agent.RemoveFencedVMResponse.error:type_name -> agent.ErrorResponse
-	12,  // 160: agent.NodeAgent.RegisterNode:input_type -> agent.RegisterNodeRequest
-	14,  // 161: agent.NodeAgent.Heartbeat:input_type -> agent.HeartbeatRequest
-	29,  // 162: agent.NodeAgent.ExecuteVMCommand:input_type -> agent.VMCommandRequest
-	35,  // 163: agent.NodeAgent.GetVMStatus:input_type -> agent.VMStatusRequest
-	38,  // 164: agent.NodeAgent.StreamVMMetrics:input_type -> agent.VMMetricsRequest
-	45,  // 165: agent.NodeAgent.CreateSnapshot:input_type -> agent.SnapshotRequest
-	54,  // 166: agent.NodeAgent.ApplyNetworkConfig:input_type -> agent.NetworkConfigRequest
-	58,  // 167: agent.NodeAgent.StartVNCProxy:input_type -> agent.VNCProxyRequest
-	61,  // 168: agent.NodeAgent.GetNodeInfo:input_type -> agent.GetNodeInfoRequest
-	65,  // 169: agent.NodeAgent.ImportDisk:input_type -> agent.DiskImportRequest
-	67,  // 170: agent.NodeAgent.BackupDisk:input_type -> agent.BackupDiskRequest
-	71,  // 171: agent.NodeAgent.RestoreDisk:input_type -> agent.RestoreDiskRequest
-	77,  // 172: agent.NodeAgent.TestObjectStore:input_type -> agent.TestObjectStoreRequest
-	75,  // 173: agent.NodeAgent.DeleteBackupFiles:input_type -> agent.DeleteBackupFilesRequest
-	101, // 174: agent.NodeAgent.GetLiveMetrics:input_type -> agent.GetLiveMetricsRequest
-	105, // 175: agent.NodeAgent.ScanVMs:input_type -> agent.ScanVMsRequest
-	80,  // 176: agent.NodeAgent.CreateStorageVolume:input_type -> agent.CreateStorageVolumeRequest
-	82,  // 177: agent.NodeAgent.DeleteStorageVolume:input_type -> agent.DeleteStorageVolumeRequest
-	96,  // 178: agent.NodeAgent.GetStorageReport:input_type -> agent.GetStorageReportRequest
-	92,  // 179: agent.NodeAgent.MigrateVM:input_type -> agent.MigrateVMRequest
-	94,  // 180: agent.NodeAgent.SyncTemplate:input_type -> agent.SyncTemplateRequest
-	84,  // 181: agent.NodeAgent.AttachDisk:input_type -> agent.AttachDiskRequest
-	86,  // 182: agent.NodeAgent.DetachDisk:input_type -> agent.DetachDiskRequest
-	88,  // 183: agent.NodeAgent.DefineNetwork:input_type -> agent.DefineNetworkRequest
-	90,  // 184: agent.NodeAgent.UndefineNetwork:input_type -> agent.UndefineNetworkRequest
-	110, // 185: agent.NodeAgent.ProbeIPs:input_type -> agent.ProbeIPsRequest
-	112, // 186: agent.NodeAgent.ConfigureFloatingIP:input_type -> agent.FloatingIPRequest
-	114, // 187: agent.NodeAgent.ConfigureVPC:input_type -> agent.VPCRequest
-	116, // 188: agent.NodeAgent.SetQuarantine:input_type -> agent.SetQuarantineRequest
-	120, // 189: agent.NodeAgent.SetConsoleAccess:input_type -> agent.SetConsoleAccessRequest
-	121, // 190: agent.NodeAgent.ConsoleStream:input_type -> agent.ConsoleData
-	117, // 191: agent.NodeAgent.GetExportProgress:input_type -> agent.GetExportProgressRequest
-	103, // 192: agent.NodeAgent.GetGuestConnections:input_type -> agent.GetGuestConnectionsRequest
-	17,  // 193: agent.NodeAgent.SetNullRoute:input_type -> agent.SetNullRouteRequest
-	124, // 194: agent.NodeAgent.UpdateAgent:input_type -> agent.AgentUpdateChunk
-	24,  // 195: agent.NodeAgent.SetVMLimits:input_type -> agent.SetVMLimitsRequest
-	26,  // 196: agent.NodeAgent.SetVMHardware:input_type -> agent.SetVMHardwareRequest
-	126, // 197: agent.NodeAgent.GetPreflight:input_type -> agent.PreflightRequest
-	130, // 198: agent.NodeAgent.GetMigrationInfo:input_type -> agent.GetMigrationInfoRequest
-	134, // 199: agent.NodeAgent.SetMigrationPeers:input_type -> agent.SetMigrationPeersRequest
-	137, // 200: agent.NodeAgent.PrepareMigrationTarget:input_type -> agent.PrepareMigrationTargetRequest
-	139, // 201: agent.NodeAgent.PullMigratedVM:input_type -> agent.PullMigratedVMRequest
-	141, // 202: agent.NodeAgent.GetMigrationProgress:input_type -> agent.GetMigrationProgressRequest
-	143, // 203: agent.NodeAgent.AbortMigration:input_type -> agent.AbortMigrationRequest
-	145, // 204: agent.NodeAgent.FinishMigrationTarget:input_type -> agent.FinishMigrationTargetRequest
-	147, // 205: agent.NodeAgent.FinishMigrationSource:input_type -> agent.FinishMigrationSourceRequest
-	149, // 206: agent.NodeAgent.ResizeVMDisk:input_type -> agent.ResizeVMDiskRequest
-	151, // 207: agent.NodeAgent.MoveVMDisk:input_type -> agent.MoveVMDiskRequest
-	153, // 208: agent.NodeAgent.ListOrphanDisks:input_type -> agent.ListOrphanDisksRequest
-	156, // 209: agent.NodeAgent.DeleteOrphanDisk:input_type -> agent.DeleteOrphanDiskRequest
-	167, // 210: agent.NodeAgent.SetSharedPool:input_type -> agent.SetSharedPoolRequest
-	169, // 211: agent.NodeAgent.SharedPoolToken:input_type -> agent.SharedPoolTokenRequest
-	171, // 212: agent.NodeAgent.SetFencedVMs:input_type -> agent.SetFencedVMsRequest
-	175, // 213: agent.NodeAgent.RemoveFencedVM:input_type -> agent.RemoveFencedVMRequest
-	158, // 214: agent.NodeAgent.PutImage:input_type -> agent.ImageChunk
-	160, // 215: agent.NodeAgent.ConfigureNIC:input_type -> agent.ConfigureNICRequest
-	164, // 216: agent.NodeAgent.SetVLANBridges:input_type -> agent.SetVLANBridgesRequest
-	13,  // 217: agent.NodeAgent.RegisterNode:output_type -> agent.RegisterNodeResponse
-	20,  // 218: agent.NodeAgent.Heartbeat:output_type -> agent.HeartbeatResponse
-	33,  // 219: agent.NodeAgent.ExecuteVMCommand:output_type -> agent.VMCommandResponse
-	36,  // 220: agent.NodeAgent.GetVMStatus:output_type -> agent.VMStatusResponse
-	39,  // 221: agent.NodeAgent.StreamVMMetrics:output_type -> agent.VMMetricsResponse
-	46,  // 222: agent.NodeAgent.CreateSnapshot:output_type -> agent.SnapshotResponse
-	55,  // 223: agent.NodeAgent.ApplyNetworkConfig:output_type -> agent.NetworkConfigResponse
-	59,  // 224: agent.NodeAgent.StartVNCProxy:output_type -> agent.VNCProxyResponse
-	62,  // 225: agent.NodeAgent.GetNodeInfo:output_type -> agent.GetNodeInfoResponse
-	66,  // 226: agent.NodeAgent.ImportDisk:output_type -> agent.DiskImportResponse
-	70,  // 227: agent.NodeAgent.BackupDisk:output_type -> agent.BackupDiskResponse
-	79,  // 228: agent.NodeAgent.RestoreDisk:output_type -> agent.RestoreDiskResponse
-	78,  // 229: agent.NodeAgent.TestObjectStore:output_type -> agent.TestObjectStoreResponse
-	76,  // 230: agent.NodeAgent.DeleteBackupFiles:output_type -> agent.DeleteBackupFilesResponse
-	102, // 231: agent.NodeAgent.GetLiveMetrics:output_type -> agent.GetLiveMetricsResponse
-	106, // 232: agent.NodeAgent.ScanVMs:output_type -> agent.ScanVMsResponse
-	81,  // 233: agent.NodeAgent.CreateStorageVolume:output_type -> agent.CreateStorageVolumeResponse
-	83,  // 234: agent.NodeAgent.DeleteStorageVolume:output_type -> agent.DeleteStorageVolumeResponse
-	100, // 235: agent.NodeAgent.GetStorageReport:output_type -> agent.GetStorageReportResponse
-	93,  // 236: agent.NodeAgent.MigrateVM:output_type -> agent.MigrateVMResponse
-	95,  // 237: agent.NodeAgent.SyncTemplate:output_type -> agent.SyncTemplateResponse
-	85,  // 238: agent.NodeAgent.AttachDisk:output_type -> agent.AttachDiskResponse
-	87,  // 239: agent.NodeAgent.DetachDisk:output_type -> agent.DetachDiskResponse
-	89,  // 240: agent.NodeAgent.DefineNetwork:output_type -> agent.DefineNetworkResponse
-	91,  // 241: agent.NodeAgent.UndefineNetwork:output_type -> agent.UndefineNetworkResponse
-	111, // 242: agent.NodeAgent.ProbeIPs:output_type -> agent.ProbeIPsResponse
-	113, // 243: agent.NodeAgent.ConfigureFloatingIP:output_type -> agent.FloatingIPResponse
-	115, // 244: agent.NodeAgent.ConfigureVPC:output_type -> agent.VPCResponse
-	123, // 245: agent.NodeAgent.SetQuarantine:output_type -> agent.SetQuarantineResponse
-	122, // 246: agent.NodeAgent.SetConsoleAccess:output_type -> agent.SetConsoleAccessResponse
-	121, // 247: agent.NodeAgent.ConsoleStream:output_type -> agent.ConsoleData
-	119, // 248: agent.NodeAgent.GetExportProgress:output_type -> agent.GetExportProgressResponse
-	104, // 249: agent.NodeAgent.GetGuestConnections:output_type -> agent.GetGuestConnectionsResponse
-	18,  // 250: agent.NodeAgent.SetNullRoute:output_type -> agent.SetNullRouteResponse
-	125, // 251: agent.NodeAgent.UpdateAgent:output_type -> agent.AgentUpdateResponse
-	28,  // 252: agent.NodeAgent.SetVMLimits:output_type -> agent.SetVMLimitsResponse
-	27,  // 253: agent.NodeAgent.SetVMHardware:output_type -> agent.SetVMHardwareResponse
-	128, // 254: agent.NodeAgent.GetPreflight:output_type -> agent.PreflightResponse
-	132, // 255: agent.NodeAgent.GetMigrationInfo:output_type -> agent.GetMigrationInfoResponse
-	135, // 256: agent.NodeAgent.SetMigrationPeers:output_type -> agent.SetMigrationPeersResponse
-	138, // 257: agent.NodeAgent.PrepareMigrationTarget:output_type -> agent.PrepareMigrationTargetResponse
-	140, // 258: agent.NodeAgent.PullMigratedVM:output_type -> agent.PullMigratedVMResponse
-	142, // 259: agent.NodeAgent.GetMigrationProgress:output_type -> agent.GetMigrationProgressResponse
-	144, // 260: agent.NodeAgent.AbortMigration:output_type -> agent.AbortMigrationResponse
-	146, // 261: agent.NodeAgent.FinishMigrationTarget:output_type -> agent.FinishMigrationTargetResponse
-	148, // 262: agent.NodeAgent.FinishMigrationSource:output_type -> agent.FinishMigrationSourceResponse
-	150, // 263: agent.NodeAgent.ResizeVMDisk:output_type -> agent.ResizeVMDiskResponse
-	152, // 264: agent.NodeAgent.MoveVMDisk:output_type -> agent.MoveVMDiskResponse
-	155, // 265: agent.NodeAgent.ListOrphanDisks:output_type -> agent.ListOrphanDisksResponse
-	157, // 266: agent.NodeAgent.DeleteOrphanDisk:output_type -> agent.DeleteOrphanDiskResponse
-	168, // 267: agent.NodeAgent.SetSharedPool:output_type -> agent.SetSharedPoolResponse
-	170, // 268: agent.NodeAgent.SharedPoolToken:output_type -> agent.SharedPoolTokenResponse
-	174, // 269: agent.NodeAgent.SetFencedVMs:output_type -> agent.SetFencedVMsResponse
-	176, // 270: agent.NodeAgent.RemoveFencedVM:output_type -> agent.RemoveFencedVMResponse
-	159, // 271: agent.NodeAgent.PutImage:output_type -> agent.PutImageResponse
-	162, // 272: agent.NodeAgent.ConfigureNIC:output_type -> agent.ConfigureNICResponse
-	166, // 273: agent.NodeAgent.SetVLANBridges:output_type -> agent.SetVLANBridgesResponse
-	217, // [217:274] is the sub-list for method output_type
-	160, // [160:217] is the sub-list for method input_type
-	160, // [160:160] is the sub-list for extension type_name
-	160, // [160:160] is the sub-list for extension extendee
-	0,   // [0:160] is the sub-list for field type_name
+	60,  // 155: agent.SetCephClusterResponse.error:type_name -> agent.ErrorResponse
+	173, // 156: agent.CephStatusRequest.pools:type_name -> agent.CephRBDPool
+	60,  // 157: agent.CephStatusResponse.error:type_name -> agent.ErrorResponse
+	175, // 158: agent.CephStatusResponse.pools:type_name -> agent.CephPoolStatus
+	179, // 159: agent.FencedVM.disks:type_name -> agent.FencedDisk
+	60,  // 160: agent.SetFencedVMsResponse.error:type_name -> agent.ErrorResponse
+	178, // 161: agent.SetFencedVMsResponse.vms:type_name -> agent.FencedVM
+	31,  // 162: agent.RemoveFencedVMRequest.lvm_pools:type_name -> agent.LVMPool
+	60,  // 163: agent.RemoveFencedVMResponse.error:type_name -> agent.ErrorResponse
+	12,  // 164: agent.NodeAgent.RegisterNode:input_type -> agent.RegisterNodeRequest
+	14,  // 165: agent.NodeAgent.Heartbeat:input_type -> agent.HeartbeatRequest
+	29,  // 166: agent.NodeAgent.ExecuteVMCommand:input_type -> agent.VMCommandRequest
+	35,  // 167: agent.NodeAgent.GetVMStatus:input_type -> agent.VMStatusRequest
+	38,  // 168: agent.NodeAgent.StreamVMMetrics:input_type -> agent.VMMetricsRequest
+	45,  // 169: agent.NodeAgent.CreateSnapshot:input_type -> agent.SnapshotRequest
+	54,  // 170: agent.NodeAgent.ApplyNetworkConfig:input_type -> agent.NetworkConfigRequest
+	58,  // 171: agent.NodeAgent.StartVNCProxy:input_type -> agent.VNCProxyRequest
+	61,  // 172: agent.NodeAgent.GetNodeInfo:input_type -> agent.GetNodeInfoRequest
+	65,  // 173: agent.NodeAgent.ImportDisk:input_type -> agent.DiskImportRequest
+	67,  // 174: agent.NodeAgent.BackupDisk:input_type -> agent.BackupDiskRequest
+	71,  // 175: agent.NodeAgent.RestoreDisk:input_type -> agent.RestoreDiskRequest
+	77,  // 176: agent.NodeAgent.TestObjectStore:input_type -> agent.TestObjectStoreRequest
+	75,  // 177: agent.NodeAgent.DeleteBackupFiles:input_type -> agent.DeleteBackupFilesRequest
+	101, // 178: agent.NodeAgent.GetLiveMetrics:input_type -> agent.GetLiveMetricsRequest
+	105, // 179: agent.NodeAgent.ScanVMs:input_type -> agent.ScanVMsRequest
+	80,  // 180: agent.NodeAgent.CreateStorageVolume:input_type -> agent.CreateStorageVolumeRequest
+	82,  // 181: agent.NodeAgent.DeleteStorageVolume:input_type -> agent.DeleteStorageVolumeRequest
+	96,  // 182: agent.NodeAgent.GetStorageReport:input_type -> agent.GetStorageReportRequest
+	92,  // 183: agent.NodeAgent.MigrateVM:input_type -> agent.MigrateVMRequest
+	94,  // 184: agent.NodeAgent.SyncTemplate:input_type -> agent.SyncTemplateRequest
+	84,  // 185: agent.NodeAgent.AttachDisk:input_type -> agent.AttachDiskRequest
+	86,  // 186: agent.NodeAgent.DetachDisk:input_type -> agent.DetachDiskRequest
+	88,  // 187: agent.NodeAgent.DefineNetwork:input_type -> agent.DefineNetworkRequest
+	90,  // 188: agent.NodeAgent.UndefineNetwork:input_type -> agent.UndefineNetworkRequest
+	110, // 189: agent.NodeAgent.ProbeIPs:input_type -> agent.ProbeIPsRequest
+	112, // 190: agent.NodeAgent.ConfigureFloatingIP:input_type -> agent.FloatingIPRequest
+	114, // 191: agent.NodeAgent.ConfigureVPC:input_type -> agent.VPCRequest
+	116, // 192: agent.NodeAgent.SetQuarantine:input_type -> agent.SetQuarantineRequest
+	120, // 193: agent.NodeAgent.SetConsoleAccess:input_type -> agent.SetConsoleAccessRequest
+	121, // 194: agent.NodeAgent.ConsoleStream:input_type -> agent.ConsoleData
+	117, // 195: agent.NodeAgent.GetExportProgress:input_type -> agent.GetExportProgressRequest
+	103, // 196: agent.NodeAgent.GetGuestConnections:input_type -> agent.GetGuestConnectionsRequest
+	17,  // 197: agent.NodeAgent.SetNullRoute:input_type -> agent.SetNullRouteRequest
+	124, // 198: agent.NodeAgent.UpdateAgent:input_type -> agent.AgentUpdateChunk
+	24,  // 199: agent.NodeAgent.SetVMLimits:input_type -> agent.SetVMLimitsRequest
+	26,  // 200: agent.NodeAgent.SetVMHardware:input_type -> agent.SetVMHardwareRequest
+	126, // 201: agent.NodeAgent.GetPreflight:input_type -> agent.PreflightRequest
+	130, // 202: agent.NodeAgent.GetMigrationInfo:input_type -> agent.GetMigrationInfoRequest
+	134, // 203: agent.NodeAgent.SetMigrationPeers:input_type -> agent.SetMigrationPeersRequest
+	137, // 204: agent.NodeAgent.PrepareMigrationTarget:input_type -> agent.PrepareMigrationTargetRequest
+	139, // 205: agent.NodeAgent.PullMigratedVM:input_type -> agent.PullMigratedVMRequest
+	141, // 206: agent.NodeAgent.GetMigrationProgress:input_type -> agent.GetMigrationProgressRequest
+	143, // 207: agent.NodeAgent.AbortMigration:input_type -> agent.AbortMigrationRequest
+	145, // 208: agent.NodeAgent.FinishMigrationTarget:input_type -> agent.FinishMigrationTargetRequest
+	147, // 209: agent.NodeAgent.FinishMigrationSource:input_type -> agent.FinishMigrationSourceRequest
+	149, // 210: agent.NodeAgent.ResizeVMDisk:input_type -> agent.ResizeVMDiskRequest
+	151, // 211: agent.NodeAgent.MoveVMDisk:input_type -> agent.MoveVMDiskRequest
+	153, // 212: agent.NodeAgent.ListOrphanDisks:input_type -> agent.ListOrphanDisksRequest
+	156, // 213: agent.NodeAgent.DeleteOrphanDisk:input_type -> agent.DeleteOrphanDiskRequest
+	167, // 214: agent.NodeAgent.SetSharedPool:input_type -> agent.SetSharedPoolRequest
+	169, // 215: agent.NodeAgent.SharedPoolToken:input_type -> agent.SharedPoolTokenRequest
+	171, // 216: agent.NodeAgent.SetCephCluster:input_type -> agent.SetCephClusterRequest
+	174, // 217: agent.NodeAgent.CephStatus:input_type -> agent.CephStatusRequest
+	177, // 218: agent.NodeAgent.SetFencedVMs:input_type -> agent.SetFencedVMsRequest
+	181, // 219: agent.NodeAgent.RemoveFencedVM:input_type -> agent.RemoveFencedVMRequest
+	158, // 220: agent.NodeAgent.PutImage:input_type -> agent.ImageChunk
+	160, // 221: agent.NodeAgent.ConfigureNIC:input_type -> agent.ConfigureNICRequest
+	164, // 222: agent.NodeAgent.SetVLANBridges:input_type -> agent.SetVLANBridgesRequest
+	13,  // 223: agent.NodeAgent.RegisterNode:output_type -> agent.RegisterNodeResponse
+	20,  // 224: agent.NodeAgent.Heartbeat:output_type -> agent.HeartbeatResponse
+	33,  // 225: agent.NodeAgent.ExecuteVMCommand:output_type -> agent.VMCommandResponse
+	36,  // 226: agent.NodeAgent.GetVMStatus:output_type -> agent.VMStatusResponse
+	39,  // 227: agent.NodeAgent.StreamVMMetrics:output_type -> agent.VMMetricsResponse
+	46,  // 228: agent.NodeAgent.CreateSnapshot:output_type -> agent.SnapshotResponse
+	55,  // 229: agent.NodeAgent.ApplyNetworkConfig:output_type -> agent.NetworkConfigResponse
+	59,  // 230: agent.NodeAgent.StartVNCProxy:output_type -> agent.VNCProxyResponse
+	62,  // 231: agent.NodeAgent.GetNodeInfo:output_type -> agent.GetNodeInfoResponse
+	66,  // 232: agent.NodeAgent.ImportDisk:output_type -> agent.DiskImportResponse
+	70,  // 233: agent.NodeAgent.BackupDisk:output_type -> agent.BackupDiskResponse
+	79,  // 234: agent.NodeAgent.RestoreDisk:output_type -> agent.RestoreDiskResponse
+	78,  // 235: agent.NodeAgent.TestObjectStore:output_type -> agent.TestObjectStoreResponse
+	76,  // 236: agent.NodeAgent.DeleteBackupFiles:output_type -> agent.DeleteBackupFilesResponse
+	102, // 237: agent.NodeAgent.GetLiveMetrics:output_type -> agent.GetLiveMetricsResponse
+	106, // 238: agent.NodeAgent.ScanVMs:output_type -> agent.ScanVMsResponse
+	81,  // 239: agent.NodeAgent.CreateStorageVolume:output_type -> agent.CreateStorageVolumeResponse
+	83,  // 240: agent.NodeAgent.DeleteStorageVolume:output_type -> agent.DeleteStorageVolumeResponse
+	100, // 241: agent.NodeAgent.GetStorageReport:output_type -> agent.GetStorageReportResponse
+	93,  // 242: agent.NodeAgent.MigrateVM:output_type -> agent.MigrateVMResponse
+	95,  // 243: agent.NodeAgent.SyncTemplate:output_type -> agent.SyncTemplateResponse
+	85,  // 244: agent.NodeAgent.AttachDisk:output_type -> agent.AttachDiskResponse
+	87,  // 245: agent.NodeAgent.DetachDisk:output_type -> agent.DetachDiskResponse
+	89,  // 246: agent.NodeAgent.DefineNetwork:output_type -> agent.DefineNetworkResponse
+	91,  // 247: agent.NodeAgent.UndefineNetwork:output_type -> agent.UndefineNetworkResponse
+	111, // 248: agent.NodeAgent.ProbeIPs:output_type -> agent.ProbeIPsResponse
+	113, // 249: agent.NodeAgent.ConfigureFloatingIP:output_type -> agent.FloatingIPResponse
+	115, // 250: agent.NodeAgent.ConfigureVPC:output_type -> agent.VPCResponse
+	123, // 251: agent.NodeAgent.SetQuarantine:output_type -> agent.SetQuarantineResponse
+	122, // 252: agent.NodeAgent.SetConsoleAccess:output_type -> agent.SetConsoleAccessResponse
+	121, // 253: agent.NodeAgent.ConsoleStream:output_type -> agent.ConsoleData
+	119, // 254: agent.NodeAgent.GetExportProgress:output_type -> agent.GetExportProgressResponse
+	104, // 255: agent.NodeAgent.GetGuestConnections:output_type -> agent.GetGuestConnectionsResponse
+	18,  // 256: agent.NodeAgent.SetNullRoute:output_type -> agent.SetNullRouteResponse
+	125, // 257: agent.NodeAgent.UpdateAgent:output_type -> agent.AgentUpdateResponse
+	28,  // 258: agent.NodeAgent.SetVMLimits:output_type -> agent.SetVMLimitsResponse
+	27,  // 259: agent.NodeAgent.SetVMHardware:output_type -> agent.SetVMHardwareResponse
+	128, // 260: agent.NodeAgent.GetPreflight:output_type -> agent.PreflightResponse
+	132, // 261: agent.NodeAgent.GetMigrationInfo:output_type -> agent.GetMigrationInfoResponse
+	135, // 262: agent.NodeAgent.SetMigrationPeers:output_type -> agent.SetMigrationPeersResponse
+	138, // 263: agent.NodeAgent.PrepareMigrationTarget:output_type -> agent.PrepareMigrationTargetResponse
+	140, // 264: agent.NodeAgent.PullMigratedVM:output_type -> agent.PullMigratedVMResponse
+	142, // 265: agent.NodeAgent.GetMigrationProgress:output_type -> agent.GetMigrationProgressResponse
+	144, // 266: agent.NodeAgent.AbortMigration:output_type -> agent.AbortMigrationResponse
+	146, // 267: agent.NodeAgent.FinishMigrationTarget:output_type -> agent.FinishMigrationTargetResponse
+	148, // 268: agent.NodeAgent.FinishMigrationSource:output_type -> agent.FinishMigrationSourceResponse
+	150, // 269: agent.NodeAgent.ResizeVMDisk:output_type -> agent.ResizeVMDiskResponse
+	152, // 270: agent.NodeAgent.MoveVMDisk:output_type -> agent.MoveVMDiskResponse
+	155, // 271: agent.NodeAgent.ListOrphanDisks:output_type -> agent.ListOrphanDisksResponse
+	157, // 272: agent.NodeAgent.DeleteOrphanDisk:output_type -> agent.DeleteOrphanDiskResponse
+	168, // 273: agent.NodeAgent.SetSharedPool:output_type -> agent.SetSharedPoolResponse
+	170, // 274: agent.NodeAgent.SharedPoolToken:output_type -> agent.SharedPoolTokenResponse
+	172, // 275: agent.NodeAgent.SetCephCluster:output_type -> agent.SetCephClusterResponse
+	176, // 276: agent.NodeAgent.CephStatus:output_type -> agent.CephStatusResponse
+	180, // 277: agent.NodeAgent.SetFencedVMs:output_type -> agent.SetFencedVMsResponse
+	182, // 278: agent.NodeAgent.RemoveFencedVM:output_type -> agent.RemoveFencedVMResponse
+	159, // 279: agent.NodeAgent.PutImage:output_type -> agent.PutImageResponse
+	162, // 280: agent.NodeAgent.ConfigureNIC:output_type -> agent.ConfigureNICResponse
+	166, // 281: agent.NodeAgent.SetVLANBridges:output_type -> agent.SetVLANBridgesResponse
+	223, // [223:282] is the sub-list for method output_type
+	164, // [164:223] is the sub-list for method input_type
+	164, // [164:164] is the sub-list for extension type_name
+	164, // [164:164] is the sub-list for extension extendee
+	0,   // [0:164] is the sub-list for field type_name
 }
 
 func init() { file_api_proto_agent_proto_init() }
@@ -16056,7 +16590,7 @@ func file_api_proto_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_proto_agent_proto_rawDesc), len(file_api_proto_agent_proto_rawDesc)),
 			NumEnums:      12,
-			NumMessages:   170,
+			NumMessages:   176,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
