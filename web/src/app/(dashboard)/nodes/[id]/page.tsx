@@ -36,8 +36,20 @@ import { useVMActions } from "@/lib/hooks/use-vms"
 import { UserPicker } from "@/components/user-picker"
 import { useTemplates } from "@/lib/hooks/use-templates"
 import { toast } from "sonner"
-import { StatusBadge, useVMTransitions } from "@/components/status-badge"
+import { StatusBadge, useVMTransitions, vmStatus } from "@/components/status-badge"
 import { useCopy } from "@/lib/use-feedback"
+import { NodeStoragePools } from "@/components/pool-allocation"
+import { NodeGroupCard } from "@/components/node-group"
+import { NodeAllocationCard } from "@/components/node-allocation"
+import { NodeInstallCommand } from "@/components/node-install-command"
+import { NodePreflight } from "@/components/node-preflight"
+import { NodeAgentSettings } from "@/components/node-agent-settings"
+import { NodeDrain } from "@/components/node-drain"
+import { NodeRecovery } from "@/components/node-recovery"
+import { NodeNATPorts } from "@/components/node-nat-ports"
+import { NodeVLANBridges } from "@/components/node-vlan-bridges"
+import { NodeCPUPool } from "@/components/node-cpu-pool"
+import { bitRate } from "@/lib/utils"
 
 // Resource gauge component
 function ResourceGauge({ value, label, detail, icon: Icon, color }: { value: number; label: string; detail?: string; icon: React.ElementType; color: string }) {
@@ -338,6 +350,37 @@ export default function NodeDetailPage() {
           {/* Resource Usage from NodeMetrics */}
           {metrics && node.status === "active" && (
             <>
+              {/* A firewall that is installed but filters nothing looks exactly
+                  like one that works, from every other screen. */}
+              {metrics.firewall_enforcement !== "enforced" && (
+                <div role="status" className="mb-6 p-4 rounded-md bg-amber-50 border border-amber-200 dark:bg-amber-950 dark:border-amber-900">
+                  <div className="flex items-start gap-3">
+                    <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" aria-hidden="true" />
+                    {metrics.firewall_enforcement === "off" ? (
+                      <div className="space-y-1">
+                        <p className="font-medium text-sm text-foreground">VM firewalls are not enforced on this node</p>
+                        <p className="text-xs text-muted-foreground">
+                          Firewall rules and the outbound scan guard are installed but filter nothing, because the node does
+                          not pass bridged traffic through its firewall. Turning it on starts applying rules to VMs that are
+                          already running, including the default rules of VMs that never had them applied, so choose the
+                          moment: set <code className="bg-muted px-1 rounded border font-mono">MABURVM_BRIDGE_NETFILTER=enforce</code> in
+                          the agent&apos;s environment on the node and restart the agent. It loads <code className="bg-muted px-1 rounded border font-mono">br_netfilter</code>,
+                          sets both <code className="bg-muted px-1 rounded border font-mono">net.bridge.bridge-nf-call-*</code> switches and keeps them across reboots.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-1">
+                        <p className="font-medium text-sm text-foreground">VM firewall enforcement is not confirmed on this node</p>
+                        <p className="text-xs text-muted-foreground">
+                          The node has not reported whether it filters VM traffic. Either its agent did not answer just now,
+                          or it is older than this panel. An agent that old also answers port forwards on every address of
+                          the node, floating IPs included: update it.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
                 <ResourceGauge
                   value={Math.round(metrics.cpu_percent)}
@@ -370,11 +413,11 @@ export default function NodeDetailPage() {
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   <div className="p-3 rounded-md border bg-muted/50">
                     <span className="text-xs font-medium text-muted-foreground block">Network RX</span>
-                    <span className="text-lg font-semibold text-emerald-600">{formatBytesPerSec(metrics.network_rx_bytes_per_sec)}</span>
+                    <span className="text-lg font-semibold text-emerald-600">{bitRate(metrics.network_rx_bytes_per_sec)}</span>
                   </div>
                   <div className="p-3 rounded-md border bg-muted/50">
                     <span className="text-xs font-medium text-muted-foreground block">Network TX</span>
-                    <span className="text-lg font-semibold text-blue-600">{formatBytesPerSec(metrics.network_tx_bytes_per_sec)}</span>
+                    <span className="text-lg font-semibold text-blue-600">{bitRate(metrics.network_tx_bytes_per_sec)}</span>
                   </div>
                   <div className="p-3 rounded-md border bg-muted/50">
                     <span className="text-xs font-medium text-muted-foreground block">Disk Read</span>
@@ -414,6 +457,12 @@ export default function NodeDetailPage() {
                     )}
                   </div>
                 )}
+                {metrics.nat_address && (
+                  <div className="mt-4 pt-4 border-t">
+                    <span className="text-xs font-medium text-muted-foreground">Port forwards published on: </span>
+                    <span className="font-mono font-semibold">{metrics.nat_address}</span>
+                  </div>
+                )}
                 {metrics.load_avg && metrics.load_avg.length >= 3 && (
                   <div className="mt-4 pt-4 border-t">
                     <span className="text-xs font-medium text-muted-foreground">Load Average: </span>
@@ -447,13 +496,33 @@ export default function NodeDetailPage() {
                     <XCircle className="w-6 h-6 text-red-600" />
                     <div>
                       <p className="font-semibold text-red-700 dark:text-red-300">Node Offline</p>
-                      <p className="text-sm text-muted-foreground">Cannot connect to this node. Check network connectivity and node status.</p>
+                      <p className="text-sm text-muted-foreground">
+                        {node.last_report_at
+                          ? `Its agent last reported ${new Date(node.last_report_at).toLocaleString()}.`
+                          : "Its agent has never reported."}{" "}
+                        No new VMs are placed on it, and the state of its VMs is unknown.
+                      </p>
                     </div>
                   </div>
                 </div>
               )}
             </>
           )}
+
+          {/* Shown for a node that is down, or that VMs were recovered from. */}
+          <NodeRecovery nodeId={node.id} nodeName={node.name} />
+
+          {/* Outside the live readings: what is stored and promised on a node
+              matters most when the node is not answering. */}
+          <NodeAllocationCard node={node} />
+          <NodeGroupCard node={node} />
+          <NodeStoragePools nodeId={node.id} />
+          <NodePreflight nodeId={node.id} />
+          <NodeNATPorts nodeId={node.id} />
+          <NodeVLANBridges nodeId={node.id} />
+          <NodeCPUPool nodeId={node.id} />
+          <NodeAgentSettings nodeId={node.id} online={node.status === "active" || node.status === "maintenance"} />
+          <NodeDrain nodeId={node.id} nodeName={node.name} />
 
           {/* Node Details */}
           <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm mb-6">
@@ -554,28 +623,7 @@ export default function NodeDetailPage() {
             </div>
           </div>
 
-          {/* Agent installation */}
-          <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm mb-6">
-            <h2 className="text-lg font-semibold text-foreground mb-2 flex items-center gap-2">
-              <Terminal className="w-5 h-5" />Install / Re-install the Agent
-            </h2>
-            <div className="p-4 rounded-md bg-amber-50 border border-amber-200 dark:bg-amber-950 dark:border-amber-900">
-              <div className="flex items-start gap-3">
-                <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-                <div className="space-y-2">
-                  <p className="font-medium text-sm text-foreground">
-                    Automatic agent installation is temporarily unavailable while node deployment security is being completed.
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    Installing or re-installing the agent on a hypervisor host manually is an administrator-only operational procedure. See the deployment documentation (<code className="bg-muted px-1 rounded border">docs/DEPLOYMENT.md</code>, agent deployment) for details.
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    The agent token above is configured on the host when the agent is deployed or its token is rotated.
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
+          <NodeInstallCommand nodeId={node.id} installerAllowed={!!node.installer_allowed} />
 
           {/* Virtual Machines on this Node */}
           <div className="bg-card text-card-foreground border rounded-lg shadow-sm overflow-hidden">
@@ -630,7 +678,7 @@ export default function NodeDetailPage() {
                       </div>
 
                       {/* Status */}
-                      <StatusBadge status={vm.status} transition={transitions.transitionOf(vm.id)} />
+                      <StatusBadge status={vmStatus(vm)} transition={transitions.transitionOf(vm.id)} />
 
                       {/* Actions */}
                       <div className="flex items-center gap-1">

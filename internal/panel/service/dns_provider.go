@@ -30,11 +30,11 @@ type DNSProvider interface {
 	SyncZone(ctx context.Context, zone *models.DNSZone, records []models.DNSRecord) error
 	// DeleteZone removes the zone from the nameserver.
 	DeleteZone(ctx context.Context, zoneName string) error
-	// SetPTR ensures the reverse zone exists and sets the PTR record for ip to
-	// hostname. Works independently of any forward zone.
-	SetPTR(ctx context.Context, ip, hostname string) error
-	// ClearPTR removes the PTR record for ip from its reverse zone.
-	ClearPTR(ctx context.Context, ip string) error
+	// SetPTR sets the PTR record rec to hostname, creating the reverse zone
+	// where the provider can. Works independently of any forward zone.
+	SetPTR(ctx context.Context, rec PTRRecord, hostname string) error
+	// ClearPTR removes the PTR record rec from its zone.
+	ClearPTR(ctx context.Context, rec PTRRecord) error
 	// ListPTRs returns existing PTR records in a reverse zone as a map of
 	// fully-qualified PTR name -> hostname (used to import pre-existing rDNS).
 	// Returns an empty map (not an error) when the reverse zone doesn't exist.
@@ -53,10 +53,10 @@ func (noopDNSProvider) SyncZone(context.Context, *models.DNSZone, []models.DNSRe
 func (noopDNSProvider) DeleteZone(context.Context, string) error {
 	return ErrDNSProviderNotConfigured
 }
-func (noopDNSProvider) SetPTR(context.Context, string, string) error {
+func (noopDNSProvider) SetPTR(context.Context, PTRRecord, string) error {
 	return ErrDNSProviderNotConfigured
 }
-func (noopDNSProvider) ClearPTR(context.Context, string) error {
+func (noopDNSProvider) ClearPTR(context.Context, PTRRecord) error {
 	return ErrDNSProviderNotConfigured
 }
 func (noopDNSProvider) ListPTRs(context.Context, string) (map[string]string, error) {
@@ -359,19 +359,10 @@ func reverseZoneName(ipStr string) (string, error) {
 	return string(buf), nil
 }
 
-// SetPTR ensures the reverse zone exists in PowerDNS and sets the PTR for ip.
+// SetPTR ensures the reverse zone exists in PowerDNS and sets the PTR.
 // It works independently of any forward zone.
-func (p *pdnsProvider) SetPTR(ctx context.Context, ip, hostname string) error {
-	zone, err := reverseZoneName(ip)
-	if err != nil {
-		return err
-	}
-	ptrName, err := reversePTRName(ip)
-	if err != nil {
-		return err
-	}
-	ptrName += "." // fully-qualified
-
+func (p *pdnsProvider) SetPTR(ctx context.Context, rec PTRRecord, hostname string) error {
+	zone := canonicalZoneName(rec.Zone)
 	if _, exists, err := p.getZone(ctx, zone); err != nil {
 		return err
 	} else if !exists {
@@ -379,38 +370,24 @@ func (p *pdnsProvider) SetPTR(ctx context.Context, ip, hostname string) error {
 			return err
 		}
 	}
-
-	host := hostname
-	if !strings.HasSuffix(host, ".") {
-		host += "."
-	}
 	return p.patchZone(ctx, zone, []pdnsRRset{{
-		Name:       ptrName,
+		Name:       ensureDot(rec.Name),
 		Type:       "PTR",
 		TTL:        3600,
 		ChangeType: "REPLACE",
-		Records:    []pdnsRecord{{Content: host, Disabled: false}},
+		Records:    []pdnsRecord{{Content: ensureDot(hostname), Disabled: false}},
 	}})
 }
 
-// ClearPTR removes the PTR record for ip (no-op if the reverse zone is absent).
-func (p *pdnsProvider) ClearPTR(ctx context.Context, ip string) error {
-	zone, err := reverseZoneName(ip)
-	if err != nil {
-		return err
-	}
-	ptrName, err := reversePTRName(ip)
-	if err != nil {
-		return err
-	}
-	ptrName += "."
-
+// ClearPTR removes the PTR record (no-op if the reverse zone is absent).
+func (p *pdnsProvider) ClearPTR(ctx context.Context, rec PTRRecord) error {
+	zone := canonicalZoneName(rec.Zone)
 	if _, exists, err := p.getZone(ctx, zone); err != nil {
 		return err
 	} else if !exists {
 		return nil
 	}
-	return p.patchZone(ctx, zone, []pdnsRRset{{Name: ptrName, Type: "PTR", ChangeType: "DELETE"}})
+	return p.patchZone(ctx, zone, []pdnsRRset{{Name: ensureDot(rec.Name), Type: "PTR", ChangeType: "DELETE"}})
 }
 
 // ListPTRs returns the PTR records in a reverse zone as fqdn->hostname.

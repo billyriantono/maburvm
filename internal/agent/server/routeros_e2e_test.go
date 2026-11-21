@@ -106,7 +106,7 @@ func TestRouterOSLifecycle(t *testing.T) {
 		return false
 	}
 
-	if err := s.createVM(request(firstPassword)); err != nil {
+	if _, err := s.createVM(request(firstPassword)); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	if got := libvirt.GuestOSType(id); got != guestos.RouterOS {
@@ -124,14 +124,14 @@ func TestRouterOSLifecycle(t *testing.T) {
 	}
 
 	// Address change on the running router: no restart expected.
-	if err := s.applyGuestNetwork(ctx, id, "198.51.100.7", 24, "198.51.100.1", guestIPv6{}); err != nil {
+	if err := s.applyGuestNetwork(ctx, id, guestNet{IP: "198.51.100.7", Prefix: 24, Gateway: "198.51.100.1"}, guestAgentWait); err != nil {
 		t.Fatalf("address change: %v", err)
 	}
 	wantAddress("address change", "198.51.100.7/24")
 
 	// Password reset. Version 7 refuses it through the guest agent, so this
 	// also proves the restart route.
-	if err := s.runRouterOSScript(ctx, id, guestos.RouterOSPasswordScript(secondPassword)); err != nil {
+	if err := s.runRouterOSScript(ctx, id, guestos.RouterOSPasswordScript(secondPassword), true); err != nil {
 		t.Fatalf("password reset: %v", err)
 	}
 	wantAddress("after password reset", "198.51.100.7/24") // the earlier change survived it

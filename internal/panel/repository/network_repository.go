@@ -44,7 +44,9 @@ func (r *NetworkRepository) GetByIDWithVM(ctx context.Context, id string) (*mode
 // GetByVMID retrieves the network configuration for a specific VM
 func (r *NetworkRepository) GetByVMID(ctx context.Context, vmID string) (*models.Network, error) {
 	var network models.Network
-	if err := r.db.WithContext(ctx).Where("vm_id = ?", vmID).First(&network).Error; err != nil {
+	// The oldest interface is the primary: the address the VM was created with,
+	// and so the one its guest uses first. By id alone it was a random pick.
+	if err := r.db.WithContext(ctx).Where("vm_id = ?", vmID).Order("created_at").First(&network).Error; err != nil {
 		return nil, err
 	}
 	return &network, nil
@@ -83,7 +85,7 @@ func (r *NetworkRepository) ListWithVM(ctx context.Context, limit, offset int) (
 // ListByVMID retrieves all network configurations for a specific VM
 func (r *NetworkRepository) ListByVMID(ctx context.Context, vmID string) ([]models.Network, error) {
 	var networks []models.Network
-	if err := r.db.WithContext(ctx).Where("vm_id = ?", vmID).Find(&networks).Error; err != nil {
+	if err := r.db.WithContext(ctx).Where("vm_id = ?", vmID).Order("created_at, id").Find(&networks).Error; err != nil {
 		return nil, err
 	}
 	return networks, nil
@@ -122,6 +124,22 @@ func (r *NetworkRepository) Delete(ctx context.Context, id string) error {
 
 // DeleteByVMID removes all network configurations for a specific VM
 func (r *NetworkRepository) DeleteByVMID(ctx context.Context, vmID string) error {
+	// Port forwards go with the interfaces. A database built from an older
+	// schema may lack the cascade, and a forward left behind would hold its
+	// port on the node for good.
+	if err := r.db.WithContext(ctx).Unscoped().Where("vm_id = ?", vmID).Delete(&models.PortForward{}).Error; err != nil {
+		return err
+	}
+	// So do the NAT port block, hostnames and group attachments (skipped on a
+	// test schema without those tables).
+	for _, table := range []string{"nat_port_blocks", "vm_hostnames", "vm_firewall_groups"} {
+		if !r.db.Migrator().HasTable(table) {
+			continue
+		}
+		if err := r.db.WithContext(ctx).Exec("DELETE FROM "+table+" WHERE vm_id = ?", vmID).Error; err != nil {
+			return err
+		}
+	}
 	return r.db.WithContext(ctx).Unscoped().Where("vm_id = ?", vmID).Delete(&models.Network{}).Error
 }
 

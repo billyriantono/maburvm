@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/maburvm/panel/internal/panel/middleware"
@@ -72,7 +73,7 @@ func (h *NodeHandler) RegisterNode(c echo.Context) error {
 				"error":   "Conflict",
 				"message": err.Error(),
 			})
-		case errors.Is(err, service.ErrInvalidNodeIP):
+		case errors.Is(err, service.ErrInvalidNodeIP), errors.Is(err, service.ErrInvalidNodeRatio):
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{
 				"error":   "Bad Request",
 				"message": err.Error(),
@@ -107,6 +108,7 @@ type NodeListItem struct {
 	Online    bool   `json:"online"`
 	// CreationPaused: no new VMs are placed here; existing ones are unaffected.
 	CreationPaused bool   `json:"creation_paused"`
+	NodeGroup      string `json:"node_group"`
 	CreatedAt      string `json:"created_at"`
 	UpdatedAt      string `json:"updated_at"`
 }
@@ -146,9 +148,11 @@ func (h *NodeHandler) ListNodes(c echo.Context) error {
 		nodes = filtered
 	}
 
+	meta, _ := WholeListMeta(max(limit, 0), max(offset, 0), len(nodes), func() (int64, error) { return int64(len(nodes)), nil })
+
 	// Apply pagination
-	if offset > 0 && offset < len(nodes) {
-		nodes = nodes[offset:]
+	if offset > 0 {
+		nodes = nodes[min(offset, len(nodes)):]
 	}
 	if limit > 0 && limit < len(nodes) {
 		nodes = nodes[:limit]
@@ -164,14 +168,17 @@ func (h *NodeHandler) ListNodes(c echo.Context) error {
 			Status:         string(node.Node.Status),
 			Online:         node.Online,
 			CreationPaused: node.Node.CreationPaused,
+			NodeGroup:      node.Node.NodeGroup,
 			CreatedAt:      node.Node.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 			UpdatedAt:      node.Node.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		}
 	}
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
+		"success": true,
 		"message": "Nodes retrieved successfully",
 		"data":    items,
+		"meta":    meta,
 	})
 }
 
@@ -183,9 +190,17 @@ type NodeDetailResponse struct {
 	Status         string       `json:"status"`
 	Online         bool         `json:"online"`
 	CreationPaused bool         `json:"creation_paused"`
+	NodeGroup      string       `json:"node_group"`
 	Metrics        *NodeMetrics `json:"metrics,omitempty"`
-	CreatedAt      string       `json:"created_at"`
-	UpdatedAt      string       `json:"updated_at"`
+	// What the node has promised to VMs, against what it has.
+	Allocation *service.NodeAllocation `json:"allocation,omitempty"`
+	// LastReportAt is when its agent last reported; nil if it never has.
+	LastReportAt *time.Time `json:"last_report_at"`
+	// InstallerAllowed: no agent has ever answered for this node and no VM is
+	// on it, so the installer may be offered for it.
+	InstallerAllowed bool   `json:"installer_allowed"`
+	CreatedAt        string `json:"created_at"`
+	UpdatedAt        string `json:"updated_at"`
 }
 
 // NodeMetrics represents node performance metrics in the response
@@ -234,9 +249,14 @@ func (h *NodeHandler) GetNode(c echo.Context) error {
 		Status:         string(node.Status),
 		Online:         online,
 		CreationPaused: node.CreationPaused,
+		NodeGroup:      node.NodeGroup,
 		CreatedAt:      node.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		UpdatedAt:      node.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 	}
+
+	resp.Allocation, _ = h.service.Allocation(c.Request().Context(), node)
+	resp.LastReportAt = node.LastReportAt
+	resp.InstallerAllowed, _ = h.service.AcceptsInstaller(c.Request().Context(), node.ID)
 
 	if metrics != nil {
 		resp.Metrics = &NodeMetrics{
@@ -259,6 +279,10 @@ type UpdateNodeRequest struct {
 	IPAddress      string `json:"ip_address,omitempty"`
 	Status         string `json:"status,omitempty"`
 	CreationPaused *bool  `json:"creation_paused,omitempty"`
+	// VCPURatio is the node's own vCPU overcommit ratio; 0 uses the panel-wide one.
+	VCPURatio *float64 `json:"vcpu_ratio,omitempty"`
+	// NodeGroup is the node's hypervisor group; "" takes it out of one.
+	NodeGroup *string `json:"node_group,omitempty"`
 }
 
 // UpdateNode handles PUT /api/nodes/:id - Update node information
@@ -292,6 +316,8 @@ func (h *NodeHandler) UpdateNode(c echo.Context) error {
 		updateReq.Status = &status
 	}
 	updateReq.CreationPaused = req.CreationPaused
+	updateReq.VCPURatio = req.VCPURatio
+	updateReq.NodeGroup = req.NodeGroup
 
 	// Update node
 	node, err := h.service.UpdateNode(c.Request().Context(), id, updateReq)
@@ -307,7 +333,7 @@ func (h *NodeHandler) UpdateNode(c echo.Context) error {
 				"error":   "Conflict",
 				"message": err.Error(),
 			})
-		case errors.Is(err, service.ErrInvalidNodeIP):
+		case errors.Is(err, service.ErrInvalidNodeIP), errors.Is(err, service.ErrInvalidNodeRatio), errors.Is(err, service.ErrInvalidNodeGroup):
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{
 				"error":   "Bad Request",
 				"message": err.Error(),

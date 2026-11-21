@@ -1,5 +1,6 @@
-# Build stage
-FROM golang:1.25-alpine AS builder
+# Build stage. Runs on the build machine and cross-compiles, so a multi-arch
+# build (the release workflow) does not compile under emulation.
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
 RUN apk add --no-cache gcc musl-dev
 
@@ -11,8 +12,8 @@ RUN go mod download
 
 # Targeted source copies required to build the panel and its dependencies.
 # Avoid a broad `COPY . .` so host artifacts/secrets never enter the build
-# context/layers (see .dockerignore). cmd/panel imports internal/ and the
-# generated gRPC code under api/proto.
+# context/layers (see .dockerignore). cmd/panel imports internal/, which holds
+# the generated gRPC code (internal/shared/grpc/pb).
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 COPY api/ ./api/
@@ -26,7 +27,8 @@ COPY integrations/ ./integrations/
 ARG GIT_COMMIT=""
 ARG BUILD_TIME=""
 ARG APP_VERSION=""
-RUN CGO_ENABLED=0 GOOS=linux go build \
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
     -ldflags "-X github.com/maburvm/panel/internal/shared/buildinfo.Commit=${GIT_COMMIT} \
               -X github.com/maburvm/panel/internal/shared/buildinfo.BuildTime=${BUILD_TIME} \
               -X github.com/maburvm/panel/internal/shared/buildinfo.Version=${APP_VERSION}" \
@@ -37,7 +39,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # so it needs glibc + libvirt headers; bookworm (glibc 2.36, libvirt 9.0) is older
 # than every node's userland, so the binary runs on all of them. Do not move this
 # to a newer base without checking the oldest node's glibc (`ldd --version`).
-FROM golang:1.25-bookworm AS agent-builder
+# Pinned to amd64: the cgo cross-compile below expects an amd64 build host, and
+# a multi-arch panel image then carries one identical agent build.
+FROM --platform=linux/amd64 golang:1.25-bookworm AS agent-builder
 RUN apt-get update && apt-get install -y --no-install-recommends libvirt-dev pkg-config \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
@@ -55,6 +59,25 @@ RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
               -X github.com/maburvm/panel/internal/shared/buildinfo.BuildTime=${BUILD_TIME} \
               -X github.com/maburvm/panel/internal/shared/buildinfo.Version=${APP_VERSION}" \
     -o /app/bin/linux/agent-amd64 ./cmd/agent
+# arm64 nodes: off unless asked for (--build-arg AGENT_ARM64=1), so an image for
+# amd64-only fleets builds exactly as before. Cross-compiled against Debian's
+# arm64 libvirt; the node still test-runs it before swapping it in.
+ARG AGENT_ARM64=""
+RUN if [ "$AGENT_ARM64" = "1" ]; then \
+      dpkg --add-architecture arm64 && apt-get update \
+      && apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross libvirt-dev:arm64 \
+      && PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig \
+         CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc go build \
+         -ldflags "-X github.com/maburvm/panel/internal/shared/buildinfo.Commit=${GIT_COMMIT} \
+                   -X github.com/maburvm/panel/internal/shared/buildinfo.BuildTime=${BUILD_TIME} \
+                   -X github.com/maburvm/panel/internal/shared/buildinfo.Version=${APP_VERSION}" \
+         -o /app/bin/linux/agent-arm64 ./cmd/agent; \
+    fi
+
+# The agent binaries alone: `docker buildx build --target agent-bin --output
+# type=local,dest=DIR .` is how the release workflow publishes them.
+FROM scratch AS agent-bin
+COPY --from=agent-builder /app/bin/linux/ /
 
 # Runtime stage
 FROM alpine:3.24
@@ -72,8 +95,12 @@ WORKDIR /app
 
 # Copy binary from builder
 COPY --from=builder /app/bin/panel ./panel
-# Default AGENT_BINARY_DIR (bin/linux, relative to WORKDIR).
-COPY --from=agent-builder /app/bin/linux/agent-amd64 ./bin/linux/agent-amd64
+# Default AGENT_BINARY_DIR (bin/linux, relative to WORKDIR): agent-amd64, and
+# agent-arm64 when it was built.
+COPY --from=agent-builder /app/bin/linux/ ./bin/linux/
+# Offline signatures for those binaries (agent-<arch>.sig), when the release
+# workflow signed them; the directory is otherwise empty.
+COPY docker/agent-sigs/ ./bin/linux/
 
 # Copy migrations (panel reads these at runtime)
 COPY internal/shared/db/migrations ./migrations

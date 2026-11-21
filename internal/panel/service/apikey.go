@@ -5,6 +5,10 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"slices"
 	"strings"
 	"time"
 
@@ -23,11 +27,12 @@ var (
 // APIKeyService manages per-user API automation credentials.
 type APIKeyService struct {
 	repo *repository.APIKeyRepository
+	db   *gorm.DB
 }
 
 // NewAPIKeyService creates a new APIKeyService.
 func NewAPIKeyService(db *gorm.DB) *APIKeyService {
-	return &APIKeyService{repo: repository.NewAPIKeyRepository(db)}
+	return &APIKeyService{repo: repository.NewAPIKeyRepository(db), db: db}
 }
 
 // CreateAPIKeyRequest is the input for creating an API key.
@@ -36,8 +41,17 @@ type CreateAPIKeyRequest struct {
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 	// Role narrows what the key may do: "" (act as the owner) or "client".
 	Role models.UserRole `json:"role,omitempty"`
-	// ReadOnly limits the key to GET requests.
+	// ReadOnly limits the key to GET requests (the read_only scope).
 	ReadOnly bool `json:"read_only,omitempty"`
+	// Scope narrows the key within the owner's role: full (the default),
+	// read_only, vm_power (list VMs, start, stop, restart) or billing (billing,
+	// plans, accounts and usage).
+	Scope string `json:"scope,omitempty"`
+	// AllowedIPs are the addresses or CIDR ranges the key may be used from.
+	// Empty means anywhere.
+	AllowedIPs []string `json:"allowed_ips,omitempty"`
+	// ClientIP is where the request came from, for the owner's email.
+	ClientIP string `json:"-"`
 }
 
 // CreateAPIKey generates a new token, stores only its hash, and returns the
@@ -56,25 +70,75 @@ func (s *APIKeyService) CreateAPIKey(ctx context.Context, userID string, ownerRo
 		return nil, "", errors.New("role must be empty or a role no higher than your own")
 	}
 
+	scope := strings.TrimSpace(req.Scope)
+	switch {
+	case scope == "" && req.ReadOnly:
+		scope = models.APIKeyScopeReadOnly
+	case scope == "":
+		scope = models.APIKeyScopeFull
+	case !slices.Contains(models.APIKeyScopes, scope):
+		return nil, "", errors.New("scope must be one of full, read_only, vm_power or billing")
+	case req.ReadOnly && scope != models.APIKeyScopeReadOnly:
+		return nil, "", errors.New("read_only and a scope other than read_only cannot be combined")
+	}
+	allowed, err := cleanAllowedIPs(req.AllowedIPs)
+	if err != nil {
+		return nil, "", err
+	}
+	if req.ExpiresAt != nil && !req.ExpiresAt.After(time.Now()) {
+		return nil, "", errors.New("expires_at must be in the future")
+	}
+
 	token, err := generateAPIToken()
 	if err != nil {
 		return nil, "", err
 	}
 
 	key := &models.APIKey{
-		UserID:    userID,
-		Name:      name,
-		KeyHash:   models.HashAPIToken(token),
-		Prefix:    token[:12],
-		ExpiresAt: req.ExpiresAt,
-		IsActive:  true,
-		Role:      req.Role,
-		ReadOnly:  req.ReadOnly,
+		UserID:     userID,
+		Name:       name,
+		KeyHash:    models.HashAPIToken(token),
+		Prefix:     token[:12],
+		ExpiresAt:  req.ExpiresAt,
+		IsActive:   true,
+		Role:       req.Role,
+		ReadOnly:   scope == models.APIKeyScopeReadOnly,
+		Scope:      scope,
+		AllowedIPs: allowed,
 	}
 	if err := s.repo.Create(ctx, key); err != nil {
 		return nil, "", err
 	}
+	if s.db != nil {
+		if err := NotifyAccount(context.WithoutCancel(ctx), s.db, userID, EmailAPIKeyCreated,
+			map[string]string{"key": name, "who": ChangeSource(false, req.ClientIP)}); err != nil {
+			slog.Default().Warn("API key created, but its owner could not be told", "user_id", userID, "error", err)
+		}
+	}
 	return key, token, nil
+}
+
+// maxAllowedIPs bounds a key's address list; a longer one is a firewall's job.
+const maxAllowedIPs = 50
+
+// cleanAllowedIPs trims and checks a key's address list: each entry an IP
+// address or a CIDR range.
+func cleanAllowedIPs(in []string) ([]string, error) {
+	out := []string{}
+	for _, raw := range in {
+		v := strings.TrimSpace(raw)
+		if v == "" {
+			continue
+		}
+		if _, _, err := net.ParseCIDR(v); err != nil && net.ParseIP(v) == nil {
+			return nil, fmt.Errorf("%q is not an IP address or a CIDR range", v)
+		}
+		out = append(out, v)
+	}
+	if len(out) > maxAllowedIPs {
+		return nil, fmt.Errorf("a key may list at most %d addresses", maxAllowedIPs)
+	}
+	return out, nil
 }
 
 // ListAPIKeys returns all keys owned by the user (without secrets).

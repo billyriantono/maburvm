@@ -29,6 +29,21 @@ var (
 	ErrSnapshotOperationFailed = errors.New("snapshot operation failed")
 	// ErrSnapshotInProgress is returned when a snapshot operation is already in progress
 	ErrSnapshotInProgress = errors.New("snapshot operation already in progress")
+	// ErrSnapshotNotComplete refuses a revert to a snapshot not yet taken, or failed.
+	ErrSnapshotNotComplete = errors.New("only a completed snapshot can be restored")
+	// ErrSnapshotsNeedQcow2 refuses a snapshot of a VM with a disk on a logical
+	// volume: snapshots live inside qcow2 images. Backups still work.
+	ErrSnapshotsNeedQcow2 = errors.New("snapshots need qcow2 disks, and this VM has a disk on LVM storage; take a backup instead")
+	// Disks on Ceph RBD take RBD snapshots: the disks, never the memory, named
+	// as RBD names its snapshots. (Any snapshot is restored with the VM off.)
+	ErrSnapshotRBDMemory = errors.New("this VM's disks are on Ceph RBD, where a snapshot holds the disks and not the memory; take a disk-only snapshot, or stop the VM first")
+	ErrSnapshotRBDName   = errors.New("this VM's disks are on Ceph RBD, where a snapshot's name is made of letters, digits, dots, dashes and underscores")
+	// ErrSnapshotOptionsUnsupported refuses a disk-only or quiesced snapshot on
+	// a node whose agent cannot take one.
+	ErrSnapshotOptionsUnsupported = errors.New("this VM's node needs an agent update before it takes disk-only or quiesced snapshots")
+	// ErrSnapshotInRescue refuses a snapshot while the built-in rescue system's
+	// disk is attached: it would be in the snapshot and gone on a revert.
+	ErrSnapshotInRescue = errors.New("the VM is in rescue mode; take it out of rescue mode first")
 )
 
 // MaxSnapshotsPerVM is the maximum number of snapshots allowed per VM
@@ -42,6 +57,17 @@ type SnapshotService struct {
 	nodeRepo     *repository.NodeRepository
 	riverClient  *river.Client[pgx.Tx]
 	logger       *slog.Logger
+	// features asks a node's agent what it can do; nil takes it to do nothing new.
+	features func(ctx context.Context, nodeID string) map[string]bool
+}
+
+// SetFeatureLookup wires how the service asks a node what its agent can do.
+func (s *SnapshotService) SetFeatureLookup(f func(ctx context.Context, nodeID string) map[string]bool) {
+	s.features = f
+}
+
+func (s *SnapshotService) nodeCan(ctx context.Context, nodeID, feature string) bool {
+	return s.features != nil && s.features(ctx, nodeID)[feature]
 }
 
 // NewSnapshotService creates a new SnapshotService instance
@@ -72,6 +98,13 @@ type CreateSnapshotRequest struct {
 	VMID   string `json:"vm_id" validate:"required,uuid"`
 	Name   string `json:"name" validate:"required,max=100"`
 	UserID string `json:"user_id" validate:"required,uuid"`
+	// DiskOnly takes a running VM's disks without its memory and without
+	// pausing it; Quiesce freezes its filesystems for that through its guest
+	// agent. A stopped VM's snapshot holds its disks only either way.
+	DiskOnly bool `json:"disk_only"`
+	Quiesce  bool `json:"quiesce"`
+	// ScheduleID marks a snapshot a schedule takes.
+	ScheduleID string `json:"-"`
 }
 
 // CreateSnapshotResponse contains the created snapshot and job information
@@ -79,6 +112,27 @@ type CreateSnapshotResponse struct {
 	Snapshot *models.Snapshot `json:"snapshot"`
 	JobID    int64            `json:"job_id"`
 	Status   string           `json:"status"`
+}
+
+// snapshotRefusal is why the VM cannot be snapshotted at all right now, nil
+// when it can.
+func (s *SnapshotService) snapshotRefusal(ctx context.Context, vm *models.VM, diskOnly bool) error {
+	switch {
+	case VMOnBlockStorage(ctx, s.db, vm):
+		return ErrSnapshotsNeedQcow2
+	case !diskOnly && vm.Status != models.VMStatusStopped && VMOnRBD(ctx, s.db, vm):
+		return ErrSnapshotRBDMemory
+	case vm.RescueMode && vm.RescueKind == models.RescueKindImage:
+		return ErrSnapshotInRescue
+	case diskOnly && !s.nodeCan(ctx, vm.NodeID, models.FeatureSnapshotOptions):
+		return ErrSnapshotOptionsUnsupported
+	case diskMoveActive(ctx, s.db, vm.ID):
+		// A snapshot taken mid-move would stay in the disk the move removes.
+		return ErrDiskMoveActive
+	case queue.RestoreActive(ctx, s.db, vm.ID):
+		return ErrVMRestoring
+	}
+	return nil
 }
 
 // CreateSnapshot creates a new VM snapshot and enqueues a creation job
@@ -97,6 +151,16 @@ func (s *SnapshotService) CreateSnapshot(ctx context.Context, req *CreateSnapsho
 	// so the service no longer gates on vm.UserID here — that previously denied
 	// legitimate admin support.
 
+	if req.Quiesce && !req.DiskOnly {
+		return nil, fmt.Errorf("quiescing applies to disk-only snapshots: a full snapshot saves the memory, which is consistent already")
+	}
+	if err := s.snapshotRefusal(ctx, vm, req.DiskOnly); err != nil {
+		return nil, err
+	}
+	if !models.ValidRBDSnapshotName(req.Name) && VMOnRBD(ctx, s.db, vm) {
+		return nil, ErrSnapshotRBDName
+	}
+
 	// Check if snapshot name already exists for this VM
 	exists, err := s.snapshotRepo.NameExists(ctx, req.VMID, req.Name)
 	if err != nil {
@@ -113,6 +177,10 @@ func (s *SnapshotService) CreateSnapshot(ctx context.Context, req *CreateSnapsho
 	}
 	if count >= MaxSnapshotsPerVM {
 		return nil, ErrVMSnapshotLimitReached
+	}
+	if err := checkVMAllowance(ctx, s.db, vm, count, func(p *models.Plan) *int { return p.MaxSnapshots },
+		"snapshot", "snapshots", "Delete one to take another."); err != nil {
+		return nil, err
 	}
 
 	// Check if there's already a pending snapshot operation for this VM
@@ -137,6 +205,20 @@ func (s *SnapshotService) CreateSnapshot(ctx context.Context, req *CreateSnapsho
 	if err := s.snapshotRepo.Create(ctx, snapshot); err != nil {
 		return nil, fmt.Errorf("failed to create snapshot record: %w", err)
 	}
+	if req.DiskOnly || req.ScheduleID != "" {
+		cols := map[string]any{"disk_only": req.DiskOnly}
+		if req.ScheduleID != "" {
+			cols["schedule_id"] = req.ScheduleID
+		}
+		if err := s.db.WithContext(ctx).Table("snapshots").Where("id = ?", snapshot.ID).Updates(cols).Error; err != nil {
+			_ = s.snapshotRepo.Delete(ctx, snapshot.ID)
+			return nil, fmt.Errorf("failed to record the snapshot's options: %w", err)
+		}
+		snapshot.DiskOnly = req.DiskOnly
+		if req.ScheduleID != "" {
+			snapshot.ScheduleID = &req.ScheduleID
+		}
+	}
 
 	// Prepare snapshot creation params
 	params := map[string]interface{}{
@@ -154,6 +236,8 @@ func (s *SnapshotService) CreateSnapshot(ctx context.Context, req *CreateSnapsho
 		NodeID:     vm.NodeID,
 		Name:       req.Name,
 		Params:     paramsJSON,
+		DiskOnly:   req.DiskOnly,
+		Quiesce:    req.Quiesce,
 	}
 
 	result, err := s.riverClient.Insert(ctx, job, nil)
@@ -333,14 +417,12 @@ func (s *SnapshotService) RestoreSnapshot(ctx context.Context, req *RestoreSnaps
 
 	// Verify snapshot is completed
 	if snapshot.Status != models.SnapshotStatusComplete {
-		return nil, fmt.Errorf("cannot restore from snapshot with status: %s", snapshot.Status)
+		return nil, fmt.Errorf("%w (it is %s)", ErrSnapshotNotComplete, snapshot.Status)
 	}
 
-	// VM must be stopped for restore
-	if vm.Status == models.VMStatusRunning {
-		return nil, fmt.Errorf("VM must be stopped before restoring snapshot")
+	if err := restoreRefusal(ctx, s.db, vm); err != nil {
+		return nil, err
 	}
-
 	// Prepare restore params
 	params := map[string]interface{}{
 		"snapshot_name": snapshot.Name,

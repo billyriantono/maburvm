@@ -44,6 +44,8 @@ quota_mode TEXT NOT NULL DEFAULT 'legacy',
 			os_template_id TEXT, resources TEXT, status TEXT DEFAULT 'stopped', suspended BOOLEAN NOT NULL DEFAULT 0,
 			source_migration TEXT, vnc_port INTEGER, vnc_password TEXT,
 			console_enabled BOOLEAN DEFAULT 1, rescue_mode BOOLEAN DEFAULT 0,
+			firewall_default TEXT NOT NULL DEFAULT 'drop', smtp_blocked BOOLEAN NOT NULL DEFAULT 0,
+			guest_network_note TEXT, guest_network_pending BOOLEAN NOT NULL DEFAULT 0,
 			created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE IF NOT EXISTS networks (
 			id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, ip_address TEXT, bandwidth_limit INTEGER,
@@ -52,12 +54,22 @@ quota_mode TEXT NOT NULL DEFAULT 'legacy',
 			updated_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE IF NOT EXISTS firewall_rules (
 			id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, protocol TEXT, port_range TEXT, action TEXT,
-			direction TEXT, source_ip TEXT, priority INTEGER, created_at DATETIME, updated_at DATETIME,
+			direction TEXT, source_ip TEXT, priority INTEGER, icmp_type TEXT NOT NULL DEFAULT '',
+			log BOOLEAN NOT NULL DEFAULT 0, family TEXT NOT NULL DEFAULT '', created_at DATETIME, updated_at DATETIME,
 			deleted_at DATETIME)`,
 		`CREATE TABLE IF NOT EXISTS port_forwards (
-			id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, network_id TEXT, external_port INTEGER,
+			id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, network_id TEXT, node_id TEXT, external_port INTEGER,
 			internal_port INTEGER, protocol TEXT, source_ip TEXT, created_at DATETIME,
 			updated_at DATETIME, deleted_at DATETIME)`,
+		`CREATE TABLE IF NOT EXISTS firewall_group_rules (id TEXT PRIMARY KEY, group_id TEXT NOT NULL, protocol TEXT NOT NULL, port_range TEXT NOT NULL DEFAULT '',
+			action TEXT NOT NULL, direction TEXT NOT NULL, source_ip TEXT, priority INTEGER NOT NULL DEFAULT 100, icmp_type TEXT NOT NULL DEFAULT '',
+			log BOOLEAN NOT NULL DEFAULT 0, family TEXT NOT NULL DEFAULT '', created_at DATETIME, updated_at DATETIME)`,
+		`CREATE TABLE IF NOT EXISTS vm_firewall_groups (vm_id TEXT NOT NULL, group_id TEXT NOT NULL, position TEXT NOT NULL DEFAULT 'after',
+			sort_order INTEGER NOT NULL DEFAULT 0, created_at DATETIME, PRIMARY KEY (vm_id, group_id))`,
+		`CREATE TABLE IF NOT EXISTS nat_port_blocks (id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, node_id TEXT NOT NULL, start_port INTEGER NOT NULL,
+			port_count INTEGER NOT NULL, created_at DATETIME)`,
+		`CREATE TABLE IF NOT EXISTS vm_hostnames (id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, hostname TEXT NOT NULL, http_port INTEGER NOT NULL DEFAULT 80,
+			https_port INTEGER NOT NULL DEFAULT 443, verify_token TEXT NOT NULL, verified_at DATETIME, node_error TEXT NOT NULL DEFAULT '', created_at DATETIME)`,
 		`CREATE TABLE IF NOT EXISTS bandwidth_usages (
 			id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, node_id TEXT NOT NULL,
 			period_start DATETIME, period_end DATETIME, rx_bytes BIGINT DEFAULT 0,
@@ -409,4 +421,111 @@ func TestNetworkHandler_OwnerPortForwardSelfServicePreserved(t *testing.T) {
 	require.NoError(t, h.AddVMPortForward(c))
 	assert.NotEqual(t, http.StatusForbidden, rec.Code)
 	assert.NotContains(t, rec.Body.String(), "may not select VM network or infrastructure placement")
+}
+
+// A second customer asking for a port another VM on the node already forwards
+// is told so (409), whatever source restriction they add: two forwards on one
+// port would shadow each other.
+func TestNetworkHandler_PortForwardTakenOnNodeIs409(t *testing.T) {
+	db := newAuthzTestDB(t)
+	first, second := seedUser(t, db, models.RoleClient), seedUser(t, db, models.RoleClient)
+	vmA, vmB := seedVM(t, db, first), seedVM(t, db, second)
+	seedNetwork(t, db, vmA)
+	require.NoError(t, db.Create(&models.Network{ID: uuid.New().String(), VMID: vmB, IPAddress: "10.0.0.2"}).Error)
+	// Both VMs on one node.
+	require.NoError(t, db.Exec("UPDATE vms SET node_id = (SELECT node_id FROM vms WHERE id = ?) WHERE id = ?", vmA, vmB).Error)
+
+	h := NewNetworkHandler(newTestNetworkService(db), authz.NewAuthorizer(db))
+	add := func(user, vmID string, body map[string]interface{}) *httptest.ResponseRecorder {
+		c, rec := ctxWithUser(t, db, user, models.RoleClient)
+		c.SetParamNames("id")
+		c.SetParamValues(vmID)
+		setBodyNetwork(t, c, body)
+		require.NoError(t, h.AddVMPortForward(c))
+		return rec
+	}
+
+	require.Equal(t, http.StatusCreated, add(first, vmA, map[string]interface{}{"external_port": 3306, "internal_port": 3306}).Code)
+	rec := add(second, vmB, map[string]interface{}{"external_port": 3306, "internal_port": 3306, "source_ip": "198.51.100.0/24"})
+	require.Equal(t, http.StatusConflict, rec.Code)
+	assert.Contains(t, rec.Body.String(), "already forwarded on this node")
+}
+
+// The firewall status of a VM is its owner's to read, and nobody else's.
+func TestNetworkHandler_FirewallStatusIsScopedToTheOwner(t *testing.T) {
+	db := newAuthzTestDB(t)
+	owner, other := seedUser(t, db, models.RoleClient), seedUser(t, db, models.RoleClient)
+	vmID := seedVM(t, db, owner)
+
+	h := NewNetworkHandler(newTestNetworkService(db), authz.NewAuthorizer(db))
+	get := func(user string) *httptest.ResponseRecorder {
+		c, rec := ctxWithUser(t, db, user, models.RoleClient)
+		c.SetParamNames("id")
+		c.SetParamValues(vmID)
+		require.NoError(t, h.FirewallStatus(c))
+		return rec
+	}
+
+	rec := get(owner)
+	require.Equal(t, http.StatusOK, rec.Code)
+	// The test nodes table has no firewall state: that must read as unknown.
+	assert.JSONEq(t, `{"success":true,"data":{"enforcement":"unknown"}}`, rec.Body.String())
+	require.Equal(t, http.StatusNotFound, get(other).Code)
+}
+
+// Outbound mail protects the address space, so only an administrator changes
+// it; the owner is told whom to ask.
+func TestNetworkHandler_SMTPIsAdminOnly(t *testing.T) {
+	db := newAuthzTestDB(t)
+	owner := seedUser(t, db, models.RoleClient)
+	admin := seedUser(t, db, models.RoleAdmin)
+	vmID := seedVM(t, db, owner)
+	h := NewNetworkHandler(newTestNetworkService(db), authz.NewAuthorizer(db))
+	blocked := func() (b bool) {
+		require.NoError(t, db.Raw(`SELECT smtp_blocked FROM vms WHERE id = ?`, vmID).Scan(&b).Error)
+		return b
+	}
+
+	c, rec := ctxWithUser(t, db, owner, models.RoleClient)
+	c.SetParamNames("id")
+	c.SetParamValues(vmID)
+	setBodyNetwork(t, c, map[string]interface{}{"blocked": false})
+	require.NoError(t, h.SetSMTP(c))
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+
+	c, rec = ctxWithUser(t, db, admin, models.RoleAdmin)
+	c.SetParamNames("id")
+	c.SetParamValues(vmID)
+	setBodyNetwork(t, c, map[string]interface{}{"blocked": true})
+	require.NoError(t, h.SetSMTP(c))
+	assert.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.True(t, blocked())
+
+	c, rec = ctxWithUser(t, db, admin, models.RoleAdmin)
+	c.SetParamNames("id")
+	c.SetParamValues(vmID)
+	setBodyNetwork(t, c, map[string]interface{}{})
+	require.NoError(t, h.SetSMTP(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code, "a missing value is not read as allowed")
+	assert.True(t, blocked())
+}
+
+func TestNetworkHandler_FirewallDefault(t *testing.T) {
+	db := newAuthzTestDB(t)
+	owner := seedUser(t, db, models.RoleClient)
+	vmID := seedVM(t, db, owner)
+	h := NewNetworkHandler(newTestNetworkService(db), authz.NewAuthorizer(db))
+	set := func(v string) int {
+		c, rec := ctxWithUser(t, db, owner, models.RoleClient)
+		c.SetParamNames("id")
+		c.SetParamValues(vmID)
+		setBodyNetwork(t, c, map[string]interface{}{"default": v})
+		require.NoError(t, h.SetFirewallDefault(c))
+		return rec.Code
+	}
+	assert.Equal(t, http.StatusOK, set(models.FirewallDefaultAccept))
+	var got string
+	require.NoError(t, db.Raw(`SELECT firewall_default FROM vms WHERE id = ?`, vmID).Scan(&got).Error)
+	assert.Equal(t, models.FirewallDefaultAccept, got)
+	assert.Equal(t, http.StatusBadRequest, set("reject"))
 }

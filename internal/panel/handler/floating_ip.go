@@ -16,6 +16,7 @@ import (
 // survive the deletion of the VM they were attached to.
 type FloatingIPHandler struct {
 	service *service.VMService
+	db      *gorm.DB
 }
 
 func NewFloatingIPHandler(s *service.VMService) *FloatingIPHandler {
@@ -23,6 +24,7 @@ func NewFloatingIPHandler(s *service.VMService) *FloatingIPHandler {
 }
 
 func RegisterFloatingIPRoutes(e *echo.Echo, h *FloatingIPHandler, db *gorm.DB) {
+	h.db = db
 	g := e.Group("/api/v1/floating-ips")
 	g.Use(middleware.RequireAuth(db))
 	g.GET("", h.List, middleware.RequirePermission("floating_ip:read"))
@@ -30,7 +32,7 @@ func RegisterFloatingIPRoutes(e *echo.Echo, h *FloatingIPHandler, db *gorm.DB) {
 	// stay admin-only; attach/detach is a tenant action on an address they own.
 	// Allocating on someone else's behalf (and choosing the pool) stays with an
 	// administrator; ordering one for yourself is self-service.
-	g.POST("", h.Allocate, middleware.RequirePermission("admin:access"))
+	g.POST("", h.Allocate, middleware.RequirePermission("network:update"))
 	g.POST("/order", h.Order, middleware.RequirePermission("floating_ip:create"))
 	// Releasing is how a customer stops being billed for an address, so it must
 	// be available to them — scoped to their own by the guard in the service.
@@ -44,34 +46,33 @@ func RegisterFloatingIPRoutes(e *echo.Echo, h *FloatingIPHandler, db *gorm.DB) {
 }
 
 // authorizeFloatingIP enforces tenant isolation on a floating IP. Admins may act
-// on any address; everyone else only on floating IPs they own. Like the VM
-// guard, an unowned address answers 404 rather than 403 so ownership can't be
-// probed.
-func (h *FloatingIPHandler) authorizeFloatingIP(c echo.Context, addressID string) bool {
-	userCtx, ok := middleware.GetUserContext(c)
+// on any address; everyone else only on floating IPs of the account they act
+// in (their own, or a team account their role there lets them change). Like
+// the VM guard, an address of another account answers 404 rather than 403 so
+// ownership can't be probed. It returns that account.
+func (h *FloatingIPHandler) authorizeFloatingIP(c echo.Context, addressID string) (string, bool) {
+	_, account, staff, ok := actingAccount(c, h.db)
 	if !ok {
-		_ = c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized", "message": "authentication required"})
-		return false
+		return "", false
 	}
-	if userCtx.Role == models.RoleAdmin {
-		return true
+	if staff {
+		return "", true
 	}
 	addr, err := h.service.GetFloatingIP(c.Request().Context(), addressID)
-	if err != nil || addr.UserID == nil || *addr.UserID != userCtx.ID.String() {
+	if err != nil || addr.UserID == nil || *addr.UserID != account {
 		_ = c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "floating IP not found"})
-		return false
+		return "", false
 	}
-	return true
+	return account, true
 }
 
 func (h *FloatingIPHandler) List(c echo.Context) error {
-	userCtx, ok := middleware.GetUserContext(c)
+	_, owner, staff, ok := actingAccount(c, h.db)
 	if !ok {
-		return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized"})
+		return nil
 	}
-	owner := ""
-	if userCtx.Role != models.RoleAdmin {
-		owner = userCtx.ID.String()
+	if staff {
+		owner = ""
 	}
 	addrs, err := h.service.ListFloatingIPs(c.Request().Context(), owner)
 	if err != nil {
@@ -115,7 +116,8 @@ func (h *FloatingIPHandler) Allocate(c echo.Context) error {
 }
 
 func (h *FloatingIPHandler) Attach(c echo.Context) error {
-	if !h.authorizeFloatingIP(c, c.Param("id")) {
+	account, ok := h.authorizeFloatingIP(c, c.Param("id"))
+	if !ok {
 		return nil
 	}
 	var req struct {
@@ -128,10 +130,10 @@ func (h *FloatingIPHandler) Attach(c echo.Context) error {
 	if req.VMID == "" {
 		return badRequest(c, "vm_id is required")
 	}
-	// A tenant may only point their floating IP at their own VM.
-	if userCtx, ok := middleware.GetUserContext(c); ok && userCtx.Role != models.RoleAdmin {
+	// A tenant may only point the account's floating IP at the account's VM.
+	if account != "" {
 		owner, err := h.service.GetVMOwner(c.Request().Context(), req.VMID)
-		if err != nil || owner != userCtx.ID.String() {
+		if err != nil || owner != account {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
 		}
 	}
@@ -143,7 +145,7 @@ func (h *FloatingIPHandler) Attach(c echo.Context) error {
 }
 
 func (h *FloatingIPHandler) Detach(c echo.Context) error {
-	if !h.authorizeFloatingIP(c, c.Param("id")) {
+	if _, ok := h.authorizeFloatingIP(c, c.Param("id")); !ok {
 		return nil
 	}
 	addr, err := h.service.DetachFloatingIP(c.Request().Context(), c.Param("id"))
@@ -153,19 +155,22 @@ func (h *FloatingIPHandler) Detach(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": addr})
 }
 
-// Order takes a floating IP for the caller from a pool an administrator has
-// opened for self-service.
+// Order takes a floating IP for the account the caller acts in from a pool an
+// administrator has opened for self-service.
 func (h *FloatingIPHandler) Order(c echo.Context) error {
-	userCtx, ok := middleware.GetUserContext(c)
+	_, account, _, ok := actingAccount(c, h.db)
 	if !ok {
-		return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized"})
+		return nil
 	}
 	var req struct {
 		Region string `json:"region"`
 	}
 	_ = c.Bind(&req)
-	addr, err := h.service.OrderFloatingIP(c.Request().Context(), userCtx.ID.String(), req.Region)
+	addr, err := h.service.OrderFloatingIP(c.Request().Context(), account, req.Region)
 	if err != nil {
+		if refusedByAccount(c, err) {
+			return nil
+		}
 		switch {
 		case errors.Is(err, service.ErrFloatingIPQuotaExceeded):
 			return c.JSON(http.StatusForbidden, map[string]interface{}{"error": err.Error()})
@@ -187,12 +192,19 @@ func (h *FloatingIPHandler) Billing(c echo.Context) error {
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized"})
 	}
-	// An administrator may ask about any account; everyone else only their own.
+	// An administrator may ask about any account; everyone else about their
+	// own, or a team account whose billing their role covers.
 	target := userCtx.ID.String()
 	if userCtx.Role == models.RoleAdmin {
 		if q := c.QueryParam("user_id"); q != "" {
 			target = q
 		}
+	} else {
+		_, account, _, ok := actingAccountFor(c, h.db, service.AccountCanBilling)
+		if !ok {
+			return nil
+		}
+		target = account
 	}
 	total, free, billable, err := h.service.BillableFloatingIPs(c.Request().Context(), target)
 	if err != nil {
@@ -204,9 +216,12 @@ func (h *FloatingIPHandler) Billing(c echo.Context) error {
 }
 
 func (h *FloatingIPHandler) Release(c echo.Context) error {
-	owner := ""
-	if userCtx, ok := middleware.GetUserContext(c); ok && userCtx.Role != models.RoleAdmin {
-		owner = userCtx.ID.String()
+	_, owner, staff, ok := actingAccount(c, h.db)
+	if !ok {
+		return nil
+	}
+	if staff {
+		owner = ""
 	}
 	if err := h.service.ReleaseFloatingIP(c.Request().Context(), owner, c.Param("id")); err != nil {
 		return floatingIPError(c, err)

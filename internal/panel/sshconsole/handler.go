@@ -17,10 +17,10 @@ type HostResolver interface {
 	ResolveVMHost(ctx context.Context, vmID string) (host string, err error)
 }
 
-// OwnerResolver returns the user ID that owns a VM, for enforcing that a caller
-// can only open an SSH console to their own VMs.
+// OwnerResolver decides whether a non-admin may open an SSH console to a VM:
+// nil when they may (their own VM, or one their team role operates).
 type OwnerResolver interface {
-	VMOwner(ctx context.Context, vmID string) (userID string, err error)
+	MayOpenConsole(ctx context.Context, vmID, userID string) error
 }
 
 // Handler exposes the SSH console token endpoint.
@@ -55,13 +55,12 @@ func (h *Handler) GenerateToken(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "VM ID required"})
 	}
 
-	// Tenant isolation: a non-admin may only open an SSH console to a VM they own.
-	// Without this any authenticated user could mint a bridge token for any VM ID
-	// and brute-force SSH against another tenant's guest. 404 (not 403) avoids
-	// leaking which VM IDs exist.
+	// Tenant isolation: a non-admin may only open an SSH console to a VM they
+	// may operate. Without this any authenticated user could mint a bridge
+	// token for any VM ID and brute-force SSH against another tenant's guest.
+	// 404 (not 403) avoids leaking which VM IDs exist.
 	if h.owners != nil && user.Role != models.RoleAdmin {
-		owner, err := h.owners.VMOwner(c.Request().Context(), vmID)
-		if err != nil || owner != userID {
+		if err := h.owners.MayOpenConsole(c.Request().Context(), vmID, userID); err != nil {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "VM not found"})
 		}
 	}

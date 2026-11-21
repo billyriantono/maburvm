@@ -22,6 +22,7 @@ var (
 	ErrInvalidNodeIP         = fmt.Errorf("invalid node IP address")
 	ErrNodeUnreachable       = fmt.Errorf("node is unreachable")
 	ErrTokenGenerationFailed = fmt.Errorf("failed to generate authentication token")
+	ErrInvalidNodeRatio      = fmt.Errorf("invalid node ratio")
 )
 
 // Default agent port for connectivity checks
@@ -205,10 +206,25 @@ type UpdateNodeRequest struct {
 	Status    *models.NodeStatus `json:"status,omitempty" validate:"omitempty,oneof=active maintenance offline"`
 	// CreationPaused, when set, stops or resumes placing new VMs on the node.
 	CreationPaused *bool `json:"creation_paused,omitempty"`
+	// VCPURatio, when set, is the node's own vCPU overcommit ratio; 0 returns
+	// it to the panel-wide one.
+	VCPURatio *float64 `json:"vcpu_ratio,omitempty"`
+	// NodeGroup, when set, puts the node in a hypervisor group; "" takes it out.
+	NodeGroup *string `json:"node_group,omitempty"`
 }
 
 // UpdateNode updates an existing node's information
 func (s *NodeService) UpdateNode(ctx context.Context, id string, req *UpdateNodeRequest) (*models.Node, error) {
+	if req.VCPURatio != nil && (*req.VCPURatio < 0 || *req.VCPURatio > 100) {
+		return nil, fmt.Errorf("%w: the vCPU ratio must be between 0 and 100", ErrInvalidNodeRatio)
+	}
+	if req.NodeGroup != nil {
+		g, err := NormalizeNodeGroup(*req.NodeGroup)
+		if err != nil {
+			return nil, err
+		}
+		req.NodeGroup = &g
+	}
 	// Get existing node
 	node, err := s.repo.GetByID(ctx, id)
 	if err != nil {
@@ -266,6 +282,20 @@ func (s *NodeService) UpdateNode(ctx context.Context, id string, req *UpdateNode
 		}
 		node.CreationPaused = *req.CreationPaused
 	}
+	if req.VCPURatio != nil {
+		if err := s.db.WithContext(ctx).Table("nodes").Where("id = ?", node.ID).
+			Update("vcpu_ratio", *req.VCPURatio).Error; err != nil {
+			return nil, fmt.Errorf("failed to update node: %w", err)
+		}
+		node.VCPURatio = *req.VCPURatio
+	}
+	if req.NodeGroup != nil {
+		if err := s.db.WithContext(ctx).Table("nodes").Where("id = ?", node.ID).
+			Update("node_group", *req.NodeGroup).Error; err != nil {
+			return nil, fmt.Errorf("failed to update node: %w", err)
+		}
+		node.NodeGroup = *req.NodeGroup
+	}
 
 	return node, nil
 }
@@ -290,6 +320,9 @@ func (s *NodeService) DeleteNode(ctx context.Context, id string, opts *DeleteNod
 
 	if err := s.repo.Delete(ctx, id); err != nil {
 		return fmt.Errorf("failed to delete node: %w", err)
+	}
+	if hook := NodeRemovedHook; hook != nil {
+		go hook(context.WithoutCancel(ctx), id)
 	}
 
 	return nil
@@ -406,22 +439,12 @@ func (s *NodeService) GetNodesWithHealth(ctx context.Context) ([]NodeWithHealth,
 	}
 	wg.Wait()
 
+	// The stored status is the collector's to change: it marks a node offline
+	// after several missed checks and tells operators. Loading this page must
+	// not flip it on a single dial.
 	result := make([]NodeWithHealth, len(nodes))
 	for i, node := range nodes {
-		online := onlineByIdx[i]
-		result[i] = NodeWithHealth{
-			Node:   node,
-			Online: online,
-		}
-
-		// Auto-sync status based on health check
-		if online && node.Status == models.NodeStatusOffline {
-			_ = s.repo.UpdateStatus(ctx, node.ID, models.NodeStatusActive)
-			result[i].Node.Status = models.NodeStatusActive
-		} else if !online && node.Status == models.NodeStatusActive {
-			_ = s.repo.UpdateStatus(ctx, node.ID, models.NodeStatusOffline)
-			result[i].Node.Status = models.NodeStatusOffline
-		}
+		result[i] = NodeWithHealth{Node: node, Online: onlineByIdx[i]}
 	}
 
 	return result, nil
@@ -475,10 +498,27 @@ func (s *NodeService) GetNodeMetrics(ctx context.Context, id string) (*NodeMetri
 	if err != nil {
 		return nil, fmt.Errorf("failed to check node health: %w", err)
 	}
+	return s.nodeMetrics(ctx, node, online), nil
+}
+
+// PollNodeMetrics is GetNodeMetrics for the collector: it dials the node now
+// instead of trusting the answer a page cached, because marking a node offline
+// is decided on what this returns.
+func (s *NodeService) PollNodeMetrics(ctx context.Context, node *models.Node) *NodeMetrics {
+	online := s.dialNode(ctx, fmt.Sprintf("%s:%d", node.IPAddress, s.agentPort))
+	return s.nodeMetrics(ctx, node, online)
+}
+
+// nodeMetrics asks a node for its figures. online is whether its agent port
+// answered; a node that did not gets zeros marked "offline", never an error.
+func (s *NodeService) nodeMetrics(ctx context.Context, node *models.Node, online bool) *NodeMetrics {
+	id := node.ID
 
 	// Get VM count from database
 	var vmCount int64
-	s.db.WithContext(ctx).Model(&models.VM{}).Where("node_id = ?", id).Count(&vmCount)
+	if s.db != nil {
+		s.db.WithContext(ctx).Model(&models.VM{}).Where("node_id = ?", id).Count(&vmCount)
+	}
 
 	if !online {
 		return &NodeMetrics{
@@ -489,7 +529,9 @@ func (s *NodeService) GetNodeMetrics(ctx context.Context, id string) (*NodeMetri
 			DiskUsage:   0,
 			VMCount:     int(vmCount),
 			Status:      "offline",
-		}, nil
+
+			FirewallEnforcement: models.FirewallUnknown,
+		}
 	}
 
 	// Register node with agent client and try to get metrics
@@ -531,8 +573,14 @@ func (s *NodeService) GetNodeMetrics(ctx context.Context, id string) (*NodeMetri
 				LoadAvg:              []float64{liveInfo.LoadAvg1, liveInfo.LoadAvg5, liveInfo.LoadAvg15},
 				ConntrackCount:       liveInfo.ConntrackCount,
 				ConntrackMax:         liveInfo.ConntrackMax,
+				FirewallEnforcement:  firewallEnforcement(liveInfo.FirewallEnforcement),
+				NATAddress:           liveInfo.NATAddress,
+				GuestNetworkPending:  liveInfo.GuestNetworkPending,
+				NetworkRepairs:       liveInfo.NetworkRepairs,
+				NetworkRepairLast:    liveInfo.NetworkRepairLast,
+				Live:                 true,
 				Status:               "online",
-			}, nil
+			}
 		}
 		// If gRPC call fails, fall through to return online with zero metrics
 	}
@@ -557,7 +605,8 @@ func (s *NodeService) GetNodeMetrics(ctx context.Context, id string) (*NodeMetri
 		AvailableDiskGB:      0,
 		LoadAvg:              []float64{0, 0, 0},
 		Status:               "online",
-	}, nil
+		FirewallEnforcement:  models.FirewallUnknown,
+	}
 }
 
 // NodeMetrics represents node performance metrics
@@ -589,4 +638,39 @@ type NodeMetrics struct {
 	// node could not read it — unknown, not empty.
 	ConntrackCount int64 `json:"conntrack_count"`
 	ConntrackMax   int64 `json:"conntrack_max"`
+
+	// FirewallEnforcement says whether the node passes bridged guest traffic
+	// through its firewall: models.FirewallEnforced, FirewallOff or
+	// FirewallUnknown. Unknown covers an unreachable node and an agent too old
+	// to say; it is never shown as enforced.
+	FirewallEnforcement string `json:"firewall_enforcement"`
+	// NATAddress is the node address port forwards are published on. Empty
+	// from an agent that still publishes them on every local address.
+	NATAddress string `json:"nat_address"`
+	// GuestNetworkPending, NetworkRepairs and NetworkRepairLast are passed on
+	// from the agent (see client.LiveMetricsResult).
+	GuestNetworkPending []string `json:"-"`
+	NetworkRepairs      int64    `json:"-"`
+	NetworkRepairLast   string   `json:"-"`
+	// Live is true when the figures came from the agent in this call, rather
+	// than being the zero values of a node that did not answer.
+	Live bool `json:"-"`
+}
+
+// firewallEnforcement maps what an agent reported to a state the panel shows.
+// Anything but a clear answer is unknown: an old agent sends nothing.
+func firewallEnforcement(reported string) string {
+	switch reported {
+	case models.FirewallEnforced, models.FirewallOff:
+		return reported
+	}
+	return models.FirewallUnknown
+}
+
+// Allocation reports what a node has promised to VMs, against what it has.
+func (s *NodeService) Allocation(ctx context.Context, node *models.Node) (*NodeAllocation, error) {
+	if node == nil || s.db == nil {
+		return nil, nil
+	}
+	return NodeAllocationOf(ctx, s.db, *node)
 }

@@ -2,9 +2,15 @@ package service
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
+	"math"
+	"path"
+	"sort"
 
 	"github.com/maburvm/panel/internal/shared/models"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // diskHeadroomBytes is kept free on a pool over and above the disk being
@@ -34,26 +40,90 @@ func PrimaryPool(ctx context.Context, db *gorm.DB, nodeID string) *models.Storag
 	var pools []models.StoragePool
 	if err := db.WithContext(ctx).
 		Where("node_id = ? AND status = ?", nodeID, "online").
-		Find(&pools).Error; err != nil || len(pools) == 0 {
+		Find(&pools).Error; err != nil {
 		return nil
 	}
+	// An RBD pool takes new VMs by default only when staff made it the pool
+	// for new VMs: being the roomiest is not a choice anyone made.
+	if p := pickPool(pools); p == nil || p.Type != models.PoolTypeRBD || p.IsPrimary {
+		return p
+	}
+	return pickPool(ownPools(pools))
+}
 
-	var fallback *models.StoragePool
+// ownPools are the pools on a node's own storage: all but its RBD pools.
+func ownPools(pools []models.StoragePool) []models.StoragePool {
+	var out []models.StoragePool
+	for _, p := range pools {
+		if p.Type != models.PoolTypeRBD {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// AgentPoolRef is a pool as a node's agent is told of it: the pool type ("" is
+// a directory) and the pool path. An RBD pool's path names its cluster too
+// (models.RBDPoolRef), which the pool's own row does not carry.
+func AgentPoolRef(ctx context.Context, db *gorm.DB, p *models.StoragePool) (poolType, poolPath string, err error) {
+	switch {
+	case p == nil:
+		return "", "", nil
+	case models.IsLVMPoolType(p.Type):
+		return p.Type, p.Path, nil
+	case p.Type != models.PoolTypeRBD:
+		return "", p.Path, nil
+	}
+	var sp models.SharedStoragePool
+	if p.SharedPoolID == nil || db.WithContext(ctx).Where("id = ?", *p.SharedPoolID).First(&sp).Error != nil || sp.CephClusterID == nil {
+		return "", "", fmt.Errorf("storage pool %s is an RBD pool whose Ceph cluster the panel has no record of", p.Name)
+	}
+	return models.PoolTypeRBD, models.RBDPoolRef(*sp.CephClusterID, sp.RBDPool, sp.RBDNamespace), nil
+}
+
+// pickPool applies PrimaryPool's order of preference to a node's pools.
+//
+// Two primaries should not exist, but rows written by older panels can hold
+// them. Then the roomiest primary wins (the headroom is flat, so that is also
+// the most room after headroom), not whichever row the database returned first.
+func pickPool(pools []models.StoragePool) *models.StoragePool {
+	if len(pools) == 0 {
+		return nil
+	}
+	// Ties go to the lower id, so the choice does not follow row order.
+	roomier := func(a, b *models.StoragePool) bool {
+		if a.AvailableSpace != b.AvailableSpace {
+			return a.AvailableSpace > b.AvailableSpace
+		}
+		return a.ID < b.ID
+	}
+	var primary, fallback *models.StoragePool
+	primaries := 0
 	for i := range pools {
 		if pools[i].IsPrimary {
-			return &pools[i]
+			primaries++
+			if primary == nil || roomier(&pools[i], primary) {
+				primary = &pools[i]
+			}
 		}
 		if pools[i].Path == DefaultNodeImageDir {
 			fallback = &pools[i]
 		}
 	}
+	if primaries > 1 {
+		slog.Warn("storage: node has more than one primary pool; using the one with the most free space. Choose one with \"Use for new VMs\" on the Storage page",
+			"node_id", primary.NodeID, "pool", primary.Name, "path", primary.Path, "primaries", primaries)
+	}
+	if primary != nil {
+		return primary
+	}
 	if fallback != nil {
 		return fallback
 	}
 
-	roomiest := &pools[0]
+	var roomiest *models.StoragePool
 	for i := range pools {
-		if pools[i].AvailableSpace > roomiest.AvailableSpace {
+		if roomiest == nil || roomier(&pools[i], roomiest) {
 			roomiest = &pools[i]
 		}
 	}
@@ -65,32 +135,527 @@ func PrimaryPool(ctx context.Context, db *gorm.DB, nodeID string) *models.Storag
 // announce it.
 const DefaultNodeImageDir = "/var/lib/libvirt/images"
 
-// PoolFits reports whether a pool has room for a disk of the given size, plus
-// headroom.
+// VMPool returns the pool a VM's disks live in: the one recorded when it was
+// created, else the pool its node provisions into. nil means the panel knows
+// no pool on that node.
+func VMPool(ctx context.Context, db *gorm.DB, vmID, nodeID string) *models.StoragePool {
+	if db == nil {
+		return nil
+	}
+	var id *string
+	if err := db.WithContext(ctx).Raw("SELECT storage_pool_id FROM vms WHERE id = ?", vmID).Scan(&id).Error; err == nil && id != nil && *id != "" {
+		var pool models.StoragePool
+		// A pool on another node is a stale record from before a migration.
+		if db.WithContext(ctx).Where("id = ? AND node_id = ?", *id, nodeID).First(&pool).Error == nil {
+			return &pool
+		}
+	}
+	// A VM with no pool on record was made before pools were recorded: on the
+	// node's own storage, never in an RBD pool.
+	var pools []models.StoragePool
+	if err := db.WithContext(ctx).Where("node_id = ? AND status = ?", nodeID, "online").Find(&pools).Error; err != nil {
+		return nil
+	}
+	return pickPool(ownPools(pools))
+}
+
+// PoolFits reports whether a pool's real free space can hold a disk of the
+// given size in full, plus headroom. This is the floor under every admission:
+// no overcommit ratio lets a disk in that could not be written to the end.
 //
 // An unknown pool (nil) fits: the panel not having synced a node's storage is
 // not evidence that the node is full, and treating it as full would stop orders
 // on a healthy node. A pool reporting no total capacity is treated the same way
 // — that is a missing measurement, not a full disk.
 func PoolFits(pool *models.StoragePool, diskGB int) bool {
-	return PoolFitsRatio(pool, diskGB, DefaultDiskOvercommitRatio)
-}
-
-// PoolFitsRatio is PoolFits with an operator-configured overcommit ratio, which
-// scales the free space admission is allowed to draw on. At 1.0 it is identical
-// to PoolFits — allocate only what physically exists. Above that it lets the
-// pool carry more allocated disk than it has bytes, which thin provisioning
-// makes workable right up until guests actually write, hence the reserve below
-// staying un-scaled: overcommit is a bet on usage, but the margin that lets an
-// operator recover when the bet goes wrong should not shrink with it.
-func PoolFitsRatio(pool *models.StoragePool, diskGB int, ratio float64) bool {
 	if pool == nil || pool.TotalSpace <= 0 {
 		return true
 	}
-	if ratio <= 0 {
-		ratio = DefaultDiskOvercommitRatio
+	return pool.AvailableSpace >= int64(diskGB)*bytesPerGB+diskHeadroomBytes
+}
+
+// PoolWithinRatio reports whether a pool that has already promised
+// allocatedBytes of virtual disk may promise addGB more, under an allocation
+// ratio. Free space cannot answer this: disks are thin, so the pool looks just
+// as empty to the next order as it did to this one.
+//
+// A ratio of 0 or less means no cap. An unmeasured pool is within any ratio,
+// for the reason PoolFits gives.
+func PoolWithinRatio(pool *models.StoragePool, allocatedBytes int64, addGB int, ratio float64) bool {
+	if pool == nil || pool.TotalSpace <= 0 || ratio <= 0 {
+		return true
 	}
-	usable := int64(float64(pool.AvailableSpace) * ratio)
-	need := int64(diskGB)*1024*1024*1024 + diskHeadroomBytes
-	return usable >= need
+	return float64(allocatedBytes+int64(addGB)*bytesPerGB) <= float64(pool.TotalSpace)*ratio
+}
+
+// PoolAllocations returns, per storage pool id, the bytes of virtual disk the
+// panel has promised there: VM system disks, extra disks, extra disks being
+// attached, and volumes. An empty nodeID covers every node.
+//
+// A system disk counts against the pool recorded on its VM. A VM with none
+// recorded (imported, or moved between nodes) counts against the pool its node
+// provisions into. An extra disk counts against the pool whose directory holds
+// it.
+//
+// ponytail: counts what the panel knows. Domains on a node that the panel does
+// not manage are not counted; have the agent report virtual sizes per pool if
+// that gap matters.
+//
+// A shared pool is one storage however many nodes mount it: each member row
+// reports what VMs on every member have been promised there.
+func PoolAllocations(ctx context.Context, db *gorm.DB, nodeID string) (map[string]int64, error) {
+	out, pools, err := poolAllocations(ctx, db, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	shared := false
+	for _, p := range pools {
+		shared = shared || p.SharedPoolID != nil
+	}
+	if !shared {
+		return out, nil
+	}
+	if nodeID != "" {
+		// The other members' VMs count too, and they are on other nodes.
+		all, allPools, err := poolAllocations(ctx, db, "")
+		if err != nil {
+			return nil, err
+		}
+		foldSharedAllocations(all, allPools)
+		for id := range out {
+			out[id] = all[id]
+		}
+		return out, nil
+	}
+	foldSharedAllocations(out, pools)
+	return out, nil
+}
+
+// foldSharedAllocations gives every member row of a shared pool the sum of
+// what all its members hold.
+func foldSharedAllocations(out map[string]int64, pools []models.StoragePool) {
+	sum := map[string]int64{}
+	for _, p := range pools {
+		if p.SharedPoolID != nil {
+			sum[*p.SharedPoolID] += out[p.ID]
+		}
+	}
+	for _, p := range pools {
+		if p.SharedPoolID != nil {
+			out[p.ID] = sum[*p.SharedPoolID]
+		}
+	}
+}
+
+func poolAllocations(ctx context.Context, db *gorm.DB, nodeID string) (map[string]int64, []models.StoragePool, error) {
+	onNode := func(q *gorm.DB, column string) *gorm.DB {
+		if nodeID != "" {
+			return q.Where(column+" = ?", nodeID)
+		}
+		return q
+	}
+
+	var pools []models.StoragePool
+	if err := onNode(db.WithContext(ctx), "node_id").Find(&pools).Error; err != nil {
+		return nil, nil, fmt.Errorf("failed to list storage pools: %w", err)
+	}
+	byNode := map[string][]models.StoragePool{}
+	out := make(map[string]int64, len(pools))
+	for _, p := range pools {
+		byNode[p.NodeID] = append(byNode[p.NodeID], p)
+		out[p.ID] = 0
+	}
+
+	var vms []struct {
+		ID            string
+		NodeID        string
+		Resources     models.Resources `gorm:"serializer:json"`
+		StoragePoolID *string
+	}
+	if err := onNode(db.WithContext(ctx).Table("vms").
+		Select("id, node_id, resources, storage_pool_id").
+		Where("deleted_at IS NULL"), "node_id").Find(&vms).Error; err != nil {
+		return nil, nil, fmt.Errorf("failed to list VM disks: %w", err)
+	}
+
+	vmPool := make(map[string]string, len(vms))
+	vmNode := make(map[string]string, len(vms))
+	// One pick per node: pickPool warns on two primaries, and this runs on every
+	// metrics scrape.
+	picked := map[string]*models.StoragePool{}
+	for _, vm := range vms {
+		poolID := ""
+		if vm.StoragePoolID != nil {
+			for _, p := range byNode[vm.NodeID] {
+				if p.ID == *vm.StoragePoolID {
+					poolID = p.ID
+				}
+			}
+		}
+		if poolID == "" {
+			p, ok := picked[vm.NodeID]
+			if !ok {
+				p = pickPool(ownPools(byNode[vm.NodeID])) // as VMPool guesses
+				picked[vm.NodeID] = p
+			}
+			if p != nil {
+				poolID = p.ID
+			}
+		}
+		vmPool[vm.ID] = poolID
+		vmNode[vm.ID] = vm.NodeID
+		if poolID != "" {
+			out[poolID] += int64(vm.Resources.Disk) * bytesPerGB
+		}
+	}
+
+	var disks []struct {
+		VMID   string `gorm:"column:vm_id"`
+		SizeGB int    `gorm:"column:size_gb"`
+		Path   string
+	}
+	if err := db.WithContext(ctx).Table("vm_disks").Select("vm_id, size_gb, path").
+		Where("deleted_at IS NULL").Find(&disks).Error; err != nil {
+		return nil, nil, fmt.Errorf("failed to list extra disks: %w", err)
+	}
+	for _, d := range disks {
+		poolID, known := vmPool[d.VMID]
+		if !known {
+			continue
+		}
+		if own := poolByID(byNode[vmNode[d.VMID]], poolID); own == nil || !PoolHoldsDisk(*own, d.Path) {
+			for _, p := range byNode[vmNode[d.VMID]] {
+				if PoolHoldsDisk(p, d.Path) {
+					poolID = p.ID
+				}
+			}
+		}
+		if poolID != "" {
+			out[poolID] += int64(d.SizeGB) * bytesPerGB
+		}
+	}
+
+	// An attach in flight has no disk row yet, only its reservation.
+	var pending []struct {
+		VMID   string `gorm:"column:vm_id"`
+		SizeGB int    `gorm:"column:size_gb"`
+	}
+	if err := db.WithContext(ctx).Table("disk_quota_reservations").Select("vm_id, size_gb").
+		Where("status = ?", models.DiskQuotaReservationPending).Find(&pending).Error; err != nil {
+		return nil, nil, fmt.Errorf("failed to list disk reservations: %w", err)
+	}
+	for _, r := range pending {
+		if poolID := vmPool[r.VMID]; poolID != "" {
+			out[poolID] += int64(r.SizeGB) * bytesPerGB
+		}
+	}
+
+	var volumes []models.StorageVolume
+	if err := db.WithContext(ctx).Select("pool_id, size").Find(&volumes).Error; err != nil {
+		return nil, nil, fmt.Errorf("failed to list storage volumes: %w", err)
+	}
+	for _, v := range volumes {
+		if _, ok := out[v.PoolID]; ok {
+			out[v.PoolID] += v.Size
+		}
+	}
+	return out, pools, nil
+}
+
+// PoolHoldsDisk reports whether the pool holds the disk at diskPath: a file
+// directly in its directory, a logical volume in its volume group, or an
+// image in its RBD pool.
+func PoolHoldsDisk(p models.StoragePool, diskPath string) bool {
+	if p.Type == models.PoolTypeRBD || models.IsRBDPath(diskPath) {
+		return p.Type == models.PoolTypeRBD && models.RBDPoolHolds(p.Path, diskPath)
+	}
+	if models.IsLVMPoolType(p.Type) {
+		return models.LVMPoolHolds(p.Type, p.Path, diskPath)
+	}
+	return !models.IsBlockDevicePath(diskPath) && path.Clean(p.Path) == path.Dir(diskPath)
+}
+
+// VMOnRBD reports a VM whose system disk is in an RBD pool. Its data disks
+// are there too: a node refuses to mix the two kinds of storage in one VM.
+func VMOnRBD(ctx context.Context, db *gorm.DB, vm *models.VM) bool {
+	// Ids are compared as text: older installs hold some as varchar.
+	var n int64
+	db.WithContext(ctx).Raw(`SELECT COUNT(*) FROM vms v JOIN storage_pools p ON CAST(p.id AS TEXT) = CAST(v.storage_pool_id AS TEXT)
+		WHERE CAST(v.id AS TEXT) = ? AND CAST(p.node_id AS TEXT) = CAST(v.node_id AS TEXT) AND p.type = ? AND p.deleted_at IS NULL`,
+		vm.ID, models.PoolTypeRBD).Scan(&n)
+	return n > 0
+}
+
+func poolByID(pools []models.StoragePool, id string) *models.StoragePool {
+	for i := range pools {
+		if pools[i].ID == id {
+			return &pools[i]
+		}
+	}
+	return nil
+}
+
+// DiskPool is the registered pool on the VM's node holding the disk at
+// diskPath, the VM's own pool first; nil when none does.
+func DiskPool(ctx context.Context, db *gorm.DB, vmID, nodeID, diskPath string) *models.StoragePool {
+	if own := VMPool(ctx, db, vmID, nodeID); own != nil && PoolHoldsDisk(*own, diskPath) {
+		return own
+	}
+	var pools []models.StoragePool
+	if db.WithContext(ctx).Where("node_id = ?", nodeID).Find(&pools).Error != nil {
+		return nil
+	}
+	for i := range pools {
+		if PoolHoldsDisk(pools[i], diskPath) {
+			return &pools[i]
+		}
+	}
+	return nil
+}
+
+// VMOnBlockStorage reports a VM with a disk the panel knows is a logical
+// volume: its system disk in an LVM pool, or a data disk on a device. A disk
+// the panel never recorded is caught by the node.
+func VMOnBlockStorage(ctx context.Context, db *gorm.DB, vm *models.VM) bool {
+	var id *string
+	if err := db.WithContext(ctx).Raw("SELECT storage_pool_id FROM vms WHERE id = ?", vm.ID).Scan(&id).Error; err == nil && id != nil && *id != "" {
+		var pool models.StoragePool
+		if db.WithContext(ctx).Where("id = ? AND node_id = ?", *id, vm.NodeID).First(&pool).Error == nil && models.IsLVMPoolType(pool.Type) {
+			return true
+		}
+	}
+	var n int64
+	db.WithContext(ctx).Model(&models.VMDisk{}).Where("vm_id = ? AND path LIKE ?", vm.ID, "/dev/%").Count(&n)
+	return n > 0
+}
+
+// AdmitPoolDisk checks that a pool can take addGB more gigabytes of disk: the
+// whole disk must fit in real free space with headroom, and, when the operator
+// has set an allocation ratio, everything promised on the pool must stay
+// within capacity times that ratio.
+//
+// Call it in the transaction that records the new disk. The pool row is locked
+// there, so two orders cannot both be admitted against the same room.
+func AdmitPoolDisk(ctx context.Context, tx *gorm.DB, pool *models.StoragePool, addGB int) error {
+	if pool == nil || addGB <= 0 {
+		return nil
+	}
+	if !PoolFits(pool, addGB) {
+		return fmt.Errorf("%w: storage pool %s has %d GB free, and a %d GB disk needs that much plus %d GB kept free",
+			ErrNodeCapacityExceeded, pool.Name, pool.AvailableSpace/bytesPerGB, addGB, diskHeadroomBytes/bytesPerGB)
+	}
+	return admitPoolRatio(ctx, tx, pool, addGB)
+}
+
+// nodeLoad is what a node has promised to VMs, with the ratios that cap it.
+type nodeLoad struct {
+	Node           models.Node
+	AllocatedVCPU  int
+	AllocatedRAMMB int64
+	RAMRatio       float64 // 0 = no cap
+	VCPURatio      float64 // 0 = no cap
+}
+
+// ramFits mirrors AdmitNodeRAMTx, so placement never picks a node admission
+// then refuses. Unmeasured RAM or no ratio fits.
+func (n nodeLoad) ramFits(ramMB int) bool {
+	if n.RAMRatio <= 0 || n.Node.MemoryTotalBytes <= 0 {
+		return true
+	}
+	capacityMB := int64(float64(n.Node.MemoryTotalBytes) / (1024 * 1024) * n.RAMRatio)
+	return n.AllocatedRAMMB+int64(ramMB) <= capacityMB
+}
+
+// vcpuFits is the vCPU half: unmeasured CPUs or no ratio fits.
+func (n nodeLoad) vcpuFits(cpu int) bool {
+	return vcpuWithinRatio(n.Node.CPUCount, n.AllocatedVCPU, cpu, n.VCPURatio)
+}
+
+func vcpuWithinRatio(cpuCount, allocated, add int, ratio float64) bool {
+	if ratio <= 0 || cpuCount <= 0 || add <= 0 {
+		return true
+	}
+	return float64(allocated+add) <= float64(cpuCount)*ratio
+}
+
+// rankNodes orders candidates best first for a VM of ramMB: least RAM
+// allocated relative to the node's physical RAM once the VM is placed, then
+// most RAM left, then by name and id so the same state always picks the same
+// node. Nodes whose RAM has not been measured go last.
+func rankNodes(loads []nodeLoad, ramMB int) []nodeLoad {
+	out := append([]nodeLoad(nil), loads...)
+	share := func(n nodeLoad) float64 {
+		total := float64(n.Node.MemoryTotalBytes) / (1024 * 1024)
+		if total <= 0 {
+			return math.Inf(1)
+		}
+		return float64(n.AllocatedRAMMB+int64(ramMB)) / total
+	}
+	free := func(n nodeLoad) int64 { return n.Node.MemoryTotalBytes/(1024*1024) - n.AllocatedRAMMB }
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if sa, sb := share(a), share(b); sa != sb {
+			return sa < sb
+		}
+		if fa, fb := free(a), free(b); fa != fb {
+			return fa > fb
+		}
+		if a.Node.Name != b.Node.Name {
+			return a.Node.Name < b.Node.Name
+		}
+		return a.Node.ID < b.Node.ID
+	})
+	return out
+}
+
+// nodeAllocations sums the vCPUs and RAM (MB) the panel has promised on each
+// of the given nodes. Summed here rather than in SQL so it reads the same on
+// every database.
+func nodeAllocations(ctx context.Context, db *gorm.DB, nodeIDs []string) (map[string][2]int64, error) {
+	out := make(map[string][2]int64, len(nodeIDs))
+	if len(nodeIDs) == 0 {
+		return out, nil
+	}
+	var vms []struct {
+		NodeID    string
+		Resources models.Resources `gorm:"serializer:json"`
+	}
+	if err := db.WithContext(ctx).Table("vms").Select("node_id, resources").
+		Where("deleted_at IS NULL AND node_id IN ?", nodeIDs).Find(&vms).Error; err != nil {
+		return nil, fmt.Errorf("failed to sum node allocations: %w", err)
+	}
+	for _, vm := range vms {
+		a := out[vm.NodeID]
+		a[0] += int64(vm.Resources.CPU)
+		a[1] += int64(vm.Resources.RAM)
+		out[vm.NodeID] = a
+	}
+	return out, nil
+}
+
+// loadNodes pairs nodes with what is promised on them and their ratios.
+func loadNodes(ctx context.Context, db *gorm.DB, nodes []models.Node) ([]nodeLoad, error) {
+	ids := make([]string, len(nodes))
+	for i := range nodes {
+		ids[i] = nodes[i].ID
+	}
+	alloc, err := nodeAllocations(ctx, db, ids)
+	if err != nil {
+		return nil, err
+	}
+	ramRatio := RAMOvercommitRatio(ctx, db)
+	out := make([]nodeLoad, len(nodes))
+	for i, n := range nodes {
+		out[i] = nodeLoad{
+			Node: n, AllocatedVCPU: int(alloc[n.ID][0]), AllocatedRAMMB: alloc[n.ID][1],
+			RAMRatio: ramRatio, VCPURatio: VCPUAllocationRatio(ctx, db, n.VCPURatio),
+		}
+	}
+	return out, nil
+}
+
+// AdmitNodeVCPU checks that a node may carry addCPU more vCPUs under its vCPU
+// ratio. Call it in the transaction that records the change: the node row is
+// locked there, so concurrent orders on one node are admitted one at a time.
+// No ratio, a node whose CPUs were never measured, or a shrink all pass.
+func AdmitNodeVCPU(ctx context.Context, tx *gorm.DB, nodeID string, addCPU int) error {
+	if nodeID == "" || addCPU <= 0 {
+		return nil
+	}
+	read := func(q *gorm.DB) (models.Node, error) {
+		var node models.Node
+		err := q.Where("id = ?", nodeID).First(&node).Error
+		return node, err
+	}
+	node, err := read(tx.WithContext(ctx))
+	if err != nil {
+		return fmt.Errorf("failed to read node: %w", err)
+	}
+	// Locked only when there is a cap to keep: with none, nothing changes.
+	if VCPUAllocationRatio(ctx, tx, node.VCPURatio) <= 0 || node.CPUCount <= 0 {
+		return nil
+	}
+	if node, err = read(tx.WithContext(ctx).Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate})); err != nil {
+		return fmt.Errorf("failed to lock node: %w", err)
+	}
+	ratio := VCPUAllocationRatio(ctx, tx, node.VCPURatio)
+	alloc, err := nodeAllocations(ctx, tx, []string{nodeID})
+	if err != nil {
+		return err
+	}
+	allocated := int(alloc[nodeID][0])
+	if !vcpuWithinRatio(node.CPUCount, allocated, addCPU, ratio) {
+		return fmt.Errorf("%w: node %s would carry %d vCPUs, over its limit of %d (%.2fx its %d CPUs)",
+			ErrNodeCapacityExceeded, node.Name, allocated+addCPU, int(float64(node.CPUCount)*ratio), ratio, node.CPUCount)
+	}
+	return nil
+}
+
+// admitPoolRatio is the allocation-ratio half of AdmitPoolDisk. With addGB 0 it
+// re-checks a pool after the new disk has been recorded.
+func admitPoolRatio(ctx context.Context, tx *gorm.DB, pool *models.StoragePool, addGB int) error {
+	if pool == nil || pool.TotalSpace <= 0 {
+		return nil
+	}
+	ratio := DiskAllocationRatio(ctx, tx)
+	if ratio <= 0 {
+		return nil
+	}
+	// Every member of a shared pool is locked: an order on another member
+	// draws on the same room.
+	var locked []models.StoragePool
+	lock := tx.WithContext(ctx).Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}).Select("id").Order("id")
+	if pool.SharedPoolID != nil {
+		lock = lock.Where("shared_pool_id = ?", *pool.SharedPoolID)
+	} else {
+		lock = lock.Where("id = ?", pool.ID)
+	}
+	if err := lock.Find(&locked).Error; err != nil || len(locked) == 0 {
+		return fmt.Errorf("failed to lock storage pool: %v", err)
+	}
+	allocated, err := PoolAllocations(ctx, tx, pool.NodeID)
+	if err != nil {
+		return err
+	}
+	if !PoolWithinRatio(pool, allocated[pool.ID], addGB, ratio) {
+		return fmt.Errorf("%w: storage pool %s would have %d GB of disk allocated, over its limit of %d GB (%.2fx its capacity)",
+			ErrNodeCapacityExceeded, pool.Name,
+			allocated[pool.ID]/bytesPerGB+int64(addGB), int64(float64(pool.TotalSpace)*ratio)/bytesPerGB, ratio)
+	}
+	return nil
+}
+
+// NodeAllocation is what a node has promised to VMs against what it has, with
+// the ratios that cap it. A limit of 0 is no cap (no ratio, or not measured).
+type NodeAllocation struct {
+	VCPUAllocated int     `json:"vcpu_allocated"`
+	CPUCount      int     `json:"cpu_count"`
+	VCPURatio     float64 `json:"vcpu_ratio"`
+	// VCPURatioNode is the node's own ratio; 0 means the panel-wide one applies.
+	VCPURatioNode  float64 `json:"vcpu_ratio_node"`
+	VCPULimit      int     `json:"vcpu_limit"`
+	RAMAllocatedMB int64   `json:"ram_allocated_mb"`
+	RAMTotalMB     int64   `json:"ram_total_mb"`
+	RAMRatio       float64 `json:"ram_ratio"`
+	RAMLimitMB     int64   `json:"ram_limit_mb"`
+}
+
+// NodeAllocationOf reports a node's allocation, for its page.
+func NodeAllocationOf(ctx context.Context, db *gorm.DB, node models.Node) (*NodeAllocation, error) {
+	loads, err := loadNodes(ctx, db, []models.Node{node})
+	if err != nil {
+		return nil, err
+	}
+	n := loads[0]
+	a := &NodeAllocation{
+		VCPUAllocated: n.AllocatedVCPU, CPUCount: node.CPUCount, VCPURatio: n.VCPURatio, VCPURatioNode: node.VCPURatio,
+		RAMAllocatedMB: n.AllocatedRAMMB, RAMTotalMB: node.MemoryTotalBytes / (1024 * 1024), RAMRatio: n.RAMRatio,
+	}
+	if n.VCPURatio > 0 && node.CPUCount > 0 {
+		a.VCPULimit = int(float64(node.CPUCount) * n.VCPURatio)
+	}
+	if n.RAMRatio > 0 && node.MemoryTotalBytes > 0 {
+		a.RAMLimitMB = int64(float64(node.MemoryTotalBytes) / (1024 * 1024) * n.RAMRatio)
+	}
+	return a, nil
 }

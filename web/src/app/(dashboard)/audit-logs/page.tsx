@@ -379,7 +379,19 @@ export default function AuditLogsPage() {
             <option value="BACKUP">Backup</option>
             <option value="OS_TEMPLATE">OS template</option>
             <option value="IP_ADDRESS">IP address</option>
-            <option value="SESSION">Session</option>
+            <option value="SESSION">Sign-in</option>
+            <option value="SETTINGS">Settings</option>
+            <option value="API_KEY">API key</option>
+            <option value="SUPPORT_ACCESS">Support access</option>
+            <option value="PORT_FORWARD">Port forward</option>
+            <option value="FLOATING_IP">Floating IP</option>
+            <option value="IP_POOL">IP pool</option>
+            <option value="PLAN">Plan</option>
+            <option value="BILLING">Billing webhook</option>
+            <option value="MCP">MCP</option>
+            <option value="STAFF_NOTE">Staff note</option>
+            <option value="ANNOUNCEMENT">Announcement</option>
+            <option value="MAINTENANCE">Maintenance mode</option>
           </select>
           
           {/* Date From */}
@@ -446,6 +458,12 @@ export default function AuditLogsPage() {
                     </td>
                     <td className="px-4 py-3">
                       <ActionBadge action={log.action} />
+                      {typeof log.details?.route === "string" && log.details.route && (
+                        <p className="mt-1 font-mono text-xs text-muted-foreground">
+                          {String(log.details.method ?? "")} {log.details.route}
+                          {log.details.failed === true && <span className="ml-2 text-destructive">failed ({String(log.details.http_status)})</span>}
+                        </p>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-sm font-medium">
                       <span className="font-mono">{log.resource_id ? log.resource_id.slice(0, 12) + "..." : "-"}</span>

@@ -23,6 +23,8 @@ const STATUSES: Record<string, { tone: Tone; label: string; busy?: boolean }> = 
   starting: { tone: "info", label: "Starting", busy: true },
   stopping: { tone: "info", label: "Stopping", busy: true },
   restarting: { tone: "info", label: "Restarting", busy: true },
+  // The node is offline: what the panel last saw is not the VM's state.
+  unknown: { tone: "warn", label: "State unknown" },
   // Backups, snapshots and other jobs
   completed: { tone: "ok", label: "Completed" },
   failed: { tone: "bad", label: "Failed" },
@@ -31,10 +33,31 @@ const STATUSES: Record<string, { tone: Tone; label: string; busy?: boolean }> = 
   // Firewall rules
   allow: { tone: "ok", label: "Allow" },
   deny: { tone: "bad", label: "Deny" },
+  reject: { tone: "bad", label: "Reject" },
   // Node
   active: { tone: "ok", label: "Active" },
   maintenance: { tone: "warn", label: "Maintenance" },
   offline: { tone: "bad", label: "Offline" },
+  // Accounts: two-factor, sign-in lockout
+  on: { tone: "ok", label: "On" },
+  off: { tone: "idle", label: "Off" },
+  locked: { tone: "bad", label: "Locked" },
+  // Sign-in history
+  signed_in: { tone: "ok", label: "Signed in" },
+  refused: { tone: "bad", label: "Refused" },
+  reset_requested: { tone: "idle", label: "Reset requested" },
+  // Applying a plan to a VM
+  applied: { tone: "ok", label: "Applied" },
+  partial: { tone: "warn", label: "Partly applied" },
+  up_to_date: { tone: "idle", label: "Up to date" },
+  skipped: { tone: "idle", label: "Not changed" },
+}
+
+// vmStatus is the status to show for a VM. A VM on a node that is not
+// answering is "unknown", whatever the panel last recorded for it.
+export function vmStatus(vm: { status: string; suspended?: boolean; state_unknown?: boolean }): string {
+  if (vm.state_unknown) return "unknown"
+  return vm.suspended ? "suspended" : vm.status
 }
 
 // Lamp colours come from the theme tokens, so they stay readable on the dark

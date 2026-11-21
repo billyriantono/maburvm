@@ -1,0 +1,2 @@
+ALTER TABLE backups DROP COLUMN IF EXISTS consistency;
+ALTER TABLE backups DROP COLUMN IF EXISTS disks;

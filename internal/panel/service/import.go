@@ -311,73 +311,14 @@ func (s *ImportService) processDiscoveredVM(ctx context.Context, req *ImportVirt
 		return result
 	}
 
-	// Generate VNC credentials (8-char alnum — VNC-safe, see generateVNCPassword)
-	vncPort := 5900 + int(time.Now().UnixNano()%100)
-	vncPassword := generateVNCPassword()
-
-	// Calculate disk size from discovered disks
-	totalDiskGB := int(candidate.GetTotalDiskSize())
-	if totalDiskGB == 0 {
-		totalDiskGB = 20 // Default if can't determine
-	}
-
-	// Create VM record
-	vm := &models.VM{
-		ID:           candidate.UUID, // Use original UUID for tracking
-		UserID:       req.UserID,
-		NodeID:       req.NodeID,
-		Hostname:     hostname,
-		OSTemplateID: req.OSTemplateID,
-		Resources: models.Resources{
-			CPU:  candidate.CPU,
-			RAM:  candidate.Memory,
-			Disk: totalDiskGB,
-		},
-		Status:          defaultImportedRuntimeStatus(candidate.Status),
-		SourceMigration: string(queue.ImportSourceVirtualizor),
-		VNCPort:         &vncPort,
-		VNCPassword:     vncPassword,
-	}
-
-	// Create VM in database
-	if err := s.vmRepo.Create(ctx, vm); err != nil {
+	vm, _, err := s.createImportedVM(ctx, importedVMSpec{NodeID: req.NodeID, UserID: req.UserID, TemplateID: req.OSTemplateID, Hostname: hostname}, candidate)
+	if err != nil {
 		result.Status = "error"
-		result.Message = fmt.Sprintf("failed to create VM record: %v", err)
+		result.Message = err.Error()
 		return result
 	}
-
 	result.VMID = vm.ID
-
-	// Create network records for discovered IPs
-	for _, net := range candidate.Networks {
-		if net.IPConfig != nil && net.IPConfig.Address != "" {
-			// Skip private/internal IPs (Docker bridges, etc.)
-			ip := net.IPConfig.Address
-			if strings.HasPrefix(ip, "172.") || strings.HasPrefix(ip, "192.168.") || strings.HasPrefix(ip, "10.") || ip == "127.0.0.1" {
-				continue
-			}
-			networkRecord := &models.Network{
-				ID:        uuid.New().String(),
-				VMID:      vm.ID,
-				IPAddress: ip,
-			}
-			if err := s.networkRepo.Create(ctx, networkRecord); err != nil {
-				s.logger.WarnContext(ctx, "failed to create network record during import",
-					"vm_id", vm.ID,
-					"ip_address", ip,
-					"error", err,
-				)
-				continue
-			}
-			if err := s.assignImportedIPAM(ctx, vm.ID, req.NodeID, ip); err != nil {
-				s.logger.WarnContext(ctx, "failed to record imported IP in IPAM",
-					"vm_id", vm.ID,
-					"ip_address", ip,
-					"error", err,
-				)
-			}
-		}
-	}
+	vncPort := *vm.VNCPort
 
 	var diskMappings []DiskMapping
 	var updatedXMLPath string
@@ -406,9 +347,9 @@ func (s *ImportService) processDiscoveredVM(ctx context.Context, req *ImportVirt
 		"original_status":   candidate.Status,
 		"original_metadata": candidate.Metadata,
 		"networks":          candidate.Networks,
+		// The VNC password stays on the VM row (encrypted), never in job args.
 		"vnc_config": map[string]interface{}{
-			"port":     vncPort,
-			"password": vncPassword,
+			"port": vncPort,
 		},
 	}
 
@@ -487,6 +428,134 @@ func (s *ImportService) processDiscoveredVM(ctx context.Context, req *ImportVirt
 	return result
 }
 
+// importedDisks splits a scanned VM's disk sizes: the gigabytes its row
+// counts (every disk but the recorded ones), and its data disks on block
+// devices, recorded like any data disk so they are listed, counted against
+// their pool and detached safely. Only the first disk is the system disk.
+func importedDisks(c *vmimport.ImportCandidate) (int, []models.VMDisk) {
+	const gib = int64(1) << 30
+	var rest int64
+	var data []models.VMDisk
+	first := true
+	for _, d := range c.Disks {
+		if (d.Device != "" && d.Device != "disk") || d.SourceFile == "" {
+			continue
+		}
+		if !first && models.IsBlockDevicePath(d.SourceFile) && d.TargetDev != "" {
+			data = append(data, models.VMDisk{Device: d.TargetDev, SizeGB: int(max((d.Size+gib-1)/gib, 1)), Path: d.SourceFile})
+		} else if d.Size > 0 {
+			rest += d.Size
+		}
+		first = false
+	}
+	return int(rest / gib), data
+}
+
+// importedVMSpec is how a scanned domain is recorded as a panel VM.
+type importedVMSpec struct {
+	NodeID, UserID, TemplateID, Hostname string
+	// IPs are the addresses to record; nil records the public ones the scan
+	// found (the guest agent also reports container bridges and the like).
+	IPs []string
+	// BandwidthMbps and QuotaGB go on its address records (0 = unlimited).
+	BandwidthMbps int
+	QuotaGB       int64
+	// VNCPassword is the running domain's own; "" generates one.
+	VNCPassword string
+}
+
+// createImportedVM records a scanned domain as a VM where it runs: the row,
+// its data disks on block devices, its addresses and their IPAM entries.
+// Nothing on the node is touched. The warnings are addresses that could not
+// be recorded; the VM is created regardless.
+func (s *ImportService) createImportedVM(ctx context.Context, spec importedVMSpec, candidate *vmimport.ImportCandidate) (*models.VM, []string, error) {
+	// Generate VNC credentials (8-char alnum — VNC-safe, see generateVNCPassword)
+	vncPort := 5900 + int(time.Now().UnixNano()%100)
+
+	// Data disks on block devices are recorded on their own below, so they are
+	// listed and counted once.
+	totalDiskGB, blockDisks := importedDisks(candidate)
+	if totalDiskGB == 0 {
+		totalDiskGB = 20 // Default if can't determine
+	}
+	vncPassword := spec.VNCPassword
+	if vncPassword == "" {
+		vncPassword = generateVNCPassword()
+	}
+	vm := &models.VM{
+		ID:           strings.ToLower(candidate.UUID), // Use original UUID for tracking
+		UserID:       spec.UserID,
+		NodeID:       spec.NodeID,
+		Hostname:     spec.Hostname,
+		OSTemplateID: spec.TemplateID,
+		Resources: models.Resources{
+			CPU:  candidate.CPU,
+			RAM:  candidate.Memory,
+			Disk: totalDiskGB,
+		},
+		Status:          defaultImportedRuntimeStatus(candidate.Status),
+		SourceMigration: string(queue.ImportSourceVirtualizor),
+		VNCPort:         &vncPort,
+		VNCPassword:     vncPassword,
+	}
+	if err := s.vmRepo.Create(ctx, vm); err != nil {
+		return nil, nil, fmt.Errorf("failed to create VM record: %w", err)
+	}
+	// An imported VM arrives with no firewall rules and is reachable on every
+	// port; its first rule must not turn that into default-deny.
+	_ = s.db.WithContext(ctx).Exec("UPDATE vms SET firewall_default = ? WHERE id = ?", models.FirewallDefaultAccept, vm.ID).Error
+	for i := range blockDisks {
+		blockDisks[i].VMID = vm.ID
+		if err := s.db.WithContext(ctx).Create(&blockDisks[i]).Error; err != nil {
+			s.logger.WarnContext(ctx, "failed to record an imported VM's data disk", "vm_id", vm.ID, "path", blockDisks[i].Path, "error", err)
+		}
+	}
+
+	ips := spec.IPs
+	if ips == nil {
+		for _, n := range candidate.Networks {
+			if n.IPConfig == nil || n.IPConfig.Address == "" {
+				continue
+			}
+			// Skip private/internal IPs (Docker bridges, etc.)
+			ip := n.IPConfig.Address
+			if strings.HasPrefix(ip, "172.") || strings.HasPrefix(ip, "192.168.") || strings.HasPrefix(ip, "10.") || ip == "127.0.0.1" {
+				continue
+			}
+			ips = append(ips, ip)
+		}
+	}
+	return vm, s.recordImportedAddresses(ctx, vm, ips, spec.BandwidthMbps, spec.QuotaGB), nil
+}
+
+// recordImportedAddresses gives a VM a network record and an IPAM entry for
+// each address it does not have yet. Safe to repeat.
+func (s *ImportService) recordImportedAddresses(ctx context.Context, vm *models.VM, ips []string, bandwidthMbps int, quotaGB int64) []string {
+	var warnings []string
+	existing, _ := s.networkRepo.ListByVMID(ctx, vm.ID)
+	have := map[string]bool{}
+	for _, n := range existing {
+		have[strings.SplitN(n.IPAddress, "/", 2)[0]] = true
+	}
+	for _, ip := range ips {
+		if !have[ip] {
+			rec := &models.Network{ID: uuid.New().String(), VMID: vm.ID, IPAddress: ip,
+				BandwidthLimit: int64(bandwidthMbps), BandwidthQuotaGB: quotaGB}
+			if err := s.networkRepo.Create(ctx, rec); err != nil {
+				s.logger.WarnContext(ctx, "failed to create network record during import", "vm_id", vm.ID, "ip_address", ip, "error", err)
+				warnings = append(warnings, fmt.Sprintf("address %s was not recorded: %v", ip, err))
+				continue
+			}
+			have[ip] = true
+		}
+		if err := s.assignImportedIPAM(ctx, vm.ID, vm.NodeID, ip); err != nil {
+			s.logger.WarnContext(ctx, "failed to record imported IP in IPAM", "vm_id", vm.ID, "ip_address", ip, "error", err)
+			warnings = append(warnings, fmt.Sprintf("address %s is not in IPAM: %v", ip, err))
+		}
+	}
+	return warnings
+}
+
 // remapDiskPaths prepares disk path mappings for the import job
 // Re-maps disk image to new storage location based on DiskAction:
 //   - symlink: Create symlinks to original disk images
@@ -503,6 +572,11 @@ func (s *ImportService) remapDiskPaths(candidate *vmimport.ImportCandidate, req 
 	storagePool := s.resolveStoragePool(req)
 
 	for i, disk := range candidate.Disks {
+		// A block device stays where it is: copying a volume into a file is
+		// not an import, and the domain keeps pointing at it.
+		if models.IsBlockDevicePath(disk.SourceFile) {
+			continue
+		}
 		diskFormat := disk.GetDiskFormatWithFallback()
 		if diskFormat == "" {
 			diskFormat = "qcow2"

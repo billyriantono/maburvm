@@ -23,6 +23,18 @@ export interface IPPool {
   link_prefix?: string
   /** How many prefixes a delegated pool has handed out (detail view only). */
   delegated_count?: number
+  /** Private addresses for VMs on NAT plans, masqueraded behind the node. */
+  nat?: boolean
+  /** Where the pool's PTR records go when not the standard zone (an RFC 2317
+   *  classless zone, or a delegated parent zone); "" for the standard one. */
+  rdns_zone?: string
+  /** Resolvers the pool's guests are given, comma separated; "" keeps the
+   *  built-in ones. Reaches guests at their next setup (create, reinstall,
+   *  address change). */
+  nameservers?: string
+  /** The node answers DHCP for the pool's assigned addresses, each to its
+   *  own VM's card only. */
+  dhcp?: boolean
   created_at: string
   updated_at: string
 }
@@ -76,6 +88,9 @@ export interface CreateIPPoolRequest {
   description?: string
   delegated_prefix_len?: number
   link_prefix?: string
+  nat?: boolean
+  nameservers?: string
+  dhcp?: boolean
 }
 
 // UpdateIPPoolRequest patches an existing pool's editable metadata. Omitted
@@ -90,6 +105,13 @@ export interface UpdateIPPoolRequest {
   delegated_prefix_len?: number
   /** "" clears it. */
   link_prefix?: string
+  /** Changes only while none of the pool's addresses is in use. */
+  nat?: boolean
+  /** "" for the standard reverse zone. */
+  rdns_zone?: string
+  /** "" for the built-in resolvers. */
+  nameservers?: string
+  dhcp?: boolean
 }
 
 export interface CreateIPAddressRequest {
@@ -123,6 +145,8 @@ export interface VPC {
   region_id?: string
   region_name?: string
   region_country?: string
+  /** Resolvers the VPC's VMs are given; "" for the built-in ones. */
+  nameservers?: string
   created_at: string
 }
 
@@ -132,6 +156,7 @@ export interface CreateVPCRequest {
   gateway?: string
   /** Which location the network lives in; it cannot span regions. */
   region?: string
+  nameservers?: string
 }
 
 export interface FloatingIPBilling {
@@ -158,4 +183,40 @@ export interface CreateRegionRequest {
   name: string
   country: string
   enabled?: boolean
+}
+
+/** A VM's network card. Position 0 is the one it was created with. */
+export interface VMNIC {
+  id: string
+  vm_id: string
+  position: number
+  bridge: string
+  mac_address: string
+  /** The VM's addresses on the card's bridge. */
+  addresses: string[]
+  /** The pool or private network the bridge belongs to. */
+  network?: string
+}
+
+/** A VM's routed IPv6 and the further addresses its guest holds in it. */
+export interface VMIPv6Addresses {
+  prefix: string
+  address: string
+  gateway: string
+  extra_addresses: string[]
+  max: number
+}
+
+/** A node bridge that carries per-VM VLANs, with its tagged uplink. */
+export interface VLANBridge {
+  bridge: string
+  uplink: string
+  problem?: string
+  filtering?: boolean
+}
+
+export interface NodeVLANBridges {
+  /** True while the agent's own environment decides. */
+  use_environment: boolean
+  bridges: VLANBridge[]
 }

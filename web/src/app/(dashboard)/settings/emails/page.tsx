@@ -21,7 +21,7 @@ const fieldClass =
 const LOGO_NOTE: Record<string, string> = {
   no_logo: "You have not added a logo, so emails open with your panel name in text.",
   svg: "Your logo is an SVG, which most mail apps will not draw, so emails open with your panel name in text. Upload a PNG in the brand studio to show it.",
-  no_public_url: "Emails open with your panel name in text, because the panel does not know its public address to serve the logo from. Set PANEL_PUBLIC_URL on the panel to show it.",
+  no_public_url: "Emails open with your panel name in text, because the panel does not know its public address to serve the logo from. Set the panel address under System settings, Panel to show it.",
 }
 
 export default function EmailsPage() {

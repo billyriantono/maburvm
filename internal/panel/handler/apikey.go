@@ -14,6 +14,8 @@ import (
 // APIKeyHandler handles per-user API key endpoints.
 type APIKeyHandler struct {
 	service *service.APIKeyService
+	// apiEnabled is the "Enable API access" switch; nil means on.
+	apiEnabled func() bool
 }
 
 // NewAPIKeyHandler creates a new APIKeyHandler.
@@ -38,7 +40,8 @@ func (h *APIKeyHandler) ListAPIKeys(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to list API keys"})
 	}
-	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": keys})
+	// Said beside the keys: with API access off, every key is refused.
+	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": keys, "api_enabled": h.apiEnabled == nil || h.apiEnabled()})
 }
 
 // CreateAPIKey handles POST /api/v1/api-keys. The plaintext token is returned
@@ -52,6 +55,7 @@ func (h *APIKeyHandler) CreateAPIKey(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request body"})
 	}
+	req.ClientIP = c.RealIP()
 	key, token, err := h.service.CreateAPIKey(c.Request().Context(), user.ID.String(), user.Role, req)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
@@ -79,6 +83,7 @@ func (h *APIKeyHandler) RevokeAPIKey(c echo.Context) error {
 
 // RegisterAPIKeyRoutes registers per-user API key routes (all require auth).
 func RegisterAPIKeyRoutes(e *echo.Echo, h *APIKeyHandler, db *gorm.DB) {
+	h.apiEnabled = func() bool { return panelMiddleware.APIAccessEnabled(db) }
 	g := e.Group("/api/v1/api-keys")
 	g.Use(panelMiddleware.RequireAuth(db))
 	g.GET("", h.ListAPIKeys)

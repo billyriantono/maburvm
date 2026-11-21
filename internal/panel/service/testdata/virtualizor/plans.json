@@ -1,0 +1,11 @@
+{
+  "title": "Plans",
+  "plans": {
+    "1": {"plid": "1", "plan_name": "KVM 1G", "virt": "kvm", "ips": "1", "ips6": "1", "ips6_subnet": "0", "ips_int": "0", "space": "20", "inodes": "0", "ram": "1024", "burst": "0", "swap": "0", "cpu": "1000", "cores": "1", "cpu_percent": "0.00", "bandwidth": "1000", "network_speed": "12800", "upload_speed": "0", "io": "0", "virtio": "1"},
+    "2": {"plid": "2", "plan_name": "Starter", "virt": "kvm", "ips": "1", "ips6": "0", "ips6_subnet": "0", "ips_int": "0", "space": "30", "inodes": "0", "ram": "2048", "burst": "0", "swap": "0", "cpu": "1000", "cores": "2", "cpu_percent": "0.00", "bandwidth": "0", "network_speed": "0", "upload_speed": "0", "io": "0", "virtio": "1"},
+    "3": {"plid": "3", "plan_name": "OVZ 512", "virt": "openvz", "ips": "1", "ips6": "0", "ips6_subnet": "0", "ips_int": "0", "space": "10", "inodes": "250000", "ram": "512", "burst": "512", "swap": "0", "cpu": "1000", "cores": "1", "cpu_percent": "0.00", "bandwidth": "500", "network_speed": "0", "upload_speed": "0", "io": "0", "virtio": "0"},
+    "4": {"plid": "4", "plan_name": "Tiny", "virt": "kvm", "ips": "1", "ips6": "0", "ips6_subnet": "0", "ips_int": "0", "space": "5", "inodes": "0", "ram": "64", "burst": "0", "swap": "0", "cpu": "1000", "cores": "1", "cpu_percent": "0.00", "bandwidth": "0", "network_speed": "0", "upload_speed": "0", "io": "0", "virtio": "1"}
+  },
+  "timenow": "1763600000",
+  "time_taken": "0.009"
+}

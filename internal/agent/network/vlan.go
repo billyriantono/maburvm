@@ -7,9 +7,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/maburvm/panel/internal/agent/libvirt"
+	"github.com/maburvm/panel/internal/agent/netrules"
+	"github.com/maburvm/panel/internal/shared/models"
 )
 
 const (
@@ -42,6 +47,10 @@ type VLANManager struct {
 	mu sync.Mutex
 	// bridges maps an opted-in bridge to its uplink port.
 	bridges map[string]string
+	// fromPanel says bridges came from the panel (SetBridges) and are kept in
+	// bridgesPath; otherwise they come from VLANBridgesEnv.
+	fromPanel   bool
+	bridgesPath string
 	// assignments is vmID -> VLAN ID, saved to statePath so it survives an
 	// agent restart; a tap is recreated plain whenever its VM restarts.
 	assignments map[string]int
@@ -52,6 +61,9 @@ type VLANManager struct {
 
 	run  func(name string, args ...string) error
 	nics func(vmID string) ([]NIC, error)
+	// defined lists the bridges in a VM's definition (a stopped VM has no
+	// tap to read them from); nil in tests.
+	defined func(vmID string) ([]string, error)
 	// filtering reports whether a bridge has VLAN filtering on.
 	filtering func(bridge string) bool
 }
@@ -81,9 +93,11 @@ func vlanStatePath() string { return "/var/lib/maburvm/vlan-assignments.json" }
 func NewVLANManager() *VLANManager { return NewVLANManagerAt(vlanStatePath()) }
 
 // NewVLANManagerAt is NewVLANManager with the state file named by the caller.
+// Bridges the panel set (kept beside it) win over the environment.
 func NewVLANManagerAt(statePath string) *VLANManager {
 	m := &VLANManager{
 		bridges:     parseVLANBridges(os.Getenv(VLANBridgesEnv)),
+		bridgesPath: filepath.Join(filepath.Dir(statePath), "vlan-bridges.json"),
 		assignments: map[string]int{},
 		statePath:   statePath,
 		lastErr:     map[string]string{},
@@ -93,7 +107,8 @@ func NewVLANManagerAt(statePath string) *VLANManager {
 			}
 			return nil
 		},
-		nics: vmNICs,
+		nics:    vmNICs,
+		defined: libvirt.DomainBridges,
 		filtering: func(bridge string) bool {
 			b, err := os.ReadFile("/sys/class/net/" + bridge + "/bridge/vlan_filtering")
 			return err == nil && strings.TrimSpace(string(b)) == "1"
@@ -105,7 +120,90 @@ func NewVLANManagerAt(statePath string) *VLANManager {
 			m.assignments = map[string]int{}
 		}
 	}
+	if b, err := os.ReadFile(m.bridgesPath); err == nil {
+		saved := map[string]string{}
+		if err := json.Unmarshal(b, &saved); err != nil {
+			log.Printf("[VLAN] WARNING: ignoring unreadable %s: %v", m.bridgesPath, err)
+		} else {
+			m.bridges, m.fromPanel = saved, true
+		}
+	}
 	return m
+}
+
+// Bridges reports the VLAN bridges in force, how each looks now, and whether
+// the list came from the agent's environment.
+func (m *VLANManager) Bridges() ([]netrules.VLANBridgeState, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.bridgeStates(), !m.fromPanel
+}
+
+func (m *VLANManager) bridgeStates() []netrules.VLANBridgeState {
+	names := make([]string, 0, len(m.bridges))
+	for b := range m.bridges {
+		names = append(names, b)
+	}
+	sort.Strings(names)
+	out := make([]netrules.VLANBridgeState, 0, len(names))
+	for _, b := range names {
+		out = append(out, netrules.CheckVLANBridge("/sys/class/net", b, m.bridges[b]))
+	}
+	return out
+}
+
+// SetBridges replaces the VLAN bridges with the panel's list and keeps it, or
+// with useEnv goes back to VLANBridgesEnv. Nothing on the host changes here:
+// filtering is switched on for a bridge when a VM on it first gets a VLAN,
+// and a bridge taken off the list keeps what it has.
+func (m *VLANManager) SetBridges(bridges map[string]string, useEnv bool) ([]netrules.VLANBridgeState, bool, error) {
+	for b, u := range bridges {
+		if !models.ValidInterfaceName(b) || !models.ValidInterfaceName(u) {
+			return nil, false, fmt.Errorf("invalid bridge or uplink name %q:%q", b, u)
+		}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	next := bridges
+	if useEnv {
+		next = parseVLANBridges(os.Getenv(VLANBridgesEnv))
+	}
+	// A VM's tap is made plain at every start and put back into its VLAN
+	// only on a listed bridge; off the list it would join the native VLAN.
+	for _, vmID := range m.vmsWithVLAN() {
+		if b := m.vmBridge(vmID); b != "" {
+			if _, was := m.bridges[b]; was {
+				if _, still := next[b]; !still {
+					return nil, false, fmt.Errorf("VM %s has VLAN %d on %s; take its VLAN off before %s leaves the list", vmID, m.assignments[vmID], b, b)
+				}
+			}
+		}
+	}
+	if useEnv {
+		if err := os.Remove(m.bridgesPath); err != nil && !os.IsNotExist(err) {
+			return nil, false, err
+		}
+		m.bridges, m.fromPanel = parseVLANBridges(os.Getenv(VLANBridgesEnv)), false
+	} else {
+		b, err := json.MarshalIndent(bridges, "", "  ")
+		if err == nil {
+			if err = os.MkdirAll(filepath.Dir(m.bridgesPath), 0o700); err == nil {
+				tmp := m.bridgesPath + ".tmp"
+				if err = os.WriteFile(tmp, b, 0o600); err == nil {
+					err = os.Rename(tmp, m.bridgesPath)
+				}
+			}
+		}
+		if err != nil {
+			return nil, false, fmt.Errorf("could not keep the VLAN bridges: %w", err)
+		}
+		m.bridges, m.fromPanel = map[string]string{}, true
+		for k, v := range bridges {
+			m.bridges[k] = v
+		}
+	}
+	log.Printf("[VLAN] VLAN bridges now %v (from %s)", m.bridges, map[bool]string{true: "the panel", false: VLANBridgesEnv}[m.fromPanel])
+	return m.bridgeStates(), !m.fromPanel, nil
 }
 
 func (m *VLANManager) save() {
@@ -157,7 +255,7 @@ func (m *VLANManager) apply(vmID string, vid int) error {
 	}
 	uplink, ok := m.bridges[bridge]
 	if !ok {
-		return fmt.Errorf("VLANs are not enabled on bridge %s on this node; add %s:<uplink> to %s in the agent's environment", bridge, bridge, VLANBridgesEnv)
+		return fmt.Errorf("VLANs are not enabled on bridge %s on this node; enable them on the node's page in the panel (or add %s:<uplink> to %s in the agent's environment)", bridge, bridge, VLANBridgesEnv)
 	}
 	if !m.filtering(bridge) {
 		log.Printf("[VLAN] enabling VLAN filtering on %s (listed in %s). Untagged traffic is unaffected; tagged frames now need their VLAN added to pass.", bridge, VLANBridgesEnv)
@@ -237,6 +335,34 @@ func (m *VLANManager) CleanupVM(vmID string) error {
 		m.save()
 	}
 	return nil
+}
+
+// vmsWithVLAN are the VMs with a VLAN on record, in a stable order.
+func (m *VLANManager) vmsWithVLAN() []string {
+	ids := make([]string, 0, len(m.assignments))
+	for id := range m.assignments {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// vmBridge is the bridge of the VM's first card, running or not; "" when
+// it cannot be read.
+func (m *VLANManager) vmBridge(vmID string) string {
+	if nics, err := m.nics(vmID); err == nil {
+		for _, n := range nics {
+			if n.Bridge != "" {
+				return n.Bridge
+			}
+		}
+	}
+	if m.defined != nil {
+		if b, err := m.defined(vmID); err == nil && len(b) > 0 {
+			return b[0]
+		}
+	}
+	return ""
 }
 
 // Has reports whether the VM has a VLAN on record.

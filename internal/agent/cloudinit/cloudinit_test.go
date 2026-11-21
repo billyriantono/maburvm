@@ -234,3 +234,17 @@ func TestWindowsSeed(t *testing.T) {
 		t.Errorf("network-config uses forms cloudbase-init does not read:\n%s", nc)
 	}
 }
+
+// A pool's resolvers replace the built-in ones, for Linux and Windows seeds
+// alike, and anything that is not an address is dropped.
+func TestNetworkConfigUsesPoolNameservers(t *testing.T) {
+	cfg := Config{MACAddress: "52:54:00:aa:bb:cc", IPAddress: "192.0.2.10", Prefix: 24, Gateway: "192.0.2.1",
+		Nameservers: []string{"9.9.9.9", "bad\nrunc: x"}, IPv6Address: "2001:db8::1/64"}
+	for _, windows := range []bool{false, true} {
+		cfg.Windows = windows
+		got := networkConfig(cfg)
+		if !strings.Contains(got, "addresses: [9.9.9.9, 2606:4700:4700::1111, 2001:4860:4860::8888]") || strings.Contains(got, "1.1.1.1") || strings.Contains(got, "bad") {
+			t.Errorf("windows=%v:\n%s", windows, got)
+		}
+	}
+}

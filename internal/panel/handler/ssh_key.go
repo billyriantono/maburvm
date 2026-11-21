@@ -13,6 +13,7 @@ import (
 // SSHKeyHandler handles per-user SSH public key endpoints.
 type SSHKeyHandler struct {
 	service *service.SSHKeyService
+	db      *gorm.DB
 }
 
 // NewSSHKeyHandler creates a new SSHKeyHandler.
@@ -20,13 +21,14 @@ func NewSSHKeyHandler(s *service.SSHKeyService) *SSHKeyHandler {
 	return &SSHKeyHandler{service: s}
 }
 
-// ListSSHKeys handles GET /api/v1/ssh-keys (current user's keys).
+// ListSSHKeys handles GET /api/v1/ssh-keys: the keys of the caller's account,
+// or of a team account with ?account_id=.
 func (h *SSHKeyHandler) ListSSHKeys(c echo.Context) error {
-	user, ok := panelMiddleware.GetUserContext(c)
+	_, account, _, ok := actingAccount(c, h.db)
 	if !ok {
-		return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized"})
+		return nil
 	}
-	keys, err := h.service.ListSSHKeys(c.Request().Context(), user.ID.String())
+	keys, err := h.service.ListSSHKeys(c.Request().Context(), account)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to list SSH keys"})
 	}
@@ -35,15 +37,15 @@ func (h *SSHKeyHandler) ListSSHKeys(c echo.Context) error {
 
 // CreateSSHKey handles POST /api/v1/ssh-keys.
 func (h *SSHKeyHandler) CreateSSHKey(c echo.Context) error {
-	user, ok := panelMiddleware.GetUserContext(c)
+	_, account, _, ok := actingAccount(c, h.db)
 	if !ok {
-		return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized"})
+		return nil
 	}
 	var req service.CreateSSHKeyRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request body"})
 	}
-	key, err := h.service.CreateSSHKey(c.Request().Context(), user.ID.String(), req)
+	key, err := h.service.CreateSSHKey(c.Request().Context(), account, req)
 	if err != nil {
 		if errors.Is(err, service.ErrSSHKeyDuplicate) {
 			return c.JSON(http.StatusConflict, map[string]interface{}{"error": err.Error()})
@@ -56,15 +58,15 @@ func (h *SSHKeyHandler) CreateSSHKey(c echo.Context) error {
 // GenerateSSHKey handles POST /api/v1/ssh-keys/generate. It stores only the
 // public key and returns the private key PEM exactly once.
 func (h *SSHKeyHandler) GenerateSSHKey(c echo.Context) error {
-	user, ok := panelMiddleware.GetUserContext(c)
+	_, account, _, ok := actingAccount(c, h.db)
 	if !ok {
-		return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized"})
+		return nil
 	}
 	var req service.GenerateSSHKeyRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request body"})
 	}
-	generated, err := h.service.GenerateSSHKey(c.Request().Context(), user.ID.String(), req)
+	generated, err := h.service.GenerateSSHKey(c.Request().Context(), account, req)
 	if err != nil {
 		if errors.Is(err, service.ErrSSHKeyDuplicate) {
 			return c.JSON(http.StatusConflict, map[string]interface{}{"error": err.Error()})
@@ -74,13 +76,13 @@ func (h *SSHKeyHandler) GenerateSSHKey(c echo.Context) error {
 	return c.JSON(http.StatusCreated, map[string]interface{}{"success": true, "data": generated})
 }
 
-// DeleteSSHKey handles DELETE /api/v1/ssh-keys/:id (current user's key only).
+// DeleteSSHKey handles DELETE /api/v1/ssh-keys/:id (the acting account's key only).
 func (h *SSHKeyHandler) DeleteSSHKey(c echo.Context) error {
-	user, ok := panelMiddleware.GetUserContext(c)
+	_, account, _, ok := actingAccount(c, h.db)
 	if !ok {
-		return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized"})
+		return nil
 	}
-	if err := h.service.DeleteSSHKey(c.Request().Context(), c.Param("id"), user.ID.String()); err != nil {
+	if err := h.service.DeleteSSHKey(c.Request().Context(), c.Param("id"), account); err != nil {
 		if errors.Is(err, service.ErrSSHKeyNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "SSH key not found"})
 		}
@@ -91,6 +93,7 @@ func (h *SSHKeyHandler) DeleteSSHKey(c echo.Context) error {
 
 // RegisterSSHKeyRoutes registers per-user SSH key routes (all require auth).
 func RegisterSSHKeyRoutes(e *echo.Echo, h *SSHKeyHandler, db *gorm.DB) {
+	h.db = db
 	g := e.Group("/api/v1/ssh-keys")
 	g.Use(panelMiddleware.RequireAuth(db))
 	g.GET("", h.ListSSHKeys)

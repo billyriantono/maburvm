@@ -3,7 +3,8 @@
 import { useMemo, useState } from "react"
 import { useVMMetricsHistory } from "@/lib/hooks/use-vms"
 import type { VMMetrics, VMMetricSample } from "@/types/vm"
-import { CHART_1, CHART_2, ReadingStrips, minutesOf, rateScale, type RangeId, type ReadingStrip } from "@/components/reading-strips"
+import { CHART_1, CHART_2, LONG_RANGES, ReadingStrips, minutesOf, rateScale, type RangeId, type ReadingStrip } from "@/components/reading-strips"
+import { usePortal } from "@/lib/hooks/use-portal"
 
 // A VM's four readings on one time axis. Every number comes from the samples
 // the panel stores each minute; the current value is the live one.
@@ -25,6 +26,11 @@ export function VMTelemetry({
   className?: string
 }) {
   const [range, setRange] = useState<RangeId>("1h")
+  // Only the ranges the panel keeps readings for: raw for a week, hourly for
+  // the graph history, daily beyond it.
+  const { data: portal } = usePortal()
+  const keptDays = Math.max(7, portal?.graph_days ?? 7, portal?.history_days ?? 0)
+  const ranges = LONG_RANGES.filter((r) => r.minutes <= keptDays * 1440)
   const { data, isLoading, error, refetch } = useVMMetricsHistory(vmId, minutesOf(range))
 
   const { times, strips } = useMemo(() => {
@@ -37,7 +43,7 @@ export function VMTelemetry({
     const tx = samples.map((s) => s.network_tx_bytes_per_sec)
     const rd = samples.map((s) => s.disk_read_bytes_per_sec)
     const wr = samples.map((s) => s.disk_write_bytes_per_sec)
-    const net = rateScale([rx, tx], [liveNow?.network_rx_bytes_per_sec, liveNow?.network_tx_bytes_per_sec])
+    const net = rateScale([rx, tx], [liveNow?.network_rx_bytes_per_sec, liveNow?.network_tx_bytes_per_sec], true)
     const dsk = rateScale([rd, wr], [liveNow?.disk_read_bytes_per_sec, liveNow?.disk_write_bytes_per_sec])
     const strips: ReadingStrip[] = [
       {
@@ -94,6 +100,7 @@ export function VMTelemetry({
       title="Readings"
       range={range}
       onRange={setRange}
+      ranges={ranges}
       times={times}
       strips={strips}
       loading={isLoading}

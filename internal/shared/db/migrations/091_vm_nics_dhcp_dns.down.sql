@@ -1,0 +1,5 @@
+ALTER TABLE nodes DROP COLUMN IF EXISTS vlan_bridges;
+ALTER TABLE vm_ipv6_prefixes DROP COLUMN IF EXISTS extra_addresses;
+DROP TABLE IF EXISTS vm_nics;
+ALTER TABLE ip_pools DROP COLUMN IF EXISTS dhcp;
+ALTER TABLE ip_pools DROP COLUMN IF EXISTS nameservers;

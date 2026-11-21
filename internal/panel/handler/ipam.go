@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 
 	"github.com/labstack/echo/v4"
 	"github.com/maburvm/panel/internal/panel/authz"
@@ -26,17 +25,17 @@ func RegisterIPAMRoutes(e *echo.Echo, h *IPAMHandler, db *gorm.DB) {
 	pools := e.Group("/api/v1/ip-pools")
 	pools.Use(panelMiddleware.RequireAuth(db))
 	pools.GET("", h.ListPools, panelMiddleware.RequirePermission("network:read"))
-	pools.POST("", h.CreatePool, panelMiddleware.RequirePermission("admin:access"))
+	pools.POST("", h.CreatePool, panelMiddleware.RequirePermission("network:update"))
 	pools.GET("/:id", h.GetPool, panelMiddleware.RequirePermission("network:read"))
-	pools.PUT("/:id", h.UpdatePool, panelMiddleware.RequirePermission("admin:access"))
-	pools.DELETE("/:id", h.DeletePool, panelMiddleware.RequirePermission("admin:access"))
+	pools.PUT("/:id", h.UpdatePool, panelMiddleware.RequirePermission("network:update"))
+	pools.DELETE("/:id", h.DeletePool, panelMiddleware.RequirePermission("network:update"))
 	pools.GET("/:id/addresses", h.ListAddresses, panelMiddleware.RequirePermission("network:read"))
 	// Admin only: the list names every VM holding a prefix.
-	pools.GET("/:id/prefixes", h.ListPrefixes, panelMiddleware.RequirePermission("admin:access"))
-	pools.POST("/:id/addresses", h.AddAddress, panelMiddleware.RequirePermission("admin:access"))
-	pools.POST("/:id/allocate", h.AllocateAddress, panelMiddleware.RequirePermission("admin:access"))
-	pools.POST("/:id/generate", h.GenerateAddresses, panelMiddleware.RequirePermission("admin:access"))
-	pools.POST("/addresses/:address_id/release", h.ReleaseAddress, panelMiddleware.RequirePermission("admin:access"))
+	pools.GET("/:id/prefixes", h.ListPrefixes, panelMiddleware.RequirePermission("network:read"))
+	pools.POST("/:id/addresses", h.AddAddress, panelMiddleware.RequirePermission("network:update"))
+	pools.POST("/:id/allocate", h.AllocateAddress, panelMiddleware.RequirePermission("network:update"))
+	pools.POST("/:id/generate", h.GenerateAddresses, panelMiddleware.RequirePermission("network:update"))
+	pools.POST("/addresses/:address_id/release", h.ReleaseAddress, panelMiddleware.RequirePermission("network:update"))
 	pools.PUT("/addresses/:address_id/rdns", h.SetRDNS, panelMiddleware.RequirePermission("network:update"))
 	pools.GET("/:id/rdns-zone", h.GetReverseZone, panelMiddleware.RequirePermission("network:read"))
 	pools.POST("/:id/rdns-import", h.ImportRDNS, panelMiddleware.RequirePermission("network:update"))
@@ -48,7 +47,7 @@ func (h *IPAMHandler) ImportRDNS(c echo.Context) error {
 	n, err := h.service.ImportRDNS(c.Request().Context(), c.Param("id"))
 	if err != nil {
 		if errors.Is(err, service.ErrDNSProviderNotConfigured) {
-			return badRequest(c, "No live DNS provider configured. Set PDNS_API_URL and PDNS_API_KEY to import existing PTRs.")
+			return badRequest(c, "No live DNS provider configured. Connect one under Settings, System, DNS to import existing PTRs.")
 		}
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 	}
@@ -77,6 +76,29 @@ func (h *IPAMHandler) SetRDNS(c echo.Context) error {
 // under /vms/:id rather than /ip-pools so it needs no IPAM permission: the VM's
 // owner may set the PTR of an address their VM holds and sees nothing else.
 func RegisterVMRDNSRoute(e *echo.Echo, h *IPAMHandler, authorizer *authz.Authorizer, db *gorm.DB) {
+	// The names set inside the VM's routed IPv6 prefix; the VM's own addresses
+	// carry theirs on the address list.
+	e.GET("/api/v1/vms/:id/rdns", func(c echo.Context) error {
+		vmID := c.Param("id")
+		if !authorizer.AuthorizeVM(c, vmID) {
+			return nil
+		}
+		ctx := c.Request().Context()
+		prefix, err := h.service.GetVMIPv6Prefix(ctx, vmID)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+		}
+		ptrs, err := h.service.ListVMPrefixPTRs(ctx, vmID)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+		}
+		out := map[string]interface{}{"prefix": "", "prefix_ptrs": ptrs}
+		if prefix != nil {
+			out["prefix"] = prefix.Prefix
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": out})
+	}, panelMiddleware.RequireAuth(db), panelMiddleware.RequirePermission("vm:read"))
+
 	e.PUT("/api/v1/vms/:id/rdns", func(c echo.Context) error {
 		vmID := c.Param("id")
 		if !authorizer.AuthorizeVM(c, vmID) {
@@ -134,12 +156,17 @@ func (h *IPAMHandler) CreatePool(c echo.Context) error {
 }
 
 func (h *IPAMHandler) ListPools(c echo.Context) error {
-	limit, offset := pagination(c)
-	pools, err := h.service.ListPools(c.Request().Context(), limit, offset)
+	ctx := c.Request().Context()
+	limit, offset := listWindow(c)
+	pools, err := h.service.ListPools(ctx, limit, offset)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to list IP pools"})
 	}
-	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": pools})
+	meta, err := WholeListMeta(limit, offset, len(pools), func() (int64, error) { return h.service.CountPools(ctx) })
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to count IP pools"})
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": pools, "meta": meta})
 }
 
 func (h *IPAMHandler) GetPool(c echo.Context) error {
@@ -194,15 +221,20 @@ func (h *IPAMHandler) AddAddress(c echo.Context) error {
 }
 
 func (h *IPAMHandler) ListAddresses(c echo.Context) error {
-	limit, offset := pagination(c)
-	addresses, err := h.service.ListAddresses(c.Request().Context(), c.Param("id"), limit, offset)
+	ctx := c.Request().Context()
+	limit, offset := listWindow(c)
+	addresses, err := h.service.ListAddresses(ctx, c.Param("id"), limit, offset)
 	if err != nil {
 		if errors.Is(err, service.ErrIPPoolNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "IP pool not found"})
 		}
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 	}
-	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": addresses})
+	meta, err := WholeListMeta(limit, offset, len(addresses), func() (int64, error) { return h.service.CountAddresses(ctx, c.Param("id")) })
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": addresses, "meta": meta})
 }
 
 func (h *IPAMHandler) AllocateAddress(c echo.Context) error {
@@ -233,18 +265,6 @@ func (h *IPAMHandler) ReleaseAddress(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 	}
 	return c.NoContent(http.StatusNoContent)
-}
-
-func pagination(c echo.Context) (int, int) {
-	limit, _ := strconv.Atoi(c.QueryParam("limit"))
-	offset, _ := strconv.Atoi(c.QueryParam("offset"))
-	if limit < 0 {
-		limit = 0
-	}
-	if offset < 0 {
-		offset = 0
-	}
-	return limit, offset
 }
 
 func badRequest(c echo.Context, message string) error {

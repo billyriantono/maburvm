@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, apiClient } from '@/lib/api-client'
 
 // --- Security centre ---
@@ -24,19 +24,22 @@ export interface SupportGrant {
   note: string
   expires_at: string
   created_at: string
+  /** Its staff role; none for accounts opened before roles (Administrator). */
+  role?: string
 }
 
-export function useSupportGrants() {
+export function useSupportGrants(enabled = true) {
   return useQuery<SupportGrant[]>({
     queryKey: ['security', 'support'],
     queryFn: async () => (await api.get<SupportGrant[]>('/api/v1/security/support-access')).data.data,
     refetchInterval: 60_000,
+    enabled,
   })
 }
 
 export function useGrantSupport() {
   const queryClient = useQueryClient()
-  return useMutation<{ grant: SupportGrant; password: string }, Error, { hours: number; note: string }>({
+  return useMutation<{ grant: SupportGrant; password: string }, Error, { hours: number; note: string; role: string }>({
     mutationFn: async (body) =>
       (await api.post<{ grant: SupportGrant; password: string }>('/api/v1/security/support-access', body)).data.data,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['security'] }),
@@ -115,13 +118,50 @@ export interface QueueData {
   jobs: QueueJob[]
   workers: Record<string, number>
   saved_workers: Record<string, number>
+  /** How many jobs match the filters, for paging. */
+  total: number
+  page: number
+  page_size: number
+  /** The kinds of job in the queue, for the filter. */
+  kinds: string[]
+  /** Maintenance mode is holding the queue. */
+  held: boolean
 }
 
-export function useQueue(state: string) {
+export interface QueueFilter {
+  state: string
+  kind: string
+  /** Job number, kind, VM or node id, operation or error text. */
+  q: string
+  page: number
+}
+
+export function useQueue(f: QueueFilter) {
   return useQuery<QueueData>({
-    queryKey: ['queue', state],
-    queryFn: async () => (await api.get<QueueData>('/api/v1/queue', { params: state ? { state } : {} })).data.data,
+    queryKey: ['queue', f],
+    queryFn: async () => {
+      const params = Object.fromEntries(Object.entries({ ...f, page_size: 50 }).filter(([, v]) => v !== ''))
+      return (await api.get<QueueData>('/api/v1/queue', { params })).data.data
+    },
+    placeholderData: keepPreviousData,
     refetchInterval: 5000,
+  })
+}
+
+export interface QueueJobDetail extends QueueJob {
+  priority: number
+  scheduled_at?: string
+  attempted_at?: string
+  /** The job's arguments, credentials replaced by [REDACTED]. */
+  args: unknown
+  errors: { at: string; attempt: number; error: string }[]
+}
+
+export function useQueueJob(id: number | null) {
+  return useQuery<QueueJobDetail>({
+    queryKey: ['queue', 'job', id],
+    queryFn: async () => (await api.get<QueueJobDetail>(`/api/v1/queue/jobs/${id}`)).data.data,
+    enabled: id !== null,
   })
 }
 

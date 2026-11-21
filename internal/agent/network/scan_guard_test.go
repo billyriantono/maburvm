@@ -32,6 +32,23 @@ func TestSynFloodRule(t *testing.T) {
 	}
 }
 
+// The rate limit must only ever see a guest's own SYNs: reached from the
+// per-guest counting rule, keyed on the guest's MAC. Inbound counting only
+// tallies, so a busy site's visitors are never dropped by it.
+func TestCountRulesOnlyLimitGuestTraffic(t *testing.T) {
+	out := strings.Join(countRule("52:54:00:12:6c:86"), " ")
+	if !strings.Contains(out, "--mac-source 52:54:00:12:6c:86") || !strings.Contains(out, "-j "+SynLimitChain) {
+		t.Errorf("outbound counter must send the guest's own SYNs to the limit, got: %s", out)
+	}
+	in := strings.Join(countInRule("52:54:00:12:6c:86", "vnet7"), " ")
+	if !strings.Contains(in, "--physdev-out vnet7") || !strings.Contains(in, "-j RETURN") || strings.Contains(in, SynLimitChain) {
+		t.Errorf("inbound counter must only count, got: %s", in)
+	}
+	if m := physdevOutRE.FindStringSubmatch(in); len(m) != 2 || m[1] != "vnet7" {
+		t.Errorf("tap not read back from %q", in)
+	}
+}
+
 func TestQuarantineRuleDropsBySourceMAC(t *testing.T) {
 	rule := strings.Join(quarantineRule("52:54:00:12:6c:86"), " ")
 

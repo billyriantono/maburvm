@@ -47,7 +47,7 @@ func TestAssignAddrs(t *testing.T) {
 
 func TestEbRuleCommandsRoundTrip(t *testing.T) {
 	const id = "0c788d51-cbb4-4757-8fdd-001bc5241adb"
-	cmds := ebRuleCommands(id, []spoofNIC{
+	cmds := ebRuleCommands(ebChain(id), []spoofNIC{
 		{NIC: NIC{MAC: "52:54:00:00:00:01", Tap: "vnet1"}, IPs: []string{"198.51.100.54", "100.64.0.9"}},
 		{NIC: NIC{MAC: "52:54:00:00:00:02", Tap: "vnet2"}, IPs: []string{"203.0.113.33"}},
 	})

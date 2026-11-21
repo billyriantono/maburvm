@@ -24,9 +24,18 @@ func TestVMDTOsExposeModelFields(t *testing.T) {
 	// Detail-only fields: a list row does not need them, and padding every row
 	// with them would be noise rather than safety.
 	detailOnly := map[string]bool{
-		"console_enabled": true,
-		"rescue_mode":     true,
-		"attached_iso":    true,
+		"console_enabled":       true,
+		"rescue_mode":           true,
+		"attached_iso":          true,
+		"plan_id":               true,
+		"billing_ref":           true,
+		"firewall_default":      true,
+		"smtp_blocked":          true,
+		"guest_network_note":    true,
+		"guest_network_pending": true,
+		"limits":                true,
+		"hardware":              true,
+		"rescue_kind":           true,
 	}
 
 	modelKeys := jsonFieldNames(models.VM{})

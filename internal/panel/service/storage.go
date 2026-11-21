@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
+	"strings"
 	"time"
 
 	"github.com/maburvm/panel/internal/panel/repository"
@@ -11,6 +13,14 @@ import (
 )
 
 const bytesPerGB = 1024 * 1024 * 1024
+
+// ErrInvalidStoragePool marks a pool the panel refuses to register.
+var ErrInvalidStoragePool = errors.New("invalid storage pool")
+
+// PoolTypeDir is a directory on the node holding qcow2 disks. A mounted ZFS
+// dataset, NFS export or CephFS is registered as one too. LVM volume groups and
+// thin pools are the other kinds that hold VM disks (models.PoolTypeLVM*).
+const PoolTypeDir = models.PoolTypeDir
 
 // StorageService defines the interface for storage business logic
 type StorageService interface {
@@ -72,30 +82,101 @@ func (s *storageService) GetPoolsByNodeID(nodeID string) ([]models.StoragePool, 
 	return s.repo.GetPoolsByNodeID(nodeID)
 }
 
-// CreatePool creates a new storage pool
+// CreatePool registers a directory, an LVM volume group or an LVM thin pool
+// on a node as a storage pool. An LVM pool is checked on the node first: it
+// must exist and must not hold the host's own system.
+//
+// Only the name, node, type, path and alert threshold are the operator's to
+// set. Capacity and status are measured on the node by the metrics collector,
+// so whatever the request says about them is dropped.
 func (s *storageService) CreatePool(pool *models.StoragePool) error {
+	pool.Name = strings.TrimSpace(pool.Name)
+	pool.Path = strings.TrimSpace(pool.Path)
 	if pool.Name == "" {
-		return errors.New("pool name is required")
+		return fmt.Errorf("%w: pool name is required", ErrInvalidStoragePool)
 	}
 	if pool.NodeID == "" {
-		return errors.New("node ID is required")
+		return fmt.Errorf("%w: node ID is required", ErrInvalidStoragePool)
 	}
-	if pool.Path == "" {
-		return errors.New("pool path is required")
+	if pool.Type == "" {
+		pool.Type = PoolTypeDir
+	}
+	pool.FileFormat = "qcow2"
+	switch {
+	case pool.Type == PoolTypeDir:
+		if !path.IsAbs(pool.Path) {
+			return fmt.Errorf("%w: the path must be an absolute directory on the node, such as /data", ErrInvalidStoragePool)
+		}
+		pool.Path = path.Clean(pool.Path)
+	case models.IsLVMPoolType(pool.Type):
+		vg, thin, err := models.SplitLVMPoolPath(pool.Type, pool.Path)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidStoragePool, err)
+		}
+		pool.Path = strings.TrimSuffix(vg+"/"+thin, "/")
+		pool.FileFormat = "raw"
+	default:
+		return fmt.Errorf("%w: pool type %q is not supported. Use a directory (mount other storage on the node and register its mount point), an LVM volume group or an LVM thin pool", ErrInvalidStoragePool, pool.Type)
+	}
+	siblings, err := s.repo.GetPoolsByNodeID(pool.NodeID)
+	if err != nil {
+		return err
+	}
+	for _, other := range siblings {
+		if other.Type == pool.Type && path.Clean(other.Path) == pool.Path {
+			return fmt.Errorf("%w: %s is already registered on this node as %q", ErrInvalidStoragePool, pool.Path, other.Name)
+		}
+	}
+	if models.IsLVMPoolType(pool.Type) {
+		if err := s.checkLVMPool(pool); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidStoragePool, err)
+		}
+	}
+	if pool.AlertThreshold <= 0 || pool.AlertThreshold > 100 {
+		pool.AlertThreshold = 90
 	}
 
-	// Set defaults
-	if pool.Type == "" {
-		pool.Type = "dir"
-	}
-	if pool.Status == "" {
-		pool.Status = "offline"
-	}
+	pool.Status = "offline"
+	pool.TotalSpace, pool.UsedSpace, pool.AvailableSpace, pool.Overcommit = 0, 0, 0, 0
+	pool.StatusNote, pool.MetadataPercent = "", nil
+	// Never primary at birth: until the node has measured it the pool is not
+	// online, and a node whose primary is not online provisions onto its root
+	// filesystem. It is promoted from its card once it is.
+	pool.IsPrimary = false
 
 	return s.repo.CreatePool(pool)
 }
 
-// UpdatePool updates an existing storage pool
+// lvmPoolUsable refuses an LVM pool its node does not report usable: an agent
+// too old for LVM pools (one rolled back, say) would make or remove a volume
+// there without the ownership checks.
+func lvmPoolUsable(p *models.StoragePool) error {
+	if p == nil || !models.IsLVMPoolType(p.Type) || p.Status == "online" {
+		return nil
+	}
+	why := p.StatusNote
+	if why == "" {
+		why = "the node has not measured it yet"
+	}
+	return fmt.Errorf("%w: storage pool %s cannot be used now: %s", ErrInvalidStoragePool, p.Name, why)
+}
+
+// checkLVMPool asks the pool's node whether it can hold VM disks there.
+func (s *storageService) checkLVMPool(pool *models.StoragePool) error {
+	if s.provisioner == nil || s.nodeRepo == nil {
+		return errors.New("the node cannot be asked whether it can use this pool")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	node, err := s.nodeRepo.GetByID(ctx, pool.NodeID)
+	if err != nil {
+		return fmt.Errorf("node not found: %w", err)
+	}
+	return s.provisioner.CheckLVMPool(ctx, node, pool.Type, pool.Path)
+}
+
+// UpdatePool renames a pool, changes its alert threshold, or makes it the
+// node's provisioning target. Capacity and status are measured, not set.
 func (s *storageService) UpdatePool(id string, pool *models.StoragePool) error {
 	if id == "" {
 		return errors.New("pool ID is required")
@@ -113,18 +194,6 @@ func (s *storageService) UpdatePool(id string, pool *models.StoragePool) error {
 	if pool.Name != "" {
 		existing.Name = pool.Name
 	}
-	if pool.Status != "" {
-		existing.Status = pool.Status
-	}
-	if pool.TotalSpace > 0 {
-		existing.TotalSpace = pool.TotalSpace
-	}
-	if pool.UsedSpace > 0 {
-		existing.UsedSpace = pool.UsedSpace
-	}
-	if pool.AvailableSpace > 0 {
-		existing.AvailableSpace = pool.AvailableSpace
-	}
 	if pool.AlertThreshold > 0 && pool.AlertThreshold <= 100 {
 		existing.AlertThreshold = pool.AlertThreshold
 	}
@@ -133,11 +202,21 @@ func (s *storageService) UpdatePool(id string, pool *models.StoragePool) error {
 	// provisioning target. Demotion is deliberately not offered: clearing the
 	// only primary would silently send every new VM back to the node's root
 	// filesystem, which is the fault this exists to prevent.
-	if pool.IsPrimary && !existing.IsPrimary {
-		if err := s.repo.SetPrimaryPool(existing.NodeID, existing.ID); err != nil {
-			return err
+	//
+	// Promoting a pool that is already primary demotes the others too: that is
+	// how a node left with two primaries is put right.
+	if pool.IsPrimary {
+		switch {
+		case existing.Status == "online":
+			if err := s.repo.SetPrimaryPool(existing.NodeID, existing.ID); err != nil {
+				return err
+			}
+			existing.IsPrimary = true
+		case !existing.IsPrimary:
+			// A primary that is not online is skipped at provisioning, which
+			// falls back to the root filesystem just the same.
+			return fmt.Errorf("%w: %s is not online on its node, so it cannot take new VMs yet", ErrInvalidStoragePool, existing.Name)
 		}
-		existing.IsPrimary = true
 	}
 
 	return s.repo.UpdatePool(existing)
@@ -155,6 +234,11 @@ func (s *storageService) DeletePool(id string) error {
 	}
 	if existing == nil {
 		return errors.New("pool not found")
+	}
+	// A member of a shared pool is mounted and guarded on its node: it leaves
+	// through the shared pool, which undoes that.
+	if existing.SharedPoolID != nil {
+		return fmt.Errorf("%w: %s is this node's part of a shared pool; remove the node from the shared pool instead", ErrInvalidStoragePool, existing.Name)
 	}
 
 	return s.repo.DeletePool(id)
@@ -199,6 +283,15 @@ func (s *storageService) CreateVolume(volume *models.StorageVolume) error {
 		}
 		if pool == nil {
 			return errors.New("pool not found")
+		}
+		if err := lvmPoolUsable(pool); err != nil {
+			return err
+		}
+		if pool.Type == models.PoolTypeRBD {
+			return fmt.Errorf("%w: %s is an RBD pool, where volumes that belong to no VM are not made; add a disk to a VM instead", ErrInvalidStoragePool, pool.Name)
+		}
+		if models.IsLVMPoolType(pool.Type) {
+			volume.Format = "raw"
 		}
 
 		sizeGB := volume.Size / bytesPerGB
@@ -250,6 +343,9 @@ func (s *storageService) DeleteVolume(id string) error {
 		if pool == nil {
 			return errors.New("pool not found")
 		}
+		if err := lvmPoolUsable(pool); err != nil {
+			return err
+		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
@@ -258,7 +354,7 @@ func (s *storageService) DeleteVolume(id string) error {
 		if err != nil {
 			return fmt.Errorf("failed to get node for pool: %w", err)
 		}
-		if err := s.provisioner.DeleteVolume(ctx, node, pool.Type, existing.Path); err != nil {
+		if err := s.provisioner.DeleteVolume(ctx, node, pool.Type, pool.Path, existing.Path); err != nil {
 			return fmt.Errorf("failed to delete volume file: %w", err)
 		}
 	}

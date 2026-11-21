@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation"
 import { Eye, EyeOff, Loader2, AlertTriangle, CheckCircle2 } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
+import { apiErrorMessage } from "@/lib/api-error"
 
 function ResetPasswordForm() {
   const router = useRouter()
@@ -35,7 +36,7 @@ function ResetPasswordForm() {
       })
       if (!response.ok) {
         const result = await response.json().catch(() => ({}))
-        setError(result.error || "Failed to reset password.")
+        setError(apiErrorMessage(result, "Failed to reset password."))
         return
       }
       setDone(true)
@@ -76,7 +77,7 @@ function ResetPasswordForm() {
     <div className="w-full">
       <h1 className="text-[2rem] font-semibold leading-tight tracking-[-0.01em] text-balance mb-2 text-foreground">Set a new password</h1>
       <p className="text-sm text-muted-foreground mb-6">
-        Choose a strong password — at least 12 characters with upper, lower, a digit and a symbol.
+        Choose a strong password. If it does not meet this panel&apos;s password rules, you are told which one.
       </p>
 
       {error && (

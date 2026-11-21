@@ -5,7 +5,7 @@ import {
   UseQueryOptions,
 } from '@tanstack/react-query'
 import { api } from '@/lib/api-client'
-import type { User, LoginRequest, LoginResponse } from '@/types'
+import type { User } from '@/types'
 
 export function useCurrentUser(
   options?: Omit<UseQueryOptions<User>, 'queryKey' | 'queryFn'>
@@ -20,25 +20,27 @@ export function useCurrentUser(
   })
 }
 
+/**
+ * Whether the account may do something, for showing or hiding a control. It
+ * mirrors middleware.Can: "admin:access" is the Administrator's wildcard,
+ * which leaves out staff management. The panel checks every request anyway.
+ */
+export function can(user: Pick<User, 'permissions'> | undefined, permission: string): boolean {
+  const held = user?.permissions ?? []
+  return held.includes(permission) || (held.includes('admin:access') && permission !== 'staff:manage')
+}
+
+/** can() for the signed-in account. */
+export function useCan() {
+  const { data } = useCurrentUser()
+  return (permission: string) => can(data, permission)
+}
+
 // Alias for useCurrentUser - provides a cleaner API for auth checks
 export function useAuth(
   options?: Omit<UseQueryOptions<User>, 'queryKey' | 'queryFn'>
 ) {
   return useCurrentUser(options)
-}
-
-export function useLogin() {
-  const queryClient = useQueryClient()
-
-  return useMutation<LoginResponse, Error, LoginRequest>({
-    mutationFn: async (data) => {
-      const response = await api.post<LoginResponse>('/api/v1/auth/login', data)
-      return response.data.data
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['auth', 'me'] })
-    },
-  })
 }
 
 export function useLogout() {
@@ -47,12 +49,11 @@ export function useLogout() {
   return useMutation<void, Error, void>({
     mutationFn: async () => {
       try {
+        // The panel revokes the session and removes the HttpOnly cookie.
         await api.post('/api/v1/auth/logout')
       } catch {
-        // Ignore logout API errors
+        // The panel removes the cookie even when it refuses the session.
       }
-      // Always clear the cookie client-side
-      document.cookie = 'accessToken=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT'
     },
     onSuccess: () => {
       queryClient.clear()

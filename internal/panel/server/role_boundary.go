@@ -11,7 +11,9 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	panelMiddleware "github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/panel/repository"
+	"github.com/maburvm/panel/internal/panel/service"
 	"github.com/maburvm/panel/internal/shared/models"
 )
 
@@ -47,10 +49,30 @@ type roleBoundaryErr struct {
 
 func (e *roleBoundaryErr) Error() string { return e.code }
 
+// roleBoundaryMessages is what the page shows for each code; the code stays in
+// "error" for scripts.
+var roleBoundaryMessages = map[string]string{
+	"only_the_founding_administrator_may_change_admin_accounts": "Only the founding administrator can change another administrator's account.",
+	"only_the_founding_administrator_may_change_admin_roles":    "Only the founding administrator can make someone an administrator or take the role away.",
+	"only_the_founding_administrator_may_create_admins":         "Only the founding administrator can create an administrator.",
+	"only_the_founding_administrator_may_delete_admins":         "Only the founding administrator can delete an administrator.",
+	"cannot_demote_last_active_admin":                           "This is the last active administrator. Make someone else an administrator first.",
+	"cannot_delete_last_active_admin":                           "This is the last active administrator, so it cannot be deleted.",
+	"user_not_found":                                            "User not found.",
+	"unauthorized":                                              "Your account could not be confirmed. Sign in again.",
+	"insufficient_permissions":                                  "You do not have permission to do this.",
+	"email_exists":                                              "Another account already uses that email address.",
+	"user_vms_delete_locked":                                    "Some of this account's VMs are locked against deletion. Unlock them first; nothing was changed.",
+}
+
 func writeRoleBoundaryErr(c echo.Context, err error) error {
 	var rb *roleBoundaryErr
 	if errors.As(err, &rb) {
-		return c.JSON(rb.status, map[string]interface{}{"error": rb.code})
+		body := map[string]interface{}{"error": rb.code}
+		if msg, ok := roleBoundaryMessages[rb.code]; ok {
+			body["message"] = msg
+		}
+		return c.JSON(rb.status, body)
 	}
 	return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "internal_error"})
 }
@@ -95,21 +117,30 @@ func recheckFoundingAuthority(db *gorm.DB, ctx context.Context, callerID uuid.UU
 	return nil
 }
 
+// mayManageAccount says whether the caller may change how the target signs in
+// (email, password, two-factor, IP allow-list) or its name. A customer account
+// is any administrator's to manage. An administrator's account, the founding
+// administrator's own included, is the founding administrator's alone:
+// otherwise any administrator, a temporary support account among them, could
+// move another's email, reset its password and take the account over. An
+// administrator still manages their own account under Profile.
+func (s *Server) mayManageAccount(ctx context.Context, caller *panelMiddleware.UserContext, target *models.User) *roleBoundaryErr {
+	if target.Role != models.RoleAdmin || caller.ID == target.ID {
+		return nil
+	}
+	if f := s.foundingAdminID(ctx); f == uuid.Nil || caller.ID != f {
+		return &roleBoundaryErr{status: http.StatusForbidden, code: "only_the_founding_administrator_may_change_admin_accounts"}
+	}
+	return nil
+}
+
 // foundingAdminIDTx returns the ID of the earliest-created active administrator
 // (the founding admin), resolved deterministically by creation order from the
 // users table. Returns uuid.Nil when no active admin exists. Operates on the
 // supplied (transaction-scoped) DB so the resolution is consistent with the
 // locked recheck.
 func foundingAdminIDTx(db *gorm.DB, ctx context.Context) uuid.UUID {
-	var user models.User
-	err := db.WithContext(ctx).
-		Where("role = ? AND deleted_at IS NULL", models.RoleAdmin).
-		Order("created_at ASC, id ASC").
-		First(&user).Error
-	if err != nil {
-		return uuid.Nil
-	}
-	return user.ID
+	return service.FoundingAdminID(ctx, db)
 }
 
 // countActiveAdminsExceptTx returns the number of active (non-deleted)
@@ -119,7 +150,9 @@ func foundingAdminIDTx(db *gorm.DB, ctx context.Context) uuid.UUID {
 func countActiveAdminsExceptTx(db *gorm.DB, ctx context.Context, exclude uuid.UUID) (int64, error) {
 	var count int64
 	err := db.WithContext(ctx).Model(&models.User{}).
-		Where("role = ? AND deleted_at IS NULL AND id <> ?", models.RoleAdmin, exclude).
+		// A support account runs out; it cannot be the administrator left standing.
+		// Nor can a suspended one (a customer suspended, then promoted).
+		Where("role = ? AND deleted_at IS NULL AND expires_at IS NULL AND suspended_at IS NULL AND id <> ?", models.RoleAdmin, exclude).
 		Count(&count).Error
 	return count, err
 }
@@ -147,7 +180,7 @@ func isActiveAdminTx(db *gorm.DB, ctx context.Context, id uuid.UUID) bool {
 // promote legacy -> managed. The role-boundary transaction also keeps quota_mode
 // untouched because it mutates only freshly-read target fields (Role/Email/
 // IPWhitelist).
-var permittedNonRoleColumns = []string{"email", "ip_whitelist"}
+var permittedNonRoleColumns = []string{"name", "email", "ip_whitelist"}
 
 // updateUserNonRoleFields applies a SELECTIVE UPDATE of only the explicitly
 // permitted non-role columns for the given user, using a column allow-list. Any
@@ -172,10 +205,10 @@ func updateUserNonRoleFields(db *gorm.DB, ctx context.Context, id uuid.UUID, fie
 			continue
 		}
 		switch col {
-		case "email":
+		case "name", "email":
 			// Column-scoped write; never touches role / quota_mode / security cols.
 			if err := db.WithContext(ctx).Model(&models.User{}).Where("id = ?", id).
-				Update("email", v).Error; err != nil {
+				Update(col, v).Error; err != nil {
 				return err
 			}
 		case "ip_whitelist":

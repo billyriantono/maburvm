@@ -1,0 +1,3 @@
+ALTER TABLE nodes DROP COLUMN IF EXISTS preflight_at;
+ALTER TABLE nodes DROP COLUMN IF EXISTS preflight;
+DROP TABLE IF EXISTS node_enrollments;

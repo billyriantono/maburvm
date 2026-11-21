@@ -1,0 +1,13 @@
+{
+  "title": "Users",
+  "users": {
+    "55": {"uid": "55", "uuid": "nmpq1k2zfo0hjx3a", "type": "0", "pid": "0", "email": "Ana@Example.com", "fname": "Ana", "lname": "Putri", "aclid": "0", "inhouse_billing": "0", "num_vs": "4"},
+    "56": {"uid": "56", "uuid": "b2d1x9o0kzq8wl4e", "type": "0", "pid": "0", "email": "budi@example.com", "fname": "Budi", "lname": "", "aclid": "0", "inhouse_billing": "0", "num_vs": "2"},
+    "57": {"uid": "57", "uuid": "qp0z8w7v6u5t4s3r", "type": "0", "pid": "0", "email": "staff@example.com", "fname": "", "lname": "", "aclid": "0", "inhouse_billing": "0", "num_vs": "1"},
+    "58": {"uid": "58", "uuid": "k1j2h3g4f5d6s7a8", "type": "0", "pid": "0", "email": "not-an-email", "fname": "Broken", "lname": "Record", "aclid": "0", "inhouse_billing": "0", "num_vs": "0"},
+    "59": {"uid": "59", "uuid": "z9x8c7v6b5n4m3l2", "type": "0", "pid": "0", "email": "ANA@example.com", "fname": "Ana", "lname": "Again", "aclid": "0", "inhouse_billing": "0", "num_vs": "0"},
+    "60": {"uid": "60", "uuid": "r4e3w2q1t5y6u7i8", "type": "1", "pid": "0", "email": "cara@example.com", "fname": "Cara", "lname": "Admin", "aclid": "1", "inhouse_billing": "0", "num_vs": "1"}
+  },
+  "timenow": "1763600000",
+  "time_taken": "0.020"
+}

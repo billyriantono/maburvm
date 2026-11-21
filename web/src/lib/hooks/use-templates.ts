@@ -10,21 +10,23 @@ import type {
   CreateTemplateRequest,
   UpdateTemplateRequest,
 } from '@/types'
+import type { TemplateRefreshResult } from '@/types/template'
+import { arrivedOffset, uploadChunks } from '@/lib/chunked-upload'
 
 interface TemplateListParams {
   type?: string
 }
 
-export function useTemplates(params: TemplateListParams = {}, enabled = true) {
-  const { type } = params
+export function useTemplates(params: TemplateListParams & { includeNodes?: boolean } = {}, enabled = true) {
+  const { type, includeNodes } = params
 
   return useQuery<OSTemplate[]>({
-    queryKey: ['templates', 'list', { type }],
+    queryKey: ['templates', 'list', { type, includeNodes }],
     queryFn: async () => {
       const response = await api.get<OSTemplate[]>('/api/v1/templates', {
-        params: type ? { type } : undefined,
+        params: { ...(type ? { type } : {}), ...(includeNodes ? { include_nodes: 'true' } : {}) },
       })
-      return response.data.data
+      return response.data.data ?? []
     },
     enabled,
   })
@@ -94,5 +96,78 @@ export function useDeleteTemplate() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['templates', 'list'] })
     },
+  })
+}
+
+// useRefreshTemplate reads the template's checksum list again and, when the
+// image changed, has every node fetch it. force fetches it anyway.
+export function useRefreshTemplate() {
+  const queryClient = useQueryClient()
+  return useMutation<TemplateRefreshResult, Error, { id: string; force?: boolean }>({
+    mutationFn: async ({ id, force }) => {
+      const response = await api.post<TemplateRefreshResult>(`/api/v1/templates/${id}/refresh`, { force: !!force })
+      return response.data.data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['templates'] })
+    },
+  })
+}
+
+// useUploadISO sends a file to the panel in chunks, then adds it as an ISO,
+// which the panel copies to every node.
+export function useUploadISO() {
+  const queryClient = useQueryClient()
+  return useMutation<OSTemplate, Error, { file: File; sha256?: string; osType?: string; onProgress?: (sent: number) => void }>({
+    mutationFn: async ({ file, sha256, osType, onProgress }) => {
+      const start = await api.post<{ upload_id: string; chunk_bytes: number }>('/api/v1/isos/uploads', {
+        name: file.name, size: file.size, sha256: sha256?.trim() || undefined, os_type: osType,
+      })
+      const { upload_id, chunk_bytes } = start.data.data
+      try {
+        await uploadChunks(file.size, chunk_bytes, async (offset, end) => {
+          try {
+            await api.put(`/api/v1/isos/uploads/${upload_id}?offset=${offset}`, file.slice(offset, end), {
+              headers: { 'Content-Type': 'application/octet-stream' },
+            })
+          } catch (err) {
+            // An answer lost after the chunk arrived: the panel is past it.
+            const at = arrivedOffset(err)
+            if (at === undefined || at < end) throw err
+          }
+          onProgress?.(end)
+        })
+      } catch (err) {
+        await api.delete(`/api/v1/isos/uploads/${upload_id}`).catch(() => undefined)
+        throw err
+      }
+      const done = await api.post<OSTemplate>(`/api/v1/isos/uploads/${upload_id}/finish`)
+      return done.data.data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['templates'] })
+    },
+  })
+}
+
+// useDriversISO is the ISO put in a Windows install's second drive.
+export function useDriversISO(enabled = true) {
+  return useQuery<{ drivers_iso_template_id: string }>({
+    queryKey: ['isos', 'drivers'],
+    queryFn: async () => {
+      const response = await api.get<{ drivers_iso_template_id: string }>('/api/v1/isos/drivers')
+      return response.data.data
+    },
+    enabled,
+  })
+}
+
+export function useSetDriversISO() {
+  const queryClient = useQueryClient()
+  return useMutation<void, Error, string>({
+    mutationFn: async (templateId) => {
+      await api.put('/api/v1/isos/drivers', { drivers_iso_template_id: templateId })
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['isos', 'drivers'] }),
   })
 }

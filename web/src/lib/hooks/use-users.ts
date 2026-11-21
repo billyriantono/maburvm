@@ -8,6 +8,7 @@ import {
 import { api } from '@/lib/api-client'
 import type {
   User,
+  AccountSuspension,
   CreateUserRequest,
   UpdateUserRequest,
   PaginatedResponse,
@@ -84,12 +85,97 @@ export function useUpdateUser(id: string) {
   })
 }
 
+/** Suspend a customer account, or restore it. withVms does the same to its VMs. */
+export function useSetUserSuspended(id: string) {
+  const queryClient = useQueryClient()
+
+  return useMutation<AccountSuspension, Error, { suspend: boolean; withVms: boolean; reason?: string }>({
+    mutationFn: async ({ suspend, withVms, reason }) => {
+      const response = await api.post<AccountSuspension>(
+        `/api/v1/users/${id}/${suspend ? 'suspend' : 'unsuspend'}`,
+        { with_vms: withVms, reason },
+        // Each VM is powered off or started on its node in turn.
+        { timeout: 180000 },
+      )
+      return response.data.data
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['users', 'detail', id] })
+      queryClient.invalidateQueries({ queryKey: ['users', 'list'] })
+      queryClient.invalidateQueries({ queryKey: ['vms'] })
+    },
+  })
+}
+
+/**
+ * A new password for someone who cannot sign in: "email" sends them a link,
+ * "temporary" sets a random one and returns it once.
+ */
+export function useResetUserPassword(id: string) {
+  return useMutation<{ sent_to?: string; temporary_password?: string }, Error, 'email' | 'temporary'>({
+    mutationFn: async (method) => {
+      const response = await api.post<{ sent_to?: string; temporary_password?: string }>(
+        `/api/v1/users/${id}/reset-password`,
+        { method },
+      )
+      return response.data.data
+    },
+  })
+}
+
+/** Takes two-factor off an account whose owner lost the authenticator and the backup codes. */
+export function useResetUserTwoFactor(id: string) {
+  const queryClient = useQueryClient()
+  return useMutation<void, Error, void>({
+    mutationFn: async () => {
+      await api.post(`/api/v1/users/${id}/reset-2fa`)
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['users', 'detail', id] })
+      queryClient.invalidateQueries({ queryKey: ['users', 'list'] })
+    },
+  })
+}
+
+/** Lifts a sign-in lock before it runs out by itself. */
+export function useUnlockUser(id: string) {
+  const queryClient = useQueryClient()
+  return useMutation<void, Error, void>({
+    mutationFn: async () => {
+      await api.post(`/api/v1/users/${id}/unlock`)
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['users', 'detail', id] })
+      queryClient.invalidateQueries({ queryKey: ['users', 'list'] })
+    },
+  })
+}
+
+/** What happens to the VMs of an account being deleted; required when it owns any. */
+export interface DeleteUserRequest {
+  id: string
+  vms?: "reassign" | "delete"
+  /** The account that receives the VMs, for vms: "reassign". */
+  to?: string
+}
+
+export interface DeleteUserResult {
+  vms_reassigned?: number
+  vms_deleting?: number
+  vms_not_queued?: { id: string; hostname: string; error: string }[]
+}
+
 export function useDeleteUser() {
   const queryClient = useQueryClient()
 
-  return useMutation<void, Error, string>({
-    mutationFn: async (id) => {
-      await api.delete(`/api/v1/users/${id}`)
+  return useMutation<DeleteUserResult, Error, string | DeleteUserRequest>({
+    mutationFn: async (req) => {
+      const { id, vms, to } = typeof req === "string" ? { id: req } as DeleteUserRequest : req
+      const q = new URLSearchParams()
+      if (vms) q.set("vms", vms)
+      if (to) q.set("to", to)
+      const res = await api.delete<DeleteUserResult>(`/api/v1/users/${id}${q.size ? `?${q}` : ""}`)
+      return res?.data?.data ?? {}
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users', 'list'] })

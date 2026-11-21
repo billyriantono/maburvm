@@ -184,6 +184,12 @@ func (c *Client) initRiver() error {
 	river.AddWorker(workers, NewImportWorker(c.logger))
 	river.AddWorker(workers, NewNetworkConfigWorker(c.logger))
 	river.AddWorker(workers, NewAuditWorker(c.logger, c.auditRepo))
+	river.AddWorker(workers, &webhookDeliveryWorker{})
+	river.AddWorker(workers, &emailDeliveryWorker{})
+	river.AddWorker(workers, &migrationWorker{})
+	river.AddWorker(workers, &drainWorker{})
+	river.AddWorker(workers, &diskMoveWorker{})
+	river.AddWorker(workers, &recoveryWorker{})
 
 	riverClient, err := river.NewClient(riverpgxv5.New(c.pool), &river.Config{
 		Queues: map[string]river.QueueConfig{
@@ -195,6 +201,7 @@ func (c *Client) initRiver() error {
 		Workers:              workers,
 		Logger:               c.logger,
 		RescueStuckJobsAfter: c.config.RescueStuckJobsAfter,
+		Middleware:           []rivertype.Middleware{&jobFailureReporter{}},
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create River client: %w", err)

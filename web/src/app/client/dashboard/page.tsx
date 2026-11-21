@@ -7,9 +7,10 @@ import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Meter } from "@/components/ui/meter"
 import { Sparkline } from "@/components/ui/sparkline"
-import { StatusBadge } from "@/components/status-badge"
+import { StatusBadge, vmStatus } from "@/components/status-badge"
 import { CountryFlag } from "@/components/country-flag"
 import { useCopy } from "@/lib/use-feedback"
+import { ClientAnnouncements } from "@/components/client-announcements"
 
 // The customer's home page answers two questions for every server they rent:
 // is it healthy, and is it about to hit a limit. One row per server, and a
@@ -36,6 +37,8 @@ function attention(vms: MyVM[]): { key: string; bad: boolean; text: string; href
   const rows: { key: string; bad: boolean; text: string; href: string }[] = []
   for (const vm of vms) {
     const href = `/client/vms/${vm.id}`
+    if (vm.state_unknown)
+      rows.push({ key: `u-${vm.id}`, bad: true, text: `We cannot reach the host ${vm.hostname} runs on, so its state is unknown. It may still be running.`, href })
     if (vm.suspended || vm.status === "suspended")
       rows.push({ key: `s-${vm.id}`, bad: true, text: `${vm.hostname} is suspended. Contact support to restore it.`, href })
     else if (vm.status === "error")
@@ -53,7 +56,7 @@ function attention(vms: MyVM[]): { key: string; bad: boolean; text: string; href
 
 function ServerRow({ vm }: { vm: MyVM }) {
   const { copy, copied } = useCopy()
-  const running = vm.status === "running" && !vm.suspended
+  const running = vm.status === "running" && !vm.suspended && !vm.state_unknown
   const cpuNow = vm.cpu_series.length ? vm.cpu_series[vm.cpu_series.length - 1] : null
   const share = transferShare(vm)
   const usedGB = vm.transfer_bytes == null ? null : vm.transfer_bytes / GB
@@ -64,7 +67,7 @@ function ServerRow({ vm }: { vm: MyVM }) {
           {vm.hostname}
         </Link>
         <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
-          <StatusBadge variant="lamp" className="text-xs" status={vm.suspended ? "suspended" : vm.status} />
+          <StatusBadge variant="lamp" className="text-xs" status={vmStatus(vm)} />
           {vm.region_name && (
             <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
               {vm.region_country && <CountryFlag country={vm.region_country} />}
@@ -104,7 +107,7 @@ function ServerRow({ vm }: { vm: MyVM }) {
             <Sparkline data={vm.cpu_series} height={28} className="min-w-0 flex-1" colorClass="text-[color:var(--chart-1)]" />
           </div>
         ) : (
-          <p className="text-sm text-muted-foreground">{running ? "No reading yet" : "Off"}</p>
+          <p className="text-sm text-muted-foreground">{running ? "No reading yet" : vm.state_unknown ? "Not known" : "Off"}</p>
         )}
       </div>
 
@@ -164,6 +167,8 @@ export default function ClientDashboardPage() {
           </Button>
         )}
       </div>
+
+      <ClientAnnouncements />
 
       {needs.length > 0 && (
         <section aria-labelledby="needs-attention" className="rounded-lg border bg-card text-card-foreground">

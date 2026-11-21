@@ -12,3 +12,4 @@ export * from './storage';
 export * from './ipam';
 export * from './ssh-key';
 export * from './vnc';
+export * from './migration';

@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"strings"
 	"time"
@@ -29,9 +31,13 @@ var (
 	ErrFirewallRuleNotFound = fmt.Errorf("firewall rule not found")
 	ErrPortForwardNotFound  = fmt.Errorf("port forward not found")
 	ErrPortAlreadyInUse     = fmt.Errorf("external port already in use")
+	ErrPortForwardLimit     = fmt.Errorf("port forward limit reached")
+	ErrFirewallRuleLimit    = fmt.Errorf("firewall rule limit reached")
 	ErrInvalidVLANID        = fmt.Errorf("invalid VLAN ID (must be 1-4094)")
 	ErrInvalidBandwidth     = fmt.Errorf("invalid bandwidth limit")
 	ErrInvalidPortRange     = fmt.Errorf("invalid port range")
+	ErrInvalidFirewallRule  = fmt.Errorf("invalid firewall rule")
+	ErrInvalidPolicy        = fmt.Errorf("invalid policy")
 )
 
 // NetworkService handles network-related operations
@@ -45,6 +51,8 @@ type NetworkService struct {
 	// ipamService is optional: without it the service still manages interfaces
 	// that already exist, it just cannot allocate new addresses.
 	ipamService *IPAMService
+	// agent reaches node agents, for changing a VM's network cards.
+	agent AgentDialer
 }
 
 // NewNetworkService creates a new NetworkService instance
@@ -124,7 +132,7 @@ func (s *NetworkService) AddNetworkInterface(ctx context.Context, vmID string, r
 	// Enqueue network config job to agent
 	if err := s.enqueueNetworkConfigJob(ctx, vm, network); err != nil {
 		// Log error but don't fail the request
-		fmt.Printf("failed to enqueue network config job: %v\n", err)
+		slog.Default().Warn("failed to enqueue network config job", "error", err)
 	}
 
 	return &AddNetworkResponse{Network: network}, nil
@@ -167,7 +175,7 @@ func (s *NetworkService) SetBandwidthLimit(ctx context.Context, vmID string, net
 	// Enqueue bandwidth config job to agent
 	network.BandwidthLimit = req.BandwidthLimit
 	if err := s.enqueueNetworkConfigJob(ctx, vm, network); err != nil {
-		fmt.Printf("failed to enqueue bandwidth config job: %v\n", err)
+		slog.Default().Warn("failed to enqueue bandwidth config job", "error", err)
 	}
 
 	return nil
@@ -237,10 +245,91 @@ func (s *NetworkService) AddPortForward(ctx context.Context, vmID string, networ
 		req.SourceIP = "0.0.0.0/0"
 	}
 
-	// Create port forward record
+	var portForward *models.PortForward
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var err error
+		portForward, err = addPortForwardTx(ctx, tx, vm, networkID, req)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+
+	// Enqueue full network resync (ReplaceAll) so the new DNAT is applied on the host.
+	if err := s.enqueueNetworkResync(ctx, vm); err != nil {
+		slog.Default().Warn("failed to enqueue network resync", "error", err)
+	}
+
+	return &AddPortForwardResponse{PortForward: portForward}, nil
+}
+
+// addPortForwardTx checks and records a forward under the node's port lock,
+// so a NAT VM's new block and a forward never take the same port.
+func addPortForwardTx(ctx context.Context, tx *gorm.DB, vm *models.VM, networkID string, req *AddPortForwardRequest) (*models.PortForward, error) {
+	if err := lockNodePorts(ctx, tx, vm.NodeID); err != nil {
+		return nil, err
+	}
+	db := tx.WithContext(ctx)
+
+	// A NAT VM forwards only ports of its own block, and nobody takes a port
+	// inside another VM's block.
+	block, err := natBlock(ctx, tx, vm.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read the VM's ports: %w", err)
+	}
+	if block != nil && !block.Contains(req.ExternalPort) {
+		return nil, fmt.Errorf("%w: choose one from %d to %d", ErrPortOutsideBlock, block.StartPort, block.EndPort())
+	}
+	var inBlock int64
+	if err := db.Model(&models.NATPortBlock{}).
+		Where("node_id = ? AND vm_id <> ? AND start_port <= ? AND start_port + port_count - 1 >= ?", vm.NodeID, vm.ID, req.ExternalPort, req.ExternalPort).
+		Count(&inBlock).Error; err != nil {
+		return nil, fmt.Errorf("failed to check port: %w", err)
+	}
+	if inBlock > 0 {
+		return nil, ErrPortAlreadyInUse
+	}
+	// The node's hostname router listens on 80 and 443.
+	if req.ExternalPort == 80 || req.ExternalPort == 443 {
+		var routed int64
+		if err := db.Table("vm_hostnames h").Joins("JOIN vms m ON m.id = h.vm_id AND m.deleted_at IS NULL").
+			Where("m.node_id = ? AND h.verified_at IS NOT NULL", vm.NodeID).Count(&routed).Error; err != nil {
+			return nil, fmt.Errorf("failed to check port: %w", err)
+		}
+		if routed > 0 {
+			return nil, ErrPortAlreadyInUse
+		}
+	}
+
+	// Every forward takes a port on the node's one public address away from the
+	// other VMs there, so a VM may only hold so many; a NAT VM its whole block.
+	var held int64
+	if err := db.Model(&models.PortForward{}).Where("vm_id = ?", vm.ID).Count(&held).Error; err != nil {
+		return nil, fmt.Errorf("failed to count port forwards: %w", err)
+	}
+	limit := PortForwardsPerVM(ctx, tx)
+	if block != nil {
+		limit = max(limit, 2*block.PortCount) // each port once per protocol
+	}
+	if held >= int64(limit) {
+		return nil, fmt.Errorf("%w: a VM may have at most %d", ErrPortForwardLimit, limit)
+	}
+
+	// One VM per (port, protocol) on a node, whatever the source restriction:
+	// two forwards on the same port would shadow each other on the node.
+	var taken int64
+	if err := db.Model(&models.PortForward{}).
+		Where("node_id = ? AND external_port = ? AND protocol = ?", vm.NodeID, req.ExternalPort, req.Protocol).
+		Count(&taken).Error; err != nil {
+		return nil, fmt.Errorf("failed to check port: %w", err)
+	}
+	if taken > 0 {
+		return nil, ErrPortAlreadyInUse
+	}
+
 	portForward := &models.PortForward{
-		VMID:         vmID,
+		VMID:         vm.ID,
 		NetworkID:    networkID,
+		NodeID:       vm.NodeID,
 		ExternalPort: req.ExternalPort,
 		InternalPort: req.InternalPort,
 		Protocol:     req.Protocol,
@@ -252,17 +341,26 @@ func (s *NetworkService) AddPortForward(ctx context.Context, vmID string, networ
 		return nil, fmt.Errorf("validation failed: %v", errs)
 	}
 
-	// Save to database using GORM directly since we don't have a repository
-	if err := s.db.WithContext(ctx).Create(portForward).Error; err != nil {
+	if err := db.Create(portForward).Error; err != nil {
+		// Two requests for the same port at once: the unique index decides.
+		if strings.Contains(err.Error(), "idx_port_forwards_node_port") {
+			return nil, ErrPortAlreadyInUse
+		}
 		return nil, fmt.Errorf("failed to create port forward: %w", err)
 	}
+	return portForward, nil
+}
 
-	// Enqueue full network resync (ReplaceAll) so the new DNAT is applied on the host.
-	if err := s.enqueueNetworkResync(ctx, vm); err != nil {
-		fmt.Printf("failed to enqueue network resync: %v\n", err)
+// lockNodePorts serialises changes to a node's public ports until the
+// transaction ends (Postgres; a test database has one writer anyway).
+func lockNodePorts(ctx context.Context, tx *gorm.DB, nodeID string) error {
+	if tx.Dialector.Name() != "postgres" {
+		return nil
 	}
-
-	return &AddPortForwardResponse{PortForward: portForward}, nil
+	if err := tx.WithContext(ctx).Exec("SELECT pg_advisory_xact_lock(hashtext(?))", "maburvm-nat-ports:"+nodeID).Error; err != nil {
+		return fmt.Errorf("failed to lock the node's ports: %w", err)
+	}
+	return nil
 }
 
 // RemovePortForward removes a port forwarding rule
@@ -292,7 +390,7 @@ func (s *NetworkService) RemovePortForward(ctx context.Context, vmID string, net
 
 	// Enqueue full network resync (ReplaceAll) so the removed DNAT is dropped on the host.
 	if err := s.enqueueNetworkResync(ctx, vm); err != nil {
-		fmt.Printf("failed to enqueue network resync: %v\n", err)
+		slog.Default().Warn("failed to enqueue network resync", "error", err)
 	}
 
 	return nil
@@ -341,14 +439,35 @@ func (s *NetworkService) RemovePortForwardForVM(ctx context.Context, vmID, forwa
 	return s.RemovePortForward(ctx, vmID, forward.NetworkID, forwardID)
 }
 
+// FirewallEnforcement says whether the VM's node applies firewall rules to
+// bridged guest traffic, as the node last reported: models.FirewallEnforced,
+// FirewallOff or FirewallUnknown. Anything unreadable is unknown, so a VM's
+// rules are never shown as working on a guess.
+func (s *NetworkService) FirewallEnforcement(ctx context.Context, vmID string) string {
+	var state string
+	if err := s.db.WithContext(ctx).
+		Raw("SELECT n.firewall_enforcement FROM nodes n JOIN vms v ON v.node_id = n.id WHERE v.id = ?", vmID).
+		Scan(&state).Error; err != nil {
+		return models.FirewallUnknown
+	}
+	switch state {
+	case models.FirewallEnforced, models.FirewallOff:
+		return state
+	}
+	return models.FirewallUnknown
+}
+
 // AddFirewallRuleRequest contains data for adding a firewall rule
 type AddFirewallRuleRequest struct {
 	Protocol  string `json:"protocol" validate:"required,oneof=tcp udp icmp all"`
 	PortRange string `json:"port_range,omitempty" validate:"omitempty,port_range"`
-	Action    string `json:"action" validate:"required,oneof=allow deny"`
+	Action    string `json:"action" validate:"required,oneof=allow deny reject"`
 	Direction string `json:"direction" validate:"required,oneof=inbound outbound"`
 	SourceIP  string `json:"source_ip,omitempty" validate:"omitempty,ip_or_cidr"`
 	Priority  int    `json:"priority" validate:"required,min=1,max=1000"`
+	ICMPType  string `json:"icmp_type,omitempty"`
+	Log       bool   `json:"log,omitempty"`
+	Family    string `json:"family,omitempty"`
 }
 
 // AddFirewallRuleResponse contains the created firewall rule data
@@ -372,6 +491,14 @@ func (s *NetworkService) AddFirewallRule(ctx context.Context, vmID string, req *
 		req.SourceIP = "0.0.0.0/0"
 	}
 
+	held, err := s.firewallRepo.CountEffectiveByVMID(ctx, vmID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count firewall rules: %w", err)
+	}
+	if limit := FirewallRulesPerVM(ctx, s.db); held >= int64(limit) {
+		return nil, fmt.Errorf("%w: a VM may have at most %d", ErrFirewallRuleLimit, limit)
+	}
+
 	// Create firewall rule
 	rule := &models.FirewallRule{
 		VMID:      vmID,
@@ -381,11 +508,14 @@ func (s *NetworkService) AddFirewallRule(ctx context.Context, vmID string, req *
 		Direction: req.Direction,
 		SourceIP:  req.SourceIP,
 		Priority:  req.Priority,
+		ICMPType:  strings.TrimSpace(req.ICMPType),
+		Log:       req.Log,
+		Family:    req.Family,
 	}
 
 	// Validate
 	if errs := rule.Validate(); len(errs) > 0 {
-		return nil, fmt.Errorf("validation failed: %v", errs)
+		return nil, fmt.Errorf("%w: %v", ErrInvalidFirewallRule, errs)
 	}
 
 	// Save to database
@@ -395,7 +525,7 @@ func (s *NetworkService) AddFirewallRule(ctx context.Context, vmID string, req *
 
 	// Enqueue full network resync (ReplaceAll) so the firewall rule is enforced on the host.
 	if err := s.enqueueNetworkResync(ctx, vm); err != nil {
-		fmt.Printf("failed to enqueue network resync: %v\n", err)
+		slog.Default().Warn("failed to enqueue network resync", "error", err)
 	}
 
 	return &AddFirewallRuleResponse{FirewallRule: rule}, nil
@@ -430,7 +560,7 @@ func (s *NetworkService) RemoveFirewallRule(ctx context.Context, vmID string, ru
 
 	// Enqueue full network resync (ReplaceAll) so the remaining rules are re-applied on the host.
 	if err := s.enqueueNetworkResync(ctx, vm); err != nil {
-		fmt.Printf("failed to enqueue network resync: %v\n", err)
+		slog.Default().Warn("failed to enqueue network resync", "error", err)
 	}
 
 	return nil
@@ -479,7 +609,7 @@ func (s *NetworkService) SetVLAN(ctx context.Context, vmID string, networkID str
 	// Enqueue VLAN config job to agent
 	network.VLANID = vlan
 	if err := s.enqueueNetworkConfigJob(ctx, vm, network); err != nil {
-		fmt.Printf("failed to enqueue VLAN config job: %v\n", err)
+		slog.Default().Warn("failed to enqueue VLAN config job", "error", err)
 	}
 
 	return nil
@@ -711,34 +841,170 @@ func (s *NetworkService) GetFirewallRules(ctx context.Context, vmID string) ([]m
 	return s.firewallRepo.ListByVMID(ctx, vmID, 0, 0)
 }
 
-// SyncNetworkConfig syncs all network configuration for a VM (used on agent reconnection)
-func (s *NetworkService) SyncNetworkConfig(ctx context.Context, vmID string) error {
-	// Get VM with relations
-	vm, err := s.vmRepo.GetByIDWithNode(ctx, vmID)
+// ResyncNodeVMs pushes the full network config of every VM on a node again.
+// The collector calls it when a node comes back after being offline: changes
+// made meanwhile never reached it, since their jobs gave up on a dead node.
+func (s *NetworkService) ResyncNodeVMs(ctx context.Context, nodeID string) int {
+	var vms []models.VM
+	if err := s.db.WithContext(ctx).Where("node_id = ?", nodeID).Find(&vms).Error; err != nil {
+		return 0
+	}
+	n := 0
+	for i := range vms {
+		if err := s.enqueueNetworkResync(ctx, &vms[i]); err == nil {
+			n++
+		}
+	}
+	return n
+}
+
+// PoolVMs are the VMs holding an address of a pool.
+func (s *NetworkService) PoolVMs(ctx context.Context, poolID string) []string {
+	var ids []string
+	_ = s.db.WithContext(ctx).Model(&models.IPAddress{}).Distinct("vm_id").
+		Where("pool_id = ? AND vm_id IS NOT NULL", poolID).Pluck("vm_id", &ids).Error
+	return ids
+}
+
+// ResyncPool sends the node config of every VM holding an address of a pool
+// again, as a pool's DHCP switch needs. Errors are logged: the switch is saved.
+func (s *NetworkService) ResyncPool(ctx context.Context, poolID string) {
+	if _, err := s.ResyncVMs(ctx, s.PoolVMs(ctx, poolID)); err != nil {
+		slog.WarnContext(ctx, "pool change not sent to every node yet", "pool_id", poolID, "error", err)
+	}
+}
+
+// resyncBatch is how many network-config jobs go to the queue in one insert.
+const resyncBatch = 200
+
+// ResyncVMs pushes the full network config of each VM again, queued in
+// batches: a group edit reaches every VM it is attached to. VMs without an
+// address are skipped (their rules apply when they get one). Returns how many
+// jobs were queued.
+func (s *NetworkService) ResyncVMs(ctx context.Context, vmIDs []string) (int, error) {
+	if len(vmIDs) == 0 {
+		return 0, nil
+	}
+	if s.riverClient == nil {
+		return 0, fmt.Errorf("river client not initialized")
+	}
+	var vms []models.VM
+	if err := s.db.WithContext(ctx).Where("id IN ?", vmIDs).Find(&vms).Error; err != nil {
+		return 0, err
+	}
+	queued := 0
+	var batch []river.InsertManyParams
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		if _, err := s.riverClient.InsertMany(ctx, batch); err != nil {
+			return err
+		}
+		queued += len(batch)
+		batch = batch[:0]
+		return nil
+	}
+	for i := range vms {
+		params, ok, err := s.NetworkConfigParams(ctx, &vms[i])
+		if err != nil {
+			return queued, fmt.Errorf("VM %s: %w", vms[i].Hostname, err)
+		}
+		if !ok {
+			continue
+		}
+		batch = append(batch, river.InsertManyParams{Args: queue.VMOperationJob{
+			VMID: vms[i].ID, NodeID: vms[i].NodeID, Operation: queue.VMOpConfigureNetwork, Params: params,
+		}})
+		if len(batch) == resyncBatch {
+			if err := flush(); err != nil {
+				return queued, err
+			}
+		}
+	}
+	return queued, flush()
+}
+
+// SetFirewallDefault sets what the VM's firewall does with inbound traffic no
+// rule matched (models.FirewallDefault*) and sends it to the node.
+func (s *NetworkService) SetFirewallDefault(ctx context.Context, vmID, policy string) error {
+	if policy != models.FirewallDefaultDrop && policy != models.FirewallDefaultAccept {
+		return fmt.Errorf("%w: the default must be drop or accept", ErrInvalidPolicy)
+	}
+	return s.setVMNetworkColumn(ctx, vmID, "firewall_default", policy)
+}
+
+// SetSMTPBlocked blocks or allows the VM's outbound mail on port 25.
+func (s *NetworkService) SetSMTPBlocked(ctx context.Context, vmID string, blocked bool) error {
+	return s.setVMNetworkColumn(ctx, vmID, "smtp_blocked", blocked)
+}
+
+// setVMNetworkColumn writes one network policy column of a VM and pushes the
+// VM's config. By table name: the model fields are read-only.
+func (s *NetworkService) setVMNetworkColumn(ctx context.Context, vmID, column string, value interface{}) error {
+	vm, err := s.vmRepo.GetByID(ctx, vmID)
 	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return fmt.Errorf("VM not found")
+		}
 		return fmt.Errorf("failed to get VM: %w", err)
 	}
-
-	// Get all networks
-	networks, err := s.networkRepo.ListByVMID(ctx, vmID)
-	if err != nil {
-		return fmt.Errorf("failed to get networks: %w", err)
+	if err := s.db.WithContext(ctx).Table("vms").Where("id = ?", vmID).Update(column, value).Error; err != nil {
+		return fmt.Errorf("failed to save the VM's network policy: %w", err)
 	}
-
-	// Enqueue a full-config sync job per interface. enqueueNetworkConfigJob loads
-	// the complete firewall set itself, so the whole config is re-applied.
-	for i := range networks {
-		_ = s.enqueueNetworkConfigJob(ctx, vm, &networks[i])
+	if err := s.enqueueNetworkResync(ctx, vm); err != nil {
+		return fmt.Errorf("saved, but the node could not be told: %w", err)
 	}
-
 	return nil
+}
+
+// DismissGuestNetworkNote clears the note about an address change the guest
+// did not take, once someone has dealt with it by hand.
+func (s *NetworkService) DismissGuestNetworkNote(ctx context.Context, vmID string) error {
+	return s.db.WithContext(ctx).Table("vms").Where("id = ?", vmID).
+		Updates(map[string]interface{}{"guest_network_note": nil, "guest_network_pending": false}).Error
+}
+
+// vmNetworkPolicy reads the VM's firewall default and mail block.
+func (s *NetworkService) vmNetworkPolicy(ctx context.Context, vmID string) (string, bool) {
+	var row struct {
+		FirewallDefault string
+		SMTPBlocked     bool `gorm:"column:smtp_blocked"`
+	}
+	if err := s.db.WithContext(ctx).Table("vms").Select("firewall_default, smtp_blocked").Where("id = ?", vmID).Scan(&row).Error; err != nil {
+		return models.FirewallDefaultDrop, false
+	}
+	if row.FirewallDefault == "" {
+		row.FirewallDefault = models.FirewallDefaultDrop
+	}
+	return row.FirewallDefault, row.SMTPBlocked
+}
+
+// vmIPPrefixes maps each IPAM address of a VM to its pool's prefix length, so
+// the guest can be given every address it holds.
+func (s *NetworkService) vmIPPrefixes(ctx context.Context, vmID string) map[string]int {
+	var rows []struct {
+		Address string
+		CIDR    string `gorm:"column:cidr"`
+	}
+	if err := s.db.WithContext(ctx).Table("ip_addresses a").Select("a.address, p.cidr").
+		Joins("JOIN ip_pools p ON p.id = a.pool_id").Where("a.vm_id = ?", vmID).Scan(&rows).Error; err != nil {
+		return nil
+	}
+	out := map[string]int{}
+	for _, r := range rows {
+		if n := prefixFromCIDR(r.CIDR); n > 0 {
+			out[hostOnlyIP(r.Address)] = n
+		}
+	}
+	return out
 }
 
 // enqueueNetworkConfigJob enqueues a job to configure network on the agent.
 //
-// The agent applies this with ReplaceAll semantics: it flushes the VM's entire
-// network config (firewall, anti-spoof, VLAN, bandwidth, NAT) and rebuilds it
-// from exactly what this job carries. So this MUST always send the VM's FULL
+// The agent applies this with ReplaceAll semantics: it replaces the VM's
+// entire network config (firewall, anti-spoof, VLAN, bandwidth, NAT) with
+// exactly what this job carries. So this MUST always send the VM's FULL
 // current firewall rule set — an attribute-only change (bandwidth/VLAN/anti-
 // spoof) that omitted the rules would silently wipe the firewall and reopen
 // blocked ports. Rules are loaded here, at the single chokepoint, so no caller
@@ -753,14 +1019,45 @@ func (s *NetworkService) enqueueNetworkConfig(ctx context.Context, vm *models.VM
 	if s.riverClient == nil {
 		return fmt.Errorf("river client not initialized")
 	}
+	paramsJSON, err := s.networkConfigParams(ctx, vm, network, pool)
+	if err != nil {
+		return err
+	}
 
+	job := queue.VMOperationJob{
+		VMID:      vm.ID,
+		NodeID:    vm.NodeID,
+		Operation: queue.VMOpConfigureNetwork,
+		Params:    paramsJSON,
+	}
+
+	_, err = s.riverClient.Insert(ctx, job, nil)
+	return err
+}
+
+// NetworkConfigParams returns the VM's full network config as a configure
+// network job carries it; false when the VM has no address to configure.
+func (s *NetworkService) NetworkConfigParams(ctx context.Context, vm *models.VM) ([]byte, bool, error) {
+	network, err := s.networkRepo.GetByVMID(ctx, vm.ID)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	params, err := s.networkConfigParams(ctx, vm, network, nil)
+	return params, err == nil, err
+}
+
+// networkConfigParams builds the job parameters of enqueueNetworkConfig.
+func (s *NetworkService) networkConfigParams(ctx context.Context, vm *models.VM, network *models.Network, pool *models.IPPool) ([]byte, error) {
 	// Always send the complete rule set; ReplaceAll drops anything not present.
 	// On load failure do NOT enqueue: a partial config would wipe the firewall.
-	// The DB change is already persisted and SyncNetworkConfig re-applies full
-	// state on the next agent reconnect.
-	rules, err := s.firewallRepo.ListByVMID(ctx, vm.ID, 0, 0)
+	// The DB change is already persisted; the full state goes out again when
+	// the node next comes back from offline (ResyncNodeVMs) or the VM changes.
+	rules, err := s.firewallRepo.ListEffectiveByVMID(ctx, vm.ID)
 	if err != nil {
-		return fmt.Errorf("failed to load firewall rules for network config: %w", err)
+		return nil, fmt.Errorf("failed to load firewall rules for network config: %w", err)
 	}
 
 	params := NetworkConfigParams{
@@ -770,6 +1067,24 @@ func (s *NetworkService) enqueueNetworkConfig(ctx context.Context, vm *models.VM
 		AntiSpoofing:   network.AntiSpoofing,
 		FirewallRules:  rules,
 	}
+	params.FirewallDefault, params.BlockSMTP = s.vmNetworkPolicy(ctx, vm.ID)
+	// An abuse rate limit in force holds the speed down in every job, so an
+	// unrelated change (a firewall rule, a resync) cannot lift it.
+	if limit := abuseSpeedCap(ctx, s.db, vm.ID); limit > 0 && (params.BandwidthLimit == 0 || params.BandwidthLimit > limit) {
+		params.BandwidthLimit = limit
+	}
+	// So does an over-quota throttle until its period resets: the collector
+	// applies it once, when the VM crosses its quota.
+	if network.Throttled {
+		limit := int64(network.ThrottleSpeedMbps)
+		if limit <= 0 {
+			limit = defaultThrottleMbps
+		}
+		if params.BandwidthLimit == 0 || params.BandwidthLimit > limit {
+			params.BandwidthLimit = limit
+		}
+	}
+	params.IPPrefixes = s.vmIPPrefixes(ctx, vm.ID)
 	if pool != nil {
 		params.Gateway = pool.Gateway
 		params.Netmask = prefixFromCIDR(pool.CIDR)
@@ -813,17 +1128,7 @@ func (s *NetworkService) enqueueNetworkConfig(ctx context.Context, vm *models.VM
 		}
 	}
 
-	paramsJSON, _ := json.Marshal(params)
-
-	job := queue.VMOperationJob{
-		VMID:      vm.ID,
-		NodeID:    vm.NodeID,
-		Operation: queue.VMOpConfigureNetwork,
-		Params:    paramsJSON,
-	}
-
-	_, err = s.riverClient.Insert(ctx, job, nil)
-	return err
+	return json.Marshal(params)
 }
 
 // enqueueNetworkResync pushes the VM's FULL desired network state (IP, bandwidth,
@@ -831,13 +1136,23 @@ func (s *NetworkService) enqueueNetworkConfig(ctx context.Context, vm *models.VM
 // (ReplaceAll). enqueueNetworkConfigJob loads the complete firewall + port-forward
 // set at its chokepoint, so every firewall / port-forward mutation converges host
 // iptables idempotently. No interface yet → nothing enforceable, so the rules
-// persist in the DB and are applied on IP assignment (SyncNetworkConfig).
+// persist in the DB and are applied on IP assignment.
 func (s *NetworkService) enqueueNetworkResync(ctx context.Context, vm *models.VM) error {
 	network, err := s.networkRepo.GetByVMID(ctx, vm.ID)
-	if err != nil {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil
 	}
+	if err != nil {
+		return err
+	}
 	return s.enqueueNetworkConfigJob(ctx, vm, network)
+}
+
+// enqueueNetworkClear sends a VM that just lost its last address a config with
+// no address, which makes the node remove every host rule it had for the VM:
+// that address may already belong to someone else.
+func (s *NetworkService) enqueueNetworkClear(ctx context.Context, vm *models.VM) error {
+	return s.enqueueNetworkConfigJob(ctx, vm, &models.Network{VMID: vm.ID})
 }
 
 // vmIPBridges maps each IPAM address of a VM to its pool's bridge.
@@ -870,9 +1185,9 @@ type NetworkConfigParams struct {
 	// IPBridges maps each address to its pool's bridge, so the agent pins it
 	// to the NIC on that bridge rather than to the VM's first NIC.
 	IPBridges map[string]string `json:"ip_bridges,omitempty"`
-	// Set only when the address itself changed: the agent then also rewrites
-	// the guest's network config, which may mean a reboot for a guest without
-	// a responsive qemu-guest-agent. Rule/bandwidth syncs leave these empty.
+	// Set only when the addresses changed: the agent then also rewrites the
+	// guest's network config, never restarting it; what the guest could not
+	// take is noted on the VM. Rule/bandwidth syncs leave these empty.
 	Gateway        string `json:"gateway,omitempty"`
 	Netmask        int    `json:"netmask,omitempty"`
 	ConfigureGuest bool   `json:"configure_guest,omitempty"`
@@ -881,6 +1196,13 @@ type NetworkConfigParams struct {
 	IPv6Prefix  string `json:"ipv6_prefix,omitempty"`
 	IPv6Address string `json:"ipv6_address,omitempty"`
 	IPv6Gateway string `json:"ipv6_gateway,omitempty"`
+	// FirewallDefault and BlockSMTP are the VM's network policy; the worker
+	// reads both again when it runs, this copy is the fallback.
+	FirewallDefault string `json:"firewall_default,omitempty"`
+	BlockSMTP       bool   `json:"block_smtp,omitempty"`
+	// IPPrefixes maps each address to its prefix length, so a guest being
+	// reconfigured keeps every address it holds.
+	IPPrefixes map[string]int `json:"ip_prefixes,omitempty"`
 }
 
 // PortForwardParam is a DNAT rule carried in a network-config job.
@@ -926,8 +1248,27 @@ func (s *NetworkService) SetAntiSpoofing(ctx context.Context, vmID string, netwo
 	// Enqueue network config job to agent (anti-spoofing is part of network setup)
 	network.AntiSpoofing = req.Enabled
 	if err := s.enqueueNetworkConfigJob(ctx, vm, network); err != nil {
-		fmt.Printf("failed to enqueue anti-spoofing config job: %v\n", err)
+		slog.Default().Warn("failed to enqueue anti-spoofing config job", "error", err)
 	}
 
 	return nil
+}
+
+// IPHistory lists who held an address when: every holding of the address, or
+// of an IPv6 prefix containing it, newest first. With at, only the holdings in
+// force at that moment.
+func (s *NetworkService) IPHistory(ctx context.Context, address string, at *time.Time) ([]models.IPAssignment, error) {
+	ip := net.ParseIP(strings.TrimSpace(address))
+	if ip == nil {
+		return nil, ErrInvalidIPAddress
+	}
+	q := s.db.WithContext(ctx).Where("address >>= ?::inet", ip.String())
+	if at != nil {
+		q = q.Where("assigned_at <= ? AND (released_at IS NULL OR released_at > ?)", *at, *at)
+	}
+	var rows []models.IPAssignment
+	if err := q.Order("assigned_at DESC").Limit(500).Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("failed to read the address history: %w", err)
+	}
+	return rows, nil
 }

@@ -22,10 +22,10 @@ echo "Deploying ${APP_VERSION} (${GIT_COMMIT}) to ${HOST}: ${SERVICES}"
 
 # Each tree to its own destination. Never `rsync --delete` several dirs into the
 # repo root: it deletes docker-compose*.yml and .env.production (it has happened).
-for d in cmd internal api integrations web/src; do
+for d in cmd internal api integrations web/src web/public docker/agent-sigs; do
   rsync -az --delete "$d/" "$HOST:$DEST/$d/"
 done
-rsync -az go.mod go.sum Dockerfile.panel "$HOST:$DEST/"
+rsync -az go.mod go.sum Dockerfile.panel Dockerfile.web .dockerignore "$HOST:$DEST/"
 # The web build also reads these from web/, outside web/src. Left unsynced, a
 # Tailwind or dependency change builds against the host's stale copy.
 rsync -az web/package.json web/package-lock.json web/tailwind.config.ts \

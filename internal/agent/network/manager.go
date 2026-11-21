@@ -4,12 +4,15 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/maburvm/panel/internal/agent/dhcp"
 	"github.com/maburvm/panel/internal/agent/libvirt"
+	"github.com/maburvm/panel/internal/agent/netrules"
 	"github.com/maburvm/panel/internal/shared/models"
 )
 
@@ -27,6 +30,8 @@ type Manager struct {
 	// ipv6StatePath: an agent restart or node reboot restores the routes, and a
 	// released or moved prefix is torn down even across restarts.
 	ipv6 map[string]IPv6Delegation
+	// dhcp answers DHCP for the VMs' addresses on pools that ask for it.
+	dhcp *dhcp.Manager
 }
 
 // VMNetworkState holds the network configuration state for a VM
@@ -62,6 +67,10 @@ func NewManager() (*Manager, error) {
 		return nil, fmt.Errorf("failed to initialize NAT manager: %w", err)
 	}
 
+	// After the NAT manager: once bridged traffic passes through iptables it
+	// also meets the port forwards, which must be scoped to one address first.
+	ensureBridgeNetfilter()
+
 	// Initialize firewall manager
 	fwManager, err := NewFirewallManager()
 	if err != nil {
@@ -94,15 +103,26 @@ func NewManager() (*Manager, error) {
 		antiSpoof:  asManager,
 		vmNetworks: make(map[string]*VMNetworkState),
 		ipv6:       loadIPv6Delegations(ipv6StatePath()),
+		dhcp:       dhcp.NewManager(filepath.Dir(ipv6StatePath())),
 	}
 	asManager.AdoptExisting(runningVMIDs(), vmNICs)
 	// VLANs on record are put back at start (agent restart, node reboot) and
 	// kept in place: a VM that restarts gets a fresh tap in the native VLAN.
 	m.vlan.Reconcile()
+	// The outbound rate limit hangs off the per-guest counting rules, so they
+	// are put in place now rather than at the panel's first poll.
+	m.syncGuestCountersFromLibvirt()
+	if fwManager.ipt6 != nil {
+		if err := applyNullRoutes6(fwManager.ipt6, readNullRoutes()); err != nil {
+			log.Printf("[NetworkManager] WARNING: IPv6 null-routes not restored: %v", err)
+		}
+	}
 	go func() {
 		for range time.Tick(30 * time.Second) {
 			asManager.RebindInterfaces(vmNICs)
 			m.vlan.Reconcile()
+			m.syncGuestCountersFromLibvirt()
+			m.ExpireNullRoutes()
 		}
 	}()
 	for vmID, d := range m.ipv6 { // node reboot: routes and neighbour entries are gone
@@ -115,102 +135,215 @@ func NewManager() (*Manager, error) {
 	return m, nil
 }
 
-// SetupVMNetwork sets up the complete network configuration for a VM
-// This should be called when a VM is started. ipv6 (may be nil) is the routed
-// prefix to forward to the guest; it is firewalled with the same rules.
-func (m *Manager) SetupVMNetwork(vmID string, internalIP string, vlanID int, bandwidthMbps int, rules []models.FirewallRule, ipv6 *IPv6Delegation, extraIPs ...string) error {
+// VMDesired is the whole host-side network state the panel wants for a VM.
+type VMDesired struct {
+	VMID     string
+	IP       string   // primary IPv4; NAT, bandwidth and port forwards follow it
+	ExtraIPs []string // further addresses, firewalled like IP
+	VLANID   int
+	// BandwidthMbps is the speed limit, 0 = unlimited.
+	BandwidthMbps int
+	Rules         []models.FirewallRule
+	DefaultAccept bool
+	BlockSMTP     bool
+	// IPv6 is the routed prefix to forward to the guest, nil when none.
+	IPv6         *IPv6Delegation
+	PortForwards []PortForwardSpec
+	// AntiSpoof pins the VM's NICs to these addresses; empty turns it off.
+	AntiSpoof []SpoofAddr
+	// DHCP are the static leases the node serves for the VM's cards.
+	DHCP []dhcp.Host
+}
+
+// firewall is the firewall part of d.
+func (d VMDesired) firewall() netrules.VMFirewall {
+	fw := netrules.VMFirewall{
+		VMID: d.VMID, IPs: append([]string{d.IP}, d.ExtraIPs...), Rules: d.Rules,
+		DefaultAccept: d.DefaultAccept, BlockSMTP: d.BlockSMTP,
+	}
+	if d.IPv6 != nil {
+		fw.IPv6Prefix = d.IPv6.Prefix
+	}
+	return fw
+}
+
+// ApplyVM brings the host in line with d, replacing in place whatever the VM
+// had: every part is rewritten so that what stays never stops working (the
+// firewall swaps whole sets, forwards are added before stale ones go), and
+// what the VM no longer has is removed. Port-forward and anti-spoofing
+// failures are returned as warnings; the rest fails the apply.
+func (m *Manager) ApplyVM(d VMDesired) (warnings []string, err error) {
+	if d.IP == "" {
+		return nil, fmt.Errorf("internal IP cannot be empty")
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	state := &VMNetworkState{
-		VMID:         vmID,
-		InternalIP:   internalIP,
-		ExtraIPs:     extraIPs,
-		VLANID:       vlanID,
-		Bandwidth:    bandwidthMbps,
+		VMID:         d.VMID,
+		InternalIP:   d.IP,
+		ExtraIPs:     d.ExtraIPs,
+		VLANID:       d.VLANID,
+		Bandwidth:    d.BandwidthMbps,
 		PortForwards: make(map[int]portForwardEntry),
-		IPv6:         ipv6,
-	}
-	var ipv6Prefix string
-	if ipv6 != nil {
-		ipv6Prefix = ipv6.Prefix
+		IPv6:         d.IPv6,
 	}
 
-	// 1. Setup NAT (MASQUERADE)
-	if err := m.nat.SetupNAT(vmID, internalIP); err != nil {
-		return fmt.Errorf("failed to setup NAT: %w", err)
+	// 1. NAT for the primary address; whatever an earlier address left goes.
+	if err := m.nat.SetupNAT(d.VMID, d.IP); err != nil {
+		return nil, fmt.Errorf("failed to setup NAT: %w", err)
 	}
-	log.Printf("[NetworkManager] NAT setup for VM %s (IP: %s)", vmID, internalIP)
+	m.nat.PruneAddrs(d.VMID, d.IP)
 
-	// 2. Apply bandwidth limit via libvirt so BOTH download and upload are
-	//    shaped (the manual tc HTB only caps download). 0 = unlimited.
-	if err := m.applyBandwidth(vmID, bandwidthMbps); err != nil {
-		// Cleanup NAT on failure
-		_ = m.nat.RemoveNAT(vmID, internalIP)
-		return fmt.Errorf("failed to apply bandwidth limit: %w", err)
-	}
-	if bandwidthMbps > 0 {
-		log.Printf("[NetworkManager] Bandwidth limit %d Mbps applied to VM %s", bandwidthMbps, vmID)
+	// 2. Bandwidth via libvirt, so download and upload are both shaped.
+	_ = m.bandwidth.CleanupVM(d.VMID)
+	if err := m.applyBandwidth(d.VMID, d.BandwidthMbps); err != nil {
+		return nil, fmt.Errorf("failed to apply bandwidth limit: %w", err)
 	}
 
-	// 3. Assign VLAN if specified
-	//    A VLAN that cannot be applied right now (the VM is stopped, or its
-	//    bridge is not enabled for VLANs) must not stop the firewall and the
-	//    rest from being applied: it is logged, kept on record, and retried by
-	//    the reconciler. No VLAN means the native network, so a VM that had
-	//    one is moved back.
-	if vlanID > 0 {
-		if err := m.vlan.AssignVLAN(vmID, vlanID); err != nil {
-			log.Printf("[NetworkManager] WARNING: VLAN %d not applied to VM %s yet: %v", vlanID, vmID, err)
-		} else {
-			log.Printf("[NetworkManager] VLAN %d assigned to VM %s", vlanID, vmID)
+	// 3. VLAN. One that cannot be applied right now (VM stopped, bridge not
+	//    VLAN-aware) is kept on record and retried by the reconciler; no VLAN
+	//    moves the VM back to the native network.
+	if d.VLANID > 0 {
+		if err := m.vlan.AssignVLAN(d.VMID, d.VLANID); err != nil {
+			log.Printf("[NetworkManager] WARNING: VLAN %d not applied to VM %s yet: %v", d.VLANID, d.VMID, err)
 		}
-	} else if err := m.vlan.RemoveVLAN(vmID, 0); err != nil {
-		log.Printf("[NetworkManager] WARNING: moving VM %s back to the native network: %v", vmID, err)
+	} else if err := m.vlan.RemoveVLAN(d.VMID, 0); err != nil {
+		log.Printf("[NetworkManager] WARNING: moving VM %s back to the native network: %v", d.VMID, err)
 	}
 
-	// 4. Apply firewall rules
-	if len(rules) > 0 {
-		fwRules := make([]FirewallRule, len(rules))
-		for i, rule := range rules {
-			fwRules[i] = FromModelRule(rule)
-			state.FirewallRules = append(state.FirewallRules, rule.ID)
-		}
-		if err := m.firewall.ApplyFirewallRules(vmID, internalIP, fwRules, ipv6Prefix, extraIPs...); err != nil {
-			// Cleanup on failure
-			_ = m.bandwidth.RemoveBandwidthLimit(vmID)
-			_ = m.nat.RemoveNAT(vmID, internalIP)
-			return fmt.Errorf("failed to apply firewall rules: %w", err)
-		}
-		log.Printf("[NetworkManager] %d firewall rules applied to VM %s", len(rules), vmID)
+	// 4. Firewall, mail block included. A VM with no rules ends up with none.
+	if err := m.firewall.Apply(d.firewall()); err != nil {
+		return nil, fmt.Errorf("failed to apply firewall rules: %w", err)
+	}
+	for _, r := range d.Rules {
+		state.FirewallRules = append(state.FirewallRules, r.ID)
 	}
 
-	// 5. Route the delegated IPv6 prefix to the guest. Idempotent. A prefix the VM
-	//    no longer has (released, or moved to another MAC/bridge) is removed first.
-	if prev, ok := m.ipv6[vmID]; ok && (ipv6 == nil || prev != *ipv6) {
-		if err := removeIPv6Route(prev); err != nil {
-			log.Printf("[NetworkManager] WARNING: removing old IPv6 %s for VM %s: %v", prev.Prefix, vmID, err)
+	// 5. The delegated IPv6 prefix. A prefix the VM no longer has (released, or
+	//    moved to another MAC/bridge) is removed; an unchanged one is left up.
+	if prev, ok := m.ipv6[d.VMID]; ok && (d.IPv6 == nil || !prev.Same(*d.IPv6)) {
+		if d.IPv6 != nil && prev.sameRoute(*d.IPv6) {
+			removeStaleProxies(prev, *d.IPv6) // the route stays up
+		} else if err := removeIPv6Route(prev); err != nil {
+			log.Printf("[NetworkManager] WARNING: removing old IPv6 %s for VM %s: %v", prev.Prefix, d.VMID, err)
 		}
-		delete(m.ipv6, vmID)
+		delete(m.ipv6, d.VMID)
 		m.saveIPv6()
 	}
-	if ipv6 != nil {
-		ll, err := applyIPv6Route(*ipv6)
+	if d.IPv6 != nil {
+		ll, err := applyIPv6Route(*d.IPv6)
 		if err != nil {
-			_ = m.firewall.CleanupVM(vmID)
-			_ = m.bandwidth.RemoveBandwidthLimit(vmID)
-			_ = m.nat.RemoveNAT(vmID, internalIP)
-			return fmt.Errorf("failed to route IPv6 prefix: %w", err)
+			return nil, fmt.Errorf("failed to route IPv6 prefix: %w", err)
 		}
-		log.Printf("[NetworkManager] IPv6 %s routed via %s on %s for VM %s", ipv6.Prefix, ll, ipv6.Bridge, vmID)
-		m.ipv6[vmID] = *ipv6
+		log.Printf("[NetworkManager] IPv6 %s routed via %s on %s for VM %s", d.IPv6.Prefix, ll, d.IPv6.Bridge, d.VMID)
+		m.ipv6[d.VMID] = *d.IPv6
 		m.saveIPv6()
 	}
 
-	// Store state
-	m.vmNetworks[vmID] = state
+	// 6. Port forwards: exactly the wanted set.
+	if err := m.nat.SetPortForwards(d.VMID, d.IP, d.PortForwards); err != nil {
+		warnings = append(warnings, "port forwards: "+err.Error())
+	}
+	for k, v := range m.nat.GetPortForwards(d.VMID) {
+		state.PortForwards[k] = v
+	}
 
-	return nil
+	// 7. Anti-spoofing, swapped in place, or lifted when it was turned off.
+	if len(d.AntiSpoof) > 0 {
+		nics, err := vmNICs(d.VMID)
+		if err == nil {
+			err = m.antiSpoof.ApplyAntiSpoofRules(d.VMID, d.AntiSpoof, nics)
+		}
+		if err != nil {
+			warnings = append(warnings, "anti-spoofing: "+err.Error())
+		} else {
+			state.AntiSpoofEnabled = true
+			if len(nics) > 0 {
+				state.MACAddress = nics[0].MAC
+			}
+		}
+	} else if err := m.antiSpoof.RemoveAntiSpoofRules(d.VMID); err != nil {
+		warnings = append(warnings, "anti-spoofing: "+err.Error())
+	}
+
+	// 8. DHCP: the VM's static leases, served on their bridges.
+	m.dhcp.Set(d.VMID, d.DHCP)
+
+	m.vmNetworks[d.VMID] = state
+	return warnings, nil
+}
+
+// DHCPStatus says, per bridge the node answers DHCP on, why it is not
+// serving ("" when it is).
+func (m *Manager) DHCPStatus() map[string]string { return m.dhcp.Status() }
+
+// VLANBridges reports the bridges that carry per-VM VLANs and how each looks
+// now, and whether the list came from the agent's environment.
+func (m *Manager) VLANBridges() ([]netrules.VLANBridgeState, bool) { return m.vlan.Bridges() }
+
+// SetVLANBridges replaces the VLAN bridges (see VLANManager.SetBridges) and
+// puts the VMs' VLANs on any newly enabled bridge at once.
+func (m *Manager) SetVLANBridges(bridges map[string]string, useEnv bool) ([]netrules.VLANBridgeState, bool, error) {
+	st, fromEnv, err := m.vlan.SetBridges(bridges, useEnv)
+	if err == nil {
+		go m.vlan.Reconcile()
+	}
+	return st, fromEnv, err
+}
+
+// EnsureChains repairs the agent's own chains and jumps if something outside
+// the agent removed them, and says whether it had to.
+func (m *Manager) EnsureChains() bool {
+	fw, err := m.firewall.EnsureChains()
+	if err != nil {
+		log.Printf("[NetworkManager] WARNING: checking the firewall chain: %v", err)
+	}
+	nat, err := m.nat.EnsureChain()
+	if err != nil {
+		log.Printf("[NetworkManager] WARNING: checking the port-forward chain: %v", err)
+	}
+	return fw || nat
+}
+
+// Snapshot lists the host's rule chains once, for checking many VMs.
+func (m *Manager) Snapshot() (netrules.HostSnapshot, bool) {
+	var s netrules.HostSnapshot
+	s.Firewall, s.Firewall6, s.Have6 = m.firewall.Lists()
+	var publish bool
+	s.Postrouting, s.Forward, s.PortForwards, publish = m.nat.Lists()
+	if _, err := exec.LookPath("ebtables"); err == nil {
+		if out, err := exec.Command("ebtables", "-L").Output(); err == nil {
+			s.HaveEbtables = true
+			s.EbChains, s.EbJumps = netrules.ParseEbtablesListing(string(out))
+		}
+	}
+	return s, publish
+}
+
+// Drift says how the host differs from d for this VM, nil when it does not.
+func (m *Manager) Drift(d VMDesired, s netrules.HostSnapshot, publishKnown bool) []string {
+	if d.IP == "" {
+		return nil
+	}
+	e := netrules.VMExpect{
+		Firewall:     d.firewall(),
+		Primary:      d.IP,
+		Masquerade:   isPrivateAddress(d.IP),
+		PortForwards: len(d.PortForwards),
+	}
+	if !s.Have6 {
+		e.Firewall.IPv6Prefix = ""
+	}
+	if !publishKnown {
+		e.PortForwards = -1
+	}
+	if len(d.AntiSpoof) > 0 {
+		if nics, err := vmNICs(d.VMID); err == nil {
+			e.AntiSpoof = len(assignAddrs(d.AntiSpoof, nics)) > 0
+		}
+	}
+	return netrules.Drift(e, s)
 }
 
 // CleanupVMNetwork removes all network configuration for a VM
@@ -261,9 +394,18 @@ func (m *Manager) CleanupVMNetwork(vmID string) error {
 		if err := m.nat.CleanupVM(vmID, state.InternalIP); err != nil {
 			errs = append(errs, fmt.Errorf("NAT cleanup: %w", err))
 		}
+	} else {
+		// No state after an agent restart, but the forwards are still in the
+		// chain. Left there, a re-apply would add its set beside the old one.
+		m.nat.ClearPortForwards(vmID)
 	}
+	// Whatever is tagged for the VM goes, whichever address it was written for.
+	m.nat.PruneAddrs(vmID, "")
 
-	// 6. Remove the IPv6 route + neighbour (persisted, so this works after a restart).
+	// 6. Stop serving the VM's DHCP leases.
+	m.dhcp.Set(vmID, nil)
+
+	// 7. Remove the IPv6 route + neighbour (persisted, so this works after a restart).
 	if d, ok := m.ipv6[vmID]; ok {
 		if err := removeIPv6Route(d); err != nil {
 			errs = append(errs, fmt.Errorf("IPv6 route cleanup: %w", err))
@@ -282,6 +424,10 @@ func (m *Manager) CleanupVMNetwork(vmID string) error {
 	log.Printf("[NetworkManager] Network cleanup completed for VM %s", vmID)
 	return nil
 }
+
+// NATAddress is the node address port forwards are published on, empty when
+// the node has none.
+func (m *Manager) NATAddress() string { return m.nat.PublishAddress() }
 
 // AddPortForward adds a port forward for a VM. protocol is "tcp" or "udp"
 // (empty defaults to tcp).
@@ -363,39 +509,6 @@ func (m *Manager) applyBandwidth(vmID string, rateMbps int) error {
 		}
 		return m.bandwidth.RemoveBandwidthLimit(vmID)
 	}
-	return nil
-}
-
-// UpdateFirewallRules updates the firewall rules for a VM
-func (m *Manager) UpdateFirewallRules(vmID string, rules []models.FirewallRule) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	state, exists := m.vmNetworks[vmID]
-	if !exists {
-		return fmt.Errorf("VM %s not found in network state", vmID)
-	}
-
-	fwRules := make([]FirewallRule, len(rules))
-	for i, rule := range rules {
-		fwRules[i] = FromModelRule(rule)
-	}
-
-	var ipv6Prefix string
-	if state.IPv6 != nil {
-		ipv6Prefix = state.IPv6.Prefix
-	}
-	if err := m.firewall.ApplyFirewallRules(vmID, state.InternalIP, fwRules, ipv6Prefix, state.ExtraIPs...); err != nil {
-		return fmt.Errorf("failed to apply firewall rules: %w", err)
-	}
-
-	// Update state
-	state.FirewallRules = make([]string, len(rules))
-	for i, rule := range rules {
-		state.FirewallRules[i] = rule.ID
-	}
-
-	log.Printf("[NetworkManager] %d firewall rules updated for VM %s", len(rules), vmID)
 	return nil
 }
 
@@ -577,6 +690,22 @@ func vmNICs(vmID string) ([]NIC, error) {
 		}
 	}
 	return nics, nil
+}
+
+// syncGuestCountersFromLibvirt brings the per-guest counting rules in line
+// with every running domain. A failed listing leaves the rules as they are
+// rather than removing every guest's.
+func (m *Manager) syncGuestCountersFromLibvirt() {
+	ifaces, err := libvirt.ListGuestInterfaces()
+	if err != nil {
+		log.Printf("[NetworkManager] WARNING: listing guest interfaces: %v", err)
+		return
+	}
+	nics := make([]GuestNIC, 0, len(ifaces))
+	for _, gi := range ifaces {
+		nics = append(nics, GuestNIC{MAC: gi.MAC, Tap: gi.Target})
+	}
+	m.SyncGuestCounters(nics)
 }
 
 // runningVMIDs lists the VMs that have taps, for anti-spoof adoption.

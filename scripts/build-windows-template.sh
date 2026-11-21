@@ -19,10 +19,18 @@
 # 6 GB) is downloaded.
 #
 # Usage: build-windows-template.sh --version 2022 --out /var/lib/libvirt/templates/windows-2022.qcow2
-#          [--iso PATH_OR_URL] [--edition standard|datacenter] [--core] [--work DIR] [--keep]
+#          [--iso PATH_OR_URL] [--edition standard|datacenter] [--core] [--uefi] [--work DIR] [--keep]
+#
+# --uefi installs Windows for UEFI boot (a GPT disk with an EFI system
+# partition) under OVMF, which must be installed (the ovmf package). Mark the
+# template's firmware UEFI in the panel, and tick Secure Boot and TPM there if
+# its VMs should have them; nodes need the ovmf package (and swtpm for a TPM),
+# which their preflight shows. A VM keeps the firmware it was created with, so
+# it is reinstalled only from images for the same firmware. Without --uefi the
+# image boots with BIOS, which every node does.
 set -euo pipefail
 
-VERSION="" OUT="" ISO="" EDITION=standard CORE=0 WORK="" KEEP=0
+VERSION="" OUT="" ISO="" EDITION=standard CORE=0 UEFI=0 WORK="" KEEP=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --version) VERSION="$2"; shift 2 ;;
@@ -30,9 +38,10 @@ while [ $# -gt 0 ]; do
     --iso) ISO="$2"; shift 2 ;;
     --edition) EDITION="$2"; shift 2 ;;
     --core) CORE=1; shift ;;
+    --uefi) UEFI=1; shift ;;
     --work) WORK="$2"; shift 2 ;;
     --keep) KEEP=1; shift ;;
-    -h|--help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -56,6 +65,16 @@ case "$EDITION" in
   datacenter) INDEX=$((4 - CORE)) ;;
   *) echo "unsupported edition: $EDITION (standard or datacenter)" >&2; exit 2 ;;
 esac
+
+# UEFI firmware: OVMF's code, and a copy of its variable store for this VM.
+OVMF_CODE="" OVMF_VARS=""
+if [ "$UEFI" = 1 ]; then
+  for pair in /usr/share/OVMF/OVMF_CODE_4M.fd:/usr/share/OVMF/OVMF_VARS_4M.fd /usr/share/OVMF/OVMF_CODE.fd:/usr/share/OVMF/OVMF_VARS.fd \
+    /usr/share/edk2/ovmf/OVMF_CODE.fd:/usr/share/edk2/ovmf/OVMF_VARS.fd /usr/share/edk2/x64/OVMF_CODE.4m.fd:/usr/share/edk2/x64/OVMF_VARS.4m.fd; do
+    if [ -f "${pair%%:*}" ] && [ -f "${pair##*:}" ]; then OVMF_CODE="${pair%%:*}" OVMF_VARS="${pair##*:}"; break; fi
+  done
+  [ -n "$OVMF_CODE" ] || { echo "--uefi needs OVMF firmware: install the ovmf package" >&2; exit 2; }
+fi
 
 for tool in qemu-system-x86_64 qemu-img xorriso curl; do
   command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 1; }
@@ -95,6 +114,37 @@ driver_paths() {
   done
 }
 
+# The disk layout: an active system partition then Windows (BIOS), or an EFI
+# system partition, the reserved partition and Windows on GPT (UEFI).
+WINDOWS_PART=2
+[ "$UEFI" = 1 ] && WINDOWS_PART=3
+partitions() {
+  if [ "$UEFI" = 1 ]; then
+    cat <<'PARTS'
+          <CreatePartitions>
+            <CreatePartition wcm:action="add"><Order>1</Order><Type>EFI</Type><Size>260</Size></CreatePartition>
+            <CreatePartition wcm:action="add"><Order>2</Order><Type>MSR</Type><Size>16</Size></CreatePartition>
+            <CreatePartition wcm:action="add"><Order>3</Order><Type>Primary</Type><Extend>true</Extend></CreatePartition>
+          </CreatePartitions>
+          <ModifyPartitions>
+            <ModifyPartition wcm:action="add"><Order>1</Order><PartitionID>1</PartitionID><Format>FAT32</Format><Label>System</Label></ModifyPartition>
+            <ModifyPartition wcm:action="add"><Order>2</Order><PartitionID>3</PartitionID><Format>NTFS</Format><Label>Windows</Label><Letter>C</Letter></ModifyPartition>
+          </ModifyPartitions>
+PARTS
+  else
+    cat <<'PARTS'
+          <CreatePartitions>
+            <CreatePartition wcm:action="add"><Order>1</Order><Type>Primary</Type><Size>350</Size></CreatePartition>
+            <CreatePartition wcm:action="add"><Order>2</Order><Type>Primary</Type><Extend>true</Extend></CreatePartition>
+          </CreatePartitions>
+          <ModifyPartitions>
+            <ModifyPartition wcm:action="add"><Order>1</Order><PartitionID>1</PartitionID><Format>NTFS</Format><Label>System</Label><Active>true</Active></ModifyPartition>
+            <ModifyPartition wcm:action="add"><Order>2</Order><PartitionID>2</PartitionID><Format>NTFS</Format><Label>Windows</Label><Letter>C</Letter></ModifyPartition>
+          </ModifyPartitions>
+PARTS
+  fi
+}
+
 cat > "$WORK/cd/autounattend.xml" <<XML
 <?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
@@ -113,20 +163,13 @@ $(driver_paths)
         <Disk wcm:action="add">
           <DiskID>0</DiskID>
           <WillWipeDisk>true</WillWipeDisk>
-          <CreatePartitions>
-            <CreatePartition wcm:action="add"><Order>1</Order><Type>Primary</Type><Size>350</Size></CreatePartition>
-            <CreatePartition wcm:action="add"><Order>2</Order><Type>Primary</Type><Extend>true</Extend></CreatePartition>
-          </CreatePartitions>
-          <ModifyPartitions>
-            <ModifyPartition wcm:action="add"><Order>1</Order><PartitionID>1</PartitionID><Format>NTFS</Format><Label>System</Label><Active>true</Active></ModifyPartition>
-            <ModifyPartition wcm:action="add"><Order>2</Order><PartitionID>2</PartitionID><Format>NTFS</Format><Label>Windows</Label><Letter>C</Letter></ModifyPartition>
-          </ModifyPartitions>
+$(partitions)
         </Disk>
       </DiskConfiguration>
       <ImageInstall>
         <OSImage>
           <InstallFrom><MetaData wcm:action="add"><Key>/IMAGE/INDEX</Key><Value>$INDEX</Value></MetaData></InstallFrom>
-          <InstallTo><DiskID>0</DiskID><PartitionID>2</PartitionID></InstallTo>
+          <InstallTo><DiskID>0</DiskID><PartitionID>$WINDOWS_PART</PartitionID></InstallTo>
         </OSImage>
       </ImageInstall>
       <UserData>
@@ -268,7 +311,18 @@ echo "To watch: connect a VNC viewer to 127.0.0.1:5977 on this host (tunnel it o
 # No network on purpose: nothing is fetched from inside, and an unpatched
 # installer is not something to put on a network. The card is there so its
 # driver is installed.
-timeout 120m qemu-system-x86_64 -name maburvm-windows-build -enable-kvm -machine q35 \
+FIRMWARE=()
+if [ "$UEFI" = 1 ]; then
+  cp "$OVMF_VARS" "$WORK/vars.fd"
+  FIRMWARE=(-drive "if=pflash,format=raw,readonly=on,file=$OVMF_CODE" -drive "if=pflash,format=raw,file=$WORK/vars.fd"
+    -monitor "tcp:127.0.0.1:5978,server,nowait")
+  # Booted under UEFI, the installer disc waits for a key before it starts.
+  ( for _ in $(seq 1 40); do
+      sleep 1
+      { exec 3<>/dev/tcp/127.0.0.1/5978 && printf 'sendkey ret\n' >&3 && exec 3>&-; } 2>/dev/null || true
+    done ) &
+fi
+timeout 120m qemu-system-x86_64 -name maburvm-windows-build -enable-kvm -machine q35 "${FIRMWARE[@]}" \
   -cpu host,hv_relaxed,hv_vapic,hv_spinlocks=0x1fff,hv_time -smp 4 -m 6144 \
   -drive "file=$DISK,if=virtio,format=qcow2,cache=unsafe,discard=unmap" \
   -drive "file=$WORK/windows.iso,media=cdrom,readonly=on" \
@@ -277,12 +331,16 @@ timeout 120m qemu-system-x86_64 -name maburvm-windows-build -enable-kvm -machine
   -device virtio-net-pci,netdev=n0 -netdev user,id=n0,restrict=on \
   -device virtio-serial-pci -chardev null,id=ga -device virtserialport,chardev=ga,name=org.qemu.guest_agent.0 \
   -device qemu-xhci -device usb-tablet -vga std -display none -vnc 127.0.0.1:77 \
-  -qmp "unix:$WORK/qmp.sock,server,nowait" -monitor none -serial none \
+  -qmp "unix:$WORK/qmp.sock,server,nowait" $([ "$UEFI" = 1 ] || echo -monitor none) -serial none \
   || { echo "The installer did not finish (exit $?). Run again with --keep and watch it over VNC." >&2; exit 1; }
 
 echo "Compressing the image"
 qemu-img convert -c -O qcow2 "$DISK" "$OUT.part"
 mv "$OUT.part" "$OUT"
 echo "Done: $OUT ($(du -h "$OUT" | cut -f1))"
+if [ "$UEFI" = 1 ]; then
+  echo "This image boots with UEFI: set the template's boot firmware to UEFI in the panel"
+  echo "(and Secure Boot and TPM if its VMs should have them)."
+fi
 echo "Add it in the panel under Templates, Add from URL: system type Windows, and this path"
 echo "(the file must be at the same path on every node, or served from a URL the nodes can reach)."

@@ -5,12 +5,18 @@ import Link from "next/link"
 import { Loader2, AlertTriangle, MailCheck } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
+import { Captcha, captchaChallenge, type CaptchaChallenge } from "@/components/captcha"
+import { apiErrorMessage } from "@/lib/api-error"
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState("")
   const [isLoading, setIsLoading] = useState(false)
   const [sent, setSent] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Asked for after repeated requests from one address or for one email.
+  const [challenge, setChallenge] = useState<CaptchaChallenge | null>(null)
+  const [captchaToken, setCaptchaToken] = useState("")
+  const [captchaKey, setCaptchaKey] = useState(0)
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -21,11 +27,17 @@ export default function ForgotPasswordPage() {
       const response = await fetch(`/api/v1/auth/forgot-password`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email, captchaToken }),
       })
+      if (challenge) {
+        setCaptchaToken("")
+        setCaptchaKey((k) => k + 1)
+      }
       if (!response.ok) {
         const result = await response.json().catch(() => ({}))
-        setError(result.error || "Something went wrong. Please try again.")
+        const asked = captchaChallenge(result)
+        if (asked) setChallenge(asked)
+        setError(apiErrorMessage(result, "Something went wrong. Please try again."))
         return
       }
       // Always a generic success — the backend never reveals whether the email exists.
@@ -85,7 +97,9 @@ export default function ForgotPasswordPage() {
           />
         </div>
 
-        <Button type="submit" size="xl" className="w-full text-base font-medium" disabled={isLoading || !email}>
+        {challenge && <Captcha key={captchaKey} challenge={challenge} onToken={setCaptchaToken} />}
+
+        <Button type="submit" size="xl" className="w-full text-base font-medium" disabled={isLoading || !email || (!!challenge && !captchaToken)}>
           {isLoading ? (
             <>
               <Loader2 className="w-5 h-5 animate-spin mr-2" />

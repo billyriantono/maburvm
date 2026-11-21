@@ -1,6 +1,7 @@
 'use client'
 
 import { useDismissSetup, useSetup } from "@/lib/hooks/use-ops"
+import { useCan } from "@/lib/hooks/use-auth"
 import { useBranding } from "@/lib/branding/provider"
 import Link from 'next/link'
 import { useDashboardStats, useDashboardOverview, type DashboardNode } from '@/lib/hooks/use-dashboard'
@@ -11,6 +12,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Meter } from '@/components/ui/meter'
 import { StatusBadge } from '@/components/status-badge'
 import { BandwidthChart } from '@/components/ui/bandwidth-chart'
+import { bitRate } from '@/lib/utils'
 
 function formatTimeAgo(dateStr: string): string {
   const date = new Date(dateStr)
@@ -73,19 +75,6 @@ function describeActivity(a: {
   return { label: `${titleCase(verb)} ${resourceLabel}`, target }
 }
 
-// formatRate renders a bytes-per-second figure at a sensible magnitude.
-function formatRate(bytesPerSec: number): string {
-  if (!Number.isFinite(bytesPerSec) || bytesPerSec <= 0) return "0 B/s"
-  const units = ["B/s", "KB/s", "MB/s", "GB/s"]
-  let value = bytesPerSec
-  let unit = 0
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024
-    unit++
-  }
-  return `${value >= 10 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`
-}
-
 // NodeBandwidthCard is one node's inbound/outbound trend.
 function NodeBandwidthCard({ nodeId, name }: { nodeId: string; name: string }) {
   const { data: samples, isLoading } = useNodeMetricsHistory(nodeId, 60)
@@ -105,7 +94,7 @@ function NodeBandwidthCard({ nodeId, name }: { nodeId: string; name: string }) {
           Loading…
         </div>
       ) : (
-        <BandwidthChart data={points} format={formatRate} />
+        <BandwidthChart data={points} format={bitRate} />
       )}
     </div>
   )
@@ -222,6 +211,7 @@ export default function DashboardPage() {
   const { branding } = useBranding()
   const { data: stats } = useDashboardStats()
   const { data: o, isLoading, error, refetch } = useDashboardOverview()
+  const can = useCan()
 
   const head = (sub: React.ReactNode) => (
     <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
@@ -321,7 +311,7 @@ export default function DashboardPage() {
           carrying what, and one shared chart would hide each node's own shape. */}
       <NodeBandwidthSection />
 
-      <section aria-labelledby="recent-activity" className="rounded-lg border bg-card text-card-foreground">
+      {can('audit:read') && <section aria-labelledby="recent-activity" className="rounded-lg border bg-card text-card-foreground">
         <div className="flex items-center justify-between border-b border-hair px-5 py-3">
           <h2 id="recent-activity" className="text-sm font-semibold">Recent activity</h2>
           <Link href="/audit-logs" className="text-sm font-semibold underline underline-offset-4">Audit log</Link>
@@ -341,7 +331,7 @@ export default function DashboardPage() {
         ) : (
           <p className="px-5 py-4 text-sm text-muted-foreground">Nothing recorded yet. Actions on VMs appear here as they happen.</p>
         )}
-      </section>
+      </section>}
     </div>
   )
 }

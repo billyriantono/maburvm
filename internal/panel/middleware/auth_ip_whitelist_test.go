@@ -34,7 +34,7 @@ quota_mode TEXT NOT NULL DEFAULT 'legacy',
 		ip_whitelist TEXT,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		token_revoked_at DATETIME, deleted_at DATETIME
+		token_revoked_at DATETIME, expires_at DATETIME, suspended_at DATETIME, deleted_at DATETIME
 	)`).Error)
 
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS sessions (

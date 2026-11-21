@@ -17,11 +17,13 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useCreateTemplate } from "@/lib/hooks/use-templates"
 import type { OSType } from "@/types/template"
+import { ImageIntegrityFields, emptyIntegrity, integrityProblem, type ImageIntegrity } from "@/components/image-integrity-fields"
 
 interface FormErrors {
   name?: string
   version?: string
   url?: string
+  integrity?: string
 }
 
 export default function NewTemplatePage() {
@@ -33,6 +35,7 @@ export default function NewTemplatePage() {
   const [description, setDescription] = useState("")
   const [url, setUrl] = useState("")
   const [osType, setOsType] = useState<OSType>("linux")
+  const [integrity, setIntegrity] = useState<ImageIntegrity>(emptyIntegrity)
   const [errors, setErrors] = useState<FormErrors>({})
 
   const validateForm = (): boolean => {
@@ -42,6 +45,8 @@ export default function NewTemplatePage() {
     if (!version.trim()) next.version = "Version is required"
     if (!url.trim()) next.url = "Image URL is required"
     else if (!/^(https?:\/\/.+|\/.+)/i.test(url.trim())) next.url = "Enter an http(s) URL, or a file path that exists on the nodes"
+    const problem = integrityProblem(url, integrity)
+    if (problem) next.integrity = problem
     setErrors(next)
     return Object.keys(next).length === 0
   }
@@ -57,6 +62,14 @@ export default function NewTemplatePage() {
         file_url: url.trim(),
         description: description.trim() || undefined,
         os_type: osType,
+        checksum_sha256: integrity.checksumSha256.trim() || undefined,
+        checksum_url: integrity.checksumUrl.trim() || undefined,
+        skip_checksum: integrity.skipChecksum,
+        allow_http: integrity.allowHttp,
+        auto_refresh: integrity.autoRefresh,
+        firmware: integrity.firmware,
+        secure_boot: integrity.firmware === "uefi" && !!integrity.secureBoot,
+        tpm: !!integrity.tpm,
       })
       toast.success(`Template "${name}" added`)
       setTimeout(() => router.push("/templates"), 1200)
@@ -206,6 +219,19 @@ export default function NewTemplatePage() {
               ? "The address, name and admin password are written to the router's disk before its first start. SSH keys and first-boot scripts do not apply. Builds 6.49.21 to 6.49.23 do not keep their settings as a VM; use 6.49.20 or a version 7 build."
               : "The address, name, root password and SSH keys are set through cloud-init and the image's filesystem. The image needs cloud-init."}
           </p>
+        </div>
+
+        {/* Integrity */}
+        <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm mb-6">
+          <h2 className="text-base font-semibold mb-1">Checksum</h2>
+          <p className="text-sm text-muted-foreground mb-4">How every node checks the image it downloads.</p>
+          <ImageIntegrityFields value={integrity} onChange={setIntegrity} idPrefix="template" />
+          {errors.integrity && (
+            <p className="text-destructive text-xs mt-3 flex items-center gap-1">
+              <AlertCircle className="w-4 h-4" />
+              {errors.integrity}
+            </p>
+          )}
         </div>
 
         {/* Submit */}

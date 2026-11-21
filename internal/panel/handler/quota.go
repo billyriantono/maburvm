@@ -24,6 +24,7 @@ type quotaService interface {
 // QuotaHandler handles per-user resource quota endpoints.
 type QuotaHandler struct {
 	service quotaService
+	db      *gorm.DB // team accounts; nil (tests) knows none
 }
 
 // NewQuotaHandler creates a new QuotaHandler.
@@ -90,13 +91,14 @@ func mapQuotaServiceError(err error) (int, map[string]interface{}) {
 	}
 }
 
-// GetMyQuota handles GET /api/v1/quota (current user's limits + usage).
+// GetMyQuota handles GET /api/v1/quota: the caller's limits and usage, or with
+// ?account_id= those of a team account whose usage their role covers.
 func (h *QuotaHandler) GetMyQuota(c echo.Context) error {
-	user, ok := panelMiddleware.GetUserContext(c)
+	_, account, _, ok := actingAccountFor(c, h.db, service.AccountCanBilling)
 	if !ok {
-		return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized"})
+		return nil
 	}
-	status, err := h.service.GetStatus(c.Request().Context(), user.ID.String())
+	status, err := h.service.GetStatus(c.Request().Context(), account)
 	if err != nil {
 		code, body := mapQuotaServiceError(err)
 		return c.JSON(code, body)
@@ -129,15 +131,19 @@ func (h *QuotaHandler) SetUserQuota(c echo.Context) error {
 }
 
 // RegisterQuotaRoutes registers quota routes. Self-quota is any authenticated
-// user; per-user quota management requires admin.
+// user; per-user quota management is staff with user permissions.
 func RegisterQuotaRoutes(e *echo.Echo, h *QuotaHandler, db *gorm.DB) {
 	auth := panelMiddleware.RequireAuth(db)
-	adminOnly := panelMiddleware.RequirePermission("admin:access")
+	h.db = db
 
 	e.GET("/api/v1/quota", h.GetMyQuota, auth)
+	// What customers may do on their own here, so a page can say so up front.
+	e.GET("/api/v1/self-service", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": service.SelfServiceSwitches(c.Request().Context(), db)})
+	}, auth)
 
 	g := e.Group("/api/v1/users/:id/quota")
 	g.Use(auth)
-	g.GET("", h.GetUserQuota, adminOnly)
-	g.PUT("", h.SetUserQuota, adminOnly)
+	g.GET("", h.GetUserQuota, panelMiddleware.RequirePermission("user:read"))
+	g.PUT("", h.SetUserQuota, panelMiddleware.RequirePermission("user:update"))
 }

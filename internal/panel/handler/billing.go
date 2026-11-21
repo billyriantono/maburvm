@@ -2,9 +2,11 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,13 +14,15 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
+	"github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/panel/service"
+	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 	"github.com/maburvm/panel/internal/shared/models"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -35,11 +39,15 @@ const (
 	WebhookAPIKeyHeader = "X-API-Key"
 	// IdempotencyKeyHeader is the header for idempotency key
 	IdempotencyKeyHeader = "X-Idempotency-Key"
-	// WebhookTimestampHeader is the header containing request timestamp
+	// WebhookTimestampHeader repeats the request timestamp. It is not signed,
+	// so the panel does not rely on it: the body's own timestamp is what counts.
 	WebhookTimestampHeader = "X-Webhook-Timestamp"
 
-	// MaxWebhookAge is the maximum age of a webhook request (5 minutes)
+	// MaxWebhookAge is how far a request's signed timestamp may be from now
 	MaxWebhookAge = 5 * time.Minute
+	// replayKeyPrefix marks the rows that remember a signature already used.
+	// They share the idempotency table and are never a caller's own key.
+	replayKeyPrefix = "replay:"
 	// IdempotencyCacheTTL is how long to cache idempotency keys (24 hours)
 	IdempotencyCacheTTL = 24 * time.Hour
 )
@@ -66,14 +74,49 @@ const (
 	EventVMStart   WebhookEventType = "vm.start"
 	EventVMStop    WebhookEventType = "vm.stop"
 	EventVMRestart WebhookEventType = "vm.restart"
+	// EventUserSuspend and EventUserUnsuspend lock a customer account out of
+	// the panel and let it back in, optionally with its VMs.
+	EventUserSuspend   WebhookEventType = "user.suspend"
+	EventUserUnsuspend WebhookEventType = "user.unsuspend"
+	// EventUserEnsure finds the customer account for a billing client by its
+	// reference or email, or creates one, and returns its ID.
+	EventUserEnsure WebhookEventType = "user.ensure"
+	// EventVMStatus reports whether a VM is ready and how it is reached.
+	EventVMStatus WebhookEventType = "vm.status"
+	// EventCatalogList lists the templates, plans and regions an order can name.
+	EventCatalogList WebhookEventType = "catalog.list"
+	// EventUserSSO returns a one-time sign-in link for a customer account.
+	EventUserSSO WebhookEventType = "user.sso"
+	// EventVMRebuild reinstalls a stopped VM, from the billing system's client area.
+	EventVMRebuild WebhookEventType = "vm.rebuild"
+	// EventVMMetrics returns recent CPU, memory, disk and network readings, for graphs.
+	EventVMMetrics WebhookEventType = "vm.metrics"
 )
+
+// readOnly reports an event that only reads: it is not audited row by row and
+// still answers in maintenance mode.
+func (e WebhookEventType) readOnly() bool {
+	return e == EventVMStatus || e == EventVMUsage || e == EventCatalogList || e == EventVMMetrics
+}
+
+// aboutUser reports an event that names an account, not a VM.
+func (e WebhookEventType) aboutUser() bool {
+	return e == EventUserSuspend || e == EventUserUnsuspend || e == EventUserEnsure || e == EventUserSSO
+}
+
+// aboutVM reports an event that acts on, or reads, one existing VM.
+func (e WebhookEventType) aboutVM() bool {
+	return e != EventVMCreate && e != EventCatalogList && !e.aboutUser()
+}
 
 // IsValid checks if the event type is valid
 func (e WebhookEventType) IsValid() bool {
 	switch e {
 	case EventVMCreate, EventVMSuspend, EventVMUnsuspend, EventVMDestroy,
 		EventVMResize, EventVMResetPassword, EventVMUsage,
-		EventVMStart, EventVMStop, EventVMRestart:
+		EventVMStart, EventVMStop, EventVMRestart,
+		EventUserSuspend, EventUserUnsuspend, EventUserEnsure,
+		EventVMStatus, EventCatalogList, EventUserSSO, EventVMRebuild, EventVMMetrics:
 		return true
 	}
 	return false
@@ -87,19 +130,25 @@ func (e WebhookEventType) IsValid() bool {
 // Document for integrators:
 //
 //	{
-//	  "event": "vm.create|vm.suspend|vm.unsuspend|vm.destroy|vm.resize|vm.reset_password|vm.usage|vm.start|vm.stop|vm.restart",
+//	  "event": "vm.create|vm.suspend|vm.unsuspend|vm.destroy|vm.resize|vm.reset_password|vm.usage|vm.status|vm.start|vm.stop|vm.restart|user.ensure|user.suspend|user.unsuspend|user.sso|catalog.list",
 //	  "timestamp": "2024-01-01T00:00:00Z",
+//	  "nonce": "a value that is new for every request",
 //	  "data": {
-//	    "user_id": "external_user_id",
+//	    "user_id": "panel user id",
 //	    "vm_specs": {"cpu": 2, "memory": 4096, "disk": 50},
-//	    "template_id": "ubuntu-22.04",
+//	    "template_id": "os template id",
 //	    "hostname": "client-vm-1"
 //	  }
 //	}
 type WebhookPayload struct {
-	Event     WebhookEventType `json:"event" validate:"required"`
-	Timestamp time.Time        `json:"timestamp" validate:"required"`
-	Data      WebhookData      `json:"data" validate:"required"`
+	Event WebhookEventType `json:"event" validate:"required"`
+	// Timestamp is signed with the body and must be within MaxWebhookAge of now.
+	Timestamp time.Time `json:"timestamp" validate:"required"`
+	// Nonce makes two otherwise identical requests in the same second distinct.
+	// The panel does not read it: a signature is accepted once, and the nonce is
+	// what gives a deliberate repeat a signature of its own.
+	Nonce string      `json:"nonce,omitempty"`
+	Data  WebhookData `json:"data" validate:"required"`
 }
 
 // WebhookData contains the event-specific data
@@ -114,10 +163,34 @@ type WebhookData struct {
 	Hostname string `json:"hostname,omitempty"`
 	// VMID is the VM identifier (for suspend/unsuspend/destroy operations)
 	VMID string `json:"vm_id,omitempty"`
-	// ExternalRef is an optional external reference
+	// ExternalRef is the billing system's reference for the service. Kept on
+	// the VM at vm.create; later events that send one must send the same.
 	ExternalRef string `json:"external_ref,omitempty"`
-	// Password is the new root password (vm.reset_password)
+	// Password is the root password to set (vm.create, vm.reset_password)
 	Password string `json:"password,omitempty"`
+	// PlanID names a panel plan (vm.create, vm.resize). The plan then decides
+	// the size, the speed cap and the transfer quota, and vm_specs is not needed.
+	PlanID string `json:"plan_id,omitempty"`
+	// WithVMs also suspends or restores the account's VMs (user.suspend, user.unsuspend)
+	WithVMs bool `json:"with_vms,omitempty"`
+	// Email and Name describe the billing client (user.ensure)
+	Email string `json:"email,omitempty"`
+	Name  string `json:"name,omitempty"`
+	// Region is where to place the VM, by slug or ID (vm.create). Without one
+	// the panel's default region is used, when one is set.
+	Region string `json:"region,omitempty"`
+	// Page names where a sign-in link lands besides the VM (user.sso):
+	// "console" opens the VM's console.
+	Page string `json:"page,omitempty"`
+	// RegeneratePassword asks vm.rebuild to make a root password and return
+	// it once, when no password is sent.
+	RegeneratePassword bool `json:"regenerate_password,omitempty"`
+	// Hours is how far back vm.metrics reads (1 to 168, default 24).
+	Hours int `json:"hours,omitempty"`
+	// BandwidthMbps and DataQuotaGB override the plan's speed cap and monthly
+	// transfer quota (vm.create; vm.resize together with plan_id). 0 keeps the plan's.
+	BandwidthMbps int   `json:"bandwidth_mbps,omitempty"`
+	DataQuotaGB   int64 `json:"data_quota_gb,omitempty"`
 }
 
 // VMSpecs represents VM resource specifications
@@ -136,11 +209,16 @@ type WebhookResponse struct {
 	Timestamp   time.Time         `json:"timestamp"`
 	RequestID   string            `json:"request_id"`
 	Metadata    map[string]string `json:"metadata,omitempty"`
+	// Data carries a structured answer (catalog.list)
+	Data interface{} `json:"data,omitempty"`
+	// Code names a refusal the caller may act on ("maintenance").
+	Code string `json:"code,omitempty"`
 }
 
 // IdempotencyRecord stores the result of a processed webhook
 type IdempotencyRecord struct {
 	RequestID   string
+	Event       string
 	Response    WebhookResponse
 	ProcessedAt time.Time
 }
@@ -151,10 +229,13 @@ type IdempotencyRecord struct {
 
 // BillingHandler handles billing webhook operations
 type BillingHandler struct {
-	vmService     *service.VMService
-	logger        *slog.Logger
-	webhookSecret string
-	apiKey        string
+	vmService *service.VMService
+	// networkService applies a plan's speed cap and quota on a package change.
+	// Optional: without it a package change alters the size only.
+	networkService *service.NetworkService
+	logger         *slog.Logger
+	webhookSecret  string
+	apiKey         string
 
 	// db backs the persistent idempotency store (survives restarts). When nil
 	// (e.g. in tests) idempotency is simply not deduplicated.
@@ -179,11 +260,9 @@ func (billingIdempotencyRow) TableName() string { return "billing_idempotency" }
 // persistent idempotency store; pass nil to disable deduplication.
 func NewBillingHandler(vmService *service.VMService, logger *slog.Logger, db *gorm.DB) *BillingHandler {
 	h := &BillingHandler{
-		vmService:     vmService,
-		logger:        logger,
-		webhookSecret: getWebhookSecret(),
-		apiKey:        getAPIKey(),
-		db:            db,
+		vmService: vmService,
+		logger:    logger,
+		db:        db,
 	}
 	if db != nil {
 		// Periodically evict expired idempotency rows for the life of the process.
@@ -198,18 +277,24 @@ func NewBillingHandler(vmService *service.VMService, logger *slog.Logger, db *go
 	return h
 }
 
-// getWebhookSecret retrieves the webhook HMAC secret from the environment. It
-// returns "" when unset — the webhook then fails closed (see RequireWebhookAuth)
-// rather than falling back to a public default that would let anyone forge
-// billing events (create/suspend/destroy VMs).
-func getWebhookSecret() string {
-	return os.Getenv("BILLING_WEBHOOK_SECRET")
-}
+// SetNetworkService wires what a package change needs to apply a plan's speed
+// cap and transfer quota.
+func (h *BillingHandler) SetNetworkService(n *service.NetworkService) { h.networkService = n }
 
-// getAPIKey retrieves the billing API key from the environment. Empty when
-// unset; the webhook fails closed rather than accepting a known default key.
-func getAPIKey() string {
-	return os.Getenv("BILLING_API_KEY")
+// credentials are the webhook's API key and signing secret: the handler's own
+// when set (tests), else System settings, Panel, else BILLING_API_KEY and
+// BILLING_WEBHOOK_SECRET. Read per request so a change applies at once. Empty
+// when unset: the webhook then fails closed (see RequireWebhookAuth) rather
+// than accepting a known default that would let anyone forge billing events.
+func (h *BillingHandler) credentials() (apiKey, secret string) {
+	apiKey, secret = h.apiKey, h.webhookSecret
+	if apiKey == "" {
+		apiKey, _ = service.PanelValue("billingApiKey")
+	}
+	if secret == "" {
+		secret, _ = service.PanelValue("billingWebhookSecret")
+	}
+	return apiKey, secret
 }
 
 // ============================================================================
@@ -223,8 +308,9 @@ func (h *BillingHandler) RequireWebhookAuth() echo.MiddlewareFunc {
 			// 0. Fail closed if the billing credentials aren't configured. Without
 			// this, an unset BILLING_API_KEY/BILLING_WEBHOOK_SECRET would otherwise
 			// accept a publicly-known default, letting anyone provision/destroy VMs.
-			if h.apiKey == "" || h.webhookSecret == "" {
-				h.logger.Error("billing webhook is disabled: BILLING_API_KEY and BILLING_WEBHOOK_SECRET must both be set")
+			wantKey, secret := h.credentials()
+			if wantKey == "" || secret == "" {
+				h.logger.Error("billing webhook is disabled: set the billing API key and signing secret under System settings, Panel (or BILLING_API_KEY and BILLING_WEBHOOK_SECRET)")
 				return c.JSON(http.StatusServiceUnavailable, WebhookResponse{
 					Success:   false,
 					Message:   "billing webhook is not configured",
@@ -242,7 +328,7 @@ func (h *BillingHandler) RequireWebhookAuth() echo.MiddlewareFunc {
 				})
 			}
 
-			if apiKey != h.apiKey {
+			if subtle.ConstantTimeCompare([]byte(apiKey), []byte(wantKey)) != 1 {
 				h.logger.Warn("Invalid API key attempt",
 					"ip", c.RealIP(),
 					"path", c.Path(),
@@ -254,26 +340,7 @@ func (h *BillingHandler) RequireWebhookAuth() echo.MiddlewareFunc {
 				})
 			}
 
-			// 2. Validate timestamp to prevent replay attacks
-			timestampStr := c.Request().Header.Get(WebhookTimestampHeader)
-			if timestampStr != "" {
-				timestamp, err := time.Parse(time.RFC3339, timestampStr)
-				if err == nil {
-					age := time.Since(timestamp)
-					if age < 0 {
-						age = -age
-					}
-					if age > MaxWebhookAge {
-						return c.JSON(http.StatusBadRequest, WebhookResponse{
-							Success:   false,
-							Message:   "Webhook request too old",
-							Timestamp: time.Now().UTC(),
-						})
-					}
-				}
-			}
-
-			// 3. Validate HMAC signature
+			// 2. Validate HMAC signature
 			signature := c.Request().Header.Get(WebhookSignatureHeader)
 			if signature == "" {
 				return c.JSON(http.StatusUnauthorized, WebhookResponse{
@@ -293,7 +360,7 @@ func (h *BillingHandler) RequireWebhookAuth() echo.MiddlewareFunc {
 				})
 			}
 			// Restore body for later use
-			c.Request().Body = io.NopCloser(strings.NewReader(string(body)))
+			c.Request().Body = io.NopCloser(bytes.NewReader(body))
 
 			if !h.verifySignature(body, signature) {
 				h.logger.Warn("Invalid webhook signature",
@@ -307,23 +374,115 @@ func (h *BillingHandler) RequireWebhookAuth() echo.MiddlewareFunc {
 				})
 			}
 
+			// 3. Replay protection, on what was signed. The X-Webhook-Timestamp
+			// header is not signed and is not trusted: the body's timestamp is.
+			if err := checkSignedTimestamp(body, time.Now()); err != nil {
+				return c.JSON(http.StatusBadRequest, WebhookResponse{
+					Success:   false,
+					Message:   err.Error(),
+					Timestamp: time.Now().UTC(),
+				})
+			}
+			fresh, err := h.firstUse(c.Request().Context(), h.sign(body))
+			if err != nil {
+				h.logger.Error("billing webhook: replay check failed", "error", err)
+				return c.JSON(http.StatusServiceUnavailable, WebhookResponse{
+					Success:   false,
+					Message:   "The panel could not check this request against earlier ones. Try again.",
+					Timestamp: time.Now().UTC(),
+				})
+			}
+			if !fresh {
+				h.logger.Warn("billing webhook: replayed request refused", "ip", c.RealIP())
+				return c.JSON(http.StatusConflict, WebhookResponse{
+					Success:   false,
+					Message:   "Duplicate request: this signed request was already received. Send a new one with a current timestamp and a new nonce.",
+					Timestamp: time.Now().UTC(),
+				})
+			}
+
 			return next(c)
 		}
 	}
+}
+
+// sign returns the hex HMAC-SHA256 of the payload under the webhook secret.
+func (h *BillingHandler) sign(payload []byte) string {
+	_, secret := h.credentials()
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(payload)
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // verifySignature verifies the HMAC-SHA256 signature of the webhook payload
 func (h *BillingHandler) verifySignature(payload []byte, signature string) bool {
 	// Remove "sha256=" prefix if present
 	sig := strings.TrimPrefix(signature, "sha256=")
-
-	// Compute HMAC
-	mac := hmac.New(sha256.New, []byte(h.webhookSecret))
-	mac.Write(payload)
-	expectedSig := hex.EncodeToString(mac.Sum(nil))
-
 	// Constant-time comparison to prevent timing attacks
-	return hmac.Equal([]byte(sig), []byte(expectedSig))
+	return hmac.Equal([]byte(sig), []byte(h.sign(payload)))
+}
+
+// checkSignedTimestamp requires the body's own timestamp, and requires it to
+// be within MaxWebhookAge of now. Without it a captured request stays valid
+// for ever.
+func checkSignedTimestamp(body []byte, now time.Time) error {
+	var signed struct {
+		Timestamp time.Time `json:"timestamp"`
+	}
+	if err := json.Unmarshal(body, &signed); err != nil || signed.Timestamp.IsZero() {
+		return errors.New("timestamp is required in the request body, in RFC 3339 form")
+	}
+	age := now.Sub(signed.Timestamp)
+	if age < 0 {
+		age = -age
+	}
+	if age > MaxWebhookAge {
+		return fmt.Errorf("request timestamp is more than %d minutes from the panel's clock; check the clock of the billing server", int(MaxWebhookAge.Minutes()))
+	}
+	return nil
+}
+
+// firstUse records a verified signature and reports whether this is the first
+// request to carry it. A signature covers the timestamp, so it is remembered
+// for as long as that timestamp could still be accepted; after that the
+// timestamp check refuses the request by itself.
+func (h *BillingHandler) firstUse(ctx context.Context, signature string) (bool, error) {
+	if h.db == nil {
+		return true, nil
+	}
+	now := time.Now().UTC()
+	res := h.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&billingIdempotencyRow{
+		IdempotencyKey: replayKeyPrefix + signature,
+		RequestID:      uuid.New().String(),
+		Event:          "replay-guard",
+		Response:       []byte("{}"),
+		ProcessedAt:    now,
+		ExpiresAt:      now.Add(2 * MaxWebhookAge),
+	})
+	return res.RowsAffected == 1, res.Error
+}
+
+// dropIdempotency forgets a stored result.
+func (h *BillingHandler) dropIdempotency(ctx context.Context, idempotencyKey string) {
+	if h.db == nil {
+		return
+	}
+	if err := h.db.WithContext(ctx).Where("idempotency_key = ?", idempotencyKey).
+		Delete(&billingIdempotencyRow{}).Error; err != nil {
+		h.logger.Error("failed to drop idempotency record", "error", err, "idempotency_key", idempotencyKey)
+	}
+}
+
+// createdVMGone reports a stored vm.create result whose VM has since been
+// destroyed. Replaying it would answer a new order with a VM that is gone.
+func (h *BillingHandler) createdVMGone(ctx context.Context, record *IdempotencyRecord) bool {
+	if record.Event != string(EventVMCreate) || record.Response.VMID == "" || h.vmService == nil {
+		return false
+	}
+	// The row, not GetVMStatus: that reports a suspended VM as suspended even
+	// while it is being deleted, which is how an unpaid service is terminated.
+	vm, err := h.vmService.GetVMRecord(ctx, record.Response.VMID)
+	return errors.Is(err, service.ErrVMNotFound) || (err == nil && vm.Status == models.VMStatusDeleting)
 }
 
 // ============================================================================
@@ -355,6 +514,7 @@ func (h *BillingHandler) checkIdempotency(ctx context.Context, idempotencyKey st
 
 	return &IdempotencyRecord{
 		RequestID:   row.RequestID,
+		Event:       row.Event,
 		Response:    response,
 		ProcessedAt: row.ProcessedAt,
 	}, true
@@ -414,17 +574,28 @@ func (h *BillingHandler) HandleWebhook(c echo.Context) error {
 
 	// Check idempotency key
 	idempotencyKey := c.Request().Header.Get(IdempotencyKeyHeader)
+	if strings.HasPrefix(idempotencyKey, replayKeyPrefix) {
+		return c.JSON(http.StatusBadRequest, WebhookResponse{
+			Success: false, Message: "Invalid idempotency key", Timestamp: now, RequestID: requestID,
+		})
+	}
 	if idempotencyKey != "" {
 		if record, exists := h.checkIdempotency(c.Request().Context(), idempotencyKey); exists {
-			h.logger.Info("Returning cached idempotency response",
-				"request_id", requestID,
-				"idempotency_key", idempotencyKey,
-			)
-			// Return cached response with new request ID
-			response := record.Response
-			response.RequestID = requestID
-			response.Timestamp = now
-			return c.JSON(http.StatusOK, response)
+			if h.createdVMGone(c.Request().Context(), record) {
+				// The service is being provisioned again after its VM was
+				// destroyed: this is a new order, not a retry of the old one.
+				h.dropIdempotency(c.Request().Context(), idempotencyKey)
+			} else {
+				h.logger.Info("Returning cached idempotency response",
+					"request_id", requestID,
+					"idempotency_key", idempotencyKey,
+				)
+				// Return cached response with new request ID
+				response := record.Response
+				response.RequestID = requestID
+				response.Timestamp = now
+				return c.JSON(http.StatusOK, response)
+			}
 		}
 	}
 
@@ -437,6 +608,22 @@ func (h *BillingHandler) HandleWebhook(c echo.Context) error {
 			Timestamp: now,
 			RequestID: requestID,
 		})
+	}
+
+	// A billing system with nowhere to keep the VM's ID names it by its own
+	// service reference instead; the VM must be that user's.
+	if payload.Event.IsValid() && payload.Event.aboutVM() && payload.Data.VMID == "" && payload.Data.ExternalRef != "" {
+		vmID, err := h.vmByServiceRef(c.Request().Context(), payload.Data.UserID, payload.Data.ExternalRef)
+		if err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, service.ErrVMNotFound) {
+				status = http.StatusNotFound
+			} else if errors.Is(err, errBillingRefAmbiguous) {
+				status = http.StatusConflict
+			}
+			return c.JSON(status, WebhookResponse{Success: false, Message: err.Error(), Timestamp: now, RequestID: requestID})
+		}
+		payload.Data.VMID = vmID
 	}
 
 	// Validate event type
@@ -465,6 +652,41 @@ func (h *BillingHandler) HandleWebhook(c echo.Context) error {
 
 	ctx := c.Request().Context()
 
+	// A sign-in link to a VM that is gone opens the customer's dashboard.
+	if payload.Event == EventUserSSO && payload.Data.VMID != "" {
+		if _, err := h.vmService.GetVMRecord(ctx, payload.Data.VMID); errors.Is(err, service.ErrVMNotFound) {
+			payload.Data.VMID = ""
+		}
+	}
+	// An event about an existing VM must come from the service that owns it.
+	if payload.Event.aboutVM() || (payload.Event == EventUserSSO && payload.Data.VMID != "") {
+		if err := h.checkEventOwner(ctx, payload.Event, &payload.Data); err != nil {
+			status := http.StatusBadRequest
+			switch {
+			case errors.Is(err, service.ErrVMNotFound):
+				status = http.StatusNotFound
+			case errors.Is(err, errBillingOwnerMismatch), errors.Is(err, errBillingServiceMismatch):
+				status = http.StatusForbidden
+				h.auditOwnerMismatch(c, &payload, requestID, err)
+			}
+			h.logger.Warn("Billing event refused", "event", payload.Event, "vm_id", payload.Data.VMID,
+				"user_id", payload.Data.UserID, "request_id", requestID, "error", err)
+			return c.JSON(status, WebhookResponse{Success: false, Message: err.Error(), Timestamp: now, RequestID: requestID})
+		}
+	}
+
+	// Polls that only read would flood the audit log with a row each.
+	if payload.Event.readOnly() {
+		middleware.SkipAudit(c)
+	}
+	// In maintenance the billing system may still read; a change waits (503,
+	// which the billing module reports and its next run retries).
+	if !payload.Event.readOnly() && payload.Event != EventUserSSO {
+		if m := middleware.LoadMaintenance(h.db); m.Enabled {
+			c.Response().Header().Set("Retry-After", "300")
+			return c.JSON(http.StatusServiceUnavailable, WebhookResponse{Success: false, Code: "maintenance", Message: m.Notice(), Timestamp: now, RequestID: requestID})
+		}
+	}
 	switch payload.Event {
 	case EventVMCreate:
 		response, err = h.handleVMCreate(ctx, &payload.Data, requestID)
@@ -486,6 +708,22 @@ func (h *BillingHandler) HandleWebhook(c echo.Context) error {
 		response, err = h.handleVMPower(ctx, &payload.Data, requestID, service.LifecycleStop)
 	case EventVMRestart:
 		response, err = h.handleVMPower(ctx, &payload.Data, requestID, service.LifecycleRestart)
+	case EventUserSuspend:
+		response, err = h.handleUserSuspend(c, &payload.Data, requestID, true)
+	case EventUserUnsuspend:
+		response, err = h.handleUserSuspend(c, &payload.Data, requestID, false)
+	case EventUserEnsure:
+		response, err = h.handleUserEnsure(c, &payload.Data, requestID)
+	case EventVMStatus:
+		response, err = h.handleVMStatus(ctx, &payload.Data, requestID)
+	case EventCatalogList:
+		response, err = h.handleCatalogList(ctx, requestID)
+	case EventUserSSO:
+		response, err = h.handleUserSSO(ctx, &payload.Data, requestID)
+	case EventVMRebuild:
+		response, err = h.handleVMRebuild(ctx, &payload.Data, requestID)
+	case EventVMMetrics:
+		response, err = h.handleVMMetrics(ctx, &payload.Data, requestID)
 	}
 
 	if err != nil {
@@ -495,18 +733,13 @@ func (h *BillingHandler) HandleWebhook(c echo.Context) error {
 			"error", err,
 		)
 
-		statusCode := http.StatusInternalServerError
-		if errors.Is(err, service.ErrVMNotFound) {
-			statusCode = http.StatusNotFound
-		}
-
 		response = WebhookResponse{
 			Success:   false,
 			Message:   err.Error(),
 			Timestamp: now,
 			RequestID: requestID,
 		}
-		return c.JSON(statusCode, response)
+		return c.JSON(webhookErrorStatus(err), response)
 	}
 
 	// Only create and destroy are cached, the two that must not run twice.
@@ -524,9 +757,137 @@ func (h *BillingHandler) HandleWebhook(c echo.Context) error {
 	return c.JSON(http.StatusOK, response)
 }
 
+// webhookErrorStatus is the HTTP status a failed event is answered with. A 5xx
+// tells the billing system the panel is at fault; a refusal it can act on
+// (out of room, VM being moved, staff account) is a 4xx.
+func webhookErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, service.ErrVMNotFound), errors.Is(err, service.ErrPlanNotFound), errors.Is(err, service.ErrUserNotFound),
+		errors.Is(err, service.ErrRegionNotFound), errors.Is(err, service.ErrTemplateNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, service.ErrPlanInactive), errors.Is(err, service.ErrNotACustomerAccount),
+		errors.Is(err, service.ErrBillingUserInvalid), errors.Is(err, service.ErrTemplateNotOffered),
+		errors.Is(err, service.ErrRebuildNotPossible):
+		return http.StatusBadRequest
+	case errors.Is(err, service.ErrBillingStaffAccount), errors.Is(err, service.ErrRegionNoCapacity),
+		errors.Is(err, service.ErrNATPortsExhausted), errors.Is(err, service.ErrNoNATPool), errors.Is(err, service.ErrNoUsablePool),
+		errors.Is(err, service.ErrNoAvailableIPAddress), errors.Is(err, service.ErrVMMigrating), errors.Is(err, service.ErrVMRestoring), errors.Is(err, service.ErrVMDeleteLocked),
+		errors.Is(err, errBillingVMNotStopped):
+		return http.StatusConflict
+	case errors.Is(err, errBillingSSORefused):
+		return http.StatusForbidden
+	}
+	return http.StatusInternalServerError
+}
+
+// errBillingVMNotStopped refuses a reinstall of a VM that is not stopped.
+var errBillingVMNotStopped = errors.New("the VM must be stopped before it is reinstalled")
+
+// errBillingRefAmbiguous marks a service reference that names more than one VM.
+var errBillingRefAmbiguous = errors.New("more than one VM carries this external_ref; send vm_id")
+
+// vmByServiceRef finds the one live VM of userID provisioned for a billing
+// service reference. A user_id is required: a reference alone never picks a VM.
+func (h *BillingHandler) vmByServiceRef(ctx context.Context, userID, ref string) (string, error) {
+	userID = strings.TrimSpace(userID)
+	if h.db == nil || userID == "" {
+		return "", fmt.Errorf("%w: send vm_id, or user_id with external_ref", service.ErrVMNotFound)
+	}
+	var ids []string
+	if err := h.db.WithContext(ctx).Model(&models.VM{}).Where("billing_ref = ? AND user_id = ?", ref, userID).
+		Order("created_at DESC").Limit(2).Pluck("id", &ids).Error; err != nil {
+		return "", err
+	}
+	switch len(ids) {
+	case 0:
+		return "", fmt.Errorf("%w: no VM of this user carries external_ref %q", service.ErrVMNotFound, ref)
+	case 1:
+		return ids[0], nil
+	}
+	return "", errBillingRefAmbiguous
+}
+
+// errBillingOwnerMismatch marks an event whose VM belongs to someone else.
+var errBillingOwnerMismatch = errors.New("the VM does not belong to the user this event names")
+
+// errBillingServiceMismatch marks an event from a service other than the one
+// the VM was provisioned for.
+var errBillingServiceMismatch = errors.New("the VM belongs to a different billing service than the one this event names")
+
+// checkEventOwner refuses an event whose vm_id is not a VM of the user_id sent
+// with it. The billing system keeps the VM id in a field staff can edit, and a
+// wrong, copied or stale id would otherwise suspend, resize or destroy another
+// customer's VM.
+func (h *BillingHandler) checkEventOwner(ctx context.Context, event WebhookEventType, data *WebhookData) error {
+	claimed := strings.TrimSpace(data.UserID)
+	if claimed == "" {
+		// The usage sync and the reads name no user and change nothing.
+		if event.readOnly() {
+			return nil
+		}
+		return fmt.Errorf("user_id is required for %s: set the panel user ID on this service", event)
+	}
+	vm, err := h.vmService.GetVMRecord(ctx, data.VMID)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(vm.UserID, claimed) {
+		return fmt.Errorf("%w: check the VM ID and the panel user ID stored on this service", errBillingOwnerMismatch)
+	}
+	// Two services of one customer: the owner matches, the service does not.
+	// VMs with no reference on record, and events that send none, pass.
+	if ref := strings.TrimSpace(data.ExternalRef); ref != "" && vm.BillingManaged() && *vm.BillingRef != ref {
+		return fmt.Errorf("%w: check the VM ID stored on this service", errBillingServiceMismatch)
+	}
+	return nil
+}
+
+// auditOwnerMismatch records a refused event against the VM it aimed at.
+func (h *BillingHandler) auditOwnerMismatch(c echo.Context, payload *WebhookPayload, requestID string, cause error) {
+	if h.db == nil {
+		return
+	}
+	vmID := payload.Data.VMID
+	action := "billing.owner_mismatch"
+	if errors.Is(cause, errBillingServiceMismatch) {
+		action = "billing.service_mismatch"
+	}
+	entry := &models.AuditLog{
+		Action:       action,
+		ResourceType: "VM",
+		ResourceID:   &vmID,
+		IPAddress:    c.RealIP(),
+		UserAgent:    c.Request().UserAgent(),
+		Details: map[string]any{
+			"event":           string(payload.Event),
+			"claimed_user_id": payload.Data.UserID,
+			"external_ref":    payload.Data.ExternalRef,
+			"request_id":      requestID,
+			"refused":         true,
+		},
+	}
+	if err := h.db.WithContext(c.Request().Context()).Create(entry).Error; err != nil {
+		h.logger.Error("audit: could not record a refused billing event", "vm_id", vmID, "error", err)
+	}
+}
+
 // validatePayload validates the payload based on event type
 func (h *BillingHandler) validatePayload(payload *WebhookPayload) error {
+	// Kept on the VM in a 255-character column: say so here, not as a database error.
+	if len(payload.Data.ExternalRef) > 255 {
+		return errors.New("external_ref is longer than 255 characters")
+	}
+	if d := payload.Data; d.BandwidthMbps < 0 || d.BandwidthMbps > 100000 || d.DataQuotaGB < 0 {
+		return errors.New("bandwidth_mbps must be between 0 and 100000, and data_quota_gb 0 or more")
+	}
 	switch payload.Event {
+	case EventCatalogList:
+		return nil
+	case EventUserEnsure:
+		if strings.TrimSpace(payload.Data.Email) == "" {
+			return errors.New("email is required for user.ensure")
+		}
+		return nil
 	case EventVMCreate:
 		if payload.Data.UserID == "" {
 			return errors.New("user_id is required for vm.create")
@@ -536,6 +897,9 @@ func (h *BillingHandler) validatePayload(payload *WebhookPayload) error {
 		}
 		if payload.Data.TemplateID == "" {
 			return errors.New("template_id is required for vm.create")
+		}
+		if payload.Data.PlanID != "" {
+			return nil // the plan decides the size
 		}
 		if payload.Data.VMSpecs.CPU == 0 {
 			return errors.New("vm_specs.cpu is required for vm.create")
@@ -547,6 +911,21 @@ func (h *BillingHandler) validatePayload(payload *WebhookPayload) error {
 			return errors.New("vm_specs.disk is required for vm.create")
 		}
 
+	case EventUserSuspend, EventUserUnsuspend:
+		if payload.Data.UserID == "" {
+			return fmt.Errorf("user_id is required for %s", payload.Event)
+		}
+
+	case EventUserSSO:
+		if payload.Data.UserID == "" {
+			return errors.New("user_id is required for user.sso")
+		}
+		if payload.Data.VMID != "" {
+			if _, err := uuid.Parse(payload.Data.VMID); err != nil {
+				return errors.New("vm_id must be a VM ID")
+			}
+		}
+
 	default:
 		if payload.Data.VMID == "" {
 			return fmt.Errorf("vm_id is required for %s", payload.Event)
@@ -554,8 +933,14 @@ func (h *BillingHandler) validatePayload(payload *WebhookPayload) error {
 		if payload.Event == EventVMResetPassword && len(payload.Data.Password) < 8 {
 			return errors.New("password of at least 8 characters is required for vm.reset_password")
 		}
-		if sp := payload.Data.VMSpecs; payload.Event == EventVMResize && (sp.CPU < 1 || sp.Memory < 128 || sp.Disk < 1) {
-			return errors.New("vm_specs.cpu, memory and disk are required for vm.resize")
+		if payload.Event == EventVMRebuild && payload.Data.Password != "" && len(payload.Data.Password) < 8 {
+			return errors.New("a vm.rebuild password must be at least 8 characters")
+		}
+		if payload.Data.Hours < 0 || payload.Data.Hours > 168 {
+			return errors.New("hours must be between 1 and 168")
+		}
+		if sp := payload.Data.VMSpecs; payload.Event == EventVMResize && payload.Data.PlanID == "" && (sp.CPU < 1 || sp.Memory < 128 || sp.Disk < 1) {
+			return errors.New("plan_id, or vm_specs.cpu, memory and disk, is required for vm.resize")
 		}
 	}
 
@@ -565,6 +950,34 @@ func (h *BillingHandler) validatePayload(payload *WebhookPayload) error {
 // ============================================================================
 // Event Handlers
 // ============================================================================
+
+// billedCreateRequest turns a vm.create event into an order. Like one placed
+// in the portal it gets a public address from the node's pools and a root
+// password: the service's own when it is long enough to set, otherwise a
+// generated one, kept for the owner to read on the VM's page.
+func billedCreateRequest(data *WebhookData) *service.CreateVMRequest {
+	password := data.Password
+	if len(password) < 8 {
+		password = ""
+	}
+	return &service.CreateVMRequest{
+		UserID:       data.UserID,
+		Hostname:     data.Hostname,
+		OSTemplateID: data.TemplateID,
+		// Ignored when a plan is named: the plan decides the size.
+		Resources:          models.Resources{CPU: data.VMSpecs.CPU, RAM: data.VMSpecs.Memory, Disk: data.VMSpecs.Disk},
+		PlanID:             data.PlanID,
+		Region:             strings.TrimSpace(data.Region),
+		BandwidthMbps:      data.BandwidthMbps,
+		DataQuotaGB:        data.DataQuotaGB,
+		Billed:             true,
+		BillingRef:         strings.TrimSpace(data.ExternalRef),
+		AnyHostname:        true,
+		AutoAssignIP:       true,
+		Password:           password,
+		RegeneratePassword: password == "",
+	}
+}
 
 // handleVMCreate creates a new VM based on billing system request
 func (h *BillingHandler) handleVMCreate(
@@ -578,20 +991,7 @@ func (h *BillingHandler) handleVMCreate(
 		"request_id", requestID,
 	)
 
-	// Map webhook specs to resources
-	resources := models.Resources{
-		CPU:  data.VMSpecs.CPU,
-		RAM:  data.VMSpecs.Memory,
-		Disk: data.VMSpecs.Disk,
-	}
-
-	// Create VM request
-	createReq := &service.CreateVMRequest{
-		UserID:       data.UserID,
-		Hostname:     data.Hostname,
-		OSTemplateID: data.TemplateID,
-		Resources:    resources,
-	}
+	createReq := billedCreateRequest(data)
 
 	// Create the VM
 	resp, err := h.vmService.CreateVM(ctx, createReq)
@@ -713,7 +1113,7 @@ func (h *BillingHandler) handleVMDestroy(
 	)
 
 	// Delete the VM (this will enqueue a cleanup job)
-	err := h.vmService.DeleteVM(ctx, data.VMID)
+	err := h.vmService.DeleteVM(service.AsBillingSystem(ctx), data.VMID)
 	if err != nil {
 		return WebhookResponse{}, fmt.Errorf("failed to destroy VM: %w", err)
 	}
@@ -737,44 +1137,129 @@ func (h *BillingHandler) handleVMDestroy(
 }
 
 // handleVMResize applies a package change. The disk only grows: a smaller
-// disk in the new package leaves the current one as it is.
+// disk in the new package leaves the current one as it is. A package that
+// names a plan also takes the plan's speed cap and transfer quota.
 func (h *BillingHandler) handleVMResize(ctx context.Context, data *WebhookData, requestID string) (WebhookResponse, error) {
 	current, err := h.vmService.GetVM(ctx, data.VMID, false)
 	if err != nil {
 		return WebhookResponse{}, err
 	}
-	res := current.VM.Resources
-	res.CPU, res.RAM = data.VMSpecs.CPU, data.VMSpecs.Memory
-	if data.VMSpecs.Disk > res.Disk {
-		res.Disk = data.VMSpecs.Disk
+	cpu, ram, disk := data.VMSpecs.CPU, data.VMSpecs.Memory, data.VMSpecs.Disk
+	var plan *models.Plan
+	if data.PlanID != "" {
+		// Active or not: a VM may be moved onto, or re-synced with, a plan that
+		// is no longer offered to new orders.
+		if plan, err = h.vmService.GetPlan(ctx, data.PlanID); err != nil {
+			return WebhookResponse{}, err
+		}
+		cpu, ram, disk = plan.CPU, plan.RAM, plan.Disk
+	}
+	old := current.VM.Resources
+	res := old
+	res.CPU, res.RAM = cpu, ram
+	if disk > res.Disk {
+		res.Disk = disk
 	}
 
-	// CPU and memory only change on a stopped VM. A running one is shut down
-	// here and booted again by the resize job once the new size is applied.
-	wasRunning := current.VM.Status == models.VMStatusRunning
-	if wasRunning {
-		if _, err := h.vmService.ExecuteLifecycleCommand(ctx, &service.LifecycleRequest{
-			VMID: data.VMID, Command: service.LifecycleStop,
-		}); err != nil {
-			return WebhookResponse{}, fmt.Errorf("failed to stop VM for resize: %w", err)
+	// The plan's CPU and disk caps, before any shutdown, so the running VM
+	// takes them live and a restart for the resize keeps them.
+	var limitsNote string
+	if plan != nil {
+		applied, err := h.vmService.ApplyPlanVMLimits(ctx, data.VMID, plan)
+		if err != nil {
+			return WebhookResponse{}, fmt.Errorf("failed to apply the plan's CPU and disk limits: %w", err)
+		}
+		if applied.Note != nil {
+			limitsNote = *applied.Note
 		}
 	}
-	vm, err := h.vmService.UpdateVM(ctx, &service.UpdateVMRequest{VMID: data.VMID, Resources: &res, StartAfter: wasRunning})
-	if err != nil {
-		if wasRunning { // do not leave the customer's VM off over a refused resize
-			_, _ = h.vmService.ExecuteLifecycleCommand(ctx, &service.LifecycleRequest{
-				VMID: data.VMID, Command: service.LifecycleStart,
-			})
+
+	// A change of speed or quota alone needs no shutdown.
+	if res.CPU != old.CPU || res.RAM != old.RAM || res.Disk != old.Disk {
+		// CPU and memory only change on a stopped VM. A running one is shut down
+		// here and booted again by the resize job once the new size is applied.
+		wasRunning := current.VM.Status == models.VMStatusRunning
+		if wasRunning {
+			// A guest still shutting down is fine: the resize job waits for
+			// it, then cuts the power.
+			if err := h.requestStop(ctx, data.VMID); err != nil {
+				return WebhookResponse{}, fmt.Errorf("failed to stop VM for resize: %w", err)
+			}
 		}
-		return WebhookResponse{}, fmt.Errorf("failed to resize VM: %w", err)
+		if _, err := h.vmService.UpdateVM(ctx, &service.UpdateVMRequest{VMID: data.VMID, Resources: &res, StartAfter: wasRunning, Billed: true}); err != nil {
+			if wasRunning { // do not leave the customer's VM off over a refused resize
+				_, _ = h.vmService.ExecuteLifecycleCommand(ctx, &service.LifecycleRequest{
+					VMID: data.VMID, Command: service.LifecycleStart,
+				})
+			}
+			return WebhookResponse{}, fmt.Errorf("failed to resize VM: %w", err)
+		}
+	}
+	meta := map[string]string{
+		"cpu":    fmt.Sprintf("%d", res.CPU),
+		"memory": fmt.Sprintf("%d", res.RAM),
+		"disk":   fmt.Sprintf("%d", res.Disk),
+	}
+	if plan != nil {
+		if h.networkService != nil {
+			// The order's own speed and quota, when it names them, over the plan's.
+			limits := *plan
+			if data.BandwidthMbps > 0 {
+				limits.BandwidthMbps = data.BandwidthMbps
+			}
+			if data.DataQuotaGB > 0 {
+				limits.DataQuotaGB = data.DataQuotaGB
+			}
+			if err := h.networkService.ApplyPlanLimits(ctx, data.VMID, &limits); err != nil {
+				return WebhookResponse{}, fmt.Errorf("the new size is applied, but not the plan's speed cap and transfer quota: %w", err)
+			}
+			meta["bandwidth_mbps"] = fmt.Sprintf("%d", limits.BandwidthMbps)
+			meta["data_quota_gb"] = fmt.Sprintf("%d", limits.DataQuotaGB)
+		}
+		if _, err := h.vmService.SetBillingLink(ctx, data.VMID, &plan.ID, nil); err != nil {
+			return WebhookResponse{}, err
+		}
+		meta["plan_id"] = plan.ID
+		meta["limits"] = "applied"
+		if limitsNote != "" {
+			meta["limits"] = limitsNote
+		}
 	}
 	return WebhookResponse{
 		Success: true, Message: "VM resized", VMID: data.VMID, ExternalRef: data.ExternalRef,
+		Timestamp: time.Now().UTC(), RequestID: requestID, Metadata: meta,
+	}, nil
+}
+
+// handleUserSuspend locks a customer account out of the panel, or lets it back
+// in, and on request does the same to its VMs.
+func (h *BillingHandler) handleUserSuspend(c echo.Context, data *WebhookData, requestID string, on bool) (WebhookResponse, error) {
+	ctx := c.Request().Context()
+	userID := strings.TrimSpace(data.UserID)
+	result, err := h.vmService.SetAccountSuspended(ctx, userID, on, data.WithVMs)
+	if result == nil {
+		return WebhookResponse{}, err
+	}
+	// The account is changed even when a VM could not be: say so, on record.
+	if h.db != nil {
+		service.AuditAccountSuspension(ctx, h.db, on, "", userID, c.RealIP(), c.Request().UserAgent(), map[string]any{
+			"source": "billing", "with_vms": data.WithVMs, "vms_changed": result.VMsChanged,
+			"vms_failed": result.VMsFailed, "external_ref": data.ExternalRef, "request_id": requestID,
+		})
+	}
+	if err != nil {
+		return WebhookResponse{}, err
+	}
+	message := "Account restored"
+	if on {
+		message = "Account suspended (cannot sign in; sessions and API keys stopped)"
+	}
+	return WebhookResponse{
+		Success: true, Message: message, ExternalRef: data.ExternalRef,
 		Timestamp: time.Now().UTC(), RequestID: requestID,
 		Metadata: map[string]string{
-			"cpu":    fmt.Sprintf("%d", vm.Resources.CPU),
-			"memory": fmt.Sprintf("%d", vm.Resources.RAM),
-			"disk":   fmt.Sprintf("%d", vm.Resources.Disk),
+			"vms_changed": fmt.Sprintf("%d", result.VMsChanged),
+			"vms_failed":  strings.Join(result.VMsFailed, ","),
 		},
 	}, nil
 }
@@ -795,7 +1280,13 @@ func (h *BillingHandler) handleVMResetPassword(ctx context.Context, data *Webhoo
 // handleVMPower runs a staff start, stop or restart. A suspended VM refuses
 // start and restart, the same as it does for its owner.
 func (h *BillingHandler) handleVMPower(ctx context.Context, data *WebhookData, requestID string, cmd service.LifecycleCommand) (WebhookResponse, error) {
-	if _, err := h.vmService.ExecuteLifecycleCommand(ctx, &service.LifecycleRequest{VMID: data.VMID, Command: cmd}); err != nil {
+	var err error
+	if cmd == service.LifecycleStop {
+		err = h.requestStop(ctx, data.VMID)
+	} else {
+		_, err = h.vmService.ExecuteLifecycleCommand(ctx, &service.LifecycleRequest{VMID: data.VMID, Command: cmd})
+	}
+	if err != nil {
 		return WebhookResponse{}, err
 	}
 	return WebhookResponse{
@@ -804,31 +1295,235 @@ func (h *BillingHandler) handleVMPower(ctx context.Context, data *WebhookData, r
 	}, nil
 }
 
-// handleVMUsage reports the current period's traffic and the disk allowance,
-// in megabytes, which is the unit billing systems store.
-// ponytail: disk used is not reported; the panel does not measure it per VM.
+// requestStop asks a VM to shut down within the billing system's 30s wait. A
+// stop answers once the guest is off; one the node took but whose guest is
+// still shutting down when the time is up (it answered, the VM not yet off)
+// is a stop requested, not a failure.
+func (h *BillingHandler) requestStop(ctx context.Context, vmID string) error {
+	stopCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	resp, err := h.vmService.ExecuteLifecycleCommand(stopCtx, &service.LifecycleRequest{VMID: vmID, Command: service.LifecycleStop})
+	if errors.Is(err, service.ErrVMLifecycleFailed) && resp != nil && resp.NewState == pb.VMState_VM_STATE_RUNNING.String() {
+		return nil
+	}
+	return err
+}
+
+// handleVMUsage reports what a VM uses, for the billing system's usage sync:
+// traffic this period, disks, snapshots, backups, addresses and running
+// hours, in megabytes and whole hours (see service.VMUsageReport).
 func (h *BillingHandler) handleVMUsage(ctx context.Context, data *WebhookData, requestID string) (WebhookResponse, error) {
-	vm, err := h.vmService.GetVM(ctx, data.VMID, false)
+	vm, err := h.vmService.GetVMRecord(ctx, data.VMID)
 	if err != nil {
 		return WebhookResponse{}, err
 	}
-	const mb = 1 << 20
+	u := service.VMUsage(ctx, h.db, vm)
+	n := func(v int64) string { return strconv.FormatInt(v, 10) }
 	meta := map[string]string{
-		"bandwidth_used_mb":  "0",
-		"bandwidth_limit_mb": "0",
-		"disk_limit_mb":      fmt.Sprintf("%d", vm.VM.Resources.Disk*1024),
-	}
-	if h.db != nil {
-		var usage models.BandwidthUsage
-		if err := h.db.WithContext(ctx).Where("vm_id = ?", data.VMID).
-			Order("period_start DESC").First(&usage).Error; err == nil {
-			meta["bandwidth_used_mb"] = fmt.Sprintf("%d", usage.TotalBytes/mb)
-			meta["bandwidth_limit_mb"] = fmt.Sprintf("%d", usage.QuotaBytes/mb)
-		}
+		"bandwidth_used_mb":  n(u.BandwidthUsedMB),
+		"bandwidth_limit_mb": n(u.BandwidthLimitMB),
+		"disk_limit_mb":      n(u.DiskLimitMB),
+		"disk_allocated_mb":  n(u.DiskAllocatedMB),
+		"snapshot_count":     n(u.SnapshotCount),
+		"backup_count":       n(u.BackupCount),
+		"backup_size_mb":     n(u.BackupSizeMB),
+		"extra_ips":          n(u.ExtraIPs),
+		"floating_ips":       n(u.FloatingIPs),
+		"uptime_hours":       n(u.UptimeHours),
+		"uptime_since":       u.UptimeSince.Format(time.RFC3339),
 	}
 	return WebhookResponse{
 		Success: true, Message: "usage", VMID: data.VMID, ExternalRef: data.ExternalRef,
+		Timestamp: time.Now().UTC(), RequestID: requestID, Metadata: meta, Data: u,
+	}, nil
+}
+
+// handleVMRebuild reinstalls a stopped VM for its owner: the template must be
+// one the VM's plan offers, the addresses stay, and the root password is the
+// one sent, or one made and returned once with regenerate_password.
+func (h *BillingHandler) handleVMRebuild(ctx context.Context, data *WebhookData, requestID string) (WebhookResponse, error) {
+	vm, err := h.vmService.GetVMRecord(ctx, data.VMID)
+	if err != nil {
+		return WebhookResponse{}, err
+	}
+	if vm.Status != models.VMStatusStopped {
+		return WebhookResponse{}, fmt.Errorf("%w: it is %s; stop it first", errBillingVMNotStopped, vm.Status)
+	}
+	resp, err := h.vmService.RebuildVM(ctx, &service.RebuildVMRequest{
+		VMID: data.VMID, TemplateID: strings.TrimSpace(data.TemplateID), PreserveIP: true,
+		Password: data.Password, RegeneratePassword: data.RegeneratePassword && data.Password == "", ByCustomer: true,
+	})
+	if err != nil {
+		return WebhookResponse{}, err
+	}
+	meta := map[string]string{"job_id": strconv.FormatInt(resp.JobID, 10)}
+	if resp.RootPassword != "" {
+		meta["password"] = resp.RootPassword
+	}
+	return WebhookResponse{
+		Success: true, Message: "Reinstall queued", VMID: data.VMID, ExternalRef: data.ExternalRef,
 		Timestamp: time.Now().UTC(), RequestID: requestID, Metadata: meta,
+	}, nil
+}
+
+// vmMetricsPoints is how many points vm.metrics returns at most.
+const vmMetricsPoints = 48
+
+// handleVMMetrics returns the VM's readings over the last hours (24 unless
+// asked), averaged down to at most 48 points, for the client area's graphs.
+func (h *BillingHandler) handleVMMetrics(ctx context.Context, data *WebhookData, requestID string) (WebhookResponse, error) {
+	if _, err := h.vmService.GetVMRecord(ctx, data.VMID); err != nil {
+		return WebhookResponse{}, err
+	}
+	if h.db == nil {
+		return WebhookResponse{}, errors.New("readings are not available")
+	}
+	hours := data.Hours
+	if hours == 0 {
+		hours = 24
+	}
+	rows, err := service.NewMetricsService(h.db).VMHistory(ctx, data.VMID, time.Duration(hours)*time.Hour, vmMetricsPoints)
+	if err != nil {
+		return WebhookResponse{}, err
+	}
+	type point struct {
+		At         time.Time `json:"at"`
+		CPU        float64   `json:"cpu_percent"`
+		Memory     float64   `json:"memory_percent"`
+		DiskRead   int64     `json:"disk_read_bps"`
+		DiskWrite  int64     `json:"disk_write_bps"`
+		NetworkIn  int64     `json:"network_in_bps"`
+		NetworkOut int64     `json:"network_out_bps"`
+	}
+	points := make([]point, 0, len(rows))
+	for _, r := range rows {
+		points = append(points, point{At: r.RecordedAt.UTC(), CPU: r.CPUUsage, Memory: r.MemoryUsage,
+			DiskRead: r.DiskReadBytesPerSec, DiskWrite: r.DiskWriteBytesPerSec,
+			NetworkIn: r.NetworkRxBytesPerSec, NetworkOut: r.NetworkTxBytesPerSec})
+	}
+	return WebhookResponse{
+		Success: true, Message: "metrics", VMID: data.VMID, ExternalRef: data.ExternalRef,
+		Timestamp: time.Now().UTC(), RequestID: requestID,
+		Metadata: map[string]string{"hours": strconv.Itoa(hours)}, Data: map[string]any{"points": points},
+	}, nil
+}
+
+// handleUserEnsure finds or creates the customer account of a billing client.
+// A new account is emailed a link to choose its password.
+func (h *BillingHandler) handleUserEnsure(c echo.Context, data *WebhookData, requestID string) (WebhookResponse, error) {
+	if h.db == nil {
+		return WebhookResponse{}, errors.New("accounts are not available")
+	}
+	ctx := c.Request().Context()
+	user, created, err := service.EnsureBillingUser(ctx, h.db, data.Email, data.Name, data.ExternalRef)
+	if err != nil {
+		return WebhookResponse{}, err
+	}
+	message := "Customer account found"
+	if created {
+		message = "Customer account created"
+		userID := user.ID.String()
+		entry := &models.AuditLog{
+			Action: "user.create", ResourceType: "USER", ResourceID: &userID,
+			IPAddress: c.RealIP(), UserAgent: c.Request().UserAgent(),
+			Details: map[string]any{"source": "billing", "email": user.Email, "external_ref": data.ExternalRef, "request_id": requestID},
+		}
+		if err := h.db.WithContext(ctx).Create(entry).Error; err != nil {
+			h.logger.Error("audit: could not record an account created by billing", "user_id", userID, "error", err)
+		}
+		service.EmitUserEvent(ctx, h.db, service.EventUserCreated, userID, map[string]any{"source": "billing"})
+	}
+	return WebhookResponse{
+		Success: true, Message: message, ExternalRef: data.ExternalRef,
+		Timestamp: time.Now().UTC(), RequestID: requestID,
+		Metadata: map[string]string{"user_id": user.ID.String(), "email": user.Email, "created": fmt.Sprintf("%t", created)},
+	}, nil
+}
+
+// Provisioning states vm.status answers with.
+const (
+	provisionPending = "provisioning"
+	provisionReady   = "ready"
+	provisionFailed  = "failed"
+	// provisionBroken is a VM that was installed and has since been left in an
+	// error state by some later operation.
+	provisionBroken = "error"
+	provisionGone   = "deleting"
+)
+
+// handleVMStatus says whether a VM has finished provisioning and how it is
+// reached. The password is never in the answer: the order named it.
+func (h *BillingHandler) handleVMStatus(ctx context.Context, data *WebhookData, requestID string) (WebhookResponse, error) {
+	vm, err := h.vmService.GetVMRecord(ctx, data.VMID)
+	if err != nil {
+		return WebhookResponse{}, err
+	}
+	meta := map[string]string{"status": string(vm.Status), "hostname": vm.Hostname, "state": provisionReady}
+	switch vm.Status {
+	case models.VMStatusCreating:
+		meta["state"] = provisionPending
+	case models.VMStatusDeleting:
+		meta["state"] = provisionGone
+	case models.VMStatusError:
+		// Any failed operation leaves a VM in "error"; only its creation
+		// failing is a failed order. The queue says which, and why.
+		switch job, reason := service.VMCreateJob(ctx, h.db, vm.ID); job {
+		case "", "completed":
+			meta["state"] = provisionBroken
+		case "discarded", "cancelled":
+			meta["state"], meta["error"] = provisionFailed, reason
+		default:
+			meta["state"], meta["error"], meta["retrying"] = provisionFailed, reason, "true"
+		}
+	}
+	if h.db != nil {
+		access := service.VMAccess(ctx, h.db, vm)
+		meta["ip"], meta["ips"], meta["username"] = access.IP, strings.Join(access.IPs, ","), access.Username
+	}
+	return WebhookResponse{
+		Success: true, Message: "status", VMID: vm.ID, ExternalRef: data.ExternalRef,
+		Timestamp: time.Now().UTC(), RequestID: requestID, Metadata: meta,
+	}, nil
+}
+
+// handleCatalogList lists what an order can name, so the billing module can
+// offer a choice instead of asking staff to paste IDs.
+func (h *BillingHandler) handleCatalogList(ctx context.Context, requestID string) (WebhookResponse, error) {
+	if h.db == nil {
+		return WebhookResponse{}, errors.New("the catalog is not available")
+	}
+	db := h.db.WithContext(ctx)
+	var templates []models.OSTemplate
+	if err := db.Where("is_active = ?", true).Order("name, version").Find(&templates).Error; err != nil {
+		return WebhookResponse{}, err
+	}
+	var plans []models.Plan
+	if err := db.Where("is_active = ?", true).Order("cpu, ram, disk, name").Find(&plans).Error; err != nil {
+		return WebhookResponse{}, err
+	}
+	var regions []models.Region
+	if err := db.Where("enabled = ?", true).Order("name").Find(&regions).Error; err != nil {
+		return WebhookResponse{}, err
+	}
+	type item = map[string]interface{}
+	out := map[string][]item{"templates": {}, "plans": {}, "regions": {}}
+	for _, t := range templates {
+		planIDs := t.PlanIDs
+		if planIDs == nil {
+			planIDs = []string{}
+		}
+		out["templates"] = append(out["templates"], item{"id": t.ID, "name": t.Name, "version": t.Version,
+			"os_type": t.OSType, "licensed": t.Licensed, "plan_ids": planIDs})
+	}
+	for _, p := range plans {
+		out["plans"] = append(out["plans"], item{"id": p.ID, "name": p.Name, "cpu": p.CPU, "memory": p.RAM, "disk": p.Disk,
+			"bandwidth_mbps": p.BandwidthMbps, "data_quota_gb": p.DataQuotaGB})
+	}
+	for _, r := range regions {
+		out["regions"] = append(out["regions"], item{"id": r.ID, "slug": r.Slug, "name": r.Name, "country": r.Country})
+	}
+	return WebhookResponse{
+		Success: true, Message: "catalog", Timestamp: time.Now().UTC(), RequestID: requestID, Data: out,
 	}, nil
 }
 
@@ -853,6 +1548,7 @@ type AuthDocumentation struct {
 	Signature     string `json:"signature_header"`
 	Timestamp     string `json:"timestamp_header"`
 	SignatureAlgo string `json:"signature_algorithm"`
+	Replay        string `json:"replay_protection"`
 }
 
 // EventDocumentation describes an event type
@@ -875,60 +1571,103 @@ func (h *BillingHandler) GetWebhookDocumentation(c echo.Context) error {
 			Signature:     WebhookSignatureHeader,
 			Timestamp:     WebhookTimestampHeader,
 			SignatureAlgo: "HMAC-SHA256",
+			Replay:        "The body's timestamp is required and must be within 5 minutes of the panel's clock. Each signed request is accepted once: send a new nonce in the body with every request.",
 		},
 		Events: []EventDocumentation{
 			{
 				Type:        string(EventVMCreate),
-				Description: "Create a new VM with specified resources",
-				Required:    []string{"user_id", "hostname", "template_id", "vm_specs.cpu", "vm_specs.memory", "vm_specs.disk"},
-				Optional:    []string{"external_ref"},
+				Description: "Create a VM with a public address and a root password. With plan_id the plan decides size, speed cap and transfer quota. external_ref is kept on the VM as its billing service. region places it; without one the panel's default region is used. A template restricted to plans is refused on any other plan.",
+				Required:    []string{"user_id", "hostname", "template_id", "plan_id or vm_specs.cpu, vm_specs.memory, vm_specs.disk"},
+				Optional:    []string{"external_ref", "password", "region", "bandwidth_mbps", "data_quota_gb"},
 			},
 			{
 				Type:        string(EventVMSuspend),
 				Description: "Suspend a VM (power off; the owner cannot start it)",
-				Required:    []string{"vm_id"},
+				Required:    []string{"vm_id", "user_id"},
 				Optional:    []string{"external_ref"},
 			},
 			{
 				Type:        string(EventVMUnsuspend),
 				Description: "Unsuspend a VM and start it",
-				Required:    []string{"vm_id"},
+				Required:    []string{"vm_id", "user_id"},
 				Optional:    []string{"external_ref"},
 			},
 			{
 				Type:        string(EventVMDestroy),
-				Description: "Destroy a VM and cleanup resources",
-				Required:    []string{"vm_id"},
+				Description: "Destroy a VM and cleanup resources. Like every event about an existing VM, refused when the VM does not belong to user_id, and the VM may be named by external_ref (with user_id) instead of vm_id",
+				Required:    []string{"vm_id", "user_id"},
 				Optional:    []string{"external_ref"},
 			},
 			{
 				Type:        string(EventVMResize),
-				Description: "Change CPU, memory and disk. A running VM is shut down and booted again. Disk only grows.",
-				Required:    []string{"vm_id", "vm_specs.cpu", "vm_specs.memory", "vm_specs.disk"},
+				Description: "Change CPU, memory and disk; a running VM is shut down and booted again, and disk only grows. With plan_id the plan's speed cap and transfer quota are applied as well.",
+				Required:    []string{"vm_id", "user_id", "plan_id or vm_specs.cpu, vm_specs.memory, vm_specs.disk"},
+				Optional:    []string{"bandwidth_mbps and data_quota_gb (with plan_id)"},
 			},
 			{
 				Type:        string(EventVMResetPassword),
 				Description: "Set the root password of a running VM",
-				Required:    []string{"vm_id", "password"},
+				Required:    []string{"vm_id", "user_id", "password"},
 			},
 			{
 				Type:        string(EventVMUsage),
-				Description: "Traffic used and allowed this period and the disk allowance, in MB, returned in metadata",
+				Description: "What the VM uses, in metadata as strings and in data as numbers: bandwidth_used_mb and bandwidth_limit_mb (this period), disk_limit_mb (primary disk) and disk_allocated_mb (with data disks), snapshot_count, backup_count and backup_size_mb (completed ones), extra_ips (addresses beyond the primary) and floating_ips, and uptime_hours (clock hours seen running since uptime_since: the period start, or 7 days back at most)",
 				Required:    []string{"vm_id"},
 			},
 			{
 				Type:        "vm.start | vm.stop | vm.restart",
 				Description: "Power actions",
+				Required:    []string{"vm_id", "user_id"},
+			},
+			{
+				Type:        "user.suspend | user.unsuspend",
+				Description: "Lock a customer account out of the panel (no sign-in; sessions and API keys stop) or let it back in. with_vms does the same to the account's VMs.",
+				Required:    []string{"user_id"},
+				Optional:    []string{"with_vms", "external_ref"},
+			},
+			{
+				Type:        string(EventUserEnsure),
+				Description: "Find the customer account for a billing client, by external_ref first and then by email, or create it. metadata.user_id is the account; metadata.created says it is new. A new account is emailed a link to choose its password. A staff account is refused.",
+				Required:    []string{"email"},
+				Optional:    []string{"name", "external_ref (the billing system's own reference for the client)"},
+			},
+			{
+				Type:        string(EventVMStatus),
+				Description: "Whether a VM has finished provisioning: metadata.state is provisioning, ready, failed (its installation failed: metadata.error says why, and metadata.retrying is true while the panel is still trying), error (installed, then left in an error state by a later operation) or deleting, with ip, ips (comma separated), username and hostname. The password is not returned.",
 				Required:    []string{"vm_id"},
+				Optional:    []string{"user_id", "external_ref"},
+			},
+			{
+				Type:        string(EventCatalogList),
+				Description: "The active templates (with licensed and plan_ids), plans and regions, in data",
+			},
+			{
+				Type:        string(EventVMRebuild),
+				Description: "Reinstall a stopped VM, keeping its addresses. template_id (default: the one installed) must be offered on the VM's plan. The root password is the one sent; with regenerate_password and no password, one is made and returned once in metadata.password. metadata.job_id follows the reinstall. Refused (409 or 400) while the VM runs, is locked against reinstall or is being moved.",
+				Required:    []string{"vm_id or external_ref", "user_id"},
+				Optional:    []string{"template_id", "password", "regenerate_password"},
+			},
+			{
+				Type:        string(EventVMMetrics),
+				Description: "The VM's readings over the last hours (default 24, at most 168), averaged to at most 48 points: data.points is a list of {at, cpu_percent, memory_percent, disk_read_bps, disk_write_bps, network_in_bps, network_out_bps}. Readings are taken every minute while the VM runs and kept 7 days.",
+				Required:    []string{"vm_id or external_ref"},
+				Optional:    []string{"user_id", "hours"},
+			},
+			{
+				Type:        string(EventUserSSO),
+				Description: "A one-time sign-in link for a customer account: metadata.path (and metadata.url when the panel knows its public address) lasts metadata.expires_in seconds and works once. Opening it signs the browser in and opens vm_id (its console with page=console), or the dashboard; the panel still asks for its own two-factor code. Refused for staff, suspended, locked or expired accounts, and when vm_id belongs to someone else.",
+				Required:    []string{"user_id"},
+				Optional:    []string{"vm_id", "page (console)", "external_ref"},
 			},
 		},
 		PayloadExample: map[string]interface{}{
 			"event":     "vm.create",
 			"timestamp": "2024-01-01T00:00:00Z",
+			"nonce":     "5f2b9c0e7a1d4c3b",
 			"data": map[string]interface{}{
-				"user_id":     "external_user_123",
+				"user_id":     "panel user id",
 				"hostname":    "client-vm-1",
-				"template_id": "ubuntu-22.04",
+				"template_id": "os template id",
 				"vm_specs": map[string]interface{}{
 					"cpu":    2,
 					"memory": 4096,

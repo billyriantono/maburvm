@@ -8,7 +8,7 @@ import (
 )
 
 func TestGuestNetworkFile(t *testing.T) {
-	got := guestNetworkFile("52:54:00:AB:CD:EF", "192.0.2.58", 25, "192.0.2.1", guestIPv6{})
+	got := guestNetworkFile("52:54:00:AB:CD:EF", "192.0.2.58", 25, "192.0.2.1", guestIPv6{}, nil)
 	for _, want := range []string{"MACAddress=52:54:00:ab:cd:ef", "Address=192.0.2.58/25", "Gateway=192.0.2.1"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in:\n%s", want, got)
@@ -19,7 +19,7 @@ func TestGuestNetworkFile(t *testing.T) {
 			t.Fatalf("v4-only config must not mention %q:\n%s", unwanted, got)
 		}
 	}
-	if strings.Contains(guestNetworkFile("52:54:00:ab:cd:ef", "10.0.0.2", 24, "", guestIPv6{}), "Gateway=") {
+	if strings.Contains(guestNetworkFile("52:54:00:ab:cd:ef", "10.0.0.2", 24, "", guestIPv6{}, nil), "Gateway=") {
 		t.Fatal("gateway line written without a gateway")
 	}
 	if !strings.Contains(guestAnnounceUnit("192.0.2.1"), "ping -c1 -w2 192.0.2.1") {
@@ -29,7 +29,7 @@ func TestGuestNetworkFile(t *testing.T) {
 
 func TestGuestNetworkFileIPv6(t *testing.T) {
 	v6 := guestIPv6From("2001:db8:20:5::1/64", "", nil)
-	got := guestNetworkFile("52:54:00:12:34:56", "192.0.2.58", 25, "192.0.2.1", v6)
+	got := guestNetworkFile("52:54:00:12:34:56", "192.0.2.58", 25, "192.0.2.1", v6, nil)
 	for _, want := range []string{
 		"Address=192.0.2.58/25\nGateway=192.0.2.1\n",
 		"Address=2001:db8:20:5::1/64\nGateway=fe80::1\nIPv6AcceptRA=no\n",
@@ -39,5 +39,17 @@ func TestGuestNetworkFileIPv6(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in:\n%s", want, got)
 		}
+	}
+}
+
+// A router or Windows guest is told what it must set itself: further cards'
+// addresses and the further IPv6 addresses of its prefix.
+func TestCardsLeftToOwner(t *testing.T) {
+	if cardsLeftToOwner(guestNet{IP: "192.0.2.10", Prefix: 24}) != nil {
+		t.Fatal("nothing is left to the owner of a guest with one card and no further IPv6")
+	}
+	err := cardsLeftToOwner(guestNet{IP: "192.0.2.10", Prefix: 24, V6: guestIPv6{Address: "2001:db8:20:5::1/64", Extra: []string{"2001:db8:20:5::25"}}})
+	if err == nil || !strings.Contains(err.Error(), "2001:db8:20:5::25") {
+		t.Fatalf("further IPv6 not named: %v", err)
 	}
 }

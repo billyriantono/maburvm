@@ -1,0 +1,10 @@
+{
+  "title": "Servers",
+  "servs": {
+    "0": {"serid": 0, "server_name": "localhost", "ip": "192.0.2.10", "virt": "kvm", "status": "1", "locked": "0", "total_ram": "65536", "ram": "20480"},
+    "1": {"serid": "1", "server_name": "node-b", "ip": "198.51.100.200", "virt": "kvm", "status": "1", "locked": "0", "total_ram": "131072", "ram": "90112"},
+    "2": {"serid": "2", "server_name": "xen-old", "ip": "192.0.2.12", "virt": "xen", "status": "1", "locked": "0", "total_ram": "32768", "ram": "16000"}
+  },
+  "timenow": "1763600000",
+  "time_taken": "0.012"
+}

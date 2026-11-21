@@ -2,6 +2,7 @@ package repository
 
 import (
 	"errors"
+	"time"
 
 	"github.com/maburvm/panel/internal/shared/models"
 	"gorm.io/gorm"
@@ -15,6 +16,7 @@ type StorageRepository interface {
 	GetPoolsByNodeID(nodeID string) ([]models.StoragePool, error)
 	CreatePool(pool *models.StoragePool) error
 	UpdatePool(pool *models.StoragePool) error
+	UpdatePoolMeasurement(pool *models.StoragePool) error
 	SetPrimaryPool(nodeID, poolID string) error
 	DeletePool(id string) error
 
@@ -38,15 +40,29 @@ type storageRepository struct {
 // the node's root filesystem.
 func (r *storageRepository) SetPrimaryPool(nodeID, poolID string) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&models.StoragePool{}).
-			Where("node_id = ? AND id <> ?", nodeID, poolID).
-			Update("is_primary", false).Error; err != nil {
+		if err := demoteOtherPools(tx, nodeID, poolID); err != nil {
 			return err
 		}
-		return tx.Model(&models.StoragePool{}).
-			Where("id = ?", poolID).
-			Update("is_primary", true).Error
+		res := tx.Model(&models.StoragePool{}).
+			Where("id = ? AND node_id = ?", poolID, nodeID).
+			Update("is_primary", true)
+		if res.Error == nil && res.RowsAffected == 0 {
+			// Deleted meanwhile, or not on this node: keep the old primary.
+			return ErrStoragePoolNotOnNode
+		}
+		return res.Error
 	})
+}
+
+// ErrStoragePoolNotOnNode is SetPrimaryPool finding no such pool on the node.
+var ErrStoragePoolNotOnNode = errors.New("storage pool not found on its node")
+
+// demoteOtherPools clears is_primary on every pool of the node but poolID.
+// Every write that sets is_primary goes with it, in the same transaction.
+func demoteOtherPools(tx *gorm.DB, nodeID, poolID string) error {
+	return tx.Model(&models.StoragePool{}).
+		Where("node_id = ? AND id <> ?", nodeID, poolID).
+		Update("is_primary", false).Error
 }
 
 // NewStorageRepository creates a new storage repository
@@ -84,14 +100,39 @@ func (r *storageRepository) GetPoolsByNodeID(nodeID string) ([]models.StoragePoo
 	return pools, nil
 }
 
-// CreatePool creates a new storage pool
+// CreatePool creates a new storage pool. A pool created primary demotes the
+// node's other pools in the same transaction.
 func (r *storageRepository) CreatePool(pool *models.StoragePool) error {
-	return r.db.Create(pool).Error
+	if !pool.IsPrimary {
+		return r.db.Create(pool).Error
+	}
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(pool).Error; err != nil {
+			return err
+		}
+		return demoteOtherPools(tx, pool.NodeID, pool.ID)
+	})
 }
 
-// UpdatePool updates an existing storage pool
+// UpdatePool updates the fields an operator sets. Capacity and status are
+// left out: they belong to UpdatePoolMeasurement, and a full-row save here
+// would write back a stale reading.
 func (r *storageRepository) UpdatePool(pool *models.StoragePool) error {
-	return r.db.Save(pool).Error
+	return r.db.Model(&models.StoragePool{}).Where("id = ?", pool.ID).
+		Select("name", "alert_threshold", "updated_at").
+		Updates(&models.StoragePool{Name: pool.Name, AlertThreshold: pool.AlertThreshold, UpdatedAt: time.Now()}).Error
+}
+
+// UpdatePoolMeasurement stores what the node reported for a pool, and nothing
+// else: a full-row save would undo a rename or a change of primary pool made
+// while the node was being asked.
+func (r *storageRepository) UpdatePoolMeasurement(pool *models.StoragePool) error {
+	return r.db.Model(&models.StoragePool{}).Where("id = ?", pool.ID).
+		Select("total_space", "used_space", "available_space", "status", "status_note", "metadata_percent", "updated_at").
+		Updates(&models.StoragePool{
+			TotalSpace: pool.TotalSpace, UsedSpace: pool.UsedSpace, AvailableSpace: pool.AvailableSpace,
+			Status: pool.Status, StatusNote: pool.StatusNote, MetadataPercent: pool.MetadataPercent, UpdatedAt: time.Now(),
+		}).Error
 }
 
 // DeletePool soft deletes a storage pool

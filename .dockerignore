@@ -5,7 +5,7 @@
 # Targeted to repo-root Dockerfiles: Dockerfile.panel, Dockerfile.web,
 # Dockerfile.agent. Do NOT exclude source/resources those builds need
 # (Go modules/source, web/ source, internal/ migrations, docker/ scripts,
-# api/proto generated code).
+# api/proto).
 
 # --- VCS / metadata ---
 .git
@@ -72,3 +72,6 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# Pre-upgrade database dumps (scripts/upgrade-panel.sh).
+backups/

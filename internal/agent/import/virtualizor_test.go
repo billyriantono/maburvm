@@ -678,3 +678,20 @@ func containsHelper(s, substr string) bool {
 	}
 	return false
 }
+
+// A disk on a logical volume is a disk, not something to skip: delete, backup
+// and resize all need to know it is there.
+func TestParseKeepsBlockDisks(t *testing.T) {
+	xmlData := []byte(`<domain type='kvm'><name>vm1</name><uuid>11111111-2222-3333-4444-555555555555</uuid>
+<memory unit='KiB'>1048576</memory><vcpu>1</vcpu><devices>
+<disk type='block' device='disk'><driver name='qemu' type='raw'/><source dev='/dev/vg0/legacy101-0'/><target dev='vda' bus='virtio'/></disk>
+<disk type='block' device='cdrom'><source dev='/dev/sr0'/><target dev='hda' bus='ide'/></disk>
+</devices></domain>`)
+	c, err := ParseVirtualizorDomainXMLBytes(xmlData, "/x.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Disks) != 1 || c.Disks[0].SourceFile != "/dev/vg0/legacy101-0" || c.Disks[0].Format != "raw" || c.Disks[0].TargetDev != "vda" {
+		t.Fatalf("disks = %+v", c.Disks)
+	}
+}

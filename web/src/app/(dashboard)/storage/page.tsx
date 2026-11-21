@@ -1,13 +1,13 @@
 "use client"
 
 import { useState, useMemo, useRef } from "react"
+import Link from "next/link"
 import {
   Database,
   Plus,
   Search,
   X,
   Settings,
-  Maximize2,
   Trash2,
   Loader2,
   HardDrive,
@@ -21,8 +21,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import {
   useStoragePools,
   useCreateStoragePool,
-  useResizeStoragePool,
   useSetPrimaryPool,
+  useSetPoolTier,
   useDeleteStoragePool,
   useStorageVolumes,
   useCreateStorageVolume,
@@ -32,6 +32,9 @@ import { useNodes } from "@/lib/hooks/use-nodes"
 import type { StoragePool } from "@/types"
 import { useConfirm } from "@/components/confirm-provider"
 import { toast } from "sonner"
+import { PoolAllocation } from "@/components/pool-allocation"
+import { AddSharedPoolDialog, SharedPools } from "@/components/shared-pools"
+import { CephClusterDialog, CephClusters } from "@/components/ceph-clusters"
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B"
@@ -68,13 +71,14 @@ function VolumesDialog({ pool: openPool, onClose }: { pool: StoragePool | null; 
   const [format, setFormat] = useState("qcow2")
 
   if (!pool) return null
+  const lvm = isLVM(pool.type)
 
   const handleCreate = async () => {
     const trimmed = name.trim()
     if (!trimmed) { toast.error("Volume name is required"); return }
     if (sizeGB <= 0) { toast.error("Size must be at least 1 GB"); return }
     try {
-      await createVolume.mutateAsync({ name: trimmed, pool_id: pool.id, size: sizeGB * GIB, format })
+      await createVolume.mutateAsync({ name: trimmed, pool_id: pool.id, size: sizeGB * GIB, format: lvm ? "raw" : format })
       toast.success(`Volume "${trimmed}" provisioned`)
       setName("")
     } catch (err) {
@@ -85,8 +89,9 @@ function VolumesDialog({ pool: openPool, onClose }: { pool: StoragePool | null; 
   const handleDelete = async (volumeId: string, volumeName: string) => {
     const ok = await confirm({
       title: `Delete volume "${volumeName}"?`,
-      description:
-        "Its disk image is removed from the node and the data on it is gone. This cannot be undone.",
+      description: lvm
+        ? "Its logical volume is removed from the node and the data on it is gone. A volume a VM still uses is refused. This cannot be undone."
+        : "Its disk image is removed from the node and the data on it is gone. This cannot be undone.",
       confirmLabel: "Delete volume",
       destructive: true,
       action: () => deleteVolume.mutateAsync(volumeId),
@@ -107,10 +112,14 @@ function VolumesDialog({ pool: openPool, onClose }: { pool: StoragePool | null; 
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-5">
           <Input aria-label="Volume name" placeholder="Volume name" value={name} onChange={(e) => setName(e.target.value)} className="md:col-span-2" />
           <Input aria-label="Size (GB)" type="number" min={1} value={sizeGB} onChange={(e) => setSizeGB(Number(e.target.value))} title="Size (GB)" />
-          <select aria-label="Format" value={format} onChange={(e) => setFormat(e.target.value)} className="h-10 px-3 rounded-md border border-input bg-background text-sm">
-            <option value="qcow2">qcow2</option>
-            <option value="raw">raw</option>
-          </select>
+          {lvm ? (
+            <p className="text-xs text-muted-foreground self-center">A raw logical volume</p>
+          ) : (
+            <select aria-label="Format" value={format} onChange={(e) => setFormat(e.target.value)} className="h-10 px-3 rounded-md border border-input bg-background text-sm">
+              <option value="qcow2">qcow2</option>
+              <option value="raw">raw</option>
+            </select>
+          )}
         </div>
         <Button onClick={handleCreate} disabled={createVolume.isPending} className="mb-5">
           {createVolume.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Plus className="w-4 h-4 mr-2" />}
@@ -129,7 +138,9 @@ function VolumesDialog({ pool: openPool, onClose }: { pool: StoragePool | null; 
           {isLoading ? (
             <div className="p-6 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto" /></div>
           ) : !volumes || volumes.length === 0 ? (
-            <div className="p-6 text-center text-muted-foreground font-medium text-sm">No volumes yet</div>
+            <div className="p-6 text-center text-muted-foreground font-medium text-sm">
+              {lvm ? "No volumes yet. Volumes a deleted VM left behind are listed here." : "No volumes yet"}
+            </div>
           ) : (
             volumes.map((v) => (
               <div key={v.id} className="grid grid-cols-12 gap-2 p-3 items-center border-t">
@@ -161,7 +172,7 @@ function StatusBadge({ status }: { status: string }) {
     offline: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-900",
     degraded: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900",
   }
-  const labels: Record<string, string> = { online: "Online", offline: "Offline", degraded: "Degraded" }
+  const labels: Record<string, string> = { online: "Online", offline: "Offline", degraded: "Unusable", pending: "Not measured yet" }
 
   const cls = config[status] || "bg-muted text-muted-foreground border-border"
   const label = labels[status] || "Unknown"
@@ -173,26 +184,21 @@ function StatusBadge({ status }: { status: string }) {
   )
 }
 
+const isLVM = (type: string) => type === "lvm" || type === "lvmthin"
+
+// Directories and LVM hold VM disks. Rows of any other type were registered
+// before the panel refused them, and nothing can provision into them.
+const typeLabels: Record<string, string> = { dir: "Directory", lvm: "LVM", lvmthin: "LVM thin" }
 function TypeBadge({ type }: { type: string }) {
-  const labels: Record<string, string> = {
-    lvm: "LVM",
-    lvmthin: "Thin LVM",
-    zfs: "ZFS",
-    zfsthin: "ZFS Thin",
-    zfscompressed: "ZFS Comp",
-    dir: "DIR",
-    nfs: "NFS",
-    ceph: "Ceph",
-  }
-
-  const label = labels[type] || type.toUpperCase()
-
   return (
     <span className="inline-flex items-center px-2 py-0.5 text-[10px] font-medium border rounded-full bg-muted text-muted-foreground">
-      {label}
+      {typeLabels[type] ?? `${type}, not supported`}
     </span>
   )
 }
+
+// LVM names: what lvcreate accepts.
+const lvmNameOk = (s: string) => /^[A-Za-z0-9+_.][A-Za-z0-9+_.-]{0,126}$/.test(s) && s !== "." && s !== ".."
 
 // StorageBar shows how full a pool is, and — more usefully — how much is left.
 //
@@ -261,40 +267,56 @@ export default function StorageListPage() {
     [nodes]
   )
   const createPool = useCreateStoragePool()
-  const resizePool = useResizeStoragePool()
   const setPrimary = useSetPrimaryPool()
+  const setTier = useSetPoolTier()
+  const [tierPool, setTierPool] = useState<{ id: string; name: string } | null>(null)
+  const [tierValue, setTierValue] = useState("")
   const deletePool = useDeleteStoragePool()
   const [searchQuery, setSearchQuery] = useState("")
-  const [typeFilter, setTypeFilter] = useState<string>("")
   const [showAddPool, setShowAddPool] = useState(false)
-  const [resizeTarget, setResizeTarget] = useState<NonNullable<typeof pools>[number] | null>(null)
-  const [newPool, setNewPool] = useState({ name: "", path: "", type: "dir", node_id: "", total_space: 107374182400, file_format: "raw", alert_threshold: 90, overcommit: 0, is_primary: false })
-  const [resizeBytes, setResizeBytes] = useState(0)
-  // Keep the last target while the dialog fades out.
-  const lastResize = useRef(resizeTarget)
-  if (resizeTarget) lastResize.current = resizeTarget
-  const resizeShown = resizeTarget ?? lastResize.current
+  const emptyPool = { name: "", type: "dir" as "dir" | "lvm" | "lvmthin", path: "", vg: "", thin: "", node_id: "", alert_threshold: 90 }
+  const [newPool, setNewPool] = useState(emptyPool)
   const [volumesPool, setVolumesPool] = useState<StoragePool | null>(null)
+  const [showAddShared, setShowAddShared] = useState(false)
+  const [showAddCeph, setShowAddCeph] = useState(false)
 
-  const filteredPools = pools?.filter(pool =>
+  // A node's part of a shared pool is shown once, under the shared pool.
+  const filteredPools = pools?.filter(pool => !pool.shared_pool_id && (
     pool.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
     pool.path.toLowerCase().includes(searchQuery.toLowerCase()) ||
     pool.node_id?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       nodeNames.get(pool.node_id)?.toLowerCase().includes(searchQuery.toLowerCase())
-  ).filter(pool => !typeFilter || pool.type === typeFilter) ?? []
+  )) ?? []
 
-  const hasFilters = searchQuery || typeFilter
+  // Nodes with more than one pool marked for new VMs (left by older panels).
+  // Placement then uses the roomiest online one, so neither badge alone is the truth.
+  const primaryConflict = useMemo(() => {
+    const count = new Map<string, number>()
+    for (const p of pools ?? []) if (p.is_primary) count.set(p.node_id, (count.get(p.node_id) ?? 0) + 1)
+    return new Set([...count].filter(([, n]) => n > 1).map(([node]) => node))
+  }, [pools])
 
-  const clearFilters = () => {
-    setSearchQuery("")
-    setTypeFilter("")
-  }
+  const hasFilters = !!searchQuery
 
+  const clearFilters = () => setSearchQuery("")
+
+  // Shared storage counts once, however many nodes mount it: the first
+  // measured member stands for the pool.
+  const counted = useMemo(() => {
+    const seen = new Set<string>()
+    const measuredFirst = [...(pools ?? [])].sort((a, b) => (b.total_space ?? 0) - (a.total_space ?? 0))
+    return measuredFirst.filter((p) => {
+      if (!p.shared_pool_id) return true
+      if (seen.has(p.shared_pool_id)) return false
+      seen.add(p.shared_pool_id)
+      return true
+    })
+  }, [pools])
   const stats = {
-    totalPools: pools?.length ?? 0,
-    totalCapacity: pools?.reduce((sum, p) => sum + (p.total_space ?? 0), 0) ?? 0,
-    usedStorage: pools?.reduce((sum, p) => sum + (p.used_space ?? 0), 0) ?? 0,
-    availableStorage: pools?.reduce((sum, p) => sum + (p.available_space ?? 0), 0) ?? 0,
+    totalPools: counted.length,
+    totalCapacity: counted.reduce((sum, p) => sum + (p.total_space ?? 0), 0),
+    usedStorage: counted.reduce((sum, p) => sum + (p.used_space ?? 0), 0),
+    availableStorage: counted.reduce((sum, p) => sum + (p.available_space ?? 0), 0),
   }
 
   const handleDelete = async (pool: NonNullable<typeof pools>[number]) => {
@@ -314,29 +336,23 @@ export default function StorageListPage() {
     toast.success(`Storage pool "${pool.name}" deleted`)
   }
 
-  const poolSizeOk = Number.isFinite(newPool.total_space) && newPool.total_space > 0
-  const resizeSizeOk = Number.isFinite(resizeBytes) && resizeBytes > 0
+  const poolPathOk =
+    newPool.type === "dir" ? newPool.path.trim().startsWith("/")
+    : lvmNameOk(newPool.vg.trim()) && (newPool.type === "lvm" || lvmNameOk(newPool.thin.trim()))
 
   const handleAddPool = () => {
-    if (!poolSizeOk) return
-    createPool.mutate(newPool, {
+    if (!poolPathOk) return
+    const path = newPool.type === "dir" ? newPool.path.trim()
+      : newPool.type === "lvm" ? newPool.vg.trim() : `${newPool.vg.trim()}/${newPool.thin.trim()}`
+    createPool.mutate({ name: newPool.name, type: newPool.type, path, node_id: newPool.node_id, alert_threshold: newPool.alert_threshold }, {
       onSuccess: () => {
-        toast.success(`Storage pool "${newPool.name}" created`)
+        toast.success(`Storage pool "${newPool.name}" registered`, {
+          description: "Its capacity appears once the node has measured it, within a minute.",
+        })
         setShowAddPool(false)
-        setNewPool({ name: "", path: "", type: "dir", node_id: "", total_space: 107374182400, file_format: "raw", alert_threshold: 90, overcommit: 0, is_primary: false })
+        setNewPool(emptyPool)
       },
-      onError: (err) => toast.error(`Failed to create pool: ${err.message}`)
-    })
-  }
-
-  const handleResize = () => {
-    if (!resizeTarget || !resizeSizeOk) return
-    resizePool.mutate({ id: resizeTarget.id, total_space: resizeBytes }, {
-      onSuccess: () => {
-        toast.success(`Storage pool "${resizeTarget.name}" resized`)
-        setResizeTarget(null)
-      },
-      onError: (err) => toast.error(`Failed to resize: ${err.message}`)
+      onError: (err) => toast.error(`Failed to register pool: ${err.message}`)
     })
   }
 
@@ -396,11 +412,39 @@ export default function StorageListPage() {
             {stats.totalPools} pools
           </p>
         </div>
-        <Button className="gap-2" onClick={() => setShowAddPool(true)}>
-          <Plus className="w-4 h-4" />
-          Add Pool
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Link href="/storage/orphans"><Button variant="outline">Orphaned disks</Button></Link>
+          <Button variant="outline" onClick={() => setShowAddCeph(true)}>Add Ceph cluster</Button>
+          <Button variant="outline" onClick={() => setShowAddShared(true)}>Add shared pool</Button>
+          <Button className="gap-2" onClick={() => setShowAddPool(true)}>
+            <Plus className="w-4 h-4" />
+            Add Pool
+          </Button>
+        </div>
       </div>
+      <Dialog open={!!tierPool} onOpenChange={(o) => { if (!o) setTierPool(null) }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Storage tier of {tierPool?.name}</DialogTitle>
+            <DialogDescription>Plans naming this tier put their VMs&apos; disks only in pools of it. Leave empty for no tier.</DialogDescription>
+          </DialogHeader>
+          <label htmlFor="pool-tier" className="text-sm font-medium">Tier</label>
+          <Input id="pool-tier" value={tierValue} onChange={(e) => setTierValue(e.target.value)} placeholder="nvme" />
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setTierPool(null)}>Cancel</Button>
+            <Button disabled={setTier.isPending} onClick={async () => {
+              if (!tierPool) return
+              try {
+                await setTier.mutateAsync({ id: tierPool.id, tier: tierValue })
+                toast.success(tierValue.trim() ? `${tierPool.name} is in tier ${tierValue.trim().toLowerCase()}` : `${tierPool.name} has no tier`)
+                setTierPool(null)
+              } catch (err) {
+                toast.error((err as Error).message)
+              }
+            }}>Save</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
         <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm">
@@ -449,22 +493,6 @@ export default function StorageListPage() {
             />
           </div>
 
-          <select
-            value={typeFilter}
-            onChange={(e) => setTypeFilter(e.target.value)}
-            className="h-10 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-          >
-            <option value="">All Types</option>
-            <option value="dir">Directory (File)</option>
-            <option value="lvm">LVM</option>
-            <option value="lvmthin">Thin LVM</option>
-            <option value="zfs">ZFS</option>
-            <option value="zfsthin">ZFS Thin</option>
-            <option value="zfscompressed">ZFS Compressed</option>
-            <option value="ceph">Ceph Block Device</option>
-            <option value="nfs">NFS</option>
-          </select>
-
           {hasFilters && (
             <Button variant="outline" onClick={clearFilters} className="gap-1">
               <X className="w-4 h-4" />
@@ -473,6 +501,9 @@ export default function StorageListPage() {
           )}
         </div>
       </div>
+
+      <CephClusters nodes={nodes ?? []} />
+      <SharedPools nodes={nodes ?? []} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {filteredPools.length === 0 ? (
@@ -493,18 +524,27 @@ export default function StorageListPage() {
                   <div>
                     <h3 className="text-lg font-semibold">{pool.name}</h3>
                     <p className="text-sm font-mono text-muted-foreground">{pool.path}</p>
+                    <p className="text-xs text-muted-foreground mt-1">{pool.tier ? `Tier ${pool.tier}` : "No tier"}</p>
                   </div>
                   <div className="flex items-center gap-2">
                     {/* Where this node puts new VMs. Worth showing on the card
                         rather than in a settings screen: a node with the wrong
                         one provisions onto its OS volume, and nothing else in
                         the UI would reveal that. */}
-                    {pool.is_primary && (
+                    {pool.is_primary && !primaryConflict.has(pool.node_id) && (
                       <span className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300">
                         NEW VMs
                       </span>
                     )}
-                    <StatusBadge status={pool.status === 'online' ? 'online' : pool.status === 'offline' ? 'offline' : 'degraded'} />
+                    {pool.is_primary && primaryConflict.has(pool.node_id) && (
+                      <span
+                        title="Another pool on this node is also marked for new VMs. Choose one with Use for new VMs."
+                        className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                      >
+                        NEW VMs: CONFLICT
+                      </span>
+                    )}
+                    <StatusBadge status={pool.status === 'online' ? 'online' : pool.status === 'offline' ? ((pool.total_space ?? 0) === 0 ? 'pending' : 'offline') : 'degraded'} />
                     <TypeBadge type={pool.type} />
                   </div>
                 </div>
@@ -529,6 +569,10 @@ export default function StorageListPage() {
                   </div>
                 </div>
 
+                {pool.status !== "online" && pool.status_note && (
+                  <p className="text-xs text-amber-700 dark:text-amber-300 mb-4">{pool.status_note}</p>
+                )}
+
                 <div className="mb-4">
                   <StorageBar
                     used={pool.used_space ?? 0}
@@ -536,6 +580,19 @@ export default function StorageListPage() {
                     available={pool.available_space ?? 0}
                     threshold={pool.alert_threshold}
                   />
+                </div>
+
+                {pool.metadata_percent != null && (
+                  <div className="mb-4 flex items-center justify-between text-xs font-medium">
+                    <span className="text-muted-foreground">Thin pool metadata</span>
+                    <span className={pool.metadata_percent >= 90 ? "text-red-600" : pool.metadata_percent >= 75 ? "text-amber-600" : ""}>
+                      {Math.round(pool.metadata_percent)}% used
+                    </span>
+                  </div>
+                )}
+
+                <div className="mb-4">
+                  <PoolAllocation pool={pool} />
                 </div>
 
                 <div className="bg-muted rounded-md p-2 mb-4">
@@ -556,7 +613,11 @@ export default function StorageListPage() {
                     <span className="ml-1">Volumes</span>
                   </Button>
 
-                  {!pool.is_primary && pool.status === "online" && (
+                  <Button variant="outline" size="sm" onClick={() => { setTierPool({ id: pool.id, name: pool.name }); setTierValue(pool.tier ?? "") }}>
+                    Tier
+                  </Button>
+
+                  {(!pool.is_primary || primaryConflict.has(pool.node_id)) && pool.status === "online" && (
                     <Button
                       variant="outline"
                       size="sm"
@@ -585,16 +646,6 @@ export default function StorageListPage() {
                   <Button
                     variant="outline"
                     size="sm"
-                    title="Resize"
-                    onClick={() => { setResizeTarget(pool); setResizeBytes(pool.total_space ?? 0) }}
-                  >
-                    <Maximize2 className="w-4 h-4" />
-                    <span className="ml-1">Resize</span>
-                  </Button>
-
-                  <Button
-                    variant="outline"
-                    size="sm"
                     onClick={() => handleDelete(pool)}
                     className="text-red-600 hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950"
                     title="Delete"
@@ -613,30 +664,18 @@ export default function StorageListPage() {
       <Dialog open={showAddPool} onOpenChange={setShowAddPool}>
         <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Add Storage Pool</DialogTitle>
-            <DialogDescription>Register a storage pool on a node.</DialogDescription>
+            <DialogTitle>Add storage pool</DialogTitle>
+            <DialogDescription>
+              A pool holds VM disks: qcow2 files in a directory, or raw logical volumes in an LVM
+              volume group or thin pool. To use a ZFS dataset, an NFS export or CephFS, mount it on
+              the node and register the mount point as a directory. Whatever you name must already
+              exist on the node; a volume group or thin pool must not hold the node&apos;s own system.
+            </DialogDescription>
           </DialogHeader>
             <div className="space-y-4">
               <div>
                 <label htmlFor="pool-name" className="text-xs font-medium text-muted-foreground">Name</label>
-                <Input id="pool-name" value={newPool.name} onChange={(e) => setNewPool({...newPool, name: e.target.value})} placeholder="e.g., local-lvm" />
-              </div>
-              <div>
-                <label htmlFor="pool-path" className="text-xs font-medium text-muted-foreground">Path</label>
-                <Input id="pool-path" value={newPool.path} onChange={(e) => setNewPool({...newPool, path: e.target.value})} placeholder="e.g., /var/lib/vz" />
-              </div>
-              <div>
-                <label htmlFor="pool-type" className="text-xs font-medium text-muted-foreground">Type</label>
-                <select id="pool-type" value={newPool.type} onChange={(e) => setNewPool({...newPool, type: e.target.value})} className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm">
-                  <option value="dir">Directory (File)</option>
-                  <option value="lvm">LVM</option>
-                  <option value="lvmthin">Thin LVM</option>
-                  <option value="zfs">ZFS</option>
-                  <option value="zfsthin">ZFS Thin</option>
-                  <option value="zfscompressed">ZFS Compressed</option>
-                  <option value="ceph">Ceph Block Device</option>
-                  <option value="nfs">NFS</option>
-                </select>
+                <Input id="pool-name" value={newPool.name} onChange={(e) => setNewPool({...newPool, name: e.target.value})} placeholder="data" />
               </div>
               <div>
                 <label htmlFor="pool-node" className="text-xs font-medium text-muted-foreground">Node</label>
@@ -648,65 +687,70 @@ export default function StorageListPage() {
                 </select>
               </div>
               <div>
-                <label htmlFor="pool-size" className="text-xs font-medium text-muted-foreground">Size (GB)</label>
-                <Input id="pool-size" type="number" min={1} value={Number.isFinite(newPool.total_space) ? Math.round(newPool.total_space / 1073741824) : ""} onChange={(e) => setNewPool({...newPool, total_space: parseInt(e.target.value) * 1073741824})} aria-invalid={!poolSizeOk} />
-                {!poolSizeOk && <p className="text-xs text-destructive mt-1">Enter a size greater than 0 GB.</p>}
-              </div>
-              <div>
-                <label htmlFor="pool-format" className="text-xs font-medium text-muted-foreground">File Format</label>
-                <select id="pool-format" value={newPool.file_format} onChange={(e) => setNewPool({...newPool, file_format: e.target.value})} className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm">
-                  <option value="raw">RAW</option>
-                  <option value="qcow2">QCOW2</option>
+                <label htmlFor="pool-type" className="text-xs font-medium text-muted-foreground">Kind</label>
+                <select id="pool-type" value={newPool.type} onChange={(e) => setNewPool({...newPool, type: e.target.value as typeof newPool.type})} className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm">
+                  <option value="dir">Directory</option>
+                  <option value="lvm">LVM volume group</option>
+                  <option value="lvmthin">LVM thin pool</option>
                 </select>
+                {newPool.type !== "dir" && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    VMs here cannot take snapshots; backups work. {newPool.type === "lvm"
+                      ? "Each disk takes its full size from the volume group when it is created."
+                      : "Disks take space as they are written, so watch the pool's data and metadata use."}
+                  </p>
+                )}
               </div>
+              {newPool.type === "dir" ? (
+                <div>
+                  <label htmlFor="pool-path" className="text-xs font-medium text-muted-foreground">Directory on the node</label>
+                  <Input id="pool-path" value={newPool.path} onChange={(e) => setNewPool({...newPool, path: e.target.value})} placeholder="/data" aria-invalid={!!newPool.path && !poolPathOk} />
+                  {newPool.path && !poolPathOk ? (
+                    <p className="text-xs text-destructive mt-1">Enter the full path, starting with /.</p>
+                  ) : (
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Capacity and free space are measured on the node every minute. They are not set here.
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-3">
+                  <div className={newPool.type === "lvm" ? "col-span-2" : ""}>
+                    <label htmlFor="pool-vg" className="text-xs font-medium text-muted-foreground">Volume group</label>
+                    <Input id="pool-vg" value={newPool.vg} onChange={(e) => setNewPool({...newPool, vg: e.target.value})} placeholder="vg0" aria-invalid={!!newPool.vg && !lvmNameOk(newPool.vg.trim())} />
+                  </div>
+                  {newPool.type === "lvmthin" && (
+                    <div>
+                      <label htmlFor="pool-thin" className="text-xs font-medium text-muted-foreground">Thin pool</label>
+                      <Input id="pool-thin" value={newPool.thin} onChange={(e) => setNewPool({...newPool, thin: e.target.value})} placeholder="thin" aria-invalid={!!newPool.thin && !lvmNameOk(newPool.thin.trim())} />
+                    </div>
+                  )}
+                  <p className="text-xs text-muted-foreground col-span-2">
+                    The node checks it when you register it. Capacity is measured every minute.
+                  </p>
+                </div>
+              )}
               <div>
-                <label htmlFor="pool-alert" className="text-xs font-medium text-muted-foreground">Alert Threshold (%)</label>
-                <Input id="pool-alert" type="number" min={0} max={100} value={newPool.alert_threshold} onChange={(e) => setNewPool({...newPool, alert_threshold: parseInt(e.target.value) || 0})} />
+                <label htmlFor="pool-alert" className="text-xs font-medium text-muted-foreground">Warn when this full (%)</label>
+                <Input id="pool-alert" type="number" min={1} max={100} value={newPool.alert_threshold} onChange={(e) => setNewPool({...newPool, alert_threshold: parseInt(e.target.value) || 0})} />
+                <p className="text-xs text-muted-foreground mt-1">Colours the usage bar here and raises the dashboard warning.</p>
               </div>
-              <div>
-                <label htmlFor="pool-overcommit" className="text-xs font-medium text-muted-foreground">Overcommit (GB, 0 = disabled)</label>
-                <Input id="pool-overcommit" type="number" min={0} value={Math.round(newPool.overcommit / 1073741824)} onChange={(e) => setNewPool({...newPool, overcommit: (parseInt(e.target.value) || 0) * 1073741824})} />
-              </div>
-              <div className="flex items-center gap-3">
-                <input type="checkbox" id="is_primary" checked={newPool.is_primary} onChange={(e) => setNewPool({...newPool, is_primary: e.target.checked})} className="w-4 h-4 rounded border-input" />
-                <label htmlFor="is_primary" className="text-xs font-medium text-muted-foreground">Primary Storage</label>
-              </div>
+              <p className="text-xs text-muted-foreground">
+                New VMs keep going where they go now. Once the node has measured this pool, choose
+                Use for new VMs on its card to send them here.
+              </p>
             </div>
             <DialogFooter className="gap-3 sm:gap-0">
               <Button variant="outline" onClick={() => setShowAddPool(false)}>Cancel</Button>
-              <Button onClick={handleAddPool} disabled={!newPool.name || !newPool.path || !newPool.node_id || !poolSizeOk || isLoadingNodes || createPool.isPending}>
-                {createPool.isPending ? "Creating..." : "Create Pool"}
+              <Button onClick={handleAddPool} disabled={!newPool.name.trim() || !poolPathOk || !newPool.node_id || isLoadingNodes || createPool.isPending}>
+                {createPool.isPending ? "Registering..." : "Register pool"}
               </Button>
             </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Resize Dialog */}
-      <Dialog open={!!resizeTarget} onOpenChange={(open) => { if (!open) setResizeTarget(null) }}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Resize Pool: {resizeShown?.name}</DialogTitle>
-            <DialogDescription>Set a new total size for this pool.</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div>
-              <span className="block text-xs font-medium text-muted-foreground">Current Size</span>
-              <p className="font-semibold">{formatBytes(resizeShown?.total_space ?? 0)}</p>
-            </div>
-            <div>
-              <label htmlFor="resize-size" className="text-xs font-medium text-muted-foreground">New Size (GB)</label>
-              <Input id="resize-size" type="number" min={1} value={Number.isFinite(resizeBytes) ? Math.round(resizeBytes / 1073741824) : ""} onChange={(e) => setResizeBytes(parseInt(e.target.value) * 1073741824)} aria-invalid={!resizeSizeOk} />
-              {!resizeSizeOk && <p className="text-xs text-destructive mt-1">Enter a size greater than 0 GB.</p>}
-            </div>
-          </div>
-          <DialogFooter className="gap-3 sm:gap-0">
-            <Button variant="outline" onClick={() => setResizeTarget(null)}>Cancel</Button>
-            <Button onClick={handleResize} disabled={resizePool.isPending || !resizeSizeOk}>
-              {resizePool.isPending ? "Resizing..." : "Resize"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <AddSharedPoolDialog open={showAddShared} onOpenChange={setShowAddShared} />
+      <CephClusterDialog open={showAddCeph} onOpenChange={setShowAddCeph} />
 
       <VolumesDialog pool={volumesPool} onClose={() => setVolumesPool(null)} />
     </div>

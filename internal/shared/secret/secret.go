@@ -411,9 +411,13 @@ func AESKey() (string, error) {
 }
 
 func secretPath() string {
-	dir := os.Getenv(dataDirEnv)
-	if dir == "" {
-		dir = defaultDir
+	return filepath.Join(DataDir(), secretsFile)
+}
+
+// DataDir is the panel's data directory: MABURVM_DATA_DIR, default ./data.
+func DataDir() string {
+	if dir := os.Getenv(dataDirEnv); dir != "" {
+		return dir
 	}
-	return filepath.Join(dir, secretsFile)
+	return defaultDir
 }

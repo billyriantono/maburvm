@@ -12,7 +12,7 @@ Multi-tenant VM lifecycle, networking, and storage management across multiple ph
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org)
 [![libvirt](https://img.shields.io/badge/libvirt%2FQEMU-KVM-CC0000?logo=qemu&logoColor=white)](https://libvirt.org)
 
-[Features](#features) · [Architecture](#architecture) · [Quick Start](#quick-start) · [Configuration](#configuration) · [Deployment](docs/DEPLOYMENT.md)
+[Features](#features) · [Architecture](#architecture) · [Quick Start](#quick-start) · [Documentation](#documentation) · [Deployment](docs/DEPLOYMENT.md)
 
 </div>
 
@@ -46,8 +46,9 @@ Multi-tenant VM lifecycle, networking, and storage management across multiple ph
 - [Architecture](#architecture)
 - [Tech Stack](#tech-stack)
 - [Quick Start](#quick-start)
+- [Documentation](#documentation)
 - [Configuration](#configuration)
-- [API Routes](#api-routes)
+- [API](#api)
 - [Development](#development)
 - [Project Structure](#project-structure)
 - [Contributing](#contributing)
@@ -59,7 +60,7 @@ Multi-tenant VM lifecycle, networking, and storage management across multiple ph
 |---|---|
 | 🖥️ **VM lifecycle** | Create, start/stop/restart, rebuild/reinstall, delete, live status, resource resize |
 | 🕹️ **In-browser consoles** | VNC (noVNC) and SSH (xterm.js) proxied through the panel |
-| 💿 **Images** | Capture a VM's disk to object storage; images survive VM deletion and can seed a new VM (Vultr/DigitalOcean-style) |
+| 💿 **Images** | Capture a VM's disk to object storage; images survive VM deletion and can seed a new VM |
 | 📸 **Snapshots & backups** | libvirt snapshots, scheduled/manual backups to S3-compatible storage, restore |
 | 🌐 **Networking** | IP pools/IPAM, managed private networks (VLAN), firewall rules, port forwarding, bandwidth shaping & monthly data quotas |
 | 📍 **Regions** | Customers choose a location when ordering; a region holds one or more nodes, and regions with no capacity are hidden rather than offered |
@@ -145,6 +146,11 @@ Production is a separate, explicit composition — it is **not** started by the
 `docker compose up` development flow. See **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**
 for the full guide (secrets, TLS, agent deployment, backups, image review).
 
+On a new host, `scripts/install-panel.sh --url https://panel.example.com` does
+all of it (checks, secrets, start) and prints the link that creates the first
+administrator; `scripts/upgrade-panel.sh` upgrades with a backup first and a
+rollback on failure. See the guide's sections 3.0 and 16.
+
 <details>
 <summary><b>Short version</b></summary>
 
@@ -187,9 +193,26 @@ make docker-prod-validate
 > termination, real secrets, image-tag review, backups, and deploying the KVM
 > agent separately on each hypervisor host.
 
+## Documentation
+
+| Guide | For |
+|---|---|
+| [Deployment](docs/DEPLOYMENT.md) | Installing the panel, TLS, agents, the panel's own backup and restore, monitoring, releases |
+| [Node setup](docs/node-setup.md) | Requirements, the node installer, the bridge and its rollback, what the agent changes, every agent setting |
+| [Administrator guide](docs/admin-guide.md) | Nodes, storage, networking, plans, customers and staff, backups, moves, alerts, billing, security |
+| [User guide](docs/user-guide.md) | For customers: ordering and running servers, console, networking, firewall, backups, API keys |
+| [Upgrading](docs/upgrading.md) | Upgrade and rollback, and what a rollback does not undo |
+| [Runbooks](docs/runbooks.md) | Node down, panel restore, failed backups and moves, full pool, abuse reports, lost Owner access |
+| [API](docs/api.md) | Authentication, errors, rate limits, MCP and webhook payloads |
+| [WHMCS](integrations/whmcs/README.md) | The provisioning module and events addon |
+| [Paymenter](integrations/paymenter/README.md) | The server extension (not yet run inside Paymenter) |
+| [FOSSBilling](integrations/fossbilling/README.md) | The server manager (not yet run inside FOSSBilling) |
+
 ## Configuration
 
-All configuration is done via environment variables. See `.env.example` for the full list.
+Most settings live in the panel (Settings, System) and apply at once. What must
+exist before the database can be read is set in the environment; see
+`.env.example` for development and `.env.production.example` for production.
 
 ### Required Variables
 
@@ -199,8 +222,6 @@ All configuration is done via environment variables. See `.env.example` for the 
 | `DB_USER` | PostgreSQL user |
 | `DB_PASSWORD` | PostgreSQL password |
 | `DB_NAME` | Database name |
-| `JWT_SECRET_KEY` | JWT signing key (min 32 chars) |
-| `AES_KEY` | AES-256 encryption key (exactly 32 bytes) |
 | `S3_ENDPOINT` | S3-compatible storage endpoint |
 | `S3_ACCESS_KEY` | S3 access key |
 | `S3_SECRET_KEY` | S3 secret key |
@@ -213,31 +234,20 @@ All configuration is done via environment variables. See `.env.example` for the 
 | `SERVER_PORT` | `8080` | API server port |
 | `ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated CORS origins |
 | `AGENT_GRPC_PORT` | `50051` | Agent gRPC port |
-| `LIBVIRT_URI` | `qemu:///system` | Libvirt connection URI |
+| `TRUSTED_PROXIES` | loopback and private ranges | Proxies whose `X-Forwarded-For` is believed |
+| `JWT_SECRET_KEY`, `AES_KEY` | generated | Generated on first boot and kept in `secrets.json` under `MABURVM_DATA_DIR`; set both only to supply your own |
+| `PANEL_PUBLIC_URL`, `BILLING_API_KEY`, `BILLING_WEBHOOK_SECRET`, `METRICS_TOKEN`, `OIDC_*` | none | Starting values for Settings, System, Panel; a value saved there wins |
 
-## API Routes
+Agent settings are listed in [docs/node-setup.md](docs/node-setup.md#6-agent-settings-reference).
 
-All routes are under `/api/v1/`:
+## API
 
-| Group | Endpoints |
-|-------|-----------|
-| **Auth** | login, register, logout, forgot-password, reset-password, `GET` me |
-| **Nodes** | CRUD + token regeneration |
-| **VMs** | CRUD + lifecycle (start/stop/restart/rebuild) + reset-password + console |
-| **Images** | Capture from VM, list, delete, create-VM-from-image |
-| **Templates** | CRUD + sync to nodes |
-| **Networks** | Network & firewall management |
-| **Regions** | List (any caller) + CRUD and node assignment (admin only) |
-| **VPCs** | Customer-defined private networks: list, create, delete |
-| **Floating IPs** | Order, attach, detach, release, billing summary |
-| **Snapshots** | Create/restore/delete |
-| **Backups** | Create, schedule, restore |
-| **Storage** | Pool & volume management |
-| **Users** | CRUD (admin only) |
-| **Abuse** | Guest connection rates + quarantine (admin only) |
-| **Audit Logs** | Action history (admin only) |
-| **Dashboard** | Statistics overview |
-| **MCP** | `POST /api/v1/mcp`: Model Context Protocol endpoint for AI agents (see below) |
+Every panel serves its API reference at **`/docs/api`** and the OpenAPI 3.1
+document at **`/api/v1/openapi.json`**: every route under `/api/v1`, its
+parameters, request and response shapes, the permission it needs, and the
+webhook payloads. A test fails when a served route is missing from it.
+Authentication, errors, rate limits and webhook signatures are explained in
+[docs/api.md](docs/api.md).
 
 ### MCP (AI agents)
 

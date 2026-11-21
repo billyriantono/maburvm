@@ -1,5 +1,6 @@
 "use client"
 
+import { ActingAccountScope } from "@/lib/acting-account"
 import { useState } from "react"
 import Link from "next/link"
 import { toast } from "sonner"
@@ -9,7 +10,7 @@ import { useSSHKeys, useCreateSSHKey, useDeleteSSHKey } from "@/lib/hooks/use-ss
 // Client SSH key management: customers add/remove the public keys that get
 // injected into VMs they order (see the order page's SSH Keys step). Keys are
 // scoped to the caller server-side, so this only ever shows/edits their own.
-export default function ClientSSHKeysPage() {
+function ClientSSHKeysPageBody() {
   const { data: keys, isLoading } = useSSHKeys()
   const createKey = useCreateSSHKey()
   const deleteKey = useDeleteSSHKey()
@@ -119,5 +120,14 @@ export default function ClientSSHKeysPage() {
         </div>
       </section>
     </div>
+  )
+}
+
+// A team member picks which account's resources the page shows.
+export default function ClientSSHKeysPage() {
+  return (
+    <ActingAccountScope>
+      <ClientSSHKeysPageBody />
+    </ActingAccountScope>
   )
 }

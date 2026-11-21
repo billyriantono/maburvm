@@ -2,14 +2,16 @@ package service
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"mime"
+	"net"
 	"net/mail"
 	"net/smtp"
-	"os"
 	"strings"
+	"time"
 
 	"github.com/maburvm/panel/internal/shared/models"
 	"gorm.io/gorm"
@@ -20,7 +22,7 @@ import (
 // ok is false when no email settings have been configured yet.
 func LoadSMTPSettings(db *gorm.DB) (cfg SMTPSettings, ok bool, err error) {
 	var raw string
-	q := db.Raw("SELECT data::text FROM system_settings WHERE section = 'email'").Scan(&raw)
+	q := db.Raw("SELECT CAST(data AS TEXT) FROM system_settings WHERE section = 'email'").Scan(&raw)
 	if q.Error != nil {
 		return SMTPSettings{}, false, q.Error
 	}
@@ -34,6 +36,7 @@ func LoadSMTPSettings(db *gorm.DB) (cfg SMTPSettings, ok bool, err error) {
 		SMTPPassword string `json:"smtpPassword"`
 		SMTPFrom     string `json:"smtpFrom"`
 		SMTPFromName string `json:"smtpFromName"`
+		EnableTLS    bool   `json:"enableTls"`
 	}
 	if err := json.Unmarshal([]byte(raw), &d); err != nil {
 		return SMTPSettings{}, false, err
@@ -41,10 +44,14 @@ func LoadSMTPSettings(db *gorm.DB) (cfg SMTPSettings, ok bool, err error) {
 	if d.SMTPHost == "" || d.SMTPPort == 0 {
 		return SMTPSettings{}, false, nil
 	}
+	password, err := models.OpenSecret(d.SMTPPassword)
+	if err != nil {
+		return SMTPSettings{}, false, err
+	}
 	return SMTPSettings{
 		Host: d.SMTPHost, Port: d.SMTPPort, Username: d.SMTPUser,
-		Password: d.SMTPPassword, From: d.SMTPFrom, FromName: d.SMTPFromName,
-		Brand: LoadBranding(db), Templates: LoadEmailTemplates(db),
+		Password: password, From: d.SMTPFrom, FromName: d.SMTPFromName,
+		Brand: LoadBranding(db), Templates: LoadEmailTemplates(db), RequireTLS: d.EnableTLS,
 	}, true, nil
 }
 
@@ -57,6 +64,10 @@ type SMTPSettings struct {
 	Password string
 	From     string
 	FromName string
+	// RequireTLS refuses to send unless the connection is encrypted. Off, the
+	// message still goes over TLS when the server offers it, and in the clear
+	// when it does not.
+	RequireTLS bool
 	// Brand and Templates come from the same database read as the SMTP
 	// settings, so one load is enough to send a finished message.
 	Brand     Branding
@@ -91,20 +102,20 @@ func EmailLogoURL(b Branding, publicURL string) string {
 	return publicURL + "/api/v1/branding/logo"
 }
 
-// SendWelcomeEmail sends the new-account message with a link to sign in.
-func SendWelcomeEmail(cfg SMTPSettings, to, name, panelURL string) error {
+// QueueWelcomeEmail queues the new-account message with a link to sign in.
+func QueueWelcomeEmail(ctx context.Context, db *gorm.DB, cfg SMTPSettings, to, name, panelURL string) error {
 	link := ""
 	if panelURL != "" {
 		link = strings.TrimRight(panelURL, "/") + "/login"
 	}
-	return SendMail(cfg, to, RenderEmail(cfg.Template(EmailWelcome), cfg.Brand,
-		EmailData{Name: name, Email: to, Link: link, LogoURL: EmailLogoURL(cfg.Brand, panelURL)}))
+	return queueRendered(ctx, db, EmailWelcome, to, RenderEmail(cfg.Template(EmailWelcome), cfg.Brand,
+		EmailData{Name: name, Email: to, Link: link, LogoURL: EmailLogoURL(cfg.Brand, panelURL)}), emailRefs{})
 }
 
 // SendPasswordResetEmail sends a password-reset link.
 func SendPasswordResetEmail(cfg SMTPSettings, to, name, resetURL string) error {
 	return SendMail(cfg, to, RenderEmail(cfg.Template(EmailPasswordReset), cfg.Brand,
-		EmailData{Name: name, Email: to, Link: resetURL, LogoURL: EmailLogoURL(cfg.Brand, os.Getenv("PANEL_PUBLIC_URL"))}))
+		EmailData{Name: name, Email: to, Link: resetURL, LogoURL: EmailLogoURL(cfg.Brand, PublicURL())}))
 }
 
 // SendTestEmail sends a short message that proves the SMTP settings work.
@@ -119,9 +130,9 @@ func SendTestEmail(cfg SMTPSettings, to string) error {
 }
 
 // SendMail sends one rendered message as HTML with a plain-text alternative.
-// It uses PlainAuth when a username is set and lets net/smtp upgrade to TLS
-// through STARTTLS when the server offers it (the common submission port, 587).
-// Errors are descriptive so the UI can say why a send failed.
+// It uses PlainAuth when a username is set. Without RequireTLS, net/smtp
+// upgrades to TLS through STARTTLS when the server offers it; with it, see
+// sendOverTLS. Errors are descriptive so the UI can say why a send failed.
 func SendMail(cfg SMTPSettings, to string, msg RenderedEmail) error {
 	if cfg.Host == "" || cfg.Port == 0 {
 		return fmt.Errorf("SMTP host and port are required")
@@ -165,24 +176,96 @@ func SendMail(cfg SMTPSettings, to string, msg RenderedEmail) error {
 	if cfg.Username != "" {
 		auth = smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.Host)
 	}
-	if err := smtp.SendMail(addr, auth, from, []string{to}, []byte(b.String())); err != nil {
+	send := smtp.SendMail
+	if cfg.RequireTLS {
+		send = sendOverTLS
+	}
+	if err := send(addr, auth, from, []string{to}, []byte(b.String())); err != nil {
 		return fmt.Errorf("SMTP send failed: %w", err)
 	}
 	return nil
 }
 
-// NotifyVMOwner emails a server's owner about something that happened to it:
-// created, reinstalled, put into or taken out of rescue mode. key is the
-// template. No email ever carries a password: when the panel generated one and
-// is keeping it, the email says where to read it; otherwise it reminds the
-// owner they chose their own. Best-effort: with no mail server set up, or that
-// email switched off, it does nothing.
-func NotifyVMOwner(ctx context.Context, db *gorm.DB, vmID, key string) error {
-	cfg, ok, err := LoadSMTPSettings(db)
-	if err != nil || !ok || !cfg.Enabled(key) {
+// sendOverTLS is smtp.SendMail that will not talk to the server in the clear:
+// TLS from the first byte on port 465, STARTTLS on any other port, and an
+// error when the server offers neither.
+func sendOverTLS(addr string, auth smtp.Auth, from string, to []string, msg []byte) error {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
 		return err
 	}
+	tlsConfig := &tls.Config{ServerName: host}
+	dialer := &net.Dialer{Timeout: 30 * time.Second}
+
+	var conn net.Conn
+	if port == "465" {
+		conn, err = tls.DialWithDialer(dialer, "tcp", addr, tlsConfig)
+	} else {
+		conn, err = dialer.Dial("tcp", addr)
+	}
+	if err != nil {
+		return err
+	}
+	c, err := smtp.NewClient(conn, host)
+	if err != nil {
+		conn.Close()
+		return err
+	}
+	defer c.Close()
+
+	if port != "465" {
+		if ok, _ := c.Extension("STARTTLS"); !ok {
+			return fmt.Errorf("the mail server does not offer TLS on port %s. Use a port that does (587 or 465), or turn off \"Require TLS\"", port)
+		}
+		if err := c.StartTLS(tlsConfig); err != nil {
+			return err
+		}
+	}
+	if auth != nil {
+		if ok, _ := c.Extension("AUTH"); !ok {
+			return fmt.Errorf("the mail server does not accept a username and password")
+		}
+		if err := c.Auth(auth); err != nil {
+			return err
+		}
+	}
+	if err := c.Mail(from); err != nil {
+		return err
+	}
+	for _, rcpt := range to {
+		if err := c.Rcpt(rcpt); err != nil {
+			return err
+		}
+	}
+	w, err := c.Data()
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write(msg); err != nil {
+		return err
+	}
+	if err := w.Close(); err != nil {
+		return err
+	}
+	return c.Quit()
+}
+
+// NotifyVMOwner tells a server's owner about something that happened to it:
+// created, reinstalled, suspended, put into or taken out of rescue mode. key
+// is the template. The owner gets a notification in the panel and, when that
+// email is on and a mail server is set up, an email through the queue. No
+// email ever carries a password: when the panel generated one and is keeping
+// it, the email says where to read it; otherwise it reminds the owner they
+// chose their own.
+func NotifyVMOwner(ctx context.Context, db *gorm.DB, vmID, key string) error {
+	return NotifyVMOwnerWith(ctx, db, vmID, key, nil)
+}
+
+// NotifyVMOwnerWith is NotifyVMOwner with placeholders only some emails have
+// ({{used}} in a transfer warning, say); they win over the server ones.
+func NotifyVMOwnerWith(ctx context.Context, db *gorm.DB, vmID, key string, extra map[string]string) error {
 	var rows []struct {
+		UserID   string
 		Hostname string
 		Email    string
 		Name     string
@@ -191,7 +274,7 @@ func NotifyVMOwner(ctx context.Context, db *gorm.DB, vmID, key string) error {
 		OSType   string `gorm:"column:os_type"`
 		Address  string
 	}
-	if err := db.WithContext(ctx).Raw(`SELECT v.hostname, u.email, coalesce(u.name, '') AS name, u.role::text AS role,
+	if err := db.WithContext(ctx).Raw(`SELECT u.id::text AS user_id, v.hostname, u.email, coalesce(u.name, '') AS name, u.role::text AS role,
 			coalesce(t.name, '') AS system, coalesce(t.os_type, '') AS os_type,
 			coalesce((SELECT host(n.ip_address) FROM networks n WHERE n.vm_id = v.id AND n.deleted_at IS NULL ORDER BY n.created_at LIMIT 1), '') AS address
 		FROM vms v JOIN users u ON u.id = v.user_id
@@ -207,7 +290,7 @@ func NotifyVMOwner(ctx context.Context, db *gorm.DB, vmID, key string) error {
 	if until, err := InitialPasswordExpiry(ctx, db, vmID); err == nil && until != nil {
 		access = AccessPasswordOnPage
 	}
-	publicURL := strings.TrimRight(strings.TrimSpace(os.Getenv("PANEL_PUBLIC_URL")), "/")
+	publicURL := PublicURL()
 	link := ""
 	if publicURL != "" {
 		// Staff manage their own VMs in the admin area; everyone else in the customer area.
@@ -223,14 +306,21 @@ func NotifyVMOwner(ctx context.Context, db *gorm.DB, vmID, key string) error {
 		}
 		return v
 	}
-	return SendMail(cfg, r.Email, RenderEmail(cfg.Template(key), cfg.Brand, EmailData{
-		Name: r.Name, Email: r.Email, Link: link, LogoURL: EmailLogoURL(cfg.Brand, publicURL),
-		Extra: map[string]string{
-			"server":  r.Hostname,
-			"address": fill(r.Address, "not assigned yet"),
-			"system":  fill(r.System, "as ordered"),
-			"user":    models.OSLoginUser(r.OSType),
-			"access":  access,
-		},
-	}))
+	fields := map[string]string{
+		"server":  r.Hostname,
+		"address": fill(r.Address, "not assigned yet"),
+		"system":  fill(r.System, "as ordered"),
+		"user":    models.OSLoginUser(r.OSType),
+		"access":  access,
+	}
+	for k, v := range extra {
+		fields[k] = v
+	}
+	brand := LoadBranding(db.WithContext(ctx))
+	msg := RenderEmail(templateFor(LoadEmailTemplates(db.WithContext(ctx)), key), brand, EmailData{
+		Name: r.Name, Email: r.Email, Link: link, LogoURL: EmailLogoURL(brand, publicURL),
+		Extra: fields,
+	})
+	addNotice(ctx, db, r.UserID, key, msg.Subject, "vm", vmID)
+	return queueEmail(ctx, db, key, r.Email, msg, emailRefs{userID: r.UserID, vmID: vmID})
 }

@@ -14,6 +14,14 @@ export interface BandwidthUsage {
   usage_percent: number
   exceeded: boolean
   blocked_at?: string
+  /** Which direction counts toward the allowance. */
+  counts?: 'both' | 'out' | 'in'
+  /** Day of the month the allowance starts again. */
+  reset_day?: number
+  /** The allowance is shared by the account's servers. */
+  pooled?: boolean
+  pool_used_gb?: number
+  pool_quota_gb?: number
 }
 
 export interface BandwidthHistoryResponse {

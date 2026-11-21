@@ -44,6 +44,9 @@ type CreateVPCRequest struct {
 	// must say which location it belongs to — otherwise they discover the answer
 	// only when a VM refuses to join it.
 	Region string `json:"region,omitempty"`
+	// Nameservers are the resolvers the VPC's VMs get; empty keeps the
+	// built-in ones.
+	Nameservers string `json:"nameservers,omitempty"`
 }
 
 // VPCService owns tenant VPCs: the managed network, its node-side provisioning
@@ -100,6 +103,10 @@ func (s *VPCService) Create(ctx context.Context, userID string, req *CreateVPCRe
 	gateway := strings.TrimSpace(req.Gateway)
 	if gateway == "" {
 		gateway = firstUsableAddress(ipnet)
+	}
+	nameservers, err := models.ParseNameservers(req.Nameservers)
+	if err != nil {
+		return nil, fmt.Errorf("nameservers: %w", err)
 	}
 	if gw := net.ParseIP(gateway); gw == nil || !ipnet.Contains(gw) {
 		return nil, fmt.Errorf("gateway %s is not inside %s", gateway, req.Subnet)
@@ -189,6 +196,7 @@ func (s *VPCService) Create(ctx context.Context, userID string, req *CreateVPCRe
 		Bridge:      created.Bridge,
 		NodeIDs:     []string{nodeID},
 		Description: "private addresses for VPC " + created.Name,
+		Nameservers: nameservers,
 	}); err != nil {
 		// Roll the VPC back rather than leave one whose VMs could never get an address.
 		_ = s.Delete(ctx, userID, created.ID)
@@ -198,7 +206,40 @@ func (s *VPCService) Create(ctx context.Context, userID string, req *CreateVPCRe
 	// without a second request — the UI shows it straight after creating.
 	one := []models.ManagedNetwork{*created}
 	s.fillRegions(ctx, one)
+	one[0].Nameservers = nameservers
 	return &one[0], nil
+}
+
+// fillNameservers shows each VPC's resolvers, kept on its address pool.
+func (s *VPCService) fillNameservers(ctx context.Context, nets []models.ManagedNetwork) {
+	for i := range nets {
+		if nets[i].Bridge == "" {
+			continue
+		}
+		var pool models.IPPool
+		if err := s.db.WithContext(ctx).Select("nameservers").Where("bridge = ?", nets[i].Bridge).First(&pool).Error; err == nil {
+			nets[i].Nameservers = pool.Nameservers
+		}
+	}
+}
+
+// SetNameservers changes the resolvers a VPC's VMs are given from now on: new
+// VMs, reinstalls and address changes.
+func (s *VPCService) SetNameservers(ctx context.Context, userID, id, nameservers string) (*models.ManagedNetwork, error) {
+	vpc, err := s.Get(ctx, userID, id)
+	if err != nil {
+		return nil, err
+	}
+	var pool models.IPPool
+	if vpc.Bridge == "" || s.db.WithContext(ctx).Where("bridge = ?", vpc.Bridge).First(&pool).Error != nil {
+		return nil, fmt.Errorf("the VPC has no address pool yet")
+	}
+	updated, err := s.ipam.UpdatePool(ctx, pool.ID, &UpdateIPPoolRequest{Nameservers: &nameservers})
+	if err != nil {
+		return nil, err
+	}
+	vpc.Nameservers = updated.Nameservers
+	return vpc, nil
 }
 
 // lockUserVPCs takes a transaction-scoped advisory lock keyed on the tenant, so
@@ -220,6 +261,7 @@ func (s *VPCService) List(ctx context.Context, userID string) ([]models.ManagedN
 		return nil, err
 	}
 	s.fillRegions(ctx, out)
+	s.fillNameservers(ctx, out)
 	return out, nil
 }
 
@@ -252,6 +294,7 @@ func (s *VPCService) Get(ctx context.Context, userID, id string) (*models.Manage
 	}
 	one := []models.ManagedNetwork{vpc}
 	s.fillRegions(ctx, one)
+	s.fillNameservers(ctx, one)
 	return &one[0], nil
 }
 

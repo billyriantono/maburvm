@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/maburvm/panel/internal/panel/middleware"
+	"github.com/maburvm/panel/internal/panel/service"
 	"github.com/maburvm/panel/internal/shared/config"
 	"github.com/maburvm/panel/internal/shared/models"
 	"github.com/stretchr/testify/assert"
@@ -60,9 +61,16 @@ quota_mode TEXT NOT NULL DEFAULT 'legacy',
 		ip_whitelist TEXT,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		token_revoked_at DATETIME, deleted_at DATETIME
+		token_revoked_at DATETIME, deleted_at DATETIME, expires_at DATETIME, suspended_at DATETIME,
+		failed_login_count INTEGER NOT NULL DEFAULT 0, locked_until DATETIME, totp_last_step INTEGER NOT NULL DEFAULT 0
 	)`
 	require.NoError(t, db.Exec(ddl).Error)
+	// Deleting an account looks for the VMs it owns.
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS vms (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, node_id TEXT NOT NULL, hostname TEXT,
+		os_template_id TEXT, resources TEXT, status TEXT DEFAULT 'stopped', suspended BOOLEAN NOT NULL DEFAULT 0, source_migration TEXT,
+		vnc_port INTEGER, vnc_password TEXT, console_enabled BOOLEAN DEFAULT 1, rescue_mode BOOLEAN DEFAULT 0, plan_id TEXT, billing_ref TEXT,
+		delete_lock TEXT NOT NULL DEFAULT '', created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS user_quotas (user_id TEXT PRIMARY KEY, max_vms INTEGER DEFAULT 0, max_vcpu INTEGER DEFAULT 0, max_ram_mb INTEGER DEFAULT 0, max_disk_gb INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, quota_mode TEXT NOT NULL DEFAULT 'legacy', policy_id TEXT, policy_version INTEGER, policy_name TEXT, policy_assigned_at DATETIME, policy_assigned_by TEXT, cap_revision_id TEXT)`).Error)
 	// Seed in deterministic order with explicit timestamps so founding-admin
 	// resolution (created_at ASC) is reproducible.
 	for i, u := range users {
@@ -205,9 +213,7 @@ func TestUserRoutes_PeerAdminCannotCreateAdmin(t *testing.T) {
 		`{"email":"another@example.com","password":"Sup3rSecret!","role":"admin"}`)
 
 	assert.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
-	var body map[string]string
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
-	assert.Contains(t, body["error"], "founding_administrator")
+	assert.Contains(t, errorCode(t, rec.Body.Bytes()), "founding_administrator")
 
 	after := countUsersByRole(t, db, models.RoleAdmin)
 	assert.Equal(t, before, after, "peer admin must not create an admin")
@@ -266,9 +272,7 @@ func TestUserRoutes_PeerAdminCannotPromoteAdmin(t *testing.T) {
 	rec := doUserReq(t, s, http.MethodPut, "/api/v1/users/"+client.ID.String(), tok,
 		`{"role":"admin"}`)
 	assert.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
-	var body map[string]string
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
-	assert.Contains(t, body["error"], "founding_administrator")
+	assert.Contains(t, errorCode(t, rec.Body.Bytes()), "founding_administrator")
 }
 
 // TestUserRoutes_FoundingAdminCanDemoteAdmin verifies the founding admin can
@@ -317,9 +321,7 @@ func TestUserRoutes_LastAdminDemoteGuarded(t *testing.T) {
 	rec := doUserReq(t, s, http.MethodPut, "/api/v1/users/"+founding.ID.String(), tok,
 		`{"role":"client"}`)
 	assert.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
-	var body map[string]string
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
-	assert.Equal(t, "cannot_demote_last_active_admin", body["error"])
+	assert.Equal(t, "cannot_demote_last_active_admin", errorCode(t, rec.Body.Bytes()))
 
 	// Role unchanged.
 	still := models.RoleClient
@@ -337,9 +339,7 @@ func TestUserRoutes_LastAdminDeleteGuarded(t *testing.T) {
 	tok := mintToken(t, founding)
 	rec := doUserReq(t, s, http.MethodDelete, "/api/v1/users/"+founding.ID.String(), tok, "")
 	assert.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
-	var body map[string]string
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
-	assert.Equal(t, "cannot_delete_last_active_admin", body["error"])
+	assert.Equal(t, "cannot_delete_last_active_admin", errorCode(t, rec.Body.Bytes()))
 
 	// Still present.
 	remaining := countUsersByRole(t, db, models.RoleAdmin)
@@ -609,4 +609,122 @@ func TestUserRoutes_RoleTransitionWithIPWhitelist(t *testing.T) {
 	assert.Equal(t, models.RoleAdmin, final.Role)
 	assert.Equal(t, []string{"203.0.113.9"}, final.IPWhitelist)
 	assert.Equal(t, models.QuotaModeManaged, final.QuotaMode, "quota_mode untouched by role transition")
+}
+
+// A new customer account starts with the default quota, not the unlimited one
+// an account with no quota row has.
+func TestUserRoutes_NewClientGetsStartingQuota(t *testing.T) {
+	founding := adminUser("founding@example.com")
+	db := setupUserContainmentDB(t, founding)
+	s := newUserServer(t, db)
+
+	rec := doUserReq(t, s, http.MethodPost, "/api/v1/users", mintToken(t, founding),
+		`{"email":"quota-client@example.com","password":"Sup3rSecret!","role":"client"}`)
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+
+	var q models.UserQuota
+	require.NoError(t, db.Raw(`SELECT q.* FROM user_quotas q JOIN users u ON u.id = q.user_id WHERE u.email = ?`, "quota-client@example.com").Scan(&q).Error)
+	assert.Equal(t, service.DefaultNewClientMaxVMs, q.MaxVMs)
+	assert.Equal(t, service.DefaultNewClientMaxVCPU, q.MaxVCPU)
+	assert.Equal(t, service.DefaultNewClientMaxRAMMB, q.MaxRAMMB)
+	assert.Equal(t, service.DefaultNewClientMaxDiskGB, q.MaxDiskGB)
+	assert.Equal(t, models.QuotaModeLegacy, q.QuotaMode)
+}
+
+// A support account is never the founding administrator, so it cannot create
+// an administrator, even when it is the oldest administrator there is.
+func TestUserRoutes_SupportAccountCannotCreateAdmin(t *testing.T) {
+	support := adminUser("support-1@support.invalid")
+	founding := adminUser("founding@example.com")
+	db := setupUserContainmentDB(t, support, founding) // the support account is created first
+	require.NoError(t, db.Exec("UPDATE users SET expires_at = ? WHERE id = ?", time.Now().Add(time.Hour), support.ID.String()).Error)
+	s := newUserServer(t, db)
+
+	body := `{"email":"minted@example.com","password":"Sup3rSecret!","role":"admin"}`
+	rec := doUserReq(t, s, http.MethodPost, "/api/v1/users", mintToken(t, support), body)
+	assert.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	assert.Equal(t, founding.ID, foundingAdminIDTx(db, context.Background()))
+
+	rec = doUserReq(t, s, http.MethodPost, "/api/v1/users", mintToken(t, founding), body)
+	assert.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+
+	// It is not the administrator left standing either.
+	remaining, err := countActiveAdminsExceptTx(db, context.Background(), founding.ID)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, remaining, "only the newly created permanent administrator counts")
+
+	// Nor is an administrator that cannot sign in: a customer suspended, then promoted.
+	require.NoError(t, db.Exec("UPDATE users SET suspended_at = ? WHERE email = ?", time.Now(), "minted@example.com").Error)
+	remaining, err = countActiveAdminsExceptTx(db, context.Background(), founding.ID)
+	require.NoError(t, err)
+	assert.Zero(t, remaining)
+}
+
+// BIL-21 / ADM-05: an administrator suspends a customer account without
+// deleting it. The customer's session stops, the account can be restored, and
+// both are on record. Administrators are not suspended this way.
+func TestUserRoutes_SuspendAndRestoreACustomer(t *testing.T) {
+	founding := adminUser("founding@example.com")
+	peer := adminUser("peer@example.com")
+	client := clientUser("client@example.com")
+	db := setupUserContainmentDB(t, founding, peer, client)
+	require.NoError(t, db.Exec(`CREATE TABLE audit_logs (id TEXT PRIMARY KEY, user_id TEXT, action TEXT NOT NULL, resource_type TEXT, resource_id TEXT,
+		ip_address TEXT, user_agent TEXT, details TEXT, before_snapshot TEXT, after_snapshot TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`).Error)
+	vmID := uuid.NewString()
+	require.NoError(t, db.Exec(`INSERT INTO vms (id, user_id, node_id, hostname, status) VALUES (?, ?, ?, 'web1', 'stopped')`, vmID, client.ID.String(), uuid.NewString()).Error)
+	s := newUserServer(t, db)
+	path := "/api/v1/users/" + client.ID.String()
+	admin, customer := mintToken(t, peer), mintToken(t, client)
+	vmSuspended := func() bool {
+		var flag bool
+		require.NoError(t, db.Raw("SELECT suspended FROM vms WHERE id = ?", vmID).Scan(&flag).Error)
+		return flag
+	}
+
+	// A customer cannot suspend anyone, themselves included.
+	rec := doUserReq(t, s, http.MethodPost, path+"/suspend", customer, `{}`)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+
+	rec = doUserReq(t, s, http.MethodPost, "/api/v1/users/"+founding.ID.String()+"/suspend", admin, `{}`)
+	assert.Equal(t, http.StatusBadRequest, rec.Code, "an administrator is not suspended: %s", rec.Body.String())
+
+	// Any administrator may suspend a customer; the VMs stay as they are unless asked.
+	rec = doUserReq(t, s, http.MethodPost, path+"/suspend", admin, `{"reason":"chargeback"}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), `"success":true`)
+	assert.Contains(t, rec.Body.String(), `"suspended_at"`)
+	assert.False(t, vmSuspended())
+	rec = doUserReq(t, s, http.MethodGet, path, customer, "")
+	assert.Equal(t, http.StatusUnauthorized, rec.Code, "the customer's open session stops")
+	rec = doUserReq(t, s, http.MethodGet, path, admin, "")
+	assert.Contains(t, rec.Body.String(), `"suspended_at"`, "and the user page can show it")
+
+	rec = doUserReq(t, s, http.MethodPost, path+"/suspend", admin, `{"with_vms":true}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.True(t, vmSuspended())
+
+	rec = doUserReq(t, s, http.MethodPost, path+"/unsuspend", admin, `{}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.NotContains(t, rec.Body.String(), `"suspended_at"`)
+	assert.True(t, vmSuspended(), "restoring the account leaves its VMs suspended unless asked")
+	rec = doUserReq(t, s, http.MethodGet, path, customer, "")
+	assert.Equal(t, http.StatusUnauthorized, rec.Code, "a session from before the suspension does not come back")
+	// Tokens carry whole seconds: one minted in a later second is a new sign-in.
+	require.NoError(t, db.Exec("UPDATE users SET token_revoked_at = ? WHERE id = ?", time.Now().Add(-time.Minute), client.ID.String()).Error)
+	rec = doUserReq(t, s, http.MethodGet, "/api/v1/users", mintToken(t, client), "")
+	assert.Equal(t, http.StatusForbidden, rec.Code, "signed in again: authenticated, and still only a customer")
+
+	rec = doUserReq(t, s, http.MethodPost, "/api/v1/users/"+uuid.NewString()+"/suspend", admin, `{}`)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+
+	var rows []models.AuditLog
+	require.NoError(t, db.Order("created_at, action").Find(&rows).Error)
+	require.Len(t, rows, 3)
+	actions := map[string]int{}
+	for _, r := range rows {
+		actions[r.Action]++
+		assert.Equal(t, peer.ID.String(), *r.UserID)
+		assert.Equal(t, client.ID.String(), *r.ResourceID)
+	}
+	assert.Equal(t, map[string]int{"user.suspend": 2, "user.unsuspend": 1}, actions)
 }

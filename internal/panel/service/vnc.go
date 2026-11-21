@@ -137,8 +137,9 @@ func (s *VNCService) GenerateConsoleToken(ctx context.Context, vmID, userID stri
 		return nil, fmt.Errorf("failed to get VM: %w", err)
 	}
 
-	// Verify user owns the VM (or is admin - handled at handler level)
-	if vm.UserID != userID {
+	// The owner, or a member whose team role operates it (admins are let in
+	// at the handler).
+	if CheckVMAccess(ctx, s.db, vm, userID, false, AccessOperate) != nil {
 		return nil, ErrConsoleTokenUnauthorized
 	}
 
@@ -422,8 +423,8 @@ func (s *VNCService) CheckAuthForVNC(ctx context.Context, vmID, userID string) e
 		return fmt.Errorf("failed to get VM: %w", err)
 	}
 
-	// User must own the VM
-	if vm.UserID != userID {
+	// The owner, or a member whose team role operates it.
+	if CheckVMAccess(ctx, s.db, vm, userID, false, AccessOperate) != nil {
 		return ErrConsoleTokenUnauthorized
 	}
 

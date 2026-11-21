@@ -17,6 +17,9 @@ type PoolCapacity struct {
 	// Filesystem is the mount point backing Path, so two pools sharing one
 	// filesystem can be shown as sharing it rather than as capacity that adds up.
 	Filesystem string
+	// Problem says why a path that exists cannot be used: a shared pool that
+	// is not mounted here.
+	Problem string
 }
 
 // Capacity measures the filesystem behind a pool path.
@@ -41,6 +44,11 @@ func Capacity(path string) PoolCapacity {
 		return out
 	}
 	out.Exists = true
+	if err := CheckSharedDir(path); err != nil {
+		// Not measured: the numbers would be the local disk's.
+		out.Problem = err.Error()
+		return out
+	}
 
 	var st unix.Statfs_t
 	if err := unix.Statfs(path, &st); err != nil {

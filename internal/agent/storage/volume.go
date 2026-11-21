@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -11,8 +12,8 @@ import (
 
 const gibibyte = 1024 * 1024 * 1024
 
-// VolumeManager provisions and removes storage volumes across pool backends:
-// directory/file (qemu-img), LVM (lvcreate), and ZFS (zfs create -V).
+// VolumeManager provisions and removes storage volumes in directory (qemu-img)
+// and ZFS (zfs create -V) pools. LVM pools go through LVM.
 type VolumeManager struct {
 	qemu    *QCOW2Manager
 	timeout time.Duration
@@ -40,13 +41,33 @@ func normalizePoolType(t string) string {
 	}
 }
 
-// lvCreateArgs builds args for `lvcreate -L <size>G -n <name> <vg>`.
-func lvCreateArgs(vg, name string, sizeGB int) []string {
-	return []string{"-L", fmt.Sprintf("%dG", sizeGB), "-n", name, vg}
+// DataDiskDir picks the directory an extra disk is created in: the pool the
+// panel named, else the directory holding the VM's own disk, else fallback.
+//
+// The fallback is the node's default image directory, on its root filesystem,
+// which is why it comes last: a data disk filling that volume takes libvirt
+// and the agent down with it. A named pool that is not an existing directory
+// is skipped, not created, so a bad path cannot become a write location.
+func DataDiskDir(poolPath, primaryDisk, fallback string) string {
+	isDir := func(p string) bool {
+		if p == "" || !filepath.IsAbs(p) {
+			return false
+		}
+		info, err := os.Stat(p)
+		return err == nil && info.IsDir()
+	}
+	if p := strings.TrimSpace(poolPath); isDir(p) {
+		return filepath.Clean(p)
+	}
+	// A VM on a block device (/dev/vg/lv) has no directory to share: /dev is
+	// memory, not storage.
+	if primaryDisk = strings.TrimSpace(primaryDisk); primaryDisk != "" && !strings.HasPrefix(primaryDisk, "/dev/") {
+		if dir := filepath.Dir(primaryDisk); isDir(dir) {
+			return dir
+		}
+	}
+	return fallback
 }
-
-// lvDevicePath returns the device path of a logical volume.
-func lvDevicePath(vg, name string) string { return filepath.Join("/dev", vg, name) }
 
 // zfsCreateArgs builds args for `zfs create -V <size>G <dataset>/<name>`.
 func zfsCreateArgs(dataset, name string, sizeGB int) []string {
@@ -80,14 +101,14 @@ func (m *VolumeManager) CreateVolume(poolType, poolPath, name, format string, si
 			}
 		}
 		full := filepath.Join(poolPath, fname)
+		if err := CheckSharedDir(poolPath); err != nil {
+			return "", 0, err
+		}
 		size, err := m.qemu.CreateVolume(full, format, sizeGB)
 		return full, size, err
 
 	case "lvm":
-		if _, err := m.run("lvcreate", lvCreateArgs(poolPath, filepath.Base(name), sizeGB)...); err != nil {
-			return "", 0, err
-		}
-		return lvDevicePath(poolPath, filepath.Base(name)), int64(sizeGB) * gibibyte, nil
+		return "", 0, errLVMElsewhere
 
 	case "zfs":
 		if _, err := m.run("zfs", zfsCreateArgs(poolPath, filepath.Base(name), sizeGB)...); err != nil {
@@ -114,11 +135,7 @@ func (m *VolumeManager) DeleteVolume(poolType, path string) error {
 		return m.qemu.DeleteImage(path)
 
 	case "lvm":
-		if !strings.HasPrefix(path, "/dev/") {
-			return fmt.Errorf("refusing to lvremove non-device path: %s", path)
-		}
-		_, err := m.run("lvremove", "-f", path)
-		return err
+		return errLVMElsewhere
 
 	case "zfs":
 		const prefix = "/dev/zvol/"
@@ -132,6 +149,10 @@ func (m *VolumeManager) DeleteVolume(poolType, path string) error {
 		return fmt.Errorf("volume deletion for pool type %q is not supported", poolType)
 	}
 }
+
+// errLVMElsewhere: logical volumes are made and removed only through LVM
+// (lvm.go), which proves a volume is in a registered pool and unused first.
+var errLVMElsewhere = fmt.Errorf("logical volumes are created and removed through a registered LVM pool")
 
 // hasVolumeExt reports whether path looks like a provisioned file-based volume.
 func hasVolumeExt(path string) bool {

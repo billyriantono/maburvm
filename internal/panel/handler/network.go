@@ -3,6 +3,8 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/maburvm/panel/internal/panel/authz"
@@ -294,6 +296,9 @@ func (h *NetworkHandler) AddPortForward(c echo.Context) error {
 	})
 
 	if err != nil {
+		if msg := portForwardRefusal(err); msg != "" {
+			return c.JSON(http.StatusConflict, map[string]interface{}{"error": "Conflict", "message": msg})
+		}
 		switch {
 		case errors.Is(err, service.ErrNetworkNotFound):
 			return c.JSON(http.StatusNotFound, map[string]interface{}{
@@ -380,6 +385,21 @@ func (h *NetworkHandler) RemovePortForward(c echo.Context) error {
 	})
 }
 
+// portForwardRefusal is the sentence for the two reasons a valid forward is
+// turned down (the port is taken on the VM's node, or the VM holds its limit),
+// or "" for any other error.
+func portForwardRefusal(err error) string {
+	switch {
+	case errors.Is(err, service.ErrPortAlreadyInUse):
+		return "That host port is already forwarded on this node. Choose another port."
+	case errors.Is(err, service.ErrPortForwardLimit):
+		return "This VM has reached its port forward limit. Remove one before adding another."
+	case errors.Is(err, service.ErrPortOutsideBlock):
+		return err.Error()
+	}
+	return ""
+}
+
 // portForwardToResponse maps a model to the API response shape.
 func portForwardToResponse(pf *models.PortForward) PortForwardResponse {
 	return PortForwardResponse{
@@ -426,6 +446,9 @@ func (h *NetworkHandler) AddVMPortForward(c echo.Context) error {
 		SourceIP:     req.SourceIP,
 	})
 	if err != nil {
+		if msg := portForwardRefusal(err); msg != "" {
+			return c.JSON(http.StatusConflict, map[string]interface{}{"error": "Conflict", "message": msg})
+		}
 		switch {
 		case errors.Is(err, service.ErrNetworkNotFound):
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "VM has no network interface to forward to (assign an IP first)"})
@@ -497,10 +520,13 @@ func (h *NetworkHandler) RemoveVMPortForward(c echo.Context) error {
 type AddFirewallRuleRequest struct {
 	Protocol  string `json:"protocol" validate:"required,oneof=tcp udp icmp all"`
 	PortRange string `json:"port_range,omitempty" validate:"omitempty,port_range"`
-	Action    string `json:"action" validate:"required,oneof=allow deny"`
+	Action    string `json:"action" validate:"required,oneof=allow deny reject"`
 	Direction string `json:"direction" validate:"required,oneof=inbound outbound"`
 	SourceIP  string `json:"source_ip,omitempty" validate:"omitempty,ip_or_cidr"`
 	Priority  int    `json:"priority" validate:"required,min=1,max=1000"`
+	ICMPType  string `json:"icmp_type,omitempty"`
+	Log       bool   `json:"log,omitempty"`
+	Family    string `json:"family,omitempty"`
 }
 
 // FirewallRuleResponse represents a firewall rule in the response
@@ -513,8 +539,29 @@ type FirewallRuleResponse struct {
 	Direction string `json:"direction"`
 	SourceIP  string `json:"source_ip"`
 	Priority  int    `json:"priority"`
+	ICMPType  string `json:"icmp_type"`
+	Log       bool   `json:"log"`
+	Family    string `json:"family"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
+}
+
+func firewallRuleResponse(rule *models.FirewallRule) FirewallRuleResponse {
+	return FirewallRuleResponse{
+		ID:        rule.ID,
+		VMID:      rule.VMID,
+		Protocol:  rule.Protocol,
+		PortRange: rule.PortRange,
+		Action:    rule.Action,
+		Direction: rule.Direction,
+		SourceIP:  rule.SourceIP,
+		Priority:  rule.Priority,
+		ICMPType:  rule.ICMPType,
+		Log:       rule.Log,
+		Family:    rule.Family,
+		CreatedAt: rule.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		UpdatedAt: rule.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+	}
 }
 
 // AddFirewallRule handles POST /api/vms/:id/firewall-rules - Add firewall rule
@@ -554,10 +601,25 @@ func (h *NetworkHandler) AddFirewallRule(c echo.Context) error {
 		Direction: req.Direction,
 		SourceIP:  req.SourceIP,
 		Priority:  req.Priority,
+		ICMPType:  req.ICMPType,
+		// The node's kernel log is the operator's: a customer could fill it
+		// and never read it.
+		Log:    req.Log && !isClientRole(c),
+		Family: req.Family,
 	})
 
 	if err != nil {
 		switch {
+		case errors.Is(err, service.ErrInvalidFirewallRule):
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{
+				"error":   "Bad Request",
+				"message": err.Error(),
+			})
+		case errors.Is(err, service.ErrFirewallRuleLimit):
+			return c.JSON(http.StatusConflict, map[string]interface{}{
+				"error":   "Conflict",
+				"message": "This VM has reached its firewall rule limit. Remove one before adding another.",
+			})
 		case err.Error() == "VM not found":
 			return c.JSON(http.StatusNotFound, map[string]interface{}{
 				"error":   "Not Found",
@@ -573,18 +635,7 @@ func (h *NetworkHandler) AddFirewallRule(c echo.Context) error {
 
 	return c.JSON(http.StatusCreated, map[string]interface{}{
 		"message": "Firewall rule added successfully",
-		"data": FirewallRuleResponse{
-			ID:        resp.FirewallRule.ID,
-			VMID:      resp.FirewallRule.VMID,
-			Protocol:  resp.FirewallRule.Protocol,
-			PortRange: resp.FirewallRule.PortRange,
-			Action:    resp.FirewallRule.Action,
-			Direction: resp.FirewallRule.Direction,
-			SourceIP:  resp.FirewallRule.SourceIP,
-			Priority:  resp.FirewallRule.Priority,
-			CreatedAt: resp.FirewallRule.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
-			UpdatedAt: resp.FirewallRule.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
-		},
+		"data":    firewallRuleResponse(resp.FirewallRule),
 	})
 }
 
@@ -827,19 +878,8 @@ func (h *NetworkHandler) ListFirewallRules(c echo.Context) error {
 	}
 
 	response := make([]FirewallRuleResponse, len(rules))
-	for i, rule := range rules {
-		response[i] = FirewallRuleResponse{
-			ID:        rule.ID,
-			VMID:      rule.VMID,
-			Protocol:  rule.Protocol,
-			PortRange: rule.PortRange,
-			Action:    rule.Action,
-			Direction: rule.Direction,
-			SourceIP:  rule.SourceIP,
-			Priority:  rule.Priority,
-			CreatedAt: rule.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
-			UpdatedAt: rule.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
-		}
+	for i := range rules {
+		response[i] = firewallRuleResponse(&rules[i])
 	}
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
@@ -911,14 +951,24 @@ func (h *NetworkHandler) SetAntiSpoofing(c echo.Context) error {
 	})
 }
 
+// FirewallStatus handles GET /api/v1/vms/:id/firewall-status: whether the
+// VM's node is applying the rules at all. The rule list alone cannot say.
+func (h *NetworkHandler) FirewallStatus(c echo.Context) error {
+	vmID := c.Param("id")
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"success": true,
+		"data":    map[string]string{"enforcement": h.service.FirewallEnforcement(c.Request().Context(), vmID)},
+	})
+}
+
 // reservedHostPort reports whether a customer may not claim this port on the
 // node: the forward is a DNAT on the host's own addresses, so a low port or one
 // the host itself listens on (agent gRPC, libvirt, VNC/SPICE displays, libvirt
 // migration) would take the host's traffic.
-func reservedHostPort(p int) bool {
-	return p < 1024 || p > 65535 || p == 50051 || p == 16509 || p == 16514 ||
-		(p >= 5900 && p <= 6100) || (p >= 49152 && p <= 49215)
-}
+func reservedHostPort(p int) bool { return service.ReservedHostPort(p) }
 
 // RegisterNetworkRoutes registers all network routes with the Echo router
 func RegisterNetworkRoutes(e *echo.Echo, handler *NetworkHandler, db *gorm.DB) {
@@ -939,6 +989,15 @@ func RegisterNetworkRoutes(e *echo.Echo, handler *NetworkHandler, db *gorm.DB) {
 	// Routed IPv6: delegate / release the VM's /64.
 	vms.POST("/:id/ipv6", handler.AssignIPv6Prefix, middleware.RequirePermission("vm:update"))
 	vms.DELETE("/:id/ipv6", handler.ReleaseIPv6Prefix, middleware.RequirePermission("vm:update"))
+	// Further addresses the guest holds inside its routed prefix.
+	vms.GET("/:id/ipv6/addresses", handler.GetIPv6Addresses, middleware.RequirePermission("vm:read"))
+	vms.PUT("/:id/ipv6/addresses", handler.SetIPv6Addresses, middleware.RequirePermission("vm:update"))
+
+	// Network cards: a second card on a VPC or another network, and MACs.
+	vms.GET("/:id/nics", handler.ListNICs, middleware.RequirePermission("vm:read"))
+	vms.POST("/:id/nics", handler.AddNIC, middleware.RequirePermission("vm:update"))
+	vms.DELETE("/:id/nics/:nic_id", handler.RemoveNIC, middleware.RequirePermission("vm:update"))
+	vms.PUT("/:id/nics/:nic_id/mac", handler.SetNICMAC, middleware.RequirePermission("vm:update"))
 
 	// Bandwidth routes
 	vms.PUT("/:id/networks/:network_id/bandwidth", handler.SetBandwidthLimit, middleware.RequirePermission("vm:update"))
@@ -963,7 +1022,102 @@ func RegisterNetworkRoutes(e *echo.Echo, handler *NetworkHandler, db *gorm.DB) {
 	// Firewall routes
 	vms.POST("/:id/firewall-rules", handler.AddFirewallRule, middleware.RequirePermission("vm:update"))
 	vms.GET("/:id/firewall-rules", handler.ListFirewallRules, middleware.RequirePermission("vm:read"))
+	vms.GET("/:id/firewall-status", handler.FirewallStatus, middleware.RequirePermission("vm:read"))
 	vms.DELETE("/:id/firewall-rules/:rule_id", handler.RemoveFirewallRule, middleware.RequirePermission("vm:update"))
+	vms.PUT("/:id/firewall-default", handler.SetFirewallDefault, middleware.RequirePermission("vm:update"))
+	// Outbound mail is the operator's call: it protects the address space.
+	vms.PUT("/:id/smtp", handler.SetSMTP, middleware.RequirePermission("vm:update"))
+	vms.DELETE("/:id/guest-network-note", handler.DismissGuestNetworkNote, middleware.RequirePermission("vm:update"))
+
+	// Who held an address when, for abuse reports.
+	history := e.Group("/api/v1/ip-history")
+	history.Use(middleware.RequireAuth(db))
+	history.GET("", handler.IPHistory, middleware.RequirePermission("network:read"))
+}
+
+// SetFirewallDefault handles PUT /api/v1/vms/:id/firewall-default
+// {"default": "drop"|"accept"}: what the VM's firewall does with inbound
+// traffic no rule matched once it has rules.
+func (h *NetworkHandler) SetFirewallDefault(c echo.Context) error {
+	vmID := c.Param("id")
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
+	}
+	var req struct {
+		Default string `json:"default"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Invalid request body"})
+	}
+	if err := h.service.SetFirewallDefault(c.Request().Context(), vmID, req.Default); err != nil {
+		return networkPolicyError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]string{"firewall_default": req.Default}})
+}
+
+// SetSMTP handles PUT /api/v1/vms/:id/smtp {"blocked": bool}. Admin only.
+func (h *NetworkHandler) SetSMTP(c echo.Context) error {
+	vmID := c.Param("id")
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
+	}
+	if userCtx, ok := middleware.GetUserContext(c); !ok || userCtx.Role != models.RoleAdmin {
+		return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "Forbidden", "message": "Only an administrator can change outbound mail for a VM. Contact support."})
+	}
+	var req struct {
+		Blocked *bool `json:"blocked"`
+	}
+	if err := c.Bind(&req); err != nil || req.Blocked == nil {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "blocked is required"})
+	}
+	if err := h.service.SetSMTPBlocked(c.Request().Context(), vmID, *req.Blocked); err != nil {
+		return networkPolicyError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]bool{"smtp_blocked": *req.Blocked}})
+}
+
+// DismissGuestNetworkNote handles DELETE /api/v1/vms/:id/guest-network-note.
+func (h *NetworkHandler) DismissGuestNetworkNote(c echo.Context) error {
+	vmID := c.Param("id")
+	if !h.authz.AuthorizeVM(c, vmID) {
+		return nil
+	}
+	if err := h.service.DismissGuestNetworkNote(c.Request().Context(), vmID); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Internal Server Error", "message": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"success": true})
+}
+
+func networkPolicyError(c echo.Context, err error) error {
+	switch {
+	case errors.Is(err, service.ErrInvalidPolicy):
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
+	case err.Error() == "VM not found":
+		return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
+	}
+	return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Internal Server Error", "message": err.Error()})
+}
+
+// IPHistory handles GET /api/v1/ip-history?address=203.0.113.5&at=RFC3339:
+// every holding of the address (or of a prefix containing it), newest first,
+// or only the one(s) in force at the given time.
+func (h *NetworkHandler) IPHistory(c echo.Context) error {
+	var at *time.Time
+	if raw := strings.TrimSpace(c.QueryParam("at")); raw != "" {
+		t, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "at must be a date and time such as 2026-11-01T14:30:00Z"})
+		}
+		at = &t
+	}
+	rows, err := h.service.IPHistory(c.Request().Context(), c.QueryParam("address"), at)
+	if err != nil {
+		if errors.Is(err, service.ErrInvalidIPAddress) {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "address must be an IPv4 or IPv6 address"})
+		}
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Internal Server Error", "message": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": rows})
 }
 
 // AssignIPRequest asks for an address to be attached to a VM.
@@ -1006,7 +1160,10 @@ func (h *NetworkHandler) AssignIPAddress(c echo.Context) error {
 
 	network, err := h.service.AssignIPAddress(c.Request().Context(), vmID, req.PoolID, req.IPAddress)
 	if err != nil {
+		var allowance *service.AllowanceError
 		switch {
+		case errors.As(err, &allowance):
+			return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "Forbidden", "message": allowance.Message})
 		case errors.Is(err, service.ErrIPAlreadyInUse):
 			return c.JSON(http.StatusConflict, map[string]interface{}{
 				"error": "Conflict", "message": err.Error(),
@@ -1053,7 +1210,10 @@ func (h *NetworkHandler) AssignIPv6Prefix(c echo.Context) error {
 	}
 	p, err := h.service.AssignIPv6Prefix(c.Request().Context(), vmID, req.PoolID)
 	if err != nil {
+		var allowance *service.AllowanceError
 		switch {
+		case errors.As(err, &allowance):
+			return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "Forbidden", "message": allowance.Message})
 		case errors.Is(err, service.ErrVMAlreadyHasIPv6Prefix), errors.Is(err, service.ErrNoAvailableIPv6Prefix):
 			return c.JSON(http.StatusConflict, map[string]interface{}{"error": "Conflict", "message": err.Error()})
 		case err.Error() == "VM not found":
@@ -1072,14 +1232,12 @@ func (h *NetworkHandler) AssignIPv6Prefix(c echo.Context) error {
 	})
 }
 
-// ReleaseIPv6Prefix handles DELETE /api/v1/vms/:id/ipv6.
+// ReleaseIPv6Prefix handles DELETE /api/v1/vms/:id/ipv6. A customer may turn
+// their own VM's IPv6 off; getting it back goes through an address request.
 func (h *NetworkHandler) ReleaseIPv6Prefix(c echo.Context) error {
 	vmID := c.Param("id")
 	if !h.authz.AuthorizeVM(c, vmID) {
 		return nil
-	}
-	if isClientRole(c) {
-		return clientNetworkSelectionDenied(c)
 	}
 	if err := h.service.ReleaseIPv6Prefix(c.Request().Context(), vmID); err != nil {
 		if err.Error() == "VM not found" {
@@ -1111,6 +1269,10 @@ func (h *NetworkHandler) ReleaseIPAddress(c echo.Context) error {
 		case errors.Is(err, service.ErrVMHasNoSuchInterface):
 			return c.JSON(http.StatusNotFound, map[string]interface{}{
 				"error": "Not Found", "message": err.Error(),
+			})
+		case errors.Is(err, service.ErrIPv6NeedsIPv4):
+			return c.JSON(http.StatusConflict, map[string]interface{}{
+				"error": "Conflict", "message": err.Error(),
 			})
 		case err.Error() == "VM not found":
 			return c.JSON(http.StatusNotFound, map[string]interface{}{

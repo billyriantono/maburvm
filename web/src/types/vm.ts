@@ -11,6 +11,64 @@ export interface Resources {
   swap?: number; // MB
 }
 
+/** CPU and disk caps of a VM or plan. 0 in a field is no limit. */
+export interface VMLimits {
+  /** Each vCPU may use at most this share of one host core (1-100). */
+  cpu_cap_percent: number;
+  /** CPU priority against other VMs on the node: 100 normal, 0 the node's default. */
+  cpu_weight: number;
+  /** Disk operations per second: a total, or read and write separately. */
+  iops: number;
+  read_iops: number;
+  write_iops: number;
+  /** Disk throughput in MB/s: a total, or read and write separately. */
+  mbps: number;
+  read_mbps: number;
+  write_mbps: number;
+}
+
+/** Virtual hardware beyond a VM's size (models.Hardware). On a plan it is
+ *  what new VMs get; firmware and pinned_cpus belong to a VM. */
+export interface VMHardware {
+  /** "" is the node's own CPU (host-passthrough), "host-model", or a model name. */
+  cpu_model?: string;
+  /** Sockets and threads per core; the cores follow from the vCPU count. */
+  sockets?: number;
+  threads?: number;
+  /** One host core of its own per vCPU, from the node's pool. */
+  dedicated_cpu?: boolean;
+  /** Memory on the NUMA nodes of the dedicated cores. */
+  numa?: boolean;
+  hugepages?: boolean;
+  /** UEFI Secure Boot and a virtual TPM: set when the VM is created. */
+  secure_boot?: boolean;
+  tpm?: boolean;
+  watchdog?: boolean;
+  restart_on_crash?: boolean;
+  /** VM only: "uefi", or absent for BIOS. */
+  firmware?: 'bios' | 'uefi' | '';
+  /** VM only, staff only: the host cores a dedicated VM holds. */
+  pinned_cpus?: string;
+}
+
+/** A VM's hardware after a change, and where its node is with it. */
+export interface VMHardwareResult {
+  hardware: VMHardware;
+  applied: boolean;
+  restart_required: boolean;
+  note: string | null;
+  warnings: string[];
+}
+
+/** A VM's limits after a change, and whether its node has them. */
+export interface VMLimitsResult {
+  limits: VMLimits;
+  throttle: VMLimits | null;
+  effective: VMLimits;
+  applied: boolean;
+  note: string | null;
+}
+
 // VMOperation tracks a multi-step VM operation (e.g. delete) for the progress UI.
 export interface VMOperation {
   id: string;
@@ -36,9 +94,13 @@ export interface VM {
   region_country?: string;
   id: string;
   user_id: string;
+  /** The project the VM is in within its account. */
+  project_id?: string;
   node_id: string;
   node_name?: string;
   node_status?: VMNodeStatus;
+  /** The node is offline, so `status` is only what the panel last saw. */
+  state_unknown?: boolean;
   hostname: string;
   os_template_id: string;
   resources: Resources;
@@ -46,12 +108,31 @@ export interface VM {
   source_migration?: string;
   vnc_port?: number;
   rescue_mode?: boolean;
+  /** How a VM in rescue mode boots: a rescue ISO, or the built-in rescue system. */
+  rescue_kind?: '' | 'iso' | 'image';
+  /** False while the operator has not chosen a rescue image. */
+  rescue_available?: boolean;
   /** ISO in the VM's drive as last confirmed by the node: null/absent = not
    *  known, "" = none, otherwise the image URL or path. Detail response only. */
   attached_iso?: string | null;
+  // The second (drivers) CD drive, the same way.
+  attached_iso_2?: string | null;
   console_enabled?: boolean;
   /** Service suspended by billing or staff: the owner can view but not change it. */
   suspended?: boolean;
+  /** Locked against deletion and reinstall: "" (no), "owner" or "staff". */
+  delete_lock?: string;
+  /** The owner's labels. */
+  tags?: string[] | null;
+  /** The plan the VM was ordered on or last changed to. Detail response only. */
+  plan_id?: string;
+  plan_name?: string;
+  /** The billing system's reference for the service that pays for this VM.
+   *  Sent to operators only; the owner gets billing_managed. */
+  billing_ref?: string;
+  billing_managed?: boolean;
+  /** False when the owner may not delete the VM themselves (billing manages it). */
+  owner_may_delete?: boolean;
   /** The VM's IPv6. With ipv6_prefix it is a routed network of its own and
    *  the guest uses ipv6_address with fe80::1 as gateway; without it,
    *  ipv6_address is one address on a shared subnet and ipv6_gateway is that
@@ -59,6 +140,23 @@ export interface VM {
   ipv6_prefix?: string;
   ipv6_address?: string;
   ipv6_gateway?: string;
+  /** What the firewall does with inbound traffic no rule matched, once the VM
+   *  has rules. A VM without rules is not filtered. Detail response only. */
+  firewall_default?: 'drop' | 'accept';
+  /** Outbound mail (port 25) is blocked by the operator. Detail response only. */
+  smtp_blocked?: boolean;
+  /** An address change the guest has not taken, in words; with
+   *  guest_network_pending the node applies it by itself later. */
+  guest_network_note?: string | null;
+  guest_network_pending?: boolean;
+  /** CPU and disk caps (detail response only). The throttle and the note on
+   *  whether the node has them are sent to operators only. */
+  limits?: VMLimits;
+  throttle?: VMLimits | null;
+  limits_note?: string | null;
+  /** Virtual hardware (detail response only); the note is for operators. */
+  hardware?: VMHardware;
+  hardware_note?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -102,7 +200,8 @@ export interface CreateVMRequest {
   requested_ip?: string;   // specific IP within the pool (optional)
   bandwidth_mbps?: number; // network rate cap
   vlan_id?: number;        // 802.1Q VLAN tag
-  cpu_model?: string;      // guest CPU model; empty → node default (kvm64, migratable)
+  mac_address?: string;    // first card's MAC (staff only); empty derives one
+  cpu_model?: string;      // guest CPU model; empty → host-passthrough (moves live only between identical CPUs)
   user_data?: string;      // first-boot script/recipe (cloud-init), run once per instance
   managed_network_id?: string; // attach to a private VPC / managed network instead of a pool
   vpc_id?: string;         // place in one of the caller's own private networks; also fixes the node
@@ -112,6 +211,12 @@ export interface CreateVMRequest {
   regenerate_password?: boolean; // generate a root password and return it once
   ssh_key_ids?: string[];  // saved SSH keys to inject into the new guest
   ssh_public_keys?: string[];  // raw public keys pasted at create time
+  account_id?: string;     // a team account the caller orders into; empty = their own
+  project_id?: string;     // one of that account's projects
+  ipv6?: boolean;          // a routed IPv6 prefix from the location, where the plan includes one
+  recipe_inputs?: Record<string, string>; // fill the recipe's {{key}} placeholders
+  storage_pool_id?: string;  // staff: the pool the disk goes in, and so its node
+  drivers_iso?: boolean;     // with an ISO template: the drivers disc in drive 2
 }
 
 // UpdateVMRequest for updating VMs
@@ -119,6 +224,9 @@ export interface UpdateVMRequest {
   hostname?: string;
   resources?: Partial<Resources>;
   user_id?: string;
+  /** Operators only. "" clears; absent leaves it as it is. */
+  plan_id?: string;
+  billing_ref?: string;
 }
 
 // VMStartRequest for starting a VM

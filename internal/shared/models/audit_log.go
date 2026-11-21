@@ -1,6 +1,8 @@
 package models
 
 import (
+	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,15 +36,48 @@ func (AuditLog) TableName() string {
 	return "audit_logs"
 }
 
+type auditWritesKey struct{}
+
+// TrackAuditWrites returns a context under which creating an AuditLog sets the
+// flag, so the request audit middleware can skip its generic row when a
+// handler already recorded the action in its own words.
+func TrackAuditWrites(ctx context.Context) (context.Context, *atomic.Bool) {
+	written := new(atomic.Bool)
+	return context.WithValue(ctx, auditWritesKey{}, written), written
+}
+
 // BeforeCreate hook for AuditLog
 func (a *AuditLog) BeforeCreate(tx *gorm.DB) error {
+	if written, ok := tx.Statement.Context.Value(auditWritesKey{}).(*atomic.Bool); ok {
+		written.Store(true)
+	}
 	if a.ID == "" {
 		a.ID = uuid.New().String()
 	}
 	if a.Details == nil {
 		a.Details = make(map[string]any)
 	}
+	if imp, ok := tx.Statement.Context.Value(impersonatorKey{}).(Impersonator); ok {
+		a.Details["impersonator_id"], a.Details["impersonator_email"] = imp.ID, imp.Email
+	}
 	return nil
+}
+
+type impersonatorKey struct{}
+
+// Impersonator is the staff account behind a request made while viewing the
+// panel as a customer. Every audit row written under it names both.
+type Impersonator struct{ ID, Email string }
+
+// WithImpersonator marks ctx as a request made by staff viewing as a customer.
+func WithImpersonator(ctx context.Context, imp Impersonator) context.Context {
+	return context.WithValue(ctx, impersonatorKey{}, imp)
+}
+
+// ImpersonatorFrom returns the staff account behind ctx, if any.
+func ImpersonatorFrom(ctx context.Context) (Impersonator, bool) {
+	imp, ok := ctx.Value(impersonatorKey{}).(Impersonator)
+	return imp, ok
 }
 
 // GetID returns the UUID representation of ID

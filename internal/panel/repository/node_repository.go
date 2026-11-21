@@ -27,15 +27,6 @@ func (r *NodeRepository) GetByID(ctx context.Context, id string) (*models.Node, 
 	return r.base.GetByID(ctx, id)
 }
 
-// GetByToken retrieves a node by its authentication token
-func (r *NodeRepository) GetByToken(ctx context.Context, token string) (*models.Node, error) {
-	var node models.Node
-	if err := r.db.WithContext(ctx).Where("token = ?", token).First(&node).Error; err != nil {
-		return nil, err
-	}
-	return &node, nil
-}
-
 // GetByIPAddress retrieves a node by its IP address
 func (r *NodeRepository) GetByIPAddress(ctx context.Context, ipAddress string) (*models.Node, error) {
 	var node models.Node
@@ -111,7 +102,11 @@ func (r *NodeRepository) UpdateStatus(ctx context.Context, id string, status mod
 
 // UpdateToken updates a node's authentication token
 func (r *NodeRepository) UpdateToken(ctx context.Context, id string, token string) error {
-	return r.db.WithContext(ctx).Model(&models.Node{}).Where("id = ?", id).Update("token", token).Error
+	sealed, err := models.SealSecret(token)
+	if err != nil {
+		return err
+	}
+	return r.db.WithContext(ctx).Model(&models.Node{}).Where("id = ?", id).Update("token", sealed).Error
 }
 
 // GetCertFingerprint returns the node's pinned TLS cert fingerprint ("" if unset).

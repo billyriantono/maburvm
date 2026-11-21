@@ -16,7 +16,8 @@
 #   * reviewing every image tag before deploy (see .env.production.example),
 #   * terminating TLS at a reverse proxy in front of the web service,
 #   * providing real secrets via the *_FILE secret mounts (not inline env),
-#   * backing up PostgreSQL and object storage (see docs/DEPLOYMENT.md),
+#   * configuring the `panel-backup` service (it idles until you do) and
+#     rehearsing a restore (see docs/DEPLOYMENT.md section 9),
 #   * deploying the KVM agent separately on each hypervisor host.
 #
 # IMPORTANT — least-privilege topology:
@@ -151,7 +152,11 @@ services:
         GIT_COMMIT: ${GIT_COMMIT:-}
         BUILD_TIME: ${BUILD_TIME:-}
         APP_VERSION: ${APP_VERSION:-}
-    image: maburvm-panel:local
+    # Built here by default. To run a published release instead, set
+    # MABURVM_IMAGE_PREFIX (e.g. ghcr.io/OWNER/maburvm) and MABURVM_VERSION
+    # (e.g. v1.2.0) in .env.production, then `pull` and `up -d --no-build`
+    # (scripts/install-panel.sh and scripts/upgrade-panel.sh do this).
+    image: ${MABURVM_IMAGE_PREFIX:-maburvm}-panel:${MABURVM_VERSION:-local}
     container_name: maburvm-panel
     restart: unless-stopped
     # Panel API is NOT published publicly — web proxies it. The loopback port
@@ -177,6 +182,9 @@ services:
       # reverse proxy. Must be the externally reachable URL, not the internal one.
       # Next (web) now serves /install-agent.sh and /webhooks/*, so no panel host
       # port is published.
+      # This and the SSO, metrics and billing values below are starting values:
+      # a value saved under System settings, Panel takes over from its variable,
+      # without a restart.
       PANEL_PUBLIC_URL: ${PANEL_PUBLIC_URL:?set PANEL_PUBLIC_URL in .env.production}
       # Optional "Sign in with SSO" through any OpenID Connect provider. Off
       # unless issuer, client id and secret are all set. The provider's redirect
@@ -210,6 +218,24 @@ services:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?set ALLOWED_ORIGINS in .env.production}
       # Bearer token for GET /metrics (Prometheus); unset leaves the endpoint off.
       METRICS_TOKEN: ${METRICS_TOKEN:-}
+      # Hops whose X-Forwarded-For is believed. Unset: loopback and private
+      # ranges, which is Caddy on the host in front of this compose network.
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+      # Billing webhook (POST /webhooks/billing). Off, answering 503, unless both
+      # are set; they are the two values entered in the billing system's server
+      # settings. Use long random strings (24+ characters each).
+      BILLING_API_KEY: ${BILLING_API_KEY:-}
+      BILLING_WEBHOOK_SECRET: ${BILLING_WEBHOOK_SECRET:-}
+      # "true" makes a plan's monthly transfer quota act: a VM that goes over is
+      # throttled or stopped, as its plan says. Anything else only measures.
+      BANDWIDTH_ENFORCE: ${BANDWIDTH_ENFORCE:-false}
+      # Rescue ISO used until one is saved under System settings, Rescue.
+      RESCUE_ISO_URL: ${RESCUE_ISO_URL:-}
+      # Each migration's own time limit at boot (Go duration).
+      MIGRATION_TIMEOUT: ${MIGRATION_TIMEOUT:-30m}
+      # When set (e.g. 6h), pending migrations wait for a database backup
+      # recorded that recently by scripts/upgrade-panel.sh. Empty: off.
+      MIGRATION_REQUIRE_BACKUP_WITHIN: ${MIGRATION_REQUIRE_BACKUP_WITHIN:-}
     # Panel needs: `data` (postgres/minio/minio-init), `webpanel` (web), and a
     # NON-internal `agent-egress` to initiate outbound gRPC to agents. It does
     # NOT join `edge`. A Docker network is NOT a full host/firewall policy.
@@ -240,7 +266,9 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
-      start_period: 20s
+      # Migrations run before the panel answers; a long one must not mark it
+      # unhealthy. A healthy answer ends the grace period at once.
+      start_period: 10m
     logging:
       driver: "json-file"
       options:
@@ -257,7 +285,7 @@ services:
         # ENFORCE=1 fails the build if empty or still localhost (production gate).
         API_BASE_URL: http://panel:8080
         ENFORCE_API_BASE_URL: "1"
-    image: maburvm-web:local
+    image: ${MABURVM_IMAGE_PREFIX:-maburvm}-web:${MABURVM_VERSION:-local}
     container_name: maburvm-web
     restart: unless-stopped
     # Only the UI is published, and only on loopback by default: an external TLS
@@ -290,6 +318,73 @@ services:
         max-size: "20m"
         max-file: "5"
 
+  panel-backup:
+    # Nightly, encrypted, OFF-HOST backup of the panel database and the panel
+    # data volume (secrets.json, without which a restored database cannot
+    # decrypt 2FA secrets or stored keys). It idles, and says so in its log,
+    # until BACKUP_DEST and BACKUP_AGE_RECIPIENTS are set. Only age PUBLIC keys
+    # live here: nothing on this host can decrypt a backup. See
+    # docs/DEPLOYMENT.md section 9.
+    build:
+      context: ./docker/panel-backup
+      args:
+        # Keep equal to the postgres service image: pg_dump must match the server.
+        POSTGRES_IMAGE: postgres:16.14
+    image: maburvm-panel-backup:local
+    container_name: maburvm-panel-backup
+    restart: unless-stopped
+    environment: &backup-db-env
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-maburvm}
+      PGDATABASE: ${POSTGRES_DB:-maburvm}
+      DB_PASSWORD_FILE: /run/secrets/postgres_password
+      BACKUP_DEST: ${BACKUP_DEST:-}
+      BACKUP_AGE_RECIPIENTS: ${BACKUP_AGE_RECIPIENTS:-}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+      BACKUP_TIME: ${BACKUP_TIME:-02:30}
+      BACKUP_HEARTBEAT_URL: ${BACKUP_HEARTBEAT_URL:-}
+    # `data` reaches postgres; `backup-egress` is the only way out, for the upload.
+    networks:
+      - data
+      - backup-egress
+    volumes:
+      - panel_data:/panel-data:ro
+      # Read-only view of this directory: .env.production and deploy/secrets go
+      # into the (encrypted) backup, and deploy/secrets/rclone.conf names the
+      # destination.
+      - .:/host:ro
+    secrets:
+      - postgres_password
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # Unhealthy after a failed backup or a failed start-up check.
+      test: ["CMD", "panel-backup", "healthcheck"]
+      interval: 5m
+      timeout: 10s
+      retries: 1
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  panel-restore:
+    # One-shot restore, run only by scripts/panel-restore.sh. The `restore`
+    # profile keeps it out of every `up`.
+    profiles: ["restore"]
+    image: maburvm-panel-backup:local
+    restart: "no"
+    entrypoint: ["panel-backup", "restore"]
+    environment: *backup-db-env
+    networks:
+      - data
+    volumes:
+      - panel_data:/panel-data
+    secrets:
+      - postgres_password
+
   # ---------------------------------------------------------------------------
   # Agent deployment (READ-ONLY NOTE — not started by this file)
   # ---------------------------------------------------------------------------
@@ -314,10 +409,9 @@ services:
   # `AGENT_PANEL_ADDRESS` is NOT used by the current agent (omitted to avoid a
   # misleading flag); only AGENT_AUTH_TOKEN is passed here.
   #
-  # The public bootstrap endpoints (e.g. GET /install-agent.sh) and the bare
-  # docker-run installer path are intentionally NOT a supported production
-  # solution. They are 503-contained until Phase 1's verified agent deployment
-  # / trust contract.
+  # The bare docker-run path above is NOT a supported production solution. New
+  # nodes are set up with the installer (/install-agent.sh and a single-use
+  # install token from the panel's Add node page); see docs/DEPLOYMENT.md 6.1.
   #
   # Privileged-agent minimization is an EXPLICIT EXCEPTION tracked separately and
   # requires a dedicated minimization test before any change.
@@ -339,6 +433,9 @@ networks:
   # No data service attaches here. A Docker network is NOT a complete
   # host/firewall policy — enforce agent ingress separately.
   agent-egress:
+    driver: bridge
+  # Outbound for panel-backup only: the upload to the off-host destination.
+  backup-egress:
     driver: bridge
 
 volumes:

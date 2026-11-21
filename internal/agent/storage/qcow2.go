@@ -126,6 +126,12 @@ func (q *QCOW2Manager) ResizeImage(path string, newSizeGB int) error {
 
 // CloneImage creates an independent copy of a QCOW2 image
 func (q *QCOW2Manager) CloneImage(source string, dest string) error {
+	return q.CloneImageFrom(source, "", dest)
+}
+
+// CloneImageFrom is CloneImage reading source as format; "" probes it, which
+// only a trusted template may be.
+func (q *QCOW2Manager) CloneImageFrom(source, format, dest string) error {
 	// Verify source exists
 	if _, err := os.Stat(source); err != nil {
 		return fmt.Errorf("source image not found: %s", source)
@@ -146,7 +152,11 @@ func (q *QCOW2Manager) CloneImage(source string, dest string) error {
 	defer cancel()
 
 	// Use convert to create an independent copy with -O qcow2
-	cmd := exec.CommandContext(ctx, q.qemuImgPath, "convert", "-O", "qcow2", source, dest)
+	args := []string{"convert"}
+	if format != "" {
+		args = append(args, "-f", format)
+	}
+	cmd := exec.CommandContext(ctx, q.qemuImgPath, append(args, "-O", "qcow2", source, dest)...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to clone QCOW2 image: %w (output: %s)", err, string(output))
@@ -183,51 +193,76 @@ func exportTimeout(sourceBytes int64) time.Duration {
 		time.Duration(sourceBytes/compressedExportBytesPerSecond)*time.Second
 }
 
-// ConvertCompressed exports source into a standalone, compressed qcow2 at dest.
+// ConvertCompressed exports source (a file or a block device) into a standalone
+// qcow2 at dest, compressed as asked (see ExportArgs). It returns the
+// compression it used: a qemu-img without zstd support falls back to zlib.
 // Used for disk backups (independent of any backing chain).
 //
 // The deadline is derived from the source size rather than taken from the
 // manager's flat timeout, because compression throughput is roughly constant
 // and the work is not.
-func (q *QCOW2Manager) ConvertCompressed(source string, dest string) error {
+func (q *QCOW2Manager) ConvertCompressed(source, format, dest, compression string) (string, error) {
 	info, err := os.Stat(source)
 	if err != nil {
-		return fmt.Errorf("source image not found: %s", source)
+		return "", fmt.Errorf("source image not found: %s", source)
 	}
+	size := info.Size()
+	if !info.Mode().IsRegular() {
+		// A block device stats as 0 bytes.
+		if n, serr := DeviceSize(source); serr == nil {
+			size = n
+		}
+	}
+	return q.ExportCompressed(source, size, format, dest, compression)
+}
+
+// ExportCompressed is ConvertCompressed for a source qemu-img opens that is
+// not a local file (a snapshot of an image on RBD); size is the source's.
+func (q *QCOW2Manager) ExportCompressed(source string, size int64, format, dest, compression string) (string, error) {
 	dir := filepath.Dir(dest)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory %s: %w", dir, err)
+		return "", fmt.Errorf("failed to create directory %s: %w", dir, err)
 	}
 
-	deadline := exportTimeout(info.Size())
+	deadline := exportTimeout(size)
 	if q.timeout > deadline {
 		// An explicit, larger timeout from the caller still wins.
 		deadline = q.timeout
 	}
+	used := NormalizeCompression(compression)
+	for {
+		output, err := q.runExport(deadline, ExportArgs(used, format, source, dest))
+		if err == nil {
+			return used, nil
+		}
+		if err == context.DeadlineExceeded {
+			// Say which of the two it was. "signal: killed" with empty output
+			// tells an operator nothing, and the two causes need opposite
+			// responses: a deadline means give it longer or use a faster path,
+			// while a real failure means look at the disk.
+			return "", fmt.Errorf("compressed export of %s (%d bytes) exceeded its %s deadline; "+
+				"compression runs at roughly %d MiB/s on this node",
+				source, size, deadline, compressedExportBytesPerSecond/(1024*1024))
+		}
+		if used == CompressionZstd && zstdUnsupported(output) {
+			_ = os.Remove(dest)
+			used = CompressionZlib
+			continue
+		}
+		return "", fmt.Errorf("failed to export QCOW2 image: %w (output: %s)", err, string(output))
+	}
+}
+
+// runExport runs one qemu-img convert. A deadline is returned as
+// context.DeadlineExceeded itself.
+func (q *QCOW2Manager) runExport(deadline time.Duration, args []string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 	defer cancel()
-
-	// -U (force-share) lets qemu-img read the disk even while the VM is running and
-	// qemu holds a write lock on it — otherwise the export fails with "Failed to
-	// get shared write lock ... Is another process using the image?". The copy is
-	// crash-consistent (a point-in-time read of a live disk), which is exactly what
-	// the backup/image flow expects.
-	cmd := exec.CommandContext(ctx, q.qemuImgPath, "convert", "-U", "-O", "qcow2", "-c", source, dest)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		// Say which of the two it was. "signal: killed" with empty output tells
-		// an operator nothing, and the two causes need opposite responses: a
-		// deadline means give it longer or use a faster path, while a real
-		// failure means look at the disk.
-		if ctx.Err() == context.DeadlineExceeded {
-			return fmt.Errorf("compressed export of %s (%d bytes) exceeded its %s deadline; "+
-				"compression runs at roughly %d MiB/s on this node",
-				source, info.Size(), deadline, compressedExportBytesPerSecond/(1024*1024))
-		}
-		return fmt.Errorf("failed to export compressed QCOW2 image: %w (output: %s)", err, string(output))
+	output, err := exec.CommandContext(ctx, q.qemuImgPath, args...).CombinedOutput()
+	if err != nil && ctx.Err() == context.DeadlineExceeded {
+		return output, context.DeadlineExceeded
 	}
-
-	return nil
+	return output, err
 }
 
 // ConvertImage converts/copies a source disk image to dest in the given format
@@ -297,6 +332,7 @@ type ImageInfo struct {
 	ClusterSize int    `json:"cluster-size"`
 	BackingFile string `json:"backing-filename,omitempty"`
 	FullBackingPath string `json:"full-backing-filename,omitempty"`
+	BackingFormat   string `json:"backing-filename-format,omitempty"`
 }
 
 // qemuImgOutput represents the JSON structure from qemu-img info
@@ -308,6 +344,7 @@ type qemuImgOutput struct {
 	ClusterSize   int         `json:"cluster-size"`
 	BackingFile   string      `json:"backing-filename"`
 	FullBackingPath string    `json:"full-backing-filename"`
+	BackingFormat string      `json:"backing-filename-format"`
 	Snapshots     []snapshot  `json:"snapshots"`
 }
 
@@ -334,6 +371,7 @@ func parseImageInfo(data []byte) (*ImageInfo, error) {
 		ClusterSize:     output.ClusterSize,
 		BackingFile:     output.BackingFile,
 		FullBackingPath: output.FullBackingPath,
+		BackingFormat:   output.BackingFormat,
 	}
 
 	return info, nil

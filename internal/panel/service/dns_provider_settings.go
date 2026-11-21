@@ -33,20 +33,37 @@ var (
 	ErrDNSInvalidURL = errors.New("the API URL must be an http or https URL")
 )
 
+// The nameservers the panel can write to.
+const (
+	DNSKindPowerDNS   = "powerdns"
+	DNSKindCloudflare = "cloudflare"
+)
+
 // DNSProviderStatus is what an administrator may see about the nameserver
 // connection. The API key is never part of it, only whether one is stored.
 type DNSProviderStatus struct {
 	// Source is "settings", "environment" or "none".
-	Source    string `json:"source"`
+	Source string `json:"source"`
+	// Kind is DNSKindPowerDNS or DNSKindCloudflare.
+	Kind      string `json:"kind"`
 	URL       string `json:"url"`
 	ServerID  string `json:"server_id"`
 	HasAPIKey bool   `json:"has_api_key"`
 }
 
 type storedDNSProvider struct {
+	// Kind is empty in settings saved before there was a choice: PowerDNS.
+	Kind      string `json:"kind,omitempty"`
 	URL       string `json:"url"`
 	ServerID  string `json:"server_id"`
 	APIKeyEnc string `json:"api_key_enc"`
+}
+
+func (s storedDNSProvider) kind() string {
+	if s.Kind == DNSKindCloudflare {
+		return DNSKindCloudflare
+	}
+	return DNSKindPowerDNS
 }
 
 // SettingsDNSProvider is the nameserver connection as configured by an
@@ -129,7 +146,11 @@ func (p *SettingsDNSProvider) current(ctx context.Context) DNSProvider {
 	var prov DNSProvider
 	if s, ok := p.load(ctx); ok {
 		if key, err := p.decrypt(s.APIKeyEnc); err == nil && key != "" {
-			prov = newPDNSProvider(s.URL, key, s.ServerID)
+			if s.kind() == DNSKindCloudflare {
+				prov = newCloudflareProvider(key)
+			} else {
+				prov = newPDNSProvider(s.URL, key, s.ServerID)
+			}
 		} else {
 			// A key we cannot decrypt (the AES key changed with no previous key
 			// configured) must not silently fall back to another nameserver.
@@ -163,7 +184,7 @@ func newPDNSProvider(apiURL, apiKey, serverID string) *pdnsProvider {
 // Status reports where the connection comes from, without the key.
 func (p *SettingsDNSProvider) Status(ctx context.Context) DNSProviderStatus {
 	if s, ok := p.load(ctx); ok {
-		return DNSProviderStatus{Source: "settings", URL: s.URL, ServerID: s.ServerID, HasAPIKey: s.APIKeyEnc != ""}
+		return DNSProviderStatus{Source: "settings", Kind: s.kind(), URL: s.URL, ServerID: s.ServerID, HasAPIKey: s.APIKeyEnc != ""}
 	}
 	envURL := strings.TrimSpace(os.Getenv("PDNS_API_URL"))
 	if envURL != "" && strings.TrimSpace(os.Getenv("PDNS_API_KEY")) != "" {
@@ -171,9 +192,9 @@ func (p *SettingsDNSProvider) Status(ctx context.Context) DNSProviderStatus {
 		if serverID == "" {
 			serverID = "localhost"
 		}
-		return DNSProviderStatus{Source: "environment", URL: envURL, ServerID: serverID, HasAPIKey: true}
+		return DNSProviderStatus{Source: "environment", Kind: DNSKindPowerDNS, URL: envURL, ServerID: serverID, HasAPIKey: true}
 	}
-	return DNSProviderStatus{Source: "none"}
+	return DNSProviderStatus{Source: "none", Kind: DNSKindPowerDNS}
 }
 
 func normalizeDNSAPIURL(raw string) (string, *url.URL, error) {
@@ -189,13 +210,16 @@ func normalizeDNSAPIURL(raw string) (string, *url.URL, error) {
 // wins. An empty one means "keep the saved key", which is only allowed while
 // the URL still points at the same host: otherwise anyone able to edit the URL
 // could have the panel deliver the saved key to a server of their choosing.
-func (p *SettingsDNSProvider) resolveKey(ctx context.Context, target *url.URL, apiKey string) (string, error) {
+func (p *SettingsDNSProvider) resolveKey(ctx context.Context, kind string, target *url.URL, apiKey string) (string, error) {
 	if apiKey = strings.TrimSpace(apiKey); apiKey != "" {
 		return apiKey, nil
 	}
 	s, ok := p.load(ctx)
 	if !ok || s.APIKeyEnc == "" {
 		return "", ErrDNSAPIKeyRequired
+	}
+	if s.kind() != kind {
+		return "", fmt.Errorf("%w when the provider changes", ErrDNSAPIKeyRequired)
 	}
 	saved, err := url.Parse(s.URL)
 	if err != nil || saved.Scheme != target.Scheme || saved.Host != target.Host {
@@ -208,13 +232,29 @@ func (p *SettingsDNSProvider) resolveKey(ctx context.Context, target *url.URL, a
 	return key, nil
 }
 
+// dnsTarget fixes the address of a hosted provider, so a saved token can only
+// ever be sent to it.
+func dnsTarget(kind, apiURL, serverID string) (string, string, string, error) {
+	switch kind {
+	case "", DNSKindPowerDNS:
+		return DNSKindPowerDNS, apiURL, serverID, nil
+	case DNSKindCloudflare:
+		return DNSKindCloudflare, cloudflareAPI, "", nil
+	}
+	return "", "", "", fmt.Errorf("%w: unknown provider %q", ErrDNSInvalidURL, kind)
+}
+
 // Save stores the connection. An empty apiKey keeps the saved one (see resolveKey).
-func (p *SettingsDNSProvider) Save(ctx context.Context, apiURL, serverID, apiKey string) error {
+func (p *SettingsDNSProvider) Save(ctx context.Context, kind, apiURL, serverID, apiKey string) error {
+	kind, apiURL, serverID, err := dnsTarget(kind, apiURL, serverID)
+	if err != nil {
+		return err
+	}
 	apiURL, u, err := normalizeDNSAPIURL(apiURL)
 	if err != nil {
 		return err
 	}
-	key, err := p.resolveKey(ctx, u, apiKey)
+	key, err := p.resolveKey(ctx, kind, u, apiKey)
 	if err != nil {
 		return err
 	}
@@ -222,10 +262,10 @@ func (p *SettingsDNSProvider) Save(ctx context.Context, apiURL, serverID, apiKey
 	if err != nil {
 		return fmt.Errorf("could not encrypt the API key: %w", err)
 	}
-	if serverID = strings.TrimSpace(serverID); serverID == "" {
+	if serverID = strings.TrimSpace(serverID); serverID == "" && kind == DNSKindPowerDNS {
 		serverID = "localhost"
 	}
-	data, _ := json.Marshal(storedDNSProvider{URL: apiURL, ServerID: serverID, APIKeyEnc: enc})
+	data, _ := json.Marshal(storedDNSProvider{Kind: kind, URL: apiURL, ServerID: serverID, APIKeyEnc: enc})
 	if err := p.db.WithContext(ctx).Exec(
 		"INSERT INTO system_settings (section, data, updated_at) VALUES (?, ?::jsonb, NOW()) "+
 			"ON CONFLICT (section) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()",
@@ -245,14 +285,21 @@ func (p *SettingsDNSProvider) Clear(ctx context.Context) error {
 }
 
 // Test checks that the nameserver answers with these details, without saving.
-func (p *SettingsDNSProvider) Test(ctx context.Context, apiURL, serverID, apiKey string) error {
+func (p *SettingsDNSProvider) Test(ctx context.Context, kind, apiURL, serverID, apiKey string) error {
+	kind, apiURL, serverID, err := dnsTarget(kind, apiURL, serverID)
+	if err != nil {
+		return err
+	}
 	apiURL, u, err := normalizeDNSAPIURL(apiURL)
 	if err != nil {
 		return err
 	}
-	key, err := p.resolveKey(ctx, u, apiKey)
+	key, err := p.resolveKey(ctx, kind, u, apiKey)
 	if err != nil {
 		return err
+	}
+	if kind == DNSKindCloudflare {
+		return newCloudflareProvider(key).verify(ctx)
 	}
 	prov := newPDNSProvider(apiURL, key, serverID)
 	req, err := prov.newRequest(ctx, http.MethodGet, "", nil)
@@ -288,11 +335,11 @@ func (p *SettingsDNSProvider) SyncZone(ctx context.Context, zone *models.DNSZone
 func (p *SettingsDNSProvider) DeleteZone(ctx context.Context, zoneName string) error {
 	return p.current(ctx).DeleteZone(ctx, zoneName)
 }
-func (p *SettingsDNSProvider) SetPTR(ctx context.Context, ip, hostname string) error {
-	return p.current(ctx).SetPTR(ctx, ip, hostname)
+func (p *SettingsDNSProvider) SetPTR(ctx context.Context, rec PTRRecord, hostname string) error {
+	return p.current(ctx).SetPTR(ctx, rec, hostname)
 }
-func (p *SettingsDNSProvider) ClearPTR(ctx context.Context, ip string) error {
-	return p.current(ctx).ClearPTR(ctx, ip)
+func (p *SettingsDNSProvider) ClearPTR(ctx context.Context, rec PTRRecord) error {
+	return p.current(ctx).ClearPTR(ctx, rec)
 }
 func (p *SettingsDNSProvider) ListPTRs(ctx context.Context, reverseZone string) (map[string]string, error) {
 	return p.current(ctx).ListPTRs(ctx, reverseZone)

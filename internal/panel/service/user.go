@@ -8,17 +8,21 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"image/png"
+	"log/slog"
+	"math"
 	"net"
 	"net/smtp"
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/boombuler/barcode"
@@ -50,7 +54,8 @@ var (
 	ErrInvalidIPWhitelist = errors.New("invalid IP whitelist entry")
 )
 
-// Password requirements
+// Password requirements. MinPasswordLength is the built-in minimum; the one
+// in force comes from LoadPasswordPolicy.
 const (
 	MinPasswordLength = 12
 	BcryptCost        = 12
@@ -158,44 +163,67 @@ func (s *UserService) Register(req *RegisterRequest) (*RegisterResponse, error) 
 	if err := s.db.Create(user).Error; err != nil {
 		return nil, fmt.Errorf("failed to create user: %w", err)
 	}
+	EmitUserEvent(context.Background(), s.db, EventUserCreated, user.ID.String(), map[string]any{"source": "signup"})
 
 	return &RegisterResponse{
 		User: user,
 	}, nil
 }
 
-// ValidatePasswordStrength is the password policy for callers that have no
-// UserService at hand.
-func ValidatePasswordStrength(password string) error {
-	return (*UserService)(nil).validatePasswordStrength(password)
+// PasswordPolicy is what a new password must satisfy. A lowercase letter is
+// always required; the rest is the operator's, under Settings, System, Security.
+type PasswordPolicy struct {
+	MinLength        int  `json:"minPasswordLength"`
+	RequireUppercase bool `json:"requireUppercase"`
+	RequireNumbers   bool `json:"requireNumbers"`
+	RequireSpecial   bool `json:"requireSpecial"`
 }
 
-// validatePasswordStrength checks password complexity
-func (s *UserService) validatePasswordStrength(password string) error {
-	if len(password) < MinPasswordLength {
-		return fmt.Errorf("%w: must be at least %d characters", ErrWeakPassword, MinPasswordLength)
+// LoadPasswordPolicy reads the operator's password policy. A field never saved
+// keeps its built-in value, and a length outside 8 to 128 is pulled back in.
+func LoadPasswordPolicy(db *gorm.DB) PasswordPolicy {
+	p := PasswordPolicy{MinLength: MinPasswordLength, RequireUppercase: true, RequireNumbers: true, RequireSpecial: true}
+	if db == nil {
+		return p
 	}
+	var raw string
+	if err := db.Raw("SELECT CAST(data AS TEXT) FROM system_settings WHERE section = 'security'").Scan(&raw).Error; err != nil || raw == "" {
+		return p
+	}
+	_ = json.Unmarshal([]byte(raw), &p)
+	p.MinLength = min(max(p.MinLength, 8), 128)
+	return p
+}
 
-	// Check for at least one uppercase letter
-	if !regexp.MustCompile(`[A-Z]`).MatchString(password) {
+// ValidatePasswordStrength checks a new password against the operator's policy.
+func ValidatePasswordStrength(db *gorm.DB, password string) error {
+	return LoadPasswordPolicy(db).Check(password)
+}
+
+func (s *UserService) validatePasswordStrength(password string) error {
+	if s == nil {
+		return ValidatePasswordStrength(nil, password)
+	}
+	return ValidatePasswordStrength(s.db, password)
+}
+
+// Check reports the first rule a password breaks.
+func (p PasswordPolicy) Check(password string) error {
+	if len(password) < p.MinLength {
+		return fmt.Errorf("%w: must be at least %d characters", ErrWeakPassword, p.MinLength)
+	}
+	if p.RequireUppercase && !regexp.MustCompile(`[A-Z]`).MatchString(password) {
 		return fmt.Errorf("%w: must contain at least one uppercase letter", ErrWeakPassword)
 	}
-
-	// Check for at least one lowercase letter
 	if !regexp.MustCompile(`[a-z]`).MatchString(password) {
 		return fmt.Errorf("%w: must contain at least one lowercase letter", ErrWeakPassword)
 	}
-
-	// Check for at least one digit
-	if !regexp.MustCompile(`[0-9]`).MatchString(password) {
+	if p.RequireNumbers && !regexp.MustCompile(`[0-9]`).MatchString(password) {
 		return fmt.Errorf("%w: must contain at least one digit", ErrWeakPassword)
 	}
-
-	// Check for at least one special character
-	if !regexp.MustCompile(`[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]`).MatchString(password) {
+	if p.RequireSpecial && !regexp.MustCompile(`[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]`).MatchString(password) {
 		return fmt.Errorf("%w: must contain at least one special character", ErrWeakPassword)
 	}
-
 	return nil
 }
 
@@ -205,6 +233,8 @@ type LoginRequest struct {
 	Password string `json:"password" validate:"required"`
 	TOTPCode string `json:"totp_code,omitempty"` // Optional for first stage
 	ClientIP string `json:"-"`                   // Set by handler
+	// UserAgent goes into the session record.
+	UserAgent string `json:"-"`
 }
 
 // LoginResponse contains login result
@@ -222,25 +252,37 @@ func (s *UserService) Login(req *LoginRequest) (*LoginResponse, error) {
 	var user models.User
 	if err := s.db.Where("email = ?", req.Email).First(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// Spend the time a real account would, so the answer does not come
+			// back faster for an email nobody has.
+			_ = bcrypt.CompareHashAndPassword(dummyPasswordHash(), []byte(req.Password))
 			return nil, ErrInvalidCredentials
 		}
 		return nil, fmt.Errorf("database error: %w", err)
 	}
 
+	// Outside the allow-list, before the password: otherwise the answer tells a
+	// right password from a wrong one, and the wrong ones lock the owner out.
+	if len(user.IPWhitelist) > 0 && !s.isIPWhitelisted(req.ClientIP, user.IPWhitelist) {
+		return nil, ErrIPNotWhitelisted
+	}
+
+	// A locked account takes no guesses at all, right or wrong.
+	if user.SignInLocked() {
+		return nil, &AccountLockedError{Until: *user.LockedUntil}
+	}
+
 	// Verify password
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+		s.recordFailedSignIn(&user, req.ClientIP)
 		return nil, ErrInvalidCredentials
 	}
 	// A temporary account that has run out is simply not an account any more.
 	if user.Expired() {
 		return nil, ErrInvalidCredentials
 	}
-
-	// Check IP whitelist (if configured)
-	if len(user.IPWhitelist) > 0 {
-		if !s.isIPWhitelisted(req.ClientIP, user.IPWhitelist) {
-			return nil, ErrIPNotWhitelisted
-		}
+	// Said only to someone who has just proved the account is theirs.
+	if user.Suspended() {
+		return nil, ErrAccountSuspended
 	}
 
 	// Check if 2FA is enabled (verified), not merely set up. An abandoned setup
@@ -257,15 +299,23 @@ func (s *UserService) Login(req *LoginRequest) (*LoginResponse, error) {
 		// Accept a TOTP code or a one-time backup code (so a lost authenticator
 		// device doesn't lock the user out).
 		if !s.verifyTwoFactorCode(&user, req.TOTPCode) {
+			s.recordFailedSignIn(&user, req.ClientIP)
 			return nil, ErrInvalidTOTPCode
 		}
 	}
 
 	// Generate the session access token via the single shared minter.
-	token, err := middleware.GenerateAccessToken(&user)
+	token, err := s.mintSession(&user, middleware.SessionMeta{Method: middleware.SignInPassword, IP: req.ClientIP, UserAgent: req.UserAgent})
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate token: %w", err)
 	}
+	// Only a finished sign-in clears the count: the password step alone must
+	// not, or it would reset the count between guesses at the code.
+	if user.FailedLoginCount != 0 {
+		_ = ClearSignInLock(context.Background(), s.db, user.ID)
+	}
+
+	auditSupportSignIn(s.db, &user, req.ClientIP)
 
 	return &LoginResponse{
 		User:  &user,
@@ -363,6 +413,11 @@ func (s *UserService) Setup2FA(req *Setup2FARequest) (*Setup2FAResponse, error) 
 	if err := s.db.Save(&user).Error; err != nil {
 		return nil, fmt.Errorf("failed to save 2FA secret: %w", err)
 	}
+	// Codes of the old secret mean nothing to the new one: start its record afresh,
+	// or re-enabling within the same half minute would refuse a good code.
+	if err := s.db.Table("users").Where("id = ?", user.ID).Update("totp_last_step", 0).Error; err != nil {
+		return nil, fmt.Errorf("failed to save 2FA secret: %w", err)
+	}
 
 	// Generate QR code
 	qrCode, err := s.generateQRCode(key.URL())
@@ -421,7 +476,7 @@ func (s *UserService) Verify2FASetup(req *Verify2FASetupRequest) error {
 	}
 
 	// Verify TOTP code
-	if !totp.Validate(req.TOTPCode, decryptedSecret) {
+	if !s.acceptTOTP(&user, decryptedSecret, req.TOTPCode) {
 		return ErrInvalidTOTPCode
 	}
 
@@ -456,6 +511,8 @@ func (s *UserService) Disable2FA(userID uuid.UUID) error {
 type Verify2FARequest struct {
 	UserID uuid.UUID `json:"user_id" validate:"required"`
 	Code   string    `json:"code" validate:"required"` // TOTP code or backup code
+	// ClientIP goes into the audit row if the wrong codes lock the account.
+	ClientIP string `json:"-"`
 }
 
 // Verify2FA verifies 2FA code (TOTP or backup code) during login
@@ -471,9 +528,21 @@ func (s *UserService) Verify2FA(req *Verify2FARequest) error {
 	if user.TwoFactorSecret == "" {
 		return Err2FANotEnabled
 	}
+	return s.checkTwoFactor(&user, req.Code, req.ClientIP)
+}
 
-	if !s.verifyTwoFactorCode(&user, req.Code) {
+// checkTwoFactor verifies a code outside the password sign-in, under the same
+// lockout: a held session or an SSO ticket must not allow unlimited guesses.
+func (s *UserService) checkTwoFactor(user *models.User, code, clientIP string) error {
+	if user.SignInLocked() {
+		return &AccountLockedError{Until: *user.LockedUntil}
+	}
+	if !s.verifyTwoFactorCode(user, code) {
+		s.recordFailedSignIn(user, clientIP)
 		return ErrInvalidTOTPCode
+	}
+	if user.FailedLoginCount != 0 {
+		_ = ClearSignInLock(context.Background(), s.db, user.ID)
 	}
 	return nil
 }
@@ -486,13 +555,112 @@ func (s *UserService) verifyTwoFactorCode(user *models.User, code string) bool {
 	if err != nil {
 		return false
 	}
-	if len(code) == 6 && totp.Validate(code, secret) {
+	if len(code) == 6 && s.acceptTOTP(user, secret, code) {
 		return true
 	}
-	if len(code) == 8 && s.verifyBackupCode(user, code) {
+	// Backup codes are shown in capitals; accept them typed either way.
+	if len(code) == 8 && s.verifyBackupCode(user, strings.ToUpper(code)) {
 		return true
 	}
 	return false
+}
+
+// totpStepSeconds is the length of one authenticator time step.
+const totpStepSeconds = 30
+
+// acceptTOTP checks an authenticator code against the current time step and
+// its neighbours, and takes it once only: a step at or before the last one
+// accepted is refused, so a code seen over a shoulder or on the wire cannot be
+// used again. The step is recorded with a conditional update, so two requests
+// with the same code cannot both pass.
+func (s *UserService) acceptTOTP(user *models.User, secret, code string) bool {
+	current := time.Now().Unix() / totpStepSeconds
+	for _, step := range []int64{current, current - 1, current + 1} {
+		if step <= user.TOTPLastStep {
+			continue
+		}
+		want, err := totp.GenerateCode(secret, time.Unix(step*totpStepSeconds, 0))
+		if err != nil || subtle.ConstantTimeCompare([]byte(want), []byte(code)) != 1 {
+			continue
+		}
+		res := s.db.Table("users").Where("id = ? AND totp_last_step < ?", user.ID, step).Update("totp_last_step", step)
+		if res.Error != nil || res.RowsAffected != 1 {
+			return false
+		}
+		user.TOTPLastStep = step
+		return true
+	}
+	return false
+}
+
+// mintSession records a finished sign-in and issues its access token, valid
+// for the operator's session length.
+func (s *UserService) mintSession(user *models.User, meta middleware.SessionMeta) (string, error) {
+	return middleware.IssueSession(s.db, user, meta, s.SessionLifetime())
+}
+
+// DB is the service's database, for the sign-in handlers' history and captcha.
+func (s *UserService) DB() *gorm.DB { return s.db }
+
+// SessionLifetime is how long a sign-in lasts (Settings, System, Security).
+func (s *UserService) SessionLifetime() time.Duration {
+	return middleware.LoadSignInPolicy(s.db).SessionLifetime()
+}
+
+// dummyPasswordHash is a real bcrypt hash of nothing in particular, compared
+// against when the email is unknown.
+var dummyPasswordHash = sync.OnceValue(func() []byte {
+	h, _ := bcrypt.GenerateFromPassword([]byte("no such account"), bcrypt.DefaultCost)
+	return h
+})
+
+// AccountLockedError is returned while an account is locked after too many
+// failed sign-ins. Until is when it unlocks by itself.
+type AccountLockedError struct{ Until time.Time }
+
+func (e *AccountLockedError) Error() string {
+	return "account locked after too many failed sign-ins"
+}
+
+// Wait says how long is left, for a message: "1 minute", "15 minutes".
+func (e *AccountLockedError) Wait() string {
+	minutes := max(int(math.Ceil(time.Until(e.Until).Minutes())), 1)
+	if minutes == 1 {
+		return "1 minute"
+	}
+	return fmt.Sprintf("%d minutes", minutes)
+}
+
+// recordFailedSignIn counts one wrong password or code and locks the account
+// when the count reaches the operator's limit. Best-effort: a failed write is
+// logged and the sign-in is refused either way.
+func (s *UserService) recordFailedSignIn(user *models.User, clientIP string) {
+	policy := middleware.LoadSignInPolicy(s.db)
+	if policy.LockoutAttempts <= 0 {
+		return
+	}
+	if err := s.db.Table("users").Where("id = ?", user.ID).
+		Update("failed_login_count", gorm.Expr("failed_login_count + 1")).Error; err != nil {
+		slog.Default().Error("sign-in lockout: could not count a failed sign-in", "user_id", user.ID, "error", err)
+		return
+	}
+	until := time.Now().Add(time.Duration(policy.LockoutMinutes) * time.Minute)
+	// The count starts again once the lock is set, so an expired lock leaves a clean slate.
+	res := s.db.Table("users").Where("id = ? AND failed_login_count >= ?", user.ID, policy.LockoutAttempts).
+		Updates(map[string]interface{}{"locked_until": until, "failed_login_count": 0})
+	if res.Error != nil || res.RowsAffected != 1 {
+		return
+	}
+	slog.Default().Warn("account locked after failed sign-ins", "user_id", user.ID, "ip", clientIP, "until", until)
+	AuditUserEvent(context.Background(), s.db, "user.locked", "", user.ID.String(), clientIP, "", map[string]any{
+		"email": user.Email, "failed_attempts": policy.LockoutAttempts, "locked_until": until.UTC().Format(time.RFC3339),
+	})
+}
+
+// ClearSignInLock unlocks an account and forgets its failed sign-ins.
+func ClearSignInLock(ctx context.Context, db *gorm.DB, userID uuid.UUID) error {
+	return db.WithContext(ctx).Table("users").Where("id = ?", userID).
+		Updates(map[string]interface{}{"locked_until": nil, "failed_login_count": 0}).Error
 }
 
 // generateQRCode creates a QR code from the TOTP URL and returns it as base64 PNG
@@ -758,15 +926,20 @@ func (s *UserService) verifyBackupCode(user *models.User, code string) bool {
 		}
 
 		if bcrypt.CompareHashAndPassword([]byte(hashedCode), []byte(code)) == nil {
-			// Mark as used
 			storedCodes[i] = "USED"
-
-			// Save back to user
 			updatedCodes, _ := json.Marshal(storedCodes)
-			encryptedCodes, _ := s.encryptSecret(string(updatedCodes))
+			encryptedCodes, err := s.encryptSecret(string(updatedCodes))
+			if err != nil {
+				return false
+			}
+			// Conditional on the codes read above, so of two requests with the
+			// same code only one gets in.
+			res := s.db.Model(&models.User{}).Where("id = ? AND two_factor_backup_codes = ?", user.ID, user.TwoFactorBackupCodes).
+				Update("two_factor_backup_codes", encryptedCodes)
+			if res.Error != nil || res.RowsAffected != 1 {
+				return false
+			}
 			user.TwoFactorBackupCodes = encryptedCodes
-			s.db.Save(user)
-
 			return true
 		}
 	}

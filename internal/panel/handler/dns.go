@@ -157,7 +157,7 @@ func RegisterDNSRoutes(e *echo.Echo, h *DNSHandler, db *gorm.DB) {
 	g := e.Group("/api/v1/dns")
 	g.Use(panelMiddleware.RequireAuth(db))
 	read := panelMiddleware.RequirePermission("network:read")
-	admin := panelMiddleware.RequirePermission("admin:access")
+	admin := panelMiddleware.RequirePermission("network:update")
 
 	g.GET("/provider", h.GetProvider, read)
 	g.GET("/zones", h.ListZones, read)

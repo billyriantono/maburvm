@@ -1,6 +1,8 @@
 package middleware
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -15,13 +17,14 @@ import (
 	"gorm.io/gorm"
 )
 
-// JWT Claims keys for cookie storage
-const (
-	AccessTokenCookieName = "access_token"
-)
+// AccessTokenCookieName is the browser session cookie: HttpOnly, set by the
+// panel at sign-in. The name is the one the web app always used, so a session
+// started before the cookie became HttpOnly keeps working until it expires.
+const AccessTokenCookieName = "accessToken"
 
-// AccessTokenExpiry is the lifetime of the panel's single stateless access JWT.
-// There is no refresh stack, so this is the full session length.
+// AccessTokenExpiry is the built-in lifetime of the panel's single stateless
+// access JWT. There is no refresh stack, so this is the full session length
+// unless the operator set another one (SignInPolicy.SessionHours).
 const AccessTokenExpiry = 24 * time.Hour
 
 // Context keys
@@ -37,6 +40,11 @@ type JWTClaims struct {
 	Role        string   `json:"role"`
 	Permissions []string `json:"permissions"`
 	TokenType   string   `json:"token_type"`
+	// SessionID names the user_sessions row; empty on tokens minted before
+	// sessions were recorded, which stay valid until they expire.
+	SessionID string `json:"sid,omitempty"`
+	// Impersonator is the staff account viewing the panel as this user.
+	Impersonator string `json:"imp,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -52,6 +60,22 @@ type UserContext struct {
 	// owner (read-only or downgraded role); such keys can't manage credentials.
 	APIKeyReadOnly   bool
 	APIKeyRestricted bool
+	// APIKeyAddressLimited: the key has its own address list, so it must not
+	// mint a key or change the sign-in that would work from anywhere.
+	APIKeyAddressLimited bool
+	// APIKeyID is the key the request was made with; "" for sessions.
+	APIKeyID string
+	// APIKeyScope is the key's scope (models.APIKeyScope*); "" for sessions.
+	APIKeyScope string
+	// TwoFactorEnabled is the account's own setting. TwoFactorSetupRequired is
+	// set on a session held to the setup pages until two-factor is on.
+	TwoFactorEnabled       bool
+	TwoFactorSetupRequired bool
+	// StaffRole is a staff account's resolved role (empty for customers).
+	StaffRole StaffRole
+	// ImpersonatorID/Email name the staff account viewing as this user.
+	ImpersonatorID    string
+	ImpersonatorEmail string
 }
 
 // GetJWTSecret returns the JWT signing key. It resolves via secret.JWTSecret:
@@ -79,7 +103,7 @@ func GetPermissionsForRole(role models.UserRole) []string {
 			"backup:create", "backup:read", "backup:update", "backup:delete",
 			"network:create", "network:read", "network:update", "network:delete",
 			"floating_ip:read", "floating_ip:update", "floating_ip:create", "floating_ip:delete",
-			"vpc:read", "vpc:create", "vpc:delete",
+			"vpc:read", "vpc:create", "vpc:update", "vpc:delete",
 			"firewall:create", "firewall:read", "firewall:update", "firewall:delete",
 			"snapshot:create", "snapshot:read", "snapshot:update", "snapshot:delete",
 			"audit:read",
@@ -92,8 +116,8 @@ func GetPermissionsForRole(role models.UserRole) []string {
 		// applies to the caller's own resources — never other tenants'.
 		return []string{
 			"vm:create", "vm:read", "vm:update", "vm:delete",
-			"vm:lifecycle", "vm:console",
-			"backup:create", "backup:read", "backup:update", "backup:delete",
+			"vm:lifecycle", "vm:console", "vm:power", "vm:rescue", "vm:credentials",
+			"backup:create", "backup:read", "backup:update", "backup:delete", "backup:download",
 			"snapshot:create", "snapshot:read", "snapshot:update", "snapshot:delete",
 			// Floating IPs get their own permissions rather than reusing network:*,
 			// precisely because network:read would expose global IPAM (see below).
@@ -111,7 +135,9 @@ func GetPermissionsForRole(role models.UserRole) []string {
 			// every handler scopes by owner, and two tenants may hold identical
 			// subnets without interfering, so nothing about another tenant's
 			// topology is exposed.
-			"vpc:read", "vpc:create", "vpc:delete",
+			"vpc:read", "vpc:create", "vpc:update", "vpc:delete",
+			// Firewall groups: the handlers show and change only the caller's own.
+			"firewall_group:read", "firewall_group:update",
 			// NOTE: no "network:read". That permission gates GLOBAL, un-tenant-filtered
 			// IPAM (/ipam/pools/*) and DNS reads, which would let any client enumerate
 			// every tenant's IP↔VM↔node↔rDNS mapping. A client's own VM interfaces are
@@ -187,40 +213,76 @@ func extractAPIToken(c echo.Context) (string, bool) {
 	return "", false
 }
 
+// APIAccessEnabled reports whether API keys may be used: the "Enable API
+// access" switch under Settings, System, API. On unless an operator turned it
+// off; a missing or unreadable setting never locks the API.
+func APIAccessEnabled(db *gorm.DB) bool {
+	if db == nil {
+		return true
+	}
+	var raw string
+	if err := db.Raw("SELECT CAST(data AS TEXT) FROM system_settings WHERE section = 'api'").Scan(&raw).Error; err != nil || raw == "" {
+		return true
+	}
+	var cfg struct {
+		EnableAPI *bool `json:"enableApi"`
+	}
+	_ = json.Unmarshal([]byte(raw), &cfg)
+	return cfg.EnableAPI == nil || *cfg.EnableAPI
+}
+
+// errAPIKeyAddress refuses a valid key used from an address its owner or the
+// key itself does not allow.
+var errAPIKeyAddress = errors.New("api key used from an address it may not be used from")
+
 // authenticateAPIKey validates a presented API token against the database and,
 // on success, returns a populated UserContext. This lets automation clients call
 // the API with a long-lived key instead of a session JWT. The lookup is done
 // directly here (not via the service layer) to keep the middleware dependency-free.
-func authenticateAPIKey(db *gorm.DB, token string, clientIP string) (*UserContext, bool) {
+// A nil context with a nil error is an unknown, revoked or expired key.
+func authenticateAPIKey(db *gorm.DB, token string, clientIP string) (*UserContext, error) {
 	if db == nil {
-		return nil, false
+		return nil, nil
 	}
 	var key models.APIKey
 	if err := db.Where("key_hash = ?", models.HashAPIToken(token)).First(&key).Error; err != nil {
-		return nil, false
+		return nil, nil
 	}
 	if !key.IsValid() {
-		return nil, false
+		return nil, nil
 	}
 	var user models.User
-	if err := db.Where("id = ?", key.UserID).First(&user).Error; err != nil || user.DeletedAt.Valid || user.Expired() {
-		return nil, false
+	if err := db.Where("id = ?", key.UserID).First(&user).Error; err != nil || user.DeletedAt.Valid || user.Locked() {
+		return nil, nil
 	}
 	if len(user.IPWhitelist) > 0 && !isIPWhitelisted(clientIP, user.IPWhitelist) {
-		return nil, false
+		return nil, nil
+	}
+	if len(key.AllowedIPs) > 0 && !isIPWhitelisted(clientIP, key.AllowedIPs) {
+		return nil, errAPIKeyAddress
 	}
 	// Best-effort last-used bookkeeping; never blocks auth.
 	db.Model(&models.APIKey{}).Where("id = ?", key.ID).Update("last_used_at", time.Now())
 
 	role := key.EffectiveRole(user.Role)
-	return &UserContext{
-		ID:               user.ID,
-		Email:            user.Email,
-		Role:             role,
-		Permissions:      GetPermissionsForRole(role),
-		APIKeyReadOnly:   key.ReadOnly,
-		APIKeyRestricted: key.ReadOnly || role != user.Role,
-	}, true
+	scope := key.EffectiveScope()
+	u := &UserContext{
+		ID:                   user.ID,
+		Email:                user.Email,
+		Role:                 role,
+		Permissions:          GetPermissionsForRole(role),
+		APIKeyReadOnly:       scope == models.APIKeyScopeReadOnly,
+		APIKeyRestricted:     scope != models.APIKeyScopeFull || role != user.Role,
+		APIKeyAddressLimited: len(key.AllowedIPs) > 0,
+		APIKeyID:             key.ID,
+		APIKeyScope:          scope,
+	}
+	// A staff key does what its owner's staff role allows, as it is now.
+	if role == models.RoleAdmin {
+		u.StaffRole, u.Permissions = ResolveStaffRole(context.Background(), db, &user)
+	}
+	u.Permissions = ScopePermissions(scope, u.Permissions)
+	return u, nil
 }
 
 // allowReadOnlyKeyCtx marks a route whose unsafe method is only a transport
@@ -240,14 +302,19 @@ func AllowReadOnlyKey(next echo.HandlerFunc) echo.HandlerFunc {
 // apiKeyScopeError returns why a scoped key may not make this request, or "".
 func apiKeyScopeError(c echo.Context, u *UserContext) string {
 	req := c.Request()
-	if u.APIKeyReadOnly && c.Get(allowReadOnlyKeyCtx) == nil &&
+	transport := c.Get(allowReadOnlyKeyCtx) != nil
+	if u.APIKeyReadOnly && !transport &&
 		req.Method != http.MethodGet && req.Method != http.MethodHead && req.Method != http.MethodOptions {
 		return "This API key is read-only"
 	}
+	if !transport && !ScopeAllowsRoute(u.APIKeyScope, req.Method, c.Path()) {
+		return apiKeyScopeWords[u.APIKeyScope]
+	}
 	// A restricted key must not be able to mint a broader key or take over
-	// the account (password, 2FA, profile).
-	if u.APIKeyRestricted {
-		for _, p := range []string{"/api/v1/api-keys", "/api/v1/settings"} {
+	// the account (password, 2FA, profile), nor let someone else in through
+	// the account's team.
+	if u.APIKeyRestricted || u.APIKeyAddressLimited {
+		for _, p := range []string{"/api/v1/api-keys", "/api/v1/settings", "/api/v1/account"} {
 			if req.URL.Path == p || strings.HasPrefix(req.URL.Path, p+"/") {
 				return "This API key may not manage account settings or API keys"
 			}
@@ -263,8 +330,21 @@ func RequireAuth(db *gorm.DB) echo.MiddlewareFunc {
 			// API-key auth (automation clients) takes precedence when a key is
 			// explicitly presented; an invalid key is rejected, not fallen through.
 			if token, ok := extractAPIToken(c); ok {
-				userCtx, ok := authenticateAPIKey(db, token, c.RealIP())
-				if !ok {
+				if !APIAccessEnabled(db) {
+					return c.JSON(http.StatusForbidden, map[string]interface{}{
+						"error":   "Forbidden",
+						"message": "API access is turned off on this panel",
+					})
+				}
+				userCtx, kerr := authenticateAPIKey(db, token, c.RealIP())
+				if kerr != nil {
+					return c.JSON(http.StatusForbidden, map[string]interface{}{
+						"error":   "Forbidden",
+						"code":    "api_key_address",
+						"message": "This API key may not be used from this address",
+					})
+				}
+				if userCtx == nil {
 					return c.JSON(http.StatusUnauthorized, map[string]interface{}{
 						"error":   "Unauthorized",
 						"message": "Invalid or expired API key",
@@ -276,15 +356,22 @@ func RequireAuth(db *gorm.DB) echo.MiddlewareFunc {
 						"message": msg,
 					})
 				}
+				if limited, err := limitAPI(c, db, "key:"+userCtx.APIKeyID); limited {
+					return err
+				}
 				c.Set(UserContextKey, userCtx)
+				if refused, err := refuseInMaintenance(c, db, userCtx); refused {
+					return err
+				}
 				return next(c)
 			}
 
-			// Try to extract token from cookie first, then header
+			// The session cookie first (the browser), then a Bearer header.
 			var tokenString string
 			var err error
 
 			tokenString, err = extractTokenFromCookie(c, AccessTokenCookieName)
+			fromCookie := err == nil
 			if err != nil {
 				tokenString, err = extractTokenFromHeader(c)
 				if err != nil {
@@ -293,6 +380,27 @@ func RequireAuth(db *gorm.DB) echo.MiddlewareFunc {
 						"message": "Access token required",
 					})
 				}
+			}
+			handler := next
+			if fromCookie {
+				// A cookie is sent by the browser on its own, so a cross-site
+				// page must not be able to make a change with it (SameSite=Lax
+				// already stops most of that; this covers the rest).
+				if crossSiteWrite(c.Request()) {
+					return c.JSON(http.StatusForbidden, map[string]interface{}{
+						"error":   "Forbidden",
+						"message": "Cross-site request refused",
+					})
+				}
+				// A session the panel no longer accepts is dropped from the
+				// browser, so the sign-in page does not bounce straight back.
+				authed := false
+				c.Response().Before(func() {
+					if !authed && c.Response().Status == http.StatusUnauthorized {
+						ClearSessionCookie(c)
+					}
+				})
+				handler = func(c echo.Context) error { authed = true; return next(c) }
 			}
 
 			// Parse and validate the token
@@ -345,6 +453,13 @@ func RequireAuth(db *gorm.DB) echo.MiddlewareFunc {
 						"message": "User account is deactivated",
 					})
 				}
+				if user.Suspended() {
+					return c.JSON(http.StatusUnauthorized, map[string]interface{}{
+						"error":   "Unauthorized",
+						"code":    "account_suspended",
+						"message": "This account is suspended. Contact support.",
+					})
+				}
 
 				// Enforce logout-based revocation: reject any token minted before the
 				// user's revocation cutoff. NULL cutoff (never logged out) allows all.
@@ -359,20 +474,76 @@ func RequireAuth(db *gorm.DB) echo.MiddlewareFunc {
 					})
 				}
 
+				// A session the user or staff revoked ends here, whatever the token says.
+				var viewedBy *uuid.UUID
+				var viewSince time.Time
+				if claims.SessionID != "" {
+					sess, status, msg := checkSession(db, claims, user.ID)
+					if sess == nil {
+						return c.JSON(status, map[string]interface{}{"error": http.StatusText(status), "message": msg})
+					}
+					viewedBy, viewSince = sess.ImpersonatorID, sess.CreatedAt
+				}
+				if claims.Impersonator != "" && (viewedBy == nil || viewedBy.String() != claims.Impersonator) {
+					return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized", "message": "Session has been revoked"})
+				}
+
+				// Viewing as a customer: the staff account must still be allowed to,
+				// its own IP allow-list applies, and some things stay off limits.
+				allowList := user.IPWhitelist
+				var staff *models.User
+				if claims.Impersonator != "" {
+					staff = impersonatingStaff(c.Request().Context(), db, claims.Impersonator, viewSince)
+					if staff == nil {
+						return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized", "message": "This view of the customer's account has ended"})
+					}
+					if impersonationForbidden(c.Request().Method, c.Request().URL.Path) {
+						return c.JSON(http.StatusForbidden, map[string]interface{}{
+							"error":   "Forbidden",
+							"code":    "impersonation_forbidden",
+							"message": "Not while viewing as a customer: their password, email, two-factor, sessions, API keys and initial passwords stay theirs.",
+						})
+					}
+					allowList = staff.IPWhitelist
+				}
+
 				// Enforce per-user IP whitelist (opt-in: empty list allows any IP).
-				if len(user.IPWhitelist) > 0 && !isIPWhitelisted(c.RealIP(), user.IPWhitelist) {
+				if len(allowList) > 0 && !isIPWhitelisted(c.RealIP(), allowList) {
 					return c.JSON(http.StatusForbidden, map[string]interface{}{
 						"error":   "Forbidden",
 						"message": "Your IP address is not whitelisted for this account",
 					})
 				}
 
+				// Staff must have two-factor on when the operator requires it. Until
+				// then the session reaches only the pages that set it up. API keys
+				// are automation and are not held to this.
+				setupRequired := user.Role == models.RoleAdmin && !user.TwoFactorEnabled && LoadSignInPolicy(db).RequireStaff2FA
+				if setupRequired && !isTwoFactorSetupPath(c.Request().URL.Path) {
+					return c.JSON(http.StatusForbidden, map[string]interface{}{
+						"error":   "Forbidden",
+						"code":    "two_factor_required",
+						"message": "Set up two-factor authentication to continue",
+					})
+				}
+
 				// Create user context from DB user
 				userCtx := &UserContext{
-					ID:          user.ID,
-					Email:       user.Email,
-					Role:        user.Role,
-					Permissions: GetPermissionsForRole(user.Role),
+					ID:                     user.ID,
+					Email:                  user.Email,
+					Role:                   user.Role,
+					Permissions:            GetPermissionsForRole(user.Role),
+					SessionID:              claims.SessionID,
+					TwoFactorEnabled:       user.TwoFactorEnabled,
+					TwoFactorSetupRequired: setupRequired,
+				}
+				if user.Role == models.RoleAdmin {
+					userCtx.StaffRole, userCtx.Permissions = ResolveStaffRole(c.Request().Context(), db, &user)
+				}
+				if staff != nil {
+					userCtx.ImpersonatorID, userCtx.ImpersonatorEmail = staff.ID.String(), staff.Email
+					c.SetRequest(c.Request().WithContext(models.WithImpersonator(c.Request().Context(),
+						models.Impersonator{ID: userCtx.ImpersonatorID, Email: staff.Email})))
 				}
 
 				c.Set(UserContextKey, userCtx)
@@ -390,9 +561,65 @@ func RequireAuth(db *gorm.DB) echo.MiddlewareFunc {
 				c.Set(ClaimsContextKey, claims)
 			}
 
-			return next(c)
+			if u, _ := GetUserContext(c); u != nil {
+				if limited, err := limitAPI(c, db, "user:"+u.ID.String()); limited {
+					return err
+				}
+				if refused, err := refuseInMaintenance(c, db, u); refused {
+					return err
+				}
+			}
+			return handler(c)
 		}
 	}
+}
+
+// crossSiteWrite reports a state-changing request a browser marked as coming
+// from another origin. The web app is always same-origin; "same-site" is
+// refused too, because SameSite=Lax does not stop a sibling subdomain (a VM
+// hostname under the panel's domain). Browsers that send no Sec-Fetch-Site are
+// left to SameSite=Lax.
+func crossSiteWrite(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return false
+	}
+	site := r.Header.Get("Sec-Fetch-Site")
+	return site == "cross-site" || site == "same-site"
+}
+
+// SetSessionCookie stores a session in the browser: HttpOnly so no script can
+// read it, SameSite=Lax, and Secure whenever the browser reached the panel
+// over https (directly or through the proxy, per X-Forwarded-Proto).
+func SetSessionCookie(c echo.Context, token string, lifetime time.Duration) {
+	c.SetCookie(&http.Cookie{Name: AccessTokenCookieName, Value: token, Path: "/", MaxAge: int(lifetime.Seconds()),
+		HttpOnly: true, Secure: requestIsHTTPS(c), SameSite: http.SameSiteLaxMode})
+}
+
+// ClearSessionCookie removes the session cookie from the browser.
+func ClearSessionCookie(c echo.Context) {
+	c.SetCookie(&http.Cookie{Name: AccessTokenCookieName, Value: "", Path: "/", MaxAge: -1,
+		HttpOnly: true, Secure: requestIsHTTPS(c), SameSite: http.SameSiteLaxMode})
+}
+
+// DropSessionCookie clears the session cookie on the way in, so signing out
+// ends the browser's session even when the panel refuses it with a 403 (an IP
+// allow-list): no script can remove an HttpOnly cookie.
+func DropSessionCookie(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		if !crossSiteWrite(c.Request()) {
+			ClearSessionCookie(c)
+		}
+		return next(c)
+	}
+}
+
+func requestIsHTTPS(c echo.Context) bool {
+	if c.IsTLS() {
+		return true
+	}
+	proto, _, _ := strings.Cut(c.Request().Header.Get(echo.HeaderXForwardedProto), ",")
+	return strings.EqualFold(strings.TrimSpace(proto), "https")
 }
 
 // OptionalAuth middleware attempts to authenticate but doesn't require it
@@ -486,16 +713,7 @@ func GetClaims(c echo.Context) (*JWTClaims, bool) {
 // HasPermission checks if the authenticated user has a specific permission
 func HasPermission(c echo.Context, permission string) bool {
 	user, ok := GetUserContext(c)
-	if !ok {
-		return false
-	}
-
-	for _, p := range user.Permissions {
-		if p == permission || p == "admin:access" {
-			return true
-		}
-	}
-	return false
+	return ok && user.Can(permission)
 }
 
 // RequirePermission creates middleware that requires a specific permission
@@ -517,21 +735,33 @@ func RequirePermission(permission string) echo.MiddlewareFunc {
 // access JWT signed with the shared JWT secret, carrying the user's id/email/role/
 // permissions, a jti, and an iat that logout revocation (users.token_revoked_at)
 // compares against. There is no refresh/server-session stack — this token,
-// validated by RequireAuth, IS the session.
-func GenerateAccessToken(user *models.User) (string, error) {
+// validated by RequireAuth, IS the session. lifetime is the operator's session
+// length (SignInPolicy.SessionLifetime); without it the built-in one applies.
+func GenerateAccessToken(user *models.User, lifetime ...time.Duration) (string, error) {
+	ttl := AccessTokenExpiry
+	if len(lifetime) > 0 && lifetime[0] > 0 {
+		ttl = lifetime[0]
+	}
+	return mintToken(user, "", "", ttl)
+}
+
+// mintToken signs an access token; sid and imp may be empty.
+func mintToken(user *models.User, sid, imp string, ttl time.Duration) (string, error) {
 	secret, err := GetJWTSecret()
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve JWT secret: %w", err)
 	}
 	now := time.Now()
 	claims := JWTClaims{
-		UserID:      user.ID.String(),
-		Email:       user.Email,
-		Role:        string(user.Role),
-		Permissions: GetPermissionsForRole(user.Role),
-		TokenType:   "access",
+		UserID:       user.ID.String(),
+		Email:        user.Email,
+		Role:         string(user.Role),
+		Permissions:  GetPermissionsForRole(user.Role),
+		TokenType:    "access",
+		SessionID:    sid,
+		Impersonator: imp,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(now.Add(AccessTokenExpiry)),
+			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 			IssuedAt:  jwt.NewNumericDate(now),
 			NotBefore: jwt.NewNumericDate(now),
 			Subject:   user.ID.String(),
@@ -540,4 +770,20 @@ func GenerateAccessToken(user *models.User) (string, error) {
 		},
 	}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(secret)
+}
+
+// impersonatingStaff loads the staff account behind a view as a customer, or
+// nil when it may no longer do that. A staff password change or "sign out
+// everywhere" after the view opened ends the view too.
+func impersonatingStaff(ctx context.Context, db *gorm.DB, id string, since time.Time) *models.User {
+	var staff models.User
+	if db.WithContext(ctx).Where("id = ?", id).First(&staff).Error != nil ||
+		staff.Role != models.RoleAdmin || staff.Locked() ||
+		(staff.TokenRevokedAt != nil && since.Before(*staff.TokenRevokedAt)) {
+		return nil
+	}
+	if _, perms := ResolveStaffRole(ctx, db, &staff); !Can(perms, PermImpersonate) {
+		return nil
+	}
+	return &staff
 }

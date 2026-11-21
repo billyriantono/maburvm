@@ -23,16 +23,30 @@ const SettingsSectionQuotas = "quotas"
 const (
 	DefaultVPCsPerUser        = 5
 	DefaultFloatingIPsPerUser = 3
+	// DefaultPortForwardsPerVM: each forward takes a port on the node's one
+	// public address away from every other VM on that node.
+	DefaultPortForwardsPerVM = 20
+	// DefaultFirewallRulesPerVM: every VM's rules share one chain on its node,
+	// so each rule slows new connections for every tenant there a little.
+	DefaultFirewallRulesPerVM = 100
+
+	// What a new customer account may hold before an operator says otherwise:
+	// enough for a first server, not an open tab on the nodes.
+	DefaultNewClientMaxVMs    = 2
+	DefaultNewClientMaxVCPU   = 4
+	DefaultNewClientMaxRAMMB  = 8192
+	DefaultNewClientMaxDiskGB = 100
 
 	// DefaultRAMOvercommitRatio is 0, meaning "no node RAM limit at all" —
 	// which is what the panel did before overcommit existed. Defaulting to a
 	// real ratio would start rejecting provisioning that works today the
 	// moment this ships, so RAM overcommit is opt-in.
 	DefaultRAMOvercommitRatio = 0.0
-	// DefaultDiskOvercommitRatio is 1.0: admit against the pool's real free
-	// space, exactly as PoolFits did before. Raising it trades safety for
-	// density, betting that thin-provisioned guests will not all fill up.
-	DefaultDiskOvercommitRatio = 1.0
+	// DefaultDiskAllocationRatio is 0, meaning "no cap on allocated disk":
+	// live pools already carry more virtual disk than they have bytes, so any
+	// real default would refuse orders that work today. The free-space floor
+	// in PoolFits applies whatever this is.
+	DefaultDiskAllocationRatio = 0.0
 )
 
 // quotaSettings is the shape stored under the 'quotas' section. The JSON names
@@ -40,11 +54,29 @@ const (
 type quotaSettings struct {
 	VPCMaxPerUser        *int `json:"vpcMaxPerUser"`
 	FloatingIPMaxPerUser *int `json:"floatingIpMaxPerUser"`
+	PortForwardMaxPerVM  *int `json:"portForwardMaxPerVm"`
+	FirewallRuleMaxPerVM *int `json:"firewallRuleMaxPerVm"`
+	// What customers may do on their own. Unset = allowed.
+	ClientOrderingEnabled   *bool `json:"clientOrderingEnabled"`
+	ClientCloneEnabled      *bool `json:"clientCloneEnabled"`
+	ClientExtraDisksEnabled *bool `json:"clientExtraDisksEnabled"`
+	// Whether a customer may delete a VM a billing service pays for. Unset = no.
+	ClientDeleteBilledEnabled *bool `json:"clientDeleteBilledEnabled"`
+	// The quota a new customer account starts with. 0 = no limit.
+	NewClientMaxVMs    *int `json:"newClientMaxVms"`
+	NewClientMaxVCPU   *int `json:"newClientMaxVcpu"`
+	NewClientMaxRAMMB  *int `json:"newClientMaxRamMb"`
+	NewClientMaxDiskGB *int `json:"newClientMaxDiskGb"`
 	// Overcommit ratios are node-capacity limits rather than per-account ones,
 	// but they live in the same section so the admin page keeps a single
 	// "limits" form instead of growing a tab for two numbers.
-	RAMOvercommitRatio  *float64 `json:"ramOvercommitRatio"`
-	DiskOvercommitRatio *float64 `json:"diskOvercommitRatio"`
+	RAMOvercommitRatio *float64 `json:"ramOvercommitRatio"`
+	// Stored under its own key: the older diskOvercommitRatio multiplied free
+	// space and was saved as 1 by the form's default, which under this meaning
+	// would refuse every order on a pool already past 1.0x.
+	DiskAllocationRatio *float64 `json:"diskAllocationRatio"`
+	// How many vCPUs a node may carry per logical CPU. A node's own ratio wins.
+	VCPUAllocationRatio *float64 `json:"vcpuAllocationRatio"`
 }
 
 // loadQuotaSettings reads the admin-managed limits. A missing row, unset field
@@ -57,7 +89,7 @@ func loadQuotaSettings(ctx context.Context, db *gorm.DB) quotaSettings {
 	}
 	var raw string
 	if err := db.WithContext(ctx).
-		Raw("SELECT data::text FROM system_settings WHERE section = ?", SettingsSectionQuotas).
+		Raw("SELECT CAST(data AS TEXT) FROM system_settings WHERE section = ?", SettingsSectionQuotas).
 		Scan(&raw).Error; err != nil || raw == "" {
 		return out
 	}
@@ -81,6 +113,22 @@ func FloatingIPsPerUser(ctx context.Context, db *gorm.DB) int {
 	return DefaultFloatingIPsPerUser
 }
 
+// PortForwardsPerVM is how many port forwards one VM may hold.
+func PortForwardsPerVM(ctx context.Context, db *gorm.DB) int {
+	if v := loadQuotaSettings(ctx, db).PortForwardMaxPerVM; v != nil && *v > 0 {
+		return *v
+	}
+	return DefaultPortForwardsPerVM
+}
+
+// FirewallRulesPerVM is how many firewall rules one VM may hold.
+func FirewallRulesPerVM(ctx context.Context, db *gorm.DB) int {
+	if v := loadQuotaSettings(ctx, db).FirewallRuleMaxPerVM; v != nil && *v > 0 {
+		return *v
+	}
+	return DefaultFirewallRulesPerVM
+}
+
 // RAMOvercommitRatio is how many times a node's physical RAM may be allocated
 // to VMs. 0 disables the check entirely (unlimited), which is the default —
 // overselling RAM is normal in hosting, and guests rarely touch all of it.
@@ -95,14 +143,26 @@ func RAMOvercommitRatio(ctx context.Context, db *gorm.DB) float64 {
 	return DefaultRAMOvercommitRatio
 }
 
-// DiskOvercommitRatio multiplies a storage pool's free space when deciding
-// whether a new or grown disk fits. qcow2 images are thin-provisioned, so a
-// pool can safely carry far more allocated disk than it has bytes — but only
-// until the guests actually write. 1.0 keeps admission pinned to real free
-// space.
-func DiskOvercommitRatio(ctx context.Context, db *gorm.DB) float64 {
-	if v := loadQuotaSettings(ctx, db).DiskOvercommitRatio; v != nil && *v > 0 {
+// DiskAllocationRatio is how many times a storage pool's capacity may be
+// promised to VM disks. qcow2 images are thin, so a pool can carry more
+// allocated disk than it has bytes, but only until the guests write: a pool that
+// fills pauses every VM on it. 0 disables the cap, which is the default.
+func DiskAllocationRatio(ctx context.Context, db *gorm.DB) float64 {
+	if v := loadQuotaSettings(ctx, db).DiskAllocationRatio; v != nil && *v > 0 {
 		return *v
 	}
-	return DefaultDiskOvercommitRatio
+	return DefaultDiskAllocationRatio
+}
+
+// VCPUAllocationRatio is how many vCPUs a node may carry per logical CPU: the
+// node's own ratio when it has one, else the panel-wide one. 0 is no cap, the
+// default, so nodes already carrying many vCPUs keep taking orders.
+func VCPUAllocationRatio(ctx context.Context, db *gorm.DB, nodeRatio float64) float64 {
+	if nodeRatio > 0 {
+		return nodeRatio
+	}
+	if v := loadQuotaSettings(ctx, db).VCPUAllocationRatio; v != nil && *v > 0 {
+		return *v
+	}
+	return 0
 }

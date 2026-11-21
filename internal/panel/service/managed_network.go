@@ -198,3 +198,42 @@ func (s *ManagedNetworkService) agentClient(ctx context.Context, nodeID string) 
 	authCtx := metadata.NewOutgoingContext(ctx, metadata.New(map[string]string{"authorization": "Bearer " + node.Token}))
 	return pb.NewNodeAgentClient(conn), authCtx, func() { _ = conn.Close() }, nil
 }
+
+// ReconcileNodeVPCs sends every VPC on a node to it again. Creating a VPC is
+// idempotent on the node and repairs what is missing, so this is what puts a
+// VPC back after a reboot wiped its namespace and bridge, and what tells a
+// newer agent about VPCs it should rebuild by itself at the next boot.
+func (s *ManagedNetworkService) ReconcileNodeVPCs(ctx context.Context, nodeID string) error {
+	nets, err := s.repo.List(ctx)
+	if err != nil {
+		return err
+	}
+	var vpcs []models.ManagedNetwork
+	for _, n := range nets {
+		if n.Type == NetworkTypeVPC && n.NodeID != nil && *n.NodeID == nodeID {
+			vpcs = append(vpcs, n)
+		}
+	}
+	if len(vpcs) == 0 {
+		return nil
+	}
+	client, authCtx, closeConn, err := s.agentClient(ctx, nodeID)
+	if err != nil {
+		return err
+	}
+	defer closeConn()
+	var failed []string
+	for _, n := range vpcs {
+		resp, err := client.ConfigureVPC(authCtx, &pb.VPCRequest{VpcId: n.ID, Subnet: n.Subnet, Gateway: n.Gateway, Create: true})
+		if err == nil && !resp.GetSuccess() {
+			err = fmt.Errorf("%s", agentErrorMessage(resp.GetError()))
+		}
+		if err != nil {
+			failed = append(failed, fmt.Sprintf("%s: %v", n.ID, err))
+		}
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("VPCs not re-applied: %v", failed)
+	}
+	return nil
+}

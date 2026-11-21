@@ -295,26 +295,25 @@ func (c *AgentClient) getConnection(ctx context.Context, node NodeInfo) (*Pooled
 		return conn, nil
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Double-check after acquiring write lock
-	if conn, exists := c.connections[node.ID]; exists && conn.IsHealthy() {
-		atomic.StoreInt64(&conn.lastUsed, time.Now().UnixNano())
-		return conn, nil
-	}
-
-	// Close existing connection if unhealthy
-	if exists && conn != nil {
-		_ = conn.Close()
-	}
-
-	// Create new connection with retry
+	// Dial without the lock. Held across the dial, one node that accepts the
+	// connection and then hangs stalled every call to every other node until
+	// its dial timed out.
 	newConn, err := c.connectWithRetry(ctx, node)
 	if err != nil {
 		return nil, err
 	}
 
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cur, ok := c.connections[node.ID]; ok && cur != nil {
+		if cur.IsHealthy() {
+			// Another caller connected while this one dialed: keep theirs.
+			_ = newConn.Close()
+			atomic.StoreInt64(&cur.lastUsed, time.Now().UnixNano())
+			return cur, nil
+		}
+		_ = cur.Close()
+	}
 	c.connections[node.ID] = newConn
 	return newConn, nil
 }
@@ -670,6 +669,9 @@ type NodeSystemInfo struct {
 	AgentCommit    string
 	AgentBuildTime string
 	AgentVersion   string
+	// AgentSettings is the agent's own environment, non-secret values only;
+	// empty from an agent older than the report.
+	AgentSettings map[string]string
 	// Live metrics
 	CpuPercent           float64
 	MemoryUsedBytes      int64
@@ -721,6 +723,7 @@ func (c *AgentClient) GetNodeInfo(ctx context.Context, nodeID string) (*NodeSyst
 			AgentCommit:          resp.GetAgentCommit(),
 			AgentBuildTime:       resp.GetAgentBuildTime(),
 			AgentVersion:         resp.GetAgentVersion(),
+			AgentSettings:        resp.GetAgentSettings(),
 			CpuPercent:           resp.GetCpuPercent(),
 			MemoryUsedBytes:      resp.GetMemoryUsedBytes(),
 			MemoryUsedPercent:    resp.GetMemoryUsedPercent(),
@@ -776,6 +779,19 @@ type LiveMetricsResult struct {
 	// exactly the failure this exists to catch.
 	ConntrackCount int64
 	ConntrackMax   int64
+
+	// FirewallEnforcement is "enforced" or "off"; NATAddress is where the node
+	// publishes port forwards. Both are empty from an agent too old to report
+	// them, which callers must treat as unknown.
+	FirewallEnforcement string
+	NATAddress          string
+
+	// GuestNetworkPending lists VMs whose guest still waits for an address
+	// change; NetworkRepairs counts host-rule repairs since the agent started,
+	// NetworkRepairLast says the last one. All empty from an older agent.
+	GuestNetworkPending []string
+	NetworkRepairs      int64
+	NetworkRepairLast   string
 }
 
 // GetLiveMetrics retrieves real-time system metrics from a node without the
@@ -819,6 +835,11 @@ func (c *AgentClient) GetLiveMetrics(ctx context.Context, nodeID string) (*LiveM
 			AvailableDiskGb:      resp.GetAvailableDiskGb(),
 			ConntrackCount:       resp.GetConntrackCount(),
 			ConntrackMax:         resp.GetConntrackMax(),
+			FirewallEnforcement:  resp.GetFirewallEnforcement(),
+			NATAddress:           resp.GetNatAddress(),
+			GuestNetworkPending:  resp.GetGuestNetworkPending(),
+			NetworkRepairs:       resp.GetNetworkRepairs(),
+			NetworkRepairLast:    resp.GetNetworkRepairLast(),
 		}
 		return nil
 	})
@@ -990,19 +1011,41 @@ type GuestConnectionReport struct {
 	InterfaceName string
 	SYNPackets    int64
 	Quarantined   bool
+	// SYNInPackets, PacketsOut and PacketsIn are cumulative too; an agent
+	// older than them reports zeros.
+	SYNInPackets int64
+	PacketsOut   int64
+	PacketsIn    int64
+}
+
+// NullRoute is an address a node drops all traffic to until Until.
+type NullRoute struct {
+	IP     string
+	Until  time.Time
+	Reason string
+}
+
+func nullRoutesFromPB(in []*pb.NullRoute) []NullRoute {
+	out := make([]NullRoute, 0, len(in))
+	for _, r := range in {
+		out = append(out, NullRoute{IP: r.GetIp(), Until: time.Unix(r.GetUntilUnix(), 0), Reason: r.GetReason()})
+	}
+	return out
 }
 
 // GetGuestConnections asks a node how fast each of its guests is opening new
-// outbound connections. The node answers for every libvirt domain it has,
-// including guests the panel does not manage — which is the whole point, since
-// those are invisible to every other view in the panel.
-func (c *AgentClient) GetGuestConnections(ctx context.Context, nodeID string) ([]GuestConnectionReport, error) {
+// connections and moving packets, and which null-routes it has in force. The
+// node answers for every libvirt domain it has, including guests the panel does
+// not manage — which is the whole point, since those are invisible to every
+// other view in the panel.
+func (c *AgentClient) GetGuestConnections(ctx context.Context, nodeID string) ([]GuestConnectionReport, []NullRoute, error) {
 	node, err := c.getNodeInfo(nodeID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var out []GuestConnectionReport
+	var routes []NullRoute
 	err = c.executeWithRetry(ctx, node, func(ctx context.Context, client pb.NodeAgentClient) error {
 		resp, err := client.GetGuestConnections(ctx, &pb.GetGuestConnectionsRequest{})
 		if err != nil {
@@ -1019,14 +1062,44 @@ func (c *AgentClient) GetGuestConnections(ctx context.Context, nodeID string) ([
 				InterfaceName: g.GetInterfaceName(),
 				SYNPackets:    g.GetSynPackets(),
 				Quarantined:   g.GetQuarantined(),
+				SYNInPackets:  g.GetSynInPackets(),
+				PacketsOut:    g.GetPacketsOut(),
+				PacketsIn:     g.GetPacketsIn(),
 			})
 		}
+		routes = nullRoutesFromPB(resp.GetNullRoutes())
 		return nil
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return out, routes, nil
+}
+
+// SetNullRoute drops all traffic to ip on a node for the given minutes, or
+// lifts it. Not retried: an older agent answers Unimplemented, which is an
+// answer, and the caller tells the operator to update it.
+func (c *AgentClient) SetNullRoute(ctx context.Context, nodeID, ip string, minutes int, reason string, on bool) ([]NullRoute, error) {
+	node, err := c.getNodeInfo(nodeID)
+	if err != nil {
+		return nil, err
+	}
+	pc, err := c.getConnection(ctx, node)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	resp, err := pc.client.SetNullRoute(c.createAuthContext(ctx, pc.token), &pb.SetNullRouteRequest{
+		Ip: ip, Minutes: int32(minutes), On: on, Reason: reason,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	if !resp.GetSuccess() {
+		return nil, fmt.Errorf("the node refused the null-route: %s", resp.GetError().GetMessage())
+	}
+	return nullRoutesFromPB(resp.GetNullRoutes()), nil
 }
 
 // SetQuarantine cuts a guest off the network, or puts it back, without stopping
@@ -1069,6 +1142,9 @@ type PoolCapacity struct {
 	Used       int64
 	Available  int64
 	Filesystem string
+	// Problem says why the node cannot use a path that exists: a shared pool
+	// that is not mounted there.
+	Problem string
 }
 
 // DiskLocation is a directory a node's domains actually keep disks in.
@@ -1077,10 +1153,12 @@ type DiskLocation struct {
 	DiskCount int
 }
 
-// StorageReport is what a node knows about its own storage.
+// StorageReport is what a node knows about its own storage. LVMPools is
+// empty from an agent that predates LVM pools.
 type StorageReport struct {
 	Pools         []PoolCapacity
 	DiskLocations []DiskLocation
+	LVMPools      []*pb.LVMPoolCapacity
 }
 
 // GetStorageReport measures each pool path on the node and reports where its
@@ -1089,7 +1167,7 @@ type StorageReport struct {
 // Paths are measured individually because pools on one node routinely sit on
 // different filesystems — deriving them all from the node's root filesystem is
 // the bug this replaces.
-func (c *AgentClient) GetStorageReport(ctx context.Context, nodeID string, paths []string) (*StorageReport, error) {
+func (c *AgentClient) GetStorageReport(ctx context.Context, nodeID string, paths []string, lvmPools []*pb.LVMPool) (*StorageReport, error) {
 	node, err := c.getNodeInfo(nodeID)
 	if err != nil {
 		return nil, err
@@ -1097,14 +1175,14 @@ func (c *AgentClient) GetStorageReport(ctx context.Context, nodeID string, paths
 
 	var out *StorageReport
 	err = c.executeWithRetry(ctx, node, func(ctx context.Context, client pb.NodeAgentClient) error {
-		resp, err := client.GetStorageReport(ctx, &pb.GetStorageReportRequest{Paths: paths})
+		resp, err := client.GetStorageReport(ctx, &pb.GetStorageReportRequest{Paths: paths, LvmPools: lvmPools})
 		if err != nil {
 			return err
 		}
 		if !resp.Success {
 			return fmt.Errorf("GetStorageReport failed: %s", resp.Error.GetMessage())
 		}
-		report := &StorageReport{}
+		report := &StorageReport{LVMPools: resp.GetLvmPools()}
 		for _, p := range resp.GetPools() {
 			report.Pools = append(report.Pools, PoolCapacity{
 				Path:       p.GetPath(),
@@ -1113,6 +1191,7 @@ func (c *AgentClient) GetStorageReport(ctx context.Context, nodeID string, paths
 				Used:       p.GetUsedBytes(),
 				Available:  p.GetAvailableBytes(),
 				Filesystem: p.GetFilesystem(),
+				Problem:    p.GetProblem(),
 			})
 		}
 		for _, l := range resp.GetDiskLocations() {

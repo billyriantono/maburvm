@@ -68,3 +68,13 @@ func Machine(osType string) string {
 	}
 	return "q35"
 }
+
+// DiskArgs names a disk to libguestfs. A block device holds a raw disk whose
+// bytes the guest wrote: left to probing, a planted image header could make
+// libguestfs open a host file named in it.
+func DiskArgs(path string) []string {
+	if models.IsBlockDevicePath(path) {
+		return []string{"--format=raw", "-a", path}
+	}
+	return []string{"-a", path}
+}

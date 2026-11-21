@@ -40,8 +40,10 @@ func (h *MetricsHandler) GetNodeMetricsHistory(c echo.Context) error {
 }
 
 // GetVMMetricsHistory handles GET /api/v1/vms/:id/metrics/history.
-// Query params: minutes (window, default 60, max 10080 = the 7 days kept),
-// limit (most points returned, default 500, max 5000; longer windows are averaged down to it).
+// Query params: minutes (window, default 60, up to two years: the last 7 days
+// are raw samples, then hourly averages for the graph history the customer
+// area keeps, 90 days unless changed, then daily averages), limit (most
+// points returned, default 500, max 5000; longer windows are averaged down to it).
 func (h *MetricsHandler) GetVMMetricsHistory(c echo.Context) error {
 	id := c.Param("id")
 
@@ -50,7 +52,8 @@ func (h *MetricsHandler) GetVMMetricsHistory(c echo.Context) error {
 		return nil
 	}
 
-	minutes := clampInt(c.QueryParam("minutes"), 60, 1, 10080)
+	maxMinutes := max(service.LoadPortalSettings(c.Request().Context(), h.service.DB()).GraphDays(), service.DailyMetricsDays) * 24 * 60
+	minutes := clampInt(c.QueryParam("minutes"), 60, 1, maxMinutes)
 	limit := clampInt(c.QueryParam("limit"), 500, 1, 5000)
 
 	samples, err := h.service.VMHistory(c.Request().Context(), id, time.Duration(minutes)*time.Minute, limit)

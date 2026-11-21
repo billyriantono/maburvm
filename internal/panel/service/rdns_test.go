@@ -47,7 +47,7 @@ func TestBuildReverseZone(t *testing.T) {
 		{Address: "203.0.113.10", RDNS: "vm1.example.com"},
 		{Address: "203.0.113.11", RDNS: "vm2.example.com."}, // already FQDN
 		{Address: "203.0.113.12", RDNS: ""},                 // skipped
-	})
+	}, "")
 	require.NoError(t, err)
 	require.Contains(t, zone, "10.113.0.203.in-addr.arpa. IN PTR vm1.example.com.")
 	require.Contains(t, zone, "11.113.0.203.in-addr.arpa. IN PTR vm2.example.com.")
@@ -56,7 +56,7 @@ func TestBuildReverseZone(t *testing.T) {
 	require.NotContains(t, zone, "vm2.example.com..")
 
 	// An invalid address surfaces an error.
-	_, err = buildReverseZone([]rdnsEntry{{Address: "bogus", RDNS: "x.example.com"}})
+	_, err = buildReverseZone([]rdnsEntry{{Address: "bogus", RDNS: "x.example.com"}}, "")
 	require.Error(t, err)
 }
 
@@ -104,4 +104,77 @@ func TestSetVMRDNS(t *testing.T) {
 	a, err = svc.SetVMRDNS(ctx, vmID, "203.0.113.10", "", true)
 	require.NoError(t, err)
 	require.Equal(t, "", a.RDNS)
+}
+
+func TestPTRLocation(t *testing.T) {
+	for _, tc := range []struct {
+		ip, zone       string
+		wantZone, name string
+		wantErr        bool
+	}{
+		{ip: "203.0.113.10", wantZone: "113.0.203.in-addr.arpa", name: "10.113.0.203.in-addr.arpa"},
+		// A parent zone holds the record under its standard name.
+		{ip: "203.0.113.10", zone: "0.203.in-addr.arpa.", wantZone: "0.203.in-addr.arpa", name: "10.113.0.203.in-addr.arpa"},
+		// RFC 2317, both spellings.
+		{ip: "203.0.113.10", zone: "0-127.113.0.203.in-addr.arpa", wantZone: "0-127.113.0.203.in-addr.arpa", name: "10.0-127.113.0.203.in-addr.arpa"},
+		{ip: "203.0.113.130", zone: "128/25.113.0.203.in-addr.arpa", wantZone: "128/25.113.0.203.in-addr.arpa", name: "130.128/25.113.0.203.in-addr.arpa"},
+		// A classless zone of another /24, or a zone that is not one.
+		{ip: "203.0.114.10", zone: "0-127.113.0.203.in-addr.arpa", wantErr: true},
+		{ip: "203.0.113.10", zone: "mail.113.0.203.in-addr.arpa", wantErr: true},
+		// IPv6 inside a delegated /48 zone.
+		{ip: "2001:db8:5::25", zone: "5.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa", wantZone: "5.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa",
+			name: "5.2.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.5.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa"},
+		{ip: "2001:db8:6::25", zone: "5.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa", wantErr: true},
+	} {
+		got, err := ptrLocation(tc.ip, tc.zone)
+		if tc.wantErr {
+			require.Error(t, err, "%s in %s", tc.ip, tc.zone)
+			continue
+		}
+		require.NoError(t, err, "%s in %s", tc.ip, tc.zone)
+		require.Equal(t, PTRRecord{Zone: tc.wantZone, Name: tc.name}, got)
+	}
+	require.NoError(t, validateRDNSZone("203.0.113.0/25", "0-127.113.0.203.in-addr.arpa"))
+	require.Error(t, validateRDNSZone("203.0.113.0/25", "example.com"))
+	require.Error(t, validateRDNSZone("", "0-127.113.0.203.in-addr.arpa"))
+	require.NoError(t, validateRDNSZone("203.0.113.0/25", ""))
+}
+
+// A classless zone file carries the CNAMEs the /24's holder must publish.
+func TestBuildReverseZoneClassless(t *testing.T) {
+	zone, err := buildReverseZone([]rdnsEntry{{Address: "203.0.113.10/32", RDNS: "mail.example.com"}}, "0-127.113.0.203.in-addr.arpa")
+	require.NoError(t, err)
+	require.Contains(t, zone, "10.0-127.113.0.203.in-addr.arpa. IN PTR mail.example.com.")
+	require.Contains(t, zone, ";   10.113.0.203.in-addr.arpa. IN CNAME 10.0-127.113.0.203.in-addr.arpa.")
+}
+
+// Inside the IPv6 prefix routed to it, a VM's owner may name any address; a
+// prefix the VM does not hold stays out of reach.
+func TestSetVMRDNSInsidePrefix(t *testing.T) {
+	db := setupIPAMServiceTestDB(t)
+	svc := NewIPAMService(db, repository.NewIPAMRepository(db))
+	ctx := context.Background()
+	const vmID = "11111111-1111-1111-1111-111111111111"
+	require.NoError(t, db.Exec(`INSERT INTO ip_pools (id, name, family, cidr, rdns_zone) VALUES ('pool-6', 'v6', 'ipv6', '2001:db8:5::/48', '')`).Error)
+	require.NoError(t, db.Exec(`INSERT INTO vm_ipv6_prefixes (id, pool_id, vm_id, prefix, idx) VALUES ('p1', 'pool-6', ?, '2001:db8:5:1::/64', 1)`, vmID).Error)
+
+	a, err := svc.SetVMRDNS(ctx, vmID, "2001:db8:5:1::25", "mail.example.com", false)
+	require.NoError(t, err)
+	require.Equal(t, "mail.example.com", a.RDNS)
+	_, err = svc.SetVMRDNS(ctx, vmID, "2001:db8:5:1::25", "mx.example.com", false)
+	require.NoError(t, err, "setting it again replaces the name")
+
+	got, err := svc.ListVMPrefixPTRs(ctx, vmID)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, "mx.example.com", got[0].RDNS)
+
+	_, err = svc.SetVMRDNS(ctx, vmID, "2001:db8:5:2::25", "mail.example.com", false)
+	require.ErrorIs(t, err, ErrIPAddressNotFound, "the neighbouring /64 is someone else's")
+
+	_, err = svc.SetVMRDNS(ctx, vmID, "2001:db8:5:1::25", "", false)
+	require.NoError(t, err)
+	got, err = svc.ListVMPrefixPTRs(ctx, vmID)
+	require.NoError(t, err)
+	require.Empty(t, got)
 }

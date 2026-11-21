@@ -1,5 +1,6 @@
 "use client"
 
+import { ActingAccountScope, useActingAccount } from "@/lib/acting-account"
 import { useState } from "react"
 import { Link2, Link2Off, Loader2, Network, Plus, Trash2 } from "lucide-react"
 import { toast } from "sonner"
@@ -39,10 +40,11 @@ import { useConfirm } from "@/components/confirm-provider"
 // cannot allocate a new one from a pool or release one back — those consume the
 // node's public address space and stay with an administrator. NAT mode is not
 // exposed either; the panel picks the only one that can work.
-export default function ClientFloatingIPsPage() {
+function ClientFloatingIPsPageBody() {
   const confirm = useConfirm()
   const { data: floatingIPs, isLoading } = useFloatingIPs()
-  const { data: vmsData } = useVMs({ pageSize: 100 })
+  const account = useActingAccount()
+  const { data: vmsData } = useVMs({ pageSize: 100, accountId: account })
   const attach = useAttachFloatingIP()
   const detach = useDetachFloatingIP()
   const order = useOrderFloatingIP()
@@ -297,5 +299,14 @@ export default function ClientFloatingIPsPage() {
         </DialogContent>
       </Dialog>
     </div>
+  )
+}
+
+// A team member picks which account's resources the page shows.
+export default function ClientFloatingIPsPage() {
+  return (
+    <ActingAccountScope>
+      <ClientFloatingIPsPageBody />
+    </ActingAccountScope>
   )
 }

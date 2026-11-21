@@ -26,7 +26,7 @@ function NodeReadings({ n, range }: { n: DashboardNode; range: RangeId }) {
     const samples = (data ?? []).filter((s) => s.status !== "offline")
     const rx = samples.map((s) => s.network_rx_bytes_per_sec)
     const tx = samples.map((s) => s.network_tx_bytes_per_sec)
-    const net = rateScale([rx, tx])
+    const net = rateScale([rx, tx], [], true)
     const conn = samples.map((s) => s.conntrack_count)
     const connMax = samples.reduce((m, s) => Math.max(m, s.conntrack_max), 0)
     // Scaled to what was seen, not to the table size: the table holds millions

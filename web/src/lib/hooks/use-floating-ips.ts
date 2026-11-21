@@ -1,14 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api-client'
+import { accountParams, useActingAccount } from '@/lib/acting-account'
 import type { AllocateFloatingIPRequest, FloatingIPBilling, IPAddress, NATMode } from '@/types'
 
 const KEY = ['floating-ips']
 
 export function useFloatingIPs() {
+  const account = useActingAccount()
   return useQuery<IPAddress[]>({
-    queryKey: KEY,
+    queryKey: [...KEY, 'list', account ?? 'own'],
     queryFn: async () => {
-      const response = await api.get<IPAddress[]>('/api/v1/floating-ips')
+      const response = await api.get<IPAddress[]>('/api/v1/floating-ips', accountParams(account))
       return response.data.data ?? []
     },
   })
@@ -32,10 +34,11 @@ export function useAllocateFloatingIP() {
 // be omitted to let the panel pick (inbound for a VM that already has a public
 // address, full for one on a private address).
 export function useAttachFloatingIP() {
+  const account = useActingAccount()
   const queryClient = useQueryClient()
   return useMutation<IPAddress, Error, { id: string; vm_id: string; nat_mode?: NATMode }>({
     mutationFn: async ({ id, ...body }) => {
-      const response = await api.post<IPAddress>(`/api/v1/floating-ips/${id}/attach`, body)
+      const response = await api.post<IPAddress>(`/api/v1/floating-ips/${id}/attach`, body, accountParams(account))
       return response.data.data
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: KEY }),
@@ -43,10 +46,11 @@ export function useAttachFloatingIP() {
 }
 
 export function useDetachFloatingIP() {
+  const account = useActingAccount()
   const queryClient = useQueryClient()
   return useMutation<IPAddress, Error, string>({
     mutationFn: async (id) => {
-      const response = await api.post<IPAddress>(`/api/v1/floating-ips/${id}/detach`)
+      const response = await api.post<IPAddress>(`/api/v1/floating-ips/${id}/detach`, undefined, accountParams(account))
       return response.data.data
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: KEY }),
@@ -56,10 +60,11 @@ export function useDetachFloatingIP() {
 // Releasing returns the address to its pool as an ordinary allocatable IP. The
 // API refuses while it is still attached to a VM.
 export function useReleaseFloatingIP() {
+  const account = useActingAccount()
   const queryClient = useQueryClient()
   return useMutation<void, Error, string>({
     mutationFn: async (id) => {
-      await api.delete(`/api/v1/floating-ips/${id}`)
+      await api.delete(`/api/v1/floating-ips/${id}`, accountParams(account))
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: KEY })
@@ -70,10 +75,11 @@ export function useReleaseFloatingIP() {
 
 // Order takes an address from a pool the operator has opened for self-service.
 export function useOrderFloatingIP() {
+  const account = useActingAccount()
   const queryClient = useQueryClient()
   return useMutation<IPAddress, Error, { region: string }>({
     mutationFn: async ({ region }) => {
-      const response = await api.post<IPAddress>('/api/v1/floating-ips/order', { region })
+      const response = await api.post<IPAddress>('/api/v1/floating-ips/order', { region }, accountParams(account))
       return response.data.data
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: KEY }),
@@ -83,10 +89,11 @@ export function useOrderFloatingIP() {
 // One attached address is included; idle ones are charged, which is why the
 // count is worth showing the customer rather than hiding on an invoice.
 export function useFloatingIPBilling() {
+  const account = useActingAccount()
   return useQuery<FloatingIPBilling>({
-    queryKey: ['floating-ips', 'billing'],
+    queryKey: ['floating-ips', 'billing', account ?? 'own'],
     queryFn: async () => {
-      const response = await api.get<FloatingIPBilling>('/api/v1/floating-ips/billing')
+      const response = await api.get<FloatingIPBilling>('/api/v1/floating-ips/billing', accountParams(account))
       return response.data.data
     },
   })

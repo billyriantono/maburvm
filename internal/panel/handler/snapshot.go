@@ -4,7 +4,6 @@ package handler
 import (
 	"errors"
 	"net/http"
-	"strconv"
 
 	"github.com/labstack/echo/v4"
 	"gorm.io/gorm"
@@ -37,6 +36,10 @@ func NewSnapshotHandler(service *service.SnapshotService, authorizer *authz.Auth
 // CreateSnapshotRequest represents a request to create a new snapshot
 type CreateSnapshotRequest struct {
 	Name string `json:"name" validate:"required,max=100"`
+	// DiskOnly takes a running VM's disks only: no memory saved, no pause.
+	// Quiesce freezes its filesystems for that through its guest agent.
+	DiskOnly bool `json:"disk_only"`
+	Quiesce  bool `json:"quiesce"`
 }
 
 // CreateSnapshotResponse represents the response after creating a snapshot
@@ -94,14 +97,19 @@ func (h *SnapshotHandler) CreateSnapshot(c echo.Context) error {
 
 	// Create snapshot
 	createReq := &service.CreateSnapshotRequest{
-		VMID:   vmID,
-		Name:   req.Name,
-		UserID: userID,
+		VMID:     vmID,
+		Name:     req.Name,
+		UserID:   userID,
+		DiskOnly: req.DiskOnly,
+		Quiesce:  req.Quiesce,
 	}
 
 	resp, err := h.service.CreateSnapshot(c.Request().Context(), createReq)
 	if err != nil {
+		var allowance *service.AllowanceError
 		switch {
+		case errors.As(err, &allowance):
+			return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "Forbidden", "message": allowance.Message})
 		case errors.Is(err, service.ErrVMNotFound):
 			return c.JSON(http.StatusNotFound, map[string]interface{}{
 				"error":   "Not Found",
@@ -122,6 +130,11 @@ func (h *SnapshotHandler) CreateSnapshot(c echo.Context) error {
 				"error":   "Conflict",
 				"message": "A snapshot operation is already in progress for this VM",
 			})
+		case errors.Is(err, service.ErrSnapshotsNeedQcow2), errors.Is(err, service.ErrSnapshotOptionsUnsupported),
+			errors.Is(err, service.ErrSnapshotInRescue):
+			return c.JSON(http.StatusUnprocessableEntity, map[string]interface{}{"error": "Unprocessable Entity", "message": err.Error()})
+		case errors.Is(err, service.ErrDiskMoveActive), vmBusy(err):
+			return vmMoving(c, err)
 		default:
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
 				"error":   "Internal Server Error",
@@ -157,6 +170,10 @@ type SnapshotListItem struct {
 	DiskPath  string `json:"disk_path,omitempty"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
+	// DiskOnly: taken without the VM's memory. Scheduled: taken by the VM's
+	// snapshot schedule, which also removes it in time.
+	DiskOnly  bool `json:"disk_only"`
+	Scheduled bool `json:"scheduled"`
 }
 
 // ListSnapshots handles GET /api/vms/:id/snapshots - List VM snapshots
@@ -171,16 +188,7 @@ func (h *SnapshotHandler) ListSnapshots(c echo.Context) error {
 
 	// Parse query parameters
 	status := c.QueryParam("status")
-	limitStr := c.QueryParam("limit")
-	offsetStr := c.QueryParam("offset")
-
-	var limit, offset int
-	if limitStr != "" {
-		limit, _ = strconv.Atoi(limitStr)
-	}
-	if offsetStr != "" {
-		offset, _ = strconv.Atoi(offsetStr)
-	}
+	limit, offset := listWindow(c)
 
 	// Enforce owner-or-admin access to the route VM (401 missing auth, 404
 	// non-owner/nonexistent). Admin support is preserved.
@@ -238,12 +246,16 @@ func (h *SnapshotHandler) ListSnapshots(c echo.Context) error {
 			DiskPath:  snapshot.DiskPath,
 			CreatedAt: snapshot.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 			UpdatedAt: snapshot.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			DiskOnly:  snapshot.DiskOnly,
+			Scheduled: snapshot.ScheduleID != nil,
 		}
 	}
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
+		"success":  true,
 		"message":  "Snapshots retrieved successfully",
 		"data":     items,
+		"meta":     OffsetPageMeta(resp.Limit, resp.Offset, resp.Total),
 		"total":    resp.Total,
 		"limit":    resp.Limit,
 		"offset":   resp.Offset,
@@ -388,6 +400,10 @@ func (h *SnapshotHandler) RestoreSnapshot(c echo.Context) error {
 				"error":   "Not Found",
 				"message": "VM not found",
 			})
+		case vmBusy(err), errors.Is(err, service.ErrDiskMoveActive):
+			return vmMoving(c, err)
+		case errors.Is(err, service.ErrVMNotStopped), errors.Is(err, service.ErrSnapshotNotComplete):
+			return restoreConflict(c, err)
 		default:
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
 				"error":   "Internal Server Error",

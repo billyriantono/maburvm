@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -36,6 +37,15 @@ type BandwidthUsageResponse struct {
 	UsagePercent float64 `json:"usage_percent"`
 	Exceeded     bool    `json:"exceeded"`
 	BlockedAt    *string `json:"blocked_at,omitempty"`
+	// Counts is which direction counts toward the allowance (both, out, in)
+	// and ResetDay the day of the month it starts again. Pooled says the
+	// allowance is shared by the account's VMs, PoolUsedGB and PoolQuotaGB
+	// being the pool's. Current period only.
+	Counts      string  `json:"counts,omitempty"`
+	ResetDay    int     `json:"reset_day,omitempty"`
+	Pooled      bool    `json:"pooled,omitempty"`
+	PoolUsedGB  float64 `json:"pool_used_gb,omitempty"`
+	PoolQuotaGB float64 `json:"pool_quota_gb,omitempty"`
 }
 
 // GetVMBandwidth handles GET /api/v1/vms/:id/bandwidth
@@ -82,8 +92,44 @@ func (h *BandwidthHandler) GetVMBandwidth(c echo.Context) error {
 		t := usage.BlockedAt.UTC().Format("2006-01-02T15:04:05Z")
 		resp.BlockedAt = &t
 	}
+	ctx := c.Request().Context()
+	resp.ResetDay, resp.Counts = h.service.TransferTerms(ctx, vmID)
+	if pool := h.service.Pool(ctx, vmID); pool.Pooled {
+		const gb = 1024 * 1024 * 1024
+		resp.Pooled, resp.PoolUsedGB, resp.PoolQuotaGB = true, float64(pool.UsedBytes)/gb, float64(pool.QuotaBytes)/gb
+	}
 
 	return c.JSON(http.StatusOK, resp)
+}
+
+// RegisterAccountTransferRoutes mounts an account's transfer settings: its
+// own reset day and pooled transfer. Staff only.
+func RegisterAccountTransferRoutes(e *echo.Echo, db *gorm.DB) {
+	auth := middleware.RequireAuth(db)
+	e.GET("/api/v1/users/:id/transfer", func(c echo.Context) error {
+		t, err := service.LoadAccountTransfer(c.Request().Context(), db, c.Param("id"))
+		if err != nil {
+			return accountTransferError(c, err)
+		}
+		return c.JSON(http.StatusOK, map[string]any{"success": true, "data": t})
+	}, auth, middleware.RequirePermission("user:read"))
+	e.PUT("/api/v1/users/:id/transfer", func(c echo.Context) error {
+		var in service.AccountTransfer
+		if err := c.Bind(&in); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]any{"error": "Bad Request", "message": "invalid request body"})
+		}
+		if err := service.SaveAccountTransfer(c.Request().Context(), db, c.Param("id"), in); err != nil {
+			return accountTransferError(c, err)
+		}
+		return c.JSON(http.StatusOK, map[string]any{"success": true, "data": in})
+	}, auth, middleware.RequirePermission("user:update"))
+}
+
+func accountTransferError(c echo.Context, err error) error {
+	if errors.Is(err, service.ErrUserNotFound) {
+		return c.JSON(http.StatusNotFound, map[string]any{"error": "Not Found", "message": "User not found"})
+	}
+	return c.JSON(http.StatusBadRequest, map[string]any{"error": "Bad Request", "message": err.Error()})
 }
 
 // GetVMBandwidthHistory handles GET /api/v1/vms/:id/bandwidth/history
@@ -181,7 +227,7 @@ func RegisterBandwidthRoutes(e *echo.Echo, h *BandwidthHandler, db *gorm.DB) {
 	bwGroup := e.Group("/api/v1/vms/:id/bandwidth")
 	bwGroup.Use(middleware.RequireAuth(db))
 
-	bwGroup.GET("", h.GetVMBandwidth)
-	bwGroup.GET("/history", h.GetVMBandwidthHistory)
-	bwGroup.PUT("/quota", h.SetVMBandwidthQuota)
+	bwGroup.GET("", h.GetVMBandwidth, middleware.RequirePermission("vm:read"))
+	bwGroup.GET("/history", h.GetVMBandwidthHistory, middleware.RequirePermission("vm:read"))
+	bwGroup.PUT("/quota", h.SetVMBandwidthQuota, middleware.RequirePermission("vm:update"))
 }

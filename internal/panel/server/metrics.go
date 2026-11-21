@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/subtle"
+	"database/sql"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/maburvm/panel/internal/shared/queue"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -46,19 +48,21 @@ func metricsMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 // metricsHandler serves the Prometheus scrape endpoint behind a bearer token.
 // With no token configured the endpoint is off: the panel is internet-facing
 // and metrics leak route and runtime details.
-func metricsHandler(token string, db *gorm.DB) echo.HandlerFunc {
+func metricsHandler(token func() string, db *gorm.DB) echo.HandlerFunc {
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}), httpRequestDuration)
+	reg.MustRegister(queue.JobFailures)
 	if db != nil {
-		reg.MustRegister(&fleetCollector{db: db})
+		reg.MustRegister(&fleetCollector{db: db}, &opsCollector{db: db})
 	}
 	h := echo.WrapHandler(promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 	return func(c echo.Context) error {
-		if token == "" {
+		want := token()
+		if want == "" {
 			return echo.ErrNotFound
 		}
 		got := c.Request().Header.Get("Authorization")
-		if subtle.ConstantTimeCompare([]byte(got), []byte("Bearer "+token)) != 1 {
+		if subtle.ConstantTimeCompare([]byte(got), []byte("Bearer "+want)) != 1 {
 			return c.NoContent(http.StatusUnauthorized)
 		}
 		return h(c)
@@ -69,7 +73,11 @@ var (
 	fleetUp        = prometheus.NewDesc("maburvm_fleet_collect_success", "1 if the fleet gauges were read from the database on this scrape.", nil, nil)
 	nodeStatusDesc = prometheus.NewDesc("maburvm_node_status", "Current node status (1 for the node's status label).", []string{"node", "status"}, nil)
 	vmsDesc        = prometheus.NewDesc("maburvm_vms", "VMs by node and status.", []string{"node", "status"}, nil)
-	nodeLastReport = prometheus.NewDesc("maburvm_node_last_report_timestamp_seconds", "Unix time of the node's latest agent metrics sample.", []string{"node"}, nil)
+	// The two signals to alert on. Both come from what the collector recorded
+	// about its own checks, never from a stored sample: a node that stops
+	// answering stops advancing the timestamp and drops to 0 here at once.
+	nodeUpDesc     = prometheus.NewDesc("maburvm_node_up", "1 if the node's agent reported on the panel's last check, 0 if that check got no report.", []string{"node"}, nil)
+	nodeLastReport = prometheus.NewDesc("maburvm_node_last_report_timestamp_seconds", "Unix time the node's agent last reported to the panel. Absent for a node that never has.", []string{"node"}, nil)
 	// In the column order of the latest-sample query below.
 	nodeSampleGauges = []*prometheus.Desc{
 		prometheus.NewDesc("maburvm_node_cpu_usage_percent", "Node CPU usage from the latest agent sample.", []string{"node"}, nil),
@@ -104,12 +112,30 @@ func (f *fleetCollector) Collect(ch chan<- prometheus.Metric) {
 func (f *fleetCollector) collect(ctx context.Context, ch chan<- prometheus.Metric) error {
 	db := f.db.WithContext(ctx)
 
-	var nodes []struct{ Name, Status string }
-	if err := db.Raw(`SELECT name, status FROM nodes WHERE deleted_at IS NULL`).Scan(&nodes).Error; err != nil {
+	nodeRows, err := db.Raw(`SELECT name, status, failed_polls, last_report_at FROM nodes WHERE deleted_at IS NULL`).Rows()
+	if err != nil {
 		return err
 	}
-	for _, n := range nodes {
-		ch <- prometheus.MustNewConstMetric(nodeStatusDesc, prometheus.GaugeValue, 1, n.Name, n.Status)
+	defer nodeRows.Close()
+	for nodeRows.Next() {
+		var name, status string
+		var failed int
+		var reported sql.NullTime
+		if err := nodeRows.Scan(&name, &status, &failed, &reported); err != nil {
+			return err
+		}
+		ch <- prometheus.MustNewConstMetric(nodeStatusDesc, prometheus.GaugeValue, 1, name, status)
+		up := 0.0
+		if failed == 0 && reported.Valid {
+			up = 1
+		}
+		ch <- prometheus.MustNewConstMetric(nodeUpDesc, prometheus.GaugeValue, up, name)
+		if reported.Valid {
+			ch <- prometheus.MustNewConstMetric(nodeLastReport, prometheus.GaugeValue, float64(reported.Time.Unix()), name)
+		}
+	}
+	if err := nodeRows.Err(); err != nil {
+		return err
 	}
 
 	var vms []struct {
@@ -125,14 +151,17 @@ func (f *fleetCollector) collect(ctx context.Context, ch chan<- prometheus.Metri
 		ch <- prometheus.MustNewConstMetric(vmsDesc, prometheus.GaugeValue, v.Count, v.Node, v.Status)
 	}
 
-	// Latest sample per node. The recency bound keeps this a short index scan
-	// (265ms unbounded on prod vs 8ms); a node silent for an hour drops out.
+	// Latest reading per node. The recency bound keeps this a short index scan
+	// (265ms unbounded on prod vs 8ms), and makes the usage gauges of a node
+	// that has gone quiet disappear instead of freezing at their last value.
+	// Rows marked offline are the zeros an older panel stored for a node it
+	// could not reach; they are not readings.
 	rows, err := db.Raw(`SELECT n.name, m.cpu_usage, m.memory_usage, m.disk_usage,
-			m.network_rx_bytes_per_sec, m.network_tx_bytes_per_sec, m.conntrack_count, m.conntrack_max, m.recorded_at
+			m.network_rx_bytes_per_sec, m.network_tx_bytes_per_sec, m.conntrack_count, m.conntrack_max
 		FROM node_metrics m JOIN nodes n ON n.id = m.node_id
-		WHERE n.deleted_at IS NULL AND m.recorded_at > ?
-		  AND m.recorded_at = (SELECT MAX(recorded_at) FROM node_metrics WHERE node_id = m.node_id)`,
-		time.Now().Add(-time.Hour)).Rows()
+		WHERE n.deleted_at IS NULL AND m.recorded_at > ? AND m.status <> 'offline'
+		  AND m.recorded_at = (SELECT MAX(recorded_at) FROM node_metrics WHERE node_id = m.node_id AND status <> 'offline')`,
+		time.Now().Add(-5*time.Minute)).Rows()
 	if err != nil {
 		return err
 	}
@@ -140,14 +169,12 @@ func (f *fleetCollector) collect(ctx context.Context, ch chan<- prometheus.Metri
 	for rows.Next() {
 		var name string
 		var vals [7]float64
-		var at time.Time
-		if err := rows.Scan(&name, &vals[0], &vals[1], &vals[2], &vals[3], &vals[4], &vals[5], &vals[6], &at); err != nil {
+		if err := rows.Scan(&name, &vals[0], &vals[1], &vals[2], &vals[3], &vals[4], &vals[5], &vals[6]); err != nil {
 			return err
 		}
 		for i, g := range nodeSampleGauges {
 			ch <- prometheus.MustNewConstMetric(g, prometheus.GaugeValue, vals[i], name)
 		}
-		ch <- prometheus.MustNewConstMetric(nodeLastReport, prometheus.GaugeValue, float64(at.Unix()), name)
 	}
 	return rows.Err()
 }

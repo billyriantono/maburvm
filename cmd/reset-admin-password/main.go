@@ -137,10 +137,17 @@ func main() {
 		// can log in with just the new password.
 		updates["two_factor_secret"] = ""
 		updates["two_factor_backup_codes"] = ""
+		// Sign-in asks for a code while this is set, whatever the secret holds.
+		updates["two_factor_enabled"] = false
 	}
 
 	if err := db.Model(&models.User{}).Where("id = ?", user.ID).Updates(updates).Error; err != nil {
 		log.Fatalf("Failed to update password: %v", err)
+	}
+	// By table name: the lockout columns are read-only on the model.
+	if err := db.Table("users").Where("id = ?", user.ID).
+		Updates(map[string]interface{}{"locked_until": nil, "failed_login_count": 0}).Error; err != nil {
+		log.Printf("Warning: the sign-in lock could not be lifted: %v", err)
 	}
 
 	fmt.Println()

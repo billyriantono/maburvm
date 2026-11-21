@@ -96,6 +96,18 @@ function RDNSCell({ address, poolId }: { address: IPAddress; poolId: string }) {
   )
 }
 
+// classlessZoneHint is the RFC 2317 zone name for an IPv4 block smaller than
+// a /24 ("<first>-<last>.c.b.a.in-addr.arpa"), or "" for anything else.
+function classlessZoneHint(cidr?: string): string {
+  const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)\/(\d+)$/.exec(cidr ?? "")
+  if (!m) return ""
+  const len = Number(m[5])
+  if (len <= 24 || len > 32) return ""
+  const size = 2 ** (32 - len)
+  const first = Number(m[4]) - (Number(m[4]) % size)
+  return `${first}-${first + size - 1}.${m[3]}.${m[2]}.${m[1]}.in-addr.arpa`
+}
+
 export default function IPPoolDetailPage() {
   const params = useParams()
   const router = useRouter()
@@ -126,7 +138,7 @@ export default function IPPoolDetailPage() {
   const [addrForm, setAddrForm] = useState({ address: "", status: "available" as IPAddressStatus, note: "" })
   const [isGenerating, setIsGenerating] = useState(false)
   const [showEdit, setShowEdit] = useState(false)
-  const [editForm, setEditForm] = useState({ name: "", bridge: "", gateway: "", description: "" })
+  const [editForm, setEditForm] = useState({ name: "", bridge: "", gateway: "", description: "", rdns_zone: "", nameservers: "", dhcp: false })
 
   // Node label: a specific address node, else the pool's node(s) — never a bare "Any"
   // when the pool is bound to a node.
@@ -222,7 +234,8 @@ export default function IPPoolDetailPage() {
 
   const openEdit = () => {
     if (!pool) return
-    setEditForm({ name: pool.name, bridge: pool.bridge ?? "", gateway: pool.gateway ?? "", description: pool.description ?? "" })
+    setEditForm({ name: pool.name, bridge: pool.bridge ?? "", gateway: pool.gateway ?? "", description: pool.description ?? "", rdns_zone: pool.rdns_zone ?? "",
+      nameservers: (pool.nameservers ?? "").split(",").filter(Boolean).join(", "), dhcp: !!pool.dhcp })
     setShowEdit((v) => !v)
   }
 
@@ -234,6 +247,9 @@ export default function IPPoolDetailPage() {
         bridge: editForm.bridge.trim(),
         gateway: editForm.gateway.trim(),
         description: editForm.description,
+        rdns_zone: editForm.rdns_zone.trim(),
+        nameservers: editForm.nameservers.trim(),
+        ...(pool?.family === "ipv4" && !pool?.delegated_prefix_len ? { dhcp: editForm.dhcp } : {}),
       })
       toast.success("Pool updated — VMs apply the new bridge on their next start")
       setShowEdit(false)
@@ -279,6 +295,8 @@ export default function IPPoolDetailPage() {
             </h1>
             <p className="text-sm text-muted-foreground mt-1">
               {pool.cidr || "No CIDR"} • Gateway {pool.gateway || "-"} • Bridge {pool.bridge || "node default"} • Node {poolNodeLabel} •{" "}
+              {pool.nameservers ? <>Nameservers <span className="font-mono">{pool.nameservers.split(",").join(", ")}</span> • </> : null}
+              {pool.dhcp ? "DHCP on • " : null}
               {pool.delegated_prefix_len
                 ? `${pool.delegated_count ?? 0} /${pool.delegated_prefix_len} prefixes delegated`
                 : `${addresses?.length ?? 0} addresses`}
@@ -307,6 +325,43 @@ export default function IPPoolDetailPage() {
               <span className="text-xs font-medium text-muted-foreground">Description</span>
               <Input value={editForm.description} onChange={(e) => setEditForm({ ...editForm, description: e.target.value })} />
             </label>
+            <label className="flex flex-col gap-1 md:col-span-2">
+              <span className="text-xs font-medium text-muted-foreground">Reverse DNS zone</span>
+              <Input
+                className="font-mono"
+                value={editForm.rdns_zone}
+                onChange={(e) => setEditForm({ ...editForm, rdns_zone: e.target.value })}
+                placeholder={classlessZoneHint(pool?.cidr) || "Standard zone (blank)"}
+              />
+              <span className="text-xs text-muted-foreground">
+                Blank writes PTRs to the standard zone. For a block smaller than a /24 delegated to you the RFC 2317
+                way, give the classless zone your upstream delegated, such as{" "}
+                <span className="font-mono">{classlessZoneHint(pool?.cidr) || "0-127.113.0.203.in-addr.arpa"}</span>;
+                the zone file then lists the CNAMEs they publish. A parent zone (a /16, an IPv6 /48) works too. Applies
+                to PTRs saved from now on.
+              </span>
+            </label>
+            <label className="flex flex-col gap-1 md:col-span-2">
+              <span className="text-xs font-medium text-muted-foreground">Nameservers</span>
+              <Input className="font-mono" value={editForm.nameservers} onChange={(e) => setEditForm({ ...editForm, nameservers: e.target.value })} placeholder="1.1.1.1, 8.8.8.8 (blank)" />
+              <span className="text-xs text-muted-foreground">
+                The resolvers this pool&apos;s guests are given, up to four, separated by commas or spaces. They reach a guest when it is created,
+                reinstalled or readdressed; running guests keep theirs until then.
+              </span>
+            </label>
+            {pool.family === "ipv4" && !pool.delegated_prefix_len && (
+              <label className="flex items-start gap-2 cursor-pointer md:col-span-2">
+                <input type="checkbox" checked={editForm.dhcp} onChange={(e) => setEditForm({ ...editForm, dhcp: e.target.checked })} className="w-4 h-4 mt-0.5" />
+                <span className="text-sm">
+                  <span className="font-medium">Answer DHCP for this pool&apos;s addresses</span>
+                  <span className="block text-xs text-muted-foreground">
+                    The node gives each assigned address to its own VM&apos;s card only, never an address from the range, with an endless lease.
+                    Switching it reaches the nodes at once; guests that already have their address are not touched. Needs a gateway and dnsmasq on the node
+                    (see the node&apos;s host checks).
+                  </span>
+                </span>
+              </label>
+            )}
             <div className="md:col-span-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <p className="text-xs text-muted-foreground">
                 Changing the bridge updates the pool only — each VM re-applies it on its next <span className="font-semibold">Start</span> (a stale bridge like <span className="font-mono">virbr0</span> is rewritten before boot).

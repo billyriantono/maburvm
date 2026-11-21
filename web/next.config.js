@@ -7,6 +7,12 @@ const nextConfig = {
   // /Users/billyriantono as the workspace root because of a parent lockfile,
   // causing dev/build to scan/watch far more files and spike CPU.
   outputFileTracingRoot: path.join(__dirname),
+  // The rewrite proxy drops a request whose answer is silent for this long
+  // (Next's default is 30s). A bulk VM action answers once every VM is done,
+  // which can take longer; the browser waits up to the same 180s for it.
+  experimental: {
+    proxyTimeout: 180_000,
+  },
   // rewrites() is evaluated at `next build` and baked into the route manifest,
   // so API_BASE_URL here is a BUILD-TIME value (not runtime, not NEXT_PUBLIC_*).
   // Browser requests stay same-origin; the panel hostname is only present in

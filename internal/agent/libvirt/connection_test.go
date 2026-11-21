@@ -9,9 +9,12 @@ import (
 	"libvirt.org/go/libvirt"
 )
 
+// libvirt's built-in mock hypervisor: the pool is exercised without a libvirtd.
+const testURI = "test:///default"
+
 func TestNewPool(t *testing.T) {
 	cfg := config.LibvirtConfig{
-		URI:                 "qemu:///system",
+		URI:                 testURI,
 		PoolMinSize:         2,
 		PoolMaxSize:         10,
 		HealthCheckInterval: 30 * time.Second,
@@ -31,14 +34,14 @@ func TestNewPool(t *testing.T) {
 	if pool.maxConns != 10 {
 		t.Errorf("Expected maxConns=10, got %d", pool.maxConns)
 	}
-	if pool.uri != "qemu:///system" {
-		t.Errorf("Expected URI='qemu:///system', got %s", pool.uri)
+	if pool.uri != testURI {
+		t.Errorf("Expected URI=%q, got %s", testURI, pool.uri)
 	}
 }
 
 func TestPoolWithMinGreaterThanMax(t *testing.T) {
 	cfg := config.LibvirtConfig{
-		URI:         "qemu:///system",
+		URI:         testURI,
 		PoolMinSize: 15, // Greater than max
 		PoolMaxSize: 10,
 	}
@@ -57,7 +60,7 @@ func TestPoolWithMinGreaterThanMax(t *testing.T) {
 
 func TestPoolDefaults(t *testing.T) {
 	cfg := config.LibvirtConfig{
-		URI: "qemu:///system",
+		URI: testURI,
 		// Using zero values to test defaults
 	}
 
@@ -77,7 +80,7 @@ func TestPoolDefaults(t *testing.T) {
 
 func TestPoolStats(t *testing.T) {
 	cfg := config.LibvirtConfig{
-		URI:         "qemu:///system",
+		URI:         testURI,
 		PoolMinSize: 2,
 		PoolMaxSize: 5,
 	}
@@ -103,7 +106,7 @@ func TestPoolStats(t *testing.T) {
 
 func TestPoolClose(t *testing.T) {
 	cfg := config.LibvirtConfig{
-		URI:         "qemu:///system",
+		URI:         testURI,
 		PoolMinSize: 2,
 		PoolMaxSize: 5,
 	}
@@ -166,7 +169,7 @@ func TestInitialize(t *testing.T) {
 	poolOnce = sync.Once{}
 
 	cfg := config.LibvirtConfig{
-		URI:         "qemu:///system",
+		URI:         testURI,
 		PoolMinSize: 2,
 		PoolMaxSize: 5,
 	}
@@ -282,7 +285,7 @@ func TestGetEventDetailString(t *testing.T) {
 
 func BenchmarkPoolStats(b *testing.B) {
 	cfg := config.LibvirtConfig{
-		URI:         "qemu:///system",
+		URI:         testURI,
 		PoolMinSize: 10,
 		PoolMaxSize: 10,
 	}

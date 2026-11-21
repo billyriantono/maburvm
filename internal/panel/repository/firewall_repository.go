@@ -73,6 +73,66 @@ func (r *FirewallRepository) ListByVMID(ctx context.Context, vmID string, limit,
 	return rules, nil
 }
 
+// ListEffectiveByVMID is every rule the VM's node enforces for it: its own
+// and those of the groups attached to it, in the order they are enforced. An
+// error must stop the push: a set without the group rules would remove them.
+func (r *FirewallRepository) ListEffectiveByVMID(ctx context.Context, vmID string) ([]models.FirewallRule, error) {
+	own, err := r.ListByVMID(ctx, vmID, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	groups, err := r.attachedRules(ctx, vmID)
+	if err != nil {
+		return nil, err
+	}
+	return models.MergeFirewallRules(own, groups), nil
+}
+
+// CountEffectiveByVMID counts the VM's own rules and its groups' rules: the
+// per-VM rule limit covers both.
+func (r *FirewallRepository) CountEffectiveByVMID(ctx context.Context, vmID string) (int64, error) {
+	own, err := r.CountByVMID(ctx, vmID)
+	if err != nil {
+		return 0, err
+	}
+	var grouped int64
+	if err := r.db.WithContext(ctx).Table("firewall_group_rules r").
+		Joins("JOIN vm_firewall_groups a ON a.group_id = r.group_id").
+		Where("a.vm_id = ?", vmID).Count(&grouped).Error; err != nil {
+		return 0, err
+	}
+	return own + grouped, nil
+}
+
+// attachedRules loads the rules of every group attached to the VM.
+func (r *FirewallRepository) attachedRules(ctx context.Context, vmID string) ([]models.AttachedRules, error) {
+	var links []models.VMFirewallGroup
+	if err := r.db.WithContext(ctx).Where("vm_id = ?", vmID).Order("sort_order ASC, created_at ASC").Find(&links).Error; err != nil {
+		return nil, err
+	}
+	if len(links) == 0 {
+		return nil, nil
+	}
+	groupIDs := make([]string, len(links))
+	for i, l := range links {
+		groupIDs[i] = l.GroupID
+	}
+	var rules []models.FirewallGroupRule
+	if err := r.db.WithContext(ctx).Where("group_id IN ?", groupIDs).Order("priority ASC, created_at ASC").Find(&rules).Error; err != nil {
+		return nil, err
+	}
+	out := make([]models.AttachedRules, len(links))
+	for i, l := range links {
+		out[i] = models.AttachedRules{Position: l.Position, SortOrder: l.SortOrder}
+		for j := range rules {
+			if rules[j].GroupID == l.GroupID {
+				out[i].Rules = append(out[i].Rules, rules[j].AsVMRule(vmID))
+			}
+		}
+	}
+	return out, nil
+}
+
 // ListByVMIDAndDirection retrieves firewall rules filtered by VM ID and direction
 func (r *FirewallRepository) ListByVMIDAndDirection(ctx context.Context, vmID string, direction string, limit, offset int) ([]models.FirewallRule, error) {
 	var rules []models.FirewallRule

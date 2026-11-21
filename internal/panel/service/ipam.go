@@ -25,6 +25,14 @@ type IPAMService struct {
 	db          *gorm.DB
 	repo        *repository.IPAMRepository
 	dnsProvider DNSProvider // optional; when set+configured, rDNS pushes PTRs live
+	// poolGuestsChanged, when set, is told a pool's DHCP was switched, so the
+	// nodes of the VMs holding its addresses are sent their config again.
+	poolGuestsChanged func(ctx context.Context, poolID string)
+}
+
+// SetPoolGuestsChanged wires what happens when a pool's DHCP is switched.
+func (s *IPAMService) SetPoolGuestsChanged(f func(ctx context.Context, poolID string)) {
+	s.poolGuestsChanged = f
 }
 
 func NewIPAMService(db *gorm.DB, repo *repository.IPAMRepository) *IPAMService {
@@ -52,6 +60,15 @@ type CreateIPPoolRequest struct {
 	// LinkPrefix (delegated pools) is the router<->node link /<n> when it lies
 	// inside the pool; it is never handed to a VM.
 	LinkPrefix string `json:"link_prefix,omitempty"`
+	// NAT makes it a pool of private addresses for NAT VMs.
+	NAT bool `json:"nat,omitempty"`
+	// RDNSZone is where the pool's PTR records go when not the standard zone.
+	RDNSZone string `json:"rdns_zone,omitempty"`
+	// Nameservers are the resolvers the pool's guests get, separated by
+	// commas or spaces; empty keeps the built-in ones.
+	Nameservers string `json:"nameservers,omitempty"`
+	// DHCP makes the node answer DHCP for the pool's assigned addresses.
+	DHCP bool `json:"dhcp,omitempty"`
 }
 
 // UpdateIPPoolRequest carries editable metadata for an existing pool. Every
@@ -70,6 +87,16 @@ type UpdateIPPoolRequest struct {
 	// existing prefixes were computed from the old length.
 	DelegatedPrefixLen *int    `json:"delegated_prefix_len,omitempty"`
 	LinkPrefix         *string `json:"link_prefix,omitempty"` // "" clears it
+	// NAT may only change while no address of the pool is in use.
+	NAT *bool `json:"nat,omitempty"`
+	// RDNSZone ("" for the standard zone) applies to PTRs written from now on;
+	// records already on the nameserver stay where they are.
+	RDNSZone *string `json:"rdns_zone,omitempty"`
+	// Nameservers ("" for the built-in ones) are given to guests set up from
+	// now on: new VMs, reinstalls and address changes. DHCP reaches the
+	// nodes at once.
+	Nameservers *string `json:"nameservers,omitempty"`
+	DHCP        *bool   `json:"dhcp,omitempty"`
 }
 
 type CreateIPAddressRequest struct {
@@ -116,7 +143,27 @@ func (s *IPAMService) CreatePool(ctx context.Context, req *CreateIPPoolRequest) 
 		}
 		linkPrefix = &lp
 	}
+	if req.NAT {
+		if err := validateNATPool(family, req.CIDR, req.Orderable); err != nil {
+			return nil, err
+		}
+	}
+	if err := validateRDNSZone(req.CIDR, req.RDNSZone); err != nil {
+		return nil, err
+	}
+	nameservers, err := models.ParseNameservers(req.Nameservers)
+	if err != nil {
+		return nil, fmt.Errorf("nameservers: %w", err)
+	}
+	if req.DHCP {
+		if err := validateDHCPPool(family, req.Gateway, req.DelegatedPrefixLen != nil); err != nil {
+			return nil, err
+		}
+	}
 	pool := &models.IPPool{
+		Nameservers:        nameservers,
+		DHCP:               req.DHCP,
+		NAT:                req.NAT,
 		Name:               req.Name,
 		NodeIDs:            req.NodeIDs,
 		Family:             family,
@@ -131,6 +178,9 @@ func (s *IPAMService) CreatePool(ctx context.Context, req *CreateIPPoolRequest) 
 		LinkPrefix:         linkPrefix,
 	}
 	if err := s.repo.CreatePool(ctx, pool); err != nil {
+		return nil, err
+	}
+	if err := s.saveRDNSZone(ctx, pool, req.RDNSZone); err != nil {
 		return nil, err
 	}
 
@@ -184,6 +234,21 @@ func (s *IPAMService) UpdatePool(ctx context.Context, id string, req *UpdateIPPo
 	if req.Orderable != nil {
 		pool.Orderable = *req.Orderable
 	}
+	if req.NAT != nil && *req.NAT != pool.NAT {
+		var used int64
+		if err := s.db.WithContext(ctx).Model(&models.IPAddress{}).Where("pool_id = ? AND vm_id IS NOT NULL", pool.ID).Count(&used).Error; err != nil {
+			return nil, err
+		}
+		if used > 0 {
+			return nil, fmt.Errorf("cannot change whether the pool is NAT while %d of its addresses are in use", used)
+		}
+		pool.NAT = *req.NAT
+	}
+	if pool.NAT {
+		if err := validateNATPool(pool.Family, pool.CIDR, pool.Orderable); err != nil {
+			return nil, err
+		}
+	}
 	if req.DelegatedPrefixLen != nil {
 		if err := validateDelegatedPrefixLen(pool.Family, pool.CIDR, *req.DelegatedPrefixLen); err != nil {
 			return nil, err
@@ -219,8 +284,38 @@ func (s *IPAMService) UpdatePool(ctx context.Context, id string, req *UpdateIPPo
 			pool.LinkPrefix = &lp
 		}
 	}
+	if req.RDNSZone != nil {
+		if err := validateRDNSZone(pool.CIDR, *req.RDNSZone); err != nil {
+			return nil, err
+		}
+	}
+	dhcpChanged := false
+	if req.Nameservers != nil {
+		ns, err := models.ParseNameservers(*req.Nameservers)
+		if err != nil {
+			return nil, fmt.Errorf("nameservers: %w", err)
+		}
+		pool.Nameservers = ns
+	}
+	if req.DHCP != nil {
+		dhcpChanged = *req.DHCP != pool.DHCP
+		pool.DHCP = *req.DHCP
+	}
+	if pool.DHCP {
+		if err := validateDHCPPool(pool.Family, pool.Gateway, pool.IsDelegated()); err != nil {
+			return nil, err
+		}
+	}
 	if err := s.repo.UpdatePool(ctx, pool); err != nil {
 		return nil, err
+	}
+	if dhcpChanged && s.poolGuestsChanged != nil {
+		s.poolGuestsChanged(ctx, pool.ID)
+	}
+	if req.RDNSZone != nil {
+		if err := s.saveRDNSZone(ctx, pool, *req.RDNSZone); err != nil {
+			return nil, err
+		}
 	}
 	// Node reassignment lives in the junction table, so it's applied separately.
 	if req.NodeIDs != nil {
@@ -230,6 +325,48 @@ func (s *IPAMService) UpdatePool(ctx context.Context, id string, req *UpdateIPPo
 		pool.NodeIDs = *req.NodeIDs
 	}
 	return pool, nil
+}
+
+// saveRDNSZone writes a changed reverse zone (already validated).
+func (s *IPAMService) saveRDNSZone(ctx context.Context, pool *models.IPPool, zone string) error {
+	zone = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(zone)), ".")
+	if zone == pool.RDNSZone {
+		return nil
+	}
+	if err := s.db.WithContext(ctx).Table("ip_pools").Where("id = ?", pool.ID).Update("rdns_zone", zone).Error; err != nil {
+		return err
+	}
+	pool.RDNSZone = zone
+	return nil
+}
+
+// validateDHCPPool checks a pool can be served by DHCP: IPv4 addresses with
+// a gateway to hand out as the router.
+func validateDHCPPool(family, gateway string, delegated bool) error {
+	if family != models.IPFamilyIPv4 || delegated {
+		return fmt.Errorf("DHCP is served for IPv4 pools only")
+	}
+	if ip := net.ParseIP(strings.TrimSpace(gateway)); ip == nil || ip.To4() == nil {
+		return fmt.Errorf("a pool served by DHCP needs an IPv4 gateway")
+	}
+	return nil
+}
+
+// validateNATPool checks a NAT pool is private IPv4 space (RFC 1918 or the
+// shared 100.64.0.0/10) that customers cannot order as floating IPs.
+func validateNATPool(family, cidr string, orderable bool) error {
+	if family != models.IPFamilyIPv4 {
+		return fmt.Errorf("a NAT pool holds IPv4 addresses; give a NAT VM IPv6 from an IPv6 pool")
+	}
+	ip, _, err := net.ParseCIDR(cidr)
+	shared := &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
+	if err != nil || !(ip.IsPrivate() || shared.Contains(ip)) {
+		return fmt.Errorf("a NAT pool needs a private range (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 or 100.64.0.0/10)")
+	}
+	if orderable {
+		return fmt.Errorf("a NAT pool cannot be orderable: its addresses are private")
+	}
+	return nil
 }
 
 // validateBridgeName rejects names that can't be a Linux bridge interface (the
@@ -250,6 +387,12 @@ func validateBridgeName(name string) error {
 
 func (s *IPAMService) ListPools(ctx context.Context, limit, offset int) ([]models.IPPool, error) {
 	return s.repo.ListPools(ctx, limit, offset)
+}
+
+// CountPools and CountAddresses are the totals of the windowed lists.
+func (s *IPAMService) CountPools(ctx context.Context) (int64, error) { return s.repo.CountPools(ctx) }
+func (s *IPAMService) CountAddresses(ctx context.Context, poolID string) (int64, error) {
+	return s.repo.CountAddresses(ctx, poolID)
 }
 
 // ListPoolsForNode returns the pools usable on a given node: those bound to it

@@ -57,15 +57,44 @@ var EmailPlaceholders = []struct {
 	{"{{system}}", "The operating system installed (server emails only)"},
 	{"{{user}}", "The account the server is signed in to with: root, or admin on a router (server emails only)"},
 	{"{{access}}", "How to sign in to the server: where to read its password, or a reminder of what was chosen (server emails only)"},
+	{"{{used}}", "Data transferred this month, e.g. 812.4 GB (transfer warnings only)"},
+	{"{{quota}}", "The monthly transfer allowance, e.g. 1000 GB (transfer warnings only)"},
+	{"{{percent}}", "How much of the allowance is used, e.g. 81% (transfer warnings only)"},
+	{"{{resets}}", "The date the allowance starts again (transfer warnings only)"},
+	{"{{after}}", "What happens once the allowance is used up, as this server is set up (transfer warnings only)"},
+	{"{{backup}}", "Which backup failed: \u201cThe scheduled backup\u201d or \u201cA backup\u201d (backup emails only)"},
+	{"{{who}}", "Where a change came from: an address, or an administrator (account emails only)"},
+	{"{{key}}", "The name of the new API key (API key emails only)"},
+	{"{{account}}", "The account someone was invited to (invitation emails only)"},
+	{"{{role}}", "What the invited person may do there (invitation emails only)"},
+	{"{{ports}}", "The public ports of a NAT server, e.g. 20000-20019 (NAT moves only)"},
+	{"{{abuse}}", "What was measured and what was done about it, or that it was lifted (network action emails only)"},
 }
 
 const (
 	EmailWelcome       = "welcome"
+	EmailWelcomeOrder  = "welcome_order"
 	EmailPasswordReset = "password_reset"
 	EmailVMReady       = "vm_ready"
 	EmailVMReinstalled = "vm_reinstalled"
 	EmailVMRescueOn    = "vm_rescue_on"
 	EmailVMRescueOff   = "vm_rescue_off"
+	EmailTransferWarn  = "transfer_warning"
+	EmailVMSuspended   = "vm_suspended"
+	EmailVMUnsuspended = "vm_unsuspended"
+	EmailBackupFailed  = "backup_failed"
+	EmailVMNATMoved    = "vm_nat_moved"
+	// EmailAbuseAction tells an owner their server was cut off, slowed or
+	// null-routed because of abuse, or that it was lifted.
+	EmailAbuseAction = "abuse_action"
+	// Account emails: a change to how the account is signed in to.
+	EmailPasswordChanged   = "password_changed"
+	EmailTwoFactorDisabled = "two_factor_disabled"
+	EmailAPIKeyCreated     = "api_key_created"
+	// EmailAccountImported invites an account an import from another panel made.
+	EmailAccountImported = "account_imported"
+	// EmailAccountInvite invites someone to work in another customer's account.
+	EmailAccountInvite = "account_invite"
 )
 
 // serverSample fills the server placeholders in previews and test sends.
@@ -91,6 +120,35 @@ var emailTemplateDefs = []EmailTemplateDef{
 		Sample:      map[string]string{"name": "Dewi", "email": "dewi@example.com"},
 		SampleLink:  "https://panel.example.com/login",
 		LinkMeaning: "The button opens your panel's sign-in page.",
+	},
+	{
+		Key:      EmailWelcomeOrder,
+		Name:     "Welcome (billing order)",
+		SentWhen: "Sent when the billing system creates an account for a new customer. Switched off, the customer sets a password through \"Forgot password\" on the sign-in page.",
+		Optional: true,
+		Default: EmailTemplate{
+			Subject: "Your {{brand}} account",
+			Body: "{{greeting}},\n\nA {{brand}} account has been created for your order. It is where you manage your servers.\n\nUsername: {{email}}\n\n" +
+				"Choose a password with the button below. It works for 72 hours; after that, use \"Forgot password\" on the sign-in page.",
+			Button: "Choose a password",
+		},
+		Sample:      map[string]string{"name": "Dewi", "email": "dewi@example.com"},
+		SampleLink:  "https://panel.example.com/reset-password?token=example",
+		LinkMeaning: "The button opens the page where they choose their password.",
+	},
+	{
+		Key:      EmailAccountImported,
+		Name:     "Account moved here (import)",
+		SentWhen: "Sent when staff send the invitations after importing customers from another panel. Nothing is sent until they do.",
+		Default: EmailTemplate{
+			Subject: "Your servers are now managed in {{brand}}",
+			Body: "{{greeting}},\n\nYour account and servers are now managed in {{brand}}. Nothing on your servers has changed.\n\nUsername: {{email}}\n\n" +
+				"Choose a password for the panel with the button below. It works for 7 days; after that, use \"Forgot password\" on the sign-in page.",
+			Button: "Choose a password",
+		},
+		Sample:      map[string]string{"name": "Dewi", "email": "dewi@example.com"},
+		SampleLink:  "https://panel.example.com/reset-password?token=example",
+		LinkMeaning: "The button opens the page where they choose their password.",
 	},
 	{
 		Key:      EmailPasswordReset,
@@ -162,6 +220,155 @@ var emailTemplateDefs = []EmailTemplateDef{
 		},
 		Sample: serverSample, SampleLink: "https://panel.example.com/client/vms/example", LinkMeaning: serverLinkMeaning,
 	},
+	{
+		Key:      EmailTransferWarn,
+		Name:     "Transfer usage warning",
+		SentWhen: "Sent to a server's owner when its data transfer reaches a warning level (set under System settings, Quotas), at most once per level each month.",
+		Optional: true,
+		Default: EmailTemplate{
+			Subject: "Your server {{server}} has used {{percent}} of its monthly transfer",
+			Body: "{{greeting}},\n\nYour server {{server}} has transferred {{used}} of its {{quota}} monthly allowance ({{percent}}).\n\n" +
+				"{{after}}\n\nThe allowance starts again on {{resets}}.",
+			Button: "Open your server",
+		},
+		Sample: transferSample, SampleLink: "https://panel.example.com/client/vms/example", LinkMeaning: serverLinkMeaning,
+	},
+	{
+		Key:      EmailVMSuspended,
+		Name:     "Server suspended",
+		SentWhen: "Sent to a server's owner when it is suspended, by staff or the billing system. Switch it off when your billing system sends its own.",
+		Optional: true,
+		Default: EmailTemplate{
+			Subject: "Your server {{server}} has been suspended",
+			Body: "{{greeting}},\n\nYour server {{server}} has been suspended and is powered off. Its disk and address are kept, " +
+				"but it cannot be started until the suspension is lifted.\n\nIf you are not sure why, contact support.",
+			Button: "Open your server",
+		},
+		Sample: serverSample, SampleLink: "https://panel.example.com/client/vms/example", LinkMeaning: serverLinkMeaning,
+	},
+	{
+		Key:      EmailVMUnsuspended,
+		Name:     "Server unsuspended",
+		SentWhen: "Sent to a server's owner when its suspension is lifted.",
+		Optional: true,
+		Default: EmailTemplate{
+			Subject: "Your server {{server}} is no longer suspended",
+			Body: "{{greeting}},\n\nThe suspension of your server {{server}} has been lifted, and it is being started again. " +
+				"If it does not come up, start it from its page.",
+			Button: "Open your server",
+		},
+		Sample: serverSample, SampleLink: "https://panel.example.com/client/vms/example", LinkMeaning: serverLinkMeaning,
+	},
+	{
+		Key:      EmailBackupFailed,
+		Name:     "Backup failed",
+		SentWhen: "Sent to a customer when a backup of their server fails after every retry. Staff see the reason under Alerts.",
+		Optional: true,
+		Default: EmailTemplate{
+			Subject: "A backup of your server {{server}} failed",
+			Body: "{{greeting}},\n\n{{backup}} of your server {{server}} did not complete. The server itself keeps running as before.\n\n" +
+				"The failure has been recorded for our staff. If it keeps happening, contact support.",
+			Button: "Open your server",
+		},
+		Sample:     map[string]string{"name": "Dewi", "email": "dewi@example.com", "server": "web-01", "backup": "The scheduled backup"},
+		SampleLink: "https://panel.example.com/client/vms/example", LinkMeaning: serverLinkMeaning,
+	},
+	{
+		Key:      EmailVMNATMoved,
+		Name:     "NAT server moved",
+		SentWhen: "Sent to the owner of a NAT server (one sharing its node's address) when staff move it to another node, which changes its public address and maybe its ports.",
+		Optional: true,
+		Default: EmailTemplate{
+			Subject: "Your server {{server}} has a new public address",
+			Body: "{{greeting}},\n\nYour server {{server}} was moved to other hardware. It shares that machine's public address, so it is now reached at:\n\n" +
+				"Address: {{address}}\nPorts: {{ports}}\n\nThe first port leads to its remote access, as before. " +
+				"Update anything that connects to the old address, and the DNS of hostnames routed to it. Nothing on the server itself has changed.",
+			Button: "Open your server",
+		},
+		Sample:     map[string]string{"name": "Dewi", "email": "dewi@example.com", "server": "web-01", "address": "203.0.113.24", "ports": "20000-20019"},
+		SampleLink: "https://panel.example.com/client/vms/example", LinkMeaning: serverLinkMeaning,
+	},
+	{
+		Key:      EmailAbuseAction,
+		Name:     "Network action on a server",
+		SentWhen: "Sent to a server's owner when its network is cut off, slowed or null-routed because of abuse or an attack on it, by staff or the abuse policy, and again when that is lifted. Switched off under Abuse, Policy, too.",
+		Optional: true,
+		Default: EmailTemplate{
+			Subject: "Network action on your server {{server}}",
+			Body:    "{{greeting}},\n\n{{abuse}}\n\nIf you have questions, contact support.",
+			Button:  "Open your server",
+		},
+		Sample: map[string]string{"name": "Dewi", "email": "dewi@example.com", "server": "web-01",
+			"abuse": "Your server was the target of a flood of traffic. We measured 412000 packets/s. To protect the network, all traffic to 203.0.113.24 is being dropped until 21 November 14:30 UTC. The server itself keeps running; it cannot be reached from the internet until then."},
+		SampleLink: "https://panel.example.com/client/vms/example", LinkMeaning: serverLinkMeaning,
+	},
+	{
+		Key:      EmailPasswordChanged,
+		Name:     "Password changed",
+		SentWhen: "Sent when the password of an account changes: changed by its owner, set through a reset link, or replaced by an administrator.",
+		Optional: true,
+		Default: EmailTemplate{
+			Subject: "Your {{brand}} password was changed",
+			Body:    "{{greeting}},\n\nThe password of your {{brand}} account ({{email}}) was changed. {{who}}\n\n" + notYou,
+			Button:  "Sign in",
+		},
+		Sample: accountSample, SampleLink: "https://panel.example.com/login", LinkMeaning: accountLinkMeaning,
+	},
+	{
+		Key:      EmailTwoFactorDisabled,
+		Name:     "Two-factor turned off",
+		SentWhen: "Sent when two-factor sign-in is turned off for an account, by its owner or by an administrator.",
+		Optional: true,
+		Default: EmailTemplate{
+			Subject: "Two-factor sign-in was turned off for your {{brand}} account",
+			Body: "{{greeting}},\n\nTwo-factor sign-in was turned off for your {{brand}} account ({{email}}). Signing in now takes only the password. {{who}}\n\n" +
+				"You can turn it on again under your profile. " + notYou,
+			Button: "Sign in",
+		},
+		Sample: accountSample, SampleLink: "https://panel.example.com/login", LinkMeaning: accountLinkMeaning,
+	},
+	{
+		Key:      EmailAPIKeyCreated,
+		Name:     "API key created",
+		SentWhen: "Sent when a new API key is created for an account.",
+		Optional: true,
+		Default: EmailTemplate{
+			Subject: "A new API key was created for your {{brand}} account",
+			Body: "{{greeting}},\n\nA new API key named \u201c{{key}}\u201d was created for your {{brand}} account ({{email}}). " +
+				"It can do what your account can until it expires or is revoked. {{who}}\n\n" + notYou,
+			Button: "Sign in",
+		},
+		Sample: accountSample, SampleLink: "https://panel.example.com/login", LinkMeaning: accountLinkMeaning,
+	},
+	{
+		Key:      EmailAccountInvite,
+		Name:     "Team invitation",
+		SentWhen: "Sent when a customer invites someone to work in their account.",
+		Default: EmailTemplate{
+			Subject: "You are invited to {{account}} on {{brand}}",
+			Body: "{{greeting}},\n\n{{account}} invited you to work in their {{brand}} account as {{role}}.\n\n" +
+				"Accept with the button below. It works for 7 days. You sign in with your own password, and you can turn on two-factor sign-in for it.\n\n" +
+				"If you did not expect this, ignore this email: nothing happens until you accept.",
+			Button: "Accept the invitation",
+		},
+		Sample:      map[string]string{"name": "", "email": "dewi@example.com", "account": "Acme Ltd (ops@acme.example)", "role": "Technical: runs the servers"},
+		SampleLink:  "https://panel.example.com/accept-invite?token=example",
+		LinkMeaning: "The button opens the page where they accept, and choose a password if they have no account yet.",
+	},
+}
+
+// accountSample fills the account placeholders in previews and test sends.
+var accountSample = map[string]string{
+	"name": "Dewi", "email": "dewi@example.com", "who": "It was made from the address 203.0.113.24.", "key": "deploy-bot",
+}
+
+const accountLinkMeaning = "The button opens your panel's sign-in page."
+
+// transferSample fills the transfer placeholders in previews and test sends.
+var transferSample = map[string]string{
+	"name": "Dewi", "email": "dewi@example.com", "server": "web-01", "address": "203.0.113.24",
+	"used": "812.4 GB", "quota": "1000 GB", "percent": "81%", "resets": "1 December",
+	"after": "Once it is used up, the server's speed is lowered to 10 Mbps until the allowance starts again.",
 }
 
 // What {{access}} becomes in a server email, by how the server can be reached.

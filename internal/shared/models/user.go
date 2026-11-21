@@ -27,8 +27,8 @@ type User struct {
 	// for every existing user (migration 037) so a managed user without a
 	// user_quotas row cannot be mistaken for a legacy user who simply has no
 	// quota row. Managed quota assignment/enforcement reads this marker.
-	QuotaMode            QuotaMode `json:"quota_mode,omitempty" gorm:"column:quota_mode;type:quota_mode;not null;default:'legacy'"`
-	TwoFactorSecret      string    `json:"-" gorm:"type:varchar(255)" validate:"-"`
+	QuotaMode       QuotaMode `json:"quota_mode,omitempty" gorm:"column:quota_mode;type:quota_mode;not null;default:'legacy'"`
+	TwoFactorSecret string    `json:"-" gorm:"type:varchar(255)" validate:"-"`
 	// TwoFactorEnabled becomes true only after Verify2FASetup confirms a TOTP
 	// code. Login gates on THIS flag, not on TwoFactorSecret presence, so an
 	// abandoned setup (secret written, never verified) can't lock the user out.
@@ -37,10 +37,33 @@ type User struct {
 	// the account cannot sign in and its sessions and API keys stop working.
 	// Read-only here; written by table name when the access is granted.
 	ExpiresAt *time.Time `json:"expires_at,omitempty" gorm:"column:expires_at;->"`
-	TwoFactorBackupCodes string    `json:"-" gorm:"type:varchar(1000)"` // Encrypted backup codes
-	IPWhitelist          []string  `json:"ip_whitelist" gorm:"type:jsonb;serializer:json" validate:"omitempty,dive,ip"`
-	CreatedAt            time.Time `json:"created_at" gorm:"not null;default:NOW()"`
-	UpdatedAt            time.Time `json:"updated_at" gorm:"not null;default:NOW()"`
+	// SuspendedAt is set while an administrator or the billing system has
+	// suspended the account: no sign-in, and sessions and API keys stop working.
+	// Read-only here; service.SetAccountSuspended is the writer.
+	SuspendedAt *time.Time `json:"suspended_at,omitempty" gorm:"column:suspended_at;->"`
+	// Sign-in lockout and authenticator-code replay state. Read-only here so a
+	// full-row save cannot write back a stale value; written by table name.
+	FailedLoginCount     int        `json:"-" gorm:"column:failed_login_count;->"`
+	LockedUntil          *time.Time `json:"locked_until,omitempty" gorm:"column:locked_until;->"`
+	TOTPLastStep         int64      `json:"-" gorm:"column:totp_last_step;->"`
+	TwoFactorBackupCodes string     `json:"-" gorm:"type:varchar(1000)"` // Encrypted backup codes
+	IPWhitelist          []string   `json:"ip_whitelist" gorm:"type:jsonb;serializer:json" validate:"omitempty,dive,ip"`
+	CreatedAt            time.Time  `json:"created_at" gorm:"not null;default:NOW()"`
+	UpdatedAt            time.Time  `json:"updated_at" gorm:"not null;default:NOW()"`
+	// StaffRole is a staff account's role key (nil = administrator). Read-only
+	// here; written by table name so a stale full-row save cannot revert it.
+	StaffRole *string `json:"staff_role,omitempty" gorm:"column:staff_role;->"`
+	// MarketingOptOut: the account unsubscribed from marketing announcements.
+	// Read-only here; written by table name.
+	MarketingOptOut bool `json:"marketing_opt_out" gorm:"column:marketing_opt_out;->"`
+	// Profile details the account holder edits. Read-only here; written by
+	// table name (service.UpdateOwnProfile).
+	Phone    string `json:"phone" gorm:"column:phone;->"`
+	Company  string `json:"company" gorm:"column:company;->"`
+	Timezone string `json:"timezone" gorm:"column:timezone;->"`
+	Locale   string `json:"locale" gorm:"column:locale;->"`
+	// StaffRoleName is filled for display, not stored.
+	StaffRoleName string `json:"staff_role_name,omitempty" gorm:"-"`
 	// TokenRevokedAt is the logout revocation cutoff. RequireAuth rejects any
 	// access token whose iat predates this instant, so logout invalidates all of a
 	// user's outstanding stateless JWTs server-side. NULL = nothing revoked.
@@ -86,4 +109,21 @@ func ValidateIPWhitelist(ips []string) error {
 // Expired reports whether a temporary account has run out.
 func (u *User) Expired() bool {
 	return u.ExpiresAt != nil && time.Now().After(*u.ExpiresAt)
+}
+
+// Suspended reports an account that has been suspended.
+func (u *User) Suspended() bool {
+	return u.SuspendedAt != nil
+}
+
+// SignInLocked reports an account locked after too many failed sign-ins. It
+// stops new sign-ins only; open sessions and API keys keep working.
+func (u *User) SignInLocked() bool {
+	return u.LockedUntil != nil && time.Now().Before(*u.LockedUntil)
+}
+
+// Locked reports an account that may not be used right now: a temporary one
+// that ran out, or a suspended one.
+func (u *User) Locked() bool {
+	return u.Expired() || u.Suspended()
 }

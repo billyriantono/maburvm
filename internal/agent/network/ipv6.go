@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -23,6 +24,14 @@ type IPv6Delegation struct {
 	// the subnet's own router is the gateway, so the node adds no route and
 	// no neighbour entries; only the firewall and the guest filter use it.
 	OnLink bool `json:",omitempty"`
+	// Extra are further addresses inside Prefix the guest holds. The prefix
+	// is routed whole; they only need their own NDP proxy entries.
+	Extra []string `json:",omitempty"`
+}
+
+// Same reports whether d and o ask for the same host state.
+func (d IPv6Delegation) Same(o IPv6Delegation) bool {
+	return d.Prefix == o.Prefix && d.MAC == o.MAC && d.Bridge == o.Bridge && d.OnLink == o.OnLink && slices.Equal(d.Extra, o.Extra)
 }
 
 // EUI64LinkLocal derives the guest's fe80:: address from its MAC the way
@@ -48,26 +57,68 @@ func EUI64LinkLocal(mac string) (string, error) {
 // prefix to the guest: a permanent neighbour entry (the guest never answers
 // NS - its nwfilter drops NA) and the route via that link-local. Both are
 // `replace`, so re-running them is a no-op and a changed MAC just moves them.
-// The proxy entry answers NS for the guest's <prefix>::1 on the bridge, for
-// upstreams that treat the whole pool as on-link instead of routing it to the
-// host. It is inert unless net.ipv6.conf.<bridge>.proxy_ndp=1.
-// ponytail: proxies ::1 only (the address the guest is configured with);
-// extra guest addresses need ndppd or a route on the upstream.
+// The proxy entries answer NS for the guest's <prefix>::1 and each further
+// address on the bridge, for upstreams that treat the whole pool as on-link
+// instead of routing it to the host. They are inert unless
+// net.ipv6.conf.<bridge>.proxy_ndp=1.
 func ipv6RouteCommands(d IPv6Delegation, linkLocal string) [][]string {
-	return [][]string{
+	cmds := [][]string{
 		{"ip", "-6", "neigh", "replace", linkLocal, "lladdr", strings.ToLower(d.MAC), "dev", d.Bridge, "nud", "permanent"},
 		{"ip", "-6", "route", "replace", d.Prefix, "via", linkLocal, "dev", d.Bridge},
-		{"ip", "-6", "neigh", "replace", "proxy", guestIPv6(d.Prefix), "dev", d.Bridge},
 	}
+	for _, a := range d.proxied() {
+		cmds = append(cmds, []string{"ip", "-6", "neigh", "replace", "proxy", a, "dev", d.Bridge})
+	}
+	return cmds
 }
 
 // ipv6RouteDeleteCommands undo ipv6RouteCommands.
 func ipv6RouteDeleteCommands(d IPv6Delegation, linkLocal string) [][]string {
-	return [][]string{
-		{"ip", "-6", "neigh", "del", "proxy", guestIPv6(d.Prefix), "dev", d.Bridge},
-		{"ip", "-6", "route", "del", d.Prefix, "via", linkLocal, "dev", d.Bridge},
-		{"ip", "-6", "neigh", "del", linkLocal, "dev", d.Bridge},
+	var cmds [][]string
+	for _, a := range d.proxied() {
+		cmds = append(cmds, []string{"ip", "-6", "neigh", "del", "proxy", a, "dev", d.Bridge})
 	}
+	return append(cmds,
+		[]string{"ip", "-6", "route", "del", d.Prefix, "via", linkLocal, "dev", d.Bridge},
+		[]string{"ip", "-6", "neigh", "del", linkLocal, "dev", d.Bridge},
+	)
+}
+
+// sameRoute reports whether only the further addresses differ, so the route
+// can stay up while the proxy entries change.
+func (d IPv6Delegation) sameRoute(o IPv6Delegation) bool {
+	return d.Prefix == o.Prefix && d.MAC == o.MAC && d.Bridge == o.Bridge && d.OnLink == o.OnLink
+}
+
+// removeStaleProxies drops the proxy entries prev had that next does not.
+func removeStaleProxies(prev, next IPv6Delegation) {
+	if prev.OnLink {
+		return
+	}
+	keep := next.proxied()
+	for _, a := range prev.proxied() {
+		if !slices.Contains(keep, a) {
+			if out, err := exec.Command("ip", "-6", "neigh", "del", "proxy", a, "dev", prev.Bridge).CombinedOutput(); err != nil && !strings.Contains(string(out), "No such") {
+				log.Printf("[NetworkManager] WARNING: removing NDP proxy %s: %s", a, strings.TrimSpace(string(out)))
+			}
+		}
+	}
+}
+
+// proxied are the addresses answered for by NDP proxy: ::1, then every valid
+// further address inside the prefix.
+func (d IPv6Delegation) proxied() []string {
+	out := []string{guestIPv6(d.Prefix)}
+	_, n, err := net.ParseCIDR(d.Prefix)
+	if err != nil {
+		return out
+	}
+	for _, a := range d.Extra {
+		if ip := net.ParseIP(a); ip != nil && ip.To4() == nil && n.Contains(ip) && !slices.Contains(out, ip.String()) {
+			out = append(out, ip.String())
+		}
+	}
+	return out
 }
 
 // guestIPv6 is the address the guest takes in its prefix: <prefix>::1.
@@ -127,63 +178,6 @@ func removeIPv6Route(d IPv6Delegation) error {
 		return fmt.Errorf("%s", strings.Join(errs, "; "))
 	}
 	return nil
-}
-
-// ipv6FirewallSpecs mirrors buildRuleSpec for ip6tables, with the VM's
-// delegated prefix in place of its address. sorted must already be in
-// priority order (the caller inserts each spec at position 1, exactly like
-// IPv4). Rules scoped to an IPv4 source can never match v6 traffic and are
-// skipped; IPv6 source CIDRs are honoured; "icmp" means ICMPv6 here.
-// Returns the per-rule specs and the trailing default-drop spec.
-func ipv6FirewallSpecs(vmID, prefix string, sorted []FirewallRule) (specs [][]string, defaultDrop []string) {
-	for _, rule := range sorted {
-		var spec []string
-		switch rule.Protocol {
-		case "", "all":
-		case "icmp":
-			spec = append(spec, "-p", "icmpv6")
-		default:
-			spec = append(spec, "-p", rule.Protocol)
-		}
-		if src := rule.SourceIP; src != "" && src != "0.0.0.0/0" && src != "::/0" {
-			if ip, _, err := net.ParseCIDR(src); err == nil && ip.To4() != nil {
-				continue // IPv4-only source: cannot apply to v6
-			} else if ip := net.ParseIP(src); ip != nil && ip.To4() != nil {
-				continue
-			}
-			// The remote end: source of inbound traffic, destination of outbound.
-			if rule.Direction == "inbound" {
-				spec = append(spec, "-s", src)
-			} else {
-				spec = append(spec, "-d", src)
-			}
-		}
-		if rule.Direction == "inbound" {
-			spec = append(spec, "-d", prefix)
-		} else {
-			spec = append(spec, "-s", prefix)
-		}
-		if rule.PortRange != "" && (rule.Protocol == "tcp" || rule.Protocol == "udp") {
-			portSpec, multi, err := normalizePortSpec(rule.PortRange)
-			if err != nil {
-				continue // validated on the v4 pass; never reached
-			}
-			if multi {
-				spec = append(spec, "-m", "multiport", "--dports", portSpec)
-			} else {
-				spec = append(spec, "--dport", portSpec)
-			}
-		}
-		if rule.Action == "allow" {
-			spec = append(spec, "-j", "ACCEPT")
-		} else {
-			spec = append(spec, "-j", "DROP")
-		}
-		spec = append(spec, "-m", "comment", "--comment", fmt.Sprintf("maburvm-vm-%s-rule-%s", vmID, rule.ID))
-		specs = append(specs, spec)
-	}
-	defaultDrop = []string{"-d", prefix, "-j", "DROP", "-m", "comment", "--comment", fmt.Sprintf("maburvm-vm-%s-default-drop", vmID)}
-	return specs, defaultDrop
 }
 
 // ipv6StatePath is where routed prefixes are persisted (MABURVM_DATA_DIR, like the

@@ -263,7 +263,11 @@ func (r *VMRepository) ClearVNCPort(ctx context.Context, id string) error {
 
 // UpdateVNCPassword updates a VM's VNC password
 func (r *VMRepository) UpdateVNCPassword(ctx context.Context, id string, password string) error {
-	return r.db.WithContext(ctx).Model(&models.VM{}).Where("id = ?", id).Update("vnc_password", password).Error
+	sealed, err := models.SealSecret(password)
+	if err != nil {
+		return err
+	}
+	return r.db.WithContext(ctx).Model(&models.VM{}).Where("id = ?", id).Update("vnc_password", sealed).Error
 }
 
 // UpdateResources updates a VM's resource allocation
@@ -284,6 +288,21 @@ func (r *VMRepository) GetByHostname(ctx context.Context, hostname string) (*mod
 func (r *VMRepository) HostnameExists(ctx context.Context, hostname string) (bool, error) {
 	var count int64
 	if err := r.db.WithContext(ctx).Model(&models.VM{}).Where("hostname = ?", hostname).Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// HostnameExistsForUser reports whether this owner already has a VM by that
+// name. Names are unique per owner only: two customers may both run "web1",
+// and neither learns of the other's.
+func (r *VMRepository) HostnameExistsForUser(ctx context.Context, userID, hostname, exceptVMID string) (bool, error) {
+	var count int64
+	q := r.db.WithContext(ctx).Model(&models.VM{}).Where("user_id = ? AND LOWER(hostname) = LOWER(?)", userID, hostname)
+	if exceptVMID != "" {
+		q = q.Where("id <> ?", exceptVMID)
+	}
+	if err := q.Count(&count).Error; err != nil {
 		return false, err
 	}
 	return count > 0, nil
@@ -337,13 +356,86 @@ type VMFilter struct {
 	// the page the client happens to be holding cannot find a VM on any other
 	// page — it reports "no VMs found" next to a total of 65.
 	Search string
+	// Tag keeps VMs carrying this tag.
+	Tag string
+	// Access, when set, keeps the VMs a customer can see: their own and those
+	// their team memberships cover. It replaces UserID.
+	Access *VMAccessScope
+	// ProjectID keeps the VMs in one project.
+	ProjectID string
+}
+
+// VMGrant is one team membership: an account, and either every VM of it or
+// the chosen VMs and projects.
+type VMGrant struct {
+	AccountID  string
+	VMIDs      []string
+	ProjectIDs []string
+}
+
+// VMAccessScope is a customer's own VMs plus what their memberships reach.
+type VMAccessScope struct {
+	UserID string
+	Grants []VMGrant
+}
+
+// Only narrows the scope to one account: the caller's own, or one of the
+// accounts they are a member of. Any other id matches nothing.
+func (s VMAccessScope) Only(accountID string) VMAccessScope {
+	out := VMAccessScope{UserID: "00000000-0000-0000-0000-000000000000"}
+	if accountID == s.UserID {
+		out.UserID = s.UserID
+	}
+	for _, g := range s.Grants {
+		if g.AccountID == accountID {
+			out.Grants = append(out.Grants, g)
+		}
+	}
+	return out
+}
+
+// SQL is the scope as a WHERE condition. col qualifies a column name, for a
+// query with joins. Project ids appear only when a grant uses them, so a
+// database without the column still answers.
+func (s VMAccessScope) SQL(col func(string) string) (string, []interface{}) {
+	if col == nil {
+		col = func(c string) string { return c }
+	}
+	parts := []string{col("user_id") + " = ?"}
+	args := []interface{}{s.UserID}
+	for _, g := range s.Grants {
+		if len(g.VMIDs) == 0 && len(g.ProjectIDs) == 0 {
+			parts = append(parts, col("user_id")+" = ?")
+			args = append(args, g.AccountID)
+			continue
+		}
+		var inner []string
+		if len(g.VMIDs) > 0 {
+			inner = append(inner, col("id")+" IN ?")
+			args = append(args, g.AccountID, g.VMIDs)
+		} else {
+			args = append(args, g.AccountID)
+		}
+		if len(g.ProjectIDs) > 0 {
+			inner = append(inner, col("project_id")+" IN ?")
+			args = append(args, g.ProjectIDs)
+		}
+		parts = append(parts, "("+col("user_id")+" = ? AND ("+strings.Join(inner, " OR ")+"))")
+	}
+	return "(" + strings.Join(parts, " OR ") + ")", args
 }
 
 // applyVMFilter builds the WHERE clause shared by ListFiltered and CountFiltered,
 // so the page and its total can never disagree about what was asked for.
 func (r *VMRepository) applyVMFilter(query *gorm.DB, f VMFilter) *gorm.DB {
-	if f.UserID != "" {
+	if f.Access != nil {
+		cond, args := f.Access.SQL(nil)
+		query = query.Where(cond, args...)
+	} else if f.UserID != "" {
 		query = query.Where("user_id = ?", f.UserID)
+	}
+	if f.ProjectID != "" {
+		query = query.Where("project_id = ?", f.ProjectID)
 	}
 	if f.NodeID != "" {
 		query = query.Where("node_id = ?", f.NodeID)
@@ -357,6 +449,11 @@ func (r *VMRepository) applyVMFilter(query *gorm.DB, f VMFilter) *gorm.DB {
 		// arbitrary text errors instead of simply not matching, and the cast form
 		// is also the one sqlite accepts, which is what the tests run on.
 		query = query.Where("LOWER(hostname) LIKE ? OR LOWER(CAST(id AS TEXT)) = ?", like, strings.ToLower(s))
+	}
+	if t := strings.ToLower(strings.TrimSpace(f.Tag)); t != "" {
+		// A quoted element of the JSON array, matched as text so sqlite reads it too.
+		esc := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(t)
+		query = query.Where(`CAST(tags AS TEXT) LIKE ? ESCAPE '\'`, `%"`+esc+`"%`)
 	}
 	return query
 }

@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 )
 
@@ -48,27 +47,25 @@ func TestIPv6RouteCommands(t *testing.T) {
 	}
 }
 
-func TestIPv6FirewallSpecs(t *testing.T) {
-	rules := []FirewallRule{
-		{ID: "ssh", Protocol: "tcp", PortRange: "22", Action: "allow", Direction: "inbound", SourceIP: "0.0.0.0/0", Priority: 10},
-		{ID: "ping", Protocol: "icmp", Action: "allow", Direction: "inbound", SourceIP: "0.0.0.0/0", Priority: 20},
-		{ID: "office", Protocol: "tcp", PortRange: "3306", Action: "allow", Direction: "inbound", SourceIP: "203.0.113.0/24", Priority: 30},
-		{ID: "v6net", Protocol: "udp", PortRange: "5000-5100", Action: "deny", Direction: "inbound", SourceIP: "2001:db8::/32", Priority: 40},
-		{ID: "egress", Protocol: "all", Action: "deny", Direction: "outbound", SourceIP: "", Priority: 50},
+// Further addresses get their own proxy entries (a node whose upstream treats
+// the pool as on-link answers for them), and one outside the prefix none.
+func TestIPv6ExtraAddressesAreProxied(t *testing.T) {
+	d := IPv6Delegation{Prefix: "2001:db8:20:5::/64", MAC: "52:54:00:12:34:56", Bridge: "viifbr0",
+		Extra: []string{"2001:db8:20:5::25", "2001:db8:99::1", "2001:db8:20:5::1"}}
+	ll, _ := d.validate()
+	got := ipv6RouteCommands(d, ll)
+	if len(got) != 4 || got[3][5] != "2001:db8:20:5::25" {
+		t.Fatalf("commands = %v", got)
 	}
-	specs, drop := ipv6FirewallSpecs("vm1", "2001:db8:20:5::/64", rules)
-	want := [][]string{
-		{"-p", "tcp", "-d", "2001:db8:20:5::/64", "--dport", "22", "-j", "ACCEPT", "-m", "comment", "--comment", "maburvm-vm-vm1-rule-ssh"},
-		{"-p", "icmpv6", "-d", "2001:db8:20:5::/64", "-j", "ACCEPT", "-m", "comment", "--comment", "maburvm-vm-vm1-rule-ping"},
-		// "office" is IPv4-scoped and must be skipped
-		{"-p", "udp", "-s", "2001:db8::/32", "-d", "2001:db8:20:5::/64", "-m", "multiport", "--dports", "5000:5100", "-j", "DROP", "-m", "comment", "--comment", "maburvm-vm-vm1-rule-v6net"},
-		{"-s", "2001:db8:20:5::/64", "-j", "DROP", "-m", "comment", "--comment", "maburvm-vm-vm1-rule-egress"},
+	if del := ipv6RouteDeleteCommands(d, ll); len(del) != 4 || del[1][5] != "2001:db8:20:5::25" {
+		t.Fatalf("delete = %v", del)
 	}
-	if !reflect.DeepEqual(specs, want) {
-		t.Errorf("specs =\n%v\nwant\n%v", specs, want)
+	if d.Same(IPv6Delegation{Prefix: d.Prefix, MAC: d.MAC, Bridge: d.Bridge}) {
+		t.Fatal("a changed list of addresses must be re-applied")
 	}
-	if strings.Join(drop, " ") != "-d 2001:db8:20:5::/64 -j DROP -m comment --comment maburvm-vm-vm1-default-drop" {
-		t.Errorf("default drop = %v", drop)
+	// A prefix that does not parse (a hand-edited state file) must not panic.
+	if got := (IPv6Delegation{Prefix: "bogus", Extra: d.Extra}).proxied(); len(got) != 1 {
+		t.Fatalf("proxied with a bad prefix = %v", got)
 	}
 }
 
@@ -81,7 +78,7 @@ func TestIPv6DelegationsPersist(t *testing.T) {
 	if err := saveIPv6Delegations(path, want); err != nil {
 		t.Fatal(err)
 	}
-	if got := loadIPv6Delegations(path); len(got) != 1 || got["vm-1"] != want["vm-1"] {
+	if got := loadIPv6Delegations(path); len(got) != 1 || !got["vm-1"].Same(want["vm-1"]) {
 		t.Fatalf("round trip: %v", got)
 	}
 	if err := os.WriteFile(path, []byte("{broken"), 0o600); err != nil {

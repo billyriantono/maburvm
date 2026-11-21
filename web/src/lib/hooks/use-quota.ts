@@ -2,11 +2,27 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api-client'
 import type { QuotaStatus, SetQuotaRequest, UserQuota } from '@/types/quota'
 
-// useMyQuota returns the current user's limits and usage.
-export function useMyQuota() {
+// useMyQuota returns the current user's limits and usage, or with accountId
+// those of a team account whose usage their role covers.
+export function useMyQuota(accountId?: string, enabled = true) {
   return useQuery<QuotaStatus>({
-    queryKey: ['quota', 'me'],
-    queryFn: async () => (await api.get<QuotaStatus>('/api/v1/quota')).data.data,
+    queryKey: ['quota', accountId ?? 'me'],
+    queryFn: async () => (await api.get<QuotaStatus>('/api/v1/quota', accountId ? { params: { account_id: accountId } } : undefined)).data.data,
+    enabled,
+  })
+}
+
+// What customers may do on their own; the operator sets it in system settings.
+export interface SelfService {
+  order: boolean
+  clone: boolean
+  extra_disk: boolean
+}
+
+export function useSelfService() {
+  return useQuery<SelfService>({
+    queryKey: ['self-service'],
+    queryFn: async () => (await api.get<SelfService>('/api/v1/self-service')).data.data,
   })
 }
 

@@ -3,6 +3,7 @@ package service
 import (
 	"testing"
 
+	vmimport "github.com/maburvm/panel/internal/agent/import"
 	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 )
 
@@ -22,5 +23,22 @@ func TestISOFromScan(t *testing.T) {
 		if got := isoFromScan(&pb.ScannedVM{Disks: c.disks}); got != c.want {
 			t.Errorf("%s: got %q, want %q", name, got, c.want)
 		}
+	}
+}
+
+func TestImportedDisksRecordBlockDataDisks(t *testing.T) {
+	const gib = int64(1) << 30
+	c := &vmimport.ImportCandidate{Disks: []vmimport.DiskInfo{
+		{SourceFile: "/dev/vg0/legacy101-0", Device: "disk", TargetDev: "vda", Size: 40 * gib},
+		{SourceFile: "/var/iso/x.iso", Device: "cdrom", TargetDev: "hda"},
+		{SourceFile: "/dev/vg0/legacy101-1", Device: "disk", TargetDev: "vdb", Size: 100*gib + 1},
+		{SourceFile: "/vm/extra.qcow2", Device: "disk", TargetDev: "vdc", Size: 10 * gib},
+	}}
+	gb, data := importedDisks(c)
+	if gb != 50 {
+		t.Fatalf("the row counts the system disk and file disks: got %d", gb)
+	}
+	if len(data) != 1 || data[0].Device != "vdb" || data[0].SizeGB != 101 || data[0].Path != "/dev/vg0/legacy101-1" {
+		t.Fatalf("data disks = %+v", data)
 	}
 }

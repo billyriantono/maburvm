@@ -1,4 +1,5 @@
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
+import { apiErrorCode, apiErrorMessage } from './api-error';
 
 // API Response wrapper matching Go backend structure
 export interface ApiResponse<T> {
@@ -7,12 +8,7 @@ export interface ApiResponse<T> {
   success: boolean;
 }
 
-// API Error structure
-export interface ApiError {
-  message: string;
-  code?: string;
-  details?: Record<string, string[]>;
-}
+export type { ApiError, PageMeta } from '@/types/api';
 
 // Create axios instance with default config.
 // Same-origin: requests to /api are proxied server-side to the panel via
@@ -25,144 +21,54 @@ const apiClient: AxiosInstance = axios.create({
   timeout: 30000,
 });
 
-// Request interceptor: Attach JWT token
-apiClient.interceptors.request.use(
-  (config) => {
-    // Try to get token from cookie first, then localStorage
-    let token: string | null = null;
+// The session is an HttpOnly cookie the panel sets at sign-in. The browser
+// sends it with every same-origin request; no script can read it.
 
-    if (typeof document !== 'undefined') {
-      // Try cookie first (preferred for httpOnly)
-      const cookieMatch = document.cookie.match(/accessToken=([^;]+)/);
-      if (cookieMatch) {
-        token = cookieMatch[1];
-      } else {
-        // Fallback to localStorage
-        token = localStorage.getItem('accessToken');
-      }
-    }
+// Pages a dropped session must not bounce away from.
+const SIGN_IN_PATHS = ['/login', '/forgot-password', '/reset-password'];
 
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
+// sessionEnded goes to sign-in, coming back here after. The panel's 401 has
+// already removed the cookie. There is no refresh: the session lasts the
+// operator's session length (Settings, System, Security) or until revoked.
+function sessionEnded() {
+  if (typeof window === 'undefined') return;
+  const { pathname, search } = window.location;
+  if (SIGN_IN_PATHS.some((p) => pathname === p || pathname.startsWith(p + '/'))) return;
+  window.location.href = '/login?next=' + encodeURIComponent(pathname + search);
+}
 
-    return config;
-  },
-  (error) => {
-    return Promise.reject(error);
-  }
-);
-
-// Response interceptor: Handle 401 and token refresh
-let isRefreshing = false;
-let failedQueue: Array<{ resolve: (token: string) => void; reject: (error: unknown) => void }> = [];
-
-const processQueue = (error: unknown, token: string | null = null) => {
-  failedQueue.forEach(prom => {
-    if (error) {
-      prom.reject(error);
-    } else {
-      prom.resolve(token!);
-    }
-  });
-  failedQueue = [];
-};
+// The profile page is where two-factor is turned on.
+const TWO_FACTOR_SETUP_PATH = '/settings/profile';
 
 apiClient.interceptors.response.use(
   (response: AxiosResponse) => response,
-  async (error) => {
-    const originalRequest = error.config;
-
+  (error) => {
     // Give every failure a sentence worth showing. Pages put error.message
     // straight into a toast, and axios's own "Request failed with status code
     // 502" tells the person nothing about what happened or what to do.
     const status: number | undefined = error.response?.status;
     const body = error.response?.data;
-    const fromServer =
-      (typeof body?.message === 'string' && body.message) ||
-      (typeof body?.error === 'string' && body.error) ||
-      '';
-    if (!error.response || status === 502 || status === 503 || status === 504) {
+    const fromServer = apiErrorMessage(body);
+    const code = apiErrorCode(body);
+    if (status === 503 && code === 'maintenance' && fromServer) {
+      // Maintenance mode: the panel is up and says why the change waits.
+      error.message = fromServer;
+    } else if (!error.response || status === 502 || status === 503 || status === 504) {
       error.message = 'The panel did not answer. It may be restarting. Try again in a moment.';
     } else if (fromServer) {
       error.message = fromServer;
     }
 
-    if (error.response?.status === 401 && !originalRequest._retry) {
-      // Don't retry refresh token requests
-      if (originalRequest.url?.includes('/auth/refresh')) {
-        // Refresh failed — clear tokens and redirect
-        if (typeof document !== 'undefined') {
-          document.cookie = 'accessToken=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;';
-          document.cookie = 'refreshToken=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;';
-        }
-        if (typeof window !== 'undefined') {
-          window.location.href = '/login';
-        }
-        return Promise.reject(error);
-      }
-
-      if (isRefreshing) {
-        return new Promise((resolve, reject) => {
-          failedQueue.push({ resolve, reject });
-        }).then(token => {
-          originalRequest.headers['Authorization'] = 'Bearer ' + token;
-          return apiClient(originalRequest);
-        }).catch(err => Promise.reject(err));
-      }
-
-      originalRequest._retry = true;
-      isRefreshing = true;
-
-      try {
-        // Try to refresh the token
-        const refreshToken = typeof document !== 'undefined'
-          ? document.cookie.split('; ').find(row => row.startsWith('refreshToken='))?.split('=')[1]
-          : null;
-
-        if (!refreshToken) {
-          throw new Error('No refresh token');
-        }
-
-        const response = await apiClient.post('/api/v1/auth/refresh', { refresh_token: refreshToken });
-        const newToken = response.data?.data?.access_token || response.data?.access_token;
-
-        if (newToken && typeof document !== 'undefined') {
-          document.cookie = `accessToken=${newToken}; path=/;`;
-          originalRequest.headers['Authorization'] = 'Bearer ' + newToken;
-          processQueue(null, newToken);
-          return apiClient(originalRequest);
-        }
-
-        throw new Error('No token in refresh response');
-      } catch (refreshError) {
-        processQueue(refreshError, null);
-        // Clear tokens and redirect to login
-        if (typeof document !== 'undefined') {
-          document.cookie = 'accessToken=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;';
-          document.cookie = 'refreshToken=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;';
-        }
-        if (typeof window !== 'undefined') {
-          window.location.href = '/login';
-        }
-        return Promise.reject(refreshError);
-      } finally {
-        isRefreshing = false;
-      }
-    }
-
-    // Surface the server's explanation instead of axios's generic
-    // "Request failed with status code 400".
-    //
-    // The API answers a refused action with a message that says what actually
-    // happened — "Domain is already active", "that region has no capacity" —
-    // and every caller displays err.message. Leaving axios's default there threw
-    // the useful half away and left an operator with a status code to guess
-    // from.
-    const data = error.response?.data as { message?: string; error?: string } | undefined;
-    const serverMessage = data?.message || data?.error;
-    if (serverMessage) {
-      error.message = serverMessage;
+    if (status === 401) {
+      sessionEnded();
+    } else if (
+      status === 403 &&
+      code === 'two_factor_required' &&
+      typeof window !== 'undefined' &&
+      window.location.pathname !== TWO_FACTOR_SETUP_PATH
+    ) {
+      // The operator requires two-factor for administrators: set it up first.
+      window.location.href = TWO_FACTOR_SETUP_PATH;
     }
 
     return Promise.reject(error);

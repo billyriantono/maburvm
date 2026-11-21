@@ -9,6 +9,10 @@ import type { User, Enable2FAResponse } from '@/types'
 interface UpdateProfileRequest {
   name?: string
   email?: string
+  phone?: string
+  company?: string
+  timezone?: string
+  locale?: string
 }
 
 interface ChangePasswordRequest {
@@ -90,7 +94,7 @@ export function useDisable2FA() {
   })
 }
 
-// System settings (admin) — one object per section: general/security/backup/api/email.
+// System settings (admin) — one object per section: security/quotas/api/email.
 export function useSystemSettings() {
   return useQuery<Record<string, Record<string, unknown>>>({
     queryKey: ['settings', 'system'],
@@ -123,6 +127,7 @@ export interface EmailTestConfig {
   smtpPassword: string
   smtpFrom?: string
   smtpFromName?: string
+  enableTls?: boolean
   to?: string
 }
 

@@ -35,11 +35,47 @@ type APIKey struct {
 	// Role, when "client", makes the key act as a plain tenant even if its owner
 	// is an admin. Empty means the owner's role. See EffectiveRole.
 	Role UserRole `json:"role,omitempty" gorm:"type:varchar(20)"`
-	// ReadOnly keys may only make safe (GET/HEAD) requests.
-	ReadOnly  bool           `json:"read_only" gorm:"not null;default:false"`
-	CreatedAt time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
-	UpdatedAt time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
-	DeletedAt gorm.DeletedAt `json:"-" gorm:"index"`
+	// ReadOnly keys may only make safe (GET/HEAD) requests. Kept for keys
+	// made before scopes: it is the read_only scope.
+	ReadOnly bool `json:"read_only" gorm:"not null;default:false"`
+	// Scope narrows the key further within its role. See APIKeyScopes.
+	Scope string `json:"scope" gorm:"type:varchar(20);not null;default:''"`
+	// AllowedIPs are the addresses (IPs or CIDRs) the key may be used from;
+	// empty means anywhere the owner's own allow-list permits.
+	AllowedIPs []string       `json:"allowed_ips" gorm:"type:jsonb;serializer:json"`
+	CreatedAt  time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
+	UpdatedAt  time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
+	DeletedAt  gorm.DeletedAt `json:"-" gorm:"index"`
+}
+
+// API key scopes, from widest to narrowest. Each is still bounded by the
+// owner's role: a scope never grants what the owner cannot do.
+const (
+	APIKeyScopeFull     = "full"
+	APIKeyScopeReadOnly = "read_only"
+	APIKeyScopeVMPower  = "vm_power"
+	APIKeyScopeBilling  = "billing"
+)
+
+// APIKeyScopes lists the scopes a key may be given.
+var APIKeyScopes = []string{APIKeyScopeFull, APIKeyScopeReadOnly, APIKeyScopeVMPower, APIKeyScopeBilling}
+
+// EffectiveScope is the key's scope, reading a key made before scopes by its
+// read_only flag.
+func (k *APIKey) EffectiveScope() string {
+	switch {
+	case k.Scope != "":
+		return k.Scope
+	case k.ReadOnly:
+		return APIKeyScopeReadOnly
+	}
+	return APIKeyScopeFull
+}
+
+// AfterFind shows a key made before scopes with the scope it acts with.
+func (k *APIKey) AfterFind(*gorm.DB) error {
+	k.Scope = k.EffectiveScope()
+	return nil
 }
 
 // TableName specifies the table name for APIKey.

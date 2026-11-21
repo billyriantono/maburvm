@@ -82,3 +82,16 @@ func WrittenBytes(destPath string) int64 {
 	}
 	return info.Size()
 }
+
+// exportLocks holds one mutex per VM that has been exported.
+// ponytail: never shrinks; one small mutex per VM ID, fine for a node's lifetime.
+var exportLocks sync.Map
+
+// LockExport serialises the exports of one VM (a backup and an image capture,
+// say): a second would stack its overlay on the first one's.
+func LockExport(vmID string) (unlock func()) {
+	m, _ := exportLocks.LoadOrStore(vmID, &sync.Mutex{})
+	mu := m.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}

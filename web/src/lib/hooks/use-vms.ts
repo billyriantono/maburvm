@@ -11,6 +11,10 @@ import type {
   VMMetrics,
   VMMetricSample,
   VMOperation,
+  VMLimits,
+  VMLimitsResult,
+  VMHardware,
+  VMHardwareResult,
   CreateVMRequest,
   UpdateVMRequest,
   PaginatedResponse,
@@ -24,6 +28,12 @@ interface VMListParams {
   status?: string;
   /** Matched against hostname or VM id by the API, across every page. */
   search?: string;
+  /** Only VMs carrying this tag. */
+  tag?: string;
+  /** A customer: only the VMs of this account (their own id, or a team's). */
+  accountId?: string;
+  /** Only the VMs in this project. */
+  projectId?: string;
 }
 
 // useVMOperation polls the VM's latest multi-step operation (e.g. a delete),
@@ -47,10 +57,10 @@ export function useVMOperation(vmId: string | null, enabled: boolean) {
 }
 
 export function useVMs(params: VMListParams = {}) {
-  const { page = 1, pageSize = 20, userId, nodeId, status, search } = params
+  const { page = 1, pageSize = 20, userId, nodeId, status, search, tag, accountId, projectId } = params
 
   return useQuery<PaginatedResponse<VM>>({
-    queryKey: ['vms', 'list', { page, pageSize, userId, nodeId, status, search }],
+    queryKey: ['vms', 'list', { page, pageSize, userId, nodeId, status, search, tag, accountId, projectId }],
     queryFn: async () => {
       const response = await api.get<PaginatedResponse<VM>>('/api/v1/vms', {
         params: {
@@ -60,6 +70,9 @@ export function useVMs(params: VMListParams = {}) {
           node_id: nodeId,
           status,
           search: search || undefined,
+          tag: tag || undefined,
+          account_id: accountId || undefined,
+          project_id: projectId || undefined,
         },
       })
       return response.data as unknown as PaginatedResponse<VM>
@@ -149,18 +162,25 @@ export function useUpdateVM(id: string) {
   })
 }
 
+// deleteImportedVolumes also removes an imported VM's own LVM volumes; an
+// operator's choice, kept and listed under their pool otherwise.
 export function useDeleteVM() {
   const queryClient = useQueryClient()
 
-  return useMutation<void, Error, string>({
-    mutationFn: async (id) => {
-      await api.delete(`/api/v1/vms/${id}`)
+  return useMutation<void, Error, string | { id: string; deleteImportedVolumes?: boolean }>({
+    mutationFn: async (arg) => {
+      const { id, deleteImportedVolumes } = typeof arg === "string" ? { id: arg, deleteImportedVolumes: false } : arg
+      await api.delete(`/api/v1/vms/${id}${deleteImportedVolumes ? "?delete_imported_volumes=true" : ""}`)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['vms', 'list'] })
     },
   })
 }
+
+// A graceful stop answers once the guest has powered off, which can take up
+// to about two minutes; the default 30s would give up on a slow shutdown.
+const actionConfig = (action: string) => (action === 'stop' ? { timeout: 150_000 } : undefined)
 
 export function useVMAction(id: string) {
   const queryClient = useQueryClient()
@@ -169,7 +189,7 @@ export function useVMAction(id: string) {
     mutationFn: async (action) => {
       // Backend exposes per-action lifecycle endpoints (/start, /stop, /restart,
       // /force-stop), not a single /actions endpoint.
-      await api.post(`/api/v1/vms/${id}/${action}`)
+      await api.post(`/api/v1/vms/${id}/${action}`, undefined, actionConfig(action))
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['vms', 'detail', id] })
@@ -184,7 +204,7 @@ export function useVMActions() {
 
   return useMutation<void, Error, { vmId: string; action: string }>({
     mutationFn: async ({ vmId, action }) => {
-      await api.post(`/api/v1/vms/${vmId}/${action}`)
+      await api.post(`/api/v1/vms/${vmId}/${action}`, undefined, actionConfig(action))
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['vms', 'list'] })
@@ -195,9 +215,11 @@ export function useVMActions() {
 // useAttachISO attaches a bootable ISO (by URL) to a VM for install/rescue.
 export function useAttachISO(id: string) {
   const queryClient = useQueryClient()
-  return useMutation<void, Error, string>({
-    mutationFn: async (isoUrl) => {
-      await api.post(`/api/v1/vms/${id}/iso/attach`, { iso_url: isoUrl })
+  // A URL, one of the ISOs staff publish (iso_id), one from the ISOs page
+  // (template_id), or the drivers disc; slot 2 is the second CD drive.
+  return useMutation<void, Error, string | { iso_id?: string; iso_url?: string; template_id?: string; drivers?: boolean; slot?: number }>({
+    mutationFn: async (iso) => {
+      await api.post(`/api/v1/vms/${id}/iso/attach`, typeof iso === "string" ? { iso_url: iso } : iso)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['vms', 'detail', id] })
@@ -208,9 +230,10 @@ export function useAttachISO(id: string) {
 // useDetachISO removes the install/rescue ISO and restores HD boot order.
 export function useDetachISO(id: string) {
   const queryClient = useQueryClient()
-  return useMutation<void, Error, void>({
-    mutationFn: async () => {
-      await api.post(`/api/v1/vms/${id}/iso/detach`)
+  // Empties drive 1 (the install drive) unless told another.
+  return useMutation<void, Error, number | void>({
+    mutationFn: async (slot) => {
+      await api.post(`/api/v1/vms/${id}/iso/detach`, slot ? { slot } : undefined)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['vms', 'detail', id] })
@@ -218,13 +241,34 @@ export function useDetachISO(id: string) {
   })
 }
 
-// useRescueVM boots the VM from a rescue ISO. Optional isoUrl overrides the
-// server default (RESCUE_ISO_URL).
+// RescueInput picks how a stopped VM is rescued: a customer's ISO, the
+// operator's rescue ISO (mode "iso"), or the built-in rescue system (mode
+// "image", or nothing when the server chooses it), with saved SSH keys for it.
+export interface RescueInput {
+  iso_url?: string
+  mode?: 'iso' | 'image'
+  ssh_key_ids?: string[]
+}
+
+// RescueResult says how to reach the built-in rescue system; root_password
+// is shown once.
+export interface RescueResult {
+  job_id: number
+  status: string
+  kind: 'iso' | 'image'
+  address?: string
+  user?: string
+  root_password?: string
+}
+
+// useRescueVM puts a stopped VM into rescue mode: the built-in rescue system
+// when the operator set one up and its node can run it, else the rescue ISO.
 export function useRescueVM(id: string) {
   const queryClient = useQueryClient()
-  return useMutation<void, Error, string | undefined>({
-    mutationFn: async (isoUrl) => {
-      await api.post(`/api/v1/vms/${id}/rescue`, isoUrl ? { iso_url: isoUrl } : {})
+  return useMutation<RescueResult, Error, RescueInput | undefined>({
+    mutationFn: async (input) => {
+      const response = await api.post(`/api/v1/vms/${id}/rescue`, input ?? {})
+      return response.data.data as RescueResult
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['vms', 'detail', id] })
@@ -288,15 +332,24 @@ export function useCloneVM(id: string) {
   })
 }
 
-// useResetPassword sets a new guest root password. Applied via the qemu guest
-// agent on the running VM (cloud images ship qemu-guest-agent), so the VM must
-// be running. Returns the enqueued job info.
+// ResetPasswordResult says how the password reaches the guest: its guest
+// agent (running), written onto its disk (stopped Linux) or at its next start
+// (stopped router).
+export interface ResetPasswordResult {
+  job_id: number
+  status: string
+  method?: 'guest_agent' | 'offline' | 'next_start'
+  message?: string
+}
+
+// useResetPassword sets a new guest root (or Administrator) password, on a
+// running VM through its guest agent, or on a stopped one by its node.
 export function useResetPassword(id: string) {
   const queryClient = useQueryClient()
-  return useMutation<{ job_id: number; status: string }, Error, string>({
+  return useMutation<ResetPasswordResult, Error, string>({
     mutationFn: async (password) => {
       const response = await api.post(`/api/v1/vms/${id}/reset-password`, { password })
-      return response.data.data as { job_id: number; status: string }
+      return response.data.data as ResetPasswordResult
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['vms', 'detail', id] })
@@ -349,17 +402,38 @@ export function useRepairConsole(id: string) {
   })
 }
 
-// useMigrateVM live-migrates a VM to another node.
-export function useMigrateVM(id: string) {
+// useVMLimits changes a VM's CPU and disk caps (operators only): set its own
+// limits, apply them again, throttle it, or lift the throttle. Each answers
+// with the limits now stored and whether the node has them.
+export function useVMLimits(id: string) {
   const queryClient = useQueryClient()
-  return useMutation<void, Error, { dest_node_id: string; live?: boolean; copy_storage?: boolean }>({
-    mutationFn: async (data) => {
-      await api.post(`/api/v1/vms/${id}/migrate`, data)
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms', 'detail', id] })
-      queryClient.invalidateQueries({ queryKey: ['vms', 'list'] })
-    },
+  const done = () => queryClient.invalidateQueries({ queryKey: ['vms', 'detail', id] })
+  const set = useMutation<VMLimitsResult, Error, VMLimits>({
+    mutationFn: async (limits) => (await api.put<VMLimitsResult>(`/api/v1/vms/${id}/limits`, { limits })).data.data,
+    onSuccess: done,
+  })
+  const apply = useMutation<VMLimitsResult, Error, void>({
+    mutationFn: async () => (await api.post<VMLimitsResult>(`/api/v1/vms/${id}/limits/apply`)).data.data,
+    onSuccess: done,
+  })
+  const throttle = useMutation<VMLimitsResult, Error, Partial<VMLimits>>({
+    mutationFn: async (t) => (await api.post<VMLimitsResult>(`/api/v1/vms/${id}/throttle`, t)).data.data,
+    onSuccess: done,
+  })
+  const unthrottle = useMutation<VMLimitsResult, Error, void>({
+    mutationFn: async () => (await api.delete<VMLimitsResult>(`/api/v1/vms/${id}/throttle`)).data.data,
+    onSuccess: done,
+  })
+  return { set, apply, throttle, unthrottle }
+}
+
+// useSetVMHardware changes a VM's hardware (operators only). Its node saves it
+// for the VM's next power off and on.
+export function useSetVMHardware(id: string) {
+  const queryClient = useQueryClient()
+  return useMutation<VMHardwareResult, Error, VMHardware>({
+    mutationFn: async (hardware) => (await api.put<VMHardwareResult>(`/api/v1/vms/${id}/hardware`, { hardware })).data.data,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['vms', 'detail', id] }),
   })
 }
 

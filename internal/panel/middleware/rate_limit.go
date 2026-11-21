@@ -36,7 +36,7 @@ func LoginRateLimiter() echo.MiddlewareFunc {
 		},
 		DenyHandler: func(c echo.Context, identifier string, err error) error {
 			return c.JSON(http.StatusTooManyRequests, map[string]string{
-				"error": "Too many login attempts. Please wait a moment and try again.",
+				"error": "Too many attempts. Please wait a moment and try again.",
 			})
 		},
 	})

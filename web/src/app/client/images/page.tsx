@@ -1,5 +1,6 @@
 "use client"
 
+import { ActingAccountScope, useActingAccount } from "@/lib/acting-account"
 import { useState } from "react"
 import Link from "next/link"
 import { AlertCircle, Layers, Loader2, Plus, RefreshCw, Trash2 } from "lucide-react"
@@ -18,10 +19,11 @@ function statusVariant(status: Image["status"]): "success" | "warning" | "destru
   return "warning"
 }
 
-export default function ClientImagesPage() {
+function ClientImagesPageBody() {
   const confirm = useConfirm()
   const { data: images, isLoading, error, refetch } = useImages()
-  const { data: vmsData } = useVMs({ pageSize: 100 })
+  const account = useActingAccount()
+  const { data: vmsData } = useVMs({ pageSize: 100, accountId: account })
   const deleteImage = useDeleteImage()
   const [actionError, setActionError] = useState("")
 
@@ -141,5 +143,14 @@ export default function ClientImagesPage() {
         </div>
       )}
     </div>
+  )
+}
+
+// A team member picks which account's resources the page shows.
+export default function ClientImagesPage() {
+  return (
+    <ActingAccountScope>
+      <ClientImagesPageBody />
+    </ActingAccountScope>
   )
 }

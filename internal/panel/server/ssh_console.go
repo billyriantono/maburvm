@@ -10,6 +10,7 @@ import (
 	"github.com/maburvm/panel/internal/panel/repository"
 	"github.com/maburvm/panel/internal/panel/service"
 	"github.com/maburvm/panel/internal/panel/sshconsole"
+	"gorm.io/gorm"
 )
 
 // sshHostResolver resolves a VM's reachable SSH host from its tracked (or live)
@@ -18,19 +19,20 @@ type sshHostResolver struct {
 	net *service.NetworkService
 }
 
-// vmOwnerResolver looks up a VM's owner so the SSH console can enforce that a
-// caller only reaches VMs they own.
+// vmOwnerResolver applies service.CheckVMAccess for the SSH console: the
+// owner, or a member whose team role operates the VM.
 type vmOwnerResolver struct {
 	vmRepo *repository.VMRepository
+	db     *gorm.DB
 }
 
-// VMOwner returns the user ID owning the VM, or an error if it doesn't exist.
-func (r *vmOwnerResolver) VMOwner(ctx context.Context, vmID string) (string, error) {
+// MayOpenConsole is nil when userID may open a console to the VM.
+func (r *vmOwnerResolver) MayOpenConsole(ctx context.Context, vmID, userID string) error {
 	vm, err := r.vmRepo.GetByID(ctx, vmID)
 	if err != nil {
-		return "", err
+		return err
 	}
-	return vm.UserID, nil
+	return service.CheckVMAccess(ctx, r.db, vm, userID, false, service.AccessOperate)
 }
 
 // ResolveVMHost returns the VM's first usable IP (strips any /prefix).
@@ -61,7 +63,7 @@ func (s *Server) setupSSHConsoleRoutes(logger *slog.Logger) {
 	networkService := service.NewNetworkService(s.db, networkRepo, firewallRepo, vmRepo, nodeRepo, s.riverClient)
 
 	proxy := sshconsole.NewProxyServer(logger, s.cfg.JWT.SecretKey)
-	h := sshconsole.NewHandler(proxy, &sshHostResolver{net: networkService}, &vmOwnerResolver{vmRepo: vmRepo})
+	h := sshconsole.NewHandler(proxy, &sshHostResolver{net: networkService}, &vmOwnerResolver{vmRepo: vmRepo, db: s.db})
 
 	s.echo.GET("/ws/ssh", h.HandleWebSocket)
 

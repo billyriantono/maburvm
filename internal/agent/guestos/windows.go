@@ -22,6 +22,11 @@ type WindowsNetwork struct {
 	IPv6Address string // CIDR form
 	IPv6Gateway string
 	IPv6DNS     []string
+	// Extra are further IPv4 addresses on the same card. They are never the
+	// source of the guest's own connections.
+	Extra []GuestAddr
+	// DNS are the resolvers; empty keeps models.DefaultIPv4DNS.
+	DNS []string
 }
 
 // WindowsNetworkScript is the PowerShell that re-addresses a running Windows
@@ -41,10 +46,15 @@ func WindowsNetworkScript(n WindowsNetwork) (string, error) {
 			return "", fmt.Errorf("invalid gateway %q", n.Gateway)
 		}
 	}
+	if err := ValidateExtra(n.Extra); err != nil {
+		return "", err
+	}
+	if err := validateDNS(append(append([]string{}, n.DNS...), n.IPv6DNS...)); err != nil {
+		return "", err
+	}
 	// Every value below was parsed above and is written back from its parsed
 	// form, so nothing the caller sent reaches PowerShell as text.
 	mac := strings.ToUpper(strings.ReplaceAll(hw.String(), ":", "-"))
-	dns := []string{"1.1.1.1", "8.8.8.8"}
 	lines := []string{
 		"$ErrorActionPreference = 'Stop'",
 		"$a = Get-NetAdapter | Where-Object { $_.MacAddress -eq '" + mac + "' } | Select-Object -First 1",
@@ -59,6 +69,9 @@ func WindowsNetworkScript(n WindowsNetwork) (string, error) {
 		add += " -DefaultGateway '" + net.ParseIP(n.Gateway).To4().String() + "'"
 	}
 	lines = append(lines, add+" | Out-Null")
+	for _, a := range n.Extra {
+		lines = append(lines, fmt.Sprintf("New-NetIPAddress -InterfaceIndex $i -IPAddress '%s' -PrefixLength %d -SkipAsSource $true | Out-Null", net.ParseIP(a.Address).To4(), a.Prefix))
+	}
 	if n.IPv6Address != "" {
 		v6, v6net, err := net.ParseCIDR(n.IPv6Address)
 		if err != nil || v6.To4() != nil {
@@ -69,11 +82,6 @@ func WindowsNetworkScript(n WindowsNetwork) (string, error) {
 		if gw == nil {
 			gw = net.ParseIP("fe80::1")
 		}
-		for _, d := range n.IPv6DNS {
-			if p := net.ParseIP(d); p != nil {
-				dns = append(dns, p.String())
-			}
-		}
 		lines = append(lines,
 			"Get-NetIPAddress -InterfaceIndex $i -AddressFamily IPv6 -PrefixOrigin Manual -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false",
 			"Get-NetRoute -InterfaceIndex $i -DestinationPrefix '::/0' -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false",
@@ -81,7 +89,11 @@ func WindowsNetworkScript(n WindowsNetwork) (string, error) {
 			fmt.Sprintf("New-NetRoute -InterfaceIndex $i -DestinationPrefix '::/0' -NextHop '%s' | Out-Null", gw),
 		)
 	}
-	lines = append(lines, "Set-DnsClientServerAddress -InterfaceIndex $i -ServerAddresses "+strings.Join(dns, ","))
+	v6dns := n.IPv6DNS
+	if n.IPv6Address == "" {
+		v6dns = nil
+	}
+	lines = append(lines, "Set-DnsClientServerAddress -InterfaceIndex $i -ServerAddresses "+strings.Join(resolvers(n.DNS, v6dns), ","))
 	return strings.Join(lines, "\n") + "\n", nil
 }
 

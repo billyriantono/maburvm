@@ -5,11 +5,19 @@ export interface ApiResponse<T> {
   success: boolean;
 }
 
-// API Error response
+// The error object of every error answer:
+// {success: false, error: ApiError, message: error.message}.
 export interface ApiError {
+  code: string;
   message: string;
-  code?: string;
-  details?: Record<string, string[]>;
+  details?: unknown;
+}
+
+// The pagination block every paginated list carries beside its data.
+export interface PageMeta {
+  page: number;
+  per_page: number;
+  total: number;
 }
 
 // Pagination parameters
@@ -20,9 +28,11 @@ export interface PaginationParams {
   order?: 'asc' | 'desc';
 }
 
-// Paginated response
+// Paginated response. meta is the one shape every paginated list carries;
+// the other fields are the older ones some lists still send beside it.
 export interface PaginatedResponse<T> {
   data: T[];
+  meta?: PageMeta;
   total: number;
   page: number;
   limit: number;

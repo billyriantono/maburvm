@@ -31,6 +31,10 @@ type RouterOSNetwork struct {
 	IPv6Address string // CIDR form
 	IPv6Gateway string
 	IPv6DNS     []string
+	// Extra are further IPv4 addresses on the same interface.
+	Extra []GuestAddr
+	// DNS are the resolvers; empty keeps models.DefaultIPv4DNS.
+	DNS []string
 }
 
 // rosPanelComment marks the address and route this panel added, so a later
@@ -58,6 +62,12 @@ func rosQuote(s string) string {
 }
 
 func (n RouterOSNetwork) validate() error {
+	if err := ValidateExtra(n.Extra); err != nil {
+		return err
+	}
+	if err := validateDNS(n.DNS); err != nil {
+		return err
+	}
 	if n.Address != "" {
 		if ip := net.ParseIP(n.Address); ip == nil || ip.To4() == nil {
 			return fmt.Errorf("invalid IPv4 address %q", n.Address)
@@ -104,11 +114,13 @@ func (n RouterOSNetwork) ipv4Lines() []string {
 		"/ip route remove [find comment=" + c + "]",
 		fmt.Sprintf("/ip address add address=%s/%d interface=$nic comment=%s", n.Address, n.Prefix, c),
 	}
+	for _, a := range n.Extra {
+		lines = append(lines, fmt.Sprintf("/ip address add address=%s/%d interface=$nic comment=%s", a.Address, a.Prefix, c))
+	}
 	if n.Gateway != "" {
 		lines = append(lines, fmt.Sprintf("/ip route add gateway=%s comment=%s", n.Gateway, c))
 	}
-	dns := append([]string{"1.1.1.1", "8.8.8.8"}, n.IPv6DNS...)
-	return append(lines, "/ip dns set servers="+strings.Join(dns, ","))
+	return append(lines, "/ip dns set servers="+strings.Join(resolvers(n.DNS, n.IPv6DNS), ","))
 }
 
 // ipv6Block replaces the panel's IPv6 address and default route.
@@ -225,7 +237,8 @@ func WriteRouterOSAutorun(diskPath, script string) error {
 	// first; version 6 has a single partition.
 	var last string
 	for _, part := range []string{"/dev/sda2", "/dev/sda1"} {
-		out, err := guestfish("--rw", "-a", diskPath, "-m", part, "upload", f.Name(), "/rw/autorun.scr")
+		args := append(append([]string{"--rw"}, DiskArgs(diskPath)...), "-m", part, "upload", f.Name(), "/rw/autorun.scr")
+		out, err := guestfish(args...)
 		if err == nil {
 			return nil
 		}

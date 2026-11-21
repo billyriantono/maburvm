@@ -281,7 +281,11 @@ func (s *ReputationService) abuseIPDBToken(ctx context.Context) string {
 		Scan(&raw).Error; err != nil {
 		return ""
 	}
-	return strings.TrimSpace(raw)
+	token, err := models.OpenSecret(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	return token
 }
 
 // CheckAddress evaluates one address and stores the result.

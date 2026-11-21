@@ -1,0 +1,4 @@
+DROP INDEX IF EXISTS idx_vms_billing_ref;
+ALTER TABLE vms DROP COLUMN IF EXISTS billing_ref;
+ALTER TABLE vms DROP COLUMN IF EXISTS plan_id;
+ALTER TABLE users DROP COLUMN IF EXISTS suspended_at;

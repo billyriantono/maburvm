@@ -1,0 +1,12 @@
+ALTER TABLE backup_schedules DROP COLUMN IF EXISTS chain_reset_at;
+ALTER TABLE backup_schedules DROP COLUMN IF EXISTS full_every_days;
+DROP INDEX IF EXISTS idx_backups_destination_id;
+DROP INDEX IF EXISTS idx_backups_parent_id;
+ALTER TABLE backups DROP COLUMN IF EXISTS mode_note;
+ALTER TABLE backups DROP COLUMN IF EXISTS checkpoint;
+ALTER TABLE backups DROP COLUMN IF EXISTS chain_id;
+ALTER TABLE backups DROP COLUMN IF EXISTS parent_id;
+ALTER TABLE backups DROP COLUMN IF EXISTS mode;
+ALTER TABLE backups DROP COLUMN IF EXISTS node_id;
+ALTER TABLE backups DROP COLUMN IF EXISTS destination_id;
+DROP TABLE IF EXISTS backup_destinations;

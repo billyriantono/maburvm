@@ -11,8 +11,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { useConfirm } from "@/components/confirm-provider"
 import { useFlash } from "@/lib/use-feedback"
 
+type DNSKind = "powerdns" | "cloudflare"
+
 interface DNSProviderStatus {
   source: "settings" | "environment" | "none"
+  kind?: DNSKind
   url: string
   server_id: string
   has_api_key: boolean
@@ -35,6 +38,7 @@ export function DNSProviderSettings() {
     queryFn: async () => (await api.get<DNSProviderStatus>(ENDPOINT)).data.data,
   })
 
+  const [kind, setKind] = useState<DNSKind>("powerdns")
   const [url, setUrl] = useState("")
   const [serverId, setServerId] = useState("")
   const [apiKey, setApiKey] = useState("")
@@ -44,11 +48,13 @@ export function DNSProviderSettings() {
   // are shown as a starting point but are not "saved here" until Save.
   useEffect(() => {
     if (!status) return
-    setUrl(status.url)
+    setKind(status.kind ?? "powerdns")
+    setUrl(status.kind === "cloudflare" ? "" : status.url)
     setServerId(status.server_id)
   }, [status])
 
-  const body = () => ({ url: url.trim(), server_id: serverId.trim(), api_key: apiKey })
+  const cloudflare = kind === "cloudflare"
+  const body = () => ({ kind, url: url.trim(), server_id: serverId.trim(), api_key: apiKey })
 
   const save = useMutation<DNSProviderStatus, Error, void>({
     mutationFn: async () => (await api.put<DNSProviderStatus>(ENDPOINT, body())).data.data,
@@ -82,17 +88,17 @@ export function DNSProviderSettings() {
     },
   })
 
-  const keySaved = status?.source === "settings" && status.has_api_key
+  const keySaved = status?.source === "settings" && status.has_api_key && (status.kind ?? "powerdns") === kind
   const busy = save.isPending || test.isPending || remove.isPending
-  const canSubmit = url.trim() !== "" && !busy
+  const canSubmit = (cloudflare || url.trim() !== "") && !busy
 
   return (
     <Card className="mt-6">
       <CardHeader className="border-b">
         <CardTitle className="text-xl">DNS provider</CardTitle>
         <CardDescription>
-          The PowerDNS server that receives reverse DNS (PTR) records and zone changes. Without one, records are kept in
-          the panel and can only be exported.
+          The nameserver that receives reverse DNS (PTR) records and zone changes: a PowerDNS server, or Cloudflare.
+          Without one, records are kept in the panel and can only be exported.
         </CardDescription>
       </CardHeader>
       <CardContent className="p-6">
@@ -125,7 +131,28 @@ export function DNSProviderSettings() {
               {status?.source === "none" && "Not configured. Records are not pushed to any nameserver."}
             </p>
 
-            <div className="grid gap-5 md:grid-cols-3">
+            <div>
+              <label htmlFor="dns-kind" className="mb-2 block text-sm font-medium">
+                Provider
+              </label>
+              <select
+                id="dns-kind"
+                value={kind}
+                onChange={(e) => setKind(e.target.value as DNSKind)}
+                className="h-10 w-full max-w-xs rounded-[4px] border border-input bg-background px-3 text-sm"
+              >
+                <option value="powerdns">PowerDNS</option>
+                <option value="cloudflare">Cloudflare</option>
+              </select>
+              {cloudflare && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Use an API token with Zone, DNS, Edit rights. Every zone written to, reverse zones included, must
+                  already be on the Cloudflare account; the panel never creates or deletes a Cloudflare zone.
+                </p>
+              )}
+            </div>
+
+            {!cloudflare && <div className="grid gap-5 md:grid-cols-3">
               <div className="md:col-span-2">
                 <label htmlFor="dns-url" className="mb-2 block text-sm font-medium">
                   API URL
@@ -155,24 +182,24 @@ export function DNSProviderSettings() {
                   spellCheck={false}
                 />
               </div>
-            </div>
+            </div>}
 
             <div>
               <label htmlFor="dns-api-key" className="mb-2 block text-sm font-medium">
-                API key
+                {cloudflare ? "API token" : "API key"}
               </label>
               <Input
                 id="dns-api-key"
                 type="password"
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
-                placeholder={keySaved ? "A key is saved. Leave empty to keep it." : "Enter the API key"}
+                placeholder={keySaved ? "A key is saved. Leave empty to keep it." : cloudflare ? "Enter the API token" : "Enter the API key"}
                 autoComplete="new-password"
                 aria-describedby="dns-api-key-help"
               />
               <p id="dns-api-key-help" className="mt-2 text-xs text-muted-foreground">
                 Stored encrypted and never shown again, here or anywhere else. If you change the server address you must
-                enter the key again, so a saved key is never sent to a different server.
+                enter the key again, so a saved key is never sent to a different server. The same goes for switching provider.
               </p>
             </div>
 

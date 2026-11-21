@@ -17,36 +17,58 @@ import (
 // checked against each other for overlap.
 type VPCHandler struct {
 	service *service.VPCService
+	db      *gorm.DB
 }
 
 func NewVPCHandler(s *service.VPCService) *VPCHandler { return &VPCHandler{service: s} }
 
 func RegisterVPCRoutes(e *echo.Echo, h *VPCHandler, db *gorm.DB) {
+	h.db = db
 	g := e.Group("/api/v1/vpcs")
 	g.Use(middleware.RequireAuth(db))
 	g.GET("", h.List, middleware.RequirePermission("vpc:read"))
 	g.GET("/:id", h.Get, middleware.RequirePermission("vpc:read"))
 	g.POST("", h.Create, middleware.RequirePermission("vpc:create"))
+	g.PUT("/:id", h.Update, middleware.RequirePermission("vpc:update"))
 	g.DELETE("/:id", h.Delete, middleware.RequirePermission("vpc:delete"))
 }
 
-// scope returns the owner id to filter by: empty for admins (all VPCs), the
-// caller's own id otherwise.
-func scope(c echo.Context) (string, bool) {
-	userCtx, ok := middleware.GetUserContext(c)
+// UpdateVPCRequest changes a VPC's resolvers.
+type UpdateVPCRequest struct {
+	Nameservers *string `json:"nameservers"`
+}
+
+// Update handles PUT /api/v1/vpcs/:id {nameservers}.
+func (h *VPCHandler) Update(c echo.Context) error {
+	owner, ok := h.scope(c)
 	if !ok {
-		return "", false
+		return nil
 	}
-	if userCtx.Role == models.RoleAdmin {
-		return "", true
+	var req UpdateVPCRequest
+	if err := c.Bind(&req); err != nil || req.Nameservers == nil {
+		return badRequest(c, "nameservers is required")
 	}
-	return userCtx.ID.String(), true
+	vpc, err := h.service.SetNameservers(c.Request().Context(), owner, c.Param("id"), *req.Nameservers)
+	if err != nil {
+		return vpcError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": vpc})
+}
+
+// scope returns the owner id to filter by: empty for admins (all VPCs), the
+// account the caller acts in otherwise. ok false: the answer is written.
+func (h *VPCHandler) scope(c echo.Context) (string, bool) {
+	_, account, staff, ok := actingAccount(c, h.db)
+	if staff {
+		return "", ok
+	}
+	return account, ok
 }
 
 func (h *VPCHandler) List(c echo.Context) error {
-	owner, ok := scope(c)
+	owner, ok := h.scope(c)
 	if !ok {
-		return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized"})
+		return nil
 	}
 	vpcs, err := h.service.List(c.Request().Context(), owner)
 	if err != nil {
@@ -56,9 +78,9 @@ func (h *VPCHandler) List(c echo.Context) error {
 }
 
 func (h *VPCHandler) Get(c echo.Context) error {
-	owner, ok := scope(c)
+	owner, ok := h.scope(c)
 	if !ok {
-		return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized"})
+		return nil
 	}
 	vpc, err := h.service.Get(c.Request().Context(), owner, c.Param("id"))
 	if err != nil {
@@ -68,9 +90,9 @@ func (h *VPCHandler) Get(c echo.Context) error {
 }
 
 func (h *VPCHandler) Create(c echo.Context) error {
-	userCtx, ok := middleware.GetUserContext(c)
+	userCtx, account, _, ok := actingAccount(c, h.db)
 	if !ok {
-		return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized"})
+		return nil
 	}
 	var req service.CreateVPCRequest
 	if err := c.Bind(&req); err != nil {
@@ -81,7 +103,7 @@ func (h *VPCHandler) Create(c echo.Context) error {
 	if userCtx.Role != models.RoleAdmin {
 		req.NodeID = ""
 	}
-	vpc, err := h.service.Create(c.Request().Context(), userCtx.ID.String(), &req)
+	vpc, err := h.service.Create(c.Request().Context(), account, &req)
 	if err != nil {
 		return vpcError(c, err)
 	}
@@ -89,9 +111,9 @@ func (h *VPCHandler) Create(c echo.Context) error {
 }
 
 func (h *VPCHandler) Delete(c echo.Context) error {
-	owner, ok := scope(c)
+	owner, ok := h.scope(c)
 	if !ok {
-		return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized"})
+		return nil
 	}
 	if err := h.service.Delete(c.Request().Context(), owner, c.Param("id")); err != nil {
 		return vpcError(c, err)

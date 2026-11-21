@@ -1,5 +1,6 @@
 "use client"
 
+import { useCan, useCurrentUser } from "@/lib/hooks/use-auth"
 import { useState, useCallback, useEffect } from "react"
 import { useParams, useRouter } from "next/navigation"
 import Link from "next/link"
@@ -15,7 +16,7 @@ import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { useVM, useVMMetrics, useVMAction, useDeleteVM, useAttachISO, useDetachISO, useRescueVM, useUnrescueVM, useMigrateVM, useRegenerateVNCPassword, useSetConsoleEnabled, useRepairConsole, useRebuildVM, useResetPassword, useCloneVM, useUpdateVM, useAssignVMIP, useReleaseVMIP, useAssignVMIPv6, useReleaseVMIPv6, useInitialPassword, useRevealInitialPassword, useForgetInitialPassword } from "@/lib/hooks/use-vms"
+import { useVM, useVMMetrics, useVMAction, useDeleteVM, useAttachISO, useDetachISO, useRescueVM, useUnrescueVM, useRegenerateVNCPassword, useSetConsoleEnabled, useRepairConsole, useRebuildVM, useResetPassword, useCloneVM, useUpdateVM, useAssignVMIP, useReleaseVMIP, useAssignVMIPv6, useReleaseVMIPv6, useInitialPassword, useRevealInitialPassword, useForgetInitialPassword } from "@/lib/hooks/use-vms"
 import { useIPPools } from "@/lib/hooks/use-ipam"
 import { DeleteProgressDialog } from "@/components/vm-delete-progress"
 import { VMNameEditor } from "@/components/vm-name-editor"
@@ -25,22 +26,38 @@ import { useSSHKeys } from "@/lib/hooks/use-ssh-keys"
 import { useNodes } from "@/lib/hooks/use-nodes"
 import { useSnapshots, useCreateSnapshot, useRestoreSnapshot, useDeleteSnapshot } from "@/lib/hooks/use-snapshots"
 import { useCreateImage } from "@/lib/hooks/use-images"
-import { useBackups, useCreateBackup, useDeleteBackup, useRestoreBackup, useBackupSchedules, useCreateBackupSchedule, useDeleteBackupSchedule } from "@/lib/hooks/use-backups"
-import { useFirewallRules, useDeleteFirewallRule, useCreateFirewallRule, useVMNetworks, useSetVMBandwidth, useSetVMRDNS, usePortForwards, useCreatePortForward, useDeletePortForward, useSetAntiSpoofing } from "@/lib/hooks/use-networks"
-import type { Network as NetworkIface } from "@/types"
+import { BACKUP_PAGE, useBackupPage, useCreateBackup, useDeleteBackup, useRestoreBackup, useRestoreBackupAsNew, useBackupSchedules, useCreateBackupSchedule, useDeleteBackupSchedule } from "@/lib/hooks/use-backups"
+import { useFirewallRules, useDeleteFirewallRule, useCreateFirewallRule, useVMNetworks, useSetVMBandwidth, useSetVMRDNS, useVMPrefixPTRs, usePortForwards, useCreatePortForward, useDeletePortForward, useSetAntiSpoofing, useFirewallStatus, useSetFirewallDefault, useSetSMTPBlocked, useDismissGuestNetworkNote } from "@/lib/hooks/use-networks"
+import type { Network as NetworkIface, VM } from "@/types"
+import { templateOfferedOn } from "@/types/template"
+import { usePlans } from "@/lib/hooks/use-plans"
+import { backupTerms } from "@/lib/plans"
 import { useTemplates } from "@/lib/hooks/use-templates"
+import { usePortal } from "@/lib/hooks/use-portal"
+import { AddressRequestsCard, VMProjectCard } from "@/components/vm-customer-extras"
+import { useMemberships } from "@/lib/hooks/use-team"
+import { ListPager } from "@/components/list-pager"
 import { useVMBandwidth, useVMBandwidthHistory, useSetBandwidthQuota } from "@/lib/hooks/use-bandwidth"
-import { useVMDisks, useAttachDisk, useDetachDisk } from "@/lib/hooks/use-disks"
+import { VMDisksCard } from "@/components/vm-disks"
 import { useVMActivity } from "@/lib/hooks/use-audit-logs"
 import { VNCConsole } from "@/components/vnc-console"
 import { VMTelemetry } from "@/components/vm-telemetry"
 import { OSLogoTile } from "@/components/os-icon"
-import type { Snapshot, Backup, FirewallRule } from "@/types"
+import type { Snapshot, Backup, BackupRetentionPolicy, FirewallRule, FirewallAction, FirewallFamily } from "@/types"
 import { useConfirm } from "@/components/confirm-provider"
-import { StatusBadge, useVMTransitions } from "@/components/status-badge"
+import { IPv6Addresses, VMNICsCard } from "@/components/vm-nics"
+import { StatusBadge, useVMTransitions, vmStatus } from "@/components/status-badge"
 import { OperationProgress, vmProvisionSteps } from "@/components/operation-progress"
 import { useCopy, useFlash } from "@/lib/use-feedback"
 import { CountryFlag } from "@/components/country-flag"
+import { VMLimitsSection } from "@/components/vm-limits"
+import { VMHardwareSection } from "@/components/vm-hardware"
+import { SnapshotScheduleCard } from "@/components/snapshot-schedule"
+import { VMNodeRow } from "@/components/vm-migrate"
+import { VMFirewallGroups } from "@/components/vm-firewall-groups"
+import { VMNATCard } from "@/components/vm-nat"
+import { useVMFirewallGroups } from "@/lib/hooks/use-firewall-groups"
+import { StaffNotes, VMLabelsAndLock } from "@/components/vm-protection"
 import { toast } from "sonner"
 
 // --- Utility Components ---
@@ -302,9 +319,73 @@ function RDNSCell({ vmId, ipAddress, rdns, verified }: { vmId: string; ipAddress
   )
 }
 
+// Reverse DNS inside the VM's routed IPv6 prefix: any address in it may be
+// named, so the list is the names set, plus a form to name another address.
+function PrefixPTRs({ vmId, prefix, verified, canEdit }: { vmId: string; prefix: string; verified: boolean; canEdit: boolean }) {
+  const { data: ptrs } = useVMPrefixPTRs(vmId, true)
+  const setRDNS = useSetVMRDNS(vmId)
+  const [address, setAddress] = useState("")
+  const [host, setHost] = useState("")
+  const [error, setError] = useState<string | null>(null)
+
+  return (
+    <div className="mt-4">
+      <h3 className="text-sm font-medium">Reverse DNS inside the prefix</h3>
+      {ptrs?.length ? (
+        <table className="mt-2 w-full text-sm">
+          <tbody className="divide-y">
+            {ptrs.map((p) => (
+              <tr key={p.id}>
+                <td className="py-2 pr-4 font-mono text-xs break-all">{p.address}</td>
+                <td className="py-2">
+                  {canEdit ? <RDNSCell vmId={vmId} ipAddress={p.address} rdns={p.rdns} verified={verified} /> : <span className="font-mono text-xs">{p.rdns}</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <p className="mt-1 text-xs text-muted-foreground">No names set. Any address in {prefix} can have one, up to 64.</p>
+      )}
+      {canEdit && (
+        <form
+          className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-start"
+          onSubmit={(e) => {
+            e.preventDefault()
+            setError(null)
+            setRDNS.mutate(
+              { ipAddress: address.trim(), rdns: host.trim() },
+              {
+                onSuccess: () => {
+                  setAddress("")
+                  setHost("")
+                  toast.success("Reverse DNS saved")
+                },
+                onError: (err) => setError(err.message),
+              },
+            )
+          }}
+        >
+          <label className="sr-only" htmlFor={`ptr-addr-${vmId}`}>Address inside the prefix</label>
+          <Input id={`ptr-addr-${vmId}`} className="font-mono sm:w-72" placeholder={prefix.replace(/::\/\d+$/, "::25")} value={address} onChange={(e) => setAddress(e.target.value)} />
+          <label className="sr-only" htmlFor={`ptr-host-${vmId}`}>Hostname</label>
+          <Input id={`ptr-host-${vmId}`} className="font-mono sm:w-64" placeholder="mail.example.com" value={host} onChange={(e) => setHost(e.target.value)} />
+          <Button type="submit" size="sm" variant="outline" disabled={!address.trim() || !host.trim() || setRDNS.isPending}>
+            {setRDNS.isPending ? <Loader2 className="w-4 h-4 animate-spin" aria-label="Saving" /> : "Add name"}
+          </Button>
+        </form>
+      )}
+      {error && <p role="alert" className="mt-1 text-xs text-destructive">{error}</p>}
+      {canEdit && verified && !error && (
+        <p className="mt-1 text-xs text-muted-foreground">The hostname must already resolve to the address.</p>
+      )}
+    </div>
+  )
+}
+
 // One action per row: what it does on the left, the button on the right. Used
 // where an action sits beside the thing it changes instead of in a button wall.
-function ActionRow({ title, description, children }: { title: string; description: React.ReactNode; children: React.ReactNode }) {
+function ActionRow({ title, description, children }: { title: string; description: React.ReactNode; children?: React.ReactNode }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-6 py-4">
       <div className="min-w-0 flex-1 basis-64">
@@ -316,11 +397,85 @@ function ActionRow({ title, description, children }: { title: string; descriptio
   )
 }
 
+// What the VM is sold as: its plan and the billing service that pays for it.
+// Mounted only while open, so the plan list is fetched when it is needed.
+function BillingLinkDialog({ vm, onClose }: { vm: VM; onClose: () => void }) {
+  const { data: plans, isLoading, error } = usePlans()
+  const updateVM = useUpdateVM(vm.id)
+  const [planId, setPlanId] = useState(vm.plan_id ?? "")
+  const [ref, setRef] = useState(vm.billing_ref ?? "")
+  const changed = planId !== (vm.plan_id ?? "") || ref.trim() !== (vm.billing_ref ?? "")
+  // A plan that has since been deleted still has to be shown as the current choice.
+  const planGone = !!vm.plan_id && !!plans && !plans.some((p) => p.id === vm.plan_id)
+
+  const save = async () => {
+    try {
+      await updateVM.mutateAsync({ plan_id: planId, billing_ref: ref.trim() })
+      toast.success("Plan and billing service saved")
+      onClose()
+    } catch (err) {
+      toast.error(`Not saved: ${(err as Error).message}`)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="text-lg font-semibold">Plan and billing service</DialogTitle>
+          <DialogDescription className="text-sm text-muted-foreground">
+            What {vm.hostname} is sold as. Saving this records it; it does not resize the VM or change its speed cap and transfer quota.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4 py-2">
+          <div>
+            <label htmlFor="link-plan" className="text-xs font-medium text-muted-foreground mb-2 block">Plan</label>
+            <select
+              id="link-plan"
+              value={planId}
+              onChange={(e) => setPlanId(e.target.value)}
+              disabled={isLoading || !!error}
+              className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            >
+              <option value="">No plan</option>
+              {planGone && <option value={vm.plan_id}>A plan that has been deleted</option>}
+              {plans?.map((p) => (
+                <option key={p.id} value={p.id}>{p.name} ({p.cpu} vCPU, {Math.round(p.ram / 1024 * 10) / 10} GB, {p.disk} GB disk){p.is_active ? "" : ", not offered"}</option>
+              ))}
+            </select>
+            {error && <p className="mt-1 text-xs text-destructive">The plans could not be loaded. Close this and try again.</p>}
+          </div>
+          <div>
+            <label htmlFor="link-ref" className="text-xs font-medium text-muted-foreground mb-2 block">Billing service reference</label>
+            <Input id="link-ref" value={ref} onChange={(e) => setRef(e.target.value)} maxLength={255} placeholder="whmcs-123" className="font-mono" />
+            <p className="mt-1 text-xs text-muted-foreground">
+              The billing system&apos;s reference for the service that pays for this VM. While one is set, billing actions from any other service are refused, and the owner cannot delete the VM unless System settings allow it. Leave it empty for a VM billing does not manage.
+            </p>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button onClick={save} disabled={!changed || updateVM.isPending || isLoading}>
+            {updateVM.isPending && <Loader2 className="w-4 h-4 animate-spin" />}Save
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 // Show an attached ISO by its file name; the full URL or path is noise here.
 function isoLabel(iso: string) {
   const name = iso.split(/[?#]/)[0].split("/").filter(Boolean).pop()
   return name || iso
 }
+
+const EMPTY_FW_FORM = { protocol: "tcp", port_range: "", action: "allow" as FirewallAction, direction: "inbound", source_ip: "", priority: 100, icmp_type: "", log: false, family: "" as FirewallFamily }
+
+// ICMP type names both iptables and ip6tables know, for the rule form.
+const ICMP_TYPE_NAMES = ["echo-request", "echo-reply", "destination-unreachable", "time-exceeded", "parameter-problem", "redirect",
+  "router-advertisement", "router-solicitation", "source-quench", "timestamp-request", "timestamp-reply",
+  "packet-too-big", "neighbour-solicitation", "neighbour-advertisement"]
 
 const VM_TABS = ["overview", "console", "network", "snapshots", "backups", "firewall", "logs", "settings"]
 
@@ -455,7 +610,111 @@ function describeCron(cron: string): { every: "daily" | "weekly" | "monthly"; ho
   return null
 }
 
-function BackupScheduleCard({ vmId }: { vmId: string }) {
+// Restore a backup as a new VM on a chosen node: what a backup is for when the
+// VM's own node is gone. The address is picked by the panel from that node's pools.
+function RestoreAsNewDialog({ vmId, hostname, nodeId, backup, nodes, onClose }: {
+  vmId: string
+  hostname: string
+  nodeId: string
+  backup: Backup | null
+  nodes: { id: string; name: string }[]
+  onClose: () => void
+}) {
+  const router = useRouter()
+  const restore = useRestoreBackupAsNew(vmId)
+  const [target, setTarget] = useState("")
+  const [name, setName] = useState("")
+  const [err, setErr] = useState<string | null>(null)
+  useEffect(() => { setTarget(""); setName(""); setErr(null) }, [backup?.id])
+
+  const submit = async () => {
+    if (!backup) return
+    setErr(null)
+    try {
+      const res = await restore.mutateAsync({ backupId: backup.id, node_id: target, hostname: name.trim() || undefined })
+      toast.success(`Restoring as ${res.vm.hostname}`, { action: { label: "Open", onClick: () => router.push(`/vms/${res.vm.id}`) } })
+      onClose()
+    } catch (e) {
+      setErr((e as Error).message)
+    }
+  }
+
+  return (
+    <Dialog open={!!backup} onOpenChange={(open) => { if (!open && !restore.isPending) onClose() }}>
+      <DialogContent className="max-w-md border shadow-lg">
+        <DialogHeader>
+          <DialogTitle className="text-lg font-semibold">Restore as a new VM</DialogTitle>
+          <DialogDescription className="text-sm text-muted-foreground">
+            Creates a new VM from the backup of {backup ? formatDate(backup.created_at) : ""}. It belongs to the same owner and has the same size, limits and firewall rules, with a new IP address. This VM and the backup are not changed.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 py-2">
+          <label htmlFor="restore-new-node" className="text-xs font-medium text-muted-foreground block">Node</label>
+          {nodes.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No active node to restore onto.</p>
+          ) : (
+            <select
+              id="restore-new-node"
+              value={target}
+              onChange={(e) => setTarget(e.target.value)}
+              className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm"
+            >
+              <option value="">Select a node…</option>
+              {nodes.map((n) => (
+                <option key={n.id} value={n.id}>{n.name}{n.id === nodeId ? " (this VM's node)" : ""}</option>
+              ))}
+            </select>
+          )}
+          <label htmlFor="restore-new-hostname" className="text-xs font-medium text-muted-foreground block">Hostname (optional)</label>
+          <Input id="restore-new-hostname" value={name} onChange={(e) => setName(e.target.value)} placeholder={`restored-${hostname}`} className="border" />
+          <p className="text-xs text-muted-foreground">
+            The node downloads the backup and checks it before the VM is created. A large disk takes a while; the new VM shows as creating until then.
+          </p>
+          {err && <p role="alert" className="text-xs text-destructive font-medium break-words">{err}</p>}
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose} disabled={restore.isPending}>Cancel</Button>
+          <Button onClick={submit} disabled={restore.isPending || !target}>
+            {restore.isPending && <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />}
+            Restore as a new VM
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+const COMPRESSION_LABELS: Record<string, string> = {
+  gzip: "Compressed (zlib)",
+  zstd: "Compressed (zstd, faster)",
+  none: "Not compressed",
+}
+
+// The warning that a disk's snapshots go with it.
+function snapshotsGoneText(n: number): string {
+  return n === 1 ? "Its snapshot is deleted too: it lives in the disk being replaced." : `Its ${n} snapshots are deleted too: they live in the disk being replaced.`
+}
+
+// What a retention policy keeps, in words.
+function describeRetention(p?: BackupRetentionPolicy): string {
+  if (!p) return "All backups"
+  const parts: string[] = []
+  if (p.keep_last) parts.push(`last ${p.keep_last}`)
+  if (p.keep_daily) parts.push(`one a day for ${p.keep_daily} days`)
+  if (p.keep_weekly) parts.push(`one a week for ${p.keep_weekly} weeks`)
+  if (p.keep_monthly) parts.push(`one a month for ${p.keep_monthly} months`)
+  const kept = parts.length ? parts.join(", ") : "all backups"
+  const text = p.max_age_days ? `${kept}, none older than ${p.max_age_days} days` : kept
+  return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
+// backupDiskTargets are the disks of a backup that can be downloaded one by
+// one, the first first; one for a backup of the primary disk only.
+function backupDiskTargets(b: Backup): string[] {
+  return b.disks?.length ? b.disks.map((d) => d.target) : ["vda"]
+}
+
+function BackupScheduleCard({ vmId, isAdmin }: { vmId: string; isAdmin: boolean }) {
   const confirm = useConfirm()
   const { data: schedules, isLoading, error, refetch } = useBackupSchedules(vmId)
   const save = useCreateBackupSchedule(vmId)
@@ -467,27 +726,60 @@ function BackupScheduleCard({ vmId }: { vmId: string }) {
   const [every, setEvery] = useState<"daily" | "weekly" | "monthly">("daily")
   const [hour, setHour] = useState(2)
   const [keep, setKeep] = useState("7")
+  const [daily, setDaily] = useState("0")
+  const [weekly, setWeekly] = useState("0")
+  const [maxAge, setMaxAge] = useState("0")
+  const [compression, setCompression] = useState<"gzip" | "zstd" | "none">("gzip")
+  const [fullEvery, setFullEvery] = useState("0")
   const [err, setErr] = useState("")
 
   const startEdit = () => {
     if (parsed) { setEvery(parsed.every); setHour(parsed.hour) }
-    if (current?.retention_policy?.keep_last) setKeep(String(current.retention_policy.keep_last))
+    const p = current?.retention_policy
+    if (current) {
+      setKeep(String(p?.keep_last ?? 0))
+      setDaily(String(p?.keep_daily ?? 0))
+      setWeekly(String(p?.keep_weekly ?? 0))
+      setMaxAge(String(p?.max_age_days ?? 0))
+      setCompression(current.compression || "gzip")
+      setFullEvery(String(current.full_every_days ?? 0))
+    }
     setErr("")
     setEditing(true)
   }
 
   const handleSave = async () => {
-    const keepLast = Number(keep)
-    if (!Number.isInteger(keepLast) || keepLast < 1 || keepLast > 365) { setErr("Keep between 1 and 365 backups."); return }
+    const fields: [string, string, number][] = [
+      ["Backups to keep", keep, 365], ["Days to keep one a day", daily, 365],
+      ["Weeks to keep one a week", weekly, 104], ["Days before a backup is deleted", maxAge, 3650],
+      ...(isAdmin ? [["Full backup every (days)", fullEvery, 31] as [string, string, number]] : []),
+    ]
+    for (const [name, value, max] of fields) {
+      const n = Number(value)
+      if (!Number.isInteger(n) || n < 0 || n > max) { setErr(`${name}: a whole number from 0 to ${max}.`); return }
+    }
+    // keep_monthly has no field here; one set through the API is kept.
+    const policy: BackupRetentionPolicy = { keep_last: Number(keep), keep_daily: Number(daily), keep_weekly: Number(weekly), keep_monthly: current?.retention_policy?.keep_monthly ?? 0, max_age_days: Number(maxAge) }
+    if (!policy.keep_last && !policy.keep_daily && !policy.keep_weekly && !policy.keep_monthly && !policy.max_age_days) {
+      setErr("Set at least one limit, or backups pile up until storage is full.")
+      return
+    }
     const cron = every === "monthly" ? `0 ${hour} 1 * *` : every === "weekly" ? `0 ${hour} * * 0` : `0 ${hour} * * *`
     try {
-      await save.mutateAsync({ schedule: cron, retention_policy: { keep_last: keepLast } })
+      await save.mutateAsync({ schedule: cron, compression, retention_policy: policy, ...(isAdmin ? { full_every_days: Number(fullEvery) } : {}) })
       toast.success("Backup schedule saved")
       setEditing(false)
     } catch (e) {
       setErr((e as Error).message)
     }
   }
+
+  const numberField = (id: string, label: string, value: string, set: (v: string) => void) => (
+    <div>
+      <label htmlFor={id} className="text-xs font-medium text-muted-foreground block mb-1">{label}</label>
+      <Input id={id} inputMode="numeric" value={value} onChange={(e) => set(e.target.value)} className="border w-24 font-mono" />
+    </div>
+  )
 
   return (
     <div className="bg-card text-card-foreground border rounded-lg p-6 mb-6">
@@ -519,7 +811,7 @@ function BackupScheduleCard({ vmId }: { vmId: string }) {
       ) : error ? (
         <SectionError message={(error as Error).message} onRetry={() => refetch()} />
       ) : editing ? (
-        <div className="space-y-3">
+        <div className="space-y-4">
           <div className="flex flex-wrap items-end gap-3">
             <div>
               <label htmlFor="bs-every" className="text-xs font-medium text-muted-foreground block mb-1">How often</label>
@@ -536,21 +828,48 @@ function BackupScheduleCard({ vmId }: { vmId: string }) {
               </select>
             </div>
             <div>
-              <label htmlFor="bs-keep" className="text-xs font-medium text-muted-foreground block mb-1">Backups to keep</label>
-              <Input id="bs-keep" inputMode="numeric" value={keep} onChange={(e) => setKeep(e.target.value)} className="border w-24 font-mono" />
+              <label htmlFor="bs-compression" className="text-xs font-medium text-muted-foreground block mb-1">Compression</label>
+              <select id="bs-compression" value={compression} onChange={(e) => setCompression(e.target.value as typeof compression)} className="h-9 border rounded-md bg-background px-2 text-sm cursor-pointer">
+                {Object.entries(COMPRESSION_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
             </div>
+          </div>
+          <div className="flex flex-wrap items-end gap-3">
+            {numberField("bs-keep", "Backups to keep", keep, setKeep)}
+            {numberField("bs-daily", "One a day for (days)", daily, setDaily)}
+            {numberField("bs-weekly", "One a week for (weeks)", weekly, setWeekly)}
+            {numberField("bs-maxage", "Delete after (days)", maxAge, setMaxAge)}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            A backup is kept while any of the first three keeps it, and deleted once it is older than the last. 0 means no such limit.
+            The newest backup is always kept. A backup can start later than its time when the server is busy or outside the backup window.
+          </p>
+          {isAdmin && (
+            <>
+              <div className="flex flex-wrap items-end gap-3">
+                {numberField("bs-full", "Full backup every (days)", fullEvery, setFullEvery)}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                0 makes every backup a full copy. Otherwise backups copy only what changed since the one before, with a full copy at least
+                this often; a node that cannot track changes makes full ones. An incremental backup needs every backup before it back to
+                its full one, so those are kept as long as it is, even past the limits above. Turn it on only for VMs on a node where a
+                chain has been restored once.
+              </p>
+            </>
+          )}
+          {err && <p role="alert" className="text-xs text-destructive font-medium">{err}</p>}
+          <div className="flex items-center gap-2">
             <Button size="sm" onClick={handleSave} disabled={save.isPending}>
               {save.isPending && <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />}Save
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>Cancel</Button>
           </div>
-          <p className="text-xs text-muted-foreground">Older backups are deleted once there are more than this number.</p>
-          {err && <p role="alert" className="text-xs text-destructive font-medium">{err}</p>}
         </div>
       ) : current ? (
-        <dl className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
+        <dl className="grid grid-cols-1 sm:grid-cols-4 gap-4 text-sm">
           <div><dt className="text-xs text-muted-foreground">Runs</dt><dd className="font-medium">{parsed ? parsed.text : <span className="font-mono">{current.schedule}</span>}</dd></div>
-          <div><dt className="text-xs text-muted-foreground">Keeps</dt><dd className="font-medium">{current.retention_policy?.keep_last ? `Last ${current.retention_policy.keep_last} backups` : "All backups"}</dd></div>
+          <div><dt className="text-xs text-muted-foreground">Keeps</dt><dd className="font-medium">{describeRetention(current.retention_policy)}</dd></div>
+          <div><dt className="text-xs text-muted-foreground">Compression</dt><dd className="font-medium">{COMPRESSION_LABELS[current.compression] ?? current.compression}{current.full_every_days ? `, incremental with a full backup every ${current.full_every_days} days` : ""}</dd></div>
           <div><dt className="text-xs text-muted-foreground">Next run</dt><dd className="font-medium">{current.next_run_at && !current.next_run_at.startsWith("0001") ? formatDate(current.next_run_at) : "Not scheduled yet"}</dd></div>
         </dl>
       ) : (
@@ -590,108 +909,6 @@ function SectionEmpty({ icon: Icon, message }: { icon: React.ElementType; messag
     <div className="p-8 text-center">
       <Icon className="w-10 h-10 mx-auto text-muted-foreground mb-3" />
       <p className="text-muted-foreground text-sm font-medium">{message}</p>
-    </div>
-  )
-}
-
-function DisksCard({ vmId }: { vmId: string }) {
-  const confirm = useConfirm()
-  const { data: disks, isLoading, error, refetch } = useVMDisks(vmId)
-  const attach = useAttachDisk(vmId)
-  const detach = useDetachDisk(vmId)
-  const [adding, setAdding] = useState(false)
-  const [sizeGB, setSizeGB] = useState("10")
-  const [err, setErr] = useState("")
-
-  const handleAttach = async () => {
-    const gb = parseInt(sizeGB, 10)
-    if (Number.isNaN(gb) || gb <= 0) { setErr("Enter a size in GB"); return }
-    setErr("")
-    try {
-      await attach.mutateAsync(gb)
-      setAdding(false)
-      setSizeGB("10")
-    } catch (e) {
-      setErr((e as Error).message)
-    }
-  }
-
-  // Genuinely three-way, which is why window.confirm could not express it: the
-  // old dialog put "keep the volume" on the Cancel button, so backing out of the
-  // decision detached the disk anyway. Cancel now means cancel.
-  const handleDetach = async (device: string) => {
-    const answer = await confirm.choose({
-      title: `Detach ${device}?`,
-      description:
-        "Detaching removes the disk from this VM. You can either keep the volume on the node to reattach later, or delete its data for good.",
-      confirmLabel: "Detach and delete data",
-      alternateLabel: "Detach, keep volume",
-      destructive: true,
-      action: (choice) => detach.mutateAsync({ device, deleteVolume: choice === "confirm" }),
-    })
-    if (answer === "cancel") return
-  }
-
-  return (
-    <div className="bg-card text-card-foreground border rounded-lg p-6">
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
-        <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
-          Data Disks
-        </h2>
-        <Button size="sm" variant="outline" onClick={() => setAdding((v) => !v)}><Plus className="w-4 h-4" />Add Disk</Button>
-      </div>
-
-      {adding && (
-        <div className="flex flex-wrap items-end gap-2 mb-4 p-3 border rounded-md bg-muted">
-          <div>
-            <label htmlFor="disk-size" className="text-xs font-medium text-muted-foreground block mb-1">Size (GB)</label>
-            <Input id="disk-size" type="number" min={1} value={sizeGB} onChange={(e) => setSizeGB(e.target.value)} className="border w-32 font-mono" />
-          </div>
-          <Button size="sm" onClick={handleAttach} disabled={attach.isPending}>
-            {attach.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}Attach
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => { setAdding(false); setErr("") }}>Cancel</Button>
-        </div>
-      )}
-      {err && <p className="text-xs text-destructive font-medium mb-3">{err}</p>}
-
-      {isLoading ? (
-        <SectionSkeleton />
-      ) : error ? (
-        <SectionError message={(error as Error).message} onRetry={() => refetch()} />
-      ) : !disks?.length ? (
-        <div className="border border-dashed border-gray-300 p-6 text-center text-sm font-medium text-muted-foreground">
-          No extra data disks. The boot disk isn&apos;t listed here.
-        </div>
-      ) : (
-        <div className="border overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-muted text-muted-foreground border-b font-medium text-xs">
-                <th className="text-left p-3">Device</th>
-                <th className="text-left p-3">Size</th>
-                <th className="text-left p-3">Path</th>
-                <th className="text-right p-3">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {disks.map((d, i) => (
-                <tr key={d.id} className={`border-t ${i % 2 ? "bg-muted/50" : "bg-card"}`}>
-                  <td className="p-3 font-mono font-medium">{d.device}</td>
-                  <td className="p-3 font-mono">{d.size_gb} GB</td>
-                  <td className="p-3 font-mono text-xs truncate max-w-[280px]" title={d.path}>{d.path}</td>
-                  <td className="p-3 text-right">
-                    <Button size="sm" variant="destructive" onClick={() => handleDetach(d.device)} disabled={detach.isPending && detach.variables?.device === d.device}>
-                      {detach.isPending && detach.variables?.device === d.device ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" /> : <Trash2 className="w-4 h-4" />}Detach
-                    </Button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      <p className="text-xs text-muted-foreground mt-3">Disks hot-plug on running VMs; format &amp; mount inside the guest after attaching.</p>
     </div>
   )
 }
@@ -746,7 +963,7 @@ function BandwidthUsageCard({ vmId, canEditQuota }: { vmId: string; canEditQuota
           <span className="text-sm font-mono font-medium">{formatBytes(bandwidth.tx_bytes)}</span>
         </div>
         <div className="p-4 border rounded-md">
-          <span className="text-xs font-medium text-muted-foreground block">Total Used</span>
+          <span className="text-xs font-medium text-muted-foreground block">{bandwidth.counts && bandwidth.counts !== "both" ? "Counted" : "Total used"}</span>
           <span className="text-sm font-mono font-medium">{bandwidth.used_gb.toFixed(2)} GB</span>
         </div>
         <div className="p-4 border rounded-md">
@@ -755,11 +972,20 @@ function BandwidthUsageCard({ vmId, canEditQuota }: { vmId: string; canEditQuota
         </div>
       </div>
 
+      {(bandwidth.counts && bandwidth.counts !== "both") || bandwidth.pooled ? (
+        <p className="text-xs text-muted-foreground mb-4">
+          {bandwidth.counts === "out" && "Only traffic sent by this server counts toward the allowance. "}
+          {bandwidth.counts === "in" && "Only traffic received by this server counts toward the allowance. "}
+          {bandwidth.pooled &&
+            `The allowance is shared by the account's servers: ${(bandwidth.pool_used_gb ?? 0).toFixed(2)} of ${Math.round(bandwidth.pool_quota_gb ?? 0)} GB used together.`}
+        </p>
+      ) : null}
+
       {bandwidth.quota_gb > 0 && (
         <div>
           <div className="flex justify-between items-center mb-1">
             <span className="text-xs font-medium text-muted-foreground">Usage</span>
-            <span className="text-xs font-semibold">{bandwidth.used_gb.toFixed(2)} / {bandwidth.quota_gb} GB ({bandwidth.usage_percent.toFixed(1)}%)</span>
+            <span className="text-xs font-semibold tabular-nums">{bandwidth.used_gb.toFixed(2)} / {bandwidth.quota_gb} GB ({bandwidth.usage_percent.toFixed(1)}%)</span>
           </div>
           <div className="h-2 rounded-full bg-muted overflow-hidden relative">
             <div
@@ -910,12 +1136,109 @@ function TransferSummary({ vmId, onOpen }: { vmId: string; onOpen: () => void })
 
 // --- Main Component ---
 
+// FirewallPolicy shows, and lets people change, what the firewall does with
+// traffic no rule matches and whether the VM may send mail on port 25.
+function FirewallPolicy({ vm, isAdmin, ruleCount, onDefault, onSMTP }: {
+  vm: VM
+  isAdmin: boolean
+  ruleCount: number
+  onDefault: (value: "drop" | "accept") => Promise<void>
+  onSMTP: (blocked: boolean) => Promise<void>
+}) {
+  const confirm = useConfirm()
+  const current = vm.firewall_default ?? "drop"
+  const blocked = !!vm.smtp_blocked
+
+  let state: string
+  let explain: string
+  if (ruleCount === 0) {
+    state = "Not filtered"
+    explain = current === "drop"
+      ? "No rules yet, so all traffic passes. Once a rule is added, inbound traffic that no rule allows is dropped."
+      : "No rules yet, so all traffic passes. Inbound traffic no rule matches stays accepted when rules are added, so rules only block what they deny or reject."
+  } else if (current === "drop") {
+    state = "Dropped"
+    explain = "Inbound traffic that no rule allows is dropped."
+  } else {
+    state = "Accepted"
+    explain = "Inbound traffic no rule matches is accepted, so only deny and reject rules have an effect. Imported and older VMs start this way so they keep working."
+  }
+
+  const changeDefault = async () => {
+    const next = current === "drop" ? "accept" : "drop"
+    const ok = await confirm(next === "drop" ? {
+      title: "Drop inbound traffic no rule allows?",
+      description: "As soon as the node applies it, inbound traffic to this VM that no rule allows is dropped. Check first that the rules allow everything the VM serves, such as SSH and the web, or it stops answering." +
+        (ruleCount === 0 ? " It takes effect once the VM has a rule." : ""),
+      confirmLabel: "Drop unmatched traffic",
+      destructive: true,
+      action: () => onDefault(next),
+    } : {
+      title: "Accept inbound traffic no rule matches?",
+      description: "Inbound traffic that no rule denies or rejects reaches the VM. Allow rules then change nothing.",
+      confirmLabel: "Accept unmatched traffic",
+      action: () => onDefault(next),
+    })
+    if (ok) toast.success(next === "drop" ? "Unmatched inbound traffic is now dropped" : "Unmatched inbound traffic is now accepted")
+  }
+
+  const changeSMTP = async () => {
+    const ok = await confirm(blocked ? {
+      title: "Allow outbound mail from this VM?",
+      description: "The VM can connect to mail servers on port 25 again. Its owner is not told.",
+      confirmLabel: "Allow outbound mail",
+      action: () => onSMTP(false),
+    } : {
+      title: "Block outbound mail from this VM?",
+      description: "New connections from the VM to port 25 are refused as soon as the node applies it, and open ones are cut. Submission ports 465 and 587 stay open.",
+      confirmLabel: "Block outbound mail",
+      destructive: true,
+      action: () => onSMTP(true),
+    })
+    if (ok) toast.success(blocked ? "Outbound mail allowed" : "Outbound mail blocked")
+  }
+
+  return (
+    <div className="mb-6 grid gap-3 sm:grid-cols-2">
+      <div className="rounded-md border p-4">
+        <span className="text-xs font-medium text-muted-foreground block">Inbound traffic no rule matches</span>
+        <span className="text-sm font-semibold block mt-1">{state}</span>
+        <p className="text-xs text-muted-foreground mt-1">{explain}</p>
+        <Button size="sm" variant="outline" className="mt-3" onClick={changeDefault}>
+          {current === "drop" ? "Accept unmatched traffic" : "Drop unmatched traffic"}
+        </Button>
+      </div>
+      <div className="rounded-md border p-4">
+        <span className="text-xs font-medium text-muted-foreground block">Outbound mail (port 25)</span>
+        <span className="text-sm font-semibold block mt-1">{blocked ? "Blocked" : "Allowed"}</span>
+        <p className="text-xs text-muted-foreground mt-1">
+          {blocked
+            ? isAdmin
+              ? "Connections from this VM to mail servers on port 25 are refused. Submission ports 465 and 587 stay open."
+              : "Sending mail straight to other mail servers is blocked for this server. Send through your mail provider on port 587 or 465, or contact support to have it unblocked."
+            : "This VM may connect to mail servers on port 25."}
+        </p>
+        {isAdmin && (
+          <Button size="sm" variant="outline" className="mt-3" onClick={changeSMTP}>
+            {blocked ? "Allow outbound mail" : "Block outbound mail"}
+          </Button>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // VMDetail is the VM page for both audiences. Admin mode is the operator view.
 // Client mode is a customer's own VM: it leaves out everything the API refuses
-// customers (resize, migrate, clone, owner, IP and bandwidth changes, VLAN,
+// customers (resize, clone, owner, IP and bandwidth changes, VLAN,
 // console repair), the data disks, and anything that names a node.
 export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const isAdmin = mode === "admin"
+  // What the signed-in role may do to this VM; the panel checks each request too.
+  const allow = useCan()
+  const { data: me } = useCurrentUser()
+  const { data: teams } = useMemberships()
+  const { data: planList } = usePlans()
   const basePath = isAdmin ? "/vms" : "/client/vms"
   const backLabel = isAdmin ? "Back to VMs" : "Back to my VMs"
   const rebuildWord = isAdmin ? "Rebuild" : "Reinstall"
@@ -930,6 +1253,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const [secret, setSecret] = useState<{ title: string; value: string } | null>(null)
   const [rebuildDialogOpen, setRebuildDialogOpen] = useState(false)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [deleteImportedVolumes, setDeleteImportedVolumes] = useState(false)
   const [selectedTemplate, setSelectedTemplate] = useState("")
   const [confirmVMName, setConfirmVMName] = useState("")
   const [actionLoading, setActionLoading] = useState<string | null>(null)
@@ -948,13 +1272,17 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   }, [])
   const [snapshotName, setSnapshotName] = useState("")
   const [createSnapshotOpen, setCreateSnapshotOpen] = useState(false)
+  // A running VM's snapshot without its memory (no pause), optionally with
+  // its filesystems frozen through the guest agent.
+  const [snapshotDiskOnly, setSnapshotDiskOnly] = useState(false)
+  const [snapshotQuiesce, setSnapshotQuiesce] = useState(false)
   const [imageName, setImageName] = useState("")
   const [createImageOpen, setCreateImageOpen] = useState(false)
   const [isoDialogOpen, setIsoDialogOpen] = useState(false)
+  const [isoSlot, setIsoSlot] = useState(1)
+  const [isoTemplate, setIsoTemplate] = useState("")
   const [selectedISOUrl, setSelectedISOUrl] = useState("")
   const [manualISOUrl, setManualISOUrl] = useState("")
-  const [migrateOpen, setMigrateOpen] = useState(false)
-  const [migrateNodeId, setMigrateNodeId] = useState("")
   // Resize (admin-only, VM must be stopped). Kept as strings so the inputs can
   // be cleared while typing instead of snapping back to 0.
   const [resizeOpen, setResizeOpen] = useState(false)
@@ -990,7 +1318,6 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const detachISO = useDetachISO(vmId)
   const rescueVM = useRescueVM(vmId)
   const unrescueVM = useUnrescueVM(vmId)
-  const migrateVM = useMigrateVM(vmId)
   const regenerateVNC = useRegenerateVNCPassword(vmId)
   const setConsole = useSetConsoleEnabled(vmId)
   const repairConsole = useRepairConsole(vmId)
@@ -1001,6 +1328,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const { data: allNodes } = useNodes(isAdmin)
   const updateVM = useUpdateVM(vmId)
   const [reassignOpen, setReassignOpen] = useState(false)
+  const [billingLinkOpen, setBillingLinkOpen] = useState(false)
   const [reassignUserId, setReassignUserId] = useState("")
   const handleReassign = useCallback(async () => {
     if (!reassignUserId) return
@@ -1018,12 +1346,18 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const createSnapshot = useCreateSnapshot(vmId)
   const restoreSnapshot = useRestoreSnapshot(vmId)
   const deleteSnapshot = useDeleteSnapshot(vmId)
-  const { data: backups, isLoading: backupsLoading, error: backupsError, refetch: refetchBackups } = useBackups(vmId)
+  const [backupPage, setBackupPage] = useState(1)
+  const { data: backupList, isLoading: backupsLoading, error: backupsError, refetch: refetchBackups } = useBackupPage(vmId, backupPage)
+  const backups = backupList?.items
   const createBackup = useCreateBackup(vmId)
   const deleteBackupMutation = useDeleteBackup(vmId)
   const restoreBackup = useRestoreBackup(vmId)
+  const [restoreNewBackup, setRestoreNewBackup] = useState<Backup | null>(null)
   const { data: firewallRules, isLoading: firewallLoading, error: firewallError, refetch: refetchFirewall } = useFirewallRules(vmId)
   const deleteFirewallRule = useDeleteFirewallRule(vmId)
+  const { data: firewallStatus } = useFirewallStatus(vmId)
+  const { data: vmGroups } = useVMFirewallGroups(vmId)
+  const groupRuleCount = vmGroups?.reduce((n, g) => n + g.rules.length, 0) ?? 0
   const { data: templates } = useTemplates()
   // Same rule as the create wizard: inactive templates and "/imported"
   // placeholders have no base image, so building from them fails on the node.
@@ -1034,21 +1368,30 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const isWindows = osType === "windows"
   const isLinux = !isRouter && !isWindows
   const loginUser = isRouter ? "admin" : isWindows ? "Administrator" : "root"
+  // A customer also keeps to what their plan includes, plus the system the
+  // VM already runs; the panel refuses anything else.
   const installableTemplates = (templates ?? []).filter((t) => {
     const path = (t.image_path || "").trim()
-    return t.is_active && path !== "" && path !== "/imported"
+    return t.is_active && path !== "" && path !== "/imported" &&
+      (isAdmin || t.id === vm?.os_template_id || templateOfferedOn(t, vm?.plan_id))
   })
   // A reinstall may put another kind of system on the VM, so its dialog goes
   // by the template chosen there, not by what is installed now.
   const rebuildOS = installableTemplates.find((t) => t.id === selectedTemplate)?.os_type || osType
   const rebuildUser = rebuildOS === "routeros" ? "admin" : rebuildOS === "windows" ? "Administrator" : "root"
   const rebuildTooSmall = rebuildOS === "windows" && !!vm && (vm.resources.ram < 2048 || vm.resources.disk < 32)
-  // Only nodes that can take work; migrating also needs a node other than this one.
+  // Only nodes that can take work.
   const activeNodes = (allNodes ?? []).filter((n) => n.status === "active")
-  const migrateTargets = activeNodes.filter((n) => n.id !== vm?.node_id)
   const cloneTarget = cloneNodeId || vm?.node_id || ""
   const cloneTargetValid = activeNodes.some((n) => n.id === cloneTarget)
-  const { data: isoTemplates } = useTemplates({ type: "iso" }, isAdmin)
+  // The install and recovery ISOs staff publish, offered to everyone.
+  const { data: portal } = usePortal()
+  const isoChoices = portal?.isos ?? []
+  // ISOs from the ISOs page: all of them for staff, those offered on the
+  // VM's plan for its owner.
+  const { data: isoTemplateList } = useTemplates({ type: "iso" })
+  const isoTemplates = (isoTemplateList ?? []).filter((t) => t.is_active && (isAdmin || (!!vm && templateOfferedOn(t, vm.plan_id))))
+  const isoURLAllowed = isAdmin || portal?.iso_url_allowed !== false
   const { data: vmNetworks } = useVMNetworks(vmId)
   const { data: ipPools } = useIPPools(isAdmin)
   const assignIP = useAssignVMIP(vmId)
@@ -1084,7 +1427,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
 
   const handleDelete = useCallback(async () => {
     try {
-      await deleteVM.mutateAsync(vmId)
+      await deleteVM.mutateAsync({ id: vmId, deleteImportedVolumes })
       setDeleteDialogOpen(false)
       // Follow the delete to the end instead of announcing success and leaving.
       // Accepting the job says nothing about whether the machine was removed:
@@ -1094,31 +1437,39 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
     } catch (err) {
       toast.error(`Failed to delete VM: ${(err as Error).message}`)
     }
-  }, [deleteVM, vmId, vm?.hostname])
+  }, [deleteVM, vmId, vm?.hostname, deleteImportedVolumes])
 
   const handleAttachISO = useCallback(async () => {
-    const url = (manualISOUrl.trim() || selectedISOUrl).trim()
-    if (!url) {
+    const url = manualISOUrl.trim()
+    if (!url && !selectedISOUrl && !isoTemplate) {
       toast.error("Pick an ISO or enter a URL")
       return
     }
+    const slot = isoSlot === 2 ? 2 : undefined
+    const body = url ? { iso_url: url, slot }
+      : isoTemplate === "drivers" ? { drivers: true, slot: isoSlot }
+      : isoTemplate ? { template_id: isoTemplate, slot }
+      : { iso_id: selectedISOUrl, slot }
     try {
-      await attachISO.mutateAsync(url)
-      toast.success("ISO attach queued. The VM will boot from it on next start")
+      await attachISO.mutateAsync(body)
+      toast.success(vm?.status === "running"
+        ? "ISO attach queued. The running VM gets the disc in a moment"
+        : isoSlot === 2 ? "ISO attach queued in drive 2" : "ISO attach queued. The VM will boot from it on next start")
       // ponytail: the job has no completion event, so re-read after a pause.
       setTimeout(() => refetchVM(), 4000)
       setIsoDialogOpen(false)
       setSelectedISOUrl("")
       setManualISOUrl("")
+      setIsoTemplate("")
     } catch (err) {
       toast.error(`Failed to attach ISO: ${(err as Error).message}`)
     }
-  }, [attachISO, manualISOUrl, selectedISOUrl, refetchVM])
+  }, [attachISO, manualISOUrl, selectedISOUrl, isoTemplate, isoSlot, vm?.status, refetchVM])
 
-  const handleDetachISO = useCallback(async () => {
+  const handleDetachISO = useCallback(async (slot?: number) => {
     try {
-      await detachISO.mutateAsync()
-      toast.success("ISO detach queued. Boot order restored to disk")
+      await detachISO.mutateAsync(slot)
+      toast.success(slot === 2 ? "Drive 2 will be emptied" : "ISO detach queued. Boot order restored to disk")
       setTimeout(() => refetchVM(), 4000)
     } catch (err) {
       toast.error(`Failed to detach ISO: ${(err as Error).message}`)
@@ -1127,8 +1478,13 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
 
   const handleRescue = useCallback(async () => {
     try {
-      await rescueVM.mutateAsync(undefined)
-      toast.success("Rescue ISO attached. Start the VM to boot into rescue")
+      const res = await rescueVM.mutateAsync(undefined)
+      if (res?.kind === "image" && res.root_password) {
+        toast.success("The rescue system is being prepared. Start the VM once it is ready, then sign in over SSH or the console")
+        setSecret({ title: `Rescue system password for ${res.user ?? "root"}${res.address ? `@${res.address}` : ""}`, value: res.root_password })
+      } else {
+        toast.success("Rescue ISO attached. Start the VM to boot into rescue")
+      }
     } catch (err) {
       toast.error(`Failed to enter rescue mode: ${(err as Error).message}`)
     }
@@ -1137,7 +1493,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const handleUnrescue = useCallback(async () => {
     try {
       await unrescueVM.mutateAsync()
-      toast.success("Rescue ISO detached. Start the VM to boot from disk")
+      toast.success("Leaving rescue mode. Start the VM to boot from its own disk")
     } catch (err) {
       toast.error(`Failed to exit rescue mode: ${(err as Error).message}`)
     }
@@ -1161,20 +1517,6 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
     }
   }, [setConsole])
 
-  const handleMigrate = useCallback(async () => {
-    if (!migrateNodeId) {
-      toast.error("Select a destination node")
-      return
-    }
-    try {
-      await migrateVM.mutateAsync({ dest_node_id: migrateNodeId, live: true, copy_storage: true })
-      toast.success("VM migrated to destination node")
-      setMigrateOpen(false)
-      setMigrateNodeId("")
-    } catch (err) {
-      toast.error(`Migration failed: ${(err as Error).message}`)
-    }
-  }, [migrateVM, migrateNodeId])
 
   // Prefill from the VM's current spec each time the dialog opens, so the
   // fields always start from reality rather than a stale previous edit.
@@ -1200,9 +1542,12 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
       toast.error(`Disk can only be grown (currently ${vm.resources.disk} GB)`)
       return
     }
+    const diskOnly = !!vm && cpu === vm.resources.cpu && ram === vm.resources.ram && disk > vm.resources.disk
     try {
       await updateVM.mutateAsync({ resources: { cpu, ram, disk } })
-      toast.success("Resize queued, applied on next boot")
+      toast.success(diskOnly && vm?.status === "running"
+        ? "The disk is bigger now. Grow the partition and filesystem inside the VM to use it"
+        : "Resize queued, applied on next boot")
       setResizeOpen(false)
       refetchVM()
     } catch (err) {
@@ -1213,7 +1558,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const handleCreateSnapshot = useCallback(async () => {
     if (!snapshotName.trim()) return
     try {
-      await createSnapshot.mutateAsync({ vm_id: vmId, name: snapshotName })
+      await createSnapshot.mutateAsync({ vm_id: vmId, name: snapshotName, disk_only: snapshotDiskOnly, quiesce: snapshotDiskOnly && snapshotQuiesce })
       toast.success("Snapshot created")
       setSnapshotName("")
       setCreateSnapshotOpen(false)
@@ -1221,7 +1566,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
     } catch (err) {
       toast.error(`Failed to create snapshot: ${(err as Error).message}`)
     }
-  }, [createSnapshot, vmId, snapshotName, refetchSnapshots])
+  }, [createSnapshot, vmId, snapshotName, snapshotDiskOnly, snapshotQuiesce, refetchSnapshots])
 
   const createImage = useCreateImage()
   const handleCreateImage = useCallback(async () => {
@@ -1271,8 +1616,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
 
   const handleDeleteBackup = useCallback(async (backupId: string) => {
     try {
-      await deleteBackupMutation.mutateAsync(backupId)
-      toast.success("Backup deleted")
+      toast.success(await deleteBackupMutation.mutateAsync(backupId))
       refetchBackups()
     } catch (err) {
       toast.error(`Failed to delete backup: ${(err as Error).message}`)
@@ -1280,21 +1624,28 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   }, [deleteBackupMutation, refetchBackups])
 
   const createFirewallRule = useCreateFirewallRule(vmId)
+  const setFirewallDefault = useSetFirewallDefault(vmId)
+  const setSMTPBlocked = useSetSMTPBlocked(vmId)
+  const dismissGuestNote = useDismissGuestNetworkNote(vmId)
   const [fwOpen, setFwOpen] = useState(false)
-  const [fwForm, setFwForm] = useState({ protocol: "tcp", port_range: "", action: "allow", direction: "inbound", source_ip: "", priority: 100 })
+  const [fwForm, setFwForm] = useState(EMPTY_FW_FORM)
   const handleAddFirewallRule = useCallback(async () => {
+    const ports = fwForm.protocol === "tcp" || fwForm.protocol === "udp"
     try {
       await createFirewallRule.mutateAsync({
         vm_id: vmId,
         protocol: fwForm.protocol as "tcp" | "udp" | "icmp" | "all",
-        port_range: fwForm.port_range.trim() || undefined,
-        action: fwForm.action as "allow" | "deny",
+        port_range: ports ? fwForm.port_range.trim() || undefined : undefined,
+        action: fwForm.action,
         direction: fwForm.direction as "inbound" | "outbound",
         source_ip: fwForm.source_ip.trim() || undefined,
         priority: fwForm.priority,
+        icmp_type: fwForm.protocol === "icmp" ? fwForm.icmp_type.trim() || undefined : undefined,
+        log: fwForm.log || undefined,
+        family: fwForm.family || undefined,
       })
       setFwOpen(false)
-      setFwForm({ protocol: "tcp", port_range: "", action: "allow", direction: "inbound", source_ip: "", priority: 100 })
+      setFwForm(EMPTY_FW_FORM)
       toast.success("Firewall rule added")
       refetchFirewall()
     } catch (err) {
@@ -1335,10 +1686,10 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const handleResetPassword = async () => {
     if (!resetPwValue.trim()) return
     try {
-      await resetPassword.mutateAsync(resetPwValue)
+      const res = await resetPassword.mutateAsync(resetPwValue)
       setResetPwOpen(false)
       setResetPwValue("")
-      toast.success(isRouter ? "Password reset requested. The router restarts if it has to." : "Password reset requested")
+      toast.success(res?.message ?? (isRouter ? "Password reset requested. The router restarts if it has to." : "Password reset requested"))
     } catch (err) {
       toast.error(`Failed to reset password: ${(err as Error).message}`)
     }
@@ -1401,8 +1752,15 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const ramGB = Math.round(vm.resources.ram / 1024 * 10) / 10
   // A suspended VM is frozen for customers until support restores it.
   const suspended = vm.suspended || vm.status === "suspended"
-  const locked = !isAdmin && suspended
-  const powerBusy = locked || actionLoading !== null || !!transitionOf(vm.id)
+  // A team member whose role only views sees everything and changes nothing.
+  const teamRole = !isAdmin && me && vm.user_id !== me.id ? teams?.memberships.find((m) => m.account_id === vm.user_id) : undefined
+  const viewOnly = !!teamRole && !teamRole.can.includes("operate")
+  const backupPlan = vm.plan_id ? planList?.find((p) => p.id === vm.plan_id) : undefined
+  const backupPlanTerms = backupPlan ? backupTerms(backupPlan) : null
+  const locked = !isAdmin && (suspended || viewOnly)
+  // The node is offline: power actions would only fail, and the state is a guess.
+  const stateUnknown = !!vm.state_unknown
+  const powerBusy = locked || stateUnknown || actionLoading !== null || !!transitionOf(vm.id) || !allow("vm:power")
   // A text button beside a value people paste elsewhere.
   const copyLink = (text: string, key: string, what: string) => (
     <button
@@ -1426,10 +1784,25 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
         </Link>
       </nav>
 
-      {locked && (
+      {locked && suspended && (
         <div role="status" className="mb-6 flex items-center gap-3 rounded-lg border border-warning/50 bg-warning/10 p-4 text-sm font-medium text-foreground">
           <AlertCircle className="w-5 h-5 shrink-0" aria-hidden="true" />
           This VM is suspended. Contact support to restore service.
+        </div>
+      )}
+      {teamRole && (
+        <p role="status" className="mb-6 rounded-lg border p-4 text-sm text-muted-foreground">
+          This server is in {teamRole.account_name || teamRole.account_email}&apos;s account.
+          {viewOnly ? " Your role there lets you see it, not change it." : ""}
+        </p>
+      )}
+
+      {stateUnknown && (
+        <div role="status" className="mb-6 flex items-center gap-3 rounded-lg border border-warning/50 bg-warning/10 p-4 text-sm font-medium text-foreground">
+          <AlertCircle className="w-5 h-5 shrink-0" aria-hidden="true" />
+          {isAdmin
+            ? "The node this VM runs on is offline, so the panel cannot tell whether the VM is running. What is shown here is what it last saw."
+            : "We cannot reach the host this server runs on right now, so its state is unknown. It may still be running. Power controls come back when the host answers again."}
         </div>
       )}
 
@@ -1438,7 +1811,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
       <div className="faceplate mb-6 rounded-lg border bg-card px-5 pb-4 pt-5">
         <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-4">
           <div className="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
-            <StatusBadge variant="lamp" status={suspended ? "suspended" : vm.status} transition={transitionOf(vm.id)} />
+            <StatusBadge variant="lamp" status={vmStatus({ status: vm.status, suspended, state_unknown: stateUnknown })} transition={transitionOf(vm.id)} />
             <VMNameEditor
               hostname={vm.hostname}
               headingClassName="text-2xl font-semibold text-foreground [font-stretch:118%] break-all"
@@ -1499,6 +1872,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                 Start
               </Button>
             )}
+            {allow("vm:console") && (
             <Button
               variant="outline"
               size="sm"
@@ -1506,7 +1880,8 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
             >
               Console
             </Button>
-            {isAdmin && (
+            )}
+            {isAdmin && allow("vm:lifecycle") && (
               <Button
                 variant="outline"
                 size="sm"
@@ -1617,6 +1992,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                     {isAdmin
                       ? "This will destroy the current VM and create a new one from a template. All data will be lost."
                       : "Erases this VM and installs a fresh operating system. All data on it will be lost. The VM keeps its IP address and is started when the install is done."}
+                    {snapshots?.length ? ` ${snapshotsGoneText(snapshots.length)}` : ""}
                   </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-4 py-4 max-h-[60vh] overflow-y-auto">
@@ -1711,33 +2087,68 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                 <DialogHeader>
                   <DialogTitle className="text-lg font-semibold">Mount ISO</DialogTitle>
                   <DialogDescription className="text-sm text-muted-foreground">
-                    Attach a bootable ISO for OS install or rescue. The VM boots from it on next start; detach to return to disk boot.
+                    Attach an ISO for an OS install, rescue or drivers. Drive 1 boots first on the next start; detach to return to disk boot. A running VM takes a disc at once in a drive it already has.
                   </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-4 py-4">
-                  {isoTemplates && isoTemplates.length > 0 && (
+                  <div>
+                    <label htmlFor="iso-slot" className="text-xs font-medium text-muted-foreground mb-2 block">CD drive</label>
+                    <select id="iso-slot" value={isoSlot} onChange={(e) => setIsoSlot(Number(e.target.value))}
+                      className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
+                      <option value={1}>Drive 1: install, boots first</option>
+                      <option value={2}>Drive 2: drivers or extra files</option>
+                    </select>
+                  </div>
+                  {isoTemplates.length > 0 && (
                     <div>
-                      <span className="text-xs font-medium text-muted-foreground mb-2 block">Select an ISO</span>
+                      <span className="text-xs font-medium text-muted-foreground mb-2 block">ISOs on this platform</span>
                       <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto">
-                        {isoTemplates.map((iso) => (
-                          <button key={iso.id} type="button"
-                            onClick={() => { setSelectedISOUrl(iso.image_path); setManualISOUrl("") }}
-                            className={`p-3 border text-left transition-all ${selectedISOUrl === iso.image_path && !manualISOUrl ? "border-primary ring-1 ring-primary bg-primary/5" : "bg-card hover:bg-muted/50"}`}>
-                            <span className="text-xs font-medium block truncate">{iso.name}</span>
-                            <span className="text-[10px] text-muted-foreground truncate block">{iso.image_path}</span>
+                        {isAdmin && (
+                          <button type="button" aria-pressed={isoTemplate === "drivers" && !manualISOUrl}
+                            onClick={() => { setIsoTemplate("drivers"); setSelectedISOUrl(""); setManualISOUrl(""); setIsoSlot(2) }}
+                            className={`p-3 border rounded-md text-left transition-all ${isoTemplate === "drivers" && !manualISOUrl ? "border-primary ring-1 ring-primary bg-primary/5" : "bg-card hover:bg-muted/50"}`}>
+                            <span className="text-xs font-medium block truncate">Windows drivers disc</span>
+                            <span className="text-[11px] text-muted-foreground block">The one chosen on the ISOs page</span>
+                          </button>
+                        )}
+                        {isoTemplates.map((t) => (
+                          <button key={t.id} type="button" aria-pressed={isoTemplate === t.id && !manualISOUrl}
+                            onClick={() => { setIsoTemplate(t.id); setSelectedISOUrl(""); setManualISOUrl("") }}
+                            className={`p-3 border rounded-md text-left transition-all ${isoTemplate === t.id && !manualISOUrl ? "border-primary ring-1 ring-primary bg-primary/5" : "bg-card hover:bg-muted/50"}`}>
+                            <span className="text-xs font-medium block truncate">{t.name}</span>
+                            {t.description && <span className="text-[11px] text-muted-foreground block truncate">{t.description}</span>}
                           </button>
                         ))}
                       </div>
                     </div>
                   )}
-                  <div>
-                    <label htmlFor="iso-url" className="text-xs font-medium text-muted-foreground mb-2 block">{isAdmin ? "Or enter an ISO URL" : "ISO URL"}</label>
-                    <Input id="iso-url" value={manualISOUrl} onChange={(e) => setManualISOUrl(e.target.value)} placeholder="https://example.com/installer.iso" className="border" />
-                  </div>
+                  {isoChoices.length > 0 ? (
+                    <div>
+                      <span className="text-xs font-medium text-muted-foreground mb-2 block">Choose an ISO</span>
+                      <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto">
+                        {isoChoices.map((iso) => (
+                          <button key={iso.id} type="button" aria-pressed={selectedISOUrl === iso.id && !manualISOUrl}
+                            onClick={() => { setSelectedISOUrl(iso.id); setManualISOUrl(""); setIsoTemplate("") }}
+                            className={`p-3 border rounded-md text-left transition-all ${selectedISOUrl === iso.id && !manualISOUrl ? "border-primary ring-1 ring-primary bg-primary/5" : "bg-card hover:bg-muted/50"}`}>
+                            <span className="text-xs font-medium block truncate">{iso.name}</span>
+                            {iso.description && <span className="text-[11px] text-muted-foreground block">{iso.description}</span>}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : !isoURLAllowed ? (
+                    <p className="text-sm text-muted-foreground">No ISO is offered yet. Contact support for an install image.</p>
+                  ) : null}
+                  {isoURLAllowed && (
+                    <div>
+                      <label htmlFor="iso-url" className="text-xs font-medium text-muted-foreground mb-2 block">{isoChoices.length ? "Or enter an ISO URL" : "ISO URL"}</label>
+                      <Input id="iso-url" value={manualISOUrl} onChange={(e) => setManualISOUrl(e.target.value)} placeholder="https://example.com/installer.iso" className="border" />
+                    </div>
+                  )}
                 </div>
                 <DialogFooter>
                   <Button variant="ghost" onClick={() => setIsoDialogOpen(false)}>Cancel</Button>
-                  <Button onClick={handleAttachISO} disabled={attachISO.isPending || (!selectedISOUrl && !manualISOUrl.trim())}>
+                  <Button onClick={handleAttachISO} disabled={attachISO.isPending || (!selectedISOUrl && !isoTemplate && !manualISOUrl.trim())}>
                     {attachISO.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Disc className="w-4 h-4" />}
                     Mount ISO
                   </Button>
@@ -1788,7 +2199,11 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                   {vm.status !== "stopped" && (
                     <div className="flex items-center gap-2 p-3 bg-muted border">
                       <AlertCircle className="w-4 h-4 shrink-0" />
-                      <p className="text-xs font-medium">VM must be stopped before it can be resized.</p>
+                      <p className="text-xs font-medium">
+                        {vm.status === "running"
+                          ? "While the VM runs only the disk can grow, at once. Stop it to change vCPU or RAM."
+                          : "VM must be stopped before it can be resized."}
+                      </p>
                     </div>
                   )}
                   <div className="flex items-center gap-2 p-3 bg-muted border">
@@ -1801,48 +2216,9 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                 </div>
                 <DialogFooter>
                   <Button variant="ghost" onClick={() => setResizeOpen(false)}>Cancel</Button>
-                  <Button onClick={handleResize} disabled={updateVM.isPending || vm.status !== "stopped"}>
+                  <Button onClick={handleResize} disabled={updateVM.isPending || !(vm.status === "stopped" ||
+                    (vm.status === "running" && Number(resizeCpu) === vm.resources.cpu && Number(resizeRam) === vm.resources.ram && Number(resizeDisk) > vm.resources.disk))}>
                     {updateVM.isPending ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Resizing…</> : <><Cpu className="w-4 h-4 mr-2" />Resize</>}
-                  </Button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
-
-            <Dialog open={migrateOpen} onOpenChange={setMigrateOpen}>
-              <DialogContent className="max-w-md border shadow-lg">
-                <DialogHeader>
-                  <DialogTitle className="text-lg font-semibold">Live Migrate VM</DialogTitle>
-                  <DialogDescription className="text-sm text-muted-foreground">
-                    Move this VM to another node with no downtime (block migration copies the disk).
-                  </DialogDescription>
-                </DialogHeader>
-                <div className="space-y-4 py-4">
-                  <div>
-                    <span className="text-xs font-medium text-muted-foreground mb-2 block">Destination Node</span>
-                    {migrateTargets.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">No other active node to migrate to.</p>
-                    ) : (
-                      <select
-                        value={migrateNodeId}
-                        onChange={(e) => setMigrateNodeId(e.target.value)}
-                        className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm"
-                      >
-                        <option value="">Select a node…</option>
-                        {migrateTargets.map((n) => (
-                          <option key={n.id} value={n.id}>{n.name} ({n.ip_address})</option>
-                        ))}
-                      </select>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2 p-3 bg-muted border">
-                    <Server className="w-4 h-4 shrink-0" />
-                    <p className="text-xs font-medium">Requires node-to-node libvirt connectivity (SSH). The VM stays running during transfer.</p>
-                  </div>
-                </div>
-                <DialogFooter>
-                  <Button variant="ghost" onClick={() => setMigrateOpen(false)}>Cancel</Button>
-                  <Button onClick={handleMigrate} disabled={migrateVM.isPending || !migrateTargets.some((n) => n.id === migrateNodeId)}>
-                    {migrateVM.isPending ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Migrating…</> : <><ArrowRightLeft className="w-4 h-4 mr-2" />Migrate</>}
                   </Button>
                 </DialogFooter>
               </DialogContent>
@@ -1929,19 +2305,23 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                   <DialogTitle className="text-lg font-semibold">Reset the password for {loginUser}</DialogTitle>
                   <DialogDescription className="text-sm text-muted-foreground">
                     {isRouter
-                      ? "Sets a new password for the admin user. RouterOS 7 only accepts this at start-up, so the router is restarted to apply it; expect it to be unreachable for under a minute."
+                      ? vm.status === "running"
+                        ? "Sets a new password for the admin user. RouterOS 7 only accepts this at start-up, so the router is restarted to apply it; expect it to be unreachable for under a minute."
+                        : "Sets a new password for the admin user. The router is stopped, so it takes the password when it next starts."
                       : isWindows
                         ? "Sets a new password for the Administrator account through the guest agent inside Windows. The VM must be running. Windows refuses a password that does not meet its complexity rules."
-                      : isAdmin
-                        ? "Sets a new root password on the running guest via the QEMU guest agent. The VM must be running and have qemu-guest-agent installed."
-                        : "Sets a new root password inside the VM. The VM must be running."}
+                      : vm.status === "running"
+                        ? isAdmin
+                          ? "Sets a new root password on the running guest via the QEMU guest agent, which must be installed. If it does not answer, stop the VM and reset the password again: it is then written onto the disk."
+                          : "Sets a new root password inside the running VM through its guest agent. If that does not work, stop the VM and reset it again: it is then written onto the disk."
+                        : "The VM is stopped, so the new root password is written onto its disk. It stays stopped and the password works from its next start."}
                   </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-3 py-2">
                   <label htmlFor="reset-pw" className="text-xs font-medium text-muted-foreground block">New Password</label>
                   <Input id="reset-pw" type="text" value={resetPwValue} onChange={(e) => setResetPwValue(e.target.value)} placeholder="New password" className="border font-mono" />
-                  {vm.status !== "running" && (
-                    <p className="text-xs text-destructive font-medium">VM is not running. Start it first.</p>
+                  {vm.status !== "running" && (isWindows || vm.status !== "stopped") && (
+                    <p className="text-xs text-destructive font-medium">{isWindows ? "Windows is not running. Start it first." : "The VM must be running or stopped."}</p>
                   )}
                 </div>
                 <DialogFooter>
@@ -1963,6 +2343,18 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                     The machine and its disks are destroyed and its addresses go back to the pool. This cannot be undone.
                   </DialogDescription>
                 </DialogHeader>
+                {isAdmin && vm.source_migration && allow("storage:delete") && (
+                  <div className="space-y-1">
+                    <label className="flex items-start gap-2 text-sm">
+                      <input type="checkbox" className="mt-1" checked={deleteImportedVolumes} onChange={(e) => setDeleteImportedVolumes(e.target.checked)} />
+                      <span>Also delete the LVM volumes it was imported with</span>
+                    </label>
+                    <p className="text-xs text-muted-foreground pl-6">
+                      Left unticked, they stay on the node and are listed under their storage pool, where you can delete them later.
+                      Volumes outside a registered LVM pool are never deleted.
+                    </p>
+                  </div>
+                )}
                 <DialogFooter>
                   <Button variant="ghost" onClick={() => setDeleteDialogOpen(false)}>Cancel</Button>
                   <Button variant="destructive" onClick={handleDelete} disabled={deleteVM.isPending}>
@@ -1981,6 +2373,21 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
           startedAt={vm.created_at}
           className="mb-6"
         />
+      )}
+
+      {vm.guest_network_note && (
+        <div role="status" className="mb-6 flex items-start gap-3 rounded-md border border-warning/50 bg-warning/10 p-3 text-sm text-foreground">
+          <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" aria-hidden="true" />
+          <div className="flex-1">
+            <p><span className="font-semibold">Address change not in the guest yet.</span> {vm.guest_network_note}</p>
+            {vm.guest_network_pending && (
+              <p className="text-muted-foreground mt-1">This note goes away by itself once the guest has taken the change. Dismissing it does not cancel the change.</p>
+            )}
+          </div>
+          <Button size="sm" variant="ghost" disabled={dismissGuestNote.isPending} onClick={() => dismissGuestNote.mutate(undefined, { onError: (e) => toast.error(`Could not dismiss: ${e.message}`) })}>
+            Dismiss
+          </Button>
+        </div>
       )}
 
       {/* Tabs */}
@@ -2061,11 +2468,16 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                   {isAdmin && <Button variant="outline" size="sm" onClick={openResize}>Resize</Button>}
                 </div>
                 <dl className="space-y-1">
+                  {vm.plan_name && <div className="flex justify-between gap-3"><dt>Plan</dt><dd className="font-semibold">{vm.plan_name}</dd></div>}
                   <div className="flex justify-between gap-3"><dt>Processor</dt><dd className="font-semibold">{vm.resources.cpu} vCPU</dd></div>
                   <div className="flex justify-between gap-3"><dt>Memory</dt><dd className="font-semibold">{ramGB} GB</dd></div>
                   <div className="flex justify-between gap-3"><dt>Disk</dt><dd className="font-semibold">{vm.resources.disk} GB</dd></div>
                 </dl>
               </section>
+
+              <VMLimitsSection vm={vm} isAdmin={isAdmin} />
+
+              <VMHardwareSection vm={vm} isAdmin={isAdmin} />
 
               <TransferSummary vmId={vmId} onOpen={() => setTab("network")} />
 
@@ -2239,25 +2651,34 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                   ) : (
                     "Attach an install or recovery ISO. The VM boots from it on the next start."
                   )}
-                  {vm.status === "running" && " Stop the VM to mount an ISO."}
+                  {vm.attached_iso_2 ? <> Drive 2: <span className="font-medium text-foreground break-all">{isoLabel(vm.attached_iso_2)}</span>.</> : null}
                 </>
               }
             >
-              <Button variant="outline" size="sm" onClick={() => setIsoDialogOpen(true)} disabled={locked || vm.status === "running"}>
+              <Button variant="outline" size="sm" onClick={() => setIsoDialogOpen(true)} disabled={locked}>
                 <Disc className="w-4 h-4" />Mount ISO
               </Button>
-              <Button variant="outline" size="sm" onClick={handleDetachISO} disabled={locked || detachISO.isPending || vm.attached_iso === ""}>
+              <Button variant="outline" size="sm" onClick={() => handleDetachISO()} disabled={locked || detachISO.isPending || vm.attached_iso === ""}>
                 {detachISO.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <CircleSlash className="w-4 h-4" />}
                 Unmount
               </Button>
+              {vm.attached_iso_2 ? (
+                <Button variant="outline" size="sm" onClick={() => handleDetachISO(2)} disabled={locked || detachISO.isPending}>Empty drive 2</Button>
+              ) : null}
             </ActionRow>
             <ActionRow
               title="Rescue mode"
               description={vm.rescue_mode
-                ? "Rescue ISO attached. Start the VM to boot into it, or exit to boot from disk again."
-                : vm.status === "running"
-                  ? "Boot a rescue system to repair a VM that will not start. Stop the VM to enable this."
-                  : "Boot a rescue system to repair a VM that will not start."}
+                ? vm.rescue_kind === "image"
+                  ? "The rescue system is attached, on the VM's own address, with the VM's disks attached for repair. Start the VM to boot it and sign in as root with the password you were shown. Exit to boot from disk again."
+                  : "Rescue ISO attached. Start the VM to boot into it, or exit to boot from disk again."
+                : vm.rescue_available === false
+                  ? isAdmin
+                    ? "Rescue mode is not available yet: no rescue image is set. Choose one under System settings, Rescue."
+                    : "Rescue mode is not available yet: no rescue image has been set up. Contact support, or mount a rescue ISO of your own above."
+                  : vm.status === "running"
+                    ? "Boot a rescue system to repair a VM that will not start. Stop the VM to enable this."
+                    : "Boot a rescue system to repair a VM that will not start."}
             >
               {vm.rescue_mode ? (
                 <Button variant="outline" size="sm" onClick={handleUnrescue} disabled={locked || unrescueVM.isPending}>
@@ -2265,7 +2686,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                   Exit rescue
                 </Button>
               ) : (
-                <Button variant="outline" size="sm" onClick={handleRescue} disabled={locked || rescueVM.isPending || vm.status === "running"}>
+                <Button variant="outline" size="sm" onClick={handleRescue} disabled={locked || !allow("vm:rescue") || rescueVM.isPending || vm.status === "running" || vm.rescue_available === false}>
                   {rescueVM.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <LifeBuoy className="w-4 h-4" />}
                   Enter rescue
                 </Button>
@@ -2375,7 +2796,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                 <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
                   IPv6
                 </h2>
-                {isAdmin && (vm.ipv6_address ? (
+                {vm.ipv6_address && (isAdmin || (!locked && allow("vm:update"))) ? (
                   <Button
                     type="button"
                     size="sm"
@@ -2384,24 +2805,25 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                     disabled={releaseIPv6.isPending}
                     onClick={async () => {
                       const ok = await confirm({
-                        title: `Release ${vm.ipv6_prefix || vm.ipv6_address}?`,
+                        title: isAdmin ? `Release ${vm.ipv6_prefix || vm.ipv6_address}?` : "Turn IPv6 off?",
                         description:
-                          "It returns to its pool and the node stops carrying it. The guest's IPv6 address is removed from its network configuration; a guest without a responsive guest agent is rebooted to apply that.",
-                        confirmLabel: "Release IPv6",
+                          (isAdmin ? "It returns to its pool and the node stops carrying it. " : "The server stops being reachable over IPv6 and the address may go to someone else. You can ask for IPv6 again later. ") +
+                          "The guest's IPv6 is removed from its network settings live where it can be, otherwise at its next start from the panel; nothing is restarted.",
+                        confirmLabel: isAdmin ? "Release IPv6" : "Turn IPv6 off",
                         destructive: true,
                         action: () => releaseIPv6.mutateAsync(),
                       })
                       if (!ok) return
-                      toast.success("IPv6 released")
+                      toast.success(isAdmin ? "IPv6 released" : "IPv6 turned off")
                     }}
                   >
-                    <Trash2 className="w-4 h-4 mr-1" />Release
+                    <Trash2 className="w-4 h-4 mr-1" />{isAdmin ? "Release" : "Turn off"}
                   </Button>
-                ) : (
+                ) : isAdmin && !vm.ipv6_address && (
                   <Button type="button" size="sm" variant="outline" onClick={() => setAssignIPv6Open(true)}>
                     <Plus className="w-4 h-4 mr-1" />Assign IPv6
                   </Button>
-                ))}
+                )}
               </div>
               {vm.ipv6_address ? (
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -2423,11 +2845,24 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                   No IPv6 assigned
                 </div>
               )}
+              {vm.ipv6_prefix && (
+                <PrefixPTRs vmId={vmId} prefix={vm.ipv6_prefix} verified={!isAdmin} canEdit={!locked && allow("vm:update")} />
+              )}
+              {vm.ipv6_prefix && (
+                <IPv6Addresses vmId={vmId} prefix={vm.ipv6_prefix} canEdit={!locked && allow("vm:update")} />
+              )}
             </div>
             )}
 
-            {/* Data disks: admin only until billing for extra disks is decided. */}
-            {isAdmin && <DisksCard vmId={vmId} />}
+            <VMNICsCard vmId={vmId} nodeId={vm.node_id} isAdmin={isAdmin} stopped={vm.status === "stopped"}
+              canEdit={!locked && allow("vm:update") && !!vmNetworks?.length} />
+
+            {!isAdmin && <AddressRequestsCard vmId={vmId} hasIPv6={!!vm.ipv6_address} disabled={locked || !allow("vm:update")} />}
+
+            {/* Disks: admin only until billing for extra disks is decided. */}
+            {isAdmin && <VMDisksCard vmId={vmId} nodeId={vm.node_id} systemDiskGB={vm.resources.disk} running={vm.status === "running"} canMove={allow("vm:migrate")} />}
+
+            <VMNATCard vmId={vmId} />
 
             <PortForwardsCard vmId={vmId} />
 
@@ -2438,6 +2873,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
 
         {/* Snapshots Tab */}
         <TabsContent value="snapshots">
+          <SnapshotScheduleCard vmId={vmId} readOnly={!allow("snapshot:create")} />
           <div className="bg-card text-card-foreground border rounded-lg p-6">
             <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
               <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
@@ -2485,6 +2921,22 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                   <div className="space-y-3 py-2">
                     <label htmlFor="snapshot-name" className="text-xs font-medium text-muted-foreground block">Snapshot Name</label>
                     <Input id="snapshot-name" value={snapshotName} onChange={(e) => setSnapshotName(e.target.value)} placeholder="e.g., before-update" className="border" />
+                    {vm.status === "running" && (
+                      <>
+                        <label htmlFor="snapshot-disk-only" className="flex items-start gap-2 text-sm">
+                          <input id="snapshot-disk-only" type="checkbox" className="mt-0.5 h-4 w-4 rounded border-input" checked={snapshotDiskOnly}
+                            onChange={(e) => setSnapshotDiskOnly(e.target.checked)} />
+                          <span><span className="font-medium">Disks only</span>
+                            <span className="block text-xs text-muted-foreground">No memory saved and no pause. Reverting boots the VM from the snapshot&apos;s disks instead of resuming where it was.</span></span>
+                        </label>
+                        <label htmlFor="snapshot-quiesce" className="flex items-start gap-2 text-sm">
+                          <input id="snapshot-quiesce" type="checkbox" className="mt-0.5 h-4 w-4 rounded border-input" checked={snapshotQuiesce} disabled={!snapshotDiskOnly}
+                            onChange={(e) => setSnapshotQuiesce(e.target.checked)} />
+                          <span><span className="font-medium">Freeze the filesystems first</span>
+                            <span className="block text-xs text-muted-foreground">Through the guest agent, so databases and files are consistent on disk.</span></span>
+                        </label>
+                      </>
+                    )}
                   </div>
                   <DialogFooter>
                     <Button variant="ghost" onClick={() => setCreateSnapshotOpen(false)}>Cancel</Button>
@@ -2512,6 +2964,8 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                       <div>
                         <span className="font-semibold">{snap.name}</span>
                         <span className="text-xs text-muted-foreground ml-2">{formatDate(snap.created_at)}</span>
+                        {snap.disk_only && <span className="text-xs text-muted-foreground ml-2">Disks only</span>}
+                        {snap.scheduled && <span className="text-xs text-muted-foreground ml-2">Scheduled</span>}
                       </div>
                     </div>
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -2534,12 +2988,15 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
 
         {/* Backups Tab */}
         <TabsContent value="backups">
-          <BackupScheduleCard vmId={vmId} />
+          <BackupScheduleCard vmId={vmId} isAdmin={isAdmin} />
           <div className="bg-card text-card-foreground border rounded-lg p-6">
             <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
-              <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
-                Backups
-              </h2>
+              <div>
+                <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
+                  Backups
+                </h2>
+                {backupPlanTerms && <p className="mt-1 text-sm text-muted-foreground">{backupPlanTerms}</p>}
+              </div>
               <Button variant="outline" size="sm" onClick={handleCreateBackup} disabled={createBackup.isPending}>
                 {createBackup.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Plus className="w-4 h-4 mr-2" />}
                 Create Backup
@@ -2559,10 +3016,33 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                     <div className="min-w-0">
                       <div>
                         <span className="font-semibold">{backup.backup_type === "scheduled" ? "Scheduled backup" : "Manual backup"}</span>
+                        {backup.mode === "incremental" && <span className="text-xs text-muted-foreground ml-2">Incremental</span>}
                         <span className="text-xs text-muted-foreground ml-2">{formatDate(backup.created_at)}</span>
+                        {(backup.disks?.length ?? 0) > 1 && <span className="text-xs text-muted-foreground ml-2">{backup.disks!.length} disks</span>}
                       </div>
-                      {backup.status === "failed" && backup.error_message && (
-                        <p className="mt-0.5 text-xs text-destructive break-words">{backup.error_message}</p>
+                      {backup.status === "completed" && backup.consistency === "live" && (
+                        <p className="mt-0.5 text-xs text-muted-foreground">Copied while the VM was writing to its disk, without a snapshot. It may not restore cleanly.</p>
+                      )}
+                      {backup.status === "completed" && backup.error_message && (
+                        <p className="mt-0.5 text-xs text-muted-foreground break-words">{backup.error_message}</p>
+                      )}
+                      {backup.mode === "incremental" && backup.status === "completed" && (
+                        <p className="mt-0.5 text-xs text-muted-foreground">Holds what changed since the backup before it, which it needs to be restored.</p>
+                      )}
+                      {isAdmin && backup.mode_note && (
+                        <p className="mt-0.5 text-xs text-muted-foreground break-words">{backup.mode_note}</p>
+                      )}
+                      {isAdmin && backup.status === "completed" && backup.storage_provider === "node" && (
+                        <p className="mt-0.5 text-xs text-muted-foreground">Kept in the node&apos;s own storage, not the backup destination.</p>
+                      )}
+                      {backup.status === "completed" && backup.encrypted && (
+                        <p className="mt-0.5 text-xs text-muted-foreground">Encrypted before it left the node.</p>
+                      )}
+                      {backup.status === "completed" && backup.mode !== "incremental" && !backup.downloadable && backup.download_note && (
+                        <p className="mt-0.5 text-xs text-muted-foreground">Not downloadable: {backup.download_note}</p>
+                      )}
+                      {backup.status !== "completed" && backup.error_message && (
+                        <p className={`mt-0.5 text-xs break-words ${backup.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}>{backup.error_message}</p>
                       )}
                     </div>
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -2575,7 +3055,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                           disabled={locked}
                           onClick={() => confirm({
                             title: "Restore this backup?",
-                            description: `The VM's disk is replaced with the backup from ${formatDate(backup.created_at)}. Everything written since then is lost. The VM must be stopped first.`,
+                            description: `${(backup.disks?.length ?? 0) > 1 ? `All ${backup.disks!.length} of the VM's disks are` : "The VM's disk is"} replaced with the backup from ${formatDate(backup.created_at)}. Everything written since then is lost.${snapshots?.length ? ` ${snapshotsGoneText(snapshots.length)}` : ""} The VM must be stopped first.`,
                             confirmLabel: "Restore backup",
                             destructive: true,
                             action: async () => {
@@ -2585,6 +3065,19 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                           })}
                         >
                           Restore
+                        </Button>
+                      )}
+                      {backup.downloadable && !viewOnly && backupDiskTargets(backup).map((target, i) => (
+                        <Button key={target} variant="outline" size="sm" asChild>
+                          <a href={`/api/v1/vms/${vmId}/backups/${backup.id}/download${i === 0 ? "" : `?disk=${target}`}`} download
+                            aria-label={`Download disk ${target} of the backup from ${formatDate(backup.created_at)}`}>
+                            {i === 0 ? ((backup.disks?.length ?? 0) > 1 ? `Download ${target}` : "Download") : target}
+                          </a>
+                        </Button>
+                      ))}
+                      {isAdmin && backup.status === "completed" && (
+                        <Button variant="outline" size="sm" onClick={() => setRestoreNewBackup(backup)}>
+                          Restore as a new VM
                         </Button>
                       )}
                       <Button variant="ghost" size="sm" onClick={async () => {
@@ -2602,9 +3095,15 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                     </div>
                   </div>
                 ))}
+                <div className="mt-3">
+                  <ListPager page={backupPage} pageSize={BACKUP_PAGE} total={backupList?.total ?? 0} onPage={setBackupPage} noun="backups" />
+                </div>
               </div>
             )}
           </div>
+          {isAdmin && (
+            <RestoreAsNewDialog vmId={vmId} hostname={vm.hostname} nodeId={vm.node_id} backup={restoreNewBackup} nodes={activeNodes} onClose={() => setRestoreNewBackup(null)} />
+          )}
         </TabsContent>
 
         {/* Firewall Tab */}
@@ -2621,7 +3120,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                 <DialogContent className="max-w-md">
                   <DialogHeader>
                     <DialogTitle>Add Firewall Rule</DialogTitle>
-                    <DialogDescription>Allow or deny traffic to this VM.</DialogDescription>
+                    <DialogDescription>Allow, drop or refuse traffic to and from this VM.</DialogDescription>
                   </DialogHeader>
                   <div className="grid grid-cols-2 gap-3 py-2">
                     <div>
@@ -2633,9 +3132,10 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                     </div>
                     <div>
                       <span className="text-xs font-medium text-muted-foreground mb-1 block">Action</span>
-                      <select value={fwForm.action} onChange={(e) => setFwForm({ ...fwForm, action: e.target.value })} className="w-full h-10 px-3 border rounded-md bg-background text-sm">
+                      <select value={fwForm.action} onChange={(e) => setFwForm({ ...fwForm, action: e.target.value as FirewallAction })} className="w-full h-10 px-3 border rounded-md bg-background text-sm">
                         <option value="allow">Allow</option>
-                        <option value="deny">Deny</option>
+                        <option value="deny">Deny (drop silently)</option>
+                        <option value="reject">Reject (refuse at once)</option>
                       </select>
                     </div>
                     <div>
@@ -2647,10 +3147,20 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                         <option value="all">All</option>
                       </select>
                     </div>
-                    <div>
-                      <span className="text-xs font-medium text-muted-foreground mb-1 block">Port / Range</span>
-                      <Input value={fwForm.port_range} onChange={(e) => setFwForm({ ...fwForm, port_range: e.target.value })} placeholder="80 or 8000-8100" />
-                    </div>
+                    {fwForm.protocol === "icmp" ? (
+                      <div>
+                        <label htmlFor="fw-icmp-type" className="text-xs font-medium text-muted-foreground mb-1 block">ICMP type</label>
+                        <Input id="fw-icmp-type" list="fw-icmp-types" value={fwForm.icmp_type} onChange={(e) => setFwForm({ ...fwForm, icmp_type: e.target.value })} placeholder="All types" />
+                        <datalist id="fw-icmp-types">
+                          {ICMP_TYPE_NAMES.map((n) => <option key={n} value={n} />)}
+                        </datalist>
+                      </div>
+                    ) : (
+                      <div>
+                        <span className="text-xs font-medium text-muted-foreground mb-1 block">Port / Range</span>
+                        <Input value={fwForm.port_range} disabled={fwForm.protocol === "all"} onChange={(e) => setFwForm({ ...fwForm, port_range: e.target.value })} placeholder={fwForm.protocol === "all" ? "Every port" : "80 or 8000-8100"} />
+                      </div>
+                    )}
                     <div>
                       <span className="text-xs font-medium text-muted-foreground mb-1 block">Source IP/CIDR</span>
                       <Input value={fwForm.source_ip} onChange={(e) => setFwForm({ ...fwForm, source_ip: e.target.value })} placeholder="Any (0.0.0.0/0)" />
@@ -2659,7 +3169,29 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                       <span className="text-xs font-medium text-muted-foreground mb-1 block">Priority</span>
                       <Input type="number" value={fwForm.priority} onChange={(e) => setFwForm({ ...fwForm, priority: parseInt(e.target.value) || 100 })} />
                     </div>
+                    <div>
+                      <label htmlFor="fw-family" className="text-xs font-medium text-muted-foreground mb-1 block">Addresses</label>
+                      <select id="fw-family" value={fwForm.family} onChange={(e) => setFwForm({ ...fwForm, family: e.target.value as FirewallFamily })} className="w-full h-10 px-3 border rounded-md bg-background text-sm">
+                        <option value="">IPv4 and IPv6</option>
+                        <option value="v4">IPv4 only</option>
+                        <option value="v6">IPv6 only</option>
+                      </select>
+                    </div>
+                    {isAdmin && (
+                      <label className="col-span-2 flex items-center gap-2 text-sm cursor-pointer w-fit">
+                        <input type="checkbox" checked={fwForm.log} onChange={(e) => setFwForm({ ...fwForm, log: e.target.checked })} className="w-4 h-4" />
+                        Log matches in the node&apos;s kernel log
+                      </label>
+                    )}
                   </div>
+                  {fwForm.protocol === "icmp" && /^\d/.test(fwForm.icmp_type.trim()) && !fwForm.family && (
+                    <p className="text-xs text-muted-foreground">A type given as a number means different messages in IPv4 and IPv6: choose one under Addresses.</p>
+                  )}
+                  {!firewallRules?.length && (vm.firewall_default ?? "drop") === "drop" && (
+                    <p role="status" className="text-sm rounded-md border border-warning/50 bg-warning/10 p-3">
+                      This is the VM&apos;s first rule. Once it is added, inbound traffic that no rule allows is dropped.
+                    </p>
+                  )}
                   <DialogFooter>
                     <Button variant="ghost" onClick={() => setFwOpen(false)}>Cancel</Button>
                     <Button onClick={handleAddFirewallRule} disabled={createFirewallRule.isPending}>
@@ -2670,12 +3202,49 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
               </Dialog>
             </div>
 
+            {/* Rules that are saved but not applied look the same as rules that
+                work, so the page says which it is. */}
+            {firewallStatus && firewallStatus.enforcement !== "enforced" && (
+              <div role="status" className="mb-6 flex items-start gap-3 rounded-md border border-warning/50 bg-warning/10 p-3 text-sm text-foreground">
+                <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" aria-hidden="true" />
+                {firewallStatus.enforcement === "off" ? (
+                  <p>
+                    <span className="font-semibold">Not enforced.</span>{" "}
+                    {isAdmin ? (
+                      <>The node this VM runs on is not passing VM traffic through its firewall, so these rules filter nothing. <Link href={`/nodes/${vm.node_id}`} className="underline underline-offset-2">See the node</Link> for the fix.</>
+                    ) : (
+                      <>These rules are saved but are not filtering traffic to this server right now. Until that is fixed, rely on a firewall inside the server, and contact support.</>
+                    )}
+                  </p>
+                ) : (
+                  <p>
+                    <span className="font-semibold">Not confirmed.</span>{" "}
+                    {isAdmin ? (
+                      <>The node this VM runs on has not reported whether it enforces firewall rules. Its agent has not answered yet or is older than this panel. <Link href={`/nodes/${vm.node_id}`} className="underline underline-offset-2">See the node</Link>.</>
+                    ) : (
+                      <>We could not confirm that these rules are being applied right now. Keep a firewall inside the server as well.</>
+                    )}
+                  </p>
+                )}
+              </div>
+            )}
+
+            <FirewallPolicy
+              vm={vm}
+              isAdmin={isAdmin}
+              ruleCount={(firewallRules?.length ?? 0) + groupRuleCount}
+              onDefault={(value) => setFirewallDefault.mutateAsync(value)}
+              onSMTP={(blocked) => setSMTPBlocked.mutateAsync(blocked)}
+            />
+
+            <VMFirewallGroups vmId={vmId} ownerId={vm.user_id} isAdmin={isAdmin} />
+
             {firewallLoading ? (
               <SectionSkeleton />
             ) : firewallError ? (
               <SectionError message={(firewallError as Error).message} onRetry={() => refetchFirewall()} />
             ) : !firewallRules?.length ? (
-              <SectionEmpty icon={Shield} message="No firewall rules configured." />
+              <SectionEmpty icon={Shield} message={groupRuleCount > 0 ? "No rules of this VM's own. Its groups' rules above apply." : "No firewall rules configured."} />
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full">
@@ -2684,7 +3253,8 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                       <th className="text-left py-3 px-4 text-xs font-semibold">Protocol</th>
                       <th className="text-left py-3 px-4 text-xs font-semibold">Port</th>
                       <th className="text-left py-3 px-4 text-xs font-semibold">Direction</th>
-                      <th className="text-left py-3 px-4 text-xs font-semibold">Source</th>
+                      <th className="text-left py-3 px-4 text-xs font-semibold">Remote</th>
+                      <th className="text-left py-3 px-4 text-xs font-semibold">Addresses</th>
                       <th className="text-left py-3 px-4 text-xs font-semibold">Action</th>
                       <th className="text-left py-3 px-4 text-xs font-semibold">Priority</th>
                       <th className="text-left py-3 px-4 text-xs font-semibold">Actions</th>
@@ -2694,11 +3264,13 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                     {firewallRules.map((rule: FirewallRule) => (
                       <tr key={rule.id} className="border-b">
                         <td className="py-3 px-4 font-mono text-sm">{rule.protocol}</td>
-                        <td className="py-3 px-4 font-mono text-sm">{rule.port_range || "*"}</td>
+                        <td className="py-3 px-4 font-mono text-sm">{rule.protocol === "icmp" ? rule.icmp_type || "All types" : rule.port_range || "*"}</td>
                         <td className="py-3 px-4 text-xs font-medium">{rule.direction}</td>
-                        <td className="py-3 px-4 font-mono text-sm">{rule.source_ip || "Any"}</td>
+                        <td className="py-3 px-4 font-mono text-sm">{!rule.source_ip || rule.source_ip === "0.0.0.0/0" ? "Any" : rule.source_ip}</td>
+                        <td className="py-3 px-4 text-xs">{rule.family === "v4" ? "IPv4" : rule.family === "v6" ? "IPv6" : "Both"}</td>
                         <td className="py-3 px-4">
                           <StatusBadge variant="lamp" className="text-xs" status={rule.action} />
+                          {rule.log && <span className="block text-xs text-muted-foreground mt-1">Logged</span>}
                         </td>
                         <td className="py-3 px-4 font-mono text-sm">{rule.priority}</td>
                         <td className="py-3 px-4">
@@ -2777,33 +3349,56 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                 <User className="w-4 h-4" />Reassign
               </Button>
             </ActionRow>
-            <ActionRow title="Node" description={<>Runs on <span className="font-medium text-foreground">{allNodes?.find((n) => n.id === vm.node_id)?.name || vm.node_name || "an unnamed node"}</span>. Move it to another node while it keeps running.</>}>
-              <Button variant="outline" size="sm" onClick={() => setMigrateOpen(true)}>
-                <ArrowRightLeft className="w-4 h-4" />Migrate
-              </Button>
-            </ActionRow>
+            <VMNodeRow vmId={vm.id} hostname={vm.hostname} nodeId={vm.node_id}
+              nodeName={allNodes?.find((n) => n.id === vm.node_id)?.name || vm.node_name || "an unnamed node"}
+              mayMove={allow("vm:migrate")} />
             <ActionRow title="Clone" description="Create a new VM that starts as a copy of this one.">
               <Button variant="outline" size="sm" onClick={() => setCloneOpen(true)}>
                 <Copy className="w-4 h-4" />Clone
               </Button>
             </ActionRow>
+            <ActionRow
+              title="Plan and billing service"
+              description={<>
+                {vm.plan_id
+                  ? <>On plan <span className="font-medium text-foreground">{vm.plan_name || "that has been deleted"}</span>. </>
+                  : "Not on a plan. "}
+                {vm.billing_ref
+                  ? <>Paid for by billing service <span className="font-mono text-foreground">{vm.billing_ref}</span>{vm.owner_may_delete === false ? "; its owner cannot delete it." : "."}</>
+                  : "Not linked to a billing service."}
+              </>}
+            >
+              <Button variant="outline" size="sm" onClick={() => setBillingLinkOpen(true)}>Edit</Button>
+            </ActionRow>
           </section>
           )}
+          {isAdmin && billingLinkOpen && <BillingLinkDialog vm={vm} onClose={() => setBillingLinkOpen(false)} />}
+
+          {!isAdmin && <VMProjectCard vm={vm} disabled={locked} />}
+          <VMLabelsAndLock vm={vm} isAdmin={isAdmin} disabled={locked || !allow("vm:update")} />
+          {isAdmin && <StaffNotes subject="vms" id={vm.id} canWrite={allow("vm:update")} />}
 
           <section className="bg-card text-card-foreground border border-destructive/40 rounded-lg divide-y divide-destructive/20">
             <h2 className="px-6 py-4 text-base font-semibold text-destructive flex items-center gap-2">
               Danger zone
             </h2>
+            {vm.delete_lock && (
+              <p className="px-6 py-3 text-sm text-muted-foreground">Locked against deletion and reinstall. Unlock it above first.</p>
+            )}
             <ActionRow title={rebuildWord} description="Reinstall the operating system. Everything on the disk is erased; the VM keeps its addresses.">
-              <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => setRebuildDialogOpen(true)} disabled={locked}>
+              <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => setRebuildDialogOpen(true)} disabled={locked || !!vm.delete_lock || !allow("vm:lifecycle")}>
                 <RefreshCw className="w-4 h-4" />{rebuildWord}
               </Button>
             </ActionRow>
+            {!isAdmin && vm.owner_may_delete === false ? (
+              <ActionRow title="Delete" description="This server is managed by your billing account. Cancel the service there to remove it." />
+            ) : (
             <ActionRow title="Delete" description="Remove this VM and its disks for good and release its addresses.">
-              <Button variant="destructive" size="sm" onClick={() => setDeleteDialogOpen(true)}>
+              <Button variant="destructive" size="sm" onClick={() => setDeleteDialogOpen(true)} disabled={!!vm.delete_lock || !allow("vm:delete")}>
                 <Trash2 className="w-4 h-4" />Delete
               </Button>
             </ActionRow>
+            )}
           </section>
         </TabsContent>
       </Tabs>
@@ -2816,7 +3411,9 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
             <DialogTitle>Assign an IP address to {vm.hostname}</DialogTitle>
             <DialogDescription>
               An address is taken from a pool on this VM&apos;s node and reserved for it. The host is
-              configured to route it — anti-spoofing and firewall rules follow the address.
+              configured to route it, and anti-spoofing and firewall rules follow the address. The guest is
+              given it beside the addresses it has, live through its guest agent; it is never restarted for
+              this. If the guest cannot take it now, this page says so.
             </DialogDescription>
           </DialogHeader>
 

@@ -8,8 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/maburvm/panel/internal/shared/models"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // reversePTRName returns the in-addr.arpa (IPv4) or ip6.arpa (IPv6) name for an
@@ -35,6 +37,83 @@ func reversePTRName(ipStr string) (string, error) {
 	}
 	buf = append(buf, "ip6.arpa"...)
 	return string(buf), nil
+}
+
+// PTRRecord is where an address's PTR lives: the zone holding it and the
+// record's full name, both without a trailing dot.
+type PTRRecord struct {
+	Zone string
+	Name string
+}
+
+// ptrLocation places an address's PTR record. With no zone given it is the
+// standard one: the /24 zone for IPv4, the /64 zone for IPv6. A zone that is a
+// parent of the address's name (a /16, or the IPv6 /48 delegated to us) holds
+// the record under its standard name. For IPv4, a zone below the address's /24
+// is an RFC 2317 classless zone ("0-127.113.0.203.in-addr.arpa", with
+// "/" in place of "-" also common), which names the record after the last
+// octet inside it: the upstream's /24 points at it with a CNAME.
+func ptrLocation(ip, zone string) (PTRRecord, error) {
+	name, err := reversePTRName(ip)
+	if err != nil {
+		return PTRRecord{}, err
+	}
+	zone = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(zone)), ".")
+	if zone == "" {
+		std, err := reverseZoneName(ip)
+		if err != nil {
+			return PTRRecord{}, err
+		}
+		return PTRRecord{Zone: strings.TrimSuffix(std, "."), Name: name}, nil
+	}
+	if name == zone || strings.HasSuffix(name, "."+zone) {
+		return PTRRecord{Zone: zone, Name: name}, nil
+	}
+	if v4 := net.ParseIP(ip).To4(); v4 != nil {
+		slash24 := fmt.Sprintf("%d.%d.%d.in-addr.arpa", v4[2], v4[1], v4[0])
+		if label, rest, ok := strings.Cut(zone, "."); ok && rest == slash24 && classlessLabel(label) {
+			return PTRRecord{Zone: zone, Name: fmt.Sprintf("%d.%s", v4[3], zone)}, nil
+		}
+	}
+	return PTRRecord{}, fmt.Errorf("%s does not belong in the reverse zone %s", ip, zone)
+}
+
+// classlessLabel reports whether a zone's first label names a sub-/24 block
+// the RFC 2317 way: two numbers with "-" or "/" between them.
+func classlessLabel(label string) bool {
+	a, b, ok := strings.Cut(label, "-")
+	if !ok {
+		a, b, ok = strings.Cut(label, "/")
+	}
+	if !ok || a == "" || b == "" {
+		return false
+	}
+	for _, r := range a + b {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// validateRDNSZone checks a pool's reverse zone: a DNS name under in-addr.arpa
+// or ip6.arpa that holds the first address of the pool.
+func validateRDNSZone(cidr, zone string) error {
+	zone = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(zone)), ".")
+	if zone == "" {
+		return nil
+	}
+	if len(zone) > 253 || !(strings.HasSuffix(zone, ".in-addr.arpa") || strings.HasSuffix(zone, ".ip6.arpa")) {
+		return fmt.Errorf("the reverse zone must end in .in-addr.arpa or .ip6.arpa")
+	}
+	ip, _, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return fmt.Errorf("set the pool's CIDR before its reverse zone")
+	}
+	if _, err := ptrLocation(ip.String(), zone); err != nil {
+		return err
+	}
+	return nil
 }
 
 // isValidRDNSHostname reports whether name is a plausible fully-qualified
@@ -74,9 +153,11 @@ type rdnsEntry struct {
 }
 
 // buildReverseZone renders PTR records as a BIND-style zone fragment ready to
-// load into an authoritative nameserver. Entries with an empty RDNS are skipped.
-func buildReverseZone(entries []rdnsEntry) (string, error) {
-	var b strings.Builder
+// load into an authoritative nameserver, placed in zone (see ptrLocation; ""
+// for the standard zones). Entries with an empty RDNS are skipped. For a
+// classless zone it also lists the CNAMEs the holder of the /24 must publish.
+func buildReverseZone(entries []rdnsEntry, zone string) (string, error) {
+	var b, cnames strings.Builder
 	b.WriteString("; MaburVM reverse DNS (PTR) records\n")
 	b.WriteString("; Load these into your authoritative nameserver.\n")
 	b.WriteString("$TTL 3600\n")
@@ -84,17 +165,54 @@ func buildReverseZone(entries []rdnsEntry) (string, error) {
 		if strings.TrimSpace(e.RDNS) == "" {
 			continue
 		}
-		ptr, err := reversePTRName(e.Address)
+		rec, err := ptrLocation(strings.SplitN(e.Address, "/", 2)[0], zone)
 		if err != nil {
 			return "", err
 		}
-		host := e.RDNS
-		if !strings.HasSuffix(host, ".") {
-			host += "."
+		std, _ := reversePTRName(strings.SplitN(e.Address, "/", 2)[0])
+		if rec.Name != std {
+			fmt.Fprintf(&cnames, ";   %s. IN CNAME %s.\n", std, rec.Name)
 		}
-		fmt.Fprintf(&b, "%s. IN PTR %s\n", ptr, host)
+		fmt.Fprintf(&b, "%s. IN PTR %s\n", rec.Name, ensureDot(e.RDNS))
+	}
+	if cnames.Len() > 0 {
+		b.WriteString(";\n; Classless delegation (RFC 2317): the holder of the /24 zone publishes these\n")
+		b.WriteString("; CNAMEs and delegates " + zone + " to your nameserver:\n")
+		b.WriteString(cnames.String())
 	}
 	return b.String(), nil
+}
+
+// poolRDNSZone is the reverse zone a pool's addresses are written to.
+func (s *IPAMService) poolRDNSZone(ctx context.Context, poolID string) string {
+	if poolID == "" {
+		return ""
+	}
+	var zone string
+	s.db.WithContext(ctx).Table("ip_pools").Select("rdns_zone").Where("id = ?", poolID).Scan(&zone)
+	return zone
+}
+
+// pushPTR writes or clears one PTR on the live nameserver, when one is
+// configured. Without one the record is export-only (see GenerateReverseZone).
+func (s *IPAMService) pushPTR(ctx context.Context, ip, zone, ptr string) error {
+	if s.dnsProvider == nil || !s.dnsProvider.Configured() {
+		return nil
+	}
+	rec, err := ptrLocation(ip, zone)
+	if err != nil {
+		return err
+	}
+	if ptr == "" {
+		if err := s.dnsProvider.ClearPTR(ctx, rec); err != nil {
+			return fmt.Errorf("failed to clear PTR on nameserver: %w", err)
+		}
+		return nil
+	}
+	if err := s.dnsProvider.SetPTR(ctx, rec, ptr); err != nil {
+		return fmt.Errorf("failed to set PTR on nameserver: %w", err)
+	}
+	return nil
 }
 
 // SetRDNS sets (or clears, when ptr is empty) the reverse-DNS hostname for an
@@ -114,18 +232,9 @@ func (s *IPAMService) SetRDNS(ctx context.Context, addressID, ptr string) (*mode
 
 	// When a live nameserver is configured, push the PTR first so the DB only
 	// reflects what's actually in DNS. Works without any forward zone (the
-	// provider manages the reverse zone). When not configured, this is skipped
-	// and the record is export-only (see GenerateReverseZone).
-	if s.dnsProvider != nil && s.dnsProvider.Configured() {
-		if ptr == "" {
-			if perr := s.dnsProvider.ClearPTR(ctx, address.Address); perr != nil {
-				return nil, fmt.Errorf("failed to clear PTR on nameserver: %w", perr)
-			}
-		} else {
-			if perr := s.dnsProvider.SetPTR(ctx, address.Address, ptr); perr != nil {
-				return nil, fmt.Errorf("failed to set PTR on nameserver: %w", perr)
-			}
-		}
+	// provider manages the reverse zone).
+	if err := s.pushPTR(ctx, strings.SplitN(address.Address, "/", 2)[0], s.poolRDNSZone(ctx, address.PoolID), ptr); err != nil {
+		return nil, err
 	}
 
 	address.RDNS = ptr
@@ -178,8 +287,17 @@ func (s *IPAMService) SetVMRDNS(ctx context.Context, vmID, ip, ptr string, verif
 			break
 		}
 	}
+	var prefix *models.VMIPv6Prefix
 	if held == nil {
-		return nil, ErrIPAddressNotFound
+		// Any address in the IPv6 prefix routed to the VM is the VM's to name.
+		p, err := vmIPv6Prefix(ctx, s.db, vmID)
+		if err != nil {
+			return nil, err
+		}
+		if p == nil || want.To4() != nil || !prefixContains(p.Prefix, want) {
+			return nil, ErrIPAddressNotFound
+		}
+		prefix = p
 	}
 
 	ptr = strings.TrimSuffix(strings.TrimSpace(ptr), ".")
@@ -201,7 +319,78 @@ func (s *IPAMService) SetVMRDNS(ctx context.Context, vmID, ip, ptr string, verif
 			return nil, rdnsForwardMismatch{host: ptr, ip: want.String()}
 		}
 	}
+	if prefix != nil {
+		return s.setPrefixPTR(ctx, vmID, prefix, want.String(), ptr)
+	}
 	return s.SetRDNS(ctx, held.ID, ptr)
+}
+
+// prefixContains reports whether ip lies inside the prefix (which an inet or
+// cidr column may return with or without its length).
+func prefixContains(prefix string, ip net.IP) bool {
+	_, n, err := net.ParseCIDR(strings.TrimSpace(prefix))
+	return err == nil && n.Contains(ip)
+}
+
+// maxPrefixPTRs bounds how many names one VM may set inside its prefix: a
+// /64 has more addresses than any zone should hold.
+const maxPrefixPTRs = 64
+
+// setPrefixPTR sets or clears the PTR of an address inside a VM's routed
+// prefix. The answer is shaped like an address row for the caller's sake.
+func (s *IPAMService) setPrefixPTR(ctx context.Context, vmID string, prefix *models.VMIPv6Prefix, ip, ptr string) (*models.IPAddress, error) {
+	if ptr != "" && !isValidRDNSHostname(ptr) {
+		return nil, fmt.Errorf("invalid rDNS hostname: %q", ptr)
+	}
+	if ptr != "" {
+		var n int64
+		s.db.WithContext(ctx).Model(&models.VMPrefixPTR{}).Where("vm_id = ? AND address <> ?", vmID, ip).Count(&n)
+		if n >= maxPrefixPTRs {
+			return nil, fmt.Errorf("at most %d reverse DNS names can be set inside one prefix", maxPrefixPTRs)
+		}
+	}
+	if err := s.pushPTR(ctx, ip, s.poolRDNSZone(ctx, prefix.PoolID), ptr); err != nil {
+		return nil, err
+	}
+	db := s.db.WithContext(ctx)
+	var err error
+	if ptr == "" {
+		err = db.Where("vm_id = ? AND address = ?", vmID, ip).Delete(&models.VMPrefixPTR{}).Error
+	} else {
+		now := time.Now()
+		err = db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "address"}},
+			DoUpdates: clause.Assignments(map[string]any{"rdns": ptr, "vm_id": vmID, "updated_at": now}),
+		}).Create(&models.VMPrefixPTR{ID: uuid.NewString(), VMID: vmID, Address: ip, RDNS: ptr, CreatedAt: now, UpdatedAt: now}).Error
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &models.IPAddress{Address: ip, RDNS: ptr}, nil
+}
+
+// ListVMPrefixPTRs are the names set inside a VM's routed prefix.
+func (s *IPAMService) ListVMPrefixPTRs(ctx context.Context, vmID string) ([]models.VMPrefixPTR, error) {
+	out := []models.VMPrefixPTR{}
+	err := s.db.WithContext(ctx).Where("vm_id = ?", vmID).Order("address").Find(&out).Error
+	for i := range out {
+		out[i].Address = strings.SplitN(out[i].Address, "/", 2)[0]
+	}
+	return out, err
+}
+
+// clearPrefixPTRs drops the names set inside a VM's prefix when the prefix
+// goes back to its pool, so the next holder does not inherit them. The
+// nameserver is cleared after the transaction, best-effort.
+func (s *IPAMService) clearPrefixPTRs(ctx context.Context, tx *gorm.DB, vmID string) []models.VMPrefixPTR {
+	var rows []models.VMPrefixPTR
+	if err := tx.WithContext(ctx).Where("vm_id = ?", vmID).Find(&rows).Error; err != nil || len(rows) == 0 {
+		return nil
+	}
+	if err := tx.WithContext(ctx).Where("vm_id = ?", vmID).Delete(&models.VMPrefixPTR{}).Error; err != nil {
+		return nil
+	}
+	return rows
 }
 
 // ImportRDNS pulls existing PTR records from the live nameserver into MaburVM's
@@ -217,14 +406,16 @@ func (s *IPAMService) ImportRDNS(ctx context.Context, poolID string) (int, error
 		return 0, err
 	}
 
+	poolZone := s.poolRDNSZone(ctx, poolID)
 	zoneCache := make(map[string]map[string]string) // reverseZone -> {ptrFQDN -> host}
 	imported := 0
 	for i := range addrs {
 		a := &addrs[i]
-		zone, zerr := reverseZoneName(a.Address)
+		rec, zerr := ptrLocation(strings.SplitN(a.Address, "/", 2)[0], poolZone)
 		if zerr != nil {
 			continue
 		}
+		zone := rec.Zone + "."
 		ptrs, ok := zoneCache[zone]
 		if !ok {
 			ptrs, err = s.dnsProvider.ListPTRs(ctx, zone)
@@ -233,11 +424,7 @@ func (s *IPAMService) ImportRDNS(ctx context.Context, poolID string) (int, error
 			}
 			zoneCache[zone] = ptrs
 		}
-		ptrName, perr := reversePTRName(a.Address)
-		if perr != nil {
-			continue
-		}
-		host := strings.TrimSuffix(ptrs[ptrName+"."], ".")
+		host := strings.TrimSuffix(ptrs[rec.Name+"."], ".")
 		if host != "" && host != a.RDNS {
 			a.RDNS = host
 			if uerr := s.repo.UpdateAddress(ctx, a); uerr != nil {
@@ -262,5 +449,5 @@ func (s *IPAMService) GenerateReverseZone(ctx context.Context, poolID string) (s
 			entries = append(entries, rdnsEntry{Address: addrs[i].Address, RDNS: addrs[i].RDNS})
 		}
 	}
-	return buildReverseZone(entries)
+	return buildReverseZone(entries, s.poolRDNSZone(ctx, poolID))
 }

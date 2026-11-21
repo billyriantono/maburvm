@@ -127,3 +127,13 @@ func TestWindowsNetworkScript(t *testing.T) {
 		}
 	}
 }
+
+// A logical volume is opened as raw, never probed; a file keeps its own format.
+func TestDiskArgs(t *testing.T) {
+	if got := strings.Join(DiskArgs("/dev/vg0/maburvm-x-vda"), " "); got != "--format=raw -a /dev/vg0/maburvm-x-vda" {
+		t.Errorf("block: %s", got)
+	}
+	if got := strings.Join(DiskArgs("/vm/x.qcow2"), " "); got != "-a /vm/x.qcow2" {
+		t.Errorf("file: %s", got)
+	}
+}

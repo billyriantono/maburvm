@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/maburvm/panel/internal/panel/repository"
 	"github.com/maburvm/panel/internal/shared/models"
@@ -53,8 +54,10 @@ type TemplateNodeStatus struct {
 	Status     TemplateSyncStatus `json:"status" gorm:"type:varchar(20);not null;default:'pending'"`
 	ErrorMsg   string             `json:"error_msg,omitempty" gorm:"type:text"`
 	SyncedAt   *time.Time         `json:"synced_at,omitempty"`
-	CreatedAt  time.Time          `json:"created_at" gorm:"not null;default:NOW()"`
-	UpdatedAt  time.Time          `json:"updated_at" gorm:"not null;default:NOW()"`
+	// Checksum is the sha256 the node's copy was checked against.
+	Checksum  string    `json:"checksum" gorm:"column:checksum;->"`
+	CreatedAt time.Time `json:"created_at" gorm:"not null;default:NOW()"`
+	UpdatedAt time.Time `json:"updated_at" gorm:"not null;default:NOW()"`
 }
 
 // TableName specifies the table name for TemplateNodeStatus
@@ -87,6 +90,22 @@ type CreateTemplateRequest struct {
 	Description string `json:"description" validate:"max=500"`
 	// OSType is the kind of system in the image. Empty means Linux.
 	OSType string `json:"os_type" validate:"omitempty,oneof=linux routeros windows"`
+	// Kind is disk (a disk image) or iso (an installer); empty is told from
+	// the address (.iso).
+	Kind string `json:"kind"`
+	// ChecksumSHA256 is the image's sha256, or ChecksumURL a checksum list to
+	// read it from. An image fetched over http(s) needs one unless
+	// SkipChecksum says the publisher gives none.
+	ChecksumSHA256 string `json:"checksum_sha256"`
+	ChecksumURL    string `json:"checksum_url"`
+	SkipChecksum   bool   `json:"skip_checksum"`
+	AllowHTTP      bool   `json:"allow_http"`
+	AutoRefresh    bool   `json:"auto_refresh"`
+	// Firmware is bios (the default) or uefi. SecureBoot (UEFI only) and TPM
+	// give VMs installed from the image Secure Boot and a virtual TPM.
+	Firmware   string `json:"firmware"`
+	SecureBoot bool   `json:"secure_boot"`
+	TPM        bool   `json:"tpm"`
 }
 
 // CreateTemplateResponse contains the created template data
@@ -102,6 +121,18 @@ type UpdateTemplateRequest struct {
 	Description string `json:"description,omitempty" validate:"omitempty,max=500"`
 	IsActive    *bool  `json:"is_active,omitempty"`
 	OSType      string `json:"os_type,omitempty" validate:"omitempty,oneof=linux routeros windows"`
+	// Licensed and PlanIDs are the availability rules; nil leaves each as it is.
+	Licensed *bool     `json:"licensed,omitempty"`
+	PlanIDs  *[]string `json:"plan_ids,omitempty"`
+	// Image integrity and boot; nil leaves each as it is. A new checksum or
+	// checksum list applies to the next download on each node.
+	ChecksumSHA256 *string `json:"checksum_sha256,omitempty"`
+	ChecksumURL    *string `json:"checksum_url,omitempty"`
+	AllowHTTP      *bool   `json:"allow_http,omitempty"`
+	AutoRefresh    *bool   `json:"auto_refresh,omitempty"`
+	Firmware       *string `json:"firmware,omitempty"`
+	SecureBoot     *bool   `json:"secure_boot,omitempty"`
+	TPM            *bool   `json:"tpm,omitempty"`
 }
 
 // SyncTemplateRequest contains data for syncing a template to nodes
@@ -130,7 +161,11 @@ type NodeTemplateStatus struct {
 	Status   TemplateSyncStatus `json:"status"`
 	ErrorMsg string             `json:"error_msg,omitempty"`
 	SyncedAt *time.Time         `json:"synced_at,omitempty"`
+	Checksum string             `json:"checksum,omitempty"`
 }
+
+// DB is the service's database, for the settings the handlers read.
+func (s *TemplateService) DB() *gorm.DB { return s.db }
 
 // NewTemplateService creates a new TemplateService
 func NewTemplateService(
@@ -221,23 +256,104 @@ func (s *TemplateService) CreateTemplate(ctx context.Context, req *CreateTemplat
 	if !models.ValidOSType(osType) {
 		return nil, fmt.Errorf("%w: unknown system type %q", ErrInvalidTemplate, osType)
 	}
+	kind := req.Kind
+	if kind == "" {
+		kind = models.TemplateKindDisk
+		if strings.HasSuffix(strings.ToLower(imageFileName(req.FileURL)), ".iso") {
+			kind = models.TemplateKindISO
+		}
+	}
+	if kind != models.TemplateKindDisk && kind != models.TemplateKindISO {
+		return nil, fmt.Errorf("%w: kind must be disk or iso", ErrInvalidTemplate)
+	}
+	firmware, err := normalizeFirmware(req.Firmware)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkImageAddress(req.FileURL, req.AllowHTTP); err != nil {
+		return nil, err
+	}
+	sum, err := s.resolveChecksum(ctx, req.ChecksumSHA256, strings.TrimSpace(req.ChecksumURL), req.FileURL)
+	if err != nil {
+		return nil, err
+	}
+	if sum == "" && isRemoteImage(req.FileURL) && !req.SkipChecksum {
+		return nil, fmt.Errorf("%w: give the image's sha256, or a checksum list (such as SHA256SUMS) to read it from, so the nodes can refuse a corrupt or changed download; or confirm the publisher gives none", ErrInvalidTemplate)
+	}
+	if req.AutoRefresh && strings.TrimSpace(req.ChecksumURL) == "" {
+		return nil, fmt.Errorf("%w: refreshing by itself needs a checksum list to watch", ErrInvalidTemplate)
+	}
 	template := &models.OSTemplate{
-		Name:        req.Name,
-		Version:     req.Version,
-		OSType:      osType,
-		ImagePath:   req.FileURL,
-		SizeBytes:   s.fetchRemoteSize(ctx, req.FileURL),
-		Description: req.Description,
-		IsActive:    true,
+		Name:           req.Name,
+		Version:        req.Version,
+		OSType:         osType,
+		ImagePath:      req.FileURL,
+		SizeBytes:      s.fetchRemoteSize(ctx, req.FileURL),
+		Description:    req.Description,
+		IsActive:       true,
+		Kind:           kind,
+		ChecksumSHA256: sum,
+		ChecksumURL:    strings.TrimSpace(req.ChecksumURL),
+		AllowHTTP:      req.AllowHTTP,
+		AutoRefresh:    req.AutoRefresh,
+		Firmware:       firmware,
+	}
+	if template.ChecksumURL != "" {
+		now := time.Now()
+		template.ChecksumCheckedAt = &now
+	}
+	template.SecureBoot, template.TPM = req.SecureBoot, req.TPM
+	if err := checkBootExtras(template); err != nil {
+		return nil, err
 	}
 
 	if err := s.templateRepo.Create(ctx, template); err != nil {
 		return nil, fmt.Errorf("failed to create template: %w", err)
 	}
+	if template.SecureBoot || template.TPM {
+		if err := s.saveBootExtras(ctx, template); err != nil {
+			return nil, err
+		}
+	}
 
 	return &CreateTemplateResponse{
 		Template: template,
+		Checksum: template.ChecksumSHA256,
 	}, nil
+}
+
+// isRemoteImage reports an image the nodes download.
+func isRemoteImage(ref string) bool {
+	return strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://")
+}
+
+// checkBootExtras refuses Secure Boot on an image that does not boot UEFI. An
+// ISO may ask for both: a VM installed from it (Windows 11, say) gets them.
+func checkBootExtras(t *models.OSTemplate) error {
+	if t.SecureBoot && t.Firmware != models.FirmwareUEFI {
+		return fmt.Errorf("%w: Secure Boot needs a UEFI image", ErrInvalidTemplate)
+	}
+	return nil
+}
+
+// saveBootExtras writes Secure Boot and TPM, which are read-only on the model.
+func (s *TemplateService) saveBootExtras(ctx context.Context, t *models.OSTemplate) error {
+	if err := s.db.WithContext(ctx).Table("os_templates").Where("id = ?", t.ID).
+		Updates(map[string]any{"secure_boot": t.SecureBoot, "tpm": t.TPM}).Error; err != nil {
+		return fmt.Errorf("failed to save the template's boot settings: %w", err)
+	}
+	return nil
+}
+
+// normalizeFirmware checks a template's boot firmware; "" is BIOS.
+func normalizeFirmware(f string) (string, error) {
+	switch f {
+	case "", models.FirmwareBIOS:
+		return models.FirmwareBIOS, nil
+	case models.FirmwareUEFI:
+		return f, nil
+	}
+	return "", fmt.Errorf("%w: firmware must be bios or uefi", ErrInvalidTemplate)
 }
 
 // GetTemplate retrieves a template by ID with optional node status
@@ -299,6 +415,7 @@ func (s *TemplateService) getTemplateNodeStatus(ctx context.Context, templateID 
 			ns.Status = status.Status
 			ns.ErrorMsg = status.ErrorMsg
 			ns.SyncedAt = status.SyncedAt
+			ns.Checksum = status.Checksum
 		} else {
 			ns.Status = SyncStatusPending
 		}
@@ -311,6 +428,12 @@ func (s *TemplateService) getTemplateNodeStatus(ctx context.Context, templateID 
 
 // ListTemplates retrieves all templates with optional pagination
 func (s *TemplateService) ListTemplates(ctx context.Context, limit, offset int, includeNodeStatus bool) ([]*TemplateWithStatus, error) {
+	return s.ListTemplatesOfKind(ctx, limit, offset, includeNodeStatus, "")
+}
+
+// ListTemplatesOfKind is ListTemplates keeping only disk images or ISOs; ""
+// keeps both.
+func (s *TemplateService) ListTemplatesOfKind(ctx context.Context, limit, offset int, includeNodeStatus bool, kind string) ([]*TemplateWithStatus, error) {
 	templates, err := s.templateRepo.List(ctx, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list templates: %w", err)
@@ -318,6 +441,9 @@ func (s *TemplateService) ListTemplates(ctx context.Context, limit, offset int, 
 
 	var result []*TemplateWithStatus
 	for _, template := range templates {
+		if kind != "" && template.Kind != kind && !(kind == models.TemplateKindDisk && template.Kind == "") {
+			continue
+		}
 		tws := &TemplateWithStatus{
 			OSTemplate: &template,
 		}
@@ -365,9 +491,83 @@ func (s *TemplateService) UpdateTemplate(ctx context.Context, id string, req *Up
 		}
 		template.OSType = req.OSType
 	}
+	if req.Licensed != nil {
+		template.Licensed = *req.Licensed
+	}
+	if req.PlanIDs != nil {
+		ids := []string{}
+		for _, id := range *req.PlanIDs {
+			if _, perr := uuid.Parse(id); perr != nil {
+				return nil, fmt.Errorf("%w: %q is not a plan ID", ErrInvalidTemplate, id)
+			}
+			ids = append(ids, id)
+		}
+		template.PlanIDs = ids
+	}
+	if req.Firmware != nil {
+		f, err := normalizeFirmware(*req.Firmware)
+		if err != nil {
+			return nil, err
+		}
+		template.Firmware = f
+	}
+	if req.SecureBoot != nil {
+		template.SecureBoot = *req.SecureBoot
+	}
+	if req.TPM != nil {
+		template.TPM = *req.TPM
+	}
+	if err := checkBootExtras(template); err != nil {
+		return nil, err
+	}
+	if req.AllowHTTP != nil {
+		template.AllowHTTP = *req.AllowHTTP
+		if err := checkImageAddress(template.ImagePath, template.AllowHTTP); err != nil {
+			return nil, err
+		}
+	}
+	// Only what changed is checked: the same values sent back with an edit of
+	// something else do not read the checksum list again.
+	if req.ChecksumSHA256 != nil && strings.EqualFold(strings.TrimSpace(*req.ChecksumSHA256), template.ChecksumSHA256) {
+		req.ChecksumSHA256 = nil
+	}
+	if req.ChecksumURL != nil && strings.TrimSpace(*req.ChecksumURL) == template.ChecksumURL {
+		req.ChecksumURL = nil
+	}
+	if req.ChecksumSHA256 != nil || req.ChecksumURL != nil {
+		sum, list := template.ChecksumSHA256, template.ChecksumURL
+		if req.ChecksumURL != nil {
+			list = strings.TrimSpace(*req.ChecksumURL)
+		}
+		if req.ChecksumSHA256 != nil {
+			sum = *req.ChecksumSHA256
+		} else if req.ChecksumURL != nil {
+			sum = "" // read from the new list
+		}
+		resolved, err := s.resolveChecksum(ctx, sum, list, template.ImagePath)
+		if err != nil {
+			return nil, err
+		}
+		template.ChecksumSHA256, template.ChecksumURL = resolved, list
+		if list != "" {
+			now := time.Now()
+			template.ChecksumCheckedAt = &now
+		}
+	}
+	if req.AutoRefresh != nil {
+		template.AutoRefresh = *req.AutoRefresh
+	}
+	if template.AutoRefresh && template.ChecksumURL == "" {
+		return nil, fmt.Errorf("%w: refreshing by itself needs a checksum list to watch", ErrInvalidTemplate)
+	}
 
 	if err := s.templateRepo.Update(ctx, template); err != nil {
 		return nil, fmt.Errorf("failed to update template: %w", err)
+	}
+	if req.SecureBoot != nil || req.TPM != nil {
+		if err := s.saveBootExtras(ctx, template); err != nil {
+			return nil, err
+		}
 	}
 
 	return template, nil
@@ -376,13 +576,14 @@ func (s *TemplateService) UpdateTemplate(ctx context.Context, id string, req *Up
 // DeleteTemplate removes a template and its sync records
 func (s *TemplateService) DeleteTemplate(ctx context.Context, id string) error {
 	// Check if template exists
-	_, err := s.templateRepo.GetByID(ctx, id)
+	existing, err := s.templateRepo.GetByID(ctx, id)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrTemplateNotFound
 		}
 		return fmt.Errorf("failed to get template: %w", err)
 	}
+	defer s.removeUploadedImage(ctx, existing.ImagePath)
 
 	// Delete sync status records first
 	if err := s.db.WithContext(ctx).Where("template_id = ?", id).Delete(&TemplateNodeStatus{}).Error; err != nil {
@@ -437,16 +638,12 @@ func (s *TemplateService) SyncTemplate(ctx context.Context, templateID string, r
 		return nil, errors.New("no target nodes available")
 	}
 
-	// Create or update sync status records
+	// Create or update sync status records; what a node holds stays recorded.
 	for _, nodeID := range nodeIDs {
-		status := TemplateNodeStatus{
-			TemplateID: templateID,
-			NodeID:     nodeID,
-			Status:     SyncStatusPending,
-		}
-
-		// Upsert the status record
-		err := s.db.WithContext(ctx).Save(&status).Error
+		err := s.db.WithContext(ctx).Exec(`INSERT INTO template_node_status (template_id, node_id, status, updated_at)
+			VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+			ON CONFLICT (template_id, node_id) DO UPDATE SET status = EXCLUDED.status, error_msg = NULL, updated_at = CURRENT_TIMESTAMP`,
+			templateID, nodeID, SyncStatusPending).Error
 		if err != nil {
 			return nil, fmt.Errorf("failed to create sync status for node %s: %w", nodeID, err)
 		}

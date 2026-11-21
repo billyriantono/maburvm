@@ -6,6 +6,7 @@ import {
 import { api } from '@/lib/api-client'
 import type {
   Backup,
+  BackupOverview,
   BackupSchedule,
   CreateBackupScheduleRequest,
   UpdateBackupScheduleRequest,
@@ -19,6 +20,27 @@ export function useBackups(vmId: string) {
       return response.data.data
     },
     enabled: !!vmId,
+    // A backup runs on its node after the request returns: poll while one is
+    // queued or running, or the row reads "In progress" until a reload.
+    refetchInterval: (query) =>
+      query.state.data?.some((b) => b.status === 'pending' || b.status === 'in_progress') ? 5000 : false,
+  })
+}
+
+export const BACKUP_PAGE = 20
+
+// useBackupPage reads one page of a VM's backups, newest first, with the total.
+export function useBackupPage(vmId: string, page: number) {
+  return useQuery<{ items: Backup[]; total: number }>({
+    queryKey: ['backups', 'list', vmId, page],
+    queryFn: async () => {
+      const response = await api.get<Backup[]>(`/api/v1/vms/${vmId}/backups`, { params: { limit: BACKUP_PAGE, offset: (page - 1) * BACKUP_PAGE } })
+      const body = response.data as unknown as { data: Backup[]; total?: number }
+      return { items: body.data ?? [], total: body.total ?? body.data?.length ?? 0 }
+    },
+    enabled: !!vmId,
+    refetchInterval: (query) =>
+      query.state.data?.items.some((b) => b.status === 'pending' || b.status === 'in_progress') ? 5000 : false,
   })
 }
 
@@ -109,15 +131,55 @@ export function useRestoreBackup(vmId: string) {
   })
 }
 
+// Admin only: the backup becomes a new VM on the chosen node.
+export function useRestoreBackupAsNew(vmId: string) {
+  return useMutation<{ vm: { id: string; hostname: string } }, Error, { backupId: string; node_id: string; hostname?: string }>({
+    mutationFn: async ({ backupId, ...body }) => {
+      const response = await api.post<{ vm: { id: string; hostname: string } }>(
+        `/api/v1/vms/${vmId}/backups/${backupId}/restore-new`,
+        body
+      )
+      return response.data.data
+    },
+  })
+}
+
 export function useDeleteBackup(vmId: string) {
   const queryClient = useQueryClient()
 
-  return useMutation<void, Error, string>({
+  // Resolves to the panel's own words: a backup whose file the panel could not
+  // reach is removed from the list, and the message says the file was left.
+  return useMutation<string, Error, string>({
     mutationFn: async (backupId) => {
-      await api.delete(`/api/v1/vms/${vmId}/backups/${backupId}`)
+      const response = await api.delete(`/api/v1/vms/${vmId}/backups/${backupId}`)
+      return response.data.message || 'Backup deleted'
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backups', 'list', vmId] })
     },
+  })
+}
+
+export interface BackupOverviewFilter {
+  node_id?: string
+  state?: string
+  q?: string
+  stale_days?: number
+}
+
+// The fleet backup page (staff). Refreshed while backups run.
+export function useBackupOverview(filter: BackupOverviewFilter) {
+  return useQuery<BackupOverview>({
+    queryKey: ['backups', 'overview', filter],
+    queryFn: async () => {
+      const params = new URLSearchParams()
+      for (const [k, v] of Object.entries(filter)) {
+        if (v !== undefined && v !== '') params.set(k, String(v))
+      }
+      const response = await api.get<BackupOverview>(`/api/v1/backups/overview?${params}`)
+      return response.data.data
+    },
+    refetchInterval: 30_000,
+    placeholderData: (prev) => prev,
   })
 }

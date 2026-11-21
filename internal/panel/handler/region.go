@@ -24,10 +24,10 @@ func RegisterRegionRoutes(e *echo.Echo, h *RegionHandler, db *gorm.DB) {
 	// Every authenticated caller may list regions — a customer cannot order
 	// without seeing them, and a location plus its flag reveals nothing sensitive.
 	g.GET("", h.List)
-	g.POST("", h.Create, middleware.RequirePermission("admin:access"))
-	g.PUT("/:id", h.Update, middleware.RequirePermission("admin:access"))
-	g.DELETE("/:id", h.Delete, middleware.RequirePermission("admin:access"))
-	g.POST("/:id/nodes/:node_id", h.AssignNode, middleware.RequirePermission("admin:access"))
+	g.POST("", h.Create, middleware.RequirePermission("node:update"))
+	g.PUT("/:id", h.Update, middleware.RequirePermission("node:update"))
+	g.DELETE("/:id", h.Delete, middleware.RequirePermission("node:update"))
+	g.POST("/:id/nodes/:node_id", h.AssignNode, middleware.RequirePermission("node:update"))
 }
 
 // List returns orderable regions for customers and every region for admins, so

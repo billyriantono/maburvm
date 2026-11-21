@@ -43,10 +43,11 @@ func testDB(t *testing.T) *gorm.DB {
 			updated_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE firewall_rules (
 			id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, protocol TEXT, port_range TEXT, action TEXT,
-			direction TEXT, source_ip TEXT, priority INTEGER, created_at DATETIME, updated_at DATETIME,
+			direction TEXT, source_ip TEXT, priority INTEGER, icmp_type TEXT NOT NULL DEFAULT '',
+			log BOOLEAN NOT NULL DEFAULT 0, family TEXT NOT NULL DEFAULT '', created_at DATETIME, updated_at DATETIME,
 			deleted_at DATETIME)`,
 		`CREATE TABLE port_forwards (
-			id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, network_id TEXT, external_port INTEGER,
+			id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, network_id TEXT, node_id TEXT, external_port INTEGER,
 			internal_port INTEGER, protocol TEXT, source_ip TEXT, created_at DATETIME,
 			updated_at DATETIME, deleted_at DATETIME)`,
 	}

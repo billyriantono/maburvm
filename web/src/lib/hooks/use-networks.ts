@@ -12,6 +12,9 @@ import type {
   FirewallRule,
   CreatePortForwardRequest,
   CreateFirewallRuleRequest,
+  FirewallEnforcement,
+  VMNIC,
+  VMIPv6Addresses,
 } from '@/types'
 
 // useNetworks lists administrator-defined managed networks (bridge/NAT/isolated).
@@ -77,7 +80,28 @@ export function useSetVMRDNS(vmId: string) {
         throw new Error(message || (err as Error).message)
       }
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['networks', 'vm', vmId] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['networks', 'vm', vmId] })
+      queryClient.invalidateQueries({ queryKey: ['rdns', 'vm', vmId] })
+    },
+  })
+}
+
+export interface VMPrefixPTR {
+  id: string
+  address: string
+  rdns: string
+}
+
+/** Reverse DNS names set inside the VM's routed IPv6 prefix. */
+export function useVMPrefixPTRs(vmId: string, enabled: boolean) {
+  return useQuery<VMPrefixPTR[]>({
+    queryKey: ['rdns', 'vm', vmId],
+    queryFn: async () => {
+      const response = await api.get<{ prefix: string; prefix_ptrs: VMPrefixPTR[] }>(`/api/v1/vms/${vmId}/rdns`)
+      return response.data.data?.prefix_ptrs ?? []
+    },
+    enabled,
   })
 }
 
@@ -126,6 +150,19 @@ export function useFirewallRules(vmId: string) {
     queryKey: ['networks', 'firewall-rules', vmId],
     queryFn: async () => {
       const response = await api.get<FirewallRule[]>(`/api/v1/vms/${vmId}/firewall-rules`)
+      return response.data.data
+    },
+    enabled: !!vmId,
+  })
+}
+
+// useFirewallStatus says whether the VM's node is applying firewall rules at
+// all, as the node last reported. The rule list cannot tell.
+export function useFirewallStatus(vmId: string) {
+  return useQuery<{ enforcement: FirewallEnforcement }>({
+    queryKey: ['networks', 'firewall-status', vmId],
+    queryFn: async () => {
+      const response = await api.get<{ enforcement: FirewallEnforcement }>(`/api/v1/vms/${vmId}/firewall-status`)
       return response.data.data
     },
     enabled: !!vmId,
@@ -191,5 +228,145 @@ export function useDeleteFirewallRule(vmId: string) {
         queryKey: ['networks', 'firewall-rules', vmId],
       })
     },
+  })
+}
+
+// useSetFirewallDefault sets what the VM's firewall does with inbound traffic
+// no rule matched.
+export function useSetFirewallDefault(vmId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<void, Error, 'drop' | 'accept'>({
+    mutationFn: async (value) => {
+      await api.put(`/api/v1/vms/${vmId}/firewall-default`, { default: value })
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['vms', 'detail', vmId] }),
+  })
+}
+
+// useSetSMTPBlocked blocks or allows the VM's outbound mail (administrators).
+export function useSetSMTPBlocked(vmId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<void, Error, boolean>({
+    mutationFn: async (blocked) => {
+      await api.put(`/api/v1/vms/${vmId}/smtp`, { blocked })
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['vms', 'detail', vmId] }),
+  })
+}
+
+// useDismissGuestNetworkNote clears the note about an address change the
+// guest did not take, once it has been dealt with.
+export function useDismissGuestNetworkNote(vmId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<void, Error, void>({
+    mutationFn: async () => {
+      await api.delete(`/api/v1/vms/${vmId}/guest-network-note`)
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['vms', 'detail', vmId] }),
+  })
+}
+
+// IPAssignment is one holding of an address (or IPv6 prefix) by a VM.
+export interface IPAssignment {
+  id: string
+  address: string
+  vm_id: string | null
+  vm_hostname: string
+  user_id: string | null
+  user_email: string
+  node_id: string | null
+  kind: 'direct' | 'floating' | 'ipv6_prefix'
+  assigned_at: string
+  released_at: string | null
+  /** Recorded when the history began: the start is the best known date. */
+  estimated: boolean
+}
+
+// useIPHistory looks up who held an address, optionally at one moment (an
+// RFC 3339 time). Disabled until an address is given.
+export function useIPHistory(address: string, at: string) {
+  return useQuery<IPAssignment[]>({
+    queryKey: ['ip-history', address, at],
+    queryFn: async () => {
+      const params = new URLSearchParams({ address })
+      if (at) params.set('at', at)
+      const response = await api.get<IPAssignment[]>(`/api/v1/ip-history?${params.toString()}`)
+      return response.data.data
+    },
+    enabled: !!address,
+    retry: false,
+  })
+}
+
+// A VM's network cards: the one it was created with and any added on a
+// private network or a second network.
+const nicsKey = (vmId: string) => ['networks', 'nics', vmId]
+
+export function useVMNICs(vmId: string) {
+  return useQuery<VMNIC[]>({
+    queryKey: nicsKey(vmId),
+    queryFn: async () => (await api.get<VMNIC[]>(`/api/v1/vms/${vmId}/nics`)).data.data ?? [],
+    enabled: !!vmId,
+  })
+}
+
+/** Staff give pool_id (and may give mac_address); customers give vpc_id. */
+export function useAddVMNIC(vmId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<{ nic: VMNIC; note: string }, Error, { pool_id?: string; vpc_id?: string; mac_address?: string }>({
+    mutationFn: async (body) => {
+      const response = await api.post<VMNIC>(`/api/v1/vms/${vmId}/nics`, body)
+      const raw = response.data as unknown as { data: VMNIC; message?: string }
+      return { nic: raw.data, note: raw.message ?? '' }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: nicsKey(vmId) })
+      queryClient.invalidateQueries({ queryKey: ['networks', 'vm', vmId] })
+      queryClient.invalidateQueries({ queryKey: ['vms', 'detail', vmId] })
+    },
+  })
+}
+
+export function useRemoveVMNIC(vmId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<string, Error, string>({
+    mutationFn: async (nicId) => {
+      const response = await api.delete(`/api/v1/vms/${vmId}/nics/${nicId}`)
+      return (response.data as unknown as { message?: string }).message ?? ''
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: nicsKey(vmId) })
+      queryClient.invalidateQueries({ queryKey: ['networks', 'vm', vmId] })
+      queryClient.invalidateQueries({ queryKey: ['vms', 'detail', vmId] })
+    },
+  })
+}
+
+export function useSetVMNICMAC(vmId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<VMNIC, Error, { nicId: string; mac: string }>({
+    mutationFn: async ({ nicId, mac }) =>
+      (await api.put<VMNIC>(`/api/v1/vms/${vmId}/nics/${nicId}/mac`, { mac_address: mac })).data.data,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: nicsKey(vmId) }),
+  })
+}
+
+// Further addresses the guest holds inside its routed IPv6 prefix.
+const ipv6AddrKey = (vmId: string) => ['networks', 'ipv6-addresses', vmId]
+
+export function useVMIPv6Addresses(vmId: string, enabled: boolean) {
+  return useQuery<VMIPv6Addresses>({
+    queryKey: ipv6AddrKey(vmId),
+    queryFn: async () => (await api.get<VMIPv6Addresses>(`/api/v1/vms/${vmId}/ipv6/addresses`)).data.data,
+    enabled: !!vmId && enabled,
+  })
+}
+
+export function useSetVMIPv6Addresses(vmId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<VMIPv6Addresses, Error, string[]>({
+    mutationFn: async (addresses) =>
+      (await api.put<VMIPv6Addresses>(`/api/v1/vms/${vmId}/ipv6/addresses`, { addresses })).data.data,
+    onSuccess: (data) => queryClient.setQueryData(ipv6AddrKey(vmId), data),
   })
 }
