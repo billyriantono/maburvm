@@ -22,6 +22,9 @@ export interface StoragePool {
   allocated_space?: number;
   // The most the disk overcommit ratio allows, in bytes. 0 = no limit set.
   allocation_limit?: number;
+  // Set on a node's member of a shared pool; the Storage page shows those
+  // once, under the shared pool.
+  shared_pool_id?: string;
   node_id: string;
   node?: {
     id: string;
@@ -29,6 +32,45 @@ export interface StoragePool {
   };
   created_at: string;
   updated_at: string;
+}
+
+// SharedPool is storage several nodes see at the same path: an NFS export the
+// nodes' agents mount, or a directory the operator mounts on each node.
+export interface SharedPool {
+  id: string;
+  name: string;
+  kind: 'nfs' | 'mounted';
+  path: string;
+  nfs_server: string;
+  nfs_export: string;
+  mount_options: string;
+  // Capacity of the storage, counted once however many nodes mount it.
+  total_space: number;
+  used_space: number;
+  available_space: number;
+  allocated_space?: number;
+  allocation_limit: number;
+  members: SharedPoolMember[];
+  created_at: string;
+}
+
+export interface SharedPoolMember {
+  // The node's own storage pool for the shared pool.
+  pool_id: string;
+  node_id: string;
+  node_name: string;
+  status: 'online' | 'offline' | 'degraded';
+  status_note: string;
+  is_primary: boolean;
+}
+
+export interface CreateSharedPoolRequest {
+  name: string;
+  kind: 'nfs' | 'mounted';
+  path?: string;
+  nfs_server?: string;
+  nfs_export?: string;
+  mount_options?: string;
 }
 
 // StorageVolume represents a storage volume (disk image) in a pool

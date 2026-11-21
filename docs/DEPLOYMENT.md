@@ -791,6 +791,14 @@ takes while the VM is copying is dropped from the VM's forwards at the
 switch-over and named in the move's note. A moved VM's next scheduled backup is
 a full one.
 
+**Shared storage.** A VM whose disks are in a shared pool (storage several
+nodes mount at the same path, added on the Storage page) moves to another
+member of that pool without its disks being copied: a live move sends only the
+memory, an offline move only the definition, and the source never deletes the
+files. The panel checks right before the move that both nodes really see the
+same storage. Shared pools are optional and change nothing on nodes that are
+not added to one. See the admin guide, section 4.7.
+
 **The migration link.** The panel sets this up the first time a VM moves to or
 from a node; nothing is configured by hand. Each agent generates its own key
 (`/var/lib/maburvm/migration/id_ed25519`). Every other node accepts it in
@@ -817,6 +825,15 @@ three at a time, gives each VM two tries, and reports what moved and what
 stayed and why. VMs that cannot move keep running on the node. Stop drain
 cancels the moves under way; nothing is lost. The node stays paused for new
 VMs afterwards until it is resumed.
+
+**A node that went down.** Moves and drains need both nodes alive. Staff with
+**Recover a failed node's VMs** (`node:recover`) bring the VMs of a node the
+panel has marked offline back on other nodes, one job per VM: on the same
+disks for a VM in a shared pool, from its newest backup otherwise. Nothing is
+recovered automatically, and staff must confirm the node is powered off or cut
+off first. It needs the agent of this version on the node a VM goes to (either
+way), and on the failed node once it is back, so it can be told not to run
+those VMs again. See the admin guide, section 10.1.
 
 ### 6.4 Firewall groups and NAT VPS
 

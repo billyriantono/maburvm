@@ -15,6 +15,7 @@ import (
 
 	"github.com/maburvm/panel/internal/agent/hostproxy"
 	"github.com/maburvm/panel/internal/agent/libvirt"
+	"github.com/maburvm/panel/internal/agent/migration"
 	"github.com/maburvm/panel/internal/agent/netrules"
 	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 )
@@ -121,6 +122,11 @@ func restoreNetworkConfigs(svc *NodeAgentService) {
 	ctx := context.WithValue(context.Background(), ContextKeyNodeID, "network-restore")
 	restored := 0
 	for vmID, raw := range s.Configs {
+		// A VM recovered onto another node: its addresses are routed there.
+		if migration.IsFenced(vmID) {
+			updateNetworkConfig(path, bootID, vmID, nil)
+			continue
+		}
 		req := &pb.NetworkConfigRequest{}
 		if err := protojson.Unmarshal(raw, req); err != nil {
 			log.Printf("[NetworkRestore] WARNING: VM %s: unreadable saved config: %v", vmID, err)

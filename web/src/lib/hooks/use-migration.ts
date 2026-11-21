@@ -7,6 +7,10 @@ import type {
   MigrationRequest,
   NodeDrain,
   NodeLink,
+  RecoveryChoice,
+  RecoveryLeftover,
+  RecoveryPlan,
+  RecoveryStarted,
   VMMigration,
 } from '@/types'
 
@@ -97,5 +101,55 @@ export function useAbortDrain(nodeId: string) {
   return useMutation<NodeDrain, Error, void>({
     mutationFn: async () => (await api.post<NodeDrain>(`/api/v1/nodes/${nodeId}/drain/abort`)).data.data,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['node-drain', nodeId] }),
+  })
+}
+
+// useNodeRecovery is what could be recovered from a node that went down, and
+// the recoveries made from it. Polled while the node is down or one runs.
+export function useNodeRecovery(nodeId: string) {
+  return useQuery<RecoveryPlan>({
+    queryKey: ['node-recovery', nodeId],
+    queryFn: async () => (await api.get<RecoveryPlan>(`/api/v1/nodes/${nodeId}/recovery`)).data.data,
+    enabled: !!nodeId,
+    refetchInterval: (query) => {
+      const plan = query.state.data as RecoveryPlan | undefined
+      if (plan?.runs.some((r) => r.status === 'queued' || r.status === 'running')) return 3000
+      return plan?.node_status === 'offline' ? 30000 : false
+    },
+  })
+}
+
+export function useStartRecovery(nodeId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<RecoveryStarted, Error, { node_is_down: boolean; vms: RecoveryChoice[] }>({
+    mutationFn: async (data) => (await api.post<RecoveryStarted>(`/api/v1/nodes/${nodeId}/recovery`, data)).data.data,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['node-recovery', nodeId] })
+      queryClient.invalidateQueries({ queryKey: ['nodes'] })
+    },
+  })
+}
+
+// useRecoveryLeftovers asks a node that is back what it still holds of the
+// VMs recovered from it. Asking also tells the node again not to run them.
+export function useRecoveryLeftovers(nodeId: string, enabled: boolean) {
+  return useQuery<RecoveryLeftover[]>({
+    queryKey: ['node-recovery-leftovers', nodeId],
+    queryFn: async () => (await api.get<RecoveryLeftover[]>(`/api/v1/nodes/${nodeId}/recovery/leftovers`)).data.data,
+    enabled: !!nodeId && enabled,
+    retry: false,
+  })
+}
+
+export function useRemoveLeftover(nodeId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<{ removed: string[] | null; kept: string[] | null }, Error, { vmId: string; forceStop: boolean }>({
+    mutationFn: async ({ vmId, forceStop }) =>
+      (await api.post<{ removed: string[] | null; kept: string[] | null }>(
+        `/api/v1/nodes/${nodeId}/recovery/leftovers/${vmId}/remove`, { force_stop: forceStop })).data.data,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['node-recovery-leftovers', nodeId] })
+      queryClient.invalidateQueries({ queryKey: ['node-recovery', nodeId] })
+    },
   })
 }

@@ -38,6 +38,7 @@ func TestStaffRolePermissionMatrix(t *testing.T) {
 		{"import:manage", true, true, false, false, false},
 		{"vm:migrate", true, true, false, false, false},
 		{"node:drain", true, true, false, false, false},
+		{"node:recover", true, true, false, false, false},
 		{"backup:read", true, true, true, false, true},
 		{"backup:update", true, true, false, false, false},
 		{"node:read", true, true, true, false, true},

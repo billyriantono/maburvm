@@ -87,7 +87,7 @@ func (m *MigrationService) PlanDrain(ctx context.Context, nodeID string, destina
 			item.Mode, item.DestNodeID, item.DestNodeName = chk.Mode, chk.DestNodeID, chk.DestNodeName
 			item.CanMove, item.Blockers, item.Warnings = chk.CanMove, chk.Blockers, chk.Warnings
 			if chk.CanMove {
-				env.add(chk.DestNodeID, chk.DestPoolID, vm, chk.DiskGB)
+				env.add(chk.DestNodeID, chk.DestPoolID, vm, chk.copyGB)
 			}
 		}
 		if item.CanMove {

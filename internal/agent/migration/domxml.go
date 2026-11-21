@@ -18,7 +18,8 @@ type Drive struct {
 	Format     string
 	SourceType string // file, block, network, volume; "" for an empty drive
 	ReadOnly   bool
-	Seed       bool // the VM's own cloud-init seed image
+	Seed       bool   // the VM's own cloud-init seed image
+	Cache      string // the driver's cache mode; "" is the hypervisor's default
 }
 
 // Copied reports whether a migration moves the drive's content. A read-only
@@ -45,7 +46,7 @@ func Drives(domXML string) ([]Drive, error) {
 			dr.Device = "disk"
 		}
 		if d.Driver != nil {
-			dr.Format = d.Driver.Type
+			dr.Format, dr.Cache = d.Driver.Type, d.Driver.Cache
 		}
 		if s := d.Source; s != nil {
 			switch {

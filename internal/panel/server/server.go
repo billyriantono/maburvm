@@ -59,6 +59,10 @@ type Server struct {
 	backupDest *service.BackupDestinations
 	backupVMs  *service.VMService
 
+	// migrations moves VMs between nodes; the backup service is given to it
+	// once it exists, for recovering a failed node's VMs from their backups.
+	migrations *service.MigrationService
+
 	// alerts tells operators about nodes, pools and jobs; one instance, shared
 	// by the collector, the job queue and the settings page. See alertsInstance.
 	alerts *service.AlertService
@@ -652,9 +656,17 @@ func (s *Server) setupVMRoutes(g *echo.Group) {
 	migrations := service.NewMigrationService(s.db, vmService, vmNet, s.alertsInstance(), s.riverClient, logger)
 	queue.MigrationHook = migrations.RunMigrationJob
 	queue.DrainHook = migrations.RunDrainJob
+	// Recovering a failed node's VMs on other nodes, and telling the node
+	// when it is back which of its VMs live elsewhere.
+	queue.RecoveryHook = migrations.RunRecoveryJob
+	service.NodeReportedHook = migrations.NodeReported
+	s.migrations = migrations
 	service.NodeRemovedHook = migrations.RevokeNode
 	vmService.SetLinkEnsurer(migrations.EnsureLink)
 	handler.RegisterMigrationRoutes(s.echo, handler.NewMigrationHandler(migrations), s.db)
+	handler.RegisterRecoveryRoutes(s.echo, migrations, s.db)
+	// Storage several nodes share; a move between its members copies no disk.
+	handler.RegisterSharedPoolRoutes(s.echo, service.NewSharedPoolService(s.db, vmService), s.db)
 
 	// Several VMs at once from the admin list; a VM's delete lock and tags,
 	// and staff notes on VMs and accounts.
@@ -957,6 +969,9 @@ func (s *Server) setupBackupRoutes() {
 	dest := s.backupDestinationInstance()
 	backupService := service.NewBackupService(s.db, backupRepo, scheduleRepo, vmRepo, nodeRepo, s.riverClient, dest, logger)
 	backupService.SetVMService(s.backupVMs)
+	if s.migrations != nil {
+		s.migrations.SetBackups(backupService)
+	}
 	// The workers send the destination to a node with each backup and restore.
 	// They live in a package that cannot reach the settings, so they call back here.
 	queue.ObjectStoreHook = dest.ObjectStore
@@ -2754,7 +2769,7 @@ func (s *Server) Start() error {
 	// Start the background node-metrics collector (persists samples for history).
 	collectorCtx, stopCollector := context.WithCancel(context.Background())
 	defer stopCollector()
-	collector := service.NewMetricsCollector(s.db, s.riverClient, 60*time.Second, 7*24*time.Hour, slog.Default())
+	collector := service.NewMetricsCollector(s.db, s.riverClient, service.NodeCheckInterval, 7*24*time.Hour, slog.Default())
 	collector.SetAlerts(s.alertsInstance())
 	go collector.Run(collectorCtx)
 	// Daily capacity rows for the reports, and the opt-in update notice.

@@ -159,7 +159,54 @@ func PoolWithinRatio(pool *models.StoragePool, allocatedBytes int64, addGB int, 
 // ponytail: counts what the panel knows. Domains on a node that the panel does
 // not manage are not counted; have the agent report virtual sizes per pool if
 // that gap matters.
+//
+// A shared pool is one storage however many nodes mount it: each member row
+// reports what VMs on every member have been promised there.
 func PoolAllocations(ctx context.Context, db *gorm.DB, nodeID string) (map[string]int64, error) {
+	out, pools, err := poolAllocations(ctx, db, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	shared := false
+	for _, p := range pools {
+		shared = shared || p.SharedPoolID != nil
+	}
+	if !shared {
+		return out, nil
+	}
+	if nodeID != "" {
+		// The other members' VMs count too, and they are on other nodes.
+		all, allPools, err := poolAllocations(ctx, db, "")
+		if err != nil {
+			return nil, err
+		}
+		foldSharedAllocations(all, allPools)
+		for id := range out {
+			out[id] = all[id]
+		}
+		return out, nil
+	}
+	foldSharedAllocations(out, pools)
+	return out, nil
+}
+
+// foldSharedAllocations gives every member row of a shared pool the sum of
+// what all its members hold.
+func foldSharedAllocations(out map[string]int64, pools []models.StoragePool) {
+	sum := map[string]int64{}
+	for _, p := range pools {
+		if p.SharedPoolID != nil {
+			sum[*p.SharedPoolID] += out[p.ID]
+		}
+	}
+	for _, p := range pools {
+		if p.SharedPoolID != nil {
+			out[p.ID] = sum[*p.SharedPoolID]
+		}
+	}
+}
+
+func poolAllocations(ctx context.Context, db *gorm.DB, nodeID string) (map[string]int64, []models.StoragePool, error) {
 	onNode := func(q *gorm.DB, column string) *gorm.DB {
 		if nodeID != "" {
 			return q.Where(column+" = ?", nodeID)
@@ -169,7 +216,7 @@ func PoolAllocations(ctx context.Context, db *gorm.DB, nodeID string) (map[strin
 
 	var pools []models.StoragePool
 	if err := onNode(db.WithContext(ctx), "node_id").Find(&pools).Error; err != nil {
-		return nil, fmt.Errorf("failed to list storage pools: %w", err)
+		return nil, nil, fmt.Errorf("failed to list storage pools: %w", err)
 	}
 	byNode := map[string][]models.StoragePool{}
 	out := make(map[string]int64, len(pools))
@@ -187,7 +234,7 @@ func PoolAllocations(ctx context.Context, db *gorm.DB, nodeID string) (map[strin
 	if err := onNode(db.WithContext(ctx).Table("vms").
 		Select("id, node_id, resources, storage_pool_id").
 		Where("deleted_at IS NULL"), "node_id").Find(&vms).Error; err != nil {
-		return nil, fmt.Errorf("failed to list VM disks: %w", err)
+		return nil, nil, fmt.Errorf("failed to list VM disks: %w", err)
 	}
 
 	vmPool := make(map[string]string, len(vms))
@@ -228,7 +275,7 @@ func PoolAllocations(ctx context.Context, db *gorm.DB, nodeID string) (map[strin
 	}
 	if err := db.WithContext(ctx).Table("vm_disks").Select("vm_id, size_gb, path").
 		Where("deleted_at IS NULL").Find(&disks).Error; err != nil {
-		return nil, fmt.Errorf("failed to list extra disks: %w", err)
+		return nil, nil, fmt.Errorf("failed to list extra disks: %w", err)
 	}
 	for _, d := range disks {
 		poolID, known := vmPool[d.VMID]
@@ -254,7 +301,7 @@ func PoolAllocations(ctx context.Context, db *gorm.DB, nodeID string) (map[strin
 	}
 	if err := db.WithContext(ctx).Table("disk_quota_reservations").Select("vm_id, size_gb").
 		Where("status = ?", models.DiskQuotaReservationPending).Find(&pending).Error; err != nil {
-		return nil, fmt.Errorf("failed to list disk reservations: %w", err)
+		return nil, nil, fmt.Errorf("failed to list disk reservations: %w", err)
 	}
 	for _, r := range pending {
 		if poolID := vmPool[r.VMID]; poolID != "" {
@@ -264,14 +311,14 @@ func PoolAllocations(ctx context.Context, db *gorm.DB, nodeID string) (map[strin
 
 	var volumes []models.StorageVolume
 	if err := db.WithContext(ctx).Select("pool_id, size").Find(&volumes).Error; err != nil {
-		return nil, fmt.Errorf("failed to list storage volumes: %w", err)
+		return nil, nil, fmt.Errorf("failed to list storage volumes: %w", err)
 	}
 	for _, v := range volumes {
 		if _, ok := out[v.PoolID]; ok {
 			out[v.PoolID] += v.Size
 		}
 	}
-	return out, nil
+	return out, pools, nil
 }
 
 // PoolHoldsDisk reports whether the pool holds the disk at diskPath: a file
@@ -498,10 +545,17 @@ func admitPoolRatio(ctx context.Context, tx *gorm.DB, pool *models.StoragePool, 
 	if ratio <= 0 {
 		return nil
 	}
-	var locked models.StoragePool
-	if err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}).
-		Select("id").Where("id = ?", pool.ID).First(&locked).Error; err != nil {
-		return fmt.Errorf("failed to lock storage pool: %w", err)
+	// Every member of a shared pool is locked: an order on another member
+	// draws on the same room.
+	var locked []models.StoragePool
+	lock := tx.WithContext(ctx).Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}).Select("id").Order("id")
+	if pool.SharedPoolID != nil {
+		lock = lock.Where("shared_pool_id = ?", *pool.SharedPoolID)
+	} else {
+		lock = lock.Where("id = ?", pool.ID)
+	}
+	if err := lock.Find(&locked).Error; err != nil || len(locked) == 0 {
+		return fmt.Errorf("failed to lock storage pool: %v", err)
 	}
 	allocated, err := PoolAllocations(ctx, tx, pool.NodeID)
 	if err != nil {

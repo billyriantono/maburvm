@@ -45,6 +45,7 @@ import { NodeInstallCommand } from "@/components/node-install-command"
 import { NodePreflight } from "@/components/node-preflight"
 import { NodeAgentSettings } from "@/components/node-agent-settings"
 import { NodeDrain } from "@/components/node-drain"
+import { NodeRecovery } from "@/components/node-recovery"
 import { NodeNATPorts } from "@/components/node-nat-ports"
 import { NodeVLANBridges } from "@/components/node-vlan-bridges"
 import { NodeCPUPool } from "@/components/node-cpu-pool"
@@ -507,6 +508,9 @@ export default function NodeDetailPage() {
               )}
             </>
           )}
+
+          {/* Shown for a node that is down, or that VMs were recovered from. */}
+          <NodeRecovery nodeId={node.id} nodeName={node.name} />
 
           {/* Outside the live readings: what is stored and promised on a node
               matters most when the node is not answering. */}

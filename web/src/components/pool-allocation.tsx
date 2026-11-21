@@ -9,7 +9,7 @@ import type { StoragePool } from "@/types"
 // much it can hold. Disks are thin, so this is not the usage figure: a pool can
 // be a third full and already promised twice over, and it is the promises that
 // fill it later.
-export function PoolAllocation({ pool }: { pool: StoragePool }) {
+export function PoolAllocation({ pool }: { pool: Pick<StoragePool, "total_space" | "allocated_space" | "allocation_limit"> }) {
   const total = pool.total_space ?? 0
   const allocated = pool.allocated_space
   if (allocated === undefined || allocated === null) {
@@ -83,6 +83,7 @@ export function NodeStoragePools({ nodeId }: { nodeId: string }) {
               <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 mb-1">
                 <p className="text-sm font-medium">
                   {pool.name} <span className="font-mono font-normal text-muted-foreground">{pool.path}</span>
+                  {pool.shared_pool_id && <span className="ml-2 text-xs font-normal text-muted-foreground">Shared with other nodes</span>}
                   {pool.is_primary && (mine.filter((p) => p.is_primary).length > 1 ? (
                     <span className="ml-2 text-xs font-medium text-amber-600">Marked for new VMs, as is another pool: choose one on the Storage page</span>
                   ) : pool.status === "online" ? (
@@ -101,7 +102,7 @@ export function NodeStoragePools({ nodeId }: { nodeId: string }) {
                     <span className="text-muted-foreground">Not measured yet</span>
                   ) : (
                     <span className="font-medium text-amber-600">
-                      {pool.status === "offline" ? "Offline" : "Path missing on the node"}
+                      {pool.status === "offline" ? "Offline" : pool.shared_pool_id ? "Not usable here: see the Storage page" : "Path missing on the node"}
                     </span>
                   )}
                 </p>

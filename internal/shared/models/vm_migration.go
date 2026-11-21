@@ -44,6 +44,11 @@ type VMMigration struct {
 	StartedAt     *time.Time `json:"started_at,omitempty"`
 	UpdatedAt     time.Time  `json:"updated_at" gorm:"not null;default:NOW()"`
 	FinishedAt    *time.Time `json:"finished_at,omitempty"`
+
+	// KeptPaths are the disk files, one per line, the move did not copy: they
+	// are on shared storage both nodes use, so the source never removes them.
+	// Read-only here, written by table name when a move starts.
+	KeptPaths string `json:"kept_paths,omitempty" gorm:"column:kept_paths;->"`
 }
 
 func (VMMigration) TableName() string { return "vm_migrations" }

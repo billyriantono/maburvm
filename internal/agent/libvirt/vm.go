@@ -516,8 +516,17 @@ func clampCPUShares(domXML string) string {
 // whatever the caller read or wrote: several callers read the definition
 // without its secrets, which would otherwise save it back with none. Its thin
 // disks also take discard from here, effective from the VM's next boot.
+// sharedTuned is domXML with its disks in shared pools set to bypass the host
+// cache (storage.TuneSharedDisks); domXML as it is when nothing needs it.
+func sharedTuned(domXML string) string {
+	if out, changed, err := storage.TuneSharedDisks(domXML); err == nil && changed {
+		return out
+	}
+	return domXML
+}
+
 func redefineDomain(conn *libvirt.Connect, domXML string) (*libvirt.Domain, error) {
-	secured, _ := console.SecureXML(domXML, console.NewPassword())
+	secured, _ := console.SecureXML(sharedTuned(domXML), console.NewPassword())
 	return conn.DomainDefineXML(domtune.DiscardXML(clampCPUShares(secured)))
 }
 

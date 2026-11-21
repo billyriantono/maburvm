@@ -32,9 +32,15 @@ type RestoreSource struct {
 	PrimaryTarget string
 }
 
-// apply adds what the create worker and the node need to know to the job.
+// apply adds what the create worker and the node need to know to the job. What
+// the job already says about the VM (its firmware) is kept.
 func (r *RestoreSource) apply(params map[string]interface{}) {
-	params["metadata"] = map[string]string{models.ImageOnceKey: "1", models.ImageSHA256Key: r.SHA256}
+	meta, _ := params["metadata"].(map[string]string)
+	if meta == nil {
+		meta = map[string]string{}
+	}
+	meta[models.ImageOnceKey], meta[models.ImageSHA256Key] = "1", r.SHA256
+	params["metadata"] = meta
 	params["object_store"] = r.InDestination
 	if r.DestinationID != "" {
 		params["backup_destination_id"] = r.DestinationID
@@ -115,12 +121,6 @@ func (s *BackupService) RestoreAsNewVM(ctx context.Context, req *RestoreAsNewReq
 		}
 		return nil, fmt.Errorf("failed to get backup: %w", err)
 	}
-	if backup.Status != models.BackupStatusCompleted {
-		return nil, fmt.Errorf("backup is not completed (status: %s)", backup.Status)
-	}
-	if backup.Checksum == "" {
-		return nil, fmt.Errorf("backup has no recorded checksum; cannot safely restore")
-	}
 	src, err := s.vmRepo.GetByID(ctx, backup.VMID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -135,7 +135,42 @@ func (s *BackupService) RestoreAsNewVM(ctx context.Context, req *RestoreAsNewReq
 		}
 		return nil, fmt.Errorf("failed to get node: %w", err)
 	}
+	restore, err := s.RestoreSourceFor(ctx, backup, node)
+	if err != nil {
+		return nil, err
+	}
 
+	create := restoreCreateRequest(backup, src, req, restore.InDestination)
+	create.Restore = restore
+	if len(create.Hostname) > 100 {
+		return nil, fmt.Errorf("hostname %q is too long; give the new VM a shorter one", create.Hostname)
+	}
+	s.vmService.inheritNetworkLimits(ctx, src.ID, create)
+	resp, err := s.vmService.CreateVM(ctx, create)
+	if err != nil {
+		return nil, err
+	}
+	s.copyFirewallRules(ctx, src.ID, resp.VM.ID)
+
+	s.logger.InfoContext(ctx, "restoring backup as a new VM",
+		"backup_id", backup.ID, "source_vm_id", src.ID, "vm_id", resp.VM.ID, "node_id", node.ID)
+	return resp, nil
+}
+
+// RestoreSourceFor is what a create on node needs to make a VM's disks from a
+// backup. It refuses a backup that is not complete, and a node that cannot
+// read the backup's storage or whose agent is too old for this backup, before
+// anything is created there.
+func (s *BackupService) RestoreSourceFor(ctx context.Context, backup *models.Backup, node *models.Node) (*RestoreSource, error) {
+	if s.dest == nil {
+		return nil, errors.New("restoring onto another node is not available")
+	}
+	if backup.Status != models.BackupStatusCompleted {
+		return nil, fmt.Errorf("backup is not completed (status: %s)", backup.Status)
+	}
+	if backup.Checksum == "" {
+		return nil, fmt.Errorf("backup has no recorded checksum; cannot safely restore")
+	}
 	chain, layers, err := s.restoreChain(ctx, backup)
 	if err != nil {
 		return nil, err
@@ -194,24 +229,12 @@ func (s *BackupService) RestoreAsNewVM(ctx context.Context, req *RestoreAsNewReq
 		}
 	}
 
-	create := restoreCreateRequest(backup, src, req, inDestination)
-	create.Restore.DestinationID, create.Restore.Layers = destinationID, layers
+	restore := &RestoreSource{SHA256: backup.Checksum, InDestination: inDestination, DestinationID: destinationID,
+		DataDisks: backup.DataDisks(), Layers: layers}
 	if len(backup.Disks) > 0 {
-		create.Restore.PrimaryTarget = backup.Disks[0].Target
+		restore.PrimaryTarget = backup.Disks[0].Target
 	}
-	if len(create.Hostname) > 100 {
-		return nil, fmt.Errorf("hostname %q is too long; give the new VM a shorter one", create.Hostname)
-	}
-	s.vmService.inheritNetworkLimits(ctx, src.ID, create)
-	resp, err := s.vmService.CreateVM(ctx, create)
-	if err != nil {
-		return nil, err
-	}
-	s.copyFirewallRules(ctx, src.ID, resp.VM.ID)
-
-	s.logger.InfoContext(ctx, "restoring backup as a new VM",
-		"backup_id", backup.ID, "source_vm_id", src.ID, "vm_id", resp.VM.ID, "node_id", node.ID)
-	return resp, nil
+	return restore, nil
 }
 
 // restoreCreateRequest is the order for the new VM.

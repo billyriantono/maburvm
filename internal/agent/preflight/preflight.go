@@ -83,6 +83,8 @@ type PoolFacts struct {
 	Total      int64
 	Available  int64
 	MountPoint string
+	// Problem is why a shared pool cannot be used here now (not mounted).
+	Problem string
 }
 
 const gib = 1 << 30
@@ -269,6 +271,12 @@ func evalPool(p PoolFacts) Check {
 		c.Fix = "Create or mount the directory, or correct the pool's path on the Storage page."
 		return c
 	}
+	if p.Problem != "" {
+		c.Status = Fail
+		c.Detail = p.Problem
+		c.Fix = "Mount the shared storage on this node again; the Storage page shows the pool."
+		return c
+	}
 	if !p.Writable {
 		c.Status = Fail
 		c.Detail = p.Path + " is not writable."
@@ -318,6 +326,8 @@ var toolChecks = []struct {
 		"libguestfs tools are missing: RouterOS templates and disk image changes fail.", "Install libguestfs-tools."},
 	{"tool_dnsmasq", "dnsmasq", []string{"dnsmasq"}, Pass,
 		"Optional, not installed: IP pools with DHCP turned on cannot be served on this node.", "Install dnsmasq-base (dnsmasq on the RHEL family)."},
+	{"tool_nfs", "NFS client", []string{"mount.nfs"}, Pass,
+		"Optional, not installed: this node cannot join a shared storage pool of kind NFS.", "Install nfs-common (nfs-utils on the RHEL family)."},
 }
 
 // ToolNames is every binary the tool checks look for.

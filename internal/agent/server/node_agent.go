@@ -34,6 +34,7 @@ import (
 	"github.com/maburvm/panel/internal/agent/guestos"
 	"github.com/maburvm/panel/internal/agent/health"
 	"github.com/maburvm/panel/internal/agent/hostproxy"
+	"github.com/maburvm/panel/internal/agent/hwprofile"
 	"github.com/maburvm/panel/internal/agent/libvirt"
 	"github.com/maburvm/panel/internal/agent/migration"
 	"github.com/maburvm/panel/internal/agent/netrules"
@@ -245,6 +246,11 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 	}
 
 	log.Printf("[NodeAgent] Executing command %v on VM %s from node %s", req.Command, req.VmId, nodeID)
+	// A VM recovered onto another node may only be stopped here.
+	if req.Command != pb.VMCommandType_VM_COMMAND_TYPE_STOP && req.Command != pb.VMCommandType_VM_COMMAND_TYPE_FORCE_STOP && migration.IsFenced(req.VmId) {
+		return &pb.VMCommandResponse{VmId: req.VmId, Command: req.Command, Message: errFenced.Error(),
+			Error: &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_CONFLICT, Message: errFenced.Error()}}, nil
+	}
 	if req.Command != pb.VMCommandType_VM_COMMAND_TYPE_START && req.Command != pb.VMCommandType_VM_COMMAND_TYPE_RESTART {
 		s.crashes.Hold(req.VmId)
 	}
@@ -258,6 +264,9 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 	case pb.VMCommandType_VM_COMMAND_TYPE_CREATE:
 		restored, err = s.createVM(req)
 		// On success the domain is defined but not started.
+		state = pb.VMState_VM_STATE_STOPPED
+	case pb.VMCommandType_VM_COMMAND_TYPE_ADOPT:
+		err = s.adoptVM(req)
 		state = pb.VMState_VM_STATE_STOPPED
 	case pb.VMCommandType_VM_COMMAND_TYPE_START:
 		state = pb.VMState_VM_STATE_RUNNING
@@ -488,6 +497,11 @@ func cleanStaleExports() {
 	}
 	cutoff := time.Now().Add(-time.Hour)
 	for dir := range dirs {
+		// In a shared pool another node's export may be running, which this
+		// node cannot tell from a stale one.
+		if _, shared := storage.SharedPoolAt(dir); shared {
+			continue
+		}
 		matches, err := filepath.Glob(filepath.Join(dir, "*-backup.qcow2"))
 		if err != nil {
 			continue
@@ -979,6 +993,9 @@ var errDisksBusy = errors.New("a disk of this VM is being moved, copied or resto
 // startVM boots a VM unless work on its disks holds it. Every start of an
 // existing VM goes through it.
 func startVM(vmID string) error {
+	if migration.IsFenced(vmID) {
+		return errFenced
+	}
 	if migrations.Busy(vmID) {
 		return errDisksBusy
 	}
@@ -1491,6 +1508,71 @@ func beginCreate(vmID string) (release func(), busy bool) {
 	}, false
 }
 
+// vmConfigFor is the definition of a VM as the panel describes it in a CREATE
+// or ADOPT command, without its disks: size, console, limits, virtual
+// hardware and first network card.
+func vmConfigFor(req *pb.VMCommandRequest, cfg *pb.VMConfig, osType string, hw models.Hardware, pinned []int, firmware *hwprofile.Firmware) libvirt.VMConfig {
+	vmCfg := libvirt.VMConfig{
+		Name:        req.VmId,
+		UUID:        req.VmId,
+		CPU:         int(cfg.Resources.Vcpus),
+		Memory:      int(cfg.Resources.MemoryMb),
+		VNCPassword: cfg.VncPassword,
+		VNCPort:     -1, // auto-assign unless overridden via metadata
+		Limits:      domtune.FromProto(cfg.Resources.GetLimits()),
+	}
+
+	// The proto VMConfig has no dedicated VNC port / VLAN fields, so the panel
+	// passes them through the metadata map.
+	if cfg.Metadata != nil {
+		if v, ok := cfg.Metadata["vnc_port"]; ok {
+			if p, err := strconv.Atoi(v); err == nil && p > 0 {
+				vmCfg.VNCPort = p
+			}
+		}
+		if v, ok := cfg.Metadata["vlan_id"]; ok {
+			if vlan, err := strconv.Atoi(v); err == nil && vlan > 0 {
+				vmCfg.VLANID = vlan
+			}
+		}
+		if v, ok := cfg.Metadata["cpu_model"]; ok {
+			vmCfg.CPUModel = v
+		}
+	}
+	if m := cfg.GetHardware().GetCpuModel(); m != "" {
+		vmCfg.CPUModel = m
+	}
+	vmCfg.OSType = osType
+	vmCfg.Hardware, vmCfg.PinnedCPUs, vmCfg.Firmware = hw, pinned, firmware
+
+	// Apply the primary network interface from the network config.
+	if cfg.NetworkConfig != nil {
+		if len(cfg.NetworkConfig.Interfaces) > 0 {
+			iface := cfg.NetworkConfig.Interfaces[0]
+			vmCfg.Bridge = iface.BridgeName
+			vmCfg.MACAddress = iface.MacAddress
+			vmCfg.IPAddress = iface.IpAddress
+			vmCfg.Netmask = int(iface.Netmask)
+			vmCfg.Gateway = iface.Gateway
+			vmCfg.AntiSpoofing = iface.AntiSpoofing
+			vmCfg.IPv6Prefix = iface.Ipv6Prefix
+			vmCfg.IPv6Address = iface.Ipv6Address
+			vmCfg.IPv6Gateway = iface.Ipv6Gateway
+			vmCfg.IPv6DNS = iface.Ipv6Dns
+			vmCfg.DNS = iface.Dns
+		}
+		if cfg.NetworkConfig.BandwidthLimits != nil {
+			vmCfg.BandwidthMbps = int(cfg.NetworkConfig.BandwidthLimits.EgressRateMbps)
+		}
+	}
+
+	// Ensure a stable MAC so cloud-init can match the interface for static config.
+	if vmCfg.MACAddress == "" {
+		vmCfg.MACAddress = generateMAC(req.VmId)
+	}
+	return vmCfg
+}
+
 func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) ([]*pb.BackupDiskFile, error) {
 	var restored []*pb.BackupDiskFile
 	err := s.provisionVM(req, &restored)
@@ -1580,6 +1662,11 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 		diskPath = filepath.Join(imageDir, req.VmId+".qcow2")
 	}
 	if _, err := os.Stat(diskPath); err == nil && !onLVM {
+		// In a shared pool no domain here does not mean no VM: the file may be
+		// this VM's disk, running or kept on another member node.
+		if _, shared := storage.SharedPoolAt(diskPath); shared {
+			return fmt.Errorf("%s already exists in a shared pool, where another node may use it; it was left as it is", diskPath)
+		}
 		// No domain uses this file: the check at the top of this function returned
 		// early if one existed, and the claim above rules out a create in flight.
 		// So it is debris from an attempt that died mid-provision — refusing here
@@ -1663,17 +1750,8 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 		}
 	}
 
-	vmCfg := libvirt.VMConfig{
-		Name:        req.VmId,
-		UUID:        req.VmId,
-		CPU:         int(cfg.Resources.Vcpus),
-		Memory:      int(cfg.Resources.MemoryMb),
-		DiskPath:    diskPath,
-		DiskSize:    diskGB,
-		VNCPassword: cfg.VncPassword,
-		VNCPort:     -1, // auto-assign unless overridden via metadata
-		Limits:      domtune.FromProto(cfg.Resources.GetLimits()),
-	}
+	vmCfg := vmConfigFor(req, cfg, osType, hw, pinned, firmware)
+	vmCfg.DiskPath, vmCfg.DiskSize = diskPath, diskGB
 	for _, d := range *restored {
 		vmCfg.ExtraDisks = append(vmCfg.ExtraDisks, libvirt.ExtraDisk{Target: d.GetTarget(), Path: d.GetPath()})
 	}
@@ -1682,57 +1760,8 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 			discardNewDisk(req.VmId, d.GetPath())
 		}
 	}
-
-	// The proto VMConfig has no dedicated VNC port / VLAN fields, so the panel
-	// passes them through the metadata map.
-	if cfg.Metadata != nil {
-		if v, ok := cfg.Metadata["vnc_port"]; ok {
-			if p, err := strconv.Atoi(v); err == nil && p > 0 {
-				vmCfg.VNCPort = p
-			}
-		}
-		if v, ok := cfg.Metadata["vlan_id"]; ok {
-			if vlan, err := strconv.Atoi(v); err == nil && vlan > 0 {
-				vmCfg.VLANID = vlan
-			}
-		}
-		if v, ok := cfg.Metadata["cpu_model"]; ok {
-			vmCfg.CPUModel = v
-		}
-	}
-	if m := cfg.GetHardware().GetCpuModel(); m != "" {
-		vmCfg.CPUModel = m
-	}
-	vmCfg.OSType = osType
-	vmCfg.Hardware, vmCfg.PinnedCPUs, vmCfg.Firmware = hw, pinned, firmware
 	if blank {
 		vmCfg.ISODrives, vmCfg.InstallISO, vmCfg.DriversISO = true, installISO, driversISO
-	}
-
-	// Apply the primary network interface from the network config.
-	if cfg.NetworkConfig != nil {
-		if len(cfg.NetworkConfig.Interfaces) > 0 {
-			iface := cfg.NetworkConfig.Interfaces[0]
-			vmCfg.Bridge = iface.BridgeName
-			vmCfg.MACAddress = iface.MacAddress
-			vmCfg.IPAddress = iface.IpAddress
-			vmCfg.Netmask = int(iface.Netmask)
-			vmCfg.Gateway = iface.Gateway
-			vmCfg.AntiSpoofing = iface.AntiSpoofing
-			vmCfg.IPv6Prefix = iface.Ipv6Prefix
-			vmCfg.IPv6Address = iface.Ipv6Address
-			vmCfg.IPv6Gateway = iface.Ipv6Gateway
-			vmCfg.IPv6DNS = iface.Ipv6Dns
-			vmCfg.DNS = iface.Dns
-		}
-		if cfg.NetworkConfig.BandwidthLimits != nil {
-			vmCfg.BandwidthMbps = int(cfg.NetworkConfig.BandwidthLimits.EgressRateMbps)
-		}
-	}
-
-	// Ensure a stable MAC so cloud-init can match the interface for static config.
-	if vmCfg.MACAddress == "" {
-		vmCfg.MACAddress = generateMAC(req.VmId)
 	}
 
 	// Build a cloud-init NoCloud seed so the guest applies its hostname and
@@ -2155,6 +2184,11 @@ func (s *NodeAgentService) rebuildVM(req *pb.VMCommandRequest) error {
 		seedDir = filepath.Dir(disk)
 	}
 	seedPath := filepath.Join(seedDir, req.VmId+"-seed.iso")
+	// An unmounted shared pool is the local disk underneath: the new disk and
+	// disc would land there and vanish when the storage came back.
+	if err := storage.CheckSharedDir(seedDir); err != nil {
+		return err
+	}
 
 	// convert gives the VM the virtual hardware the new system needs when it
 	// is of another kind than the one installed (see ConvertDomainKind). It is
@@ -2680,7 +2714,8 @@ func backupDiskErr(code pb.ErrorCode, msg string) *pb.BackupDiskResponse {
 // "blank_install": BlankImageRef creates a VM from an empty disk and ISOs.
 // "iso_slots": a second CD drive (ISOSlotKey), and discs changed while a VM
 // runs. "lvm_migration": VMs whose disks are logical volumes move between
-// nodes, and onto LVM pools.
+// nodes, and onto LVM pools. models.FeatureSharedStorage: shared pools (see
+// shared_pool.go) and moves that leave a disk on shared storage where it is.
 //
 // "vm_hardware": VMConfig.hardware, SetVMHardware and restart on crash.
 // "snapshot_options": disk-only and quiesced snapshots, and reverts that keep
@@ -2691,12 +2726,13 @@ func backupDiskErr(code pb.ErrorCode, msg string) *pb.BackupDiskResponse {
 // models.FeatureGuestDNS, FeatureDHCPServer, FeatureVMNICs, FeatureVLANBridges
 // and FeatureIPv6Extra: the network card, resolver, DHCP, VLAN bridge and
 // extra IPv6 address fields and calls (see the proto). FeatureBackupEncryption:
-// ObjectStore.encryption and decryption_keys.
+// ObjectStore.encryption and decryption_keys. FeatureVMRecovery: the ADOPT
+// command, SetFencedVMs and RemoveFencedVM (see recovery.go).
 var agentFeatures = []string{"restore_disks", "lvm_disks", "backup_targets", "incremental_backup", "hostname_proxy",
-	"template_checksum", "blank_install", "iso_slots", "lvm_migration",
+	"template_checksum", "blank_install", "iso_slots", "lvm_migration", models.FeatureSharedStorage,
 	models.FeatureVMHardware, models.FeatureSnapshotOptions, models.FeatureOfflinePassword, models.FeatureBuiltinRescue,
 	models.FeatureGuestDNS, models.FeatureDHCPServer, models.FeatureVMNICs, models.FeatureVLANBridges, models.FeatureIPv6Extra,
-	models.FeatureBackupEncryption}
+	models.FeatureBackupEncryption, models.FeatureVMRecovery}
 
 // volumeReserveBytes is the room an export or a restore must leave free on the
 // volume it writes to. qemu pauses a VM the moment a write fails, so filling a
@@ -3088,6 +3124,12 @@ func (s *NodeAgentService) RestoreDisk(ctx context.Context, req *pb.RestoreDiskR
 	for _, f := range files {
 		d := byTarget[f.GetTarget()]
 		dir := storage.DataDiskDir("", d.Path, storage.DataDiskDir("", have[0].Path, blockScratchDir()))
+		// An unmounted shared pool is the local disk underneath: the restored
+		// disk would land there and vanish when the storage is back.
+		if err := storage.CheckSharedDir(dir); err != nil {
+			discard()
+			return restoreDiskErr(fmt.Sprintf("disk %s: %v", d.Target, err)), nil
+		}
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			discard()
 			return restoreDiskErr(fmt.Sprintf("cannot stage disk %s in %s: %v", d.Target, dir, err)), nil
@@ -3995,6 +4037,10 @@ func (s *NodeAgentService) ApplyNetworkConfig(ctx context.Context, req *pb.Netwo
 	if s.networkMgr == nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "network manager not initialized")
 	}
+	// Its addresses are routed to another node now.
+	if migration.IsFenced(req.VmId) {
+		return nil, status.Error(codes.FailedPrecondition, errFenced.Error())
+	}
 
 	unlock := lockVMNetwork(req.VmId)
 	defer unlock()
@@ -4705,6 +4751,7 @@ func (s *NodeAgentService) GetStorageReport(ctx context.Context, req *pb.GetStor
 			UsedBytes:      c.Used,
 			AvailableBytes: c.Available,
 			Filesystem:     c.Filesystem,
+			Problem:        c.Problem,
 		})
 	}
 

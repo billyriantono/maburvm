@@ -314,7 +314,7 @@ func LiveMigrate(ctx context.Context, uuidStr, destURI, dataURI string, disks []
 // DefineMigrated defines a VM that arrived offline, set to start with the node.
 func DefineMigrated(domXML string) error {
 	return WithConnection(func(conn *libvirt.Connect) error {
-		dom, err := conn.DomainDefineXML(domXML)
+		dom, err := conn.DomainDefineXML(sharedTuned(domXML))
 		if err != nil {
 			return fmt.Errorf("failed to define the VM: %w", err)
 		}
@@ -350,6 +350,17 @@ func ConfirmArrived(uuidStr string) (string, error) {
 		if err := dom.SetAutostart(true); err != nil {
 			log.Printf("[Migrate] WARNING: %s does not start on boot here: %v", uuidStr, err)
 		}
+		// A disk that arrived in a shared pool bypasses the host cache from the
+		// VM's next start; the node it came from may not know the pool.
+		if saved, err := dom.GetXMLDesc(libvirt.DOMAIN_XML_INACTIVE | libvirt.DOMAIN_XML_SECURE); err == nil {
+			if out, changed, _ := storage.TuneSharedDisks(saved); changed {
+				if d, err := conn.DomainDefineXML(out); err != nil {
+					log.Printf("[Migrate] WARNING: %s keeps its disk cache mode on shared storage: %v", uuidStr, err)
+				} else {
+					_ = d.Free()
+				}
+			}
+		}
 		return nil
 	})
 	return state, err
@@ -357,8 +368,10 @@ func ConfirmArrived(uuidStr string) (string, error) {
 
 // RemoveMovedSource removes the definition and disk files of a VM that has
 // moved to another node. It refuses a VM that runs here, and deletes only the
-// plain files the definition owned that no other domain uses.
-func RemoveMovedSource(uuidStr string) ([]string, error) {
+// plain files the definition owned that no other domain uses. Files keep
+// reports are on shared storage and are the VM's disks on its new node: they
+// stay.
+func RemoveMovedSource(uuidStr string, keep func(path string) bool) ([]string, error) {
 	if _, err := uuid.Parse(uuidStr); err != nil {
 		return nil, fmt.Errorf("invalid UUID format: %w", err)
 	}
@@ -404,6 +417,10 @@ func RemoveMovedSource(uuidStr string) ([]string, error) {
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
+		if keep != nil && keep(p) {
+			log.Printf("[Migrate] kept %s: the VM uses it on its new node (shared storage)", p)
+			continue
+		}
 		if err != nil || !fi.Mode().IsRegular() || inUse[p] {
 			log.Printf("[Migrate] kept %s: not a plain file of the moved VM alone", p)
 			continue
@@ -414,6 +431,27 @@ func RemoveMovedSource(uuidStr string) ([]string, error) {
 		removed = append(removed, p)
 	}
 	return removed, nil
+}
+
+// SetAutostart turns a VM's start with the node on or off. found is false
+// when the VM is not defined here.
+func SetAutostart(uuidStr string, on bool) (found bool, err error) {
+	if _, err := uuid.Parse(uuidStr); err != nil {
+		return false, fmt.Errorf("invalid UUID format: %w", err)
+	}
+	err = WithConnection(func(conn *libvirt.Connect) error {
+		dom, err := conn.LookupDomainByUUIDString(uuidStr)
+		if err != nil {
+			if IsNoDomain(err) {
+				return nil
+			}
+			return err
+		}
+		defer dom.Free()
+		found = true
+		return dom.SetAutostart(on)
+	})
+	return found, err
 }
 
 // UndefineStopped removes the definition of a VM that is shut off, and nothing

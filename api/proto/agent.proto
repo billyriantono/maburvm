@@ -269,6 +269,22 @@ service NodeAgent {
   // unused, still in a registered pool, unchanged since it was listed.
   rpc DeleteOrphanDisk(DeleteOrphanDiskRequest) returns (DeleteOrphanDiskResponse);
 
+  // Shared storage pools: join or leave one, and the token file that proves
+  // nodes see the same storage.
+  rpc SetSharedPool(SetSharedPoolRequest) returns (SetSharedPoolResponse);
+  rpc SharedPoolToken(SharedPoolTokenRequest) returns (SharedPoolTokenResponse);
+
+  // SetFencedVMs replaces the list of VMs that were recovered onto another
+  // node while this one was down ("vm_recovery" feature). The agent never
+  // starts one and turns its autostart off; it does not stop one that runs.
+  // The answer says what is left of each here.
+  rpc SetFencedVMs(SetFencedVMsRequest) returns (SetFencedVMsResponse);
+
+  // RemoveFencedVM removes this node's copy of a fenced VM: its definition,
+  // and its disks except those in a shared pool (they are the VM's disks on
+  // its new node).
+  rpc RemoveFencedVM(RemoveFencedVMRequest) returns (RemoveFencedVMResponse);
+
   // PutImage stores a file uploaded to the panel (an ISO) in this node's image
   // cache. The first chunk names it; the data is checked against its sha256.
   rpc PutImage(stream ImageChunk) returns (PutImageResponse);
@@ -608,6 +624,11 @@ enum VMCommandType {
   // attached to it. Needs the agent feature "builtin_rescue".
   VM_COMMAND_TYPE_RESCUE = 15;
   VM_COMMAND_TYPE_UNRESCUE = 16; // Take the rescue system's disk out again (VM stopped)
+  // Define a VM on disks that exist already (adopt_disks), from config as
+  // CREATE builds it. Nothing is created, copied or started. For a VM
+  // recovered from a failed node onto another member of its shared pool.
+  // Needs the agent feature "vm_recovery".
+  VM_COMMAND_TYPE_ADOPT = 17;
 }
 
 // DiskStorageDisposition is the fail-closed, idempotent accountability verdict
@@ -692,6 +713,16 @@ message VMCommandRequest {
   // that MaburVM did not create (an imported VM's), when they live in a
   // registered pool. The operator confirmed it; without it they are kept.
   bool remove_foreign_volumes = 12;
+
+  // adopt_disks are the VM's existing disks, for ADOPT: vda first. Each must
+  // be a file in a shared pool this node is a member of.
+  repeated AdoptDisk adopt_disks = 13;
+}
+
+// AdoptDisk is one existing disk of a VM being adopted.
+message AdoptDisk {
+  string target = 1;
+  string path = 2;
 }
 
 // LVMPool is a volume group, or a thin pool inside one, registered as a pool.
@@ -2149,6 +2180,10 @@ message PoolCapacity {
   // one filesystem can be shown as sharing it rather than as independent
   // capacity that can be added up.
   string filesystem = 6;
+
+  // problem says why the node cannot use a pool whose path exists: a shared
+  // pool this node is a member of that is not mounted here. Empty when it can.
+  string problem = 7;
 }
 
 // DiskLocation is a directory the node's domains actually keep disks in.
@@ -2594,6 +2629,9 @@ message MigrationDiskInfo {
   bool readonly = 9;
   // seed marks the VM's own cloud-init seed image.
   bool seed = 10;
+  // cache is the disk's cache mode ("none", "writeback"...); empty for the
+  // hypervisor's default, which is not "none".
+  string cache = 11;
 }
 
 message GetMigrationInfoResponse {
@@ -2765,6 +2803,10 @@ message FinishMigrationSourceRequest {
   // lvm_pools are the LVM pools registered on this node: the moved VM's
   // logical volumes MaburVM created in them are removed too.
   repeated LVMPool lvm_pools = 3;
+  // keep_paths are disk files on shared storage that the VM uses on its new
+  // node: the same files, so they are never removed here. Sent only to an
+  // agent with the "shared_storage" feature.
+  repeated string keep_paths = 4;
 }
 
 message FinishMigrationSourceResponse {
@@ -2955,4 +2997,101 @@ message SetVLANBridgesResponse {
   repeated VLANBridgeStatus bridges = 3;
   // from_environment says the list in force came from the environment.
   bool from_environment = 4;
+}
+
+// ============================================================================
+// Shared storage pools
+// ============================================================================
+
+// SetSharedPoolRequest makes this node a member of a shared pool, or removes
+// it. As a member the node refuses to write under the pool's path unless the
+// pool's marker file is there (an unmounted path is the local disk underneath),
+// and defines disks in it with the host cache bypassed.
+message SetSharedPoolRequest {
+  string pool_id = 1;
+  // kind is "nfs" (the agent mounts server:export at the pool's fixed path
+  // with a systemd mount unit) or "mounted" (the operator mounts it at path).
+  string kind = 2;
+  // path is the directory of a "mounted" pool; ignored for "nfs".
+  string path = 3;
+  string nfs_server = 4;
+  string nfs_export = 5;
+  string mount_options = 6;
+  // remove takes the node out: refused while a VM here has a disk in the pool.
+  // An "nfs" pool is then unmounted and its unit removed.
+  bool remove = 7;
+}
+
+message SetSharedPoolResponse {
+  bool success = 1;
+  ErrorResponse error = 2;
+  // path is where the pool is on this node.
+  string path = 3;
+}
+
+// SharedPoolTokenRequest writes, reads or removes one small file directly
+// under a shared pool's path: how the panel proves two nodes see the same
+// storage (one writes a random token, the others read it back).
+message SharedPoolTokenRequest {
+  string path = 1;
+  // name starts with ".maburvm-".
+  string name = 2;
+  // op is "write", "read" or "remove".
+  string op = 3;
+  string content = 4;
+}
+
+message SharedPoolTokenResponse {
+  bool success = 1;
+  ErrorResponse error = 2;
+  bool exists = 3;
+  string content = 4;
+}
+
+// ============================================================================
+// VMs recovered onto another node
+// ============================================================================
+
+message SetFencedVMsRequest {
+  // vm_ids is the whole list; a VM left out is no longer fenced.
+  repeated string vm_ids = 1;
+}
+
+// FencedVM is what this node still has of a VM that now lives elsewhere.
+message FencedVM {
+  string vm_id = 1;
+  // defined is false when nothing of the VM is defined here.
+  bool defined = 2;
+  // state is "running", "paused", "shutoff"...
+  string state = 3;
+  repeated FencedDisk disks = 4;
+}
+
+message FencedDisk {
+  string target = 1;
+  string path = 2;
+  int64 size_bytes = 3;
+  // shared: in a shared pool, so never removed from here.
+  bool shared = 4;
+}
+
+message SetFencedVMsResponse {
+  bool success = 1;
+  ErrorResponse error = 2;
+  repeated FencedVM vms = 3;
+}
+
+message RemoveFencedVMRequest {
+  string vm_id = 1;
+  // force_stop powers the copy off first when it runs here. Without it a
+  // running copy is refused.
+  bool force_stop = 2;
+  repeated LVMPool lvm_pools = 3;
+}
+
+message RemoveFencedVMResponse {
+  bool success = 1;
+  ErrorResponse error = 2;
+  repeated string removed = 3;
+  repeated string kept = 4;
 }

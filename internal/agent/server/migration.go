@@ -96,7 +96,7 @@ func (s *NodeAgentService) GetMigrationInfo(ctx context.Context, req *pb.GetMigr
 				resp.Disks = append(resp.Disks, &pb.MigrationDiskInfo{
 					Target: d.Target, Device: d.Device, Path: d.Path, Format: d.Format, SourceType: d.SourceType,
 					VirtualSizeBytes: d.VirtualSize, FileSizeBytes: d.FileSize, BackingFile: d.BackingFile,
-					Readonly: d.ReadOnly, Seed: d.Seed,
+					Readonly: d.ReadOnly, Seed: d.Seed, Cache: d.Cache,
 				})
 			}
 		case libvirt.IsNoDomain(err):
@@ -243,6 +243,8 @@ func (s *NodeAgentService) PrepareMigrationTarget(ctx context.Context, req *pb.P
 		problems = append(problems, lvmTargetProblems(ctx, lvPool, needLV, req.ScratchBytesNeeded)...)
 	} else if fi, err := os.Stat(req.PoolPath); err != nil || !fi.IsDir() {
 		problems = append(problems, fmt.Sprintf("the pool directory %s does not exist on this node", req.PoolPath))
+	} else if err := storage.CheckSharedDir(req.PoolPath); err != nil {
+		problems = append(problems, err.Error())
 	} else if req.FreeBytesNeeded > 0 {
 		if free, err := freeBytes(req.PoolPath); err == nil && free < req.FreeBytesNeeded {
 			problems = append(problems, fmt.Sprintf("%s has %d GB free, and the VM's disks need %d GB", req.PoolPath, free>>30, req.FreeBytesNeeded>>30))
@@ -280,6 +282,11 @@ func (s *NodeAgentService) PrepareMigrationTarget(ctx context.Context, req *pb.P
 		if inUse, err := libvirt.DiskSourceFiles(); err == nil {
 			if old, err := migration.Removable(prev, prev.MigrationID, inUse); err == nil {
 				for _, f := range old {
+					// In a shared pool the file may be the VM's disk on another
+					// node by now: it is left for the orphaned-disk list.
+					if _, shared := storage.SharedPoolAt(f); shared {
+						continue
+					}
 					_ = os.Remove(f)
 				}
 				if removePreparedVolumes(ctx, prev) == nil {
@@ -393,9 +400,23 @@ func (s *NodeAgentService) MigrateVM(ctx context.Context, req *pb.MigrateVMReque
 			copyDrives = append(copyDrives, migration.Drive{Target: d.Target})
 		}
 	}
+	copied := map[string]bool{}
+	for _, d := range copyDrives {
+		copied[d.Target] = true
+	}
 	for _, d := range info.Drives {
-		if _, mapped := paths[d.Target]; d.Copied() && !mapped {
+		dest, mapped := paths[d.Target]
+		if d.Copied() && !mapped {
 			return fail(pb.ErrorCode_ERROR_CODE_INVALID_ARGUMENT, fmt.Errorf("drive %s has no place on the destination", d.Target))
+		}
+		// A disk that is not copied is the same file there: shared storage.
+		if d.Copied() && !copied[d.Target] {
+			if dest.Path != d.Path {
+				return fail(pb.ErrorCode_ERROR_CODE_INVALID_ARGUMENT, fmt.Errorf("drive %s is not copied, so it must stay at %s", d.Target, d.Path))
+			}
+			if err := sharedDiskHere(d.Path); err != nil {
+				return fail(pb.ErrorCode_ERROR_CODE_CONFLICT, err)
+			}
 		}
 	}
 
@@ -421,7 +442,23 @@ func (s *NodeAgentService) MigrateVM(ctx context.Context, req *pb.MigrateVMReque
 	return &pb.MigrateVMResponse{Success: true, Message: "started"}, nil
 }
 
-// PullMigratedVM starts copying a stopped VM's disks here from its node.
+// sharedDiskHere checks a disk a move leaves where it is: a file in a shared
+// pool this node is a member of, mounted and holding the file right now.
+func sharedDiskHere(p string) error {
+	if _, ok := storage.SharedPoolAt(p); !ok {
+		return fmt.Errorf("%s is not in a shared pool this node is a member of, so it cannot be used without a copy", p)
+	}
+	if err := storage.CheckSharedDir(filepath.Dir(p)); err != nil {
+		return err
+	}
+	if fi, err := os.Stat(p); err != nil || !fi.Mode().IsRegular() {
+		return fmt.Errorf("%s is not there as this node sees the shared pool", p)
+	}
+	return nil
+}
+
+// PullMigratedVM starts copying a stopped VM's disks here from its node. A
+// disk not marked for copying stays where it is, on shared storage.
 func (s *NodeAgentService) PullMigratedVM(ctx context.Context, req *pb.PullMigratedVMRequest) (*pb.PullMigratedVMResponse, error) {
 	if err := requireAuth(ctx); err != nil {
 		return nil, err
@@ -445,9 +482,15 @@ func (s *NodeAgentService) PullMigratedVM(ctx context.Context, req *pb.PullMigra
 	for _, f := range prep.Files {
 		allowed[f] = true
 	}
-	for _, p := range paths {
-		if !allowed[p.Path] {
-			return fail(fmt.Errorf("%s was not prepared for this migration", p.Path))
+	for _, d := range req.Disks {
+		if allowed[d.DestPath] {
+			continue
+		}
+		if d.Copy {
+			return fail(fmt.Errorf("%s was not prepared for this migration", d.DestPath))
+		}
+		if err := sharedDiskHere(d.DestPath); err != nil {
+			return fail(err)
 		}
 	}
 	if migrations.Running(req.VmId, req.MigrationId) {
@@ -678,7 +721,11 @@ func (s *NodeAgentService) FinishMigrationSource(ctx context.Context, req *pb.Fi
 	// Block devices outlive the definition, which owns only files: those
 	// MaburVM created for the VM go after it, others are kept for an operator.
 	blockDisks, _ := libvirt.BackupDisks(req.VmId)
-	removed, err := libvirt.RemoveMovedSource(req.VmId)
+	keep := map[string]bool{}
+	for _, p := range req.GetKeepPaths() {
+		keep[filepath.Clean(p)] = true
+	}
+	removed, err := libvirt.RemoveMovedSource(req.VmId, func(p string) bool { return keep[p] })
 	if err != nil && !libvirt.IsNoDomain(err) {
 		return &pb.FinishMigrationSourceResponse{Removed: removed, Error: migErr(pb.ErrorCode_ERROR_CODE_CONFLICT, err)}, nil
 	}
@@ -694,15 +741,7 @@ func (s *NodeAgentService) FinishMigrationSource(ctx context.Context, req *pb.Fi
 			}
 		}
 	}
-	if s.networkMgr != nil {
-		if cerr := s.networkMgr.CleanupVMNetwork(req.VmId); cerr != nil {
-			log.Printf("[Migration] WARNING: network cleanup of moved VM %s: %v", req.VmId, cerr)
-		}
-		s.networkMgr.ForgetVM(req.VmId)
-		updateNetworkConfig(netConfigPath(), currentBootID(), req.VmId, nil)
-		clearPendingGuest(req.VmId)
-		_ = s.hostProxy.Set(req.VmId, nil)
-	}
+	s.forgetVMNetwork(req.VmId)
 	log.Printf("[Migration] removed the old copy of %s (migration %s): %v", req.VmId, req.MigrationId, removed)
 	return &pb.FinishMigrationSourceResponse{Success: true, Removed: removed}, nil
 }

@@ -125,16 +125,29 @@ function Summary({ chk }: { chk: MigrationCheck }) {
         To <span className="font-medium">{chk.dest_node_name || "—"}</span>
         {chk.dest_pool_name && <>, storage pool <span className="font-medium">{chk.dest_pool_name}</span> <span className="font-mono text-xs">{chk.dest_pool_path}</span></>}.
       </p>
-      {chk.mode === "live" && (
+      {chk.mode === "live" && !chk.copy_free && (
         <p className="text-muted-foreground">
           Moves live: the VM keeps running while its memory and about {size} of disk are copied, then pauses for a moment
           as it switches to the new node. Its addresses stay the same.
         </p>
       )}
-      {chk.mode === "offline" && (
+      {chk.mode === "offline" && !chk.copy_free && (
         <p className="text-muted-foreground">
           Moves offline: the VM is stopped, so its disks (about {size}) are copied and it stays stopped on the new node
           until it is started.
+        </p>
+      )}
+      {chk.copy_free && (
+        <p className="text-muted-foreground">
+          {chk.mode === "live"
+            ? "Moves live without copying a disk: only its memory is copied, then it pauses for a moment as it switches to the new node."
+            : "Moves offline without copying a disk: it is defined on the new node and stays stopped until it is started."}{" "}
+          Its disks are on shared storage both nodes use, and stay where they are.
+        </p>
+      )}
+      {!chk.copy_free && (chk.shared_disks?.length ?? 0) > 0 && (
+        <p className="text-muted-foreground">
+          {chk.shared_disks?.join(", ")} stay on shared storage both nodes use; only the other disks are copied.
         </p>
       )}
       {chk.cpu_mode === "host-passthrough" && chk.mode === "live" && chk.can_move && (

@@ -97,6 +97,7 @@ var PermissionCatalog = []PermissionArea{
 		{"node:update", "Change nodes and regions, update agents, see node tokens"},
 		{"node:delete", "Remove nodes"},
 		{"node:drain", "Drain nodes: move every VM off a node"},
+		{"node:recover", "Recover a failed node's VMs on other nodes, and remove what is left of them on it"},
 		{"storage:create", "Add storage pools and volumes"},
 		{"storage:update", "Change storage pools"},
 		{"storage:delete", "Remove storage pools and volumes"},

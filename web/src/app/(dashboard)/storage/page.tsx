@@ -33,6 +33,7 @@ import type { StoragePool } from "@/types"
 import { useConfirm } from "@/components/confirm-provider"
 import { toast } from "sonner"
 import { PoolAllocation } from "@/components/pool-allocation"
+import { AddSharedPoolDialog, SharedPools } from "@/components/shared-pools"
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B"
@@ -275,13 +276,15 @@ export default function StorageListPage() {
   const emptyPool = { name: "", type: "dir" as "dir" | "lvm" | "lvmthin", path: "", vg: "", thin: "", node_id: "", alert_threshold: 90 }
   const [newPool, setNewPool] = useState(emptyPool)
   const [volumesPool, setVolumesPool] = useState<StoragePool | null>(null)
+  const [showAddShared, setShowAddShared] = useState(false)
 
-  const filteredPools = pools?.filter(pool =>
+  // A node's part of a shared pool is shown once, under the shared pool.
+  const filteredPools = pools?.filter(pool => !pool.shared_pool_id && (
     pool.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
     pool.path.toLowerCase().includes(searchQuery.toLowerCase()) ||
     pool.node_id?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       nodeNames.get(pool.node_id)?.toLowerCase().includes(searchQuery.toLowerCase())
-  ) ?? []
+  )) ?? []
 
   // Nodes with more than one pool marked for new VMs (left by older panels).
   // Placement then uses the roomiest online one, so neither badge alone is the truth.
@@ -295,11 +298,23 @@ export default function StorageListPage() {
 
   const clearFilters = () => setSearchQuery("")
 
+  // Shared storage counts once, however many nodes mount it: the first
+  // measured member stands for the pool.
+  const counted = useMemo(() => {
+    const seen = new Set<string>()
+    const measuredFirst = [...(pools ?? [])].sort((a, b) => (b.total_space ?? 0) - (a.total_space ?? 0))
+    return measuredFirst.filter((p) => {
+      if (!p.shared_pool_id) return true
+      if (seen.has(p.shared_pool_id)) return false
+      seen.add(p.shared_pool_id)
+      return true
+    })
+  }, [pools])
   const stats = {
-    totalPools: pools?.length ?? 0,
-    totalCapacity: pools?.reduce((sum, p) => sum + (p.total_space ?? 0), 0) ?? 0,
-    usedStorage: pools?.reduce((sum, p) => sum + (p.used_space ?? 0), 0) ?? 0,
-    availableStorage: pools?.reduce((sum, p) => sum + (p.available_space ?? 0), 0) ?? 0,
+    totalPools: counted.length,
+    totalCapacity: counted.reduce((sum, p) => sum + (p.total_space ?? 0), 0),
+    usedStorage: counted.reduce((sum, p) => sum + (p.used_space ?? 0), 0),
+    availableStorage: counted.reduce((sum, p) => sum + (p.available_space ?? 0), 0),
   }
 
   const handleDelete = async (pool: NonNullable<typeof pools>[number]) => {
@@ -397,6 +412,7 @@ export default function StorageListPage() {
         </div>
         <div className="flex gap-2">
           <Link href="/storage/orphans"><Button variant="outline">Orphaned disks</Button></Link>
+          <Button variant="outline" onClick={() => setShowAddShared(true)}>Add shared pool</Button>
           <Button className="gap-2" onClick={() => setShowAddPool(true)}>
             <Plus className="w-4 h-4" />
             Add Pool
@@ -482,6 +498,8 @@ export default function StorageListPage() {
           )}
         </div>
       </div>
+
+      <SharedPools nodes={nodes ?? []} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {filteredPools.length === 0 ? (
@@ -726,6 +744,8 @@ export default function StorageListPage() {
             </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AddSharedPoolDialog open={showAddShared} onOpenChange={setShowAddShared} />
 
       <VolumesDialog pool={volumesPool} onClose={() => setVolumesPool(null)} />
     </div>

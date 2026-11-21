@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/maburvm/panel/internal/agent/migration"
 	"github.com/maburvm/panel/internal/agent/storage"
 	"libvirt.org/go/libvirt"
 )
@@ -402,6 +403,10 @@ func RecoverBackupOverlays() error {
 			if err != nil {
 				continue
 			}
+			// A VM recovered onto another node: its disks are that node's now.
+			if migration.IsFenced(id) {
+				continue
+			}
 			seen := map[string]bool{}
 			for _, flags := range []libvirt.DomainXMLFlags{0, libvirt.DOMAIN_XML_INACTIVE} {
 				x, err := doms[i].GetXMLDesc(flags)
@@ -441,6 +446,11 @@ func RecoverBackupOverlays() error {
 	// Overlays no domain uses are what a commit left behind before removing them.
 	if inUse, err := DiskSourceFiles(); err == nil {
 		for dir := range dirs {
+			// In a shared pool an overlay may be the disk a VM on another node
+			// writes to right now, which this node cannot see.
+			if _, shared := storage.SharedPoolAt(dir); shared {
+				continue
+			}
 			matches, _ := filepath.Glob(filepath.Join(dir, "*"+storage.OverlayMarker+"*"))
 			for _, m := range matches {
 				if !inUse[filepath.Clean(m)] {

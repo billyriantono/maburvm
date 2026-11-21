@@ -29,6 +29,10 @@ type StoragePool struct {
 	// its VMs' disks put only in pools of that tier. "" is untiered. Read-only
 	// here, written by table name (storageService.SetPoolTier).
 	Tier string `json:"tier" gorm:"column:tier;->"`
+	// SharedPoolID names the shared pool this row is one node's member of;
+	// nil for a pool of the node's own. Read-only here, written by table name
+	// (SharedPoolService).
+	SharedPoolID *string `json:"shared_pool_id,omitempty" gorm:"column:shared_pool_id;->"`
 	// StatusNote says why the node cannot use the pool; MetadataPercent is a
 	// thin pool's metadata use. Both are measured, not set.
 	StatusNote      string         `json:"status_note" gorm:"type:text;not null;default:''"`

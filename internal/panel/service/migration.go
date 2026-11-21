@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -47,9 +50,22 @@ type MigrationService struct {
 	alerts  *AlertService
 	river   *river.Client[pgx.Tx]
 	logger  *slog.Logger
+	// shared proves two nodes see the same shared pool before a move leaves
+	// a disk where it is.
+	shared *SharedPoolService
 
 	// poll is how often a running move is asked for progress.
 	poll time.Duration
+
+	// backups says what a node needs to restore a backup, for recovering a
+	// failed node's VMs; nodeAnswers reports a node whose agent port answers
+	// right now. See recovery.go.
+	backups     restoreSourcer
+	nodeAnswers func(ctx context.Context, node *models.Node) bool
+	fencing     sync.Map
+	// enqueueRecovery queues a recovery's job and returns its id; nil uses
+	// the job queue.
+	enqueueRecovery func(ctx context.Context, row *models.VMRecovery) (int64, error)
 }
 
 // NewMigrationService builds the service.
@@ -57,7 +73,8 @@ func NewMigrationService(db *gorm.DB, vms *VMService, network *NetworkService, a
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &MigrationService{db: db, vms: vms, network: network, alerts: alerts, river: riverClient, logger: logger, poll: 3 * time.Second}
+	return &MigrationService{db: db, vms: vms, network: network, alerts: alerts, river: riverClient, logger: logger, poll: 3 * time.Second,
+		shared: NewSharedPoolService(db, vms), nodeAnswers: agentPortAnswers}
 }
 
 // agent returns a client for a node's agent and a context carrying its credentials.
@@ -110,8 +127,14 @@ type MigrationCheck struct {
 	Blockers       []string `json:"blockers"`
 	Warnings       []string `json:"warnings"`
 	CanMove        bool     `json:"can_move"`
+	// SharedDisks are the drives on shared storage both nodes use: they stay
+	// where they are and are not copied. CopyFree says every disk is one.
+	SharedDisks []string `json:"shared_disks"`
+	CopyFree    bool     `json:"copy_free"`
 
 	plan *migrationPlan
+	// copyGB is the disk the destination pool has to take.
+	copyGB int
 }
 
 func (c *MigrationCheck) block(format string, args ...interface{}) {
@@ -132,6 +155,10 @@ type planDisk struct {
 	FileSize int64
 	// Block is a disk on a block device (a logical volume): raw, copied whole.
 	Block bool
+	// Cache is the disk's cache mode; "" is the hypervisor's default.
+	Cache string
+	// Backing is the image the disk is built on, "" for none.
+	Backing string
 }
 
 // destFormat is the format a disk has on the destination pool: raw on a
@@ -172,6 +199,24 @@ type migrationPlan struct {
 	bridges []string
 	disks   []planDisk
 	seed    *planDisk
+	// stay holds the targets of drives that are not copied: files on shared
+	// storage that are the same files on the destination.
+	stay map[string]bool
+}
+
+// keptPaths are the files the move leaves in place, which the source must
+// never remove.
+func (p *migrationPlan) keptPaths() []string {
+	var out []string
+	for _, d := range p.disks {
+		if p.stay[d.Target] {
+			out = append(out, d.Path)
+		}
+	}
+	if p.seed != nil && p.stay[p.seed.Target] {
+		out = append(out, p.seed.Path)
+	}
+	return out
 }
 
 // checkEnv carries what a drain plan already promised to each node, and the
@@ -180,6 +225,8 @@ type checkEnv struct {
 	info  map[string]*pb.GetMigrationInfoResponse
 	infoE map[string]error
 	extra map[string]*extraLoad
+	// proofs are shared-pool checks between two nodes already made.
+	proofs map[string]error
 }
 
 type extraLoad struct {
@@ -189,7 +236,7 @@ type extraLoad struct {
 }
 
 func newCheckEnv() *checkEnv {
-	return &checkEnv{info: map[string]*pb.GetMigrationInfoResponse{}, infoE: map[string]error{}, extra: map[string]*extraLoad{}}
+	return &checkEnv{info: map[string]*pb.GetMigrationInfoResponse{}, infoE: map[string]error{}, extra: map[string]*extraLoad{}, proofs: map[string]error{}}
 }
 
 func (e *checkEnv) add(nodeID, poolID string, vm *models.VM, diskGB int) {
@@ -260,10 +307,13 @@ func (m *MigrationService) activeMigration(ctx context.Context, vmID string) (*m
 }
 
 // VMMigrating reports that a VM is being moved, for the guards on everything
-// else that changes a VM.
+// else that changes a VM. A recovery from a failed node is a move too.
 func VMMigrating(ctx context.Context, db *gorm.DB, vmID string) bool {
 	if db == nil {
 		return false
+	}
+	if queue.RecoveryActive(ctx, db, vmID) {
+		return true
 	}
 	var n int64
 	// Quiet: a test schema without the table has no migrations, and says so on every call.
@@ -302,7 +352,7 @@ func (m *MigrationService) check(ctx context.Context, req MigrationRequest, env 
 	}
 	base := MigrationCheck{
 		VMID: f.vm.ID, Hostname: f.vm.Hostname, SourceNodeID: f.src.ID, SourceNodeName: f.src.Name,
-		Mode: f.mode, DiskGB: f.diskGB, Blockers: []string{}, Warnings: []string{},
+		Mode: f.mode, DiskGB: f.diskGB, Blockers: []string{}, Warnings: []string{}, SharedDisks: []string{},
 	}
 	if f.info != nil {
 		base.CPUMode = f.info.VmCpuMode
@@ -334,7 +384,7 @@ func (m *MigrationService) check(ctx context.Context, req MigrationRequest, env 
 	for i := range candidates {
 		chk := base
 		chk.Blockers = append([]string{}, f.blocked...)
-		chk.Warnings = []string{}
+		chk.Warnings, chk.SharedDisks = []string{}, []string{}
 		m.destinationChecks(ctx, f, &candidates[i], req, env, &chk)
 		chk.CanMove = len(chk.Blockers) == 0
 		if chk.CanMove {
@@ -380,6 +430,9 @@ func (m *MigrationService) sourceFacts(ctx context.Context, req MigrationRequest
 	}
 	if queue.RestoreActive(ctx, m.db, vm.ID) {
 		block("a backup or snapshot is being restored to the VM")
+	}
+	if queue.RecoveryActive(ctx, m.db, vm.ID) {
+		block("the VM is being recovered from a node that went down")
 	}
 	if src.Status == models.NodeStatusOffline {
 		block("the VM's node %s is offline", src.Name)
@@ -481,7 +534,7 @@ func (m *MigrationService) sourceFacts(ctx context.Context, req MigrationRequest
 		}
 		names[name] = true
 		f.disks = append(f.disks, planDisk{Target: d.Target, Path: d.Path, FileName: name, Format: d.Format, Virtual: d.VirtualSizeBytes,
-			FileSize: d.FileSizeBytes, Block: d.SourceType == "block"})
+			FileSize: d.FileSizeBytes, Block: d.SourceType == "block", Cache: d.Cache, Backing: d.BackingFile})
 		if d.SourceType == "block" {
 			f.blockDisks = true
 		}
@@ -502,12 +555,7 @@ func (m *MigrationService) recordBlockers(ctx context.Context, vm *models.VM, bl
 	if len(floating) > 0 {
 		block("floating IP %s is attached; floating IPs live on one node, so detach it first", strings.Join(hostAddrs(floating), ", "))
 	}
-	var networks []string
-	m.db.WithContext(ctx).Table("ip_addresses a").Select("DISTINCT m.name").
-		Joins("JOIN ip_pools p ON p.id = a.pool_id").
-		Joins("JOIN managed_networks m ON m.bridge = p.bridge AND m.deleted_at IS NULL").
-		Where("a.vm_id = ? AND a.deleted_at IS NULL AND p.bridge <> ''", vm.ID).Pluck("m.name", &networks)
-	if len(networks) > 0 {
+	if networks := vmPrivateNetworks(ctx, m.db, vm.ID); len(networks) > 0 {
 		block("the VM is in private network %s, which exists on one node only", strings.Join(networks, ", "))
 	}
 	if vm.RescueMode {
@@ -527,6 +575,44 @@ func (m *MigrationService) recordBlockers(ctx context.Context, vm *models.VM, bl
 	if m.db.WithContext(ctx).Model(&models.Snapshot{}).Where("vm_id = ?", vm.ID).Count(&snaps).Error == nil && snaps > 0 {
 		block("the VM has %d snapshots; snapshots cannot move with it, so delete them first", snaps)
 	}
+}
+
+// vmPrivateNetworks names the private networks a VM has an address in. Each
+// exists on one node only.
+func vmPrivateNetworks(ctx context.Context, db *gorm.DB, vmID string) []string {
+	var networks []string
+	db.WithContext(ctx).Table("ip_addresses a").Select("DISTINCT m.name").
+		Joins("JOIN ip_pools p ON p.id = a.pool_id").
+		Joins("JOIN managed_networks m ON m.bridge = p.bridge AND m.deleted_at IS NULL").
+		Where("a.vm_id = ? AND a.deleted_at IS NULL AND p.bridge <> ''", vmID).Pluck("m.name", &networks)
+	return networks
+}
+
+// missingPool is an address pool a VM uses that a node does not carry.
+type missingPool struct {
+	ID     string
+	Name   string
+	Family string
+	NAT    bool `gorm:"column:nat"`
+}
+
+// vmPoolsNotOn lists the pools the VM's addresses and IPv6 prefix come from
+// that are not available on nodeID: addresses from them would not reach the VM
+// there. floating counts the pools of its floating IPs too.
+func vmPoolsNotOn(ctx context.Context, db *gorm.DB, vmID, nodeID string, floating bool) ([]missingPool, error) {
+	skip := models.IPDeliveryFloating
+	if floating {
+		skip = "" // no address has an empty delivery mode
+	}
+	var pools []missingPool
+	err := db.WithContext(ctx).Raw(`SELECT DISTINCT p.id, p.name, p.family, p.nat FROM ip_pools p WHERE p.id IN (
+			SELECT pool_id FROM ip_addresses WHERE vm_id = ? AND deleted_at IS NULL AND delivery_mode <> ?
+			UNION SELECT pool_id FROM vm_ipv6_prefixes WHERE vm_id = ?)
+		AND NOT (EXISTS (SELECT 1 FROM ip_pool_nodes j WHERE j.pool_id = p.id AND j.node_id = ?) OR COALESCE(p.node_id = ?, false)
+			OR (p.node_id IS NULL AND NOT EXISTS (SELECT 1 FROM ip_pool_nodes j WHERE j.pool_id = p.id)))
+		ORDER BY p.name`,
+		vmID, skip, vmID, nodeID, nodeID).Scan(&pools).Error
+	return pools, err
 }
 
 func hostAddrs(in []string) []string {
@@ -644,13 +730,15 @@ func (m *MigrationService) candidates(ctx context.Context, f *srcFacts, env *che
 		return nil, err
 	}
 	var fit []nodeLoad
+	copyFree := map[string]bool{}
 	for _, l := range loads {
-		pool := movePool(ctx, m.db, l.Node.ID, VMPool(ctx, m.db, f.vm.ID, f.src.ID))
+		pool, stay := m.destination(ctx, f, l.Node.ID, "")
 		if pool == nil {
 			continue
 		}
-		if len(m.capacityBlockers(ctx, f.vm, &l.Node, pool, f.diskGB, env)) == 0 {
+		if len(m.capacityBlockers(ctx, f.vm, &l.Node, pool, f.copyGB(stay), env)) == 0 {
 			fit = append(fit, l)
+			copyFree[l.Node.ID] = len(f.disks) > 0 && f.copyGB(stay) == 0
 		}
 	}
 	ranked := rankNodes(withExtra(fit, env), f.vm.Resources.RAM)
@@ -658,6 +746,8 @@ func (m *MigrationService) candidates(ctx context.Context, f *srcFacts, env *che
 	for i := range ranked {
 		out[i] = ranked[i].Node
 	}
+	// A node that needs no disk copy (shared storage) comes first.
+	sort.SliceStable(out, func(i, j int) bool { return copyFree[out[i].ID] && !copyFree[out[j].ID] })
 	return out, nil
 }
 
@@ -673,8 +763,8 @@ func withExtra(loads []nodeLoad, env *checkEnv) []nodeLoad {
 }
 
 // capacityBlockers is admission for a VM arriving on a node: RAM and vCPU
-// under the node's ratios, the disks in the pool's free space and allocation
-// ratio, counting what a drain plan already sends there.
+// under the node's ratios, the diskGB of disk it brings in the pool's free
+// space and allocation ratio, counting what a drain plan already sends there.
 func (m *MigrationService) capacityBlockers(ctx context.Context, vm *models.VM, dst *models.Node, pool *models.StoragePool, diskGB int, env *checkEnv) []string {
 	var out []string
 	loads, err := loadNodes(ctx, m.db, []models.Node{*dst})
@@ -687,6 +777,9 @@ func (m *MigrationService) capacityBlockers(ctx context.Context, vm *models.VM, 
 	}
 	if !l.vcpuFits(vm.Resources.CPU) {
 		out = append(out, fmt.Sprintf("node %s would pass its vCPU overcommit limit", dst.Name))
+	}
+	if diskGB <= 0 {
+		return out // nothing is placed in the pool: the disks are there already
 	}
 	extraGB := 0
 	if x := env.extra[dst.ID]; x != nil {
@@ -719,17 +812,32 @@ func (m *MigrationService) destinationChecks(ctx context.Context, f *srcFacts, d
 	if dst.CreationPaused {
 		chk.block("node %s is paused for new VMs; resume it to move VMs onto it", dst.Name)
 	}
+	if oldCopyOn(ctx, m.db, f.vm.ID, dst.ID) {
+		chk.block("node %s still holds an old copy of this VM from a recovery, and refuses to run it; remove the copy under Recovery leftovers on that node's page first", dst.Name)
+	}
 
-	var pool *models.StoragePool
-	if req.DestPoolID != "" {
-		var p models.StoragePool
-		if err := m.db.WithContext(ctx).Where("id = ? AND node_id = ?", req.DestPoolID, dst.ID).First(&p).Error; err != nil {
-			chk.block("storage pool %s is not on node %s", req.DestPoolID, dst.Name)
-		} else {
-			pool = &p
-		}
-	} else if pool = movePool(ctx, m.db, dst.ID, VMPool(ctx, m.db, f.vm.ID, f.src.ID)); pool == nil {
+	pool, stay := m.destination(ctx, f, dst.ID, req.DestPoolID)
+	switch {
+	case pool != nil:
+	case req.DestPoolID != "":
+		chk.block("storage pool %s is not on node %s", req.DestPoolID, dst.Name)
+	default:
 		chk.block("the panel knows no online storage pool on node %s to put the VM's disks in", dst.Name)
+	}
+	stays := map[string]bool{}
+	for t := range stay {
+		stays[t] = true
+	}
+	chk.copyGB = f.copyGB(stay)
+	for _, d := range f.disks {
+		if stays[d.Target] {
+			chk.SharedDisks = append(chk.SharedDisks, d.Target)
+			chk.CopyBytes -= d.FileSize
+		}
+	}
+	chk.CopyFree = len(f.disks) > 0 && len(chk.SharedDisks) == len(f.disks)
+	if len(stay) > 0 {
+		m.sharedChecks(ctx, f, dst, stay, env, chk)
 	}
 	if pool != nil {
 		chk.DestPoolID, chk.DestPoolName, chk.DestPoolPath = pool.ID, pool.Name, pool.Path
@@ -747,7 +855,7 @@ func (m *MigrationService) destinationChecks(ctx context.Context, f *srcFacts, d
 				}
 			}
 		}
-		for _, b := range m.capacityBlockers(ctx, f.vm, dst, pool, f.diskGB, env) {
+		for _, b := range m.capacityBlockers(ctx, f.vm, dst, pool, chk.copyGB, env) {
 			chk.block("%s", b)
 		}
 	}
@@ -787,17 +895,11 @@ func (m *MigrationService) destinationChecks(ctx context.Context, f *srcFacts, d
 		chk.warn("%d of the VM's backups are in node %s's own storage; node %s can restore them only if it uses the same storage", nodeKept, f.src.Name, dst.Name)
 	}
 
-	var pools []string
-	if err := m.db.WithContext(ctx).Raw(`SELECT DISTINCT p.name FROM ip_pools p WHERE p.id IN (
-			SELECT pool_id FROM ip_addresses WHERE vm_id = ? AND deleted_at IS NULL AND delivery_mode <> ?
-			UNION SELECT pool_id FROM vm_ipv6_prefixes WHERE vm_id = ?)
-		AND NOT (EXISTS (SELECT 1 FROM ip_pool_nodes j WHERE j.pool_id = p.id AND j.node_id = ?) OR COALESCE(p.node_id = ?, false)
-			OR (p.node_id IS NULL AND NOT EXISTS (SELECT 1 FROM ip_pool_nodes j WHERE j.pool_id = p.id)))`,
-		f.vm.ID, models.IPDeliveryFloating, f.vm.ID, dst.ID, dst.ID).Scan(&pools).Error; err != nil {
+	if pools, err := vmPoolsNotOn(ctx, m.db, f.vm.ID, dst.ID, false); err != nil {
 		chk.block("the VM's address pools could not be checked: %v", err)
 	} else {
 		for _, p := range pools {
-			chk.block("address pool %s is not available on node %s, so the VM's address would not reach it there", p, dst.Name)
+			chk.block("address pool %s is not available on node %s, so the VM's address would not reach it there", p.Name, dst.Name)
 		}
 	}
 	var unmanaged int64
@@ -843,7 +945,7 @@ func (m *MigrationService) destinationChecks(ctx context.Context, f *srcFacts, d
 		chk.block("%v", err)
 		return
 	}
-	dry := m.targetRequest(f, pool, f.ownMigration, true)
+	dry := m.targetRequest(f, pool, f.ownMigration, true, stays)
 	if f.mode == models.MigrationLive && f.info.VmCpuMode != "host-passthrough" {
 		dry.CpuXml = f.info.VmCpuXml
 	}
@@ -863,11 +965,136 @@ func (m *MigrationService) destinationChecks(ctx context.Context, f *srcFacts, d
 		}
 	}
 	chk.plan = &migrationPlan{vm: f.vm, src: f.src, dst: dst, pool: pool, mode: f.mode, cpuMode: f.info.VmCpuMode,
-		cpuXML: dry.CpuXml, bridges: f.info.Bridges, disks: f.disks, seed: f.seed}
+		cpuXML: dry.CpuXml, bridges: f.info.Bridges, disks: f.disks, seed: f.seed, stay: stays}
 }
 
-// targetRequest asks the destination to check or prepare for the VM.
-func (m *MigrationService) targetRequest(f *srcFacts, pool *models.StoragePool, migrationID string, dryRun bool) *pb.PrepareMigrationTargetRequest {
+// sharedStay finds the VM's drives that reach dstID without a copy: each is a
+// file in a shared pool both nodes are members of, so it is the same file
+// there. It maps the drive's target to the destination's member pool.
+func (m *MigrationService) sharedStay(ctx context.Context, f *srcFacts, dstID string) map[string]*models.StoragePool {
+	out := map[string]*models.StoragePool{}
+	// Quiet: a test schema without shared pools has none.
+	quiet := func() *gorm.DB { return m.db.WithContext(ctx).Session(&gorm.Session{Logger: gormlogger.Discard}) }
+	var src, dst []models.StoragePool
+	if quiet().Where("node_id = ? AND shared_pool_id IS NOT NULL", f.src.ID).Find(&src).Error != nil || len(src) == 0 {
+		return out
+	}
+	if quiet().Where("node_id = ? AND shared_pool_id IS NOT NULL AND status = ?", dstID, "online").Find(&dst).Error != nil {
+		return out
+	}
+	drives := append([]planDisk{}, f.disks...)
+	if f.seed != nil {
+		drives = append(drives, *f.seed)
+	}
+	for _, d := range drives {
+		for i := range src {
+			if d.Block || !PoolHoldsDisk(src[i], d.Path) {
+				continue
+			}
+			for j := range dst {
+				if *dst[j].SharedPoolID == *src[i].SharedPoolID && path.Clean(dst[j].Path) == path.Clean(src[i].Path) {
+					out[d.Target] = &dst[j]
+				}
+			}
+		}
+	}
+	return out
+}
+
+// destination is the pool the VM's copied disks go in on dstID, and the
+// drives that stay where they are (always, whatever pool is named: they are
+// there already). Without a named pool the VM follows its system disk: onto
+// the shared pool it is in, or into the pool movePool picks.
+func (m *MigrationService) destination(ctx context.Context, f *srcFacts, dstID, poolID string) (*models.StoragePool, map[string]*models.StoragePool) {
+	stay := m.sharedStay(ctx, f, dstID)
+	if poolID != "" {
+		var p models.StoragePool
+		if err := m.db.WithContext(ctx).Where("id = ? AND node_id = ?", poolID, dstID).First(&p).Error; err != nil {
+			return nil, nil
+		}
+		return &p, stay
+	}
+	if len(f.disks) > 0 && stay[f.disks[0].Target] != nil {
+		return stay[f.disks[0].Target], stay
+	}
+	return movePool(ctx, m.db, dstID, VMPool(ctx, m.db, f.vm.ID, f.src.ID)), stay
+}
+
+// copyGB is the disk the destination pool has to take: all of it, less the
+// disks that stay on shared storage.
+func (f *srcFacts) copyGB(stay map[string]*models.StoragePool) int {
+	var kept int64
+	left := 0
+	for _, d := range f.disks {
+		if stay[d.Target] != nil {
+			kept += d.Virtual
+		} else {
+			left++
+		}
+	}
+	if len(f.disks) > 0 && left == 0 {
+		return 0
+	}
+	return max(f.diskGB-int(kept/bytesPerGB), 0)
+}
+
+// sharedChecks adds what stops a move that leaves disks on shared storage:
+// an agent too old to keep them, a destination that does not see the same
+// storage right now, and, for a live move, a disk that goes through the
+// host's cache.
+func (m *MigrationService) sharedChecks(ctx context.Context, f *srcFacts, dst *models.Node, stay map[string]*models.StoragePool, env *checkEnv, chk *MigrationCheck) {
+	for _, n := range []*models.Node{f.src, dst} {
+		if !m.nodeHasFeature(ctx, n, models.FeatureSharedStorage) {
+			chk.block("node %s needs an agent update before a VM can move without its disks on shared storage being copied", n.Name)
+			return
+		}
+	}
+	proved := map[string]bool{}
+	prove := func(q *models.StoragePool) {
+		id := *q.SharedPoolID
+		if proved[id] {
+			return
+		}
+		proved[id] = true
+		key := id + "|" + f.src.ID + "|" + dst.ID
+		err, done := env.proofs[key]
+		if !done {
+			err = m.shared.ProveBetween(ctx, id, f.src, dst)
+			env.proofs[key] = err
+		}
+		if err != nil {
+			chk.block("shared pool %s cannot carry this move: %v", q.Name, err)
+		}
+	}
+	for _, d := range f.disks {
+		q := stay[d.Target]
+		if q == nil {
+			continue
+		}
+		prove(q)
+		// The destination opens the disk's backing image at the same path: it
+		// must be the same file, so in the same shared directory.
+		if b := d.Backing; b != "" {
+			if !path.IsAbs(b) {
+				b = path.Join(path.Dir(d.Path), b)
+			}
+			if path.Dir(b) != path.Clean(q.Path) {
+				chk.block("disk %s is built on %s, which is not in shared pool %s, so node %s would not have that image", d.Target, b, q.Name, dst.Name)
+			}
+		}
+		if f.mode == models.MigrationLive && d.Cache != "none" && d.Cache != "directsync" {
+			chk.block("disk %s is on shared storage but goes through the host's cache, so moving it live without a copy could lose writes; stop the VM and move it offline once, which defines it with cache=none", d.Target)
+		}
+	}
+	if f.seed != nil && stay[f.seed.Target] != nil {
+		prove(stay[f.seed.Target])
+	}
+}
+
+// targetRequest asks the destination to check or prepare for the VM. Drives
+// in stay are left out: nothing is made for them there, so nothing of theirs
+// is ever rolled back.
+func (m *MigrationService) targetRequest(f *srcFacts, pool *models.StoragePool, migrationID string, dryRun bool, stay map[string]bool) *pb.PrepareMigrationTargetRequest {
 	req := &pb.PrepareMigrationTargetRequest{
 		VmId: f.vm.ID, MigrationId: migrationID, PoolPath: pool.Path, DryRun: dryRun,
 		CreateDisks: f.mode == models.MigrationLive,
@@ -880,6 +1107,9 @@ func (m *MigrationService) targetRequest(f *srcFacts, pool *models.StoragePool, 
 		req.Bridges = f.info.Bridges
 	}
 	for _, d := range f.disks {
+		if stay[d.Target] {
+			continue
+		}
 		req.Disks = append(req.Disks, &pb.MigrationTargetDisk{Target: d.Target, FileName: d.destFileName(pool, f.mode),
 			VirtualSizeBytes: d.Virtual, Format: d.destFormat(pool, f.mode)})
 		switch {
@@ -890,7 +1120,7 @@ func (m *MigrationService) targetRequest(f *srcFacts, pool *models.StoragePool, 
 			req.ScratchBytesNeeded += d.FileSize
 		}
 	}
-	if f.seed != nil {
+	if f.seed != nil && !stay[f.seed.Target] {
 		req.SeedFileName = f.seed.FileName
 	}
 	return req

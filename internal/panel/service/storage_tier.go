@@ -7,6 +7,7 @@ import (
 
 	"github.com/maburvm/panel/internal/shared/models"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 // Storage tiers: a label on storage pools (nvme, hdd). A plan naming a tier
@@ -61,10 +62,17 @@ func NodeDiskPool(ctx context.Context, db *gorm.DB, nodeID, tier string) (*model
 }
 
 // chosenPool is a pool staff named for a new VM: it must be on the VM's node
-// and online.
+// and online. A shared pool's id names that node's member of it.
 func chosenPool(ctx context.Context, db *gorm.DB, poolID, nodeID string) (*models.StoragePool, error) {
 	var p models.StoragePool
-	if err := db.WithContext(ctx).Where("id = ? AND node_id = ?", poolID, nodeID).First(&p).Error; err != nil {
+	err := db.WithContext(ctx).Where("id = ? AND node_id = ?", poolID, nodeID).First(&p).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		if db.WithContext(ctx).Session(&gorm.Session{Logger: gormlogger.Discard}).
+			Where("shared_pool_id = ? AND node_id = ?", poolID, nodeID).First(&p).Error == nil {
+			err = nil
+		}
+	}
+	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, fmt.Errorf("%w: storage pool %s is not on the VM's node", ErrInvalidStoragePool, poolID)
 		}

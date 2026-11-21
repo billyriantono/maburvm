@@ -20,6 +20,7 @@ and database queries with `$DC exec postgres psql -U maburvm -d maburvm`
 6. [Abuse report about an address](#6-abuse-report-about-an-address)
 7. [Lost access to the Owner account](#7-lost-access-to-the-owner-account)
 8. [A VM that keeps crashing, or a guest agent that does not answer](#8-a-vm-that-keeps-crashing-or-a-guest-agent-that-does-not-answer)
+9. [Shared pool not usable on a node](#9-shared-pool-not-usable-on-a-node)
 
 ## 1. Node down
 
@@ -73,18 +74,75 @@ VMs may well still be running: the panel only knows it cannot reach the agent.
 alert closes after the settle time. Open a VM console, and look at the node's
 host checks.
 
-**When the node is gone for good:**
+**When the node is gone, or will be for too long:**
 
-1. Pause the node (it is offline already, so nothing new lands there).
-2. For each VM, **Restore as new VM** from its newest backup onto another node
-   (VM page, Backups; `admin:access`). The new VM keeps the owner, size, limits
-   and firewall rules and gets an address from the new node's pools, so tell the
-   customer their address changed. Floating IPs and private networks of the
-   dead node cannot move.
-3. When every VM that can be restored is, delete the old VMs and the node.
+Moves and drains need both nodes alive. Use **Recover VMs on other nodes** on
+the node's page (`node:recover`;
+[admin-guide.md §10.1](admin-guide.md#101-recovering-the-vms-of-a-node-that-went-down)).
 
-Moves and drains need both nodes alive; they cannot rescue VMs from a dead
-node.
+1. **Make sure the node is off.** Power it off at the provider's console or
+   IPMI, or cut it off from its storage and its VM network. A node that is only
+   unreachable from the panel may still run its VMs; recovering one then runs
+   it twice, which destroys a disk on shared storage and breaks the address of
+   any VM. If you cannot make sure, do not recover.
+2. For each VM choose a node. A VM on shared storage is defined on the other
+   node on its own disks, with nothing lost. Any other VM is restored from its
+   newest backup; what it wrote since is on the dead node only. A VM without
+   either is listed with the reason.
+3. A node in another site does not carry the VM's address pool: tick **Give it
+   a new address**, and tell the customer. A VM in a private network or with
+   several network cards is not recovered this way: use **Restore as new VM**
+   from its backup (VM page, Backups).
+4. Type the node's name and start. Each VM is a job on the card; a failed one
+   says why and changed nothing unless it says the records already moved.
+
+**"is open in a running VM":** the node is not down, or another node already
+runs the VM. Stop and find out where it runs before anything else. One
+exception: on an NFSv3 export the server keeps a dead client's locks until
+that client comes back. If the node is certainly powered off, release its
+locks on the NFS server (on Linux, `echo <node address> >
+/proc/fs/nfsd/unlock_ip`), then recover again. With NFSv4 they expire by
+themselves after the lease time, about 90 seconds.
+
+**"a backup of the VM was under way ... and left <file>":** the node died in
+the middle of a backup, while the VM wrote to a temporary overlay beside its
+disk. On a member node, compare the two files' modification times. If the
+overlay is the newer one it holds the VM's latest writes: commit it into the
+disk with `qemu-img commit <overlay>`, then remove it. If the disk is newer
+the backup had already finished: remove the overlay. Then recover again.
+
+**"is built on ..., which is not in the shared pool":** the VM's disk is an
+overlay on a backing image outside the pool, usually an older node's own
+template copy. Another node would open a different file at that path. Recover
+the VM from its backup onto a node that is not a member of the pool.
+
+**"already has a definition of this VM, left from an earlier move":** the
+chosen node still has the VM defined from a time it lived there. On that node,
+`virsh undefine <vm id>` (never with `--remove-all-storage`), then recover
+again.
+
+**When a recovered-from node comes back:**
+
+1. If you can reach its console first, keep the old copies from starting:
+   unplug its VM network, or delete the recovered VMs' files from
+   `/etc/libvirt/qemu/autostart/` before libvirt starts.
+2. The panel tells the agent which VMs live elsewhere at the first answered
+   check; from then on the node will not start them. An alert **"runs on
+   <node> although it was recovered onto <node>"** means the old copy started
+   before that. Decide which copy to keep; normally the recovered one. Power
+   the old copy off from **Recovery leftovers** on the node's page (Remove,
+   which offers to power it off), or with `virsh destroy <vm id>` on the node.
+3. For a VM restored from a backup, copy what you still need off the old disk
+   (the leftovers list shows its path), then **Remove** the old copy. For a VM
+   on shared storage, Remove deletes only the old definition. Until the old
+   copy is removed, the VM cannot be moved or recovered back onto that node.
+4. An alert that the node **"may run VMs that were recovered elsewhere"** is
+   an agent too old to be told: update it now
+   ([node-setup.md §7](node-setup.md#7-updating-an-agent)), and check with
+   `virsh list` that none of the VMs on the card runs there.
+
+Do not define and start a VM on another node by hand while its old node might
+still be running it.
 
 ## 2. Restoring the panel from a backup
 
@@ -209,6 +267,10 @@ only once it has been seen running on the destination.
   deleted after a check. Never start the old copy: two copies
   of one VM with the same address corrupt each other's view of the network and
   the customer's data diverges.
+  **If the VM's disks are in a shared pool, the files on the old node are the
+  disks the VM is running on now.** Undefine only: never
+  `virsh undefine --remove-all-storage`, and never delete the files by hand.
+  The orphaned-disk list does not offer them.
 - A VM defined on both nodes after an interrupted move: leave the running copy
   alone, `virsh autostart --disable <domain>` on the other, and let the move's
   job finish before removing anything.
@@ -378,3 +440,41 @@ while it does not answer works with the VM stopped: it is then written onto the
 disk.
 
 **Afterwards.** The VM page shows it running, and the alert resolves.
+
+## 9. Shared pool not usable on a node
+
+**Shows as:** a critical "Shared pool <name> is not usable on <node>" alert;
+the node marked **Not usable** on the pool's card on the Storage page, with the
+reason; a move refused with "does not have the shared storage" or "not looking
+at the same storage".
+
+**What it means:** the node's path for the pool is not the shared storage
+right now. Usually the mount is gone, and the path is an empty directory on
+the node's own disk. The node writes nothing there while this lasts: new disks,
+moves, backup restores, reinstalls and rescue onto the pool are refused on that
+node. VMs already running there
+keep their open disks only if the storage itself is still reachable; a VM
+whose storage is gone is paused or fails I/O.
+
+**Check, on the node:**
+
+1. `findmnt <path>` (for an NFS pool the path is
+   `/var/lib/maburvm/pools/<pool id>`, shown on the card). Nothing printed
+   means it is not mounted.
+2. For an NFS pool: `systemctl status 'var-lib-maburvm-pools-*.mount'` and
+   `journalctl -u '<that unit>'` name the mount error; `showmount -e <server>`
+   and a ping tell whether the server is reachable.
+3. `ls -la <path>/.maburvm-shared-pool`: the marker file must be there and
+   hold the pool's id. If the storage is mounted but the marker is missing,
+   someone removed it; `cat` it on a healthy member and write the same content
+   back.
+
+**Fix:** bring the mount back (`systemctl start '<unit>'` for an NFS pool, your
+own mount otherwise). The node reports the pool usable again within a minute
+and the alert closes; **Check now** on the card confirms every node sees the
+same storage. If files were written into the empty directory while it was
+unmounted (by hand; the agent refuses to), move them away before mounting, or
+the mount hides them.
+
+**Do not** remove and re-add the node to "reset" it while VMs on it have disks
+in the pool: removal is refused for that reason.

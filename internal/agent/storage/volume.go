@@ -101,6 +101,9 @@ func (m *VolumeManager) CreateVolume(poolType, poolPath, name, format string, si
 			}
 		}
 		full := filepath.Join(poolPath, fname)
+		if err := CheckSharedDir(poolPath); err != nil {
+			return "", 0, err
+		}
 		size, err := m.qemu.CreateVolume(full, format, sizeGB)
 		return full, size, err
 

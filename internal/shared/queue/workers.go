@@ -360,6 +360,163 @@ func attachISORef(imagePath, isoSource string) string {
 	return models.CustomerISORef(imagePath)
 }
 
+// commandConfig is what a job's params tell the node: the VM's config, and
+// where its disk goes.
+type commandConfig struct {
+	Config             *pb.VMConfig
+	PoolPath, PoolType string
+	// ObjectStore asks for the backup destination named Destination ("" is the
+	// default) to be sent along.
+	ObjectStore bool
+	Destination string
+}
+
+// buildCommandConfig turns the params of a create, reinstall, resize, password
+// or ISO job into what the node is sent. Params that cannot be read give an
+// empty result, as a job without params does; a password that cannot be
+// opened is an error.
+func buildCommandConfig(ctx context.Context, logger *slog.Logger, vm *models.VM, op VMOperationType, raw json.RawMessage) (commandConfig, error) {
+	var out commandConfig
+	var params struct {
+		Hostname      string            `json:"hostname"`
+		ImagePath     string            `json:"image_path"`
+		RootPassword  string            `json:"root_password"`
+		VNCPort       int               `json:"vnc_port"`
+		VNCPassword   string            `json:"vnc_password"`
+		IPAddress     string            `json:"ip_address"`
+		Gateway       string            `json:"gateway"`
+		Netmask       int               `json:"netmask"`
+		Bridge        string            `json:"bridge"`
+		VLANID        int               `json:"vlan_id"`
+		BandwidthMbps int               `json:"bandwidth_mbps"`
+		MACAddress    string            `json:"mac_address"`
+		CPUModel      string            `json:"cpu_model"`
+		SSHPublicKey  string            `json:"ssh_public_key"`
+		UserData      string            `json:"user_data"`
+		Metadata      map[string]string `json:"metadata"`
+		IPv6Prefix    string            `json:"ipv6_prefix"`
+		IPv6Address   string            `json:"ipv6_address"`
+		IPv6Gateway   string            `json:"ipv6_gateway"`
+		// PoolPath is the storage pool the panel placed this VM in. Empty
+		// leaves the choice to the node, which defaults to its root
+		// filesystem — fine as a fallback, wrong as a destination.
+		PoolPath string `json:"pool_path"`
+		// PoolType is the type of that pool: a directory, or LVM.
+		PoolType string `json:"pool_type"`
+		// ISOSource is ISOSourceOperator when the operator chose the ISO
+		// being attached. Anything else is treated as a customer's URL.
+		ISOSource string `json:"iso_source"`
+		// ObjectStore asks for the panel's backup destination to be sent
+		// along, for a disk restored from a backup kept there.
+		ObjectStore bool `json:"object_store"`
+		// BackupDestinationID names that destination; empty is the default.
+		BackupDestinationID string `json:"backup_destination_id"`
+		// RestoreDisks are a backup's data disks, for a VM restored from it.
+		RestoreDisks []models.BackupDisk `json:"restore_disks"`
+		// RestoreLayers (primary disk) and RestoreDiskLayers (by target) are
+		// the images an incremental backup is built on, the full one first.
+		RestoreLayers     []models.BackupDisk            `json:"restore_layers"`
+		RestoreDiskLayers map[string][]models.BackupDisk `json:"restore_disk_layers"`
+		// Hardware is the VM's hardware profile (create, and a dedicated
+		// VM's cores on resize); nil for a plain VM.
+		Hardware *models.Hardware `json:"hardware"`
+	}
+
+	if err := json.Unmarshal(raw, &params); err != nil {
+		logger.ErrorContext(ctx, "failed to parse VM params", "error", err)
+		return out, nil
+	}
+	// Passwords ride in the job encrypted; a job queued before that is plaintext.
+	root, rerr := models.OpenSecret(params.RootPassword)
+	vncPass, verr := models.OpenSecret(params.VNCPassword)
+	if err := errors.Join(rerr, verr); err != nil {
+		return out, fmt.Errorf("the job's password cannot be decrypted: %w", err)
+	}
+	params.RootPassword, params.VNCPassword = root, vncPass
+	out.PoolPath, out.PoolType = params.PoolPath, params.PoolType
+	out.ObjectStore, out.Destination = params.ObjectStore, params.BackupDestinationID
+	metadata := params.Metadata
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	// The proto VMConfig has no dedicated VNC-port / VLAN fields, so carry
+	// them to the agent through the metadata map.
+	metadata["vnc_port"] = strconv.Itoa(params.VNCPort)
+	metadata["vlan_id"] = strconv.Itoa(params.VLANID)
+	if params.Hostname != "" {
+		metadata["hostname"] = params.Hostname
+	}
+	// CPU model (empty → the agent defaults to host-passthrough).
+	if params.CPUModel != "" {
+		metadata["cpu_model"] = params.CPUModel
+	}
+
+	imageID := params.ImagePath
+	if op == VMOpAttachISO {
+		imageID = attachISORef(params.ImagePath, params.ISOSource)
+	}
+
+	swapMb := int64(0)
+	if vm.Resources.Swap != nil {
+		swapMb = int64(*vm.Resources.Swap)
+	}
+	// The resolvers come from the pools, read now: a pool edited since
+	// the enqueue is what the guest should get.
+	var dns, v6dns []string
+	if opDB := workerDB(); opDB != nil && params.IPAddress != "" {
+		dns = vmAddressFacts(ctx, opDB, vm.ID)[hostIP(params.IPAddress)].DNS
+		v6dns, _ = vmIPv6Facts(ctx, opDB, vm.ID)
+	}
+	if len(v6dns) == 0 {
+		v6dns = ipv6DNSFor(params.IPv6Prefix)
+	}
+
+	out.Config = &pb.VMConfig{
+		Resources: &pb.VMResources{
+			Vcpus:                int32(vm.Resources.CPU),
+			MemoryMb:             int64(vm.Resources.RAM),
+			DiskGb:               int64(vm.Resources.Disk),
+			SwapMb:               swapMb,
+			NetworkBandwidthMbps: int32(params.BandwidthMbps),
+			Limits:               LimitsProto(vm.Limits.WithThrottle(vm.Throttle)),
+		},
+		ImageId:       imageID,
+		SshPublicKey:  params.SSHPublicKey,
+		UserData:      params.UserData,
+		Metadata:      metadata,
+		VncEnabled:    true,
+		VncPassword:   params.VNCPassword,
+		RootPassword:  params.RootPassword,
+		RestoreDisks:  restoreDisksProto(params.RestoreDisks, params.RestoreDiskLayers),
+		RestoreLayers: layersProto(params.RestoreLayers),
+		Hardware:      HardwareProto(params.Hardware),
+		NetworkConfig: &pb.VMNetworkConfig{
+			Interfaces: []*pb.NetworkInterface{
+				{
+					Name:        "eth0",
+					Type:        pb.NetworkInterfaceType_NETWORK_INTERFACE_TYPE_BRIDGE,
+					BridgeName:  params.Bridge,
+					MacAddress:  params.MACAddress,
+					IpAddress:   params.IPAddress,
+					Netmask:     int32(params.Netmask),
+					Gateway:     params.Gateway,
+					UseDhcp:     params.IPAddress == "",
+					Ipv6Prefix:  params.IPv6Prefix,
+					Ipv6Address: params.IPv6Address,
+					Ipv6Gateway: params.IPv6Gateway,
+					Ipv6Dns:     v6dns,
+					Dns:         dns,
+				},
+			},
+			BandwidthLimits: &pb.BandwidthLimit{
+				IngressRateMbps: int32(params.BandwidthMbps),
+				EgressRateMbps:  int32(params.BandwidthMbps),
+			},
+		},
+	}
+	return out, nil
+}
+
 // Work runs a VM operation. When a create or reinstall fails on its last try,
 // for whatever reason, the VM is marked failed: nothing will retry it, and it
 // must not sit at "creating" for good.
@@ -520,146 +677,13 @@ func (w *VMOperationWorker) run(ctx context.Context, job *river.Job[VMOperationJ
 		job.Args.Operation == VMOpResize || job.Args.Operation == VMOpResetPassword ||
 		job.Args.Operation == VMOpAttachISO || job.Args.Operation == VMOpRescue
 	if len(job.Args.Params) > 0 && needsConfig {
-		var params struct {
-			Hostname      string            `json:"hostname"`
-			ImagePath     string            `json:"image_path"`
-			RootPassword  string            `json:"root_password"`
-			VNCPort       int               `json:"vnc_port"`
-			VNCPassword   string            `json:"vnc_password"`
-			IPAddress     string            `json:"ip_address"`
-			Gateway       string            `json:"gateway"`
-			Netmask       int               `json:"netmask"`
-			Bridge        string            `json:"bridge"`
-			VLANID        int               `json:"vlan_id"`
-			BandwidthMbps int               `json:"bandwidth_mbps"`
-			MACAddress    string            `json:"mac_address"`
-			CPUModel      string            `json:"cpu_model"`
-			SSHPublicKey  string            `json:"ssh_public_key"`
-			UserData      string            `json:"user_data"`
-			Metadata      map[string]string `json:"metadata"`
-			IPv6Prefix    string            `json:"ipv6_prefix"`
-			IPv6Address   string            `json:"ipv6_address"`
-			IPv6Gateway   string            `json:"ipv6_gateway"`
-			// PoolPath is the storage pool the panel placed this VM in. Empty
-			// leaves the choice to the node, which defaults to its root
-			// filesystem — fine as a fallback, wrong as a destination.
-			PoolPath string `json:"pool_path"`
-			// PoolType is the type of that pool: a directory, or LVM.
-			PoolType string `json:"pool_type"`
-			// ISOSource is ISOSourceOperator when the operator chose the ISO
-			// being attached. Anything else is treated as a customer's URL.
-			ISOSource string `json:"iso_source"`
-			// ObjectStore asks for the panel's backup destination to be sent
-			// along, for a disk restored from a backup kept there.
-			ObjectStore bool `json:"object_store"`
-			// BackupDestinationID names that destination; empty is the default.
-			BackupDestinationID string `json:"backup_destination_id"`
-			// RestoreDisks are a backup's data disks, for a VM restored from it.
-			RestoreDisks []models.BackupDisk `json:"restore_disks"`
-			// RestoreLayers (primary disk) and RestoreDiskLayers (by target) are
-			// the images an incremental backup is built on, the full one first.
-			RestoreLayers     []models.BackupDisk            `json:"restore_layers"`
-			RestoreDiskLayers map[string][]models.BackupDisk `json:"restore_disk_layers"`
-			// Hardware is the VM's hardware profile (create, and a dedicated
-			// VM's cores on resize); nil for a plain VM.
-			Hardware *models.Hardware `json:"hardware"`
+		cc, err := buildCommandConfig(ctx, w.logger, vm, job.Args.Operation, job.Args.Params)
+		if err != nil {
+			vmRepo.UpdateStatus(ctx, vm.ID, models.VMStatusError)
+			return river.JobCancel(err)
 		}
-
-		if err := json.Unmarshal(job.Args.Params, &params); err != nil {
-			w.logger.ErrorContext(ctx, "failed to parse VM params",
-				"error", err,
-			)
-		} else {
-			// Passwords ride in the job encrypted; a job queued before that is plaintext.
-			root, rerr := models.OpenSecret(params.RootPassword)
-			vncPass, verr := models.OpenSecret(params.VNCPassword)
-			if err := errors.Join(rerr, verr); err != nil {
-				vmRepo.UpdateStatus(ctx, vm.ID, models.VMStatusError)
-				return river.JobCancel(fmt.Errorf("the job's password cannot be decrypted: %w", err))
-			}
-			params.RootPassword, params.VNCPassword = root, vncPass
-			poolPath, poolType = params.PoolPath, params.PoolType
-			wantsObjectStore, restoreDestination = params.ObjectStore, params.BackupDestinationID
-			metadata := params.Metadata
-			if metadata == nil {
-				metadata = map[string]string{}
-			}
-			// The proto VMConfig has no dedicated VNC-port / VLAN fields, so carry
-			// them to the agent through the metadata map.
-			metadata["vnc_port"] = strconv.Itoa(params.VNCPort)
-			metadata["vlan_id"] = strconv.Itoa(params.VLANID)
-			if params.Hostname != "" {
-				metadata["hostname"] = params.Hostname
-			}
-			// CPU model (empty → the agent defaults to host-passthrough).
-			if params.CPUModel != "" {
-				metadata["cpu_model"] = params.CPUModel
-			}
-
-			imageID := params.ImagePath
-			if job.Args.Operation == VMOpAttachISO {
-				imageID = attachISORef(params.ImagePath, params.ISOSource)
-			}
-
-			swapMb := int64(0)
-			if vm.Resources.Swap != nil {
-				swapMb = int64(*vm.Resources.Swap)
-			}
-			// The resolvers come from the pools, read now: a pool edited since
-			// the enqueue is what the guest should get.
-			var dns, v6dns []string
-			if opDB := workerDB(); opDB != nil && params.IPAddress != "" {
-				dns = vmAddressFacts(ctx, opDB, vm.ID)[hostIP(params.IPAddress)].DNS
-				v6dns, _ = vmIPv6Facts(ctx, opDB, vm.ID)
-			}
-			if len(v6dns) == 0 {
-				v6dns = ipv6DNSFor(params.IPv6Prefix)
-			}
-
-			vmConfig = &pb.VMConfig{
-				Resources: &pb.VMResources{
-					Vcpus:                int32(vm.Resources.CPU),
-					MemoryMb:             int64(vm.Resources.RAM),
-					DiskGb:               int64(vm.Resources.Disk),
-					SwapMb:               swapMb,
-					NetworkBandwidthMbps: int32(params.BandwidthMbps),
-					Limits:               LimitsProto(vm.Limits.WithThrottle(vm.Throttle)),
-				},
-				ImageId:       imageID,
-				SshPublicKey:  params.SSHPublicKey,
-				UserData:      params.UserData,
-				Metadata:      metadata,
-				VncEnabled:    true,
-				VncPassword:   params.VNCPassword,
-				RootPassword:  params.RootPassword,
-				RestoreDisks:  restoreDisksProto(params.RestoreDisks, params.RestoreDiskLayers),
-				RestoreLayers: layersProto(params.RestoreLayers),
-				Hardware:      HardwareProto(params.Hardware),
-				NetworkConfig: &pb.VMNetworkConfig{
-					Interfaces: []*pb.NetworkInterface{
-						{
-							Name:        "eth0",
-							Type:        pb.NetworkInterfaceType_NETWORK_INTERFACE_TYPE_BRIDGE,
-							BridgeName:  params.Bridge,
-							MacAddress:  params.MACAddress,
-							IpAddress:   params.IPAddress,
-							Netmask:     int32(params.Netmask),
-							Gateway:     params.Gateway,
-							UseDhcp:     params.IPAddress == "",
-							Ipv6Prefix:  params.IPv6Prefix,
-							Ipv6Address: params.IPv6Address,
-							Ipv6Gateway: params.IPv6Gateway,
-							Ipv6Dns:     v6dns,
-							Dns:         dns,
-						},
-					},
-					BandwidthLimits: &pb.BandwidthLimit{
-						IngressRateMbps: int32(params.BandwidthMbps),
-						EgressRateMbps:  int32(params.BandwidthMbps),
-					},
-				},
-			}
-		}
+		vmConfig, poolPath, poolType = cc.Config, cc.PoolPath, cc.PoolType
+		wantsObjectStore, restoreDestination = cc.ObjectStore, cc.Destination
 	}
 
 	// For START, carry just the pool's current bridge so the agent can self-heal

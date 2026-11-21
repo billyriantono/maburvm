@@ -127,19 +127,36 @@ func collectBackups(ctx context.Context, db *gorm.DB, ch chan<- prometheus.Metri
 
 func collectPools(ctx context.Context, db *gorm.DB, ch chan<- prometheus.Metric) error {
 	var pools []struct {
-		ID, Name, Node string
-		Total, Free    float64
+		ID, Name, Node, Shared string
+		Total, Free            float64
 	}
-	if err := db.Raw(`SELECT p.id::text AS id, p.name, n.name AS node, p.total_space AS total, p.available_space AS free
+	// A shared pool is one storage: its series is its roomiest-looking online
+	// member's, under the node label "shared", so sums count it once.
+	if err := db.Raw(`SELECT p.id::text AS id, p.name, n.name AS node, p.total_space AS total, p.available_space AS free,
+			COALESCE(p.shared_pool_id::text, '') AS shared
 		FROM storage_pools p JOIN nodes n ON n.id::text = p.node_id::text
-		WHERE p.deleted_at IS NULL AND n.deleted_at IS NULL`).Scan(&pools).Error; err != nil {
+		WHERE p.deleted_at IS NULL AND n.deleted_at IS NULL
+		ORDER BY (p.status = 'online') DESC, p.total_space DESC, p.id`).Scan(&pools).Error; err != nil {
 		return err
 	}
 	alloc, err := service.PoolAllocations(ctx, db, "")
 	if err != nil {
 		return err
 	}
+	seen := map[string]bool{}
 	for _, p := range pools {
+		if p.Shared != "" {
+			if seen[p.Shared] {
+				continue
+			}
+			seen[p.Shared] = true
+			a := float64(alloc[p.ID])
+			p.ID, p.Node = p.Shared, "shared"
+			ch <- prometheus.MustNewConstMetric(poolTotalDesc, prometheus.GaugeValue, p.Total, p.Node, p.Name, p.ID)
+			ch <- prometheus.MustNewConstMetric(poolFreeDesc, prometheus.GaugeValue, p.Free, p.Node, p.Name, p.ID)
+			ch <- prometheus.MustNewConstMetric(poolAllocDesc, prometheus.GaugeValue, a, p.Node, p.Name, p.ID)
+			continue
+		}
 		ch <- prometheus.MustNewConstMetric(poolTotalDesc, prometheus.GaugeValue, p.Total, p.Node, p.Name, p.ID)
 		ch <- prometheus.MustNewConstMetric(poolFreeDesc, prometheus.GaugeValue, p.Free, p.Node, p.Name, p.ID)
 		ch <- prometheus.MustNewConstMetric(poolAllocDesc, prometheus.GaugeValue, float64(alloc[p.ID]), p.Node, p.Name, p.ID)

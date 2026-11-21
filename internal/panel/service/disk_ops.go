@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"reflect"
 	"strings"
 	"time"
@@ -620,11 +621,17 @@ func (s *VMService) ListOrphanDisks(ctx context.Context, nodeID string) ([]Orpha
 		referenced[p] = true
 	}
 
+	sharedDirs := sharedDirMembers(ctx, s.db, nodeID)
 	var out []OrphanDisk
 	for _, d := range resp.Disks {
 		if referenced[d.Path] {
 			continue
 		}
+		// In a shared pool a VM on another member may be using the file, and
+		// this node cannot see that: only a file whose VM the panel knows, and
+		// knows is gone or off the pool's members, is offered.
+		members, inShared := sharedDirs[path.Dir(d.Path)]
+		ownerKnown := false
 		o := OrphanDisk{NodeID: nodeID, Path: d.Path, Kind: d.Kind, SizeBytes: d.SizeBytes, ModifiedUnix: d.ModifiedUnix,
 			Reason: d.Reason, Pool: d.Pool, MaburVM: d.Maburvm, VMID: d.VmId}
 		if o.VMID != "" {
@@ -635,6 +642,10 @@ func (s *VMService) ListOrphanDisks(ctx context.Context, nodeID string) ([]Orpha
 			}
 			if s.db.WithContext(ctx).Table("vms").Select("hostname, node_id, deleted_at").Where("id = ?", o.VMID).Scan(&vm).Error == nil && vm.Hostname != "" {
 				o.VMHostname, o.VMDeleted = vm.Hostname, vm.DeletedAt != nil
+				ownerKnown = true
+				if !o.VMDeleted && members[vm.NodeID] {
+					continue
+				}
 				// A VM the panel still has on this node may be using its disk in
 				// a way the node cannot see yet (a create about to define it).
 				// One recorded on another node left this copy behind (a move or
@@ -647,9 +658,33 @@ func (s *VMService) ListOrphanDisks(ctx context.Context, nodeID string) ([]Orpha
 				}
 			}
 		}
+		if inShared && !ownerKnown {
+			continue
+		}
 		out = append(out, o)
 	}
 	return out, nil
+}
+
+// sharedDirMembers maps each shared pool directory on a node to the nodes
+// that are members of that pool.
+func sharedDirMembers(ctx context.Context, db *gorm.DB, nodeID string) map[string]map[string]bool {
+	var rows []struct{ Path, NodeID string }
+	out := map[string]map[string]bool{}
+	// Quiet: a test schema without shared pools has none.
+	if db.WithContext(ctx).Session(&gorm.Session{Logger: gormlogger.Discard}).Raw(`SELECT a.path, CAST(b.node_id AS TEXT) AS node_id
+		FROM storage_pools a JOIN storage_pools b ON b.shared_pool_id = a.shared_pool_id AND b.deleted_at IS NULL
+		WHERE CAST(a.node_id AS TEXT) = ? AND a.shared_pool_id IS NOT NULL AND a.deleted_at IS NULL`, nodeID).Scan(&rows).Error != nil {
+		return out
+	}
+	for _, r := range rows {
+		dir := path.Clean(r.Path)
+		if out[dir] == nil {
+			out[dir] = map[string]bool{}
+		}
+		out[dir][r.NodeID] = true
+	}
+	return out
 }
 
 // OrphanDeleteRequest names an orphaned disk as the list showed it.

@@ -69,6 +69,10 @@ const (
 	NodeAgent_MoveVMDisk_FullMethodName             = "/agent.NodeAgent/MoveVMDisk"
 	NodeAgent_ListOrphanDisks_FullMethodName        = "/agent.NodeAgent/ListOrphanDisks"
 	NodeAgent_DeleteOrphanDisk_FullMethodName       = "/agent.NodeAgent/DeleteOrphanDisk"
+	NodeAgent_SetSharedPool_FullMethodName          = "/agent.NodeAgent/SetSharedPool"
+	NodeAgent_SharedPoolToken_FullMethodName        = "/agent.NodeAgent/SharedPoolToken"
+	NodeAgent_SetFencedVMs_FullMethodName           = "/agent.NodeAgent/SetFencedVMs"
+	NodeAgent_RemoveFencedVM_FullMethodName         = "/agent.NodeAgent/RemoveFencedVM"
 	NodeAgent_PutImage_FullMethodName               = "/agent.NodeAgent/PutImage"
 	NodeAgent_ConfigureNIC_FullMethodName           = "/agent.NodeAgent/ConfigureNIC"
 	NodeAgent_SetVLANBridges_FullMethodName         = "/agent.NodeAgent/SetVLANBridges"
@@ -282,6 +286,19 @@ type NodeAgentClient interface {
 	// DeleteOrphanDisk removes one of those after checking it again: still
 	// unused, still in a registered pool, unchanged since it was listed.
 	DeleteOrphanDisk(ctx context.Context, in *DeleteOrphanDiskRequest, opts ...grpc.CallOption) (*DeleteOrphanDiskResponse, error)
+	// Shared storage pools: join or leave one, and the token file that proves
+	// nodes see the same storage.
+	SetSharedPool(ctx context.Context, in *SetSharedPoolRequest, opts ...grpc.CallOption) (*SetSharedPoolResponse, error)
+	SharedPoolToken(ctx context.Context, in *SharedPoolTokenRequest, opts ...grpc.CallOption) (*SharedPoolTokenResponse, error)
+	// SetFencedVMs replaces the list of VMs that were recovered onto another
+	// node while this one was down ("vm_recovery" feature). The agent never
+	// starts one and turns its autostart off; it does not stop one that runs.
+	// The answer says what is left of each here.
+	SetFencedVMs(ctx context.Context, in *SetFencedVMsRequest, opts ...grpc.CallOption) (*SetFencedVMsResponse, error)
+	// RemoveFencedVM removes this node's copy of a fenced VM: its definition,
+	// and its disks except those in a shared pool (they are the VM's disks on
+	// its new node).
+	RemoveFencedVM(ctx context.Context, in *RemoveFencedVMRequest, opts ...grpc.CallOption) (*RemoveFencedVMResponse, error)
 	// PutImage stores a file uploaded to the panel (an ISO) in this node's image
 	// cache. The first chunk names it; the data is checked against its sha256.
 	PutImage(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[ImageChunk, PutImageResponse], error)
@@ -822,6 +839,46 @@ func (c *nodeAgentClient) DeleteOrphanDisk(ctx context.Context, in *DeleteOrphan
 	return out, nil
 }
 
+func (c *nodeAgentClient) SetSharedPool(ctx context.Context, in *SetSharedPoolRequest, opts ...grpc.CallOption) (*SetSharedPoolResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetSharedPoolResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_SetSharedPool_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeAgentClient) SharedPoolToken(ctx context.Context, in *SharedPoolTokenRequest, opts ...grpc.CallOption) (*SharedPoolTokenResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SharedPoolTokenResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_SharedPoolToken_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeAgentClient) SetFencedVMs(ctx context.Context, in *SetFencedVMsRequest, opts ...grpc.CallOption) (*SetFencedVMsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetFencedVMsResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_SetFencedVMs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeAgentClient) RemoveFencedVM(ctx context.Context, in *RemoveFencedVMRequest, opts ...grpc.CallOption) (*RemoveFencedVMResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RemoveFencedVMResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_RemoveFencedVM_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *nodeAgentClient) PutImage(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[ImageChunk, PutImageResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &NodeAgent_ServiceDesc.Streams[4], NodeAgent_PutImage_FullMethodName, cOpts...)
@@ -1063,6 +1120,19 @@ type NodeAgentServer interface {
 	// DeleteOrphanDisk removes one of those after checking it again: still
 	// unused, still in a registered pool, unchanged since it was listed.
 	DeleteOrphanDisk(context.Context, *DeleteOrphanDiskRequest) (*DeleteOrphanDiskResponse, error)
+	// Shared storage pools: join or leave one, and the token file that proves
+	// nodes see the same storage.
+	SetSharedPool(context.Context, *SetSharedPoolRequest) (*SetSharedPoolResponse, error)
+	SharedPoolToken(context.Context, *SharedPoolTokenRequest) (*SharedPoolTokenResponse, error)
+	// SetFencedVMs replaces the list of VMs that were recovered onto another
+	// node while this one was down ("vm_recovery" feature). The agent never
+	// starts one and turns its autostart off; it does not stop one that runs.
+	// The answer says what is left of each here.
+	SetFencedVMs(context.Context, *SetFencedVMsRequest) (*SetFencedVMsResponse, error)
+	// RemoveFencedVM removes this node's copy of a fenced VM: its definition,
+	// and its disks except those in a shared pool (they are the VM's disks on
+	// its new node).
+	RemoveFencedVM(context.Context, *RemoveFencedVMRequest) (*RemoveFencedVMResponse, error)
 	// PutImage stores a file uploaded to the panel (an ISO) in this node's image
 	// cache. The first chunk names it; the data is checked against its sha256.
 	PutImage(grpc.ClientStreamingServer[ImageChunk, PutImageResponse]) error
@@ -1234,6 +1304,18 @@ func (UnimplementedNodeAgentServer) ListOrphanDisks(context.Context, *ListOrphan
 }
 func (UnimplementedNodeAgentServer) DeleteOrphanDisk(context.Context, *DeleteOrphanDiskRequest) (*DeleteOrphanDiskResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteOrphanDisk not implemented")
+}
+func (UnimplementedNodeAgentServer) SetSharedPool(context.Context, *SetSharedPoolRequest) (*SetSharedPoolResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetSharedPool not implemented")
+}
+func (UnimplementedNodeAgentServer) SharedPoolToken(context.Context, *SharedPoolTokenRequest) (*SharedPoolTokenResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SharedPoolToken not implemented")
+}
+func (UnimplementedNodeAgentServer) SetFencedVMs(context.Context, *SetFencedVMsRequest) (*SetFencedVMsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetFencedVMs not implemented")
+}
+func (UnimplementedNodeAgentServer) RemoveFencedVM(context.Context, *RemoveFencedVMRequest) (*RemoveFencedVMResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveFencedVM not implemented")
 }
 func (UnimplementedNodeAgentServer) PutImage(grpc.ClientStreamingServer[ImageChunk, PutImageResponse]) error {
 	return status.Error(codes.Unimplemented, "method PutImage not implemented")
@@ -2125,6 +2207,78 @@ func _NodeAgent_DeleteOrphanDisk_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NodeAgent_SetSharedPool_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetSharedPoolRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).SetSharedPool(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_SetSharedPool_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).SetSharedPool(ctx, req.(*SetSharedPoolRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeAgent_SharedPoolToken_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SharedPoolTokenRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).SharedPoolToken(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_SharedPoolToken_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).SharedPoolToken(ctx, req.(*SharedPoolTokenRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeAgent_SetFencedVMs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetFencedVMsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).SetFencedVMs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_SetFencedVMs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).SetFencedVMs(ctx, req.(*SetFencedVMsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeAgent_RemoveFencedVM_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveFencedVMRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).RemoveFencedVM(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_RemoveFencedVM_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).RemoveFencedVM(ctx, req.(*RemoveFencedVMRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _NodeAgent_PutImage_Handler(srv interface{}, stream grpc.ServerStream) error {
 	return srv.(NodeAgentServer).PutImage(&grpc.GenericServerStream[ImageChunk, PutImageResponse]{ServerStream: stream})
 }
@@ -2358,6 +2512,22 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteOrphanDisk",
 			Handler:    _NodeAgent_DeleteOrphanDisk_Handler,
+		},
+		{
+			MethodName: "SetSharedPool",
+			Handler:    _NodeAgent_SetSharedPool_Handler,
+		},
+		{
+			MethodName: "SharedPoolToken",
+			Handler:    _NodeAgent_SharedPoolToken_Handler,
+		},
+		{
+			MethodName: "SetFencedVMs",
+			Handler:    _NodeAgent_SetFencedVMs_Handler,
+		},
+		{
+			MethodName: "RemoveFencedVM",
+			Handler:    _NodeAgent_RemoveFencedVM_Handler,
 		},
 		{
 			MethodName: "ConfigureNIC",

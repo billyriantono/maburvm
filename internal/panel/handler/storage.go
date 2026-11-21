@@ -212,6 +212,9 @@ func (h *StorageHandler) DeletePool(c echo.Context) error {
 	id := c.Param("id")
 
 	if err := h.storageService.DeletePool(id); err != nil {
+		if errors.Is(err, service.ErrInvalidStoragePool) {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
+		}
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": "failed to delete storage pool",
 		})

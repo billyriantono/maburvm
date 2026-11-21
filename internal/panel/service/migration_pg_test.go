@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path"
 	"strings"
 	"sync"
 	"testing"
@@ -88,6 +89,9 @@ func testKey(t *testing.T) string {
 type fakeVM struct {
 	state string
 	pool  string
+	cache string
+	// backing is the image vda is built on, "" for none.
+	backing string
 }
 
 // fakeNode is a node agent that moves VMs between fakes at once.
@@ -114,6 +118,84 @@ type fakeNode struct {
 	loseAnswer bool
 	// onMove runs as a live move starts.
 	onMove func()
+
+	// features are what the agent reports it can do.
+	features []string
+	// shared is the storage at each shared pool path: two nodes holding the
+	// same map see the same storage.
+	shared map[string]map[string]string
+	// member lists the shared pool paths this node has joined.
+	member map[string]bool
+	// onJoin runs as the node is asked to join a shared pool.
+	onJoin func()
+	// prepared, maps and kept are the last prepare's disks, the last move's
+	// drive maps and the paths the last source clean-up was told to keep.
+	prepared []*pb.MigrationTargetDisk
+	maps     []*pb.MigrationDiskMap
+	kept     []string
+	orphans  []*pb.OrphanDisk
+
+	// Recovery (recovery_pg_test.go): the commands received, the VMs the node
+	// was told live elsewhere, why an ADOPT is refused, and a hook run as a
+	// VM is defined.
+	commands  []*pb.VMCommandRequest
+	fenced    []string
+	failAdopt string
+	onDefine  func()
+}
+
+func (f *fakeNode) GetNodeInfo(context.Context, *pb.GetNodeInfoRequest) (*pb.GetNodeInfoResponse, error) {
+	return &pb.GetNodeInfoResponse{Features: f.features}, nil
+}
+
+func (f *fakeNode) SetSharedPool(_ context.Context, req *pb.SetSharedPoolRequest) (*pb.SetSharedPoolResponse, error) {
+	if hook := f.onJoin; hook != nil && !req.Remove {
+		f.onJoin = nil
+		hook()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	dir := req.Path
+	if req.Kind == models.SharedPoolNFS {
+		dir = models.SharedPoolMountPath(req.PoolId)
+	}
+	if req.Remove {
+		f.calls = append(f.calls, "leave")
+		delete(f.member, dir)
+		return &pb.SetSharedPoolResponse{Success: true, Path: dir}, nil
+	}
+	if f.shared[dir] == nil {
+		return &pb.SetSharedPoolResponse{Error: &pb.ErrorResponse{Message: "the directory " + dir + " does not exist on this node"}}, nil
+	}
+	if f.member == nil {
+		f.member = map[string]bool{}
+	}
+	f.member[dir] = true
+	return &pb.SetSharedPoolResponse{Success: true, Path: dir}, nil
+}
+
+func (f *fakeNode) SharedPoolToken(_ context.Context, req *pb.SharedPoolTokenRequest) (*pb.SharedPoolTokenResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	files := f.shared[req.Path]
+	if !f.member[req.Path] || files == nil {
+		return &pb.SharedPoolTokenResponse{Error: &pb.ErrorResponse{Message: req.Path + " is not a shared pool this node is a member of"}}, nil
+	}
+	switch req.Op {
+	case "write":
+		if _, ok := files[req.Name]; !ok {
+			files[req.Name] = req.Content
+		}
+	case "remove":
+		delete(files, req.Name)
+		return &pb.SharedPoolTokenResponse{Success: true}, nil
+	}
+	got, ok := files[req.Name]
+	return &pb.SharedPoolTokenResponse{Success: true, Exists: ok, Content: got}, nil
+}
+
+func (f *fakeNode) ListOrphanDisks(context.Context, *pb.ListOrphanDisksRequest) (*pb.ListOrphanDisksResponse, error) {
+	return &pb.ListOrphanDisksResponse{Success: true, Disks: f.orphans}, nil
 }
 
 func (f *fakeNode) record(call string) {
@@ -141,8 +223,8 @@ func (f *fakeNode) GetMigrationInfo(_ context.Context, req *pb.GetMigrationInfoR
 	if vm := f.vms[req.VmId]; req.VmId != "" && vm != nil {
 		r.VmFound, r.VmState, r.VmCpuMode, r.Bridges = true, vm.state, "host-passthrough", []string{"br0"}
 		r.Disks = []*pb.MigrationDiskInfo{
-			{Target: "vda", Device: "disk", Path: vm.pool + "/" + req.VmId + ".qcow2", Format: "qcow2", SourceType: "file", VirtualSizeBytes: 20 << 30, FileSizeBytes: 5 << 30},
-			{Target: "vdb", Device: "disk", Path: vm.pool + "/" + req.VmId + "-vdb.qcow2", Format: "qcow2", SourceType: "file", VirtualSizeBytes: 10 << 30, FileSizeBytes: 1 << 30},
+			{Target: "vda", Device: "disk", Path: vm.pool + "/" + req.VmId + ".qcow2", Format: "qcow2", SourceType: "file", VirtualSizeBytes: 20 << 30, FileSizeBytes: 5 << 30, Cache: vm.cache, BackingFile: vm.backing},
+			{Target: "vdb", Device: "disk", Path: vm.pool + "/" + req.VmId + "-vdb.qcow2", Format: "qcow2", SourceType: "file", VirtualSizeBytes: 10 << 30, FileSizeBytes: 1 << 30, Cache: vm.cache},
 			{Target: "sda", Device: "cdrom", Path: vm.pool + "/" + req.VmId + "-seed.iso", Format: "raw", SourceType: "file", Readonly: true, Seed: true, FileSizeBytes: 4096},
 		}
 		if req.IncludePayload {
@@ -162,6 +244,9 @@ func (f *fakeNode) SetMigrationPeers(_ context.Context, req *pb.SetMigrationPeer
 func (f *fakeNode) PrepareMigrationTarget(_ context.Context, req *pb.PrepareMigrationTargetRequest) (*pb.PrepareMigrationTargetResponse, error) {
 	if !req.DryRun {
 		f.record("prepare")
+		f.mu.Lock()
+		f.prepared = req.Disks
+		f.mu.Unlock()
 	}
 	paths := map[string]string{}
 	for _, d := range req.Disks {
@@ -170,18 +255,30 @@ func (f *fakeNode) PrepareMigrationTarget(_ context.Context, req *pb.PrepareMigr
 	return &pb.PrepareMigrationTargetResponse{Success: true, Paths: paths, SeedPath: req.PoolPath + "/" + req.SeedFileName}, nil
 }
 
+// landPool is the directory a move's drives go to on the node they land on.
+func landPool(maps []*pb.MigrationDiskMap, def string) string {
+	if len(maps) > 0 && maps[0].DestPath != "" {
+		return path.Dir(maps[0].DestPath)
+	}
+	return def
+}
+
 // land moves a VM from f to its peer, as a finished copy would.
-func (f *fakeNode) land(vmID, state string) {
+func (f *fakeNode) land(vmID, state string, maps []*pb.MigrationDiskMap) {
 	f.mu.Lock()
 	f.vms[vmID].state = "shutoff"
+	cache := f.vms[vmID].cache
 	f.mu.Unlock()
 	f.peer.mu.Lock()
-	f.peer.vms[vmID] = &fakeVM{state: state, pool: f.peer.pool}
+	f.peer.vms[vmID] = &fakeVM{state: state, pool: landPool(maps, f.peer.pool), cache: cache}
 	f.peer.mu.Unlock()
 }
 
 func (f *fakeNode) MigrateVM(_ context.Context, req *pb.MigrateVMRequest) (*pb.MigrateVMResponse, error) {
 	f.record("migrate")
+	f.mu.Lock()
+	f.maps = req.Disks
+	f.mu.Unlock()
 	if f.onMove != nil {
 		f.onMove()
 	}
@@ -201,7 +298,7 @@ func (f *fakeNode) MigrateVM(_ context.Context, req *pb.MigrateVMRequest) (*pb.M
 	}
 	f.mu.Unlock()
 	if fail == "" || strings.HasPrefix(fail, "landed:") {
-		f.land(req.VmId, "running")
+		f.land(req.VmId, "running", req.Disks)
 	}
 	if f.loseAnswer {
 		return nil, status.Error(codes.Unavailable, "connection reset")
@@ -215,7 +312,8 @@ func (f *fakeNode) PullMigratedVM(_ context.Context, req *pb.PullMigratedVMReque
 		return &pb.PullMigratedVMResponse{Error: &pb.ErrorResponse{Message: "no definition"}}, nil
 	}
 	f.mu.Lock()
-	f.vms[req.VmId] = &fakeVM{state: "shutoff", pool: f.pool}
+	f.maps = req.Disks
+	f.vms[req.VmId] = &fakeVM{state: "shutoff", pool: landPool(req.Disks, f.pool)}
 	f.progress[req.VmId] = &pb.GetMigrationProgressResponse{State: "completed"}
 	f.mu.Unlock()
 	return &pb.PullMigratedVMResponse{Success: true}, nil
@@ -248,6 +346,7 @@ func (f *fakeNode) FinishMigrationTarget(_ context.Context, req *pb.FinishMigrat
 func (f *fakeNode) FinishMigrationSource(_ context.Context, req *pb.FinishMigrationSourceRequest) (*pb.FinishMigrationSourceResponse, error) {
 	f.record("remove-source")
 	f.mu.Lock()
+	f.kept = req.KeepPaths
 	delete(f.vms, req.VmId)
 	f.mu.Unlock()
 	return &pb.FinishMigrationSourceResponse{Success: true}, nil
@@ -491,7 +590,7 @@ func TestMoveFollowedAfterTheAgentLosesTrack(t *testing.T) {
 	assert.Equal(t, models.MigrationRunning, got.Status, got.Error)
 	assert.False(t, f.dst.called("rollback"), "the incoming copy is left alone")
 
-	f.src.land(vm, "running")
+	f.src.land(vm, "running", nil)
 	require.NoError(t, f.svc.RunMigrationJob(ctx, row.ID))
 	got = f.migration(t, row.ID)
 	assert.Equal(t, models.MigrationCompleted, got.Status, got.Error)

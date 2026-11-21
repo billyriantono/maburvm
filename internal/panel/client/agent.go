@@ -1142,6 +1142,9 @@ type PoolCapacity struct {
 	Used       int64
 	Available  int64
 	Filesystem string
+	// Problem says why the node cannot use a path that exists: a shared pool
+	// that is not mounted there.
+	Problem string
 }
 
 // DiskLocation is a directory a node's domains actually keep disks in.
@@ -1188,6 +1191,7 @@ func (c *AgentClient) GetStorageReport(ctx context.Context, nodeID string, paths
 				Used:       p.GetUsedBytes(),
 				Available:  p.GetAvailableBytes(),
 				Filesystem: p.GetFilesystem(),
+				Problem:    p.GetProblem(),
 			})
 		}
 		for _, l := range resp.GetDiskLocations() {

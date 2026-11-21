@@ -1,7 +1,56 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api-client'
 import type { CreateStoragePoolRequest, CreateStorageVolumeRequest, StoragePool, StorageVolume } from '@/types'
-import type { OrphanDisk } from '@/types/storage'
+import type { CreateSharedPoolRequest, OrphanDisk, SharedPool } from '@/types/storage'
+
+// Shared pools: storage several nodes mount. Every change also changes the
+// member rows in the pool list.
+export function useSharedPools() {
+  return useQuery<SharedPool[]>({
+    queryKey: ['storage', 'shared-pools'],
+    queryFn: async () => {
+      const response = await api.get<SharedPool[]>('/api/v1/storage/shared-pools')
+      return response.data.data ?? []
+    },
+  })
+}
+
+export type SharedPoolChange =
+  | { op: 'create'; pool: CreateSharedPoolRequest }
+  | { op: 'delete'; id: string }
+  | { op: 'add-node'; id: string; nodeId: string }
+  | { op: 'remove-node'; id: string; nodeId: string }
+
+export function useChangeSharedPool() {
+  const queryClient = useQueryClient()
+  return useMutation<void, Error, SharedPoolChange>({
+    mutationFn: async (c) => {
+      const base = '/api/v1/storage/shared-pools'
+      if (c.op === 'create') await api.post(base, c.pool)
+      else if (c.op === 'delete') await api.delete(`${base}/${c.id}`)
+      else if (c.op === 'add-node') await api.post(`${base}/${c.id}/members`, { node_id: c.nodeId })
+      else await api.delete(`${base}/${c.id}/members/${c.nodeId}`)
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['storage'] })
+    },
+  })
+}
+
+// useCheckSharedPool proves every member against the pool now; the answer
+// maps node ids to what is wrong ("" passes).
+export function useCheckSharedPool() {
+  const queryClient = useQueryClient()
+  return useMutation<Record<string, string>, Error, string>({
+    mutationFn: async (id) => {
+      const response = await api.post<Record<string, string>>(`/api/v1/storage/shared-pools/${id}/check`)
+      return response.data.data ?? {}
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['storage'] })
+    },
+  })
+}
 
 export function useStoragePools() {
   return useQuery<StoragePool[]>({

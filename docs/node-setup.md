@@ -55,6 +55,16 @@ add them on the nodes that should offer them, and the node's host checks
 An offline password reset and the built-in rescue system use
 `libguestfs-tools` (`virt-customize`), which the installer already installs.
 
+**Shared storage (optional).** A node joins a shared pool only when staff add
+it on the Storage page; nothing is mounted otherwise. For a pool of kind NFS
+the node needs the NFS client (`nfs-common` on Debian and Ubuntu, `nfs-utils`
+on the RHEL family); the host checks show it as "NFS client". The node must
+reach the NFS server, and the export must give root on the node write access
+(`no_root_squash`, or ownership that lets QEMU's user write) and support
+locking (NFSv4, or `lockd` for v3). For a directory you mount yourself, mount
+it at the same path on every member node and make it mount at boot before
+libvirt starts.
+
 **DHCP for IP pools.** A pool with DHCP turned on is served by `dnsmasq`
 (`dnsmasq-base` on Debian and Ubuntu, usually present with libvirt; `dnsmasq` on
 the RHEL family), version 2.81 or later. The agent runs one per bridge with
@@ -188,6 +198,8 @@ Kept by the agent while it runs:
 | A network namespace per private network (VPC) | `maburvm-vpc-*` |
 | Speed limits on VM interfaces | tc and libvirt interface bandwidth |
 | IPv6 routes and neighbour entries for routed prefixes, and NDP proxy entries for each guest's `::1` and further addresses | on the bridge |
+| The shared pools the node is a member of, and a mount unit per NFS pool (written when staff add the node to the pool, removed when they take it out) | `/var/lib/maburvm/shared-pools.json`, `/etc/systemd/system/var-lib-maburvm-pools-<pool id>.mount`, mounted at `/var/lib/maburvm/pools/<pool id>` |
+| The VMs that were recovered onto other nodes while this one was down, which the agent never starts again (written when the panel tells the returned node; a VM leaves the list when staff remove its old copy) | `/var/lib/maburvm/fenced-vms.json` |
 | Quarantined guests | `/etc/maburvm/quarantine` |
 | Null-routed addresses | `/etc/maburvm/nullroutes` (address and expiry; the agent lifts each when it expires) |
 | Downloaded templates, clone copies, scratch space for disks on LVM, customer ISOs | `TEMPLATE_CACHE_DIR` (`/var/lib/libvirt/templates`), customer ISOs in its `customer-iso` directory |

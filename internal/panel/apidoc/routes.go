@@ -477,6 +477,15 @@ func apiRoutes() []*apiRoute {
 			post("/api/v1/nodes/:id/drain/plan", "Plan a drain").can("node:drain").in(service.DrainRequest{}).out(ok(service.DrainPlan{})),
 			post("/api/v1/nodes/:id/drain", "Start a drain").can("node:drain").in(service.DrainRequest{}).code(http.StatusAccepted).out(ok(models.NodeDrain{})),
 			post("/api/v1/nodes/:id/drain/abort", "Stop a drain").can("node:drain").out(ok(models.NodeDrain{})),
+			get("/api/v1/nodes/:id/recovery", "Recovery plan of a node that went down").can("node:read").out(ok(service.RecoveryPlan{})).
+				note("The node's VMs, the nodes each could be recovered onto and how (on its shared disks, or from its latest backup), and the recoveries made from it. `refusal` says why nothing can be recovered now. Changes nothing."),
+			post("/api/v1/nodes/:id/recovery", "Recover VMs of a node that went down").can("node:recover").in(service.RecoveryRequest{}).code(http.StatusAccepted).out(ok(service.RecoveryStarted{})).
+				note("One background job per VM. Refused unless `node_is_down` is true (the caller's word that the node is powered off or cut off: a VM running twice destroys its disk) and the panel has not heard from the node for as long as it takes to mark one offline. A VM that cannot be recovered as chosen is listed under `refused`."),
+			get("/api/v1/nodes/:id/recovery/leftovers", "Old copies on a node that came back").can("node:recover").out(ok(arr(service.RecoveryLeftover{}))).
+				note("Asks the node, which must answer, what it still holds of the VMs recovered from it, and tells it again not to run them."),
+			post("/api/v1/nodes/:id/recovery/leftovers/:vm_id/remove", "Remove a node's old copy of a recovered VM").can("node:recover").
+				in(obj("force_stop", tBool)).out(ok(obj("removed", arr(tStr), "kept", arr(tStr)))).
+				note("Removes the definition and the disks, except disks on shared storage. A copy that runs is removed only with `force_stop`, which powers it off."),
 			post("/api/v1/nodes/:id/import/sync", "Adopt VMs found on the node").can("vm:import").out(msgData(tAny)),
 			get("/api/v1/nodes/:id/import/virtualizor/preview", "Preview VMs to import from this node's Virtualizor").can("vm:import").q("custom_path").
 				out(ok(handler.PreviewVirtualizorResponse{})),
@@ -507,6 +516,19 @@ func apiRoutes() []*apiRoute {
 				note("Disk files and logical volumes in the node's registered pools that no VM on the node uses and no panel record names: leftovers of failed creates, restores, moves and deleted VMs. Files written in the last six hours are left out."),
 			post("/api/v1/storage/orphans/delete", "Delete an orphaned disk").can("storage:delete").in(service.OrphanDeleteRequest{}).out(okMsg).
 				note("Send the disk as listed, with `confirm` repeating its path. It is listed again here and on the node first, and refused if it is no longer orphaned or has changed (size, time). One MaburVM did not make needs `allow_foreign`."),
+			get("/api/v1/storage/shared-pools", "List shared storage pools").can("node:read").out(okList(service.SharedPoolView{})).
+				note("Storage several nodes see at the same path. Each pool is listed once, with its member nodes; capacity and allocation count the storage once."),
+			post("/api/v1/storage/shared-pools", "Add a shared storage pool").can("storage:create").in(models.SharedStoragePool{}).
+				code(http.StatusCreated).out(ok(models.SharedStoragePool{})).
+				note("`kind` is `nfs` (`nfs_server`, `nfs_export`, optional `mount_options`; each member's agent mounts it under `/var/lib/maburvm/pools/<id>`) or `mounted` (`path`, a directory you mount yourself at the same path on every member). No node is touched until one is added as a member."),
+			del("/api/v1/storage/shared-pools/:id", "Remove a shared storage pool").can("storage:delete").code(http.StatusNoContent).
+				note("Refused while it has members. Files in it are not removed."),
+			post("/api/v1/storage/shared-pools/:id/members", "Add a node to a shared pool").can("storage:update").in(obj("node_id", tStr)).out(okMsg).
+				note("The node mounts the pool (kind `nfs`) and must read back a random token file a member writes there, and have its own read back. A node that does not see the same storage is taken out again and refused with the reason."),
+			del("/api/v1/storage/shared-pools/:id/members/:nodeId", "Remove a node from a shared pool").can("storage:update").code(http.StatusNoContent).
+				note("Refused while a VM on that node has a disk in the pool. An `nfs` pool is unmounted there."),
+			post("/api/v1/storage/shared-pools/:id/check", "Check a shared pool's members now").can("storage:update").out(ok(obj())).
+				note("`data` maps each member node's id to what is wrong with it; an empty string passes. A member that fails takes no new disks until its node reports the storage back."),
 		),
 		group("Templates and plans",
 			get("/api/v1/templates", "List templates").can("signed-in").q("include_nodes").out(handler.SuccessResponse{}).

@@ -78,11 +78,15 @@ func (*drainWorker) Work(ctx context.Context, job *river.Job[DrainJob]) error {
 
 func (*drainWorker) Timeout(*river.Job[DrainJob]) time.Duration { return 72 * time.Hour }
 
-// MigrationActive reports that a VM is being moved between nodes. A database
-// without the table (an older test schema) has no migrations.
+// MigrationActive reports that a VM is being moved between nodes, or recovered
+// onto another node from one that went down. A database without the table (an
+// older test schema) has no migrations.
 func MigrationActive(ctx context.Context, vmID string) bool {
 	if globalWorkerContext == nil || globalWorkerContext.DB == nil {
 		return false
+	}
+	if RecoveryActive(ctx, globalWorkerContext.DB, vmID) {
+		return true
 	}
 	var n int64
 	err := globalWorkerContext.DB.WithContext(ctx).Session(&gorm.Session{Logger: gormlogger.Discard}).Table("vm_migrations").

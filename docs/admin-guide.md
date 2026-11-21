@@ -156,7 +156,7 @@ its migration key from every other node that is online.
 
 | Kind | Path | Disks | Notes |
 |---|---|---|---|
-| Directory | a directory on the node | qcow2 files, thin | ZFS datasets, NFS exports and CephFS work by mounting them on the node and registering the mount point. |
+| Directory | a directory on the node | qcow2 files, thin | ZFS datasets, NFS exports and CephFS work by mounting them on the node and registering the mount point. Storage that several nodes mount is better added as a shared pool (section 4.7). |
 | LVM volume group | the volume group | raw logical volumes | Each disk takes its full size from the group when it is created. |
 | LVM thin pool | `vg/thinpool` | thin logical volumes | Disks take space as they are written; watch data **and metadata** use (the Storage page shows both). A full metadata area stops every thin volume. |
 
@@ -247,6 +247,79 @@ space with 20 GB to spare. Disks of machines the panel does not manage are not
 counted. A disk on a volume group (thick LVM) that grows has its new space
 zeroed before the VM sees it, which takes as long as writing that much on
 slow disks.
+
+### 4.7 Shared pools
+
+A **shared pool** is storage that several nodes reach at the same path: an NFS
+export, or a CephFS, GlusterFS or other cluster file system mount. A VM whose
+disks are in one moves between the pool's nodes **without its disks being
+copied** (section 10). Shared pools are optional. Nothing changes on any node,
+and nothing is mounted, until you add that node to a pool; nodes with only
+local storage are not affected at all.
+
+**Storage, Add shared pool** (`storage:create`) records the pool:
+
+| Kind | You give | What happens on a member node |
+|---|---|---|
+| NFS export, mounted by the nodes | server, export, optional mount options | The node's agent mounts it at `/var/lib/maburvm/pools/<pool id>` with a systemd mount unit, so it is mounted again after a reboot, before libvirt starts VMs. The node needs the NFS client (`nfs-common`; `nfs-utils` on the RHEL family). |
+| A directory I mount myself | the path, the same on every node | Nothing is mounted for you. Mount it on each node first and make it mount at boot. |
+
+NFS pools are mounted `hard`. The options `nolock`, `local_lock=all`,
+`local_lock=posix`, `soft`, `softerr` and `ro` are refused: without locks the
+other nodes see, two nodes could write one disk image at once, and a soft
+mount can silently lose a VM's writes.
+
+Then add nodes on the pool's card (**Add node**; `storage:update`). A node is
+**checked before it joins**: a node that is already a member writes a file with
+a random token into the pool, the new node must read it back, and the new node
+writes one that a member must read back. A node that does not see the same
+storage (a wrong export, a path that is not mounted, a read-only mount) is
+taken out again and told why. The first node of a pool has nobody to be
+checked against; it writes the pool's marker file (`.maburvm-shared-pool`,
+holding the pool's id), which every later node must find.
+
+Each member node gets an ordinary pool of its own for the shared storage, so
+everything that works on a pool works here: **Use for new VMs** on the pool's
+card sends that node's new VMs to it, staff creating a VM can name it, tiers
+and the overcommit ratio apply. The Storage page shows the shared pool once,
+with its nodes; capacity and the disk allocated count the storage once, not
+once per node. A directory pool you had already registered at the same path on
+a node becomes that node's part of the shared pool when you add the node.
+
+What keeps disks safe on shared storage:
+
+- **An unmounted pool takes no writes.** When the mount is gone, the path is
+  an empty directory on the node's own disk. The node sees that the marker
+  file is missing, reports the pool **Not usable** (and raises a critical
+  storage alert), and refuses to create, move, restore or reinstall a disk
+  there, or put a rescue disk beside one, instead of filling its own disk. It is usable again by itself once the storage is back.
+  **Check now** on the card runs the token check on every member at once.
+- **Disks bypass the host cache.** Disks created in a shared pool are defined
+  with `cache=none`, which a live move without a copy needs. QEMU's image
+  locking is left on: a second hypervisor that tries to open a disk in use is
+  refused by QEMU.
+- **One VM's files are never another's.** Disk files are named after their VM,
+  so VMs on different nodes cannot collide. Deleting a VM or a disk removes its
+  own files once, from the node the VM is on. The orphaned-disk list (4.4) does
+  not offer a file in a shared pool unless its name points to a VM the panel
+  has deleted: a VM on another member may be using a file this node cannot see
+  in use. For the same reason the clean-ups a node runs by itself (left-over
+  backup files, files of a move that did not finish) leave shared pools alone,
+  and a create that finds its VM's disk file already in a shared pool is
+  refused instead of removing the file as left over from a failed try.
+
+Templates are cached per node in `TEMPLATE_CACHE_DIR`, not in the pool, so a
+shared pool holds VM disks only.
+
+**Remove** on a node's row takes the node out; it is refused while a VM on
+that node has a disk in the pool. An NFS pool is then unmounted there and its
+unit removed; a directory you mount yourself is left alone. A shared pool with
+no nodes left can be deleted; files on the storage are never removed.
+
+For live moves without a copy libvirt must recognise the file system as
+shared. It knows NFS, CephFS, GlusterFS, GFS2, OCFS2 and a few more; for any
+other, list its mount point under `shared_filesystems` in
+`/etc/libvirt/qemu.conf` on each node.
 
 ## 5. Networking
 
@@ -954,6 +1027,26 @@ moving to a directory pool becomes a qcow2 file (live) or a raw file
 made are removed after the move; an imported VM's are kept and listed under
 orphaned disks.
 
+**On shared storage no disk is copied.** When a VM's disks are in a shared
+pool (section 4.7) that the destination is also a usable member of, the move
+leaves them where they are: a live move copies only the memory, and an offline
+move defines the VM on the destination and removes its definition from the
+source. The files are the same on both nodes, so the source never deletes
+them. Right before such a move the panel runs the token check between the two
+nodes again and refuses the move when the destination does not see the same
+storage. Other refusals the check may name: a node whose agent is too old, a
+running VM whose disk does not use `cache=none` (stop it and move it offline
+once; it is defined with `cache=none` on arrival), a disk built on a backing
+image outside the shared pool (the other node has no such image at that
+path), and an offline move of a VM that is not shut off (two hypervisors must
+never open one image). A VM
+with some disks in a shared pool and some local keeps the shared ones in
+place and copies only the others, into the destination pool you name or the
+panel picks. A disk on shared storage that the destination also uses always
+stays; to take a VM off shared storage, move its disk to another pool of its
+node first (section 4.3). When no node is named, a destination that needs no
+copy is preferred, in single moves and in drains.
+
 A **drain** pauses the node for new VMs, plans a destination for every VM,
 moves them one to three at a time with two tries each, and reports what moved
 and what stayed. Stop drain cancels the moves under way. The node stays paused
@@ -966,6 +1059,93 @@ moves send memory and disks **unencrypted** on TCP 49152-49215 between nodes:
 keep that traffic on a private network or move VMs offline. Requirements:
 [DEPLOYMENT.md §6.3](DEPLOYMENT.md#63-moving-vms-between-nodes-and-draining-a-node).
 When a move fails: [runbooks.md](runbooks.md#4-failed-move-to-another-node).
+
+### 10.1 Recovering the VMs of a node that went down
+
+Moves and drains need both nodes alive. For a node that is down and not coming
+back soon, staff with `node:recover` use **Recover VMs on other nodes** on the
+node's page. The panel never does this by itself: there is no automatic
+failover.
+
+The card lists the node's VMs and, for each, the nodes it could go to and how:
+
+| The VM's disks | What recovery does |
+|---|---|
+| All in a shared pool (section 4.7) that the other node is a healthy member of | Defines the VM there from the panel's record, on the same disk files. Nothing is created or copied. It is started if **Start it** is ticked, which it is for a VM that was running. |
+| On the failed node's own storage | Restores its newest finished backup onto the other node and starts it. What was written after that backup is not in it. |
+| On the node's own storage, no finished backup | Listed as not recoverable, with the reason. |
+
+Either way it stays **the same VM**: same record, owner, plan, firewall rules,
+limits, port forwards and backups. A NAT VM gets a port block on the new node,
+as in a move. Not carried over, and said in the plan: dedicated CPU cores
+(turn them on again afterwards), snapshots, a virtual TPM's keys, UEFI
+settings, rescue mode, and a disc in the drive.
+
+**Addresses.** A VM is only recovered with its address onto a node its address
+pool is available on (section 5.1), floating IPs included. Nodes in different
+sites usually share no pool, so those are refused with the reason. You can then
+tick **Give it a new address**: the VM's card keeps its record and gets an
+address from the other node's pool, the old address is released, a floating IP
+from an unreachable pool is detached (it stays the customer's), IPv6 from one
+is released, and the guest is given the new address the way an address change
+does (section 5.1). Tell the customer. A VM with more than one network card,
+or in a private network (which exists on one node only), is not recovered this
+way: restore its backup as a new VM (section 9.3).
+
+**The node must really be off.** A node the panel cannot reach may still be
+running its VMs. Recover one of them and two copies run: on shared storage
+they write the same disk and destroy it; from a backup they answer on the same
+address. So:
+
+- recovery is refused unless the panel has marked the node offline by its own
+  checks, has not heard from its agent for as long as that takes (section 3.4),
+  and cannot reach the agent's port at that moment. The job checks again right
+  before it defines the VM;
+- you type the node's name to confirm it is **powered off, or cut off from its
+  storage and its VM network** (API: `node_is_down: true`). Who confirmed is in
+  the audit log, and each VM gets its own entry in its activity;
+- on shared storage the new node refuses to define a VM whose disk is open in
+  another QEMU (the image lock), or that has a backup's temporary overlay lying
+  beside its disk. It also refuses a disk built on a backing image outside the
+  pool (older disks sit on a node's own template copy): that node would open a
+  different file at that path. Recover such a VM from its backup onto a node
+  that is not a member of the pool.
+
+Each VM is its own background job, shown on the card with its progress.
+Nothing else can change a VM while it is being recovered. A recovery that
+fails before the VM is defined on the other node changes nothing, and can be
+run again. It fails, and leaves things as they are, when the other node
+already has a definition of the VM left from an earlier move: undefine that
+one there (keep its disks) and recover again. A backup is never restored into
+the shared pool the VM's own disks are in, which would replace them; pick a
+node that restores it elsewhere.
+
+**When the node comes back** the panel tells its agent which VMs now live
+elsewhere, at the first check the node answers. The agent turns their
+autostart off, removes their network rules from the host, and refuses to start
+them from then on; the list survives a reboot. It does **not** stop a copy it
+finds running: the panel raises a critical alert and you decide. The VM's
+record is never moved back by itself.
+
+The first minute is the gap: libvirt starts its autostart VMs at boot, before
+the panel can reach the agent. For a VM on shared storage the image lock stops
+the second copy. For a VM restored from a backup, the old copy boots with the
+same address. If you can, bring the node back with its VM network unplugged,
+or remove the recovered VMs' files from `/etc/libvirt/qemu/autostart/` (named
+after the VM ids listed on the card) before libvirt starts.
+
+**Recovery leftovers** on the returned node's page asks the node what it still
+holds of those VMs. **Remove** deletes the old definition. For a VM restored
+from a backup it also deletes the old disks, which hold what the VM wrote
+after that backup: copy off what you need first. For a VM on shared storage
+only the definition goes; the disks are the ones it runs on now. A disk file
+some running VM holds open is kept too (storage the nodes share without a
+shared pool saying so). A VM cannot be recovered or moved back onto a node
+that still holds its old copy: that node's agent refuses to run it.
+
+Needs the current agent on the node a VM is recovered onto (either way) and on
+the node that comes back; an older returning agent cannot be told and raises a
+critical alert until it is updated.
 
 ## 11. Alerts, email and notifications
 

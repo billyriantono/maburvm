@@ -159,12 +159,15 @@ func poolFacts(path string) PoolFacts {
 	if !p.IsDir {
 		return p
 	}
+	c := storage.Capacity(path)
+	if p.Problem = c.Problem; p.Problem != "" {
+		return p // a shared pool that is not mounted: nothing is written there
+	}
 	if tmp, err := os.CreateTemp(path, ".maburvm-preflight-*"); err == nil {
 		p.Writable = true
 		tmp.Close()
 		os.Remove(tmp.Name())
 	}
-	c := storage.Capacity(path)
 	p.Total, p.Available, p.MountPoint = c.Total, c.Available, c.Filesystem
 	return p
 }

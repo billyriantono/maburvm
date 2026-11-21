@@ -28,6 +28,9 @@ const (
 	phaseCleanup   = "Removing the old copy"
 )
 
+// systemDiskTarget is the drive every VM's system disk is on.
+const systemDiskTarget = "vda"
+
 // errInterrupted ends a job try without ending the move: the panel is
 // stopping, or the job ran out of time, and the next try picks it up.
 var errInterrupted = errors.New("interrupted")
@@ -210,6 +213,18 @@ func (m *MigrationService) launch(ctx context.Context, row *models.VMMigration, 
 		return fmt.Errorf("the VM can no longer be moved: %s", strings.Join(chk.Blockers, "; "))
 	}
 	plan := chk.plan
+	// Recorded before anything starts: these files are the VM's disks on the
+	// destination too, and the clean-up of the source goes by this list.
+	if kept := strings.Join(plan.keptPaths(), "\n"); kept != row.KeptPaths {
+		if err := m.db.WithContext(ctx).Table("vm_migrations").Where("id = ?", row.ID).Update("kept_paths", kept).Error; err != nil {
+			return fmt.Errorf("the disks that stay on shared storage could not be recorded: %w", err)
+		}
+		row.KeptPaths = kept
+	}
+	copies := false // whether any disk is copied
+	for _, d := range plan.disks {
+		copies = copies || !plan.stay[d.Target]
+	}
 
 	m.setPhase(ctx, row, phaseLink)
 	if err := m.EnsureLink(ctx, src.ID, dst.ID); err != nil {
@@ -228,9 +243,16 @@ func (m *MigrationService) launch(ctx context.Context, row *models.VMMigration, 
 	if err != nil {
 		return fmt.Errorf("node %s could not describe the VM: %w", src.Name, err)
 	}
+	if plan.mode == models.MigrationOffline && len(plan.stay) > 0 && srcInfo.VmState != "shutoff" {
+		// Its disks are not copied: defined on a second node while it runs
+		// here, two hypervisors could open the same image.
+		return fmt.Errorf("the VM is %s on node %s; a VM on shared storage is moved offline only while it is shut off", srcInfo.VmState, src.Name)
+	}
 	f := &srcFacts{vm: vm, src: src, info: srcInfo, mode: plan.mode, disks: plan.disks, seed: plan.seed}
-	prep := m.targetRequest(f, plan.pool, row.ID, false)
-	prep.SeedImage = srcInfo.SeedImage
+	prep := m.targetRequest(f, plan.pool, row.ID, false, plan.stay)
+	if plan.seed != nil && !plan.stay[plan.seed.Target] {
+		prep.SeedImage = srcInfo.SeedImage
+	}
 	dclient, dctx, err := m.agent(ctx, dst)
 	if err != nil {
 		return err
@@ -253,7 +275,11 @@ func (m *MigrationService) launch(ctx context.Context, row *models.VMMigration, 
 	}
 
 	if plan.mode == models.MigrationLive {
-		m.setPhase(ctx, row, phaseCopying+" memory and disks")
+		if copies {
+			m.setPhase(ctx, row, phaseCopying+" memory and disks")
+		} else {
+			m.setPhase(ctx, row, phaseCopying+" memory (the disks stay on shared storage)")
+		}
 		sclient, sctx, err := m.agent(ctx, src)
 		if err != nil {
 			m.rollback(ctx, row, dst)
@@ -263,7 +289,7 @@ func (m *MigrationService) launch(ctx context.Context, row *models.VMMigration, 
 		mctx, cancel := context.WithTimeout(sctx, 2*time.Minute)
 		resp, err := sclient.MigrateVM(mctx, &pb.MigrateVMRequest{
 			VmId: vm.ID, MigrationId: row.ID, DestAddress: hostOnlyIP(dst.IPAddress), Disks: maps, BandwidthMibS: bw,
-			Live: true, CopyStorage: true,
+			Live: true, CopyStorage: copies,
 		})
 		cancel()
 		if err != nil {
@@ -278,7 +304,11 @@ func (m *MigrationService) launch(ctx context.Context, row *models.VMMigration, 
 		return nil
 	}
 
-	m.setPhase(ctx, row, phaseCopying+" disks")
+	if copies {
+		m.setPhase(ctx, row, phaseCopying+" disks")
+	} else {
+		m.setPhase(ctx, row, phaseCopying+" the definition (the disks stay on shared storage)")
+	}
 	pctx, cancel = context.WithTimeout(dctx, 2*time.Minute)
 	resp, err := dclient.PullMigratedVM(pctx, &pb.PullMigratedVMRequest{
 		VmId: vm.ID, MigrationId: row.ID, SourceAddress: hostOnlyIP(src.IPAddress), Disks: maps, DomainXml: srcInfo.DomainXml,
@@ -303,10 +333,14 @@ func mibPerSecond(mbps int) int64 {
 }
 
 // diskMaps says where each drive goes: the disks are copied, the seed image
-// is already there.
+// is already there. A drive on shared storage stays at its path, uncopied.
 func diskMaps(plan *migrationPlan, prep *pb.PrepareMigrationTargetResponse) []*pb.MigrationDiskMap {
 	var out []*pb.MigrationDiskMap
 	for _, d := range plan.disks {
+		if plan.stay[d.Target] {
+			out = append(out, &pb.MigrationDiskMap{Target: d.Target, DestPath: d.Path})
+			continue
+		}
 		dm := &pb.MigrationDiskMap{Target: d.Target, DestPath: prep.Paths[d.Target], Copy: true, ExpectedBytes: d.FileSize}
 		// Only a disk changing between a file and a volume says so: an older
 		// agent never sees the fields it would not know.
@@ -315,7 +349,11 @@ func diskMaps(plan *migrationPlan, prep *pb.PrepareMigrationTargetResponse) []*p
 		}
 		out = append(out, dm)
 	}
-	if plan.seed != nil && prep.SeedPath != "" {
+	switch {
+	case plan.seed == nil:
+	case plan.stay[plan.seed.Target]:
+		out = append(out, &pb.MigrationDiskMap{Target: plan.seed.Target, DestPath: plan.seed.Path})
+	case prep.SeedPath != "":
 		out = append(out, &pb.MigrationDiskMap{Target: plan.seed.Target, DestPath: prep.SeedPath})
 	}
 	return out
@@ -549,11 +587,63 @@ func (m *MigrationService) moveRecords(ctx context.Context, row *models.VMMigrat
 	if vm.Suspended && newStatus == models.VMStatusStopped {
 		newStatus = models.VMStatusSuspended // as the status sync reads a suspended VM that is off
 	}
-	note := row.Note
+	// The VM's pool is the one its system disk is in: the destination pool,
+	// unless that disk stayed on shared storage while others were copied.
+	poolID := *row.DestPoolID
+	var dstPools []models.StoragePool
+	if sys := paths[systemDiskTarget]; sys != "" && m.db.WithContext(ctx).Where("node_id = ?", dst.ID).Find(&dstPools).Error == nil {
+		if own := poolByID(dstPools, poolID); own == nil || !PoolHoldsDisk(*own, sys) {
+			for i := range dstPools {
+				if PoolHoldsDisk(dstPools[i], sys) {
+					poolID = dstPools[i].ID
+					break
+				}
+			}
+		}
+	}
+	note, nat, err := m.moveVMRecords(ctx, recordsMove{vm: vm, src: src, dst: dst, poolID: poolID, status: newStatus, paths: paths, note: row.Note,
+		record: func(tx *gorm.DB, note string) error {
+			return tx.Model(&models.VMMigration{}).Where("id = ?", row.ID).Updates(map[string]interface{}{"phase": phaseApplying, "note": note, "updated_at": time.Now()}).Error
+		}})
+	if err == nil {
+		row.Note = note
+		if nat != nil {
+			m.tellNATMove(ctx, vm, dst, nat)
+		}
+	}
+	return err
+}
+
+// recordsMove is what pointing a VM's records at another node takes.
+type recordsMove struct {
+	vm       *models.VM
+	src, dst *models.Node
+	// poolID is the destination pool holding the system disk; "" when the
+	// panel knows none.
+	poolID string
+	status models.VMStatus
+	// paths are the VM's drives on the destination, by target.
+	paths map[string]string
+	note  string
+	// record runs in the same transaction with the note as it ended up, once
+	// the VM's row has moved. Skipped when an earlier try moved it already.
+	record func(tx *gorm.DB, note string) error
+}
+
+// moveVMRecords points the VM, its disks, port forwards and addresses at the
+// destination in one transaction: what a move and a recovery from a failed
+// node both end with. It returns the note with what had to be dropped, and
+// where a NAT VM's ports went.
+func (m *MigrationService) moveVMRecords(ctx context.Context, mv recordsMove) (string, *natMove, error) {
+	vm, src, dst, paths, note := mv.vm, mv.src, mv.dst, mv.paths, mv.note
+	var pool interface{}
+	if mv.poolID != "" {
+		pool = mv.poolID
+	}
 	var nat *natMove
-	err = m.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := m.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		res := tx.Table("vms").Where("id = ? AND node_id = ?", vm.ID, src.ID).Updates(map[string]interface{}{
-			"node_id": dst.ID, "storage_pool_id": *row.DestPoolID, "vnc_port": nil, "status": newStatus, "updated_at": time.Now(),
+			"node_id": dst.ID, "storage_pool_id": pool, "vnc_port": nil, "status": mv.status, "updated_at": time.Now(),
 		})
 		if res.Error != nil {
 			return res.Error
@@ -615,15 +705,12 @@ func (m *MigrationService) moveRecords(ctx context.Context, row *models.VMMigrat
 		if err := tx.Model(&models.IPAddress{}).Where("vm_id = ? AND node_id = ?", vm.ID, src.ID).Update("node_id", dst.ID).Error; err != nil {
 			return err
 		}
-		return tx.Model(&models.VMMigration{}).Where("id = ?", row.ID).Updates(map[string]interface{}{"phase": phaseApplying, "note": note, "updated_at": time.Now()}).Error
-	})
-	if err == nil {
-		row.Note = note
-		if nat != nil {
-			m.tellNATMove(ctx, vm, dst, nat)
+		if mv.record == nil {
+			return nil
 		}
-	}
-	return err
+		return mv.record(tx, note)
+	})
+	return note, nat, err
 }
 
 // tellNATMove tells a NAT VM's owner where its public ports now answer.
@@ -696,8 +783,20 @@ func (m *MigrationService) removeOldCopy(ctx context.Context, vm *models.VM, src
 	}
 	cctx, cancel := context.WithTimeout(actx, 5*time.Minute)
 	defer cancel()
+	// The disks the move left on shared storage are the VM's disks on its new
+	// node, and must outlive the old definition.
+	var keep []string
+	for _, p := range strings.Split(row.KeptPaths, "\n") {
+		if p != "" {
+			keep = append(keep, p)
+		}
+	}
+	if len(keep) > 0 && !m.nodeHasFeature(ctx, src, models.FeatureSharedStorage) {
+		// An agent that does not know the list would delete the files.
+		return nil, fmt.Errorf("node %s's agent cannot leave the VM's shared disks in place; update it, then undefine the VM there by hand", src.Name)
+	}
 	resp, err := client.FinishMigrationSource(cctx, &pb.FinishMigrationSourceRequest{VmId: vm.ID, MigrationId: row.ID,
-		LvmPools: queue.NodeLVMPools(ctx, m.db, src.ID)})
+		LvmPools: queue.NodeLVMPools(ctx, m.db, src.ID), KeepPaths: keep})
 	if err != nil {
 		return nil, err
 	}

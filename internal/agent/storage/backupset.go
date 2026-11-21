@@ -134,7 +134,7 @@ func domainDisk(d libvirtxml.DomainDisk) (DomainDisk, bool) {
 
 // DiskDevice is the definition of a disk at target backed by path: a raw block
 // device for a /dev path, which gives freed blocks back to a thin pool, and a
-// qcow2 file otherwise.
+// qcow2 file otherwise. A file in a shared pool bypasses the host cache.
 func DiskDevice(path, target string) libvirtxml.DomainDisk {
 	d := libvirtxml.DomainDisk{Device: "disk", Target: &libvirtxml.DomainDiskTarget{Dev: target, Bus: "virtio"}}
 	if strings.HasPrefix(path, "/dev/") {
@@ -144,6 +144,7 @@ func DiskDevice(path, target string) libvirtxml.DomainDisk {
 	}
 	d.Driver = &libvirtxml.DomainDiskDriver{Name: "qemu", Type: "qcow2"}
 	d.Source = &libvirtxml.DomainDiskSource{File: &libvirtxml.DomainDiskSourceFile{File: path}}
+	sharedDiskDriver(&d)
 	return d
 }
 

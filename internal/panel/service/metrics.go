@@ -326,6 +326,10 @@ func (c *MetricsCollector) watchNodes(ctx context.Context) {
 	}
 }
 
+// NodeReportedHook runs each time a node's agent answers a check. The panel
+// sets it (MigrationService.NodeReported); it must not block.
+var NodeReportedHook func(ctx context.Context, nodeID string)
+
 // nodeCheck is what one check of a node means for it.
 type nodeCheck struct {
 	// Failed is how many checks in a row have gone without a report.
@@ -484,6 +488,11 @@ func (c *MetricsCollector) recordPoll(ctx context.Context, node *models.Node, m 
 		}
 		c.syncGuestPending(ctx, nodeID, m.GuestNetworkPending)
 		c.noteRepairs(ctx, node, m)
+		// A node that answers is told, until it has heard, which of its VMs
+		// were recovered onto other nodes while it was down.
+		if NodeReportedHook != nil {
+			NodeReportedHook(ctx, nodeID)
+		}
 	}
 	// By table name: the model fields are read-only (see models.Node).
 	seen := map[string]interface{}{"failed_polls": health.Failed}
@@ -1137,6 +1146,23 @@ func (c *MetricsCollector) syncStoragePools(ctx context.Context, node *models.No
 			}
 			continue
 		}
+		// A shared pool that is not mounted on this node: the node says so, or
+		// the pool's marker cannot be read there. It takes no disks here until
+		// it is back.
+		problem := cap.Problem
+		if problem == "" && pools[i].SharedPoolID != nil && c.vmService != nil {
+			problem = NewSharedPoolService(c.db, c.vmService).MemberProblem(ctx, *pools[i].SharedPoolID, node)
+		}
+		if problem != "" {
+			pools[i].Status = "degraded"
+			pools[i].StatusNote = problem
+			if err := c.storageRepo.UpdatePoolMeasurement(&pools[i]); err != nil {
+				c.logger.Error("storage sync: update pool failed", "pool_id", pools[i].ID, "error", err)
+			}
+			c.alertSharedMount(ctx, node, &pools[i], problem)
+			continue
+		}
+		c.alertSharedMount(ctx, node, &pools[i], "")
 		pools[i].TotalSpace = cap.Total
 		pools[i].UsedSpace = cap.Used
 		pools[i].AvailableSpace = cap.Available
@@ -1170,6 +1196,25 @@ func (c *MetricsCollector) syncStoragePools(ctx context.Context, node *models.No
 	}
 
 	c.warnUnregisteredStorage(node, pools, report.DiskLocations)
+}
+
+// alertSharedMount raises, or with no problem clears, the alert of a shared
+// pool that is not mounted on one of its member nodes.
+func (c *MetricsCollector) alertSharedMount(ctx context.Context, node *models.Node, p *models.StoragePool, problem string) {
+	if c.alerts == nil || p.SharedPoolID == nil {
+		return
+	}
+	key := "pool_shared:" + p.ID
+	if problem == "" {
+		c.alerts.Clear(ctx, key)
+		return
+	}
+	c.alerts.Raise(ctx, AlertInput{
+		Key: key, Kind: models.AlertKindStoragePool, Severity: models.AlertSeverityCritical,
+		Title:        fmt.Sprintf("Shared pool %s is not usable on %s", p.Name, node.Name),
+		Detail:       problem + " VMs on this node with disks in the pool cannot start, and no new disk is placed there, until it is mounted again.",
+		ResourceType: "storage_pool", ResourceID: p.ID, ResourceName: p.Name,
+	})
 }
 
 // measureLVMPool applies what the node reported for an LVM pool. A pool the

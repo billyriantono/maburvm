@@ -346,6 +346,10 @@ func (s *NodeAgentService) enterRescue(req *pb.VMCommandRequest) error {
 	if !models.IsBlockDevicePath(primary) {
 		dir = filepath.Dir(primary)
 	}
+	// Not into an unmounted shared pool: that is the local disk underneath.
+	if err := storage.CheckSharedDir(dir); err != nil {
+		return err
+	}
 	path := filepath.Join(dir, rescueDiskName(req.VmId))
 	_, imageRef := models.SplitGuestImageRef(cfg.GetImageId())
 	template, err := resolveTemplateImage(imageRef, req.GetObjectStore(), cfg.GetMetadata()[models.ImageSHA256Key])

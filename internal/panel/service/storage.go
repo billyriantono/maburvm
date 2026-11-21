@@ -235,6 +235,11 @@ func (s *storageService) DeletePool(id string) error {
 	if existing == nil {
 		return errors.New("pool not found")
 	}
+	// A member of a shared pool is mounted and guarded on its node: it leaves
+	// through the shared pool, which undoes that.
+	if existing.SharedPoolID != nil {
+		return fmt.Errorf("%w: %s is this node's part of a shared pool; remove the node from the shared pool instead", ErrInvalidStoragePool, existing.Name)
+	}
 
 	return s.repo.DeletePool(id)
 }
