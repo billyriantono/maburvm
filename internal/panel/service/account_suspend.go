@@ -120,4 +120,13 @@ func AuditAccountSuspension(ctx context.Context, db *gorm.DB, on bool, actorID, 
 	if err := db.WithContext(ctx).Create(entry).Error; err != nil {
 		slog.Default().Error("audit: could not record account suspension", "action", action, "account", userID, "error", err)
 	}
+	event := EventUserUnsuspended
+	if on {
+		event = EventUserSuspended
+	}
+	source := "staff"
+	if actorID == "" {
+		source = "billing"
+	}
+	EmitUserEvent(ctx, db, event, userID, map[string]any{"source": source, "with_vms": details["with_vms"]})
 }

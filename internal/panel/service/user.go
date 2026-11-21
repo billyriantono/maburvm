@@ -163,6 +163,7 @@ func (s *UserService) Register(req *RegisterRequest) (*RegisterResponse, error) 
 	if err := s.db.Create(user).Error; err != nil {
 		return nil, fmt.Errorf("failed to create user: %w", err)
 	}
+	EmitUserEvent(context.Background(), s.db, EventUserCreated, user.ID.String(), map[string]any{"source": "signup"})
 
 	return &RegisterResponse{
 		User: user,

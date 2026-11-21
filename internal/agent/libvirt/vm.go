@@ -73,6 +73,14 @@ type VMConfig struct {
 	// ExtraDisks are qcow2 data disks attached at their targets (vdb, vdc...)
 	// from the first boot: those of a backup restored as a new VM.
 	ExtraDisks []ExtraDisk
+
+	// ISODrives gives the VM both CD drives from the start, so discs can be
+	// changed while it runs; InstallISO and DriversISO are what they hold.
+	// The install drive holding a disc boots first. Set for a VM installed
+	// from an ISO.
+	ISODrives  bool
+	InstallISO string
+	DriversISO string
 }
 
 // ExtraDisk is a data disk of a new VM.
@@ -313,6 +321,12 @@ func generateDomainXML(config VMConfig) (string, error) {
 		},
 	}
 
+	if config.ISODrives {
+		domain.Devices.Disks = append(domain.Devices.Disks,
+			storage.CDROMDevice(storage.InstallISOTarget, config.InstallISO),
+			storage.CDROMDevice(storage.DriversISOTarget, config.DriversISO))
+	}
+
 	tuneForKind(domain, config.OSType)
 	domtune.Discard(domain.Devices.Disks[0].Driver)
 	domtune.Apply(domain, config.Limits, domtune.CgroupV2())
@@ -333,7 +347,10 @@ func generateDomainXML(config VMConfig) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal domain XML: %w", err)
 	}
-
+	if config.ISODrives && config.InstallISO != "" {
+		// The installer boots first until it is taken out.
+		return storage.SetISODrive(string(xmlBytes), storage.InstallISOTarget, config.InstallISO)
+	}
 	return string(xmlBytes), nil
 }
 
@@ -730,130 +747,12 @@ func RestartVM(uuidStr string) error {
 	})
 }
 
-// installISOTarget is the target dev used for an attached install/rescue ISO,
-// distinct from the cloud-init seed cdrom (sda).
-const installISOTarget = "sdb"
+// AttachISO puts an ISO in the VM's install drive, which then boots first,
+// for an OS install or rescue. Idempotent (replaces any prior ISO).
+func AttachISO(uuidStr, isoPath string) error { return AttachISOSlot(uuidStr, isoPath, 1) }
 
-func removeDiskByTarget(disks []libvirtxml.DomainDisk, dev string) []libvirtxml.DomainDisk {
-	out := make([]libvirtxml.DomainDisk, 0, len(disks))
-	for _, d := range disks {
-		if d.Target != nil && d.Target.Dev == dev {
-			continue
-		}
-		out = append(out, d)
-	}
-	return out
-}
-
-// AttachISO attaches an ISO as a bootable cdrom (first in boot order) to a
-// stopped VM, for OS install or rescue. Idempotent (replaces any prior ISO).
-func AttachISO(uuidStr, isoPath string) error {
-	if _, err := uuid.Parse(uuidStr); err != nil {
-		return fmt.Errorf("invalid UUID format: %w", err)
-	}
-	if _, err := os.Stat(isoPath); err != nil {
-		return fmt.Errorf("ISO not found at %s: %w", isoPath, err)
-	}
-	return WithConnection(func(conn *libvirt.Connect) error {
-		dom, err := conn.LookupDomainByUUIDString(uuidStr)
-		if err != nil {
-			return fmt.Errorf("domain not found: %w", err)
-		}
-		defer dom.Free()
-		if state, _, err := dom.GetState(); err == nil && state == libvirt.DOMAIN_RUNNING {
-			return fmt.Errorf("stop the VM before attaching an install ISO")
-		}
-		xmlDesc, err := dom.GetXMLDesc(0)
-		if err != nil {
-			return fmt.Errorf("failed to get domain XML: %w", err)
-		}
-		var domain libvirtxml.Domain
-		if err := xml.Unmarshal([]byte(xmlDesc), &domain); err != nil {
-			return fmt.Errorf("failed to parse domain XML: %w", err)
-		}
-		if domain.Devices == nil {
-			return fmt.Errorf("domain has no devices")
-		}
-		// Per-device boot order requires clearing the OS-level boot list.
-		if domain.OS != nil {
-			domain.OS.BootDevices = nil
-		}
-		domain.Devices.Disks = removeDiskByTarget(domain.Devices.Disks, installISOTarget)
-		domain.Devices.Disks = append(domain.Devices.Disks, libvirtxml.DomainDisk{
-			Device: "cdrom",
-			Driver: &libvirtxml.DomainDiskDriver{Name: "qemu", Type: "raw"},
-			// optional: a VM whose ISO has gone (a customer's download is evicted
-			// once nothing uses it, and a snapshot can bring the drive back) starts
-			// with an empty drive instead of refusing to start.
-			Source: &libvirtxml.DomainDiskSource{
-				File:          &libvirtxml.DomainDiskSourceFile{File: isoPath},
-				StartupPolicy: "optional",
-			},
-			Target:   &libvirtxml.DomainDiskTarget{Dev: installISOTarget, Bus: "sata"},
-			ReadOnly: &libvirtxml.DomainDiskReadOnly{},
-			Boot:     &libvirtxml.DomainDeviceBoot{Order: 1},
-		})
-		// Primary disk boots second.
-		for i := range domain.Devices.Disks {
-			if domain.Devices.Disks[i].Device == "disk" {
-				domain.Devices.Disks[i].Boot = &libvirtxml.DomainDeviceBoot{Order: 2}
-			}
-		}
-		out, err := xml.Marshal(&domain)
-		if err != nil {
-			return fmt.Errorf("failed to marshal domain XML: %w", err)
-		}
-		newDom, err := redefineDomain(conn, string(out))
-		if err != nil {
-			return fmt.Errorf("failed to redefine domain with ISO: %w", err)
-		}
-		newDom.Free()
-		return nil
-	})
-}
-
-// DetachISO removes an attached install ISO and restores normal disk boot order.
-func DetachISO(uuidStr string) error {
-	if _, err := uuid.Parse(uuidStr); err != nil {
-		return fmt.Errorf("invalid UUID format: %w", err)
-	}
-	return WithConnection(func(conn *libvirt.Connect) error {
-		dom, err := conn.LookupDomainByUUIDString(uuidStr)
-		if err != nil {
-			return fmt.Errorf("domain not found: %w", err)
-		}
-		defer dom.Free()
-		xmlDesc, err := dom.GetXMLDesc(0)
-		if err != nil {
-			return fmt.Errorf("failed to get domain XML: %w", err)
-		}
-		var domain libvirtxml.Domain
-		if err := xml.Unmarshal([]byte(xmlDesc), &domain); err != nil {
-			return fmt.Errorf("failed to parse domain XML: %w", err)
-		}
-		if domain.Devices == nil {
-			return nil
-		}
-		domain.Devices.Disks = removeDiskByTarget(domain.Devices.Disks, installISOTarget)
-		// Clear per-device boot order and restore OS-level boot list.
-		for i := range domain.Devices.Disks {
-			domain.Devices.Disks[i].Boot = nil
-		}
-		if domain.OS != nil {
-			domain.OS.BootDevices = []libvirtxml.DomainBootDevice{{Dev: "hd"}, {Dev: "cdrom"}}
-		}
-		out, err := xml.Marshal(&domain)
-		if err != nil {
-			return fmt.Errorf("failed to marshal domain XML: %w", err)
-		}
-		newDom, err := redefineDomain(conn, string(out))
-		if err != nil {
-			return fmt.Errorf("failed to redefine domain: %w", err)
-		}
-		newDom.Free()
-		return nil
-	})
-}
+// DetachISO empties the install drive and restores normal disk boot order.
+func DetachISO(uuidStr string) error { return DetachISOSlot(uuidStr, 1) }
 
 // ResizeDisk grows the VM's primary disk to diskGB. It only ever grows (a
 // qcow2/guest filesystem can't be safely shrunk online), and is a no-op when the
@@ -865,80 +764,8 @@ func DetachISO(uuidStr string) error {
 // A primary disk on a block device is grown by growBlock (a logical volume's
 // lvextend); nil refuses it. qemu is then told the new size if it runs.
 func ResizeDisk(uuidStr string, diskGB int, growBlock func(dev string, want int64) error) error {
-	if _, err := uuid.Parse(uuidStr); err != nil {
-		return fmt.Errorf("invalid UUID format: %w", err)
-	}
-	if diskGB <= 0 {
-		return fmt.Errorf("disk size must be positive")
-	}
-	return WithConnection(func(conn *libvirt.Connect) error {
-		dom, err := conn.LookupDomainByUUIDString(uuidStr)
-		if err != nil {
-			return fmt.Errorf("domain not found: %w", err)
-		}
-		defer dom.Free()
-
-		xmlDesc, err := dom.GetXMLDesc(0)
-		if err != nil {
-			return fmt.Errorf("failed to get domain XML: %w", err)
-		}
-		disks, err := storage.DomainDisks(xmlDesc)
-		if err != nil {
-			return err
-		}
-		if len(disks) == 0 {
-			return fmt.Errorf("no resizable primary disk found")
-		}
-		path, target := disks[0].Path, disks[0].Target
-		want := int64(diskGB) * 1024 * 1024 * 1024
-		running := false
-		if state, _, _ := dom.GetState(); state == libvirt.DOMAIN_RUNNING {
-			running = true
-		}
-
-		// The overlay is a file over the disk's own image: grown alone, its
-		// commit back into a logical volume could not fit.
-		if err := refuseDuringBackup(dom); err != nil {
-			return err
-		}
-		if disks[0].Block {
-			if have, serr := storage.DeviceSize(path); serr == nil && want <= have {
-				return nil
-			}
-			if growBlock == nil {
-				return fmt.Errorf("the disk is the block device %s, which cannot be resized here", path)
-			}
-			if err := growBlock(path, want); err != nil {
-				return err
-			}
-			if running {
-				have, serr := storage.DeviceSize(path)
-				if serr != nil {
-					return serr
-				}
-				if err := dom.BlockResize(target, uint64(have), libvirt.DOMAIN_BLOCK_RESIZE_BYTES); err != nil {
-					return fmt.Errorf("the volume was grown, but the running VM was not told: %w; it sees the new size after a stop and start", err)
-				}
-			}
-			return nil
-		}
-
-		// Grow-only + idempotent: skip when already at/above the requested size.
-		if info, ierr := storage.NewQCOW2Manager().ImageInfo(path); ierr == nil && want <= info.VirtualSize {
-			return nil
-		}
-
-		if running {
-			if err := dom.BlockResize(target, uint64(want), libvirt.DOMAIN_BLOCK_RESIZE_BYTES); err != nil {
-				return fmt.Errorf("failed to live-resize disk: %w", err)
-			}
-			return nil
-		}
-		if err := storage.NewQCOW2Manager().ResizeImage(path, diskGB); err != nil {
-			return fmt.Errorf("failed to resize disk image: %w", err)
-		}
-		return nil
-	})
+	_, _, err := ResizeDiskTarget(uuidStr, "", diskGB, growBlock)
+	return err
 }
 
 // nextFreeVirtioTarget returns the next unused virtio disk target (vdb, vdc, …).

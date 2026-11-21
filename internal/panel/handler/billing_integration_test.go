@@ -32,7 +32,7 @@ func billingIntegrationDB(t *testing.T) *gorm.DB {
 			policy_name TEXT, policy_assigned_at DATETIME, policy_assigned_by TEXT, cap_revision_id TEXT)`,
 		`CREATE TABLE billing_user_links (external_ref TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at DATETIME)`,
 		`CREATE TABLE os_templates (id TEXT PRIMARY KEY, name TEXT NOT NULL, version TEXT NOT NULL, image_path TEXT NOT NULL, size_bytes BIGINT NOT NULL DEFAULT 0,
-			os_type TEXT NOT NULL DEFAULT 'linux', is_active BOOLEAN, description TEXT, licensed BOOLEAN NOT NULL DEFAULT 0, plan_ids TEXT, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
+			os_type TEXT NOT NULL DEFAULT 'linux', is_active BOOLEAN, description TEXT, licensed BOOLEAN NOT NULL DEFAULT 0, plan_ids TEXT, kind TEXT NOT NULL DEFAULT 'disk', checksum_sha256 TEXT NOT NULL DEFAULT '', checksum_url TEXT NOT NULL DEFAULT '', checksum_checked_at DATETIME, allow_http BOOLEAN NOT NULL DEFAULT 0, auto_refresh BOOLEAN NOT NULL DEFAULT 0, firmware TEXT NOT NULL DEFAULT 'bios', created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE plans (id TEXT PRIMARY KEY, name TEXT NOT NULL, cpu INTEGER, ram INTEGER, disk INTEGER, bandwidth_mbps INTEGER DEFAULT 0, data_quota_gb INTEGER DEFAULT 0,
 			over_quota_policy TEXT DEFAULT 'throttle', throttle_speed_mbps INTEGER DEFAULT 0, smtp_policy TEXT NOT NULL DEFAULT 'allowed', limits TEXT NOT NULL DEFAULT '{}', price_monthly REAL, price_hourly REAL, currency TEXT NOT NULL DEFAULT '', max_snapshots INTEGER, max_backups INTEGER, max_extra_ipv4 INTEGER, max_extra_ipv6 INTEGER, description TEXT, default_firewall_group_id TEXT, network_type TEXT NOT NULL DEFAULT 'public', nat_ports INTEGER NOT NULL DEFAULT 0, nat_hostnames INTEGER NOT NULL DEFAULT 0, is_active BOOLEAN, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE regions (id TEXT PRIMARY KEY, slug TEXT NOT NULL, name TEXT NOT NULL, country TEXT NOT NULL DEFAULT '', enabled BOOLEAN, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
@@ -58,6 +58,21 @@ func sendBilling(t *testing.T, h *BillingHandler, event WebhookEventType, data W
 	var resp WebhookResponse
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp), rec.Body.String())
 	return rec.Code, resp
+}
+
+// In maintenance a change from the billing system waits, with the code the
+// API reference names; a read still answers.
+func TestBillingChangeInMaintenance(t *testing.T) {
+	db := billingIntegrationDB(t)
+	h := newBillingTestHandler(t, db)
+	middleware.RememberMaintenance(middleware.Maintenance{Enabled: true})
+	t.Cleanup(middleware.ForgetMaintenance)
+
+	code, resp := sendBilling(t, h, EventUserEnsure, WebhookData{Email: "dewi@example.test", ExternalRef: "whmcs-client-7"})
+	require.Equal(t, http.StatusServiceUnavailable, code, resp.Message)
+	require.Equal(t, "maintenance", resp.Code)
+	code, resp = sendBilling(t, h, EventCatalogList, WebhookData{})
+	require.Equal(t, http.StatusOK, code, resp.Message)
 }
 
 // BIL-02: an order needs no panel user pasted in. The module asks for the
@@ -286,7 +301,7 @@ func TestBillingDeliveryLogIsStaffOnly(t *testing.T) {
 	db := billingIntegrationDB(t)
 	require.NoError(t, db.Exec(`CREATE TABLE webhook_deliveries (id TEXT PRIMARY KEY, event TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
 		attempts INTEGER NOT NULL DEFAULT 0, response_code INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '', resource_id TEXT NOT NULL DEFAULT '',
-		created_at DATETIME, last_attempt_at DATETIME, delivered_at DATETIME)`).Error)
+		created_at DATETIME, last_attempt_at DATETIME, delivered_at DATETIME, endpoint_id TEXT)`).Error)
 	failed := &service.WebhookDelivery{ID: "0b0e7f0a-3c59-4d0c-9d5c-6a1f1f0a2b11", Event: service.BillingEventVMCreated, Body: `{"hostname":"shop"}`,
 		Status: service.DeliveryFailed, Attempts: 10, LastError: "the billing system answered HTTP 503", CreatedAt: time.Now()}
 	require.NoError(t, db.Create(failed).Error)

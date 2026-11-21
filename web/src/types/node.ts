@@ -9,6 +9,8 @@ export interface Node {
   status: NodeStatus;
   /** No new VMs are placed on the node; the ones already there are unaffected. */
   creation_paused?: boolean;
+  /** The hypervisor group the node is in ("" for none); plans may target one. */
+  node_group?: string;
   /** When the node's agent last reported to the panel; absent if it never has. */
   last_report_at?: string | null;
   /** Checks in a row the node has missed. 0 while it is reporting. */
@@ -125,6 +127,8 @@ export interface UpdateNodeRequest {
   creation_paused?: boolean;
   /** The node's own vCPU overcommit ratio; 0 returns it to the panel-wide one. */
   vcpu_ratio?: number;
+  /** The node's hypervisor group; "" takes it out of one. */
+  node_group?: string;
 }
 
 // GuestConnection is how fast one guest NIC on one node is opening new outbound

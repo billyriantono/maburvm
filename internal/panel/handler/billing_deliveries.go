@@ -25,7 +25,7 @@ func RegisterBillingDeliveryRoutes(e *echo.Echo, db *gorm.DB, rc *river.Client[p
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Internal Server Error", "message": err.Error()})
 		}
-		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "meta": PageMeta(page, size, total), "data": map[string]interface{}{
 			"deliveries": rows, "total": total, "page": page, "page_size": size,
 		}})
 	}, auth, middleware.RequirePermission("billing:read"))

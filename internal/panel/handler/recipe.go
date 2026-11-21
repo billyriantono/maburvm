@@ -7,6 +7,7 @@ import (
 	"github.com/labstack/echo/v4"
 	panelMiddleware "github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/panel/service"
+	"github.com/maburvm/panel/internal/shared/models"
 	"gorm.io/gorm"
 )
 
@@ -43,7 +44,7 @@ func (h *RecipeHandler) CreateRecipe(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request body"})
 	}
-	recipe, err := h.service.CreateRecipe(c.Request().Context(), user.ID.String(), req)
+	recipe, err := h.service.CreateRecipe(c.Request().Context(), user.ID.String(), req, recipePublisher(c))
 	if err != nil {
 		return recipeError(c, err)
 	}
@@ -60,7 +61,7 @@ func (h *RecipeHandler) UpdateRecipe(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request body"})
 	}
-	recipe, err := h.service.UpdateRecipe(c.Request().Context(), c.Param("id"), user.ID.String(), req)
+	recipe, err := h.service.UpdateRecipe(c.Request().Context(), c.Param("id"), user.ID.String(), req, recipePublisher(c))
 	if err != nil {
 		return recipeError(c, err)
 	}
@@ -73,10 +74,17 @@ func (h *RecipeHandler) DeleteRecipe(c echo.Context) error {
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized"})
 	}
-	if err := h.service.DeleteRecipe(c.Request().Context(), c.Param("id"), user.ID.String()); err != nil {
+	if err := h.service.DeleteRecipe(c.Request().Context(), c.Param("id"), user.ID.String(), recipePublisher(c)); err != nil {
 		return recipeError(c, err)
 	}
 	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "Recipe deleted"})
+}
+
+// recipePublisher reports staff who manage templates: they publish recipes
+// to every customer and look after the published ones.
+func recipePublisher(c echo.Context) bool {
+	u, ok := panelMiddleware.GetUserContext(c)
+	return ok && u.Role == models.RoleAdmin && u.Can("template:update")
 }
 
 // recipeError maps service errors to HTTP responses.

@@ -21,6 +21,21 @@ const (
 	SMTPBlocked = "blocked"
 )
 
+// The extras a plan can show a monthly price for (Plan.AddonPrices keys).
+const (
+	AddonPriceSnapshot    = "snapshot"
+	AddonPriceBackup      = "backup"
+	AddonPriceImage       = "image"
+	AddonPriceExtraDiskGB = "extra_disk_gb"
+	AddonPriceFloatingIP  = "floating_ip"
+	AddonPriceExtraIPv4   = "extra_ipv4"
+	AddonPriceExtraIPv6   = "extra_ipv6"
+)
+
+// AddonPriceKeys lists them in the order prices are shown.
+var AddonPriceKeys = []string{AddonPriceSnapshot, AddonPriceBackup, AddonPriceImage, AddonPriceExtraDiskGB,
+	AddonPriceFloatingIP, AddonPriceExtraIPv4, AddonPriceExtraIPv6}
+
 // Plan is a VPS flavor: a named bundle of resources users pick when creating a
 // VM ("Plans").
 type Plan struct {
@@ -52,19 +67,35 @@ type Plan struct {
 	MaxBackups   *int `json:"max_backups" gorm:"column:max_backups"`
 	MaxExtraIPv4 *int `json:"max_extra_ipv4" gorm:"column:max_extra_ipv4"`
 	MaxExtraIPv6 *int `json:"max_extra_ipv6" gorm:"column:max_extra_ipv6"`
+	// MaxExtraDisks is per VM; MaxImages and MaxFloatingIPs are what each VM
+	// on the plan adds to its account's allowance. AddonPrices are the display
+	// prices of the extras (AddonPrice* keys), in Currency. All read-only
+	// here and written by table name (PlanService), so databases and test
+	// schemas without them keep working.
+	MaxExtraDisks  *int               `json:"max_extra_disks" gorm:"column:max_extra_disks;->"`
+	MaxImages      *int               `json:"max_images" gorm:"column:max_images;->"`
+	MaxFloatingIPs *int               `json:"max_floating_ips" gorm:"column:max_floating_ips;->"`
+	AddonPrices    map[string]float64 `json:"addon_prices" gorm:"column:addon_prices;type:jsonb;serializer:json;->"`
 	// DefaultFirewallGroupID is the group VMs created on the plan get instead
 	// of the built-in default rules; nil keeps those. Existing VMs keep theirs.
 	DefaultFirewallGroupID *string `json:"default_firewall_group_id" gorm:"column:default_firewall_group_id;type:uuid"`
 	// NetworkType is PlanNetworkPublic or PlanNetworkNAT. A NAT VM gets
 	// NATPorts public ports on its node and may route NATHostnames hostnames.
-	NetworkType  string         `json:"network_type" gorm:"column:network_type;type:varchar(8);not null;default:'public'"`
-	NATPorts     int            `json:"nat_ports" gorm:"column:nat_ports;not null;default:0"`
-	NATHostnames int            `json:"nat_hostnames" gorm:"column:nat_hostnames;not null;default:0"`
-	Description  string         `json:"description,omitempty" gorm:"type:text"`
-	IsActive     bool           `json:"is_active" gorm:"default:true"`
-	CreatedAt    time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
-	UpdatedAt    time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
-	DeletedAt    gorm.DeletedAt `json:"-" gorm:"index"`
+	NetworkType  string `json:"network_type" gorm:"column:network_type;type:varchar(8);not null;default:'public'"`
+	NATPorts     int    `json:"nat_ports" gorm:"column:nat_ports;not null;default:0"`
+	NATHostnames int    `json:"nat_hostnames" gorm:"column:nat_hostnames;not null;default:0"`
+	// NodeGroup places new VMs on the plan only on nodes in that hypervisor
+	// group; "" places them anywhere. Read-only here, written by table name
+	// (PlanService), so databases and test schemas without it keep working.
+	NodeGroup string `json:"node_group" gorm:"column:node_group;->"`
+	// StorageTier puts new VMs' disks only in storage pools of that tier; ""
+	// uses each node's primary pool. Read-only here, like NodeGroup.
+	StorageTier string         `json:"storage_tier" gorm:"column:storage_tier;->"`
+	Description string         `json:"description,omitempty" gorm:"type:text"`
+	IsActive    bool           `json:"is_active" gorm:"default:true"`
+	CreatedAt   time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
+	UpdatedAt   time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
+	DeletedAt   gorm.DeletedAt `json:"-" gorm:"index"`
 }
 
 // TableName specifies the table name for Plan.

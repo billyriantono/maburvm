@@ -6,6 +6,7 @@ import { Loader2, AlertTriangle, MailCheck } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Captcha, captchaChallenge, type CaptchaChallenge } from "@/components/captcha"
+import { apiErrorMessage } from "@/lib/api-error"
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState("")
@@ -36,7 +37,7 @@ export default function ForgotPasswordPage() {
         const result = await response.json().catch(() => ({}))
         const asked = captchaChallenge(result)
         if (asked) setChallenge(asked)
-        setError(result.error || "Something went wrong. Please try again.")
+        setError(apiErrorMessage(result, "Something went wrong. Please try again."))
         return
       }
       // Always a generic success — the backend never reveals whether the email exists.

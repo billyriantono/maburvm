@@ -26,6 +26,20 @@ describe('apiClient error handling', () => {
     await expect(apiClient.get('/api/v1/x')).rejects.toThrow('that region has no capacity');
   });
 
+  it('reads the error envelope, and never shows its object', async () => {
+    respond(409, { success: false, error: { code: 'conflict', message: 'A job is already running' } });
+    await expect(apiClient.post('/api/v1/x')).rejects.toThrow('A job is already running');
+    respond(503, { success: false, error: { code: 'maintenance', message: 'Back at noon.' } });
+    await expect(apiClient.post('/api/v1/x')).rejects.toThrow('Back at noon.');
+  });
+
+  it('says why a change waits in maintenance mode, and treats other 503s as the panel being down', async () => {
+    respond(503, { code: 'maintenance', message: 'The panel is being upgraded.' });
+    await expect(apiClient.post('/api/v1/vms')).rejects.toThrow('The panel is being upgraded.');
+    respond(503, { message: 'upstream gone' });
+    await expect(apiClient.get('/api/v1/x')).rejects.toThrow('The panel did not answer');
+  });
+
   it('keeps the axios message when the body has none', async () => {
     respond(500, null);
     await expect(apiClient.get('/api/v1/x')).rejects.toThrow('Request failed with status code 500');

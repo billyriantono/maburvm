@@ -389,6 +389,9 @@ export default function AuditLogsPage() {
             <option value="PLAN">Plan</option>
             <option value="BILLING">Billing webhook</option>
             <option value="MCP">MCP</option>
+            <option value="STAFF_NOTE">Staff note</option>
+            <option value="ANNOUNCEMENT">Announcement</option>
+            <option value="MAINTENANCE">Maintenance mode</option>
           </select>
           
           {/* Date From */}

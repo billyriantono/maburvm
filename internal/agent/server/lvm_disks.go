@@ -56,7 +56,19 @@ func growLV(ctx context.Context, pools []storage.LVMPool) func(dev string, want 
 		if _, ok := storage.HeldBy(lv, pools); !ok {
 			return fmt.Errorf("the disk %s is not in a storage pool registered with the panel; register its volume group as an LVM pool to resize it", dev)
 		}
-		return lvm.Extend(ctx, lv, want)
+		if err := lvm.Extend(ctx, lv, want); err != nil || lv.Pool != "" {
+			return err
+		}
+		// A thick volume's new extents hold what an earlier volume left there:
+		// cleared before the VM is told of them, even if the caller gives up.
+		end, err := storage.DeviceSize(dev)
+		if err != nil {
+			return err
+		}
+		if err := lvm.ZeroRange(context.WithoutCancel(ctx), dev, lv.Size, end); err != nil {
+			return fmt.Errorf("the volume grew but its new space could not be cleared: %w", err)
+		}
+		return nil
 	}
 }
 
@@ -294,7 +306,7 @@ func provisionLVMDisk(req *pb.VMCommandRequest, imageRef string, pool storage.LV
 		*restored = extra
 		return dev, nil
 	}
-	templatePath, err := resolveTemplateImage(imageRef, req.GetObjectStore())
+	templatePath, err := resolveTemplateImage(imageRef, req.GetObjectStore(), cfg.GetMetadata()[models.ImageSHA256Key])
 	if err != nil {
 		return "", err
 	}
@@ -323,6 +335,28 @@ func removeDetachedLV(ctx context.Context, vmID, dev string, pools []storage.LVM
 		}
 	}
 	return err
+}
+
+// createDiskLV makes a tagged volume of at least size bytes for a disk about
+// to be copied in. A thick volume is rounded up to whole extents, and what is
+// past size may still hold an earlier volume's data the copy never reaches:
+// that part is zeroed now. (A thin volume reads as zeroes already.)
+func createDiskLV(ctx context.Context, pool storage.LVMPool, name string, size int64) (string, error) {
+	dev, err := lvm.Create(ctx, pool, name, size)
+	if err != nil || pool.Thin != "" {
+		return dev, err
+	}
+	end, err := storage.DeviceSize(dev)
+	if err == nil {
+		err = lvm.ZeroRange(ctx, dev, size, end)
+	}
+	if err != nil {
+		if lv, lerr := lvm.Lookup(context.Background(), dev); lerr == nil && lv.Tagged() {
+			_ = lvm.Remove(context.Background(), lv)
+		}
+		return "", fmt.Errorf("could not clear the new volume %s: %w", dev, err)
+	}
+	return dev, nil
 }
 
 // lvVolumeName names a standalone volume made in an LVM pool from the panel.

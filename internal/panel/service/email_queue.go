@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -57,8 +58,12 @@ var emailQueue atomic.Pointer[river.Client[pgx.Tx]]
 // SetEmailQueue routes emails through the job queue.
 func SetEmailQueue(rc *river.Client[pgx.Tx]) { emailQueue.Store(rc) }
 
-// emailRefs ties a logged email to the account and VM it is about.
-type emailRefs struct{ userID, vmID string }
+// emailRefs ties a logged email to the account and VM it is about; at, when
+// set, holds the delivery until then (mass mail is spread out this way).
+type emailRefs struct {
+	userID, vmID string
+	at           time.Time
+}
 
 // QueueEmail logs a rendered email and hands it to the queue, which retries a
 // mail server that refuses or is down. key is the template; an optional email
@@ -96,7 +101,11 @@ func queueRendered(ctx context.Context, db *gorm.DB, key, to string, msg Rendere
 		go func() { _ = DeliverEmail(context.WithoutCancel(ctx), db, row.ID, true) }()
 		return nil
 	}
-	if _, err := rc.Insert(ctx, queue.EmailDeliveryJob{EmailID: row.ID}, nil); err != nil {
+	var opts *river.InsertOpts
+	if !refs.at.IsZero() {
+		opts = &river.InsertOpts{ScheduledAt: refs.at}
+	}
+	if _, err := rc.Insert(ctx, queue.EmailDeliveryJob{EmailID: row.ID}, opts); err != nil {
 		db.WithContext(ctx).Model(&EmailLogEntry{}).Where("id = ?", row.ID).
 			Updates(map[string]any{"status": EmailFailed, "last_error": "could not be queued: " + err.Error()})
 		return err
@@ -162,9 +171,25 @@ var sendMailNow = SendMail
 
 // ListEmailLog returns the sent-email log, newest first.
 func ListEmailLog(ctx context.Context, db *gorm.DB, status string, limit, offset int) ([]EmailLogEntry, int64, error) {
+	return SearchEmailLog(ctx, db, EmailLogFilter{Status: status}, limit, offset)
+}
+
+// EmailLogFilter narrows the email log; every field is optional. Q matches
+// the recipient or the subject.
+type EmailLogFilter struct{ Status, Template, Q string }
+
+// SearchEmailLog returns the matching emails, newest first, and how many match.
+func SearchEmailLog(ctx context.Context, db *gorm.DB, f EmailLogFilter, limit, offset int) ([]EmailLogEntry, int64, error) {
 	q := db.WithContext(ctx).Model(&EmailLogEntry{})
-	if status != "" {
-		q = q.Where("status = ?", status)
+	if f.Status != "" {
+		q = q.Where("status = ?", f.Status)
+	}
+	if f.Template != "" {
+		q = q.Where("template = ?", f.Template)
+	}
+	if s := strings.ToLower(strings.TrimSpace(f.Q)); s != "" {
+		like := "%" + s + "%"
+		q = q.Where("LOWER(recipient) LIKE ? OR LOWER(subject) LIKE ?", like, like)
 	}
 	var total int64
 	if err := q.Count(&total).Error; err != nil {

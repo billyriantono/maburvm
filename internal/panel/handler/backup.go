@@ -41,7 +41,7 @@ func NewBackupHandler(service *service.BackupService) *BackupHandler {
 // deleted by its owner: a restore or a fresh backup is a way around the
 // suspension.
 func (h *BackupHandler) authorizeVM(c echo.Context, vmID string) bool {
-	return authorizeVMAccess(c, h.service, vmID, !isReadRequest(c))
+	return authorizeVMAccess(c, h.service, vmID, methodNeed(c))
 }
 
 // ============================================================================
@@ -184,16 +184,7 @@ func (h *BackupHandler) ListBackups(c echo.Context) error {
 
 	// Parse query parameters
 	status := c.QueryParam("status")
-	limitStr := c.QueryParam("limit")
-	offsetStr := c.QueryParam("offset")
-
-	var limit, offset int
-	if limitStr != "" {
-		limit, _ = strconv.Atoi(limitStr)
-	}
-	if offsetStr != "" {
-		offset, _ = strconv.Atoi(offsetStr)
-	}
+	limit, offset := listWindow(c)
 
 	// Build request
 	listReq := &service.ListBackupsRequest{
@@ -251,8 +242,10 @@ func (h *BackupHandler) ListBackups(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
+		"success":  true,
 		"message":  "Backups retrieved successfully",
 		"data":     items,
+		"meta":     OffsetPageMeta(resp.Limit, resp.Offset, resp.Total),
 		"total":    resp.Total,
 		"limit":    resp.Limit,
 		"offset":   resp.Offset,

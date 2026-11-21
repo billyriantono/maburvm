@@ -399,12 +399,47 @@ func TestSessionsAndSignInHistory(t *testing.T) {
 	// An API key cannot turn itself into a browser session that outlives it.
 	require.NoError(t, f.db.Exec(`CREATE TABLE api_keys (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL,
 		key_hash TEXT NOT NULL UNIQUE, prefix TEXT NOT NULL, last_used_at DATETIME, expires_at DATETIME, is_active BOOLEAN DEFAULT 1,
-		role TEXT, read_only BOOLEAN NOT NULL DEFAULT 0, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`).Error)
+		role TEXT, read_only BOOLEAN NOT NULL DEFAULT 0, scope TEXT NOT NULL DEFAULT '', allowed_ips TEXT, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`).Error)
 	const key = "mvk_sessions_test_token"
 	require.NoError(t, f.db.Create(&models.APIKey{UserID: f.customer.ID.String(), Name: "ci", KeyHash: models.HashAPIToken(key), Prefix: "mvk_sess", IsActive: true}).Error)
 	rec = f.do(t, staffReq{method: http.MethodPost, path: "/api/v1/settings/sessions/revoke-others", bearer: key})
 	assert.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
 	assert.Nil(t, cookieNamed(rec, middleware.AccessTokenCookieName))
+
+	// The founding administrator's billing-scope key manages customers only: it
+	// cannot mint a staff account, change a role or redirect a staff email.
+	const billingKey = "mvk_billing_scope_token"
+	require.NoError(t, f.db.Create(&models.APIKey{UserID: f.owner.ID.String(), Name: "billing", KeyHash: models.HashAPIToken(billingKey),
+		Prefix: "mvk_bill", IsActive: true, Scope: models.APIKeyScopeBilling}).Error)
+	rec = f.do(t, staffReq{method: http.MethodPost, path: "/api/v1/users", bearer: billingKey,
+		body: `{"email":"minted@example.com","password":"` + staffTestPassword + `","role":"admin"}`})
+	assert.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	var minted int64
+	f.db.Table("users").Where("email = ?", "minted@example.com").Count(&minted)
+	assert.Zero(t, minted)
+	rec = f.do(t, staffReq{method: http.MethodPut, path: "/api/v1/users/" + f.admin.ID.String(), bearer: billingKey, body: `{"email":"taken@example.com"}`})
+	assert.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	rec = f.do(t, staffReq{method: http.MethodPut, path: "/api/v1/users/" + f.customer.ID.String(), bearer: billingKey, body: `{"role":"admin"}`})
+	assert.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	rec = f.do(t, staffReq{method: http.MethodPut, path: "/api/v1/users/" + f.customer.ID.String(), bearer: billingKey, body: `{"name":"Billed Customer"}`})
+	assert.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	// A key limited to addresses may not change the account's sign-in, which
+	// would work from anywhere.
+	const officeKey = "mvk_office_only_token"
+	require.NoError(t, f.db.Create(&models.APIKey{UserID: f.customer.ID.String(), Name: "office", KeyHash: models.HashAPIToken(officeKey),
+		Prefix: "mvk_offi", IsActive: true, AllowedIPs: []string{"192.0.2.0/24"}}).Error)
+	rec = f.do(t, staffReq{method: http.MethodPost, path: "/api/v1/settings/sessions/revoke-others", bearer: officeKey})
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Contains(t, rec.Body.String(), "may not manage account settings or API keys")
+	// A refused email change writes nothing, the name sent with it included.
+	cust := f.login(t, f.customer.Email)
+	rec = f.do(t, staffReq{method: http.MethodPut, path: "/api/v1/settings/profile", cookies: []*http.Cookie{cust},
+		body: `{"name":"Renamed Elsewhere","email":"elsewhere@example.com","current_password":"wrong"}`})
+	assert.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	var custName string
+	require.NoError(t, f.db.Table("users").Select("name").Where("id = ?", f.customer.ID.String()).Scan(&custName).Error)
+	assert.NotEqual(t, "Renamed Elsewhere", custName)
 
 	// Signing out ends only this session.
 	a, b := f.login(t, f.customer.Email), f.login(t, f.customer.Email)

@@ -38,6 +38,7 @@ import { BackupDestinationSettings } from "@/components/backup-destination-setti
 import { BackupPolicySettings } from "@/components/backup-policy-settings"
 import { TransferQuotaSettings } from "@/components/transfer-quota-settings"
 import { BillingDeliveries } from "@/components/billing-deliveries"
+import { OutboundWebhooks } from "@/components/outbound-webhooks"
 import { RescueImageSettings } from "@/components/rescue-image-settings"
 import { PanelConfigSettings } from "@/components/panel-config-settings"
 import { EmailLog } from "@/components/email-log"
@@ -1243,6 +1244,7 @@ export default function SystemSettingsPage() {
             </CardContent>
           </Card>
           <BillingDeliveries />
+          <OutboundWebhooks />
           <DNSProviderSettings />
         </TabsContent>
 

@@ -137,9 +137,12 @@ func (s *AlertService) Raise(ctx context.Context, in AlertInput) {
 		return
 	}
 	if open == nil {
-		if err := s.db.WithContext(ctx).Create(in.alert(models.AlertStateFiring, s.now())).Error; err != nil {
+		a := in.alert(models.AlertStateFiring, s.now())
+		if err := s.db.WithContext(ctx).Create(a).Error; err != nil {
 			s.logger.Warn("alerts: could not record", "key", in.Key, "error", err)
+			return
 		}
+		EmitEvent(ctx, s.db, EventAlertRaised, a.ID, alertEventFields(a))
 		return
 	}
 	updates := map[string]interface{}{}
@@ -202,6 +205,10 @@ func (s *AlertService) Event(ctx context.Context, in AlertInput) {
 	}
 	if err := s.db.WithContext(ctx).Create(a).Error; err != nil {
 		s.logger.Warn("alerts: could not record", "key", in.Key, "error", err)
+		return
+	}
+	if a.NotifiedAt == nil { // the same alert within the settle time is not sent again
+		EmitEvent(ctx, s.db, EventAlertRaised, a.ID, alertEventFields(a))
 	}
 }
 
@@ -341,9 +348,17 @@ func (s *AlertService) settle(ctx context.Context, cooldown time.Duration, now t
 		if now.Sub(*a.ClearSince) < cooldown {
 			continue
 		}
-		if err := db.Model(&models.Alert{}).Where("id = ? AND state = ?", a.ID, models.AlertStateFiring).
-			Updates(map[string]interface{}{"state": models.AlertStateResolved, "resolved_at": now, "attempts": 0}).Error; err != nil {
-			s.logger.Warn("alerts: could not resolve", "key", a.Key, "error", err)
+		res := db.Model(&models.Alert{}).Where("id = ? AND state = ?", a.ID, models.AlertStateFiring).
+			Updates(map[string]interface{}{"state": models.AlertStateResolved, "resolved_at": now, "attempts": 0})
+		if res.Error != nil {
+			s.logger.Warn("alerts: could not resolve", "key", a.Key, "error", res.Error)
+			continue
+		}
+		if res.RowsAffected == 1 {
+			a.State = models.AlertStateResolved
+			fields := alertEventFields(&a)
+			fields["resolved_at"] = now
+			EmitEvent(ctx, s.db, EventAlertResolved, a.ID, fields)
 		}
 	}
 	_ = db.Where("state <> ? AND fired_at < ?", models.AlertStateFiring, now.Add(-alertHistoryKept)).Delete(&models.Alert{}).Error

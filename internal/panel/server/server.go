@@ -85,7 +85,9 @@ func NewServer(db *gorm.DB, cfg *config.Config) *Server {
 	// Rate limits, IP allow-lists and audit rows all read c.RealIP().
 	e.IPExtractor = clientIPExtractor(cfg.Server)
 
-	// Middleware
+	// Middleware. The error envelope goes first, so every error answer below
+	// it, from a handler or a middleware, has the one shape (API-04).
+	e.Use(panelMiddleware.ErrorEnvelope())
 	e.Use(requestLogger())
 	e.Use(middleware.Recover())
 
@@ -208,6 +210,8 @@ func (s *Server) SetupRoutes() {
 
 	// Every mutating request, admin and customer alike, goes to the audit log.
 	s.echo.Use(panelMiddleware.NewClient(s.queueClient).EchoMiddleware())
+	// The most recent API requests, for the Logs page.
+	s.echo.Use(panelMiddleware.RequestLog())
 
 	// API v1 routes
 	v1 := s.echo.Group("/api/v1")
@@ -326,6 +330,9 @@ func (s *Server) SetupRoutes() {
 
 	// Notifications routes
 	s.setupNotificationRoutes(v1)
+
+	// Customer teams: members, invitations and projects
+	handler.RegisterAccountTeamRoutes(s.echo, s.db)
 }
 
 // setupHealthRoutes registers liveness and readiness probes. Liveness is
@@ -631,16 +638,23 @@ func (s *Server) setupVMRoutes(g *echo.Group) {
 		s.db)
 
 	handler.RegisterVMRoutes(s.echo, vmHandler, s.db)
+	handler.RegisterDiskOpsRoutes(s.echo, vmHandler, s.db)
+	queue.DiskMoveHook = vmService.RunDiskMoveJob
 
 	// Moving VMs between nodes and draining nodes, as background jobs.
-	migrations := service.NewMigrationService(s.db, vmService,
-		service.NewNetworkService(s.db, repository.NewNetworkRepository(s.db), repository.NewFirewallRepository(s.db), vmRepo, nodeRepo, s.riverClient),
-		s.alertsInstance(), s.riverClient, logger)
+	vmNet := service.NewNetworkService(s.db, repository.NewNetworkRepository(s.db), repository.NewFirewallRepository(s.db), vmRepo, nodeRepo, s.riverClient)
+	migrations := service.NewMigrationService(s.db, vmService, vmNet, s.alertsInstance(), s.riverClient, logger)
 	queue.MigrationHook = migrations.RunMigrationJob
 	queue.DrainHook = migrations.RunDrainJob
 	service.NodeRemovedHook = migrations.RevokeNode
 	vmService.SetLinkEnsurer(migrations.EnsureLink)
 	handler.RegisterMigrationRoutes(s.echo, handler.NewMigrationHandler(migrations), s.db)
+
+	// Several VMs at once from the admin list; a VM's delete lock and tags,
+	// and staff notes on VMs and accounts.
+	handler.RegisterBulkVMRoutes(s.echo, handler.BulkDeps{VMs: vmService, Migrations: migrations, Network: vmNet,
+		FirewallGroups: service.NewFirewallGroupService(s.db, vmNet)}, s.db)
+	handler.RegisterVMMetaRoutes(s.echo, vmService, s.db)
 
 	// Floating (elastic) IPs: host-side 1:1-NATed addresses that move between VMs
 	// on a node and outlive the VM they were attached to. Shares VMService for its
@@ -724,6 +738,8 @@ func (s *Server) setupTemplateRoutes(g *echo.Group) {
 	templateService := service.NewTemplateService(s.db, templateRepo, nodeRepo, s.riverClient)
 	templateHandler := handler.NewTemplateHandler(templateService)
 	templateHandler.RegisterRoutes(s.echo, panelMiddleware.RequireAuth(s.db))
+	// Templates that ask for it are checked against their checksum list daily.
+	go templateService.AutoRefreshLoop(context.Background(), slog.Default())
 }
 
 // setupNetworkRoutes configures network-related routes
@@ -744,6 +760,8 @@ func (s *Server) setupNetworkRoutes() {
 		handler.NewFirewallGroupHandler(service.NewFirewallGroupService(s.db, networkService), authz.NewAuthorizer(s.db)), s.db)
 	natVMs := service.NewVMService(s.db, vmRepo, nodeRepo, repository.NewTemplateRepository(s.db), s.riverClient, slog.Default())
 	handler.RegisterNATRoutes(s.echo, handler.NewNATHandler(service.NewNATService(s.db, networkService, natVMs), authz.NewAuthorizer(s.db)), s.db)
+	// The customer area's settings, and customers asking for more addresses.
+	handler.RegisterPortalRoutes(s.echo, s.db, networkService)
 
 	// Standalone /api/v1/networks endpoint: administrator-defined virtual networks
 	// (bridge/NAT/isolated) — persisted, not phantom. Per-VM IPs live under IP Pools.
@@ -931,6 +949,12 @@ func (s *Server) setupBackupRoutes() {
 	handler.RegisterBackupRoutes(s.echo, backupHandler, s.db)
 	handler.RegisterSearchRoutes(s.echo, s.db)
 	handler.RegisterOpsRoutes(s.echo, s.db, s.riverClient, s.queueConfig)
+	// Logs, reports, announcements, maintenance mode and the update notice.
+	handler.RegisterLogRoutes(s.echo, s.db)
+	handler.RegisterReportRoutes(s.echo, s.db)
+	handler.RegisterAnnouncementRoutes(s.echo, s.db)
+	handler.RegisterMaintenanceRoutes(s.echo, s.db, s.riverClient)
+	handler.RegisterUpdateCheckRoutes(s.echo, s.db)
 	handler.RegisterDashboardRoutes(s.echo, s.db)
 	handler.RegisterAlertRoutes(s.echo, s.db, s.alertsInstance())
 }
@@ -990,6 +1014,8 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to count users"})
 		}
 		return c.JSON(http.StatusOK, map[string]interface{}{
+			"success":    true,
+			"meta":       handler.PageMeta(page, limit, total),
 			"data":       userList,
 			"total":      total,
 			"page":       page,
@@ -1081,6 +1107,7 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 				slog.Default().Error("create client failed", "email", req.Email, "error", err)
 				return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "failed to create user"})
 			}
+			service.EmitUserEvent(ctx, s.db, service.EventUserCreated, client.ID.String(), map[string]any{"source": "staff"})
 			// Best-effort welcome email (never fails the creation).
 			if req.SendWelcomeEmail {
 				if cfg, ok, serr := service.LoadSMTPSettings(s.db); serr == nil && ok {
@@ -1101,6 +1128,12 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 		caller, ok := panelMiddleware.GetUserContext(c)
 		if !ok || caller.Role != models.RoleAdmin {
 			return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "Insufficient permissions"})
+		}
+		// A narrowed key (billing scope) manages customer accounts only: a new
+		// staff account without a role would be a full Administrator.
+		if caller.APIKeyRestricted {
+			return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "api_key_scope",
+				"message": "This API key may only create customer accounts"})
 		}
 		if req.StaffRole != "" {
 			r, found := panelMiddleware.LookupStaffRole(ctx, s.db, req.StaffRole)
@@ -1150,6 +1183,7 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 		if rbErr != nil {
 			return writeRoleBoundaryErr(c, rbErr)
 		}
+		service.EmitUserEvent(ctx, s.db, service.EventUserCreated, created.ID.String(), map[string]any{"source": "staff"})
 		return c.JSON(http.StatusCreated, map[string]interface{}{"data": created})
 	}, panelMiddleware.RequirePermission("user:create"))
 
@@ -1186,6 +1220,12 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 		// Another administrator's account is the founding administrator's to change.
 		if rbErr := s.mayManageAccount(ctx, caller, user); rbErr != nil {
 			return writeRoleBoundaryErr(c, rbErr)
+		}
+		// A narrowed key changes customer accounts only, and never a role: a
+		// staff account's email leads to its password reset.
+		if caller.APIKeyRestricted && (user.Role != models.RoleClient || (req.Role != "" && models.UserRole(req.Role) != user.Role)) {
+			return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "api_key_scope",
+				"message": "This API key may only change customer accounts, and not their role"})
 		}
 
 		// The email is where password resets go, so a new one is validated like a
@@ -1449,6 +1489,16 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 				return fmt.Errorf("list VMs: %w", oerr)
 			}
 			ownedVMs = owned
+			if vmsMode == service.UserVMsDelete && len(owned) > 0 {
+				// A locked VM would be left behind with no account; nothing changes until it is unlocked.
+				var locked int64
+				if err := tx.Table("vms").Where("user_id = ? AND deleted_at IS NULL AND delete_lock <> ''", id.String()).Count(&locked).Error; err != nil {
+					return fmt.Errorf("check VM locks: %w", err)
+				}
+				if locked > 0 {
+					return &roleBoundaryErr{status: http.StatusConflict, code: "user_vms_delete_locked"}
+				}
+			}
 			switch {
 			case len(owned) == 0:
 			case vmsMode == "":
@@ -1501,6 +1551,7 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 			result["vms_deleting"], result["vms_not_queued"] = len(ownedVMs)-len(failed), failed
 		}
 		service.AuditUserEvent(ctx, s.db, "user.delete", caller.ID.String(), id.String(), c.RealIP(), c.Request().UserAgent(), details)
+		service.EmitUserEvent(ctx, s.db, service.EventUserDeleted, id.String(), map[string]any{"vms": details["vms"]})
 		if len(result) == 0 {
 			return c.NoContent(http.StatusNoContent)
 		}
@@ -1712,6 +1763,8 @@ func (s *Server) setupAuditLogRoutes(g *echo.Group) {
 		enrichAuditLogs(c.Request().Context(), s.db, logs)
 
 		return c.JSON(http.StatusOK, map[string]interface{}{
+			"success":    true,
+			"meta":       handler.PageMeta(page, limit, total),
 			"data":       logs,
 			"total":      total,
 			"page":       page,
@@ -1768,6 +1821,7 @@ func (s *Server) setupBillingRoutes() {
 		repository.NewFirewallRepository(s.db), vmRepo, nodeRepo, s.riverClient))
 	handler.RegisterBillingRoutes(s.echo, billingHandler)
 	handler.RegisterBillingDeliveryRoutes(s.echo, s.db, s.riverClient)
+	handler.RegisterWebhookRoutes(s.echo, s.db, s.riverClient)
 }
 
 // setupSettingsRoutes configures user settings routes (profile, password, 2FA)
@@ -1803,8 +1857,9 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		}
 		var req struct {
 			Email           string `json:"email"`
-			Name            string `json:"name"`
 			CurrentPassword string `json:"current_password"`
+			// Name, phone, company, timezone and locale: left out keeps them.
+			service.ProfileInput
 		}
 		if err := c.Bind(&req); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request"})
@@ -1815,6 +1870,8 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		}
 		// The email is where password resets go, so changing it is as good as
 		// changing the password: it needs the current one, not just a session.
+		// Checked before anything is written, so a refusal changes nothing.
+		newEmail := ""
 		if email := strings.ToLower(strings.TrimSpace(req.Email)); email != "" && email != user.Email {
 			if _, err := mail.ParseAddress(email); err != nil {
 				return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Enter a valid email address"})
@@ -1825,7 +1882,17 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 			if exists, err := userRepo.EmailExists(c.Request().Context(), email); err != nil || exists {
 				return c.JSON(http.StatusConflict, map[string]interface{}{"error": "That email address cannot be used"})
 			}
-			user.Email = email
+			newEmail = email
+		}
+		if err := service.UpdateOwnProfile(c.Request().Context(), s.db, userCtx.ID.String(), req.ProfileInput); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+		}
+		// Read again: the save below writes the whole row, name included.
+		if user, err = userRepo.GetByID(c.Request().Context(), userCtx.ID); err != nil {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "User not found"})
+		}
+		if newEmail != "" {
+			user.Email = newEmail
 		}
 		if err := userRepo.Update(c.Request().Context(), user); err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to update profile"})
@@ -2015,6 +2082,13 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 				if p.PerNode < 0 || p.PerNode > 20 {
 					return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Backups at once per node must be between 1 and 20"})
 				}
+			}
+			if section == service.PortalSettingsSection {
+				clean, err := service.ValidatePortalSettings(data)
+				if err != nil {
+					return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
+				}
+				data = clean
 			}
 			if section == service.RescueSettingsSection {
 				clean, err := service.ValidateRescueSettings(data)
@@ -2235,11 +2309,13 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		if c.QueryParam("page_size") == "" {
 			size = 25
 		}
-		rows, total, err := service.ListEmailLog(c.Request().Context(), s.db, c.QueryParam("status"), size, (page-1)*size)
+		rows, total, err := service.SearchEmailLog(c.Request().Context(), s.db, service.EmailLogFilter{
+			Status: c.QueryParam("status"), Template: c.QueryParam("template"), Q: c.QueryParam("q"),
+		}, size, (page-1)*size)
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to load the email log"})
 		}
-		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "meta": handler.PageMeta(page, size, total), "data": map[string]interface{}{
 			"emails": rows, "total": total, "page": page, "page_size": size,
 		}})
 	})
@@ -2576,11 +2652,18 @@ func (s *Server) setupNotificationRoutes(g *echo.Group) {
 			logs, _ := auditRepo.List(ctx, 20, 0)
 			return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": logs})
 		}
-		rows, unread, err := service.ListNotifications(ctx, s.db, userCtx.ID.String(), 30)
+		// The bell asks for the latest 30; the notifications page pages
+		// through the rest with limit and offset.
+		limit, _ := strconv.Atoi(c.QueryParam("limit"))
+		offset, _ := strconv.Atoi(c.QueryParam("offset"))
+		if limit <= 0 || limit > 100 {
+			limit = 30
+		}
+		rows, total, unread, err := service.NotificationsPage(ctx, s.db, userCtx.ID.String(), limit, max(offset, 0))
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to load notifications"})
 		}
-		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": rows, "unread": unread})
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "meta": handler.OffsetPageMeta(limit, max(offset, 0), total), "data": rows, "unread": unread, "total": total})
 	})
 
 	// PUT /notifications/read-all
@@ -2623,6 +2706,9 @@ func (s *Server) Start() error {
 	collector := service.NewMetricsCollector(s.db, s.riverClient, 60*time.Second, 7*24*time.Hour, slog.Default())
 	collector.SetAlerts(s.alertsInstance())
 	go collector.Run(collectorCtx)
+	// Daily capacity rows for the reports, and the opt-in update notice.
+	go service.RunCapacityRecorder(collectorCtx, s.db)
+	go service.RunUpdateChecker(collectorCtx, s.db)
 
 	// Start the backup scheduler: starts the cron and (re)loads active schedules
 	// from the DB so they survive restarts. Without this, scheduled backups never run.
@@ -2738,9 +2824,18 @@ func Run() error {
 		return service.DeliverEmail(ctx, db, emailID, final)
 	}
 	service.SetEmailQueue(queueClient.RiverClient())
+	service.SetEventQueue(queueClient.RiverClient())
+	queue.BackupDoneHook = func(ctx context.Context, backupID string, failure string) {
+		service.EmitBackupEvent(ctx, db, backupID, failure)
+	}
 	if err := queueClient.Start(context.Background()); err != nil {
 		_ = queueClient.Stop(context.Background())
 		return fmt.Errorf("failed to start queue: %w", err)
+	}
+	// Held jobs stay held across a restart in maintenance (an upgrade), and a
+	// queue left paused without it is released.
+	if err := service.SyncMaintenanceHold(context.Background(), db, queueClient.RiverClient()); err != nil {
+		slog.Default().Error("maintenance mode: the job queue could not be matched to it", "error", err)
 	}
 	defer func() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)

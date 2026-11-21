@@ -78,9 +78,9 @@ func apiRoutes() []*apiRoute {
 		),
 		group("Account",
 			get("/api/v1/settings/profile", "Own profile").can("signed-in").out(ok(user)),
-			put("/api/v1/settings/profile", "Change own name or email").can("signed-in").
-				in(obj("name", tStr, "email", tStr, "current_password", tStr)).out(ok(user)).
-				note("A new email needs `current_password`."),
+			put("/api/v1/settings/profile", "Change own profile").can("signed-in").
+				in(obj("name", tStr, "phone", tStr, "company", tStr, "timezone", tStr, "locale", tStr, "email", tStr, "current_password", tStr)).out(ok(user)).
+				note("Each field left out keeps its value. `timezone` is an IANA name such as `Asia/Jakarta`; `locale` a language code such as `en` or `id-ID`. A new email needs `current_password`."),
 			post("/api/v1/settings/change-password", "Change own password").can("signed-in").
 				in(obj("current_password", tStr, "new_password", tStr)).out(okMsg).
 				note("Signs out every session; sign in again."),
@@ -95,23 +95,31 @@ func apiRoutes() []*apiRoute {
 				out(ok(obj("revoked", tInt, "token", tStr))).
 				note("Answers a fresh token for this session."),
 			get("/api/v1/settings/sign-ins", "Own sign-in history").can("signed-in").out(okList(models.SignInEvent{})),
+			put("/api/v1/settings/email-preferences", "Whether to get marketing email").can("signed-in").in(obj("marketing", tBool)).
+				out(ok(obj("marketing", tBool))).note("Service notices are sent either way."),
 			get("/api/v1/api-keys", "Own API keys").can("signed-in").out(obj("success", tTrue, "data", arr(models.APIKey{}), "api_enabled", tBool)),
 			post("/api/v1/api-keys", "Create an API key").can("signed-in").in(service.CreateAPIKeyRequest{}).code(http.StatusCreated).
 				out(ok(obj("token", tStr))).
-				note("The `data` object is the key's record plus `token`, the secret `mvk_...` value, shown this once. A read-only or narrowed key cannot create keys."),
+				note("The `data` object is the key's record plus `token`, the secret `mvk_...` value, shown this once. A read-only, narrowed or address-limited key cannot create keys. "+
+					"`scope` narrows the key within its owner's role: `full` (the default), `read_only` (GET only), `vm_power` (list VMs, read one, start, stop, force-stop, restart) "+
+					"or `billing` (billing deliveries, plans, customer accounts, usage reports and transfer; never staff accounts or roles). `allowed_ips` lists the addresses or CIDR ranges it may be used from "+
+					"(a request from anywhere else answers 403 `api_key_address`); `expires_at` must be in the future."),
 			del("/api/v1/api-keys/:id", "Revoke an API key").can("signed-in").out(okMsg),
 			get("/api/v1/ssh-keys", "Own SSH keys").can("signed-in").out(okList(models.SSHKey{})),
 			post("/api/v1/ssh-keys", "Add an SSH public key").can("signed-in").in(service.CreateSSHKeyRequest{}).code(http.StatusCreated).out(ok(models.SSHKey{})),
 			post("/api/v1/ssh-keys/generate", "Generate an SSH key pair").can("signed-in").in(service.GenerateSSHKeyRequest{}).code(http.StatusCreated).
 				out(ok(service.GeneratedSSHKey{})).note("The private key is returned once and not kept."),
 			del("/api/v1/ssh-keys/:id", "Delete an SSH key").can("signed-in").out(okMsg),
-			get("/api/v1/recipes", "Own first-boot scripts").can("signed-in").out(okList(models.Recipe{})),
-			post("/api/v1/recipes", "Save a first-boot script").can("signed-in").in(service.RecipeRequest{}).code(http.StatusCreated).out(ok(models.Recipe{})),
-			put("/api/v1/recipes/:id", "Change a first-boot script").can("signed-in").in(service.RecipeRequest{}).out(ok(models.Recipe{})),
+			get("/api/v1/recipes", "Own first-boot scripts and the app catalog").can("signed-in").out(okList(models.Recipe{})).
+				note("The caller's own recipes and every published one (`is_public`). `inputs` are the values asked for when ordering; the script names each as `{{key}}`."),
+			post("/api/v1/recipes", "Save a first-boot script").can("signed-in").in(service.RecipeRequest{}).code(http.StatusCreated).out(ok(models.Recipe{})).
+				note("`is_public` publishes it to every customer; only staff with `template:update` may, and it is ignored for anyone else."),
+			put("/api/v1/recipes/:id", "Change a first-boot script").can("signed-in").in(service.RecipeRequest{}).out(ok(models.Recipe{})).
+				note("Own recipes; staff with `template:update` also change published ones."),
 			del("/api/v1/recipes/:id", "Delete a first-boot script").can("signed-in").out(okMsg),
-			get("/api/v1/notifications", "Notifications").can("signed-in").
-				out(obj("success", tTrue, "data", arr(service.UserNotification{}), "unread", tInt)).
-				note("Customers get their notifications and the unread count. Staff with `audit:read` get the 20 newest audit log rows instead (`data` is then audit entries, with no `unread`)."),
+			get("/api/v1/notifications", "Notifications").can("signed-in").q("limit", "offset").
+				out(obj("success", tTrue, "meta", pageMeta, "data", arr(service.UserNotification{}), "unread", tInt, "total", tInt)).
+				note("Customers get their notifications (30 newest unless `limit`, up to 100, and `offset` say otherwise), the unread count and the total. Staff with `audit:read` get the 20 newest audit log rows instead (`data` is then audit entries, with no `unread` or `meta`)."),
 			put("/api/v1/notifications/read-all", "Mark every notification read").can("signed-in").out(okOnly),
 			put("/api/v1/notifications/:id/read", "Mark a notification read").can("signed-in").out(okOnly),
 			get("/api/v1/quota", "Own resource limits and use").can("signed-in").out(ok(service.QuotaStatus{})),
@@ -123,12 +131,14 @@ func apiRoutes() []*apiRoute {
 				out(ok(obj("panel", tAny, "nodes", arr(tAny)))).note("Customers get the panel build only."),
 		),
 		group("VMs",
-			get("/api/v1/vms", "List VMs").can("vm:read").cust().q("page", "page_size", "limit", "offset", "search", "status", "node_id", "user_id").
-				out(described(obj("message", tStr, "data", arr(handler.VMListItem{}), "total", tInt, "page", tInt, "limit", tInt,
-					"totalPages", tInt, "offset", tInt, "has_more", tBool), "Accepts page/page_size or limit/offset.")),
+			get("/api/v1/vms", "List VMs").can("vm:read").cust().q("page", "page_size", "limit", "offset", "search", "status", "node_id", "user_id", "tag", "project_id", "account_id").
+				out(described(obj("success", tTrue, "message", tStr, "data", arr(handler.VMListItem{}), "meta", pageMeta, "total", tInt, "page", tInt, "limit", tInt,
+					"totalPages", tInt, "offset", tInt, "has_more", tBool), "Accepts page/page_size (or per_page) or limit/offset.")),
 			post("/api/v1/vms", "Create a VM").can("vm:read vm:create").cust().in(handler.CreateVMRequest{}).code(http.StatusCreated).
 				out(msgData(handler.CreateVMResponse{})).
-				note("Creation runs as a job; follow it with `GET /api/v1/vms/{id}/operation`. Customers are held to their quota, plan and the self-service switches."),
+				note("Creation runs as a job; follow it with `GET /api/v1/vms/{id}/operation`. Customers are held to their quota, plan and the self-service switches. "+
+					"`account_id` orders into a team account the caller operates in (its quota counts), `project_id` puts the VM in one of that account's projects, "+
+					"`ipv6` adds a routed IPv6 prefix where the location has one (409 where it has not), and `recipe_inputs` fill the recipe's `{{key}}` placeholders."),
 			get("/api/v1/vms/:id", "Get a VM").can("vm:read").cust().q("include_status").out(msgData(handler.VMDetailResponse{})),
 			put("/api/v1/vms/:id", "Change a VM (resize, rename, plan)").can("vm:read vm:update|billing:update").cust().
 				in(handler.UpdateVMRequest{}).out(msgData(tAny)),
@@ -138,7 +148,8 @@ func apiRoutes() []*apiRoute {
 			get("/api/v1/vms/:id/activity", "The VM's activity log").can("vm:read").cust().q("limit").out(bare(arr(models.AuditLog{}))),
 			get("/api/v1/vms/:id/metrics", "Live usage").can("vm:read").cust().out(bare(vmMetric)).
 				note("When the node does not answer, the allocated memory with zero usage."),
-			get("/api/v1/vms/:id/metrics/history", "Recorded usage").can("vm:read").cust().q("minutes", "limit").out(okList(models.VMMetricSample{})),
+			get("/api/v1/vms/:id/metrics/history", "Recorded usage").can("vm:read").cust().q("minutes", "limit").out(okList(models.VMMetricSample{})).
+				note("`minutes` reaches back as far as the graph history kept (90 days unless changed under Customer area settings): the last 7 days from the raw samples, earlier ones as hourly averages."),
 			post("/api/v1/vms/:id/start", "Start").can("vm:read vm:power").cust().in(handler.LifecycleRequest{}).out(msgData(handler.LifecycleResponse{})),
 			post("/api/v1/vms/:id/stop", "Shut down").can("vm:read vm:power").cust().in(handler.LifecycleRequest{}).out(msgData(handler.LifecycleResponse{})),
 			post("/api/v1/vms/:id/force-stop", "Power off").can("vm:read vm:power").cust().in(handler.LifecycleRequest{}).out(msgData(handler.LifecycleResponse{})),
@@ -150,9 +161,11 @@ func apiRoutes() []*apiRoute {
 				note("Erases the disk and installs the chosen template, of any kind (Linux, RouterOS, Windows)."),
 			post("/api/v1/vms/:id/reset-password", "Set the root or Administrator password").can("vm:read vm:lifecycle").cust().
 				in(obj("password", tStr)).out(msgData(tAny)),
-			post("/api/v1/vms/:id/iso/attach", "Attach an ISO").can("vm:read vm:lifecycle").cust().in(obj("iso_url", tStr)).out(msgData(jobQueued)).
-				note("A customer's URL must be public; the node refuses private addresses and large files."),
-			post("/api/v1/vms/:id/iso/detach", "Detach the ISO").can("vm:read vm:lifecycle").cust().out(msgData(jobQueued)),
+			post("/api/v1/vms/:id/iso/attach", "Attach an ISO").can("vm:read vm:lifecycle").cust().
+				in(obj("iso_id", tStr, "iso_url", tStr, "template_id", tStr, "drivers", tBool, "slot", tInt)).out(msgData(jobQueued)).
+				note("`iso_id` mounts one of the ISOs staff publish (`GET /api/v1/portal`); `template_id` one from the ISOs page (for a customer, one offered on the VM's plan); `drivers` the drivers ISO staff chose, in drive 2. A customer's own `iso_url` must be public, and is refused (403 `iso_url_not_allowed`) when the operator allows only the published ones. `slot` is the CD drive: 1, the install drive that boots first (the default), or 2. A running VM takes the disc at once when its node's agent can, in a drive it already has; otherwise stop it first."),
+			post("/api/v1/vms/:id/iso/detach", "Detach the ISO").can("vm:read vm:lifecycle").cust().in(obj("slot", tInt)).out(msgData(jobQueued)).
+				note("Empties drive `slot` (1 by default); the drive stays, so a disc can go back in while the VM runs."),
 			post("/api/v1/vms/:id/clone", "Clone").can("vm:read vm:lifecycle").cust().in(obj("hostname", tStr, "node_id", tStr)).
 				code(http.StatusCreated).out(msgData(tAny)),
 			post("/api/v1/vms/:id/rescue", "Boot into rescue mode").can("vm:read vm:rescue").cust().in(obj("iso_url", tStr)).out(msgData(jobQueued)).
@@ -163,6 +176,15 @@ func apiRoutes() []*apiRoute {
 				code(http.StatusCreated).out(ok(models.VMDisk{})),
 			del("/api/v1/vms/:id/disks/:device", "Detach and delete a disk").can("vm:read vm:lifecycle").cust().q("delete_volume").out(okMsg).
 				note("The disk and its data are deleted."),
+			post("/api/v1/vms/:id/disks/:device/resize", "Grow a disk").can("vm:read vm:lifecycle").cust().in(obj("size_gb", tInt)).
+				out(ok(service.DiskResizeResult{})).
+				note("Grows `vda` (the system disk; staff only, a customer's grows with the plan) or an extra disk, whether the VM runs or not; disks never shrink. `live` says the running VM saw the new size at once. The guest still grows its partition and filesystem itself (`note`)."),
+			post("/api/v1/vms/:id/disks/:device/move", "Move a disk to another pool of its node").can("vm:read vm:migrate").
+				in(obj("dest_pool_id", tStr)).code(http.StatusAccepted).out(ok(service.VMDiskMove{})).
+				note("Copied while the VM is off (it cannot start until the copy is done), or block-copied while it runs; then the VM uses the copy and the old disk is removed (a volume MaburVM did not make is kept and listed under orphaned disks). Directory and LVM pools both work. Refused while the VM has snapshots."),
+			get("/api/v1/vms/:id/disk-moves", "The VM's disk moves").can("vm:read vm:migrate").out(okList(service.VMDiskMove{})),
+			post("/api/v1/vms/:id/disk-moves/cancel", "Cancel a disk move").can("vm:read vm:migrate").out(ok(service.VMDiskMove{})).
+				note("The disk stays where it was."),
 			get("/api/v1/vms/:id/vnc", "Open the console").can("vm:read vm:console").cust().out(msgData(handler.VNCConfigResponse{})).
 				note("Returns a short-lived token and the websocket path (`/ws/vnc`)."),
 			post("/api/v1/vms/:id/vnc/refresh", "Change the console password").can("vm:read vm:console").cust().out(msgData(tAny)),
@@ -193,6 +215,20 @@ func apiRoutes() []*apiRoute {
 				out(ok(service.MigrationCheck{})),
 			get("/api/v1/vms/:id/migration", "The VM's latest move").can("vm:migrate").out(ok(models.VMMigration{})),
 			post("/api/v1/vms/:id/migration/cancel", "Cancel a move").can("vm:migrate").out(ok(models.VMMigration{})),
+			put("/api/v1/vms/:id/lock", "Lock or unlock the VM against deletion and reinstall").can("vm:read vm:update").cust().
+				in(obj("locked", tBool)).out(ok(obj("delete_lock", js{"type": "string", "enum": []any{"", "owner", "staff"}}))).
+				note("A locked VM cannot be deleted or reinstalled until it is unlocked. An owner's lock does not stop the billing system removing the VM; a staff lock stops everything, and only staff lift it."),
+			put("/api/v1/vms/:id/tags", "Set the VM's tags").can("vm:read vm:update").cust().in(obj("tags", arr(tStr))).out(ok(obj("tags", arr(tStr)))).
+				note("Up to 10 lower-case labels of 1 to 32 letters, digits, dots, dashes, underscores or colons. Filter the VM list with `tag`."),
+			get("/api/v1/vms/:id/notes", "Staff notes on the VM").can("vm:read").out(okList(service.StaffNote{})).
+				note("Staff only; customers never see them."),
+			post("/api/v1/vms/:id/notes", "Add a staff note to the VM").can("vm:read vm:update").in(obj("body", tStr)).
+				code(http.StatusCreated).out(ok(service.StaffNote{})),
+			put("/api/v1/vms/:id/notes/:note_id", "Change a staff note on the VM").can("vm:read vm:update").in(obj("body", tStr)).out(ok(service.StaffNote{})),
+			del("/api/v1/vms/:id/notes/:note_id", "Delete a staff note on the VM").can("vm:read vm:update").out(ok(nil)),
+			post("/api/v1/vms/bulk", "Act on several VMs at once").can("vm:power|vm:lifecycle|vm:update|vm:migrate").in(handler.BulkRequest{}).
+				out(ok(obj("action", tStr, "preview", tBool, "results", arr(handler.BulkResult{}), "ok", tInt, "total", tInt))).
+				note("`action` is start, stop, restart (needs `vm:power`), suspend, unsuspend (`vm:lifecycle`), lock, unlock (`vm:update`), apply_plan (`vm:update` and `billing:update`, with `plan_id`), add_firewall_group (`vm:update` and `firewall_group:read`, with `group_id`) or migrate (`vm:migrate`, with an optional `node_id`). At most 100 VMs. With `preview` nothing changes and each result says what would happen; moves are planned together, so two VMs are not both sent to room only one fits in."),
 		),
 		group("VM networking",
 			get("/api/v1/vms/:id/networks", "Network interfaces").can("vm:read").cust().out(msgData(arr(handler.NetworkResponse{}))),
@@ -325,12 +361,12 @@ func apiRoutes() []*apiRoute {
 			put("/api/v1/regions/:id", "Change a region").can("node:update").in(service.CreateRegionRequest{}).out(ok(models.Region{})),
 			del("/api/v1/regions/:id", "Delete a region").can("node:update").code(http.StatusNoContent),
 			post("/api/v1/regions/:id/nodes/:node_id", "Put a node in a region").can("node:update").out(okOnly),
-			get("/api/v1/ip-pools", "List IP pools").can("network:read").q("limit", "offset").out(okList(models.IPPool{})),
+			get("/api/v1/ip-pools", "List IP pools").can("network:read").q("limit", "offset", "page", "page_size").out(okListMeta(models.IPPool{})),
 			post("/api/v1/ip-pools", "Create an IP pool").can("network:update").in(service.CreateIPPoolRequest{}).code(http.StatusCreated).out(ok(models.IPPool{})),
 			get("/api/v1/ip-pools/:id", "Get an IP pool").can("network:read").out(ok(models.IPPool{})),
 			put("/api/v1/ip-pools/:id", "Change an IP pool").can("network:update").in(service.UpdateIPPoolRequest{}).out(ok(models.IPPool{})),
 			del("/api/v1/ip-pools/:id", "Delete an IP pool").can("network:update").code(http.StatusNoContent),
-			get("/api/v1/ip-pools/:id/addresses", "Addresses in a pool").can("network:read").q("limit", "offset").out(okList(models.IPAddress{})),
+			get("/api/v1/ip-pools/:id/addresses", "Addresses in a pool").can("network:read").q("limit", "offset", "page", "page_size").out(okListMeta(models.IPAddress{})),
 			post("/api/v1/ip-pools/:id/addresses", "Add an address to a pool").can("network:update").in(service.CreateIPAddressRequest{}).
 				code(http.StatusCreated).out(ok(models.IPAddress{})),
 			post("/api/v1/ip-pools/:id/generate", "Fill a pool from its range").can("network:update").out(obj("success", tTrue, "message", tStr, "data", obj("count", tInt))),
@@ -365,7 +401,9 @@ func apiRoutes() []*apiRoute {
 			post("/api/v1/ip-reputation/check", "Check the address space now").can("network:update").out(msgData(obj("checked", tInt))),
 		),
 		group("Nodes and storage",
-			get("/api/v1/nodes", "List nodes").can("node:read").q("status", "limit", "offset").out(msgData(arr(handler.NodeListItem{}))),
+			get("/api/v1/nodes", "List nodes").can("node:read").q("status", "limit", "offset").out(obj("success", tTrue, "message", tStr, "data", arr(handler.NodeListItem{}), "meta", pageMeta)),
+			get("/api/v1/node-groups", "Hypervisor groups in use").can("node:read").out(okList(service.NodeGroupSummary{})).
+				note("A node's group is set with `PUT /api/v1/nodes/{id}` (`node_group`); a plan's with the plan (`node_group`). New VMs on a plan with a group are placed only on that group's nodes."),
 			post("/api/v1/nodes", "Add a node").can("node:create").in(handler.RegisterRequest{}).code(http.StatusCreated).
 				out(msgData(handler.RegisterResponse{})),
 			get("/api/v1/nodes/:id", "Get a node").can("node:read").out(msgData(handler.NodeDetailResponse{})),
@@ -412,16 +450,39 @@ func apiRoutes() []*apiRoute {
 			post("/api/v1/storage/pools/:poolId/volumes", "Create a volume").can("storage:create").in(models.StorageVolume{}).
 				code(http.StatusCreated).out(bare(models.StorageVolume{})),
 			del("/api/v1/storage/pools/:poolId/volumes/:volumeId", "Delete a volume").can("storage:delete").code(http.StatusNoContent),
+			put("/api/v1/storage/pools/:id/tier", "Set a pool's storage tier").can("storage:update").in(obj("tier", tStr)).out(ok(models.StoragePool{})).
+				note("A plan naming a tier (`storage_tier`) puts its VMs' disks only in pools of that tier. Empty clears it."),
+			get("/api/v1/storage/tiers", "Storage tiers in use").can("node:read").out(ok(arr(tStr))),
+			get("/api/v1/storage/orphans", "Orphaned disks on a node").can("node:read").q("node_id").out(okList(service.OrphanDisk{})).
+				note("Disk files and logical volumes in the node's registered pools that no VM on the node uses and no panel record names: leftovers of failed creates, restores, moves and deleted VMs. Files written in the last six hours are left out."),
+			post("/api/v1/storage/orphans/delete", "Delete an orphaned disk").can("storage:delete").in(service.OrphanDeleteRequest{}).out(okMsg).
+				note("Send the disk as listed, with `confirm` repeating its path. It is listed again here and on the node first, and refused if it is no longer orphaned or has changed (size, time). One MaburVM did not make needs `allow_foreign`."),
 		),
 		group("Templates and plans",
 			get("/api/v1/templates", "List templates").can("signed-in").q("include_nodes").out(handler.SuccessResponse{}).
 				note("`data` is a list of templates with, for staff asking `include_nodes`, their state on each node."),
 			post("/api/v1/templates", "Add a template").can("template:update").in(handler.CreateTemplateRequest{}).code(http.StatusCreated).out(handler.SuccessResponse{}),
-			post("/api/v1/templates/download-url", "Add a template from a URL").can("template:update").in(obj("url", tStr, "name", tStr)).out(handler.SuccessResponse{}),
+			post("/api/v1/templates/download-url", "Add an ISO from a URL").can("template:update").
+				in(obj("url", tStr, "filename", tStr, "checksum_sha256", tStr, "checksum_url", tStr, "skip_checksum", tBool, "os_type", tStr)).out(handler.SuccessResponse{}).
+				note("Adds an ISO. A sha256, or a checksum list to read it from, is required unless `skip_checksum` confirms the publisher gives none; plain http needs `allow_http` on the template."),
 			get("/api/v1/templates/:id", "Get a template").can("signed-in").q("include_nodes").out(handler.SuccessResponse{}),
 			put("/api/v1/templates/:id", "Change a template").can("template:update").in(handler.UpdateTemplateRequest{}).out(handler.SuccessResponse{}),
 			del("/api/v1/templates/:id", "Delete a template").can("template:update").out(handler.SuccessResponse{}),
 			post("/api/v1/templates/:id/sync", "Copy a template to nodes").can("template:update").in(handler.SyncTemplateRequest{}).out(handler.SuccessResponse{}),
+			post("/api/v1/templates/:id/refresh", "Refresh a template on the nodes").can("template:update").in(obj("force", tBool)).
+				out(ok(service.TemplateRefreshResult{})).
+				note("Reads the template's checksum list again; when the image changed, records the new checksum and has every active node fetch it. VMs built from the old image are copies and stay as they are; each node drops its old copy once nothing uses it. `force` fetches onto the nodes even when nothing changed."),
+			post("/api/v1/isos/uploads", "Start uploading an ISO").can("template:update").in(obj("name", tStr, "size", tInt, "sha256", tStr, "os_type", tStr)).
+				code(http.StatusCreated).out(ok(obj("upload_id", tStr, "chunk_bytes", tInt))),
+			put("/api/v1/isos/uploads/:upload", "Send a chunk of an ISO").can("template:update").q("offset").raw("application/octet-stream").
+				out(ok(obj("offset", tInt))).
+				note("The body is the chunk's bytes, at most `chunk_bytes`, sent in order: `offset` must be where the upload has got to (409 says where that is)."),
+			post("/api/v1/isos/uploads/:upload/finish", "Finish an ISO upload").can("template:update").code(http.StatusCreated).out(ok(models.OSTemplate{})).
+				note("Checks the size and, when given, the sha256, adds the ISO, and copies it to every active node."),
+			del("/api/v1/isos/uploads/:upload", "Cancel an ISO upload").can("template:update").out(okOnly),
+			get("/api/v1/isos/drivers", "The drivers ISO").can("template:update").out(ok(service.ImageSettings{})),
+			put("/api/v1/isos/drivers", "Choose the drivers ISO").can("template:update").in(service.ImageSettings{}).out(ok(service.ImageSettings{})).
+				note("The ISO put in a Windows install's second drive (the virtio drivers disc) when an order asks for it. Empty clears it."),
 			get("/api/v1/plans", "List plans").can("signed-in").q("active").out(okList(models.Plan{})),
 			post("/api/v1/plans", "Create a plan").can("plan:update").in(service.PlanRequest{}).code(http.StatusCreated).out(ok(models.Plan{})),
 			get("/api/v1/plans/:id", "Get a plan").can("signed-in").out(ok(models.Plan{})),
@@ -464,6 +525,11 @@ func apiRoutes() []*apiRoute {
 				note("Opens the customer's client area for up to an hour in this browser. Customer accounts only."),
 			get("/api/v1/users/:id/quota", "An account's limits and use").can("user:read").out(ok(service.QuotaStatus{})),
 			put("/api/v1/users/:id/quota", "Set an account's limits").can("user:update").in(service.SetQuotaRequest{}).out(ok(models.UserQuota{})),
+			get("/api/v1/users/:id/notes", "Staff notes on an account").can("user:read").out(okList(service.StaffNote{})),
+			post("/api/v1/users/:id/notes", "Add a staff note to an account").can("user:read user:update").in(obj("body", tStr)).
+				code(http.StatusCreated).out(ok(service.StaffNote{})),
+			put("/api/v1/users/:id/notes/:note_id", "Change a staff note on an account").can("user:read user:update").in(obj("body", tStr)).out(ok(service.StaffNote{})),
+			del("/api/v1/users/:id/notes/:note_id", "Delete a staff note on an account").can("user:read user:update").out(ok(nil)),
 			get("/api/v1/staff-roles", "Staff roles and the permission catalog").can("staff").
 				out(ok(obj("areas", arr(middleware.PermissionArea{}), "roles", arr(middleware.StaffRole{}), "can_manage", tBool))).
 				note("Each role also carries `members`, the number of staff holding it."),
@@ -482,8 +548,8 @@ func apiRoutes() []*apiRoute {
 		group("Operations",
 			get("/api/v1/dashboard/stats", "Fleet totals").can("staff").out(bare(tAny)),
 			get("/api/v1/dashboard/overview", "Dashboard overview").can("staff").out(ok(tAny)),
-			get("/api/v1/dashboard/vms", "VM table for the dashboard").can("vm:read").q("search", "status", "node", "sort", "page", "page_size").
-				out(ok(obj("vms", arr(tAny), "total", tInt, "page", tInt, "page_size", tInt, "all", tInt, "by_status", tAny))).
+			get("/api/v1/dashboard/vms", "VM table for the dashboard").can("vm:read").q("search", "status", "node", "tag", "sort", "page", "page_size").
+				out(okPaged(obj("vms", arr(tAny), "total", tInt, "page", tInt, "page_size", tInt, "all", tInt, "by_status", tAny))).
 				note("Staff only: customers get 403."),
 			get("/api/v1/dashboard/mine", "A customer's VMs at a glance").can("vm:read").cust().out(ok(obj("vms", arr(tAny)))),
 			get("/api/v1/events/vm-status", "VM status stream").can("vm:read").cust().raw("text/event-stream").
@@ -492,9 +558,13 @@ func apiRoutes() []*apiRoute {
 				out(pageNum(models.AuditLog{})),
 			get("/api/v1/alerts", "Alerts").can("ops:read").q("page", "page_size", "state").pageInList("alerts", models.Alert{}),
 			post("/api/v1/alerts/:id/close", "Close an alert").can("ops:update").out(ok(obj("closed", tBool))),
-			get("/api/v1/queue", "Job queue").can("ops:read").q("state").
-				out(ok(obj("counts", arr(obj("state", tStr, "count", tInt)), "jobs", arr(handler.QueueJob{}), "workers", js{"type": "object", "additionalProperties": tInt},
-					"saved_workers", js{"type": "object", "additionalProperties": tInt}))),
+			get("/api/v1/queue", "Job queue").can("ops:read").q("state", "kind", "node_id", "vm_id", "q", "page", "page_size").
+				out(okPaged(obj("counts", arr(obj("state", tStr, "count", tInt)), "jobs", arr(handler.QueueJob{}), "workers", js{"type": "object", "additionalProperties": tInt},
+					"saved_workers", js{"type": "object", "additionalProperties": tInt}, "total", tInt, "page", tInt, "page_size", tInt,
+					"kinds", arr(tStr), "held", tBool))).
+				note("Newest first, 50 a page (at most 200). `q` matches the job number, its kind, the VM or node it is about, its operation and its last error. `held` is true while maintenance mode holds the queue."),
+			get("/api/v1/queue/jobs/:id", "A job with its arguments and every failed attempt").can("ops:read").out(ok(handler.JobDetail{})).
+				note("Credentials in the arguments come back as `[REDACTED]`."),
 			put("/api/v1/queue/workers", "Set workers per queue").can("settings:update").
 				in(js{"type": "object", "additionalProperties": tInt, "description": "Workers by queue: critical, default, batch, audit. Applies after a panel restart."}).out(ok(tAny)),
 			post("/api/v1/queue/jobs/:id/retry", "Retry a job").can("ops:update").out(ok(tAny)),
@@ -504,9 +574,62 @@ func apiRoutes() []*apiRoute {
 			put("/api/v1/setup/dismissed", "Hide the first steps checklist").can("settings:update").in(obj("dismissed", tBool)).out(ok(tAny)),
 			get("/api/v1/export/:kind", "Export as CSV").can("admin:access").raw("text/csv").
 				note("`kind` is `vms`, `users`, `ip-addresses` or `audit-log`."),
+			get("/api/v1/logs/requests", "Recent API requests").can("audit:read").q("method", "status", "q", "min_ms", "page", "page_size").
+				out(okPaged(obj("requests", arr(middleware.RequestLogEntry{}), "total", tInt, "page", tInt, "page_size", tInt, "kept", tInt))).
+				note("The last 10,000 requests to the API and the billing webhook, newest first, kept in the panel's memory: a restart empties it. `status` is a class (`4xx`) or a code; `q` matches the path, account, API key, address or request id. Query strings are never recorded."),
+			get("/api/v1/logs/ip-allocations", "Address assignments and releases").can("network:read").q("q", "state", "kind", "page", "page_size").
+				out(okPaged(obj("events", arr(handler.IPAllocationEvent{}), "total", tInt, "page", tInt, "page_size", tInt))).
+				note("Every holding of an address, newest change first. `q` matches the address, VM name, owner's email or VM id; `state` is `held` or `released`."),
+			get("/api/v1/reports/capacity", "Capacity and allocation by day").can("report:read").q("scope", "days", "format").
+				out(ok(obj("scope", tStr, "days", tInt, "series", arr(service.CapacitySeries{})))).
+				note("`scope` is `node` (default), `pool` or `region`; `days` up to 730 (default 90). One point a day: what was allocated against what there was, and the day's average use. `format=csv` answers a spreadsheet."),
+			get("/api/v1/reports/usage", "What each customer uses").can("report:read").q("month", "format").
+				out(ok(obj("month", tStr, "customers", arr(service.CustomerUsage{})))).
+				note("Customer accounts with VMs or transfer in `month` (YYYY-MM, default this month): VMs, vCPU, memory and disk held now, and the month's transfer. `format=csv` answers a spreadsheet."),
+			get("/api/v1/announcements/current", "Announcements for this account").can("signed-in").out(okList(service.CustomerAnnouncement{})).
+				note("Customers get the announcements showing now that are meant for them; staff get none."),
+			get("/api/v1/announcements", "Announcements").can("announcement:read").out(okList(service.Announcement{})),
+			post("/api/v1/announcements", "Write an announcement").can("announcement:update").in(service.AnnouncementInput{}).
+				code(http.StatusCreated).out(ok(service.Announcement{})).
+				note("`audience.type` is `all`, `nodes`, `regions`, `plans` or `vms`, with the chosen ids; the customers who own a VM there see it. `kind` is `service` or `marketing`. `{{name}}`, `{{greeting}}` and `{{brand}}` in the message are filled in each email."),
+			put("/api/v1/announcements/:id", "Change an announcement").can("announcement:update").in(service.AnnouncementInput{}).out(ok(service.Announcement{})),
+			del("/api/v1/announcements/:id", "Take an announcement down").can("announcement:update").out(ok(nil)),
+			post("/api/v1/announcements/preview", "Who an announcement reaches, and its email").can("announcement:update").in(service.AnnouncementInput{}).
+				out(ok(service.AnnouncementPreview{})),
+			post("/api/v1/announcements/:id/email", "Email an announcement").can("announcement:update").in(obj("per_minute", tInt)).
+				out(ok(obj("queued", tInt, "per_minute", tInt))).
+				note("Queues one email per customer in the audience who has not had it, spread at `per_minute` (default 60, at most 600), through the email log. A marketing one skips customers who unsubscribed and carries an unsubscribe link. Safe to send again: nobody gets it twice."),
+			post("/api/v1/unsubscribe", "Stop marketing email").can("public").in(obj("token", tStr)).out(ok(obj("unsubscribed", tBool))).
+				note("The token comes from the link in a marketing email. Service notices still reach the account."),
+			get("/api/v1/maintenance", "Maintenance mode").can("signed-in").out(ok(handler.MaintenanceView{})).
+				note("While on, customers and the billing system cannot change anything (503 with `code: maintenance`), staff carry on. Staff also see who switched it on and the jobs still running."),
+			put("/api/v1/maintenance", "Switch maintenance mode").can("owner").in(obj("enabled", tBool, "message", tStr, "hold_jobs", tBool)).
+				out(ok(handler.MaintenanceView{})).
+				note("`hold_jobs` starts no new job until maintenance ends; running ones finish. `panel maintenance on|off` does the same from the host (scripts/upgrade-panel.sh)."),
+			get("/api/v1/system/update", "The update notice").can("settings:read").out(ok(obj("status", service.UpdateStatus{}, "can_manage", tBool))),
+			put("/api/v1/system/update", "Turn the update notice on or off").can("owner").in(service.UpdateCheckSettings{}).
+				out(ok(obj("status", service.UpdateStatus{}, "can_manage", tBool))).
+				note("Off by default. When on, the panel reads the GitHub release feed of `repository` once a day; the request carries nothing about this panel."),
+			post("/api/v1/system/update/check", "Check for a new release now").can("owner").out(ok(obj("status", service.UpdateStatus{}, "can_manage", tBool))),
+			post("/api/v1/system/update/dismiss", "Hide the notice for a release").can("owner").in(obj("tag", tStr)).
+				out(ok(obj("status", service.UpdateStatus{}, "can_manage", tBool))),
 			get("/api/v1/billing/deliveries", "Events sent to the billing system").can("billing:read").q("page", "page_size", "status").
 				pageInList("deliveries", service.WebhookDelivery{}),
 			post("/api/v1/billing/deliveries/:id/retry", "Send an event again").can("billing:update").out(ok(obj("queued", tBool))),
+			get("/api/v1/webhooks", "Outbound webhooks").can("webhook:read").
+				out(obj("success", tTrue, "data", arr(service.WebhookEndpoint{}), "events", arr(service.WebhookEventGroup{}))).
+				note("Each webhook's address, events and whether a secret is saved (the secret is never shown), and in `events` every event one can subscribe to."),
+			post("/api/v1/webhooks", "Add an outbound webhook").can("webhook:update").in(service.WebhookEndpointRequest{}).
+				code(http.StatusCreated).out(ok(service.WebhookEndpoint{})).
+				note("`events` names events from the catalog, or `*` for every event including ones added later. The secret, at least 32 characters, signs each delivery: `X-Webhook-Signature` is the hex HMAC-SHA256 of the raw body."),
+			put("/api/v1/webhooks/:id", "Change an outbound webhook").can("webhook:update").in(service.WebhookEndpointRequest{}).
+				out(ok(service.WebhookEndpoint{})).note("Leave `secret` out to keep the saved one; send an empty one to remove it. `enabled: false` stops new deliveries and retries."),
+			del("/api/v1/webhooks/:id", "Remove an outbound webhook").can("webhook:update").out(okMsg).note("Its delivery log goes with it."),
+			post("/api/v1/webhooks/:id/test", "Send a test event now").can("webhook:update").out(ok(service.WebhookDelivery{})).
+				note("Sends `webhook.test` once, waits for the answer (ten seconds at most) and returns the delivery: `status` delivered or failed, with the receiver's answer. Works on a switched-off webhook too."),
+			get("/api/v1/webhooks/:id/deliveries", "What was sent to a webhook").can("webhook:read").q("page", "page_size", "status").
+				pageInList("deliveries", service.WebhookDelivery{}),
+			post("/api/v1/webhooks/:id/deliveries/:delivery_id/retry", "Send a webhook event again").can("webhook:update").out(ok(obj("queued", tBool))),
 			get("/api/v1/import/sources", "Panels to import from").can("import:manage").out(okList(service.VirtualizorSource{})),
 			post("/api/v1/import/sources", "Add a panel to import from").can("import:manage").in(service.VirtualizorSourceInput{}).
 				code(http.StatusCreated).out(ok(service.VirtualizorSource{})),
@@ -519,7 +642,7 @@ func apiRoutes() []*apiRoute {
 				out(ok(obj("results", arr(service.ImportApplyResult{})))),
 			post("/api/v1/import/sources/:id/invites", "Invite the imported customers").can("import:manage").out(ok(obj("sent", tInt))),
 			post("/api/v1/mcp", "Model Context Protocol endpoint").can("api-key").in(tAny).out(obj("jsonrpc", tStr, "id", tAny, "result", tAny, "error", tAny)).
-				note("JSON-RPC 2.0 over Streamable HTTP for AI agents. A read-only key lists only the monitoring tools."),
+				note("JSON-RPC 2.0 over Streamable HTTP for AI agents. Tools cover VMs (power, create, change, reinstall, delete, passwords), snapshots, backups, firewall rules, addresses and floating IPs, templates and plans, and for staff nodes, IP pools, accounts, alerts and migrations. `tools/list` shows only the tools the key may use: those its scope reaches and whose route permissions its owner holds (a read-only key sees only reading tools). Each call is checked again like the REST route it maps to."),
 			get("/api/v1/mcp", "MCP stream (not offered)").can("api-key").code(http.StatusMethodNotAllowed).out(tAny),
 			get("/api/v1/openapi.json", "This document").can("public").out(tAny),
 		),
@@ -545,7 +668,7 @@ func apiRoutes() []*apiRoute {
 			post("/api/v1/settings/system/email-templates/:key/test", "Send a template to an address").can("settings:update").
 				in(obj("to", tStr, "template", emailTemplate)).out(okMsg),
 			post("/api/v1/settings/system/email/test", "Test the mail server").can("settings:update").in(smtpTest).out(okMsg),
-			get("/api/v1/settings/system/emails", "Email log").can("settings:read").q("page", "page_size", "status").pageInList("emails", service.EmailLogEntry{}),
+			get("/api/v1/settings/system/emails", "Email log").can("settings:read").q("page", "page_size", "status", "template", "q").pageInList("emails", service.EmailLogEntry{}),
 			post("/api/v1/settings/system/emails/:id/retry", "Send an email again").can("settings:update").out(ok(obj("queued", tBool))),
 			get("/api/v1/settings/system/dns-provider", "Nameserver connection").can("settings:read").out(ok(service.DNSProviderStatus{})),
 			put("/api/v1/settings/system/dns-provider", "Save the nameserver connection").can("settings:update").
@@ -565,6 +688,45 @@ func apiRoutes() []*apiRoute {
 			post("/api/v1/settings/system/backup-destinations/scan-host-key", "Read an SFTP server's host key").can("settings:update").
 				in(obj("host", tStr, "port", tInt)).out(ok(obj("host_key", tStr, "fingerprint", tStr))),
 		),
+		group("Teams and customer area",
+			get("/api/v1/portal", "What the customer area offers").can("signed-in").out(ok(service.CustomerPortal{})).
+				note("Support, billing and status links, the ISOs customers may mount, whether they may mount their own, how address requests are handled (`off`, `approval`, `auto`) and how many days of graphs are kept."),
+			get("/api/v1/account/members", "An account's members and invitations").can("signed-in").q("account_id").out(okList(service.AccountMember{})).
+				note("The caller's own account, or with `account_id` one they are an admin of. Members with empty `vm_ids` and `project_ids` reach every VM of the account."),
+			post("/api/v1/account/members", "Invite someone to the account").can("signed-in").in(obj("account_id", tStr, "email", tStr, "role", tStr, "vm_ids", arr(tStr), "project_ids", arr(tStr))).
+				code(http.StatusCreated).out(obj("success", tTrue, "data", service.AccountMember{}, "warning", tStr)).
+				note("`role` is `admin` (everything the owner does, the team too), `technical` (runs the VMs), `billing` (usage and billing, VMs view-only) or `readonly`. The invitation is emailed and works for 7 days; `warning` says when it was saved but not sent."),
+			put("/api/v1/account/members/:id", "Change a member's role or reach").can("signed-in").in(obj("account_id", tStr, "role", tStr, "vm_ids", arr(tStr), "project_ids", arr(tStr))).
+				out(ok(service.AccountMember{})),
+			del("/api/v1/account/members/:id", "Remove a member or revoke an invitation").can("signed-in").q("account_id").out(okOnly),
+			get("/api/v1/account/memberships", "The accounts the caller works in").can("signed-in").
+				out(ok(obj("memberships", arr(service.Membership{}), "member_only", tBool))).
+				note("`member_only`: the caller's own account was made by accepting an invitation and cannot order anything of its own until staff allow it."),
+			del("/api/v1/account/memberships/:id", "Leave an account").can("signed-in").out(okOnly),
+			post("/api/v1/account/invitations/lookup", "An invitation, before accepting it").can("public").limit().in(obj("token", tStr)).out(ok(service.InvitationView{})).
+				note("The token from the email link, in the body so it stays out of request logs. 410 `invitation_invalid` when it was revoked, accepted or has expired."),
+			post("/api/v1/account/invitations/accept", "Accept an invitation").can("public").limit().in(service.AcceptInput{}).out(ok(obj("email", tStr))).
+				note("An existing account with the invited address is linked as it is; otherwise one is made with `name` and `password`, and it can sign in at once. It cannot order servers of its own until staff allow it."),
+			get("/api/v1/account/projects", "An account's projects").can("signed-in").q("account_id").out(okList(service.Project{})),
+			post("/api/v1/account/projects", "Add a project").can("signed-in").in(obj("account_id", tStr, "name", tStr, "description", tStr)).code(http.StatusCreated).out(ok(service.Project{})),
+			put("/api/v1/account/projects/:id", "Rename a project").can("signed-in").in(obj("account_id", tStr, "name", tStr, "description", tStr)).out(ok(service.Project{})),
+			del("/api/v1/account/projects/:id", "Delete a project").can("signed-in").q("account_id").out(okOnly).
+				note("Its VMs stay, in no project. A member limited to it alone loses their membership."),
+			put("/api/v1/vms/:id/project", "Move a VM into a project").can("vm:update").cust().in(obj("project_id", tStr)).out(ok(obj("project_id", tStr))).
+				note("`\"\"` takes it out of its project."),
+			get("/api/v1/vms/:id/ip-requests", "A VM's address requests").can("vm:read").cust().out(okList(service.IPRequest{})),
+			post("/api/v1/vms/:id/ip-requests", "Ask for another address").can("vm:update").cust().in(obj("family", tStr, "reason", tStr)).code(http.StatusCreated).
+				out(obj("success", tTrue, "data", service.IPRequest{}, "warning", tStr)).
+				note("`family` is `ipv4` or `ipv6`. Refused at once when the VM's plan allows no more. With automatic grants the address is assigned now (`status: granted`); otherwise it waits for staff (`pending`)."),
+			del("/api/v1/vms/:id/ip-requests/:request_id", "Withdraw a pending request").can("vm:update").cust().out(okOnly),
+			get("/api/v1/ip-requests", "Address requests waiting for staff").can("network:read").q("status", "limit", "offset", "page", "page_size").
+				out(obj("success", tTrue, "meta", pageMeta, "data", arr(service.IPRequest{}), "total", tInt, "limit", tInt, "offset", tInt)),
+			post("/api/v1/ip-requests/:id/approve", "Grant an address request").can("network:update").out(obj("success", tTrue, "data", service.IPRequest{}, "warning", tStr)),
+			post("/api/v1/ip-requests/:id/reject", "Decline an address request").can("network:update").in(obj("note", tStr)).out(ok(service.IPRequest{})),
+			get("/api/v1/users/:id/team", "A customer's team, projects and memberships").can("user:read").
+				out(ok(obj("members", arr(service.AccountMember{}), "projects", arr(service.Project{}), "memberships", arr(service.Membership{}), "member_only", tBool))),
+			put("/api/v1/users/:id/member-only", "Let an invited account order on its own").can("user:update").in(obj("member_only", tBool)).out(ok(obj("member_only", tBool))),
+		),
 		group("Billing webhook",
 			post("/webhooks/billing", "Billing system events").can("webhook").in(handler.WebhookPayload{}).out(handler.WebhookResponse{}).
 				note("Signed requests from the billing system. `event` is one of `user.ensure`, `user.suspend`, `user.unsuspend`, `user.sso`, `vm.create`, `vm.status`, `vm.suspend`, `vm.unsuspend`, `vm.destroy`, `vm.resize`, `vm.reset_password`, `vm.usage`, `vm.start`, `vm.stop`, `vm.restart` or `catalog.list`. "+
@@ -583,21 +745,22 @@ func apiRoutes() []*apiRoute {
 func (r *apiRoute) pageInList(key string, item any) *apiRoute { return r.out(pageIn(key, item)) }
 
 var apiTagDescriptions = map[string]string{
-	"Health":                "Probes for orchestrators and monitoring.",
-	"Authentication":        "Signing in and out, single sign-on and the first administrator.",
-	"Branding":              "What the sign-in page shows before anyone signs in.",
-	"Account":               "What any signed-in account does with itself: profile, two-factor, sessions, keys, scripts, notifications.",
-	"VMs":                   "Virtual machines: lifecycle, power, console, credentials, limits and moves.",
-	"VM networking":         "A VM's addresses, interfaces, port forwards, firewall, reverse DNS, NAT hostnames and transfer.",
-	"Backups and snapshots": "Backups, schedules, snapshots and images.",
-	"Networking":            "Floating IPs, VPCs, firewall groups, regions, IP pools, DNS, abuse and reputation.",
-	"Nodes and storage":     "Hypervisor nodes, their installer and agent, drains and storage pools.",
-	"Templates and plans":   "Operating system templates and the plans customers order.",
-	"Customers and staff":   "Accounts, staff roles, impersonation and support access.",
-	"Operations":            "Dashboard, audit log, alerts, job queue, exports, billing deliveries, imports and MCP.",
-	"Settings":              "System settings: panel, branding, quotas, alerts, email, DNS and backup destinations.",
-	"Billing webhook":       "The signed webhook a billing system drives the panel through, and the node installer.",
-	"Webhooks":              "Requests the panel sends to you.",
+	"Health":                  "Probes for orchestrators and monitoring.",
+	"Authentication":          "Signing in and out, single sign-on and the first administrator.",
+	"Branding":                "What the sign-in page shows before anyone signs in.",
+	"Account":                 "What any signed-in account does with itself: profile, two-factor, sessions, keys, scripts, notifications.",
+	"VMs":                     "Virtual machines: lifecycle, power, console, credentials, limits and moves.",
+	"VM networking":           "A VM's addresses, interfaces, port forwards, firewall, reverse DNS, NAT hostnames and transfer.",
+	"Backups and snapshots":   "Backups, schedules, snapshots and images.",
+	"Networking":              "Floating IPs, VPCs, firewall groups, regions, IP pools, DNS, abuse and reputation.",
+	"Nodes and storage":       "Hypervisor nodes, their installer and agent, drains and storage pools.",
+	"Templates and plans":     "Operating system templates and the plans customers order.",
+	"Customers and staff":     "Accounts, staff roles, impersonation and support access.",
+	"Operations":              "Dashboard, audit log, alerts, job queue, exports, billing deliveries, outbound webhooks, imports and MCP.",
+	"Settings":                "System settings: panel, branding, quotas, alerts, email, DNS and backup destinations.",
+	"Billing webhook":         "The signed webhook a billing system drives the panel through, and the node installer.",
+	"Teams and customer area": "Members, invitations and projects of customer accounts; address requests; what the customer area offers.",
+	"Webhooks":                "Requests the panel sends to you.",
 }
 
 var apiWebhooks = map[string]apiWebhook{
@@ -622,6 +785,30 @@ var apiWebhooks = map[string]apiWebhook{
 			"total", described(tInt, "floating_ip.usage"), "free", tInt, "billable", tInt, "address", tStr,
 		),
 	},
+	"outboundEvent": {
+		summary: "Event for an operator's webhook",
+		desc: "Sent to each webhook added under System settings, API, Outbound webhooks, for the events it subscribed to: VM lifecycle (the billing events' VM events), " +
+			"`backup.completed` and `backup.failed`, `alert.raised` and `alert.resolved`, `bandwidth.overage` and `floating_ip.usage`, " +
+			"`user.created`, `user.suspended`, `user.unsuspended` and `user.deleted`, and `webhook.test` from the Send test button. " +
+			"Headers are those of the billing events: `X-Webhook-Event`, `X-Webhook-Id` and, with a secret saved, `X-Webhook-Signature` (hex HMAC-SHA256 of the raw body, no prefix). " +
+			"Each delivery is stored and retried up to 10 times over about four hours; the webhook's log shows each one. Fields may be added; none are renamed or removed.",
+		body: obj(
+			"id", described(tStr, "Delivery id; repeats on a retry."),
+			"event", js{"type": "string", "enum": []any{service.BillingEventVMCreated, service.BillingEventVMFailed, service.BillingEventVMSuspended,
+				service.BillingEventVMUnsuspended, service.BillingEventVMDestroyed, service.EventBackupCompleted, service.EventBackupFailed,
+				service.EventAlertRaised, service.EventAlertResolved, service.BillingEventOverage, service.BillingEventFloatingIP,
+				service.EventUserCreated, service.EventUserSuspended, service.EventUserUnsuspended, service.EventUserDeleted, service.EventWebhookTest}},
+			"sent_at", tTime,
+			"vm_id", described(tStr, "VM and backup events."), "user_id", tStr, "user_ref", tStr, "hostname", tStr, "status", tStr,
+			"external_ref", tStr, "ip", tStr, "ips", arr(tStr),
+			"backup_id", described(tStr, "Backup events."), "backup_type", tStr, "mode", tStr, "size_bytes", js{"type": "integer", "format": "int64"},
+			"reason", described(tStr, "backup.failed and vm.failed: why."),
+			"alert_id", described(tStr, "Alert events."), "kind", tStr, "severity", tStr, "title", tStr, "detail", tStr, "state", tStr,
+			"resource_type", tStr, "resource_id", tStr, "resource_name", tStr, "fired_at", tTime, "resolved_at", tTime,
+			"email", described(tStr, "Account events."), "name", tStr, "role", tStr,
+			"source", described(tStr, "Account events: staff, billing or signup."),
+		),
+	},
 	"alert": {
 		summary: "Operator alert",
 		desc: "Sent to the alert webhook (Alerts page) in the JSON format; Slack and Discord formats post a line of text instead. " +
@@ -641,7 +828,7 @@ Every path is relative to the panel's address, for example ` + "`https://panel.e
 
 - **Session cookie.** ` + "`POST /api/v1/auth/login`" + ` sets ` + "`accessToken`" + ` (HttpOnly, SameSite=Lax). A browser write carrying it that the browser marks cross-site or same-site is refused.
 - **Bearer token.** The same login answers ` + "`token`" + `; send ` + "`Authorization: Bearer <token>`" + `. It lasts the session length under Settings, System, Security.
-- **API key.** Make one under Settings, API keys and send ` + "`X-API-Key: mvk_...`" + ` or ` + "`Authorization: Bearer mvk_...`" + `. A key acts as its owner, with the owner's staff role as it is at each call. A **read-only** key may only GET (MCP excepted); an **own resources only** key makes a staff owner act as a customer. Neither kind may manage API keys or account settings. Operators can switch API keys off (Settings, System, API).
+- **API key.** Make one under Settings, API keys and send ` + "`X-API-Key: mvk_...`" + ` or ` + "`Authorization: Bearer mvk_...`" + `. A key acts as its owner, with the owner's staff role as it is at each call, narrowed by its **scope**: ` + "`full`" + `, ` + "`read_only`" + ` (GET only, MCP excepted), ` + "`vm_power`" + ` (list VMs, start, stop, restart) or ` + "`billing`" + ` (billing, plans, accounts and usage). An **own resources only** key makes a staff owner act as a customer. A key may list the addresses it may be used from and may expire. No narrowed key may manage API keys or account settings. Operators can switch API keys off (Settings, System, API).
 
 Two-factor, IP whitelists and suspension apply to every method. While "Require two-factor authentication for administrators" is on (Settings, System, Security), staff without two-factor get ` + "`403 two_factor_required`" + ` until they set it up (API keys excepted).
 
@@ -656,16 +843,23 @@ Each operation states its access as ` + "`x-access`" + ` and in words:
 
 ## Answers
 
-Successful answers are JSON objects, but not yet one shape; making them one is planned and will come with a release note. Each operation documents its own. Most are ` + "`{\"success\": true, \"data\": ...}`" + `; some older ones are ` + "`{\"message\": \"...\", \"data\": ...}`" + ` without ` + "`success`" + `, ` + "`{\"data\": ...}`" + ` alone, or the object itself. Lists come four ways:
+Successful answers are JSON objects. New routes answer ` + "`{\"success\": true, \"data\": ...}`" + `; some older ones still answer ` + "`{\"message\": \"...\", \"data\": ...}`" + `, ` + "`{\"data\": ...}`" + ` alone, or the object itself, and each operation documents its own.
 
-| Shape | Used by |
+**Paginated lists** carry ` + "`meta: {page, per_page, total}`" + ` beside ` + "`data`" + `, and ` + "`success: true`" + `. Ask with ` + "`page`" + ` (from 1) and ` + "`per_page`" + ` (` + "`page_size`" + ` is the same); lists read by ` + "`limit`" + ` and ` + "`offset`" + ` accept those too. The fields lists had before ` + "`meta`" + ` stay for the clients that read them:
+
+| Older fields | Used by |
 |---|---|
-| ` + "`data`" + ` array, ` + "`total`" + `, ` + "`limit`" + `, ` + "`offset`" + `, ` + "`has_more`" + ` | backups, snapshots; VMs add ` + "`page`" + ` and ` + "`totalPages`" + ` and also accept ` + "`page`" + `/` + "`page_size`" + ` |
+| ` + "`data`" + ` array, ` + "`total`" + `, ` + "`limit`" + `, ` + "`offset`" + `, ` + "`has_more`" + ` | backups, snapshots; VMs add ` + "`page`" + ` and ` + "`totalPages`" + ` |
 | ` + "`data`" + ` array, ` + "`total`" + `, ` + "`page`" + `, ` + "`page_size`" + `, ` + "`totalPages`" + ` | accounts, audit log |
-| ` + "`data: {<items>: [...], total, page, page_size}`" + ` | alerts, billing deliveries, email log |
-| ` + "`data`" + ` array, everything at once | the rest |
+| ` + "`data: {<items>: [...], total, page, page_size}`" + ` | alerts, billing and webhook deliveries, email log, job queue, request and address logs, dashboard VMs |
 
-Errors carry ` + "`error`" + ` and usually ` + "`message`" + `, sometimes a machine ` + "`code`" + `; read ` + "`message`" + ` when present. Writes that start work on a node run as background jobs and answer at once (often 202 or a job id); poll the resource.
+Lists without ` + "`meta`" + ` return everything at once.
+
+**Errors** all have one shape, whichever route answers:
+
+` + "```json\n{\"success\": false, \"error\": {\"code\": \"forbidden\", \"message\": \"Insufficient permissions\", \"details\": {}}, \"message\": \"Insufficient permissions\"}\n```" + `
+
+` + "`error.code`" + ` is stable: a route's own (` + "`two_factor_required`" + `, ` + "`maintenance`" + `, ` + "`api_key_address`" + `, ` + "`email_exists`" + `...) or one for the status (` + "`bad_request`" + `, ` + "`unauthorized`" + `, ` + "`forbidden`" + `, ` + "`not_found`" + `, ` + "`conflict`" + `, ` + "`rate_limited`" + `, ` + "`unavailable`" + `, ` + "`internal_error`" + `). ` + "`details`" + ` appears when the route has more to say. The top-level ` + "`message`" + ` repeats ` + "`error.message`" + `, and a top-level ` + "`code`" + ` stays on the routes that sent one. Before this envelope ` + "`error`" + ` was a string; read ` + "`error.message`" + ` (or ` + "`message`" + `). The MCP endpoint answers JSON-RPC errors in JSON-RPC's own shape. Writes that start work on a node run as background jobs and answer at once (often 202 or a job id); poll the resource.
 
 ## Rate limits
 
@@ -673,7 +867,7 @@ Every signed-in account and every API key gets "API requests per minute" (Settin
 
 ## Webhooks
 
-The panel receives signed events from a billing system at ` + "`POST /webhooks/billing`" + ` and sends two kinds of its own, described under webhooks: billing events, and operator alerts.
+The panel receives signed events from a billing system at ` + "`POST /webhooks/billing`" + ` and sends three kinds of its own, described under webhooks: billing events, events for the webhooks an operator adds (each with its own events, secret and delivery log), and operator alerts.
 
 ## Stability
 

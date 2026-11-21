@@ -23,11 +23,39 @@ type OSTemplate struct {
 	// billing system or staff installed it.
 	Licensed bool `json:"licensed" gorm:"column:licensed;not null;default:false"`
 	// PlanIDs restricts the template to these plans. Empty means any plan.
-	PlanIDs   []string       `json:"plan_ids" gorm:"column:plan_ids;type:jsonb;serializer:json"`
+	PlanIDs []string `json:"plan_ids" gorm:"column:plan_ids;type:jsonb;serializer:json"`
+	// Kind is TemplateKindDisk (a disk image a VM is built from) or
+	// TemplateKindISO (an installer or drivers disc).
+	Kind string `json:"kind" gorm:"column:kind;type:varchar(8);not null;default:disk"`
+	// ChecksumSHA256 is what the downloaded image must hash to; nodes refuse
+	// one that does not. ChecksumURL, when set, is a SHA256SUMS-style list the
+	// checksum is read from again on a refresh.
+	ChecksumSHA256    string     `json:"checksum_sha256" gorm:"column:checksum_sha256;type:varchar(64);not null;default:''"`
+	ChecksumURL       string     `json:"checksum_url" gorm:"column:checksum_url;type:text;not null;default:''"`
+	ChecksumCheckedAt *time.Time `json:"checksum_checked_at,omitempty" gorm:"column:checksum_checked_at"`
+	// AllowHTTP accepts an image address on plain http.
+	AllowHTTP bool `json:"allow_http" gorm:"column:allow_http;not null;default:false"`
+	// AutoRefresh has the panel read ChecksumURL every day and fetch a changed
+	// image onto the nodes.
+	AutoRefresh bool `json:"auto_refresh" gorm:"column:auto_refresh;not null;default:false"`
+	// Firmware is FirmwareBIOS or FirmwareUEFI: how the image boots.
+	Firmware  string         `json:"firmware" gorm:"column:firmware;type:varchar(8);not null;default:bios"`
 	CreatedAt time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
 	UpdatedAt time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
 	DeletedAt gorm.DeletedAt `json:"-" gorm:"index"`
 }
+
+// Template kinds and boot firmware.
+const (
+	TemplateKindDisk = "disk"
+	TemplateKindISO  = "iso"
+
+	FirmwareBIOS = "bios"
+	FirmwareUEFI = "uefi"
+)
+
+// IsISO reports an installer or drivers disc rather than a disk image.
+func (t *OSTemplate) IsISO() bool { return t.Kind == TemplateKindISO }
 
 // TableName specifies the table name for OSTemplate
 func (OSTemplate) TableName() string {

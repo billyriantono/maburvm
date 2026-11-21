@@ -62,6 +62,7 @@ var roleBoundaryMessages = map[string]string{
 	"unauthorized":                                              "Your account could not be confirmed. Sign in again.",
 	"insufficient_permissions":                                  "You do not have permission to do this.",
 	"email_exists":                                              "Another account already uses that email address.",
+	"user_vms_delete_locked":                                    "Some of this account's VMs are locked against deletion. Unlock them first; nothing was changed.",
 }
 
 func writeRoleBoundaryErr(c echo.Context, err error) error {

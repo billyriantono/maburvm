@@ -19,6 +19,7 @@ import (
 	"github.com/maburvm/panel/internal/agent/migration"
 	"github.com/maburvm/panel/internal/agent/storage"
 	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
+	"github.com/maburvm/panel/internal/shared/models"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -185,12 +186,29 @@ func (s *NodeAgentService) PrepareMigrationTarget(ctx context.Context, req *pb.P
 		}
 	}
 
+	lvPool, onLVM, err := requestLVMPool(req.PoolType, req.PoolPath)
+	if err != nil {
+		return fail(err)
+	}
 	var problems []string
 	paths := map[string]string{}
 	var planned []string
+	var needLV int64
 	for _, d := range req.Disks {
 		if !migration.ValidTarget(d.Target) {
 			return fail(fmt.Errorf("unusable drive %q", d.Target))
+		}
+		if onLVM {
+			// A volume of the VM's own, named and tagged as MaburVM names and
+			// tags the volumes it creates, so it is provably the VM's to remove.
+			if d.VirtualSizeBytes <= 0 {
+				return fail(fmt.Errorf("drive %s has no size to create its volume at", d.Target))
+			}
+			p := "/dev/" + lvPool.VG + "/" + models.LVMDiskName(req.VmId, d.Target)
+			paths[d.Target] = p
+			planned = append(planned, p)
+			needLV += d.VirtualSizeBytes
+			continue
 		}
 		p, err := migration.TargetPath(req.PoolPath, d.FileName)
 		if err != nil {
@@ -201,7 +219,13 @@ func (s *NodeAgentService) PrepareMigrationTarget(ctx context.Context, req *pb.P
 	}
 	seedPath := ""
 	if len(req.SeedImage) > 0 || req.SeedFileName != "" {
-		p, err := migration.TargetPath(req.PoolPath, req.SeedFileName)
+		// On an LVM pool the setup disc stays in the default directory, where
+		// a create puts it too.
+		seedDir := req.PoolPath
+		if onLVM {
+			seedDir = defaultImageDir
+		}
+		p, err := migration.TargetPath(seedDir, req.SeedFileName)
 		if err != nil {
 			return fail(err)
 		}
@@ -214,7 +238,9 @@ func (s *NodeAgentService) PrepareMigrationTarget(ctx context.Context, req *pb.P
 	} else if found {
 		problems = append(problems, "the VM is already defined on this node")
 	}
-	if fi, err := os.Stat(req.PoolPath); err != nil || !fi.IsDir() {
+	if onLVM {
+		problems = append(problems, lvmTargetProblems(ctx, lvPool, needLV, req.ScratchBytesNeeded)...)
+	} else if fi, err := os.Stat(req.PoolPath); err != nil || !fi.IsDir() {
 		problems = append(problems, fmt.Sprintf("the pool directory %s does not exist on this node", req.PoolPath))
 	} else if req.FreeBytesNeeded > 0 {
 		if free, err := freeBytes(req.PoolPath); err == nil && free < req.FreeBytesNeeded {
@@ -255,16 +281,33 @@ func (s *NodeAgentService) PrepareMigrationTarget(ctx context.Context, req *pb.P
 				for _, f := range old {
 					_ = os.Remove(f)
 				}
-				migration.ClearPrepared(l, req.VmId)
+				if removePreparedVolumes(ctx, prev) == nil {
+					migration.ClearPrepared(l, req.VmId)
+				}
 			}
 		}
 	}
 	// Recorded before anything is created, so a crash halfway still leaves
 	// the files traceable to this migration.
-	if err := migration.SavePrepared(l, migration.Prepared{VMID: req.VmId, MigrationID: req.MigrationId, Files: planned}); err != nil {
+	rec := migration.Prepared{VMID: req.VmId, MigrationID: req.MigrationId, Files: planned}
+	if onLVM {
+		rec.PoolType, rec.PoolPath = req.PoolType, req.PoolPath
+	}
+	if err := migration.SavePrepared(l, rec); err != nil {
 		return &pb.PrepareMigrationTargetResponse{Error: migErr(pb.ErrorCode_ERROR_CODE_INTERNAL, err)}, nil
 	}
-	if req.CreateDisks {
+	if onLVM {
+		// An offline copy writes into the volumes too, so both kinds of move
+		// have them made here.
+		for _, d := range req.Disks {
+			if _, err := os.Stat(paths[d.Target]); err == nil && ours[paths[d.Target]] {
+				continue
+			}
+			if _, err := createDiskLV(ctx, lvPool, models.LVMDiskName(req.VmId, d.Target), d.VirtualSizeBytes); err != nil {
+				return &pb.PrepareMigrationTargetResponse{Error: migErr(pb.ErrorCode_ERROR_CODE_INTERNAL, fmt.Errorf("could not create the volume for %s: %w", d.Target, err))}, nil
+			}
+		}
+	} else if req.CreateDisks {
 		for _, d := range req.Disks {
 			// An earlier try may have recorded a file and stopped before making it.
 			if _, err := os.Lstat(paths[d.Target]); err == nil && ours[paths[d.Target]] {
@@ -295,15 +338,18 @@ func (s *NodeAgentService) PrepareMigrationTarget(ctx context.Context, req *pb.P
 	return resp, nil
 }
 
-func diskMaps(in []*pb.MigrationDiskMap) (paths map[string]string, err error) {
-	paths = map[string]string{}
+func diskMaps(in []*pb.MigrationDiskMap) (dests map[string]migration.Dest, err error) {
+	dests = map[string]migration.Dest{}
 	for _, d := range in {
 		if !migration.ValidTarget(d.Target) || !filepath.IsAbs(d.DestPath) || filepath.Clean(d.DestPath) != d.DestPath {
 			return nil, fmt.Errorf("unusable drive mapping %q -> %q", d.Target, d.DestPath)
 		}
-		paths[d.Target] = d.DestPath
+		if f := d.DestFormat; f != "" && f != "raw" && f != "qcow2" {
+			return nil, fmt.Errorf("unusable format %q for drive %s", f, d.Target)
+		}
+		dests[d.Target] = migration.Dest{Path: d.DestPath, Format: d.DestFormat}
 	}
-	return paths, nil
+	return dests, nil
 }
 
 // MigrateVM starts a live move of a VM from this node over the migration link.
@@ -399,8 +445,8 @@ func (s *NodeAgentService) PullMigratedVM(ctx context.Context, req *pb.PullMigra
 		allowed[f] = true
 	}
 	for _, p := range paths {
-		if !allowed[p] {
-			return fail(fmt.Errorf("%s was not prepared for this migration", p))
+		if !allowed[p.Path] {
+			return fail(fmt.Errorf("%s was not prepared for this migration", p.Path))
 		}
 	}
 	if migrations.Running(req.VmId, req.MigrationId) {
@@ -420,8 +466,10 @@ func (s *NodeAgentService) PullMigratedVM(ctx context.Context, req *pb.PullMigra
 	return &pb.PullMigratedVMResponse{Success: true}, nil
 }
 
-func (s *NodeAgentService) pullVM(ctx context.Context, req *pb.PullMigratedVMRequest, paths map[string]string) error {
+func (s *NodeAgentService) pullVM(ctx context.Context, req *pb.PullMigratedVMRequest, dests map[string]migration.Dest) error {
 	l := migrationLayout()
+	prep, _ := migration.LoadPrepared(l, req.VmId)
+	thin := prep.PoolType == "lvmthin"
 	var total, done int64
 	for _, d := range req.Disks {
 		if d.Copy {
@@ -434,32 +482,70 @@ func (s *NodeAgentService) pullVM(ctx context.Context, req *pb.PullMigratedVMReq
 		}
 		phase := "Copying disk " + d.Target
 		migrations.Update(req.VmId, req.MigrationId, phase, total, done)
-		n, err := pullDisk(ctx, l, req.SourceAddress, req.VmId, d.Target, d.DestPath, func(v int64) {
-			migrations.Update(req.VmId, req.MigrationId, phase, total, done+v)
-		})
+		progress := func(v int64) { migrations.Update(req.VmId, req.MigrationId, phase, total, done+v) }
+		n, err := pullOneDisk(ctx, l, req.SourceAddress, req.VmId, d, thin, progress)
 		if err != nil {
 			return err
 		}
 		if d.ExpectedBytes > 0 && n != d.ExpectedBytes {
 			return fmt.Errorf("disk %s: copied %d of %d bytes", d.Target, n, d.ExpectedBytes)
 		}
-		if _, err := storage.NewQCOW2Manager().ImageInfo(d.DestPath); err != nil {
-			return fmt.Errorf("disk %s arrived unreadable: %w", d.Target, err)
-		}
 		done += n
 	}
 	migrations.Update(req.VmId, req.MigrationId, "Defining the VM", total, done)
-	domXML, err := migration.RewriteForTarget(req.DomainXml, paths)
+	domXML, err := migration.RewriteDisks(req.DomainXml, dests)
 	if err != nil {
 		return err
 	}
 	return libvirt.DefineMigrated(domXML)
 }
 
+// pullOneDisk brings one drive of a stopped VM here: into a file as it is,
+// or into a logical volume made ready for it. A volume holds raw data, so a
+// qcow2 image is fetched beside it first and written onto it.
+func pullOneDisk(ctx context.Context, l migration.Layout, address, vmID string, d *pb.MigrationDiskMap, thin bool, progress func(int64)) (int64, error) {
+	if !models.IsBlockDevicePath(d.DestPath) {
+		n, err := pullDisk(ctx, l, address, vmID, d.Target, d.DestPath, false, progress)
+		if err != nil {
+			return n, err
+		}
+		if d.DestFormat != "raw" {
+			if _, err := storage.NewQCOW2Manager().ImageInfo(d.DestPath); err != nil {
+				return n, fmt.Errorf("disk %s arrived unreadable: %w", d.Target, err)
+			}
+		}
+		return n, nil
+	}
+	if d.SourceFormat == "" || d.SourceFormat == "raw" {
+		// Raw onto the volume. A new thin volume reads as zeroes, so its holes
+		// may be skipped; a thick one may hold an earlier volume's data.
+		return pullDisk(ctx, l, address, vmID, d.Target, d.DestPath, !thin, progress)
+	}
+	if err := os.MkdirAll(blockScratchDir(), 0o755); err != nil {
+		return 0, err
+	}
+	scratch := filepath.Join(blockScratchDir(), vmID+"-"+d.Target+".migrate.part")
+	defer os.Remove(scratch)
+	n, err := pullDisk(ctx, l, address, vmID, d.Target, scratch, false, progress)
+	if err != nil {
+		return n, err
+	}
+	if err := lvm.WriteImage(ctx, scratch, d.SourceFormat, d.DestPath, thin); err != nil {
+		return n, fmt.Errorf("disk %s could not be written onto %s: %w", d.Target, d.DestPath, err)
+	}
+	return n, nil
+}
+
 // pullDisk copies one drive of a stopped VM on a peer into dest over the
-// migration link, keeping holes, and returns the bytes copied.
-func pullDisk(ctx context.Context, l migration.Layout, address, vmID, target, dest string, progress func(int64)) (int64, error) {
-	f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+// migration link and returns the bytes copied. A file is created and keeps
+// its holes; a device (a volume made ready for it) is written in place, every
+// block of it when dense.
+func pullDisk(ctx context.Context, l migration.Layout, address, vmID, target, dest string, dense bool, progress func(int64)) (int64, error) {
+	flags := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+	if models.IsBlockDevicePath(dest) {
+		flags = os.O_WRONLY
+	}
+	f, err := os.OpenFile(dest, flags, 0o600)
 	if err != nil {
 		return 0, err
 	}
@@ -474,7 +560,11 @@ func pullDisk(ctx context.Context, l migration.Layout, address, vmID, target, de
 	if err := cmd.Start(); err != nil {
 		return 0, err
 	}
-	n, cerr := migration.CopySparse(f, out, 1<<20, progress)
+	copyFn := migration.CopySparse
+	if dense {
+		copyFn = migration.CopyAll
+	}
+	n, cerr := copyFn(f, out, 1<<20, progress)
 	if cerr != nil {
 		_, _ = io.Copy(io.Discard, out)
 	}
@@ -564,6 +654,10 @@ func (s *NodeAgentService) FinishMigrationTarget(ctx context.Context, req *pb.Fi
 		}
 		removed = append(removed, f)
 	}
+	if err := removePreparedVolumes(ctx, prep); err != nil {
+		return &pb.FinishMigrationTargetResponse{Removed: removed, Error: migErr(pb.ErrorCode_ERROR_CODE_INTERNAL, err)}, nil
+	}
+	removed = append(removed, migration.Devices(prep)...)
 	migration.ClearPrepared(l, req.VmId)
 	log.Printf("[Migration] rolled back migration %s of %s: removed %v", req.MigrationId, req.VmId, removed)
 	return &pb.FinishMigrationTargetResponse{Success: true, Removed: removed}, nil
@@ -577,9 +671,24 @@ func (s *NodeAgentService) FinishMigrationSource(ctx context.Context, req *pb.Fi
 	if !migration.ValidUUID(req.VmId) {
 		return &pb.FinishMigrationSourceResponse{Error: migErr(pb.ErrorCode_ERROR_CODE_INVALID_ARGUMENT, errors.New("a VM id is required"))}, nil
 	}
+	// Block devices outlive the definition, which owns only files: those
+	// MaburVM created for the VM go after it, others are kept for an operator.
+	blockDisks, _ := libvirt.BackupDisks(req.VmId)
 	removed, err := libvirt.RemoveMovedSource(req.VmId)
 	if err != nil && !libvirt.IsNoDomain(err) {
 		return &pb.FinishMigrationSourceResponse{Removed: removed, Error: migErr(pb.ErrorCode_ERROR_CODE_CONFLICT, err)}, nil
+	}
+	if err == nil {
+		for _, k := range removeVMVolumes(ctx, req.VmId, blockDisks, lvmPoolsOf(req.GetLvmPools()), false) {
+			log.Printf("[Migration] kept %s of moved VM %s: %s", k.Path, req.VmId, k.Reason)
+		}
+		for _, d := range blockDisks {
+			if d.Block {
+				if _, serr := os.Stat(d.Path); errors.Is(serr, os.ErrNotExist) {
+					removed = append(removed, d.Path)
+				}
+			}
+		}
 	}
 	if s.networkMgr != nil {
 		if cerr := s.networkMgr.CleanupVMNetwork(req.VmId); cerr != nil {
@@ -614,8 +723,8 @@ func RunMigrationShell(original string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		defer f.Close()
-		if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
-			fmt.Fprintln(stderr, path, "is not a plain file")
+		if fi, err := f.Stat(); err != nil || !(fi.Mode().IsRegular() || fi.Mode()&os.ModeDevice != 0) {
+			fmt.Fprintln(stderr, path, "is not a plain file or a disk device")
 			return 1
 		}
 		if _, err := io.Copy(stdout, f); err != nil {
@@ -632,4 +741,47 @@ func RunMigrationShell(original string, stdout, stderr io.Writer) int {
 	err = syscall.Exec(cmd[0], cmd, os.Environ())
 	fmt.Fprintln(stderr, err)
 	return 1
+}
+
+// lvmTargetProblems says why an LVM pool cannot take a VM's volumes of need
+// bytes in all, and an offline copy its scratch room.
+func lvmTargetProblems(ctx context.Context, pool storage.LVMPool, need, scratch int64) []string {
+	var out []string
+	if err := lvm.Check(ctx, pool); err != nil {
+		return []string{fmt.Sprintf("the LVM pool %s cannot hold VM disks: %v", pool, err)}
+	}
+	if c, err := lvm.Capacity(ctx, pool); err == nil && c.Available < need {
+		out = append(out, fmt.Sprintf("the LVM pool %s has %d GB free, and the VM's disks need %d GB", pool, c.Available>>30, need>>30))
+	}
+	if scratch > 0 {
+		if err := os.MkdirAll(blockScratchDir(), 0o755); err == nil {
+			if free, err := freeBytes(blockScratchDir()); err == nil && free < scratch+volumeReserveBytes {
+				out = append(out, fmt.Sprintf("%s has %d GB free; an offline copy onto logical volumes fetches the images there first (%d GB, and %d GB kept free)",
+					blockScratchDir(), free>>30, scratch>>30, volumeReserveBytes>>30))
+			}
+		}
+	}
+	return out
+}
+
+// removePreparedVolumes removes the logical volumes a migration made here,
+// each only when it is provably the VM's: named and tagged for it, unused.
+func removePreparedVolumes(ctx context.Context, p migration.Prepared) error {
+	devs := migration.Devices(p)
+	if len(devs) == 0 {
+		return nil
+	}
+	pool, err := storage.ParseLVMPool(p.PoolType, p.PoolPath)
+	if err != nil {
+		return fmt.Errorf("the volumes this migration made were kept: %w", err)
+	}
+	for _, dev := range devs {
+		if _, err := os.Stat(dev); errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err := removeLV(ctx, p.VMID, dev, []storage.LVMPool{pool}, false); err != nil {
+			return err
+		}
+	}
+	return nil
 }

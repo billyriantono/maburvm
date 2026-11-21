@@ -84,3 +84,8 @@ func keptVolumeName(hostname, target string) string {
 	}
 	return name
 }
+
+// NodeLVMPools is nodeLVMPools for the panel's own calls to a node.
+func NodeLVMPools(ctx context.Context, db *gorm.DB, nodeID string) []*pb.LVMPool {
+	return nodeLVMPools(ctx, db, nodeID)
+}

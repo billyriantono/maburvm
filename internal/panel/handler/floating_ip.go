@@ -166,6 +166,9 @@ func (h *FloatingIPHandler) Order(c echo.Context) error {
 	_ = c.Bind(&req)
 	addr, err := h.service.OrderFloatingIP(c.Request().Context(), userCtx.ID.String(), req.Region)
 	if err != nil {
+		if refusedByAccount(c, err) {
+			return nil
+		}
 		switch {
 		case errors.Is(err, service.ErrFloatingIPQuotaExceeded):
 			return c.JSON(http.StatusForbidden, map[string]interface{}{"error": err.Error()})

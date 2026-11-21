@@ -16,9 +16,10 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
-import { useTemplates, useDeleteTemplate } from "@/lib/hooks/use-templates"
+import { useTemplates, useDeleteTemplate, useUploadISO, useDriversISO, useSetDriversISO } from "@/lib/hooks/use-templates"
 import { api } from "@/lib/api-client"
 import { useConfirm } from "@/components/confirm-provider"
+import { ImageIntegrityFields, emptyIntegrity, integrityProblem, type ImageIntegrity } from "@/components/image-integrity-fields"
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B"
@@ -30,87 +31,150 @@ function formatBytes(bytes: number): string {
 function UploadDialog({
   open,
   onClose,
-  onRemoteUpload
+  onAdded,
 }: {
   open: boolean
   onClose: () => void
-  onRemoteUpload: (url: string, filename: string) => void
+  onAdded: () => void
 }) {
+  const [mode, setMode] = useState<"url" | "file">("url")
   const [remoteUrl, setRemoteUrl] = useState("")
   const [remoteFilename, setRemoteFilename] = useState("")
-  
-  const handleRemoteSubmit = () => {
-    if (remoteUrl) {
-      let finalName = remoteFilename.trim()
-      if (!finalName) {
-        try {
-          const parsedUrl = new URL(remoteUrl)
-          const pathParts = parsedUrl.pathname.split('/')
-          const lastPart = pathParts[pathParts.length - 1]
-          finalName = lastPart && lastPart.endsWith('.iso') ? lastPart : 'downloaded-image.iso'
-        } catch (e) {
-          finalName = 'downloaded-image.iso'
-        }
-      } else if (!finalName.endsWith('.iso')) {
-        finalName += '.iso'
+  const [osType, setOsType] = useState("linux")
+  const [integrity, setIntegrity] = useState<ImageIntegrity>(emptyIntegrity)
+  const [file, setFile] = useState<File | null>(null)
+  const [fileSha, setFileSha] = useState("")
+  const [sent, setSent] = useState(0)
+  const upload = useUploadISO()
+  const [busy, setBusy] = useState(false)
+
+  const resetState = () => {
+    if (busy) return
+    setRemoteUrl(""); setRemoteFilename(""); setIntegrity(emptyIntegrity); setFile(null); setFileSha(""); setSent(0)
+    onClose()
+  }
+
+  const fileName = (url: string, given: string) => {
+    let name = given.trim()
+    if (!name) {
+      try {
+        const last = new URL(url).pathname.split("/").pop()
+        name = last && last.toLowerCase().endsWith(".iso") ? last : "downloaded-image.iso"
+      } catch {
+        name = "downloaded-image.iso"
       }
-      onRemoteUpload(remoteUrl, finalName)
-      setRemoteUrl("")
-      setRemoteFilename("")
+    } else if (!name.toLowerCase().endsWith(".iso")) {
+      name += ".iso"
+    }
+    return name
+  }
+
+  const submitURL = async () => {
+    const problem = integrityProblem(remoteUrl, integrity)
+    if (problem) {
+      toast.error(problem)
+      return
+    }
+    setBusy(true)
+    try {
+      await api.post("/api/v1/templates/download-url", {
+        url: remoteUrl.trim(), filename: fileName(remoteUrl, remoteFilename), os_type: osType,
+        checksum_sha256: integrity.checksumSha256.trim() || undefined, checksum_url: integrity.checksumUrl.trim() || undefined,
+        skip_checksum: integrity.skipChecksum,
+      })
+      toast.success("ISO added. Each node fetches it the first time it is attached")
+      onAdded()
+      setBusy(false)
+      resetState()
+    } catch (err) {
+      setBusy(false)
+      toast.error(`Could not add the ISO: ${(err as Error).message}`)
     }
   }
 
-  const resetState = () => {
-    setRemoteUrl("")
-    setRemoteFilename("")
-    onClose()
+  const submitFile = async () => {
+    if (!file) return
+    setBusy(true)
+    try {
+      await upload.mutateAsync({ file, sha256: fileSha, osType, onProgress: setSent })
+      toast.success(`${file.name} uploaded. The panel is copying it to every node`)
+      onAdded()
+      setBusy(false)
+      resetState()
+    } catch (err) {
+      setBusy(false)
+      toast.error(`Upload failed: ${(err as Error).message}`)
+    }
   }
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) resetState() }}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Upload className="w-6 h-6" aria-hidden="true" />
             Add ISO Image
           </DialogTitle>
-          <DialogDescription className="sr-only">Download an ISO from a remote URL.</DialogDescription>
+          <DialogDescription>Fetch an ISO from an address, or upload one from this computer.</DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4 mb-6">
-            <div>
-              <label htmlFor="remote-url" className="block text-sm font-medium mb-1">Direct URL</label>
-              <Input
-                id="remote-url"
-                placeholder="https://example.com/ubuntu.iso"
-                value={remoteUrl}
-                onChange={(e) => setRemoteUrl(e.target.value)}
-              />
-            </div>
-            <div>
-              <label htmlFor="remote-filename" className="block text-sm font-medium mb-1">Save As (Optional)</label>
-              <Input
-                id="remote-filename"
-                placeholder="ubuntu-custom.iso"
-                value={remoteFilename}
-                onChange={(e) => setRemoteFilename(e.target.value)}
-              />
-            </div>
+        <div role="tablist" className="flex gap-2 border-b pb-2">
+          <Button role="tab" aria-selected={mode === "url"} variant={mode === "url" ? "default" : "ghost"} size="sm" onClick={() => setMode("url")} disabled={busy}>From an address</Button>
+          <Button role="tab" aria-selected={mode === "file"} variant={mode === "file" ? "default" : "ghost"} size="sm" onClick={() => setMode("file")} disabled={busy}>Upload a file</Button>
+        </div>
+
+        <div className="space-y-4 my-4">
+          {mode === "url" ? (
+            <>
+              <div>
+                <label htmlFor="remote-url" className="block text-sm font-medium mb-1">Direct URL</label>
+                <Input id="remote-url" placeholder="https://example.com/ubuntu.iso" value={remoteUrl} onChange={(e) => setRemoteUrl(e.target.value)} />
+              </div>
+              <div>
+                <label htmlFor="remote-filename" className="block text-sm font-medium mb-1">Save As (Optional)</label>
+                <Input id="remote-filename" placeholder="ubuntu-custom.iso" value={remoteFilename} onChange={(e) => setRemoteFilename(e.target.value)} />
+              </div>
+              <ImageIntegrityFields value={integrity} onChange={setIntegrity} idPrefix="iso" showFirmware={false} />
+            </>
+          ) : (
+            <>
+              <div>
+                <label htmlFor="iso-file" className="block text-sm font-medium mb-1">ISO file</label>
+                <Input id="iso-file" type="file" accept=".iso" onChange={(e) => { setFile(e.target.files?.[0] ?? null); setSent(0) }} disabled={busy} />
+                <p className="text-xs text-muted-foreground mt-1">Kept on the panel and copied to every node, which checks it against its sha256.</p>
+              </div>
+              <div>
+                <label htmlFor="iso-file-sha" className="block text-sm font-medium mb-1">sha256 (optional)</label>
+                <Input id="iso-file-sha" value={fileSha} onChange={(e) => setFileSha(e.target.value)} placeholder="Checked once the upload is complete" className="font-mono" disabled={busy} />
+              </div>
+              {file && busy && (
+                <div aria-live="polite">
+                  <div className="h-2 rounded bg-muted overflow-hidden">
+                    <div className="h-full bg-foreground/70" style={{ width: `${file.size ? Math.round((sent / file.size) * 100) : 0}%` }} />
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1 tabular-nums">{formatBytes(sent)} of {formatBytes(file.size)}</p>
+                </div>
+              )}
+            </>
+          )}
+          <div>
+            <label htmlFor="iso-os-type" className="block text-sm font-medium mb-1">System it installs</label>
+            <select id="iso-os-type" value={osType} onChange={(e) => setOsType(e.target.value)}
+              className="h-10 w-full max-w-xs rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
+              <option value="linux">Linux or other</option>
+              <option value="windows">Windows</option>
+            </select>
+            <p className="text-xs text-muted-foreground mt-1">A VM installed from this ISO gets virtual hardware for this kind of system.</p>
           </div>
-        
+        </div>
+
         <DialogFooter className="gap-3 sm:gap-0">
-          <Button variant="outline" onClick={resetState}>
-            Cancel
-          </Button>
-          <Button
-            disabled={!remoteUrl}
-            onClick={() => {
-              handleRemoteSubmit()
-              resetState()
-            }}
-          >
-            Download
-          </Button>
+          <Button variant="outline" onClick={resetState} disabled={busy}>Cancel</Button>
+          {mode === "url" ? (
+            <Button disabled={!remoteUrl || busy} onClick={submitURL}>{busy && <Loader2 className="w-4 h-4 animate-spin mr-2" />}Add ISO</Button>
+          ) : (
+            <Button disabled={!file || busy} onClick={submitFile}>{busy && <Loader2 className="w-4 h-4 animate-spin mr-2" />}Upload</Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -119,8 +183,20 @@ function UploadDialog({
 
 export default function ISOListPage() {
   const confirm = useConfirm()
-  const { data: templates, isLoading, error, refetch } = useTemplates({ type: 'iso' })
+  const { data: templates, isLoading, error, refetch } = useTemplates({ type: 'iso', includeNodes: true })
   const deleteTemplate = useDeleteTemplate()
+  const { data: driversSetting } = useDriversISO()
+  const setDrivers = useSetDriversISO()
+  const driversID = driversSetting?.drivers_iso_template_id ?? ""
+  const toggleDrivers = useCallback(async (id: string) => {
+    const next = driversID === id ? "" : id
+    try {
+      await setDrivers.mutateAsync(next)
+      toast.success(next ? "Windows installs can now get this ISO as their drivers disc" : "No drivers disc is set")
+    } catch (err) {
+      toast.error((err as Error).message)
+    }
+  }, [driversID, setDrivers])
   const [searchQuery, setSearchQuery] = useState("")
   const [osFilter, setOsFilter] = useState("")
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false)
@@ -155,15 +231,6 @@ export default function ISOListPage() {
     refetch()
   }, [confirm, deleteTemplate, refetch])
 
-  const handleRemoteUpload = useCallback((url: string, filename: string) => {
-    setUploadDialogOpen(false)
-    api.post('/api/v1/templates/download-url', { url, filename }).then(() => {
-      toast.success(`Downloading ${filename} from remote URL...`)
-      refetch()
-    }).catch((err: any) => {
-      toast.error(`Download failed: ${err?.message || 'Unknown error'}`)
-    })
-  }, [refetch])
 
   if (isLoading) {
     return (
@@ -292,9 +359,20 @@ export default function ISOListPage() {
                   : "inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-md border bg-muted text-muted-foreground"}>
                   {iso.is_active ? "Active" : "Inactive"}
                 </span>
+                {iso.image_path.startsWith("upload:") && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    On {(iso.nodes ?? []).filter((n) => n.status === "available").length} of {(iso.nodes ?? []).length} nodes
+                  </p>
+                )}
+                {!iso.checksum_sha256 && <p className="text-xs text-amber-700 dark:text-amber-300 mt-1">No checksum</p>}
+                {driversID === iso.id && <p className="text-xs font-medium mt-1">Windows drivers disc</p>}
               </div>
 
               <div className="col-span-2 flex items-center justify-end gap-2">
+                <Button variant="ghost" size="sm" onClick={() => toggleDrivers(iso.id)} disabled={setDrivers.isPending}
+                  title="Offer this ISO as the drivers disc of Windows installs">
+                  {driversID === iso.id ? "Not the drivers disc" : "Drivers disc"}
+                </Button>
                 <Button
                   variant="ghost"
                   size="sm"
@@ -314,7 +392,7 @@ export default function ISOListPage() {
       <UploadDialog
         open={uploadDialogOpen}
         onClose={() => setUploadDialogOpen(false)}
-        onRemoteUpload={handleRemoteUpload}
+        onAdded={() => refetch()}
       />
     </div>
   )

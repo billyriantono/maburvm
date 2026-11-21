@@ -307,7 +307,13 @@ func mibPerSecond(mbps int) int64 {
 func diskMaps(plan *migrationPlan, prep *pb.PrepareMigrationTargetResponse) []*pb.MigrationDiskMap {
 	var out []*pb.MigrationDiskMap
 	for _, d := range plan.disks {
-		out = append(out, &pb.MigrationDiskMap{Target: d.Target, DestPath: prep.Paths[d.Target], Copy: true, ExpectedBytes: d.FileSize})
+		dm := &pb.MigrationDiskMap{Target: d.Target, DestPath: prep.Paths[d.Target], Copy: true, ExpectedBytes: d.FileSize}
+		// Only a disk changing between a file and a volume says so: an older
+		// agent never sees the fields it would not know.
+		if f := d.destFormat(plan.pool, plan.mode); d.Block || f != d.Format {
+			dm.SourceFormat, dm.DestFormat = d.Format, f
+		}
+		out = append(out, dm)
 	}
 	if plan.seed != nil && prep.SeedPath != "" {
 		out = append(out, &pb.MigrationDiskMap{Target: plan.seed.Target, DestPath: prep.SeedPath})
@@ -658,7 +664,8 @@ func (m *MigrationService) removeOldCopy(ctx context.Context, vm *models.VM, src
 	}
 	cctx, cancel := context.WithTimeout(actx, 5*time.Minute)
 	defer cancel()
-	resp, err := client.FinishMigrationSource(cctx, &pb.FinishMigrationSourceRequest{VmId: vm.ID, MigrationId: row.ID})
+	resp, err := client.FinishMigrationSource(cctx, &pb.FinishMigrationSourceRequest{VmId: vm.ID, MigrationId: row.ID,
+		LvmPools: queue.NodeLVMPools(ctx, m.db, src.ID)})
 	if err != nil {
 		return nil, err
 	}

@@ -237,6 +237,28 @@ service NodeAgent {
   // FinishMigrationSource removes a VM that now runs on another node: its
   // definition, the disk files it owned here and its host network rules.
   rpc FinishMigrationSource(FinishMigrationSourceRequest) returns (FinishMigrationSourceResponse);
+
+  // ResizeVMDisk grows one disk of a VM, the primary one or an extra one,
+  // whether the VM runs or not. It never shrinks a disk.
+  rpc ResizeVMDisk(ResizeVMDiskRequest) returns (ResizeVMDiskResponse);
+
+  // MoveVMDisk starts moving one disk of a VM to another storage pool of this
+  // node: a copy while the VM is shut off, a block copy while it runs. It
+  // returns at once; GetMigrationProgress and AbortMigration follow it with
+  // move_id as the migration id.
+  rpc MoveVMDisk(MoveVMDiskRequest) returns (MoveVMDiskResponse);
+
+  // ListOrphanDisks lists the disk files and logical volumes in the given
+  // pools that no domain on this node uses. Read-only.
+  rpc ListOrphanDisks(ListOrphanDisksRequest) returns (ListOrphanDisksResponse);
+
+  // DeleteOrphanDisk removes one of those after checking it again: still
+  // unused, still in a registered pool, unchanged since it was listed.
+  rpc DeleteOrphanDisk(DeleteOrphanDiskRequest) returns (DeleteOrphanDiskResponse);
+
+  // PutImage stores a file uploaded to the panel (an ISO) in this node's image
+  // cache. The first chunk names it; the data is checked against its sha256.
+  rpc PutImage(stream ImageChunk) returns (PutImageResponse);
 }
 
 // ============================================================================
@@ -2364,6 +2386,10 @@ message MigrationDiskMap {
   bool copy = 3;
   // expected_bytes is the source file's length, checked after an offline copy.
   int64 expected_bytes = 4;
+  // source_format is the drive's format on the source and dest_format the one
+  // it has here (a logical volume is raw). Empty keeps the format.
+  string source_format = 5;
+  string dest_format = 6;
 }
 
 message GetMigrationInfoRequest {
@@ -2482,6 +2508,12 @@ message PrepareMigrationTargetRequest {
   bool dry_run = 10;
   // free_bytes_needed must be free on the pool's filesystem.
   int64 free_bytes_needed = 11;
+  // pool_type is "" or "dir" for a directory, "lvm" or "lvmthin" for an LVM
+  // pool named by pool_path: each disk then becomes a logical volume.
+  string pool_type = 12;
+  // scratch_bytes_needed is room an offline copy into a logical volume needs
+  // beside it: the image is fetched there, then written onto the volume.
+  int64 scratch_bytes_needed = 13;
 }
 
 message PrepareMigrationTargetResponse {
@@ -2554,10 +2586,121 @@ message FinishMigrationTargetResponse {
 message FinishMigrationSourceRequest {
   string vm_id = 1;
   string migration_id = 2;
+  // lvm_pools are the LVM pools registered on this node: the moved VM's
+  // logical volumes MaburVM created in them are removed too.
+  repeated LVMPool lvm_pools = 3;
 }
 
 message FinishMigrationSourceResponse {
   bool success = 1;
   ErrorResponse error = 2;
   repeated string removed = 3;
+}
+
+// ============================================================================
+// Disk operations
+// ============================================================================
+
+message ResizeVMDiskRequest {
+  string vm_id = 1;
+  // target is the disk's target: vda for the primary disk, vdb... for others.
+  string target = 2;
+  int64 size_gb = 3;
+  // lvm_pools are the registered LVM pools; a logical volume is grown only in one.
+  repeated LVMPool lvm_pools = 4;
+}
+
+message ResizeVMDiskResponse {
+  bool success = 1;
+  ErrorResponse error = 2;
+  // live is true when the running VM was given the new size at once.
+  bool live = 3;
+  int64 size_bytes = 4;
+}
+
+message MoveVMDiskRequest {
+  string vm_id = 1;
+  // move_id names this move for GetMigrationProgress and AbortMigration.
+  string move_id = 2;
+  string target = 3;
+  // dest_pool_type and dest_pool_path name the pool the disk goes to, as
+  // pool_type and pool_path do on VMCommandRequest.
+  string dest_pool_type = 4;
+  string dest_pool_path = 5;
+  // lvm_pools are the registered LVM pools: the old disk is removed only from
+  // one, and only when MaburVM created it.
+  repeated LVMPool lvm_pools = 6;
+}
+
+message MoveVMDiskResponse {
+  bool success = 1;
+  ErrorResponse error = 2;
+  // live is true for a block copy of a running VM.
+  bool live = 3;
+  // dest_path is where the disk will be.
+  string dest_path = 4;
+}
+
+message ListOrphanDisksRequest {
+  // dir_pools are the directory pools to look in (their own files only).
+  repeated string dir_pools = 1;
+  repeated LVMPool lvm_pools = 2;
+}
+
+// OrphanDisk is a disk file or logical volume no domain uses.
+message OrphanDisk {
+  string path = 1;
+  // kind is "file" or "lv".
+  string kind = 2;
+  int64 size_bytes = 3;
+  // modified_unix is a file's modification time; 0 for a volume.
+  int64 modified_unix = 4;
+  // reason says what it looks like: a VM disk, a backup left mid-way...
+  string reason = 5;
+  // vm_id is the VM its name says it belonged to, when it names one.
+  string vm_id = 6;
+  // maburvm is true for a name MaburVM gives, or a volume it tagged.
+  bool maburvm = 7;
+  // pool is the pool directory, or vg[/thin pool], it is in.
+  string pool = 8;
+}
+
+message ListOrphanDisksResponse {
+  bool success = 1;
+  ErrorResponse error = 2;
+  repeated OrphanDisk disks = 3;
+}
+
+message DeleteOrphanDiskRequest {
+  string path = 1;
+  // size_bytes and modified_unix are what the listing showed; something that
+  // changed since is kept.
+  int64 size_bytes = 2;
+  int64 modified_unix = 3;
+  repeated string dir_pools = 4;
+  repeated LVMPool lvm_pools = 5;
+  // allow_foreign also removes a volume or file MaburVM did not make; the
+  // operator confirmed it.
+  bool allow_foreign = 6;
+}
+
+message DeleteOrphanDiskResponse {
+  bool success = 1;
+  ErrorResponse error = 2;
+}
+
+// ImageChunk is part of a PutImage upload. The first names the file (name,
+// sha256 and size_bytes); every chunk may carry data.
+message ImageChunk {
+  string name = 1;
+  string sha256 = 2;
+  int64 size_bytes = 3;
+  bytes data = 4;
+}
+
+message PutImageResponse {
+  bool success = 1;
+  ErrorResponse error = 2;
+  // local_path is where the file is kept on this node.
+  string local_path = 3;
 }

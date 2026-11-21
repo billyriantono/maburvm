@@ -35,6 +35,8 @@ import {
 import { can, useCurrentUser } from "@/lib/hooks/use-auth"
 import { useAssignStaffRole, useImpersonate, useStaffRoles } from "@/lib/hooks/use-staff"
 import { AccountSessions } from "@/components/account-sessions"
+import { StaffNotes } from "@/components/vm-protection"
+import { UserTeamCard } from "@/components/user-team-card"
 import { useVMs } from "@/lib/hooks/use-vms"
 import { useCopy } from "@/lib/use-feedback"
 import { isSignInLocked, type VM } from "@/types"
@@ -661,6 +663,16 @@ export default function UserDetailPage() {
       {(user.role !== "admin" || isMe || me?.staff_role === "owner") && (
         <AccountSessions userId={userId} canRevoke={mayRecoverThis} />
       )}
+
+      {user.role === "client" && (
+        <div className="mt-6">
+          <UserTeamCard userId={userId} canUpdate={can(me, "user:update")} />
+        </div>
+      )}
+
+      <div className="mt-6">
+        <StaffNotes subject="users" id={userId} canWrite={can(me, "user:update")} />
+      </div>
     </div>
   )
 }

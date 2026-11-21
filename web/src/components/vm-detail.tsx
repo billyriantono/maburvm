@@ -1,6 +1,6 @@
 "use client"
 
-import { useCan } from "@/lib/hooks/use-auth"
+import { useCan, useCurrentUser } from "@/lib/hooks/use-auth"
 import { useState, useCallback, useEffect } from "react"
 import { useParams, useRouter } from "next/navigation"
 import Link from "next/link"
@@ -26,14 +26,18 @@ import { useSSHKeys } from "@/lib/hooks/use-ssh-keys"
 import { useNodes } from "@/lib/hooks/use-nodes"
 import { useSnapshots, useCreateSnapshot, useRestoreSnapshot, useDeleteSnapshot } from "@/lib/hooks/use-snapshots"
 import { useCreateImage } from "@/lib/hooks/use-images"
-import { useBackups, useCreateBackup, useDeleteBackup, useRestoreBackup, useRestoreBackupAsNew, useBackupSchedules, useCreateBackupSchedule, useDeleteBackupSchedule } from "@/lib/hooks/use-backups"
+import { BACKUP_PAGE, useBackupPage, useCreateBackup, useDeleteBackup, useRestoreBackup, useRestoreBackupAsNew, useBackupSchedules, useCreateBackupSchedule, useDeleteBackupSchedule } from "@/lib/hooks/use-backups"
 import { useFirewallRules, useDeleteFirewallRule, useCreateFirewallRule, useVMNetworks, useSetVMBandwidth, useSetVMRDNS, usePortForwards, useCreatePortForward, useDeletePortForward, useSetAntiSpoofing, useFirewallStatus, useSetFirewallDefault, useSetSMTPBlocked, useDismissGuestNetworkNote } from "@/lib/hooks/use-networks"
 import type { Network as NetworkIface, VM } from "@/types"
 import { templateOfferedOn } from "@/types/template"
 import { usePlans } from "@/lib/hooks/use-plans"
 import { useTemplates } from "@/lib/hooks/use-templates"
+import { usePortal } from "@/lib/hooks/use-portal"
+import { AddressRequestsCard, VMProjectCard } from "@/components/vm-customer-extras"
+import { useMemberships } from "@/lib/hooks/use-team"
+import { ListPager } from "@/components/list-pager"
 import { useVMBandwidth, useVMBandwidthHistory, useSetBandwidthQuota } from "@/lib/hooks/use-bandwidth"
-import { useVMDisks, useAttachDisk, useDetachDisk } from "@/lib/hooks/use-disks"
+import { VMDisksCard } from "@/components/vm-disks"
 import { useVMActivity } from "@/lib/hooks/use-audit-logs"
 import { VNCConsole } from "@/components/vnc-console"
 import { VMTelemetry } from "@/components/vm-telemetry"
@@ -49,6 +53,7 @@ import { VMNodeRow } from "@/components/vm-migrate"
 import { VMFirewallGroups } from "@/components/vm-firewall-groups"
 import { VMNATCard } from "@/components/vm-nat"
 import { useVMFirewallGroups } from "@/lib/hooks/use-firewall-groups"
+import { StaffNotes, VMLabelsAndLock } from "@/components/vm-protection"
 import { toast } from "sonner"
 
 // --- Utility Components ---
@@ -834,105 +839,6 @@ function SectionEmpty({ icon: Icon, message }: { icon: React.ElementType; messag
   )
 }
 
-function DisksCard({ vmId }: { vmId: string }) {
-  const confirm = useConfirm()
-  const { data: disks, isLoading, error, refetch } = useVMDisks(vmId)
-  const attach = useAttachDisk(vmId)
-  const detach = useDetachDisk(vmId)
-  const [adding, setAdding] = useState(false)
-  const [sizeGB, setSizeGB] = useState("10")
-  const [err, setErr] = useState("")
-
-  const handleAttach = async () => {
-    const gb = parseInt(sizeGB, 10)
-    if (Number.isNaN(gb) || gb <= 0) { setErr("Enter a size in GB"); return }
-    setErr("")
-    try {
-      await attach.mutateAsync(gb)
-      setAdding(false)
-      setSizeGB("10")
-    } catch (e) {
-      setErr((e as Error).message)
-    }
-  }
-
-  // A detached disk is not kept anywhere it could be reattached from, so
-  // detaching is deleting, and the dialog says so.
-  const handleDetach = async (device: string) => {
-    await confirm({
-      title: `Detach and delete ${device}?`,
-      description:
-        "The disk is removed from this VM and deleted, with everything on it. This cannot be undone. Copy anything you need off it first.",
-      confirmLabel: "Detach and delete",
-      destructive: true,
-      action: () => detach.mutateAsync({ device, deleteVolume: true }),
-    })
-  }
-
-  return (
-    <div className="bg-card text-card-foreground border rounded-lg p-6">
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
-        <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
-          Data Disks
-        </h2>
-        <Button size="sm" variant="outline" onClick={() => setAdding((v) => !v)}><Plus className="w-4 h-4" />Add Disk</Button>
-      </div>
-
-      {adding && (
-        <div className="flex flex-wrap items-end gap-2 mb-4 p-3 border rounded-md bg-muted">
-          <div>
-            <label htmlFor="disk-size" className="text-xs font-medium text-muted-foreground block mb-1">Size (GB)</label>
-            <Input id="disk-size" type="number" min={1} value={sizeGB} onChange={(e) => setSizeGB(e.target.value)} className="border w-32 font-mono" />
-          </div>
-          <Button size="sm" onClick={handleAttach} disabled={attach.isPending}>
-            {attach.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}Attach
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => { setAdding(false); setErr("") }}>Cancel</Button>
-        </div>
-      )}
-      {err && <p className="text-xs text-destructive font-medium mb-3">{err}</p>}
-
-      {isLoading ? (
-        <SectionSkeleton />
-      ) : error ? (
-        <SectionError message={(error as Error).message} onRetry={() => refetch()} />
-      ) : !disks?.length ? (
-        <div className="border border-dashed border-gray-300 p-6 text-center text-sm font-medium text-muted-foreground">
-          No extra data disks. The boot disk isn&apos;t listed here.
-        </div>
-      ) : (
-        <div className="border overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-muted text-muted-foreground border-b font-medium text-xs">
-                <th className="text-left p-3">Device</th>
-                <th className="text-left p-3">Size</th>
-                <th className="text-left p-3">Path</th>
-                <th className="text-right p-3">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {disks.map((d, i) => (
-                <tr key={d.id} className={`border-t ${i % 2 ? "bg-muted/50" : "bg-card"}`}>
-                  <td className="p-3 font-mono font-medium">{d.device}</td>
-                  <td className="p-3 font-mono">{d.size_gb} GB</td>
-                  <td className="p-3 font-mono text-xs truncate max-w-[280px]" title={d.path}>{d.path}</td>
-                  <td className="p-3 text-right">
-                    <Button size="sm" variant="destructive" onClick={() => handleDetach(d.device)} disabled={detach.isPending && detach.variables?.device === d.device}>
-                      {detach.isPending && detach.variables?.device === d.device ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" /> : <Trash2 className="w-4 h-4" />}Detach
-                    </Button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      <p className="text-xs text-muted-foreground mt-3">Disks hot-plug on running VMs; format &amp; mount inside the guest after attaching.</p>
-    </div>
-  )
-}
-
 function BandwidthUsageCard({ vmId, canEditQuota }: { vmId: string; canEditQuota: boolean }) {
   const { data: bandwidth, isLoading, error, refetch } = useVMBandwidth(vmId)
   const setQuota = useSetBandwidthQuota(vmId)
@@ -1247,6 +1153,8 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const isAdmin = mode === "admin"
   // What the signed-in role may do to this VM; the panel checks each request too.
   const allow = useCan()
+  const { data: me } = useCurrentUser()
+  const { data: teams } = useMemberships()
   const basePath = isAdmin ? "/vms" : "/client/vms"
   const backLabel = isAdmin ? "Back to VMs" : "Back to my VMs"
   const rebuildWord = isAdmin ? "Rebuild" : "Reinstall"
@@ -1283,6 +1191,8 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const [imageName, setImageName] = useState("")
   const [createImageOpen, setCreateImageOpen] = useState(false)
   const [isoDialogOpen, setIsoDialogOpen] = useState(false)
+  const [isoSlot, setIsoSlot] = useState(1)
+  const [isoTemplate, setIsoTemplate] = useState("")
   const [selectedISOUrl, setSelectedISOUrl] = useState("")
   const [manualISOUrl, setManualISOUrl] = useState("")
   // Resize (admin-only, VM must be stopped). Kept as strings so the inputs can
@@ -1348,7 +1258,9 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const createSnapshot = useCreateSnapshot(vmId)
   const restoreSnapshot = useRestoreSnapshot(vmId)
   const deleteSnapshot = useDeleteSnapshot(vmId)
-  const { data: backups, isLoading: backupsLoading, error: backupsError, refetch: refetchBackups } = useBackups(vmId)
+  const [backupPage, setBackupPage] = useState(1)
+  const { data: backupList, isLoading: backupsLoading, error: backupsError, refetch: refetchBackups } = useBackupPage(vmId, backupPage)
+  const backups = backupList?.items
   const createBackup = useCreateBackup(vmId)
   const deleteBackupMutation = useDeleteBackup(vmId)
   const restoreBackup = useRestoreBackup(vmId)
@@ -1384,7 +1296,14 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const activeNodes = (allNodes ?? []).filter((n) => n.status === "active")
   const cloneTarget = cloneNodeId || vm?.node_id || ""
   const cloneTargetValid = activeNodes.some((n) => n.id === cloneTarget)
-  const { data: isoTemplates } = useTemplates({ type: "iso" }, isAdmin)
+  // The install and recovery ISOs staff publish, offered to everyone.
+  const { data: portal } = usePortal()
+  const isoChoices = portal?.isos ?? []
+  // ISOs from the ISOs page: all of them for staff, those offered on the
+  // VM's plan for its owner.
+  const { data: isoTemplateList } = useTemplates({ type: "iso" })
+  const isoTemplates = (isoTemplateList ?? []).filter((t) => t.is_active && (isAdmin || (!!vm && templateOfferedOn(t, vm.plan_id))))
+  const isoURLAllowed = isAdmin || portal?.iso_url_allowed !== false
   const { data: vmNetworks } = useVMNetworks(vmId)
   const { data: ipPools } = useIPPools(isAdmin)
   const assignIP = useAssignVMIP(vmId)
@@ -1433,28 +1352,36 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   }, [deleteVM, vmId, vm?.hostname, deleteImportedVolumes])
 
   const handleAttachISO = useCallback(async () => {
-    const url = (manualISOUrl.trim() || selectedISOUrl).trim()
-    if (!url) {
+    const url = manualISOUrl.trim()
+    if (!url && !selectedISOUrl && !isoTemplate) {
       toast.error("Pick an ISO or enter a URL")
       return
     }
+    const slot = isoSlot === 2 ? 2 : undefined
+    const body = url ? { iso_url: url, slot }
+      : isoTemplate === "drivers" ? { drivers: true, slot: isoSlot }
+      : isoTemplate ? { template_id: isoTemplate, slot }
+      : { iso_id: selectedISOUrl, slot }
     try {
-      await attachISO.mutateAsync(url)
-      toast.success("ISO attach queued. The VM will boot from it on next start")
+      await attachISO.mutateAsync(body)
+      toast.success(vm?.status === "running"
+        ? "ISO attach queued. The running VM gets the disc in a moment"
+        : isoSlot === 2 ? "ISO attach queued in drive 2" : "ISO attach queued. The VM will boot from it on next start")
       // ponytail: the job has no completion event, so re-read after a pause.
       setTimeout(() => refetchVM(), 4000)
       setIsoDialogOpen(false)
       setSelectedISOUrl("")
       setManualISOUrl("")
+      setIsoTemplate("")
     } catch (err) {
       toast.error(`Failed to attach ISO: ${(err as Error).message}`)
     }
-  }, [attachISO, manualISOUrl, selectedISOUrl, refetchVM])
+  }, [attachISO, manualISOUrl, selectedISOUrl, isoTemplate, isoSlot, vm?.status, refetchVM])
 
-  const handleDetachISO = useCallback(async () => {
+  const handleDetachISO = useCallback(async (slot?: number) => {
     try {
-      await detachISO.mutateAsync()
-      toast.success("ISO detach queued. Boot order restored to disk")
+      await detachISO.mutateAsync(slot)
+      toast.success(slot === 2 ? "Drive 2 will be emptied" : "ISO detach queued. Boot order restored to disk")
       setTimeout(() => refetchVM(), 4000)
     } catch (err) {
       toast.error(`Failed to detach ISO: ${(err as Error).message}`)
@@ -1522,9 +1449,12 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
       toast.error(`Disk can only be grown (currently ${vm.resources.disk} GB)`)
       return
     }
+    const diskOnly = !!vm && cpu === vm.resources.cpu && ram === vm.resources.ram && disk > vm.resources.disk
     try {
       await updateVM.mutateAsync({ resources: { cpu, ram, disk } })
-      toast.success("Resize queued, applied on next boot")
+      toast.success(diskOnly && vm?.status === "running"
+        ? "The disk is bigger now. Grow the partition and filesystem inside the VM to use it"
+        : "Resize queued, applied on next boot")
       setResizeOpen(false)
       refetchVM()
     } catch (err) {
@@ -1729,7 +1659,10 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const ramGB = Math.round(vm.resources.ram / 1024 * 10) / 10
   // A suspended VM is frozen for customers until support restores it.
   const suspended = vm.suspended || vm.status === "suspended"
-  const locked = !isAdmin && suspended
+  // A team member whose role only views sees everything and changes nothing.
+  const teamRole = !isAdmin && me && vm.user_id !== me.id ? teams?.memberships.find((m) => m.account_id === vm.user_id) : undefined
+  const viewOnly = !!teamRole && !teamRole.can.includes("operate")
+  const locked = !isAdmin && (suspended || viewOnly)
   // The node is offline: power actions would only fail, and the state is a guess.
   const stateUnknown = !!vm.state_unknown
   const powerBusy = locked || stateUnknown || actionLoading !== null || !!transitionOf(vm.id) || !allow("vm:power")
@@ -1756,11 +1689,17 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
         </Link>
       </nav>
 
-      {locked && (
+      {locked && suspended && (
         <div role="status" className="mb-6 flex items-center gap-3 rounded-lg border border-warning/50 bg-warning/10 p-4 text-sm font-medium text-foreground">
           <AlertCircle className="w-5 h-5 shrink-0" aria-hidden="true" />
           This VM is suspended. Contact support to restore service.
         </div>
+      )}
+      {teamRole && (
+        <p role="status" className="mb-6 rounded-lg border p-4 text-sm text-muted-foreground">
+          This server is in {teamRole.account_name || teamRole.account_email}&apos;s account.
+          {viewOnly ? " Your role there lets you see it, not change it." : ""}
+        </p>
       )}
 
       {stateUnknown && (
@@ -2053,33 +1992,68 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                 <DialogHeader>
                   <DialogTitle className="text-lg font-semibold">Mount ISO</DialogTitle>
                   <DialogDescription className="text-sm text-muted-foreground">
-                    Attach a bootable ISO for OS install or rescue. The VM boots from it on next start; detach to return to disk boot.
+                    Attach an ISO for an OS install, rescue or drivers. Drive 1 boots first on the next start; detach to return to disk boot. A running VM takes a disc at once in a drive it already has.
                   </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-4 py-4">
-                  {isoTemplates && isoTemplates.length > 0 && (
+                  <div>
+                    <label htmlFor="iso-slot" className="text-xs font-medium text-muted-foreground mb-2 block">CD drive</label>
+                    <select id="iso-slot" value={isoSlot} onChange={(e) => setIsoSlot(Number(e.target.value))}
+                      className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
+                      <option value={1}>Drive 1: install, boots first</option>
+                      <option value={2}>Drive 2: drivers or extra files</option>
+                    </select>
+                  </div>
+                  {isoTemplates.length > 0 && (
                     <div>
-                      <span className="text-xs font-medium text-muted-foreground mb-2 block">Select an ISO</span>
+                      <span className="text-xs font-medium text-muted-foreground mb-2 block">ISOs on this platform</span>
                       <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto">
-                        {isoTemplates.map((iso) => (
-                          <button key={iso.id} type="button"
-                            onClick={() => { setSelectedISOUrl(iso.image_path); setManualISOUrl("") }}
-                            className={`p-3 border text-left transition-all ${selectedISOUrl === iso.image_path && !manualISOUrl ? "border-primary ring-1 ring-primary bg-primary/5" : "bg-card hover:bg-muted/50"}`}>
-                            <span className="text-xs font-medium block truncate">{iso.name}</span>
-                            <span className="text-[10px] text-muted-foreground truncate block">{iso.image_path}</span>
+                        {isAdmin && (
+                          <button type="button" aria-pressed={isoTemplate === "drivers" && !manualISOUrl}
+                            onClick={() => { setIsoTemplate("drivers"); setSelectedISOUrl(""); setManualISOUrl(""); setIsoSlot(2) }}
+                            className={`p-3 border rounded-md text-left transition-all ${isoTemplate === "drivers" && !manualISOUrl ? "border-primary ring-1 ring-primary bg-primary/5" : "bg-card hover:bg-muted/50"}`}>
+                            <span className="text-xs font-medium block truncate">Windows drivers disc</span>
+                            <span className="text-[11px] text-muted-foreground block">The one chosen on the ISOs page</span>
+                          </button>
+                        )}
+                        {isoTemplates.map((t) => (
+                          <button key={t.id} type="button" aria-pressed={isoTemplate === t.id && !manualISOUrl}
+                            onClick={() => { setIsoTemplate(t.id); setSelectedISOUrl(""); setManualISOUrl("") }}
+                            className={`p-3 border rounded-md text-left transition-all ${isoTemplate === t.id && !manualISOUrl ? "border-primary ring-1 ring-primary bg-primary/5" : "bg-card hover:bg-muted/50"}`}>
+                            <span className="text-xs font-medium block truncate">{t.name}</span>
+                            {t.description && <span className="text-[11px] text-muted-foreground block truncate">{t.description}</span>}
                           </button>
                         ))}
                       </div>
                     </div>
                   )}
-                  <div>
-                    <label htmlFor="iso-url" className="text-xs font-medium text-muted-foreground mb-2 block">{isAdmin ? "Or enter an ISO URL" : "ISO URL"}</label>
-                    <Input id="iso-url" value={manualISOUrl} onChange={(e) => setManualISOUrl(e.target.value)} placeholder="https://example.com/installer.iso" className="border" />
-                  </div>
+                  {isoChoices.length > 0 ? (
+                    <div>
+                      <span className="text-xs font-medium text-muted-foreground mb-2 block">Choose an ISO</span>
+                      <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto">
+                        {isoChoices.map((iso) => (
+                          <button key={iso.id} type="button" aria-pressed={selectedISOUrl === iso.id && !manualISOUrl}
+                            onClick={() => { setSelectedISOUrl(iso.id); setManualISOUrl(""); setIsoTemplate("") }}
+                            className={`p-3 border rounded-md text-left transition-all ${selectedISOUrl === iso.id && !manualISOUrl ? "border-primary ring-1 ring-primary bg-primary/5" : "bg-card hover:bg-muted/50"}`}>
+                            <span className="text-xs font-medium block truncate">{iso.name}</span>
+                            {iso.description && <span className="text-[11px] text-muted-foreground block">{iso.description}</span>}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : !isoURLAllowed ? (
+                    <p className="text-sm text-muted-foreground">No ISO is offered yet. Contact support for an install image.</p>
+                  ) : null}
+                  {isoURLAllowed && (
+                    <div>
+                      <label htmlFor="iso-url" className="text-xs font-medium text-muted-foreground mb-2 block">{isoChoices.length ? "Or enter an ISO URL" : "ISO URL"}</label>
+                      <Input id="iso-url" value={manualISOUrl} onChange={(e) => setManualISOUrl(e.target.value)} placeholder="https://example.com/installer.iso" className="border" />
+                    </div>
+                  )}
                 </div>
                 <DialogFooter>
                   <Button variant="ghost" onClick={() => setIsoDialogOpen(false)}>Cancel</Button>
-                  <Button onClick={handleAttachISO} disabled={attachISO.isPending || (!selectedISOUrl && !manualISOUrl.trim())}>
+                  <Button onClick={handleAttachISO} disabled={attachISO.isPending || (!selectedISOUrl && !isoTemplate && !manualISOUrl.trim())}>
                     {attachISO.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Disc className="w-4 h-4" />}
                     Mount ISO
                   </Button>
@@ -2130,7 +2104,11 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                   {vm.status !== "stopped" && (
                     <div className="flex items-center gap-2 p-3 bg-muted border">
                       <AlertCircle className="w-4 h-4 shrink-0" />
-                      <p className="text-xs font-medium">VM must be stopped before it can be resized.</p>
+                      <p className="text-xs font-medium">
+                        {vm.status === "running"
+                          ? "While the VM runs only the disk can grow, at once. Stop it to change vCPU or RAM."
+                          : "VM must be stopped before it can be resized."}
+                      </p>
                     </div>
                   )}
                   <div className="flex items-center gap-2 p-3 bg-muted border">
@@ -2143,7 +2121,8 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                 </div>
                 <DialogFooter>
                   <Button variant="ghost" onClick={() => setResizeOpen(false)}>Cancel</Button>
-                  <Button onClick={handleResize} disabled={updateVM.isPending || vm.status !== "stopped"}>
+                  <Button onClick={handleResize} disabled={updateVM.isPending || !(vm.status === "stopped" ||
+                    (vm.status === "running" && Number(resizeCpu) === vm.resources.cpu && Number(resizeRam) === vm.resources.ram && Number(resizeDisk) > vm.resources.disk))}>
                     {updateVM.isPending ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Resizing…</> : <><Cpu className="w-4 h-4 mr-2" />Resize</>}
                   </Button>
                 </DialogFooter>
@@ -2571,17 +2550,20 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                   ) : (
                     "Attach an install or recovery ISO. The VM boots from it on the next start."
                   )}
-                  {vm.status === "running" && " Stop the VM to mount an ISO."}
+                  {vm.attached_iso_2 ? <> Drive 2: <span className="font-medium text-foreground break-all">{isoLabel(vm.attached_iso_2)}</span>.</> : null}
                 </>
               }
             >
-              <Button variant="outline" size="sm" onClick={() => setIsoDialogOpen(true)} disabled={locked || vm.status === "running"}>
+              <Button variant="outline" size="sm" onClick={() => setIsoDialogOpen(true)} disabled={locked}>
                 <Disc className="w-4 h-4" />Mount ISO
               </Button>
-              <Button variant="outline" size="sm" onClick={handleDetachISO} disabled={locked || detachISO.isPending || vm.attached_iso === ""}>
+              <Button variant="outline" size="sm" onClick={() => handleDetachISO()} disabled={locked || detachISO.isPending || vm.attached_iso === ""}>
                 {detachISO.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <CircleSlash className="w-4 h-4" />}
                 Unmount
               </Button>
+              {vm.attached_iso_2 ? (
+                <Button variant="outline" size="sm" onClick={() => handleDetachISO(2)} disabled={locked || detachISO.isPending}>Empty drive 2</Button>
+              ) : null}
             </ActionRow>
             <ActionRow
               title="Rescue mode"
@@ -2762,8 +2744,10 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
             </div>
             )}
 
-            {/* Data disks: admin only until billing for extra disks is decided. */}
-            {isAdmin && <DisksCard vmId={vmId} />}
+            {!isAdmin && <AddressRequestsCard vmId={vmId} hasIPv6={!!vm.ipv6_address} disabled={locked || !allow("vm:update")} />}
+
+            {/* Disks: admin only until billing for extra disks is decided. */}
+            {isAdmin && <VMDisksCard vmId={vmId} nodeId={vm.node_id} systemDiskGB={vm.resources.disk} running={vm.status === "running"} canMove={allow("vm:migrate")} />}
 
             <VMNATCard vmId={vmId} />
 
@@ -2962,6 +2946,9 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                     </div>
                   </div>
                 ))}
+                <div className="mt-3">
+                  <ListPager page={backupPage} pageSize={BACKUP_PAGE} total={backupList?.total ?? 0} onPage={setBackupPage} noun="backups" />
+                </div>
               </div>
             )}
           </div>
@@ -3238,12 +3225,19 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
           )}
           {isAdmin && billingLinkOpen && <BillingLinkDialog vm={vm} onClose={() => setBillingLinkOpen(false)} />}
 
+          {!isAdmin && <VMProjectCard vm={vm} disabled={locked} />}
+          <VMLabelsAndLock vm={vm} isAdmin={isAdmin} disabled={locked || !allow("vm:update")} />
+          {isAdmin && <StaffNotes subject="vms" id={vm.id} canWrite={allow("vm:update")} />}
+
           <section className="bg-card text-card-foreground border border-destructive/40 rounded-lg divide-y divide-destructive/20">
             <h2 className="px-6 py-4 text-base font-semibold text-destructive flex items-center gap-2">
               Danger zone
             </h2>
+            {vm.delete_lock && (
+              <p className="px-6 py-3 text-sm text-muted-foreground">Locked against deletion and reinstall. Unlock it above first.</p>
+            )}
             <ActionRow title={rebuildWord} description="Reinstall the operating system. Everything on the disk is erased; the VM keeps its addresses.">
-              <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => setRebuildDialogOpen(true)} disabled={locked || !allow("vm:lifecycle")}>
+              <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => setRebuildDialogOpen(true)} disabled={locked || !!vm.delete_lock || !allow("vm:lifecycle")}>
                 <RefreshCw className="w-4 h-4" />{rebuildWord}
               </Button>
             </ActionRow>
@@ -3251,7 +3245,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
               <ActionRow title="Delete" description="This server is managed by your billing account. Cancel the service there to remove it." />
             ) : (
             <ActionRow title="Delete" description="Remove this VM and its disks for good and release its addresses.">
-              <Button variant="destructive" size="sm" onClick={() => setDeleteDialogOpen(true)} disabled={!allow("vm:delete")}>
+              <Button variant="destructive" size="sm" onClick={() => setDeleteDialogOpen(true)} disabled={!!vm.delete_lock || !allow("vm:delete")}>
                 <Trash2 className="w-4 h-4" />Delete
               </Button>
             </ActionRow>

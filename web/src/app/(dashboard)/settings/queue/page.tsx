@@ -1,12 +1,14 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import Link from "next/link"
 import { Loader2 } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { useConfirm } from "@/components/confirm-provider"
-import { type QueueJob, useQueue, useQueueJobAction, useSaveQueueWorkers } from "@/lib/hooks/use-ops"
+import { type QueueJob, useQueue, useQueueJob, useQueueJobAction, useSaveQueueWorkers } from "@/lib/hooks/use-ops"
 
 const FILTERS = [
   { id: "", label: "All" },
@@ -33,6 +35,52 @@ const QUEUES = [
 const KIND: Record<string, string> = {
   vm_operation: "VM action", template_sync: "Template sync", backup: "Backup", restore: "Restore",
   image: "Image", snapshot: "Snapshot", import: "Import", network_config: "Network change", audit: "Audit entry",
+  email_delivery: "Email", webhook_delivery: "Billing event", migration: "VM move", drain: "Node drain",
+}
+
+const PAGE = 50
+
+// One job in full: what it was asked to do (credentials hidden) and every try that failed.
+function JobDetail({ id, onClose }: { id: number | null; onClose: () => void }) {
+  const { data, isLoading, error } = useQueueJob(id)
+  return (
+    <Dialog open={id !== null} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Job {id}{data ? `: ${KIND[data.kind] ?? data.kind}` : ""}</DialogTitle>
+          <DialogDescription>{data ? `${STATE[data.state] ?? data.state}, try ${data.attempt} of ${data.max_attempts}, queued ${when(data.created_at)}` : "Loading"}</DialogDescription>
+        </DialogHeader>
+        {isLoading ? (
+          <p className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />Reading the job</p>
+        ) : error ? (
+          <p className="text-sm" role="alert">{(error as Error).message}</p>
+        ) : data && (
+          <div className="space-y-4 text-sm">
+            <div>
+              <h3 className="mb-1 font-medium">What it was asked to do</h3>
+              <p className="mb-1 text-xs text-muted-foreground">Passwords, keys and scripts show as [REDACTED].</p>
+              <pre className="max-h-64 overflow-auto rounded-md border bg-background p-3 font-mono text-xs">{JSON.stringify(data.args, null, 2)}</pre>
+            </div>
+            <div>
+              <h3 className="mb-1 font-medium">Failed tries</h3>
+              {data.errors.length === 0 ? (
+                <p className="text-muted-foreground">None.</p>
+              ) : (
+                <ol className="max-h-56 space-y-2 overflow-y-auto">
+                  {data.errors.map((e, i) => (
+                    <li key={i} className="rounded-md border p-2">
+                      <p className="text-xs text-muted-foreground">Try {e.attempt}, {when(e.at)}</p>
+                      <p className="break-words text-destructive">{e.error}</p>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 function when(iso: string) {
@@ -42,7 +90,17 @@ function when(iso: string) {
 export default function QueuePage() {
   const confirm = useConfirm()
   const [filter, setFilter] = useState("")
-  const { data, isLoading, error, refetch } = useQueue(filter)
+  const [kind, setKind] = useState("")
+  const [typed, setTyped] = useState("")
+  const [q, setQ] = useState("")
+  const [page, setPage] = useState(1)
+  const [open, setOpen] = useState<number | null>(null)
+  useEffect(() => {
+    const t = setTimeout(() => { setQ(typed.trim()); setPage(1) }, 300)
+    return () => clearTimeout(t)
+  }, [typed])
+  const { data, isLoading, error, refetch } = useQueue({ state: filter, kind, q, page })
+  const pages = data ? Math.max(1, Math.ceil(data.total / PAGE)) : 1
   const act = useQueueJobAction()
   const saveWorkers = useSaveQueueWorkers()
   const [workers, setWorkers] = useState<Record<string, string>>({})
@@ -101,13 +159,31 @@ export default function QueuePage() {
           )}
         </div>
 
+        {data?.held && (
+          <p role="status" className="mb-3 flex items-center gap-2 rounded-md border border-warning/50 bg-warning/10 p-3 text-sm">
+            <span className="h-2 w-2 rounded-full bg-warning" aria-hidden="true" />
+            Maintenance mode is holding the queue: running jobs finish, others wait. <Link href="/settings/maintenance" className="font-medium underline underline-offset-4">Maintenance</Link>
+          </p>
+        )}
+
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <label htmlFor="queue-q" className="sr-only">Search jobs</label>
+          <Input id="queue-q" type="search" className="h-9 w-80" placeholder="Job number, VM or node id, operation, error" value={typed} onChange={(e) => setTyped(e.target.value)} />
+          <label htmlFor="queue-kind" className="sr-only">Kind</label>
+          <select id="queue-kind" value={kind} onChange={(e) => { setKind(e.target.value); setPage(1) }}
+            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            <option value="">Every kind</option>
+            {(data?.kinds ?? []).map((k) => <option key={k} value={k}>{KIND[k] ?? k}</option>)}
+          </select>
+        </div>
+
         <div role="group" aria-label="Show jobs that are" className="flex flex-wrap gap-1 mb-3">
           {FILTERS.map((f) => (
             <button
               key={f.id}
               type="button"
               aria-pressed={filter === f.id}
-              onClick={() => setFilter(f.id)}
+              onClick={() => { setFilter(f.id); setPage(1) }}
               className={`rounded-md px-3 py-1.5 text-sm font-medium cursor-pointer transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${filter === f.id ? "bg-foreground text-background" : "text-muted-foreground hover:bg-muted"}`}
             >
               {f.label}
@@ -125,7 +201,7 @@ export default function QueuePage() {
             </div>
           ) : !data?.jobs.length ? (
             <p className="p-5 text-sm text-muted-foreground">
-              {filter ? "No jobs in this state." : "No jobs yet. They appear here as soon as someone creates or changes a VM."}
+              {filter || kind || q ? "No job matches." : "No jobs yet. They appear here as soon as someone creates or changes a VM."}
             </p>
           ) : (
             <table className="w-full text-sm">
@@ -145,7 +221,9 @@ export default function QueuePage() {
                   const canCancel = ["available", "scheduled", "pending", "retryable", "running"].includes(job.state)
                   return (
                     <tr key={job.id} className="border-t align-top">
-                      <td className="p-3 font-mono tabular-nums">{job.id}</td>
+                      <td className="p-3 font-mono tabular-nums">
+                        <button type="button" className="underline underline-offset-2" onClick={() => setOpen(job.id)} aria-label={`Open job ${job.id}`}>{job.id}</button>
+                      </td>
                       <td className="p-3">
                         <p className="font-medium">{KIND[job.kind] ?? job.kind}</p>
                         {job.subject && <p className="text-xs text-muted-foreground font-mono break-all">{job.subject}</p>}
@@ -187,7 +265,16 @@ export default function QueuePage() {
             </table>
           )}
         </div>
-        {data && data.jobs.length === 100 && <p className="text-xs text-muted-foreground mt-2">Showing the newest 100. Use a filter to narrow it down.</p>}
+        {data && pages > 1 && (
+          <nav aria-label="Pages" className="mt-3 flex flex-wrap items-center justify-between gap-3 text-sm">
+            <p className="text-muted-foreground">Page {page} of {pages}, {data.total.toLocaleString()} jobs</p>
+            <div className="flex gap-2">
+              <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage(page - 1)}>Previous</Button>
+              <Button size="sm" variant="outline" disabled={page >= pages} onClick={() => setPage(page + 1)}>Next</Button>
+            </div>
+          </nav>
+        )}
+        <JobDetail id={open} onClose={() => setOpen(null)} />
       </section>
 
       <section aria-labelledby="workers-heading" className="max-w-3xl">

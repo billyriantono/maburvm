@@ -14,6 +14,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -85,7 +86,17 @@ const (
 	EventCatalogList WebhookEventType = "catalog.list"
 	// EventUserSSO returns a one-time sign-in link for a customer account.
 	EventUserSSO WebhookEventType = "user.sso"
+	// EventVMRebuild reinstalls a stopped VM, from the billing system's client area.
+	EventVMRebuild WebhookEventType = "vm.rebuild"
+	// EventVMMetrics returns recent CPU, memory, disk and network readings, for graphs.
+	EventVMMetrics WebhookEventType = "vm.metrics"
 )
+
+// readOnly reports an event that only reads: it is not audited row by row and
+// still answers in maintenance mode.
+func (e WebhookEventType) readOnly() bool {
+	return e == EventVMStatus || e == EventVMUsage || e == EventCatalogList || e == EventVMMetrics
+}
 
 // aboutUser reports an event that names an account, not a VM.
 func (e WebhookEventType) aboutUser() bool {
@@ -104,7 +115,7 @@ func (e WebhookEventType) IsValid() bool {
 		EventVMResize, EventVMResetPassword, EventVMUsage,
 		EventVMStart, EventVMStop, EventVMRestart,
 		EventUserSuspend, EventUserUnsuspend, EventUserEnsure,
-		EventVMStatus, EventCatalogList, EventUserSSO:
+		EventVMStatus, EventCatalogList, EventUserSSO, EventVMRebuild, EventVMMetrics:
 		return true
 	}
 	return false
@@ -167,6 +178,14 @@ type WebhookData struct {
 	// Region is where to place the VM, by slug or ID (vm.create). Without one
 	// the panel's default region is used, when one is set.
 	Region string `json:"region,omitempty"`
+	// Page names where a sign-in link lands besides the VM (user.sso):
+	// "console" opens the VM's console.
+	Page string `json:"page,omitempty"`
+	// RegeneratePassword asks vm.rebuild to make a root password and return
+	// it once, when no password is sent.
+	RegeneratePassword bool `json:"regenerate_password,omitempty"`
+	// Hours is how far back vm.metrics reads (1 to 168, default 24).
+	Hours int `json:"hours,omitempty"`
 	// BandwidthMbps and DataQuotaGB override the plan's speed cap and monthly
 	// transfer quota (vm.create; vm.resize together with plan_id). 0 keeps the plan's.
 	BandwidthMbps int   `json:"bandwidth_mbps,omitempty"`
@@ -191,6 +210,8 @@ type WebhookResponse struct {
 	Metadata    map[string]string `json:"metadata,omitempty"`
 	// Data carries a structured answer (catalog.list)
 	Data interface{} `json:"data,omitempty"`
+	// Code names a refusal the caller may act on ("maintenance").
+	Code string `json:"code,omitempty"`
 }
 
 // IdempotencyRecord stores the result of a processed webhook
@@ -588,6 +609,22 @@ func (h *BillingHandler) HandleWebhook(c echo.Context) error {
 		})
 	}
 
+	// A billing system with nowhere to keep the VM's ID names it by its own
+	// service reference instead; the VM must be that user's.
+	if payload.Event.IsValid() && payload.Event.aboutVM() && payload.Data.VMID == "" && payload.Data.ExternalRef != "" {
+		vmID, err := h.vmByServiceRef(c.Request().Context(), payload.Data.UserID, payload.Data.ExternalRef)
+		if err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, service.ErrVMNotFound) {
+				status = http.StatusNotFound
+			} else if errors.Is(err, errBillingRefAmbiguous) {
+				status = http.StatusConflict
+			}
+			return c.JSON(status, WebhookResponse{Success: false, Message: err.Error(), Timestamp: now, RequestID: requestID})
+		}
+		payload.Data.VMID = vmID
+	}
+
 	// Validate event type
 	if !payload.Event.IsValid() {
 		return c.JSON(http.StatusBadRequest, WebhookResponse{
@@ -638,8 +675,16 @@ func (h *BillingHandler) HandleWebhook(c echo.Context) error {
 	}
 
 	// Polls that only read would flood the audit log with a row each.
-	if payload.Event == EventVMStatus || payload.Event == EventVMUsage || payload.Event == EventCatalogList {
+	if payload.Event.readOnly() {
 		middleware.SkipAudit(c)
+	}
+	// In maintenance the billing system may still read; a change waits (503,
+	// which the billing module reports and its next run retries).
+	if !payload.Event.readOnly() && payload.Event != EventUserSSO {
+		if m := middleware.LoadMaintenance(h.db); m.Enabled {
+			c.Response().Header().Set("Retry-After", "300")
+			return c.JSON(http.StatusServiceUnavailable, WebhookResponse{Success: false, Code: "maintenance", Message: m.Notice(), Timestamp: now, RequestID: requestID})
+		}
 	}
 	switch payload.Event {
 	case EventVMCreate:
@@ -674,6 +719,10 @@ func (h *BillingHandler) HandleWebhook(c echo.Context) error {
 		response, err = h.handleCatalogList(ctx, requestID)
 	case EventUserSSO:
 		response, err = h.handleUserSSO(ctx, &payload.Data, requestID)
+	case EventVMRebuild:
+		response, err = h.handleVMRebuild(ctx, &payload.Data, requestID)
+	case EventVMMetrics:
+		response, err = h.handleVMMetrics(ctx, &payload.Data, requestID)
 	}
 
 	if err != nil {
@@ -716,16 +765,45 @@ func webhookErrorStatus(err error) int {
 		errors.Is(err, service.ErrRegionNotFound), errors.Is(err, service.ErrTemplateNotFound):
 		return http.StatusNotFound
 	case errors.Is(err, service.ErrPlanInactive), errors.Is(err, service.ErrNotACustomerAccount),
-		errors.Is(err, service.ErrBillingUserInvalid), errors.Is(err, service.ErrTemplateNotOffered):
+		errors.Is(err, service.ErrBillingUserInvalid), errors.Is(err, service.ErrTemplateNotOffered),
+		errors.Is(err, service.ErrRebuildNotPossible):
 		return http.StatusBadRequest
 	case errors.Is(err, service.ErrBillingStaffAccount), errors.Is(err, service.ErrRegionNoCapacity),
 		errors.Is(err, service.ErrNATPortsExhausted), errors.Is(err, service.ErrNoNATPool), errors.Is(err, service.ErrNoUsablePool),
-		errors.Is(err, service.ErrNoAvailableIPAddress), errors.Is(err, service.ErrVMMigrating):
+		errors.Is(err, service.ErrNoAvailableIPAddress), errors.Is(err, service.ErrVMMigrating), errors.Is(err, service.ErrVMDeleteLocked),
+		errors.Is(err, errBillingVMNotStopped):
 		return http.StatusConflict
 	case errors.Is(err, errBillingSSORefused):
 		return http.StatusForbidden
 	}
 	return http.StatusInternalServerError
+}
+
+// errBillingVMNotStopped refuses a reinstall of a VM that is not stopped.
+var errBillingVMNotStopped = errors.New("the VM must be stopped before it is reinstalled")
+
+// errBillingRefAmbiguous marks a service reference that names more than one VM.
+var errBillingRefAmbiguous = errors.New("more than one VM carries this external_ref; send vm_id")
+
+// vmByServiceRef finds the one live VM of userID provisioned for a billing
+// service reference. A user_id is required: a reference alone never picks a VM.
+func (h *BillingHandler) vmByServiceRef(ctx context.Context, userID, ref string) (string, error) {
+	userID = strings.TrimSpace(userID)
+	if h.db == nil || userID == "" {
+		return "", fmt.Errorf("%w: send vm_id, or user_id with external_ref", service.ErrVMNotFound)
+	}
+	var ids []string
+	if err := h.db.WithContext(ctx).Model(&models.VM{}).Where("billing_ref = ? AND user_id = ?", ref, userID).
+		Order("created_at DESC").Limit(2).Pluck("id", &ids).Error; err != nil {
+		return "", err
+	}
+	switch len(ids) {
+	case 0:
+		return "", fmt.Errorf("%w: no VM of this user carries external_ref %q", service.ErrVMNotFound, ref)
+	case 1:
+		return ids[0], nil
+	}
+	return "", errBillingRefAmbiguous
 }
 
 // errBillingOwnerMismatch marks an event whose VM belongs to someone else.
@@ -742,8 +820,8 @@ var errBillingServiceMismatch = errors.New("the VM belongs to a different billin
 func (h *BillingHandler) checkEventOwner(ctx context.Context, event WebhookEventType, data *WebhookData) error {
 	claimed := strings.TrimSpace(data.UserID)
 	if claimed == "" {
-		// The usage sync and a status read name no user and change nothing.
-		if event == EventVMUsage || event == EventVMStatus {
+		// The usage sync and the reads name no user and change nothing.
+		if event.readOnly() {
 			return nil
 		}
 		return fmt.Errorf("user_id is required for %s: set the panel user ID on this service", event)
@@ -853,6 +931,12 @@ func (h *BillingHandler) validatePayload(payload *WebhookPayload) error {
 		}
 		if payload.Event == EventVMResetPassword && len(payload.Data.Password) < 8 {
 			return errors.New("password of at least 8 characters is required for vm.reset_password")
+		}
+		if payload.Event == EventVMRebuild && payload.Data.Password != "" && len(payload.Data.Password) < 8 {
+			return errors.New("a vm.rebuild password must be at least 8 characters")
+		}
+		if payload.Data.Hours < 0 || payload.Data.Hours > 168 {
+			return errors.New("hours must be between 1 and 168")
 		}
 		if sp := payload.Data.VMSpecs; payload.Event == EventVMResize && payload.Data.PlanID == "" && (sp.CPU < 1 || sp.Memory < 128 || sp.Disk < 1) {
 			return errors.New("plan_id, or vm_specs.cpu, memory and disk, is required for vm.resize")
@@ -1028,7 +1112,7 @@ func (h *BillingHandler) handleVMDestroy(
 	)
 
 	// Delete the VM (this will enqueue a cleanup job)
-	err := h.vmService.DeleteVM(ctx, data.VMID)
+	err := h.vmService.DeleteVM(service.AsBillingSystem(ctx), data.VMID)
 	if err != nil {
 		return WebhookResponse{}, fmt.Errorf("failed to destroy VM: %w", err)
 	}
@@ -1204,31 +1288,102 @@ func (h *BillingHandler) handleVMPower(ctx context.Context, data *WebhookData, r
 	}, nil
 }
 
-// handleVMUsage reports the current period's traffic and the disk allowance,
-// in megabytes, which is the unit billing systems store.
-// ponytail: disk used is not reported; the panel does not measure it per VM.
+// handleVMUsage reports what a VM uses, for the billing system's usage sync:
+// traffic this period, disks, snapshots, backups, addresses and running
+// hours, in megabytes and whole hours (see service.VMUsageReport).
 func (h *BillingHandler) handleVMUsage(ctx context.Context, data *WebhookData, requestID string) (WebhookResponse, error) {
-	vm, err := h.vmService.GetVM(ctx, data.VMID, false)
+	vm, err := h.vmService.GetVMRecord(ctx, data.VMID)
 	if err != nil {
 		return WebhookResponse{}, err
 	}
-	const mb = 1 << 20
+	u := service.VMUsage(ctx, h.db, vm)
+	n := func(v int64) string { return strconv.FormatInt(v, 10) }
 	meta := map[string]string{
-		"bandwidth_used_mb":  "0",
-		"bandwidth_limit_mb": "0",
-		"disk_limit_mb":      fmt.Sprintf("%d", vm.VM.Resources.Disk*1024),
-	}
-	if h.db != nil {
-		var usage models.BandwidthUsage
-		if err := h.db.WithContext(ctx).Where("vm_id = ?", data.VMID).
-			Order("period_start DESC").First(&usage).Error; err == nil {
-			meta["bandwidth_used_mb"] = fmt.Sprintf("%d", usage.TotalBytes/mb)
-			meta["bandwidth_limit_mb"] = fmt.Sprintf("%d", usage.QuotaBytes/mb)
-		}
+		"bandwidth_used_mb":  n(u.BandwidthUsedMB),
+		"bandwidth_limit_mb": n(u.BandwidthLimitMB),
+		"disk_limit_mb":      n(u.DiskLimitMB),
+		"disk_allocated_mb":  n(u.DiskAllocatedMB),
+		"snapshot_count":     n(u.SnapshotCount),
+		"backup_count":       n(u.BackupCount),
+		"backup_size_mb":     n(u.BackupSizeMB),
+		"extra_ips":          n(u.ExtraIPs),
+		"floating_ips":       n(u.FloatingIPs),
+		"uptime_hours":       n(u.UptimeHours),
+		"uptime_since":       u.UptimeSince.Format(time.RFC3339),
 	}
 	return WebhookResponse{
 		Success: true, Message: "usage", VMID: data.VMID, ExternalRef: data.ExternalRef,
+		Timestamp: time.Now().UTC(), RequestID: requestID, Metadata: meta, Data: u,
+	}, nil
+}
+
+// handleVMRebuild reinstalls a stopped VM for its owner: the template must be
+// one the VM's plan offers, the addresses stay, and the root password is the
+// one sent, or one made and returned once with regenerate_password.
+func (h *BillingHandler) handleVMRebuild(ctx context.Context, data *WebhookData, requestID string) (WebhookResponse, error) {
+	vm, err := h.vmService.GetVMRecord(ctx, data.VMID)
+	if err != nil {
+		return WebhookResponse{}, err
+	}
+	if vm.Status != models.VMStatusStopped {
+		return WebhookResponse{}, fmt.Errorf("%w: it is %s; stop it first", errBillingVMNotStopped, vm.Status)
+	}
+	resp, err := h.vmService.RebuildVM(ctx, &service.RebuildVMRequest{
+		VMID: data.VMID, TemplateID: strings.TrimSpace(data.TemplateID), PreserveIP: true,
+		Password: data.Password, RegeneratePassword: data.RegeneratePassword && data.Password == "", ByCustomer: true,
+	})
+	if err != nil {
+		return WebhookResponse{}, err
+	}
+	meta := map[string]string{"job_id": strconv.FormatInt(resp.JobID, 10)}
+	if resp.RootPassword != "" {
+		meta["password"] = resp.RootPassword
+	}
+	return WebhookResponse{
+		Success: true, Message: "Reinstall queued", VMID: data.VMID, ExternalRef: data.ExternalRef,
 		Timestamp: time.Now().UTC(), RequestID: requestID, Metadata: meta,
+	}, nil
+}
+
+// vmMetricsPoints is how many points vm.metrics returns at most.
+const vmMetricsPoints = 48
+
+// handleVMMetrics returns the VM's readings over the last hours (24 unless
+// asked), averaged down to at most 48 points, for the client area's graphs.
+func (h *BillingHandler) handleVMMetrics(ctx context.Context, data *WebhookData, requestID string) (WebhookResponse, error) {
+	if _, err := h.vmService.GetVMRecord(ctx, data.VMID); err != nil {
+		return WebhookResponse{}, err
+	}
+	if h.db == nil {
+		return WebhookResponse{}, errors.New("readings are not available")
+	}
+	hours := data.Hours
+	if hours == 0 {
+		hours = 24
+	}
+	rows, err := service.NewMetricsService(h.db).VMHistory(ctx, data.VMID, time.Duration(hours)*time.Hour, vmMetricsPoints)
+	if err != nil {
+		return WebhookResponse{}, err
+	}
+	type point struct {
+		At         time.Time `json:"at"`
+		CPU        float64   `json:"cpu_percent"`
+		Memory     float64   `json:"memory_percent"`
+		DiskRead   int64     `json:"disk_read_bps"`
+		DiskWrite  int64     `json:"disk_write_bps"`
+		NetworkIn  int64     `json:"network_in_bps"`
+		NetworkOut int64     `json:"network_out_bps"`
+	}
+	points := make([]point, 0, len(rows))
+	for _, r := range rows {
+		points = append(points, point{At: r.RecordedAt.UTC(), CPU: r.CPUUsage, Memory: r.MemoryUsage,
+			DiskRead: r.DiskReadBytesPerSec, DiskWrite: r.DiskWriteBytesPerSec,
+			NetworkIn: r.NetworkRxBytesPerSec, NetworkOut: r.NetworkTxBytesPerSec})
+	}
+	return WebhookResponse{
+		Success: true, Message: "metrics", VMID: data.VMID, ExternalRef: data.ExternalRef,
+		Timestamp: time.Now().UTC(), RequestID: requestID,
+		Metadata: map[string]string{"hours": strconv.Itoa(hours)}, Data: map[string]any{"points": points},
 	}, nil
 }
 
@@ -1255,6 +1410,7 @@ func (h *BillingHandler) handleUserEnsure(c echo.Context, data *WebhookData, req
 		if err := h.db.WithContext(ctx).Create(entry).Error; err != nil {
 			h.logger.Error("audit: could not record an account created by billing", "user_id", userID, "error", err)
 		}
+		service.EmitUserEvent(ctx, h.db, service.EventUserCreated, userID, map[string]any{"source": "billing"})
 	}
 	return WebhookResponse{
 		Success: true, Message: message, ExternalRef: data.ExternalRef,
@@ -1417,7 +1573,7 @@ func (h *BillingHandler) GetWebhookDocumentation(c echo.Context) error {
 			},
 			{
 				Type:        string(EventVMDestroy),
-				Description: "Destroy a VM and cleanup resources. Like every event about an existing VM, refused when the VM does not belong to user_id",
+				Description: "Destroy a VM and cleanup resources. Like every event about an existing VM, refused when the VM does not belong to user_id, and the VM may be named by external_ref (with user_id) instead of vm_id",
 				Required:    []string{"vm_id", "user_id"},
 				Optional:    []string{"external_ref"},
 			},
@@ -1434,7 +1590,7 @@ func (h *BillingHandler) GetWebhookDocumentation(c echo.Context) error {
 			},
 			{
 				Type:        string(EventVMUsage),
-				Description: "Traffic used and allowed this period and the disk allowance, in MB, returned in metadata",
+				Description: "What the VM uses, in metadata as strings and in data as numbers: bandwidth_used_mb and bandwidth_limit_mb (this period), disk_limit_mb (primary disk) and disk_allocated_mb (with data disks), snapshot_count, backup_count and backup_size_mb (completed ones), extra_ips (addresses beyond the primary) and floating_ips, and uptime_hours (clock hours seen running since uptime_since: the period start, or 7 days back at most)",
 				Required:    []string{"vm_id"},
 			},
 			{
@@ -1465,10 +1621,22 @@ func (h *BillingHandler) GetWebhookDocumentation(c echo.Context) error {
 				Description: "The active templates (with licensed and plan_ids), plans and regions, in data",
 			},
 			{
+				Type:        string(EventVMRebuild),
+				Description: "Reinstall a stopped VM, keeping its addresses. template_id (default: the one installed) must be offered on the VM's plan. The root password is the one sent; with regenerate_password and no password, one is made and returned once in metadata.password. metadata.job_id follows the reinstall. Refused (409 or 400) while the VM runs, is locked against reinstall or is being moved.",
+				Required:    []string{"vm_id or external_ref", "user_id"},
+				Optional:    []string{"template_id", "password", "regenerate_password"},
+			},
+			{
+				Type:        string(EventVMMetrics),
+				Description: "The VM's readings over the last hours (default 24, at most 168), averaged to at most 48 points: data.points is a list of {at, cpu_percent, memory_percent, disk_read_bps, disk_write_bps, network_in_bps, network_out_bps}. Readings are taken every minute while the VM runs and kept 7 days.",
+				Required:    []string{"vm_id or external_ref"},
+				Optional:    []string{"user_id", "hours"},
+			},
+			{
 				Type:        string(EventUserSSO),
-				Description: "A one-time sign-in link for a customer account: metadata.path (and metadata.url when the panel knows its public address) lasts metadata.expires_in seconds and works once. Opening it signs the browser in and opens vm_id, or the dashboard; the panel still asks for its own two-factor code. Refused for staff, suspended, locked or expired accounts, and when vm_id belongs to someone else.",
+				Description: "A one-time sign-in link for a customer account: metadata.path (and metadata.url when the panel knows its public address) lasts metadata.expires_in seconds and works once. Opening it signs the browser in and opens vm_id (its console with page=console), or the dashboard; the panel still asks for its own two-factor code. Refused for staff, suspended, locked or expired accounts, and when vm_id belongs to someone else.",
 				Required:    []string{"user_id"},
-				Optional:    []string{"vm_id", "external_ref"},
+				Optional:    []string{"vm_id", "page (console)", "external_ref"},
 			},
 		},
 		PayloadExample: map[string]interface{}{

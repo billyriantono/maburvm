@@ -60,6 +60,14 @@ func (r *Registry) Running(vmID, migrationID string) bool {
 	return j != nil && j.migrationID == migrationID && j.progress.State == StateRunning
 }
 
+// Busy reports whether the VM has any run in progress.
+func (r *Registry) Busy(vmID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	j := r.jobs[vmID]
+	return j != nil && j.progress.State == StateRunning
+}
+
 // Update sets the phase and byte counts of a run in progress.
 func (r *Registry) Update(vmID, migrationID, phase string, total, processed int64) {
 	r.mu.Lock()

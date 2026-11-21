@@ -29,7 +29,7 @@ func TestCustomerAPIKeysAndTheAccessSwitch(t *testing.T) {
 	db := newVMRouteTestDB(t)
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS api_keys (
 		id TEXT PRIMARY KEY, user_id TEXT, name TEXT, key_hash TEXT, prefix TEXT,
-		last_used_at DATETIME, expires_at DATETIME, is_active BOOLEAN, role TEXT, read_only BOOLEAN NOT NULL DEFAULT 0,
+		last_used_at DATETIME, expires_at DATETIME, is_active BOOLEAN, role TEXT, read_only BOOLEAN NOT NULL DEFAULT 0, scope TEXT NOT NULL DEFAULT '', allowed_ips TEXT,
 		created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`).Error)
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS system_settings (section TEXT PRIMARY KEY, data TEXT, updated_at DATETIME)`).Error)
 

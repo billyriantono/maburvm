@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -224,9 +223,7 @@ func TestPG_PeerCannotDeleteFounder(t *testing.T) {
 	peerTok := mintToken(t, peer)
 	rec := doUserReq(t, s, "DELETE", "/api/v1/users/"+founding.ID.String(), peerTok, "")
 	assert.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
-	var body map[string]string
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
-	assert.Contains(t, body["error"], "founding_administrator")
+	assert.Contains(t, errorCode(t, rec.Body.Bytes()), "founding_administrator")
 
 	// Founding admin still present and active.
 	var n int64

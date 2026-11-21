@@ -9,6 +9,8 @@ import (
 	"github.com/maburvm/panel/internal/panel/service"
 	"github.com/maburvm/panel/internal/shared/config"
 	"github.com/maburvm/panel/internal/shared/models"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/bcrypt"
@@ -37,11 +39,14 @@ func auditCount(t *testing.T, db *gorm.DB, action string, actor, target *models.
 
 func errorCode(t *testing.T, body []byte) string {
 	t.Helper()
+	// The machine code is error.code in the error envelope (API-04).
 	var out struct {
-		Error string `json:"error"`
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
 	}
 	require.NoError(t, json.Unmarshal(body, &out), string(body))
-	return out.Error
+	return out.Error.Code
 }
 
 // ADM-43: any administrator deletes a customer; deleting staff stays with the
@@ -95,6 +100,18 @@ func TestUserRoutes_DeleteRefusedWhileTheAccountOwnsVMs(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, rec.Code, q+": "+rec.Body.String())
 	}
 	assert.Equal(t, int64(1), countUsersByRole(t, db, models.RoleClient), "a bad choice deletes nothing")
+
+	// ADM-17: a locked VM would outlive its account, so nothing is deleted.
+	// The queue is never reached; a client without a pool is enough to get past
+	// the "queue not running" refusal.
+	rc, err := river.NewClient(riverpgxv5.New(nil), &river.Config{})
+	require.NoError(t, err)
+	s.riverClient = rc
+	require.NoError(t, db.Exec(`UPDATE vms SET delete_lock = 'owner' WHERE id = 'vm-1'`).Error)
+	rec = doUserReq(t, s, http.MethodDelete, path+"?vms=delete", tok, "")
+	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+	assert.Equal(t, "user_vms_delete_locked", errorCode(t, rec.Body.Bytes()))
+	assert.Equal(t, int64(1), countUsersByRole(t, db, models.RoleClient), "a locked VM keeps the account")
 }
 
 // SEC-14: another administrator's email, allow-list, name, password, 2FA and

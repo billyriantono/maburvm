@@ -16,8 +16,16 @@ export const RANGES = [
   { id: "24h", label: "24 hours", minutes: 1440 },
   { id: "7d", label: "7 days", minutes: 10080 },
 ] as const
-export type RangeId = (typeof RANGES)[number]["id"]
-export const minutesOf = (range: RangeId) => RANGES.find((r) => r.id === range)!.minutes
+// A VM's readings also go back further, as hourly averages, for as long as
+// the operator keeps them (90 days unless changed).
+export const LONG_RANGES = [
+  ...RANGES,
+  { id: "30d", label: "30 days", minutes: 43200 },
+  { id: "90d", label: "90 days", minutes: 129600 },
+] as const
+export type RangeId = (typeof LONG_RANGES)[number]["id"]
+type Range = (typeof LONG_RANGES)[number]
+export const minutesOf = (range: RangeId) => LONG_RANGES.find((r) => r.id === range)!.minutes
 
 export interface StripSeries {
   key: string
@@ -85,9 +93,12 @@ export function ReadingStrips({
   heading: Heading = "h2",
   className,
   children,
+  ranges = RANGES,
 }: {
   title: string
   range: RangeId
+  /** The ranges offered; the three short ones unless the machine keeps more. */
+  ranges?: readonly Range[]
   /** Leave out when a control elsewhere on the page sets the range. */
   onRange?: (range: RangeId) => void
   /** When each reading was taken, in milliseconds, oldest first. */
@@ -174,7 +185,7 @@ export function ReadingStrips({
     if (!running) return offWord
     return fresh && s.values.length ? s.fmt(s.values[s.values.length - 1]) : "No reading"
   }
-  const span = RANGES.find((r) => r.id === range)!.label.replace(/^1 /, "")
+  const span = LONG_RANGES.find((r) => r.id === range)!.label.replace(/^1 /, "")
   const headingId = `readings-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`
   const firstPlot = strips.findIndex((strip) => !strip.note)
 
@@ -189,7 +200,7 @@ export function ReadingStrips({
         </div>
         {onRange && (
           <div role="group" aria-label="Time range" className="flex gap-1.5">
-            {RANGES.map((r) => (
+            {ranges.map((r) => (
               <Button
                 key={r.id}
                 type="button"

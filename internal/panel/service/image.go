@@ -55,8 +55,19 @@ func (s *ImageService) CreateImageFromVM(ctx context.Context, userID uuid.UUID, 
 		return nil, err
 	}
 	// An image of a suspended VM would be the same disk as a new, running VM.
-	if err := OwnerAccess(&vm, userID.String(), isAdmin, true); err != nil {
+	if err := CheckVMAccess(ctx, s.db, &vm, userID.String(), isAdmin, AccessChange); err != nil {
 		return nil, err
+	}
+	if err := s.checkImageAllowance(ctx, &vm, isAdmin); err != nil {
+		return nil, err
+	}
+	// A customer's image belongs to the VM's account, also when a team member
+	// made it; staff keep the images they make.
+	owner := userID
+	if !isAdmin {
+		if id, perr := uuid.Parse(vm.UserID); perr == nil {
+			owner = id
+		}
 	}
 
 	name = strings.TrimSpace(name)
@@ -75,7 +86,7 @@ func (s *ImageService) CreateImageFromVM(ctx context.Context, userID uuid.UUID, 
 
 	img := &models.Image{
 		ID:           uuid.New(),
-		UserID:       userID,
+		UserID:       owner,
 		Name:         name,
 		SourceVMID:   &srcVMID,
 		OSTemplateID: tmplID,
@@ -242,7 +253,7 @@ func (s *ImageService) RetryCapture(ctx context.Context, imageID string, userID 
 			}
 			return nil, err
 		}
-		if err := OwnerAccess(&vm, userID.String(), false, true); err != nil {
+		if err := CheckVMAccess(ctx, s.db, &vm, userID.String(), false, AccessChange); err != nil {
 			return nil, err
 		}
 	}

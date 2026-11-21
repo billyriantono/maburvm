@@ -163,7 +163,7 @@ func TestBillingEventDelivery(t *testing.T) {
 	require.NoError(t, db.Exec(`CREATE TABLE system_settings (section TEXT PRIMARY KEY, data TEXT, updated_at DATETIME)`).Error)
 	require.NoError(t, db.Exec(`CREATE TABLE webhook_deliveries (id TEXT PRIMARY KEY, event TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
 		attempts INTEGER NOT NULL DEFAULT 0, response_code INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '', resource_id TEXT NOT NULL DEFAULT '',
-		created_at DATETIME, last_attempt_at DATETIME, delivered_at DATETIME)`).Error)
+		created_at DATETIME, last_attempt_at DATETIME, delivered_at DATETIME, endpoint_id TEXT)`).Error)
 	count := func() (n int64) {
 		require.NoError(t, db.Model(&WebhookDelivery{}).Count(&n).Error)
 		return n
@@ -291,7 +291,7 @@ func TestWHMCSReceiverAcceptsPanelEvents(t *testing.T) {
 	require.NoError(t, db.Exec(`INSERT INTO system_settings (section, data) VALUES ('api', '{"webhookUrl":"http://billing.example.test/hook","hmacSecret":"panel-own-secret"}')`).Error)
 	require.NoError(t, db.Exec(`CREATE TABLE webhook_deliveries (id TEXT PRIMARY KEY, event TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
 		attempts INTEGER NOT NULL DEFAULT 0, response_code INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '', resource_id TEXT NOT NULL DEFAULT '',
-		created_at DATETIME, last_attempt_at DATETIME, delivered_at DATETIME)`).Error)
+		created_at DATETIME, last_attempt_at DATETIME, delivered_at DATETIME, endpoint_id TEXT)`).Error)
 	require.NoError(t, db.Exec(`CREATE TABLE billing_user_links (external_ref TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at DATETIME)`).Error)
 	user, _, _ := seedVMIPAMDependencies(t, db)
 	require.NoError(t, db.Exec(`INSERT INTO billing_user_links (external_ref, user_id) VALUES ('whmcs-client-7', ?)`, user.ID.String()).Error)

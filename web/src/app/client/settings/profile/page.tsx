@@ -7,6 +7,8 @@ import { useChangePassword } from "@/lib/hooks/use-settings"
 import { useMyQuota } from "@/lib/hooks/use-quota"
 import { TwoFactorSettings } from "@/components/two-factor-settings"
 import { AccountSessions } from "@/components/account-sessions"
+import { EmailPreferences } from "@/components/client-announcements"
+import { ProfileDetails } from "@/components/profile-details"
 
 function quotaLabel(used: number, max: number, unit: string) {
   return `${used}${unit} / ${max === 0 ? "∞" : `${max}${unit}`}`
@@ -53,22 +55,9 @@ export default function ClientProfilePage() {
     <div className="space-y-6">
       <h1 className="text-2xl font-semibold tracking-tight">Profile</h1>
 
-      {/* Account */}
-      <section className="rounded-lg border bg-card text-card-foreground shadow-sm">
-        <div className="px-5 py-4 border-b">
-          <h2 className="text-lg font-semibold">Account</h2>
-        </div>
-        <div className="p-5 space-y-2">
-          <div className="flex justify-between">
-            <span className="text-muted-foreground">Email</span>
-            <span className="font-medium">{user?.email ?? "—"}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-muted-foreground">Role</span>
-            <span className="font-medium capitalize">{user?.role ?? "—"}</span>
-          </div>
-        </div>
-      </section>
+      <ProfileDetails />
+
+      <EmailPreferences disabled={viewing} />
 
       {viewing ? (
         <p className="rounded-md border p-4 text-sm text-muted-foreground">

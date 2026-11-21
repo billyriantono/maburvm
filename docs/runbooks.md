@@ -111,7 +111,9 @@ Then, before letting anyone in:
    allow it on port 50051 in any firewall.
 4. **Sign in with an account that has two-factor.** An accepted code proves
    `secrets.json` matches the database.
-5. **Check every node comes online.**
+5. **Check every node comes online.** ISOs uploaded to the panel are not in
+   its backups (the nodes keep their copies): upload any you will add to new
+   nodes again from the ISOs page.
 6. **Reconcile with the nodes.** The panel knows the fleet as it was at backup
    time, up to a day earlier. On each node compare `virsh list --all` with the
    panel's VMs: a VM created after the backup still runs but is unknown to the
@@ -182,9 +184,10 @@ only once it has been seen running on the destination.
 **Check:**
 
 1. The error on the move. "Needs an agent update" means one of the two agents
-   is older: update it. A refusal listed by **Check** (snapshots, an ISO,
-   floating IPs, a NAT VM, LVM, no room, a CPU mismatch for a live move) needs
-   that cause removed, or an offline move.
+   is older: update it (VMs on logical volumes, or moving onto an LVM pool,
+   need the current agent on both nodes). A refusal listed by **Check**
+   (snapshots, an ISO, floating IPs, a NAT VM, no room, a CPU mismatch for a
+   live move) needs that cause removed, or an offline move.
 2. The job queue: a move interrupted by a panel restart is picked up by the
    next try and follows what the nodes are doing; let it finish.
 3. On both nodes, `virsh list --all | grep <vm id>` and `virsh domstate
@@ -200,8 +203,9 @@ only once it has been seen running on the destination.
 - **"<VM> moved, but its old copy on <node> was left"**: the VM runs on the
   destination and the panel shows it there; only the clean-up failed. On the
   old node, check the domain is shut off and not running anywhere else
-  (`virsh domstate <domain>`), then `virsh undefine <domain>` and remove its
-  old disk files from the pool directory. Never start the old copy: two copies
+  (`virsh domstate <domain>`), then `virsh undefine <domain>`; its old disk
+  files and volumes then show under Storage, Orphaned disks, where they are
+  deleted after a check. Never start the old copy: two copies
   of one VM with the same address corrupt each other's view of the network and
   the customer's data diverges.
 - A VM defined on both nodes after an interrupted move: leave the running copy
@@ -226,6 +230,11 @@ room.
 
 - Storage, the pool, **Volumes**: volumes a deleted VM left behind are listed
   there; delete them.
+- Storage, **Orphaned disks**: files and volumes in the node's pools that no VM
+  uses (left by failed creates, restores, moves and removed VMs), deleted after
+  a check.
+- Move a disk to another pool of the node from its VM's page (Disks, Move),
+  while the VM runs.
 - When the agent's `TEMPLATE_CACHE_DIR` is on the same filesystem: set
   `TEMPLATE_CACHE_MAX_GB` in the agent's settings, or remove unused downloads
   under it by hand. Images you placed there yourself are yours to remove.
@@ -244,6 +253,10 @@ systems.
 **Afterwards:** set each pool's alert level so the warning comes with time to
 act, set the disk overcommit ratio, and keep an eye on the Storage page's
 allocated figure.
+
+A disk move that failed or was cancelled leaves the disk where it was; a copy
+it had made shows under Orphaned disks. A VM whose offline disk copy is
+running cannot be started until it ends: wait, or cancel the move on its page.
 
 ## 6. Abuse report about an address
 

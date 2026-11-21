@@ -157,12 +157,18 @@ export interface FleetVM {
   /** The newest reading from the last three minutes; null when there is none. */
   cpu_now: number | null
   memory_now: number | null
+  /** The owner's labels. */
+  tags?: string[] | null
+  /** Who locked it against deletion and reinstall: "", "owner" or "staff". */
+  delete_lock?: string
 }
 
 export interface FleetVMsParams {
   search: string
   status: string
   node: string
+  /** Only VMs carrying this tag; "" for any. */
+  tag?: string
   sort: string
   page: number
   pageSize: number
@@ -185,7 +191,7 @@ export function useFleetVMs(p: FleetVMsParams) {
     queryKey: ['vms', 'list', 'fleet', p],
     queryFn: async () => {
       const response = await api.get<FleetVMs>('/api/v1/dashboard/vms', {
-        params: { search: p.search, status: p.status, node: p.node, sort: p.sort, page: p.page, page_size: p.pageSize },
+        params: { search: p.search, status: p.status, node: p.node, tag: p.tag || undefined, sort: p.sort, page: p.page, page_size: p.pageSize },
       })
       return response.data.data
     },

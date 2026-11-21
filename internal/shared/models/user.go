@@ -53,6 +53,15 @@ type User struct {
 	// StaffRole is a staff account's role key (nil = administrator). Read-only
 	// here; written by table name so a stale full-row save cannot revert it.
 	StaffRole *string `json:"staff_role,omitempty" gorm:"column:staff_role;->"`
+	// MarketingOptOut: the account unsubscribed from marketing announcements.
+	// Read-only here; written by table name.
+	MarketingOptOut bool `json:"marketing_opt_out" gorm:"column:marketing_opt_out;->"`
+	// Profile details the account holder edits. Read-only here; written by
+	// table name (service.UpdateOwnProfile).
+	Phone    string `json:"phone" gorm:"column:phone;->"`
+	Company  string `json:"company" gorm:"column:company;->"`
+	Timezone string `json:"timezone" gorm:"column:timezone;->"`
+	Locale   string `json:"locale" gorm:"column:locale;->"`
 	// StaffRoleName is filled for display, not stored.
 	StaffRoleName string `json:"staff_role_name,omitempty" gorm:"-"`
 	// TokenRevokedAt is the logout revocation cutoff. RequireAuth rejects any

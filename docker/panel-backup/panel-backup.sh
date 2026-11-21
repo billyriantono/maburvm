@@ -99,7 +99,9 @@ backup() {
   pg_dump --format=custom --file="$WORK/db.dump"
   pg_restore --list "$WORK/db.dump" >/dev/null
 
-  tar -C "$PANEL_DATA_DIR" -cf "$WORK/panel-data.tar" .
+  # ISOs uploaded to the panel (images/) are large, kept on every node and
+  # uploaded again if lost; they would swell every backup.
+  tar -C "$PANEL_DATA_DIR" --exclude=./images -cf "$WORK/panel-data.tar" .
 
   mkdir "$WORK/host-config"
   if [ -f "$HOST_DIR/.env.production" ]; then cp "$HOST_DIR/.env.production" "$WORK/host-config/"; fi

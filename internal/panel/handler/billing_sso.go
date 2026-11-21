@@ -37,14 +37,15 @@ var errBillingSSORefused = errors.New("single sign-on refused")
 type billingSSOToken struct {
 	UserID uuid.UUID `json:"u"`
 	VMID   string    `json:"v,omitempty"`
+	Page   string    `json:"p,omitempty"`
 	Exp    int64     `json:"e"`
 	Nonce  string    `json:"n"`
 }
 
 // billingSSOLink is the path of a one-time sign-in link for a customer.
-func billingSSOLink(userID uuid.UUID, vmID string, now time.Time) (string, error) {
+func billingSSOLink(userID uuid.UUID, vmID, page string, now time.Time) (string, error) {
 	token, err := signJSON(billingSSOPurpose, billingSSOToken{
-		UserID: userID, VMID: vmID, Exp: now.Add(billingSSOTTL).Unix(), Nonce: randomString(18),
+		UserID: userID, VMID: vmID, Page: page, Exp: now.Add(billingSSOTTL).Unix(), Nonce: randomString(18),
 	})
 	if err != nil {
 		return "", err
@@ -52,10 +53,13 @@ func billingSSOLink(userID uuid.UUID, vmID string, now time.Time) (string, error
 	return billingSSOPath + "?token=" + url.QueryEscape(token), nil
 }
 
-// billingSSOLanding is the page a customer lands on: the VM the link names,
-// else their dashboard.
-func billingSSOLanding(vmID string) string {
+// billingSSOLanding is the page a customer lands on: the VM the link names
+// (its console when page is "console"), else their dashboard.
+func billingSSOLanding(vmID, page string) string {
 	if _, err := uuid.Parse(vmID); err == nil {
+		if page == "console" {
+			return "/client/vms/" + vmID + "/console"
+		}
 		return "/client/vms/" + vmID
 	}
 	return "/client/dashboard"
@@ -102,7 +106,7 @@ func (h *OIDCHandler) BillingSSO(c echo.Context) error {
 		}
 		h.recordSignIn(c, user, email, middleware.SignInBillingSSO, err)
 	}
-	next := billingSSOLanding(t.VMID)
+	next := billingSSOLanding(t.VMID, t.Page)
 	var locked *service.AccountLockedError
 	switch {
 	case errors.Is(err, service.ErrNoSSOAccount):
@@ -169,7 +173,11 @@ func (h *BillingHandler) handleUserSSO(ctx context.Context, data *WebhookData, r
 		}
 		return WebhookResponse{}, fmt.Errorf("%w: %s", errBillingSSORefused, why)
 	}
-	path, err := billingSSOLink(u.ID, data.VMID, time.Now())
+	page := ""
+	if data.Page == "console" && data.VMID != "" {
+		page = "console"
+	}
+	path, err := billingSSOLink(u.ID, data.VMID, page, time.Now())
 	if err != nil {
 		return WebhookResponse{}, fmt.Errorf("the sign-in link could not be made: %w", err)
 	}

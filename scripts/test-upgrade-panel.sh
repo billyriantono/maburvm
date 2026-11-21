@@ -38,6 +38,8 @@ case "$args" in
   *" exec -T postgres pg_dump "*) [ "$(cat "$S/scenario")" != dump-fails ] || exit 1; echo "PGDMP-fake"; exit 0 ;;
   *" exec -T postgres pg_restore "*) cat > /dev/null; exit 0 ;;
   *" exec -T postgres "*) exit 0 ;;
+  *" exec -T panel grep -q usage: maintenance on /app/panel"*) [ "$(cat "$S/scenario")" != old-panel ] && exit 0; exit 1 ;;
+  *" exec -T panel /app/panel maintenance on"*) [ "$(cat "$S/scenario")" != jobs-still-running ] || exit 3; exit 0 ;;
   *" up -d --no-deps --no-build --force-recreate panel"*) echo 0 > "$S/restarts"; echo healthy > "$S/health"; exit 0 ;;
   *" up -d --no-deps --no-build panel"*)
     case "$(cat "$S/scenario")" in
@@ -77,8 +79,9 @@ calls | grep -q "pull panel web" || fail "the new images were not pulled"
 ! calls | grep -q "force-recreate" || fail "a good upgrade must not roll back"
 # The dump comes after the pull, with the panel stopped, so a restore loses
 # nothing the previous version wrote.
-order="$(calls | awk '/pull panel web/ { printf "pull " } / stop panel/ { printf "stop " } /pg_dump/ { printf "dump " } /up -d --no-deps --no-build panel/ { printf "up " }')"
-[ "$order" = "pull stop dump up " ] || fail "expected pull, stop, dump, start; got: $order"
+order="$(calls | awk '/pull panel web/ { printf "pull " } /maintenance on --hold-jobs/ { printf "hold " } / stop panel/ { printf "stop " } /pg_dump/ { printf "dump " } /up -d --no-deps --no-build panel/ { printf "up " } /maintenance off/ { printf "release " }')"
+[ "$order" = "pull hold stop dump up release " ] || fail "expected pull, hold jobs, stop, dump, start, release; got: $order"
+! calls | grep -q "DELETE FROM system_settings WHERE section = 'maintenance'" || fail "a good upgrade ends maintenance through the panel"
 rm -rf "$T"
 
 # Migrations ran and the panel crashed: images back, database restored (--yes).
@@ -89,6 +92,11 @@ calls | grep -q "tag maburvm-panel:rollback ghcr.io/example/maburvm-panel:v1.0.0
 calls | grep -q "createdb -U maburvm maburvm_restoring_" || fail "the dump was not restored into a new database"
 calls | grep -qF 'RENAME TO "maburvm_replaced_' || fail "the old database was not kept aside"
 calls | grep -q "up -d --no-deps --no-build --force-recreate panel \[MABURVM_VERSION=rollback\]" || fail "the previous panel was not started from its :rollback image"
+# Maintenance is switched off in the database before the previous panel starts:
+# its binary may not know the command, and the restored dump was taken in maintenance.
+order="$(calls | awk "/section = 'maintenance'/ { printf \"clear \" } /force-recreate panel/ { printf \"start \" }")"
+[ "$order" = "clear start " ] || fail "maintenance must be cleared in the database before the previous panel starts; got: $order"
+! calls | grep -q "/app/panel maintenance off" || fail "a rollback must not run the maintenance command"
 grep -q "Rolled back" "$T/out" || { cat "$T/out"; fail "no rollback report"; }
 rm -rf "$T"
 
@@ -106,6 +114,29 @@ grep -q '^MABURVM_VERSION=v1.0.0$' "$T/.env.production" || fail "the env file wa
 calls | grep -q "start panel" || fail "the previous panel was not started again"
 ! calls | grep -q "up -d --no-deps --no-build panel" || fail "the new panel must not start without a dump"
 ! ls "$T"/backups/pre-upgrade-*.dump > /dev/null 2>&1 || fail "a failed dump must not be kept"
+rm -rf "$T"
+
+# Jobs still running when the drain times out: maintenance off, nothing changed.
+setup jobs-still-running
+if run --version v1.1.0 --drain-timeout 5; then fail "jobs still running must stop the upgrade"; fi
+calls | grep -q "maintenance on --hold-jobs --wait 5" || fail "the drain timeout was not passed on"
+calls | grep -q "/app/panel maintenance off" || fail "maintenance was not switched off"
+! calls | grep -q " stop panel" || fail "the panel must not be stopped while jobs run"
+! calls | grep -q "pg_dump" || fail "nothing may be dumped while jobs run"
+grep -q '^MABURVM_VERSION=v1.0.0$' "$T/.env.production" || fail "the env file was not put back"
+rm -rf "$T"
+
+# A panel binary from before maintenance mode, even on a database migrated past
+# it: no command is run (it would start a second panel), and the upgrade goes on.
+setup old-panel
+run --version v1.1.0 || { cat "$T/out"; fail "an upgrade from an older panel must succeed"; }
+! calls | grep -q "/app/panel maintenance" || fail "an older panel has no maintenance command"
+rm -rf "$T"
+
+# --no-drain skips maintenance mode altogether.
+setup ok
+run --version v1.1.0 --no-drain || { cat "$T/out"; fail "--no-drain must succeed"; }
+! calls | grep -q "/app/panel maintenance" || fail "--no-drain must not switch maintenance on"
 rm -rf "$T"
 
 # Refusals that change nothing.

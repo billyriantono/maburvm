@@ -21,6 +21,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
+import { cn } from "@/lib/utils"
 import { useCurrentUser } from "@/lib/hooks/use-auth"
 import { useCopy } from "@/lib/use-feedback"
 import {
@@ -32,7 +33,20 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { useAPIKeys, useCreateAPIKey, useRevokeAPIKey } from "@/lib/hooks/use-api-keys"
-import type { APIKey } from "@/types/api-key"
+import type { APIKey, APIKeyScope } from "@/types/api-key"
+
+// What a key may do, narrowest last. Every scope stays within what its owner
+// may do; billing is for staff keys a billing system uses.
+const SCOPES: { value: APIKeyScope; label: string; badge: string; help: string; staffOnly?: boolean }[] = [
+  { value: "full", label: "Full access", badge: "", help: "Everything you can do yourself." },
+  { value: "read_only", label: "Read only", badge: "Read-only", help: "Can view and monitor, but not change anything. Good for AI agents that only watch." },
+  { value: "vm_power", label: "Power only", badge: "Power only", help: "Can list servers and start, shut down or restart them. Nothing else." },
+  { value: "billing", label: "Billing", badge: "Billing only", help: "Billing, plans, customer accounts and usage, for a billing system. Never staff accounts or roles. Within what your staff role allows.", staffOnly: true },
+]
+
+function scopeOf(key: APIKey): APIKeyScope {
+  return key.scope || (key.read_only ? "read_only" : "full")
+}
 
 function formatDate(value?: string): string {
   if (!value) return "—"
@@ -56,7 +70,8 @@ export default function APIKeysSettingsPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [name, setName] = useState("")
   const [expiresAt, setExpiresAt] = useState("")
-  const [readOnly, setReadOnly] = useState(false)
+  const [scope, setScope] = useState<APIKeyScope>("full")
+  const [allowedIPs, setAllowedIPs] = useState("")
   const [asClient, setAsClient] = useState(false)
   const [newToken, setNewToken] = useState<string | null>(null)
   const [revokeTarget, setRevokeTarget] = useState<APIKey | null>(null)
@@ -72,14 +87,17 @@ export default function APIKeysSettingsPage() {
         name: trimmed,
         // Datetime-local has no timezone; treat as local and send ISO.
         expires_at: expiresAt ? new Date(expiresAt).toISOString() : undefined,
-        read_only: readOnly,
+        scope,
+        // The panel checks each entry and says which one it refused.
+        allowed_ips: allowedIPs.split(/[\s,]+/).filter(Boolean),
         role: asClient ? "client" : undefined,
       })
       setNewToken(created.token)
       setShowCreate(false)
       setName("")
       setExpiresAt("")
-      setReadOnly(false)
+      setScope("full")
+      setAllowedIPs("")
       setAsClient(false)
     } catch (err) {
       toast.error("Failed to create API key", { description: (err as Error).message })
@@ -193,6 +211,8 @@ export default function APIKeysSettingsPage() {
             <ul className="divide-y">
               {keys.map((key) => {
                 const expired = isExpired(key)
+                const scopeBadge = SCOPES.find((s) => s.value === scopeOf(key))?.badge
+                const ips = key.allowed_ips ?? []
                 return (
                   <li key={key.id} className="p-4 flex items-center justify-between gap-4">
                     <div className="min-w-0">
@@ -205,13 +225,16 @@ export default function APIKeysSettingsPage() {
                         ) : (
                           <Badge variant="secondary" className="text-[10px]">Revoked</Badge>
                         )}
-                        {key.read_only && <Badge variant="outline" className="text-[10px]">Read-only</Badge>}
+                        {scopeBadge && <Badge variant="outline" className="text-[10px]">{scopeBadge}</Badge>}
                         {key.role === "client" && <Badge variant="outline" className="text-[10px]">Own resources only</Badge>}
                       </div>
                       <code className="text-xs font-mono text-muted-foreground">{key.prefix}••••••••</code>
                       <p className="text-xs text-muted-foreground mt-1">
                         Created {formatDate(key.created_at)} · Last used {formatDate(key.last_used_at)}
                         {key.expires_at ? ` · Expires ${formatDate(key.expires_at)}` : ""}
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {ips.length === 0 ? "Works from any address" : <>Works only from <span className="font-mono">{ips.join(", ")}</span></>}
                       </p>
                     </div>
                     <Button
@@ -238,9 +261,11 @@ export default function APIKeysSettingsPage() {
               <Plus className="w-5 h-5" />
               Create API Key
             </DialogTitle>
-            <DialogDescription>Give your key a recognizable name. Expiry is optional.</DialogDescription>
+            <DialogDescription>
+              Name the key and choose what it may do. Limiting where it works from and when it stops is optional.
+            </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4">
+          <div className="space-y-4 max-h-[65vh] overflow-y-auto pr-1">
             <div>
               <label htmlFor="key-name" className="block text-sm font-medium text-muted-foreground mb-2">
                 Name
@@ -264,12 +289,50 @@ export default function APIKeysSettingsPage() {
                 onChange={(e) => setExpiresAt(e.target.value)}
               />
             </div>
-            <div className="flex items-start gap-2">
-              <Checkbox id="key-read-only" checked={readOnly} onCheckedChange={(v) => setReadOnly(v === true)} />
-              <div className="grid gap-1">
-                <Label htmlFor="key-read-only">Read-only</Label>
-                <p className="text-xs text-muted-foreground">Can view and monitor, but not change anything. Good for AI agents that only watch.</p>
+            <fieldset>
+              <legend className="block text-sm font-medium text-muted-foreground mb-2">What the key may do</legend>
+              <div className="space-y-2">
+                {SCOPES.filter((s) => isAdmin || !s.staffOnly).map((s) => (
+                  <label
+                    key={s.value}
+                    className={cn(
+                      "flex items-start gap-3 rounded-md border p-3 cursor-pointer",
+                      scope === s.value && "border-primary"
+                    )}
+                  >
+                    <input
+                      type="radio"
+                      name="key-scope"
+                      value={s.value}
+                      checked={scope === s.value}
+                      onChange={() => setScope(s.value)}
+                      className="mt-0.5 h-4 w-4 accent-primary"
+                    />
+                    <span className="grid gap-0.5">
+                      <span className="text-sm font-medium">{s.label}</span>
+                      <span className="text-xs text-muted-foreground">{s.help}</span>
+                    </span>
+                  </label>
+                ))}
               </div>
+            </fieldset>
+            <div>
+              <label htmlFor="key-ips" className="block text-sm font-medium text-muted-foreground mb-2">
+                Works only from (optional)
+              </label>
+              <textarea
+                id="key-ips"
+                aria-describedby="key-ips-help"
+                placeholder={"203.0.113.10\n198.51.100.0/24"}
+                value={allowedIPs}
+                onChange={(e) => setAllowedIPs(e.target.value)}
+                rows={3}
+                className="w-full rounded-md border border-input bg-background p-3 font-mono text-xs resize-y focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              />
+              <p id="key-ips-help" className="text-xs text-muted-foreground mt-1">
+                Addresses or ranges, one per line. Empty means anywhere. Requests from anywhere else are refused, and a
+                key limited this way cannot make keys or change account settings.
+              </p>
             </div>
             {isAdmin && (
               <div className="flex items-start gap-2">

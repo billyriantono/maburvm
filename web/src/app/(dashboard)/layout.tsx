@@ -13,6 +13,7 @@ import {
   Loader2
 } from "lucide-react"
 import { Sidebar, adminPages, visibleAdminPages } from "@/components/sidebar"
+import { MaintenanceBanner, UpdateNotice } from "@/components/maintenance-banner"
 import { GlobalSearch } from "@/components/global-search"
 import { Button } from "@/components/ui/button"
 import { ThemeToggle } from "@/components/theme-toggle"
@@ -246,6 +247,8 @@ export default function DashboardLayout({
               </DropdownMenu>
             </div>
           </div>
+          <MaintenanceBanner staff />
+          <UpdateNotice owner={user.staff_role === "owner" && !user.impersonator} />
         </header>
 
         {/* Main Content */}

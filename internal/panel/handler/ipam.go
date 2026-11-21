@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 
 	"github.com/labstack/echo/v4"
 	"github.com/maburvm/panel/internal/panel/authz"
@@ -134,12 +133,17 @@ func (h *IPAMHandler) CreatePool(c echo.Context) error {
 }
 
 func (h *IPAMHandler) ListPools(c echo.Context) error {
-	limit, offset := pagination(c)
-	pools, err := h.service.ListPools(c.Request().Context(), limit, offset)
+	ctx := c.Request().Context()
+	limit, offset := listWindow(c)
+	pools, err := h.service.ListPools(ctx, limit, offset)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to list IP pools"})
 	}
-	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": pools})
+	meta, err := WholeListMeta(limit, offset, len(pools), func() (int64, error) { return h.service.CountPools(ctx) })
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to count IP pools"})
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": pools, "meta": meta})
 }
 
 func (h *IPAMHandler) GetPool(c echo.Context) error {
@@ -194,15 +198,20 @@ func (h *IPAMHandler) AddAddress(c echo.Context) error {
 }
 
 func (h *IPAMHandler) ListAddresses(c echo.Context) error {
-	limit, offset := pagination(c)
-	addresses, err := h.service.ListAddresses(c.Request().Context(), c.Param("id"), limit, offset)
+	ctx := c.Request().Context()
+	limit, offset := listWindow(c)
+	addresses, err := h.service.ListAddresses(ctx, c.Param("id"), limit, offset)
 	if err != nil {
 		if errors.Is(err, service.ErrIPPoolNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "IP pool not found"})
 		}
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 	}
-	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": addresses})
+	meta, err := WholeListMeta(limit, offset, len(addresses), func() (int64, error) { return h.service.CountAddresses(ctx, c.Param("id")) })
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": addresses, "meta": meta})
 }
 
 func (h *IPAMHandler) AllocateAddress(c echo.Context) error {
@@ -233,18 +242,6 @@ func (h *IPAMHandler) ReleaseAddress(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 	}
 	return c.NoContent(http.StatusNoContent)
-}
-
-func pagination(c echo.Context) (int, int) {
-	limit, _ := strconv.Atoi(c.QueryParam("limit"))
-	offset, _ := strconv.Atoi(c.QueryParam("offset"))
-	if limit < 0 {
-		limit = 0
-	}
-	if offset < 0 {
-		offset = 0
-	}
-	return limit, offset
 }
 
 func badRequest(c echo.Context, message string) error {

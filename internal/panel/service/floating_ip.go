@@ -472,6 +472,12 @@ func (s *VMService) OrderFloatingIP(ctx context.Context, userID, region string) 
 	if held >= int64(FloatingIPsPerUser(ctx, s.db)) {
 		return nil, ErrFloatingIPQuotaExceeded
 	}
+	if err := checkFloatingIPAllowance(ctx, s.db, userID, held); err != nil {
+		return nil, err
+	}
+	if IsMemberOnlyAccount(ctx, s.db, userID) {
+		return nil, ErrMemberOnlyAccount
+	}
 
 	// Prefer a node the customer already has a VM on, so the address is usable
 	// immediately rather than stranded on a node with nothing to attach it to.

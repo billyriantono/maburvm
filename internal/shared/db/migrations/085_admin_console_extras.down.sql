@@ -1,0 +1,9 @@
+DROP TABLE IF EXISTS capacity_history;
+DROP TABLE IF EXISTS announcements;
+DROP TABLE IF EXISTS staff_notes;
+ALTER TABLE users DROP COLUMN IF EXISTS marketing_opt_out;
+ALTER TABLE plans DROP COLUMN IF EXISTS node_group;
+ALTER TABLE nodes DROP COLUMN IF EXISTS node_group;
+ALTER TABLE vms DROP CONSTRAINT IF EXISTS vms_delete_lock_check;
+ALTER TABLE vms DROP COLUMN IF EXISTS tags;
+ALTER TABLE vms DROP COLUMN IF EXISTS delete_lock;

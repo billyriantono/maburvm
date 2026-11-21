@@ -124,7 +124,7 @@ func TestAPIRateLimitPerUserAndKey(t *testing.T) {
 	t.Cleanup(func() { db.Exec(`DROP TABLE system_settings`) })
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS api_keys (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL,
 		key_hash TEXT NOT NULL UNIQUE, prefix TEXT NOT NULL, last_used_at DATETIME, expires_at DATETIME, is_active BOOLEAN DEFAULT 1,
-		role TEXT, read_only BOOLEAN NOT NULL DEFAULT 0, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`).Error)
+		role TEXT, read_only BOOLEAN NOT NULL DEFAULT 0, scope TEXT NOT NULL DEFAULT '', allowed_ips TEXT, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`).Error)
 	t.Cleanup(func() { db.Exec(`DROP TABLE api_keys`) })
 	// 6 a minute: one request at a time, the next a token every 10 seconds.
 	require.NoError(t, db.Exec(`INSERT INTO system_settings (section, data) VALUES ('api', '{"apiRequestsPerMinute":6}')`).Error)

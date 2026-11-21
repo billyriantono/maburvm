@@ -56,11 +56,21 @@ var resourceTypes = []struct{ seg, rt string }{
 	{"/api-keys", "API_KEY"},
 	{"/support-access", "SUPPORT_ACCESS"},
 	{"/import/sources", "IMPORT"},
+	{"/notes", "STAFF_NOTE"},
+	{"/announcements", "ANNOUNCEMENT"},
+	{"/maintenance", "MAINTENANCE"},
+	{"/system/update", "SETTINGS"},
 	{"/firewall", "FIREWALL_RULE"},
 	{"/port-forwards", "PORT_FORWARD"},
 	{"/snapshots", "SNAPSHOT"},
 	{"/backups", "BACKUP"},
 	{"/floating-ips", "FLOATING_IP"},
+	{"/ip-requests", "IP_REQUEST"},
+	{"/account/members", "ACCOUNT_MEMBER"},
+	{"/account/memberships", "ACCOUNT_MEMBER"},
+	{"/account/invitations", "ACCOUNT_MEMBER"},
+	{"/account/projects", "PROJECT"},
+	{"/recipes", "RECIPE"},
 	{"/ip-addresses", "IP_ADDRESS"},
 	{"/ipam", "IP_POOL"},
 	{"/ip-pools", "IP_POOL"},
@@ -255,6 +265,16 @@ func captureBody(r *http.Request) *map[string]any {
 	}
 	out := redactMap(body)
 	return &out
+}
+
+// RedactJSON decodes a JSON document with credentials replaced by
+// [REDACTED] and long strings shortened, for showing job arguments to staff.
+func RedactJSON(raw []byte) any {
+	var v any
+	if json.Unmarshal(raw, &v) != nil {
+		return nil
+	}
+	return redactValue(v)
 }
 
 func redactMap(m map[string]any) map[string]any {

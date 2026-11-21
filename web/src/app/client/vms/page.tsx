@@ -1,20 +1,45 @@
 "use client"
 
 import Link from "next/link"
-import { useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 import { Monitor, PlusCircle, Play, Square, RotateCw, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { StatusBadge, useVMTransitions, vmStatus } from "@/components/status-badge"
 import { useVMs, useVMStatusStream, useVMActions } from "@/lib/hooks/use-vms"
 import { CountryFlag } from "@/components/country-flag"
+import { ListPager } from "@/components/list-pager"
+import { useCurrentUser } from "@/lib/hooks/use-auth"
+import { useMemberships, useProjects } from "@/lib/hooks/use-team"
 import type { VM } from "@/types"
+
+const PAGE = 25
 
 export default function ClientVMsPage() {
   useVMStatusStream()
-  const { data, isLoading, error, refetch } = useVMs({ pageSize: 100 })
+  const [tag, setTag] = useState("")
+  const [page, setPage] = useState(1)
+  // Whose servers: everything the caller can see, or one account's (their
+  // own, or a team they work in), narrowed to one of its projects.
+  const [accountId, setAccountId] = useState("")
+  const [projectId, setProjectId] = useState("")
+  const { data: me } = useCurrentUser()
+  const { data: teams } = useMemberships()
+  const memberships = teams?.memberships ?? []
+  const { data: projects } = useProjects(accountId && accountId !== me?.id ? accountId : undefined, !!accountId)
+  const accountName = (id: string) => {
+    const m = memberships.find((x) => x.account_id === id)
+    return m ? m.account_name || m.account_email : ""
+  }
+  const { data, isLoading, error, refetch } = useVMs({ page, pageSize: PAGE, tag, accountId, projectId })
   const action = useVMActions()
   const vms: VM[] = data?.data ?? []
+  // The tags in use, remembered while one is filtered on so the choice stays.
+  const inUse = useMemo(() => [...new Set((data?.data ?? []).flatMap((v) => v.tags ?? []))].sort(), [data])
+  const [known, setKnown] = useState<string[]>([])
+  useEffect(() => {
+    if (!tag && data) setKnown(inUse)
+  }, [tag, data, inUse])
   const { transitionOf, begin } = useVMTransitions(vms)
   // Which VM is waiting on which request, so only that row is disabled.
   const [inFlight, setInFlight] = useState<Record<string, string>>({})
@@ -80,6 +105,40 @@ export default function ClientVMsPage() {
         </Link>
       </div>
 
+      <div className="flex flex-wrap items-center gap-4">
+        {memberships.length > 0 && (
+          <div className="flex items-center gap-2">
+            <label htmlFor="vm-account" className="text-sm text-muted-foreground">Account</label>
+            <select id="vm-account" value={accountId} onChange={(e) => { setAccountId(e.target.value); setProjectId(""); setPage(1) }}
+              className="h-9 rounded-md border border-input bg-transparent px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              <option value="">Every account</option>
+              <option value={me?.id ?? ""}>Your own</option>
+              {memberships.map((m) => <option key={m.account_id} value={m.account_id}>{m.account_name || m.account_email}</option>)}
+            </select>
+          </div>
+        )}
+        {!!accountId && !!projects?.length && (
+          <div className="flex items-center gap-2">
+            <label htmlFor="vm-project" className="text-sm text-muted-foreground">Project</label>
+            <select id="vm-project" value={projectId} onChange={(e) => { setProjectId(e.target.value); setPage(1) }}
+              className="h-9 rounded-md border border-input bg-transparent px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              <option value="">Every project</option>
+              {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </div>
+        )}
+        {known.length > 0 && (
+          <div className="flex items-center gap-2">
+            <label htmlFor="vm-tag" className="text-sm text-muted-foreground">Tag</label>
+            <select id="vm-tag" value={tag} onChange={(e) => { setTag(e.target.value); setPage(1) }}
+              className="h-9 rounded-md border border-input bg-transparent px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              <option value="">Every server</option>
+              {known.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+        )}
+      </div>
+
       <div className="rounded-lg border bg-card text-card-foreground shadow-sm">
         {isLoading ? (
           <div className="p-8 text-center text-muted-foreground">Loading…</div>
@@ -88,6 +147,11 @@ export default function ClientVMsPage() {
             <p className="font-medium text-muted-foreground">Could not load your VMs.</p>
             <p className="text-sm text-muted-foreground mt-1">{(error as Error).message}</p>
             <Button className="mt-4" variant="outline" onClick={() => refetch()}>Retry</Button>
+          </div>
+        ) : vms.length === 0 && tag ? (
+          <div className="p-10 text-center">
+            <p className="font-medium text-muted-foreground">No server has the tag {tag}.</p>
+            <Button className="mt-4" variant="outline" onClick={() => setTag("")}>Show every server</Button>
           </div>
         ) : vms.length === 0 ? (
           <div className="p-10 text-center">
@@ -104,6 +168,16 @@ export default function ClientVMsPage() {
                   <Monitor className="w-5 h-5 shrink-0 text-muted-foreground" />
                   <div className="min-w-0">
                     <p className="font-medium truncate">{vm.hostname}</p>
+                    {me && vm.user_id !== me.id && accountName(vm.user_id) && (
+                      <p className="text-xs text-muted-foreground truncate">In {accountName(vm.user_id)}&apos;s account</p>
+                    )}
+                    {vm.tags && vm.tags.length > 0 && (
+                      <span className="mt-0.5 flex flex-wrap gap-1">
+                        {vm.tags.map((t) => (
+                          <span key={t} className="rounded border px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">{t}</span>
+                        ))}
+                      </span>
+                    )}
                     <p className="text-xs text-muted-foreground flex items-center gap-1.5">
                       {vm.region_name && (
                         <>
@@ -131,6 +205,7 @@ export default function ClientVMsPage() {
           </ul>
         )}
       </div>
+      <ListPager page={page} pageSize={PAGE} total={data?.total ?? 0} onPage={setPage} noun="servers" />
     </div>
   )
 }

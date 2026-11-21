@@ -9,6 +9,10 @@ import type { User, Enable2FAResponse } from '@/types'
 interface UpdateProfileRequest {
   name?: string
   email?: string
+  phone?: string
+  company?: string
+  timezone?: string
+  locale?: string
 }
 
 interface ChangePasswordRequest {

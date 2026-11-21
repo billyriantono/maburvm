@@ -23,7 +23,7 @@ func setupAPIKeyTestDB(t *testing.T) *gorm.DB {
 		id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL,
 		key_hash TEXT NOT NULL, prefix TEXT NOT NULL,
 		last_used_at DATETIME, expires_at DATETIME,
-		is_active BOOLEAN DEFAULT 1, role TEXT, read_only BOOLEAN NOT NULL DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		is_active BOOLEAN DEFAULT 1, role TEXT, read_only BOOLEAN NOT NULL DEFAULT 0, scope TEXT NOT NULL DEFAULT '', allowed_ips TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, deleted_at DATETIME
 	)`).Error)
 	return db
@@ -83,11 +83,64 @@ func TestAPIKeyServiceExpiry(t *testing.T) {
 	const userID = "33333333-3333-3333-3333-333333333333"
 
 	past := time.Now().Add(-time.Hour)
-	_, token, err := svc.CreateAPIKey(ctx, userID, models.RoleClient, CreateAPIKeyRequest{Name: "expired", ExpiresAt: &past})
+	_, _, err := svc.CreateAPIKey(ctx, userID, models.RoleClient, CreateAPIKeyRequest{Name: "expired", ExpiresAt: &past})
+	require.Error(t, err, "a key that would be born expired is refused")
+
+	soon := time.Now().Add(time.Hour)
+	key, token, err := svc.CreateAPIKey(ctx, userID, models.RoleClient, CreateAPIKeyRequest{Name: "expiring", ExpiresAt: &soon})
 	require.NoError(t, err)
+	require.NoError(t, db.Model(&models.APIKey{}).Where("id = ?", key.ID).Update("expires_at", past).Error)
 
 	_, err = svc.Authenticate(ctx, token)
 	require.ErrorIs(t, err, ErrAPIKeyInvalid, "expired key must not authenticate")
+}
+
+// Scopes and address lists are checked when a key is made, and the older
+// read_only flag is the read_only scope.
+func TestAPIKeyServiceScopesAndAddresses(t *testing.T) {
+	db := setupAPIKeyTestDB(t)
+	svc := NewAPIKeyService(db)
+	ctx := context.Background()
+	const userID = "55555555-5555-5555-5555-555555555555"
+
+	cases := []struct {
+		name      string
+		req       CreateAPIKeyRequest
+		wantScope string
+		wantErr   bool
+	}{
+		{"default is full", CreateAPIKeyRequest{Name: "a"}, models.APIKeyScopeFull, false},
+		{"read_only flag", CreateAPIKeyRequest{Name: "b", ReadOnly: true}, models.APIKeyScopeReadOnly, false},
+		{"power scope", CreateAPIKeyRequest{Name: "c", Scope: models.APIKeyScopeVMPower}, models.APIKeyScopeVMPower, false},
+		{"billing scope", CreateAPIKeyRequest{Name: "d", Scope: models.APIKeyScopeBilling}, models.APIKeyScopeBilling, false},
+		{"unknown scope", CreateAPIKeyRequest{Name: "e", Scope: "root"}, "", true},
+		{"flag contradicts scope", CreateAPIKeyRequest{Name: "f", ReadOnly: true, Scope: models.APIKeyScopeVMPower}, "", true},
+		{"bad address", CreateAPIKeyRequest{Name: "g", AllowedIPs: []string{"10.0.0.0/8", "not-an-ip"}}, "", true},
+	}
+	for _, tc := range cases {
+		key, _, err := svc.CreateAPIKey(ctx, userID, models.RoleClient, tc.req)
+		if tc.wantErr {
+			require.Error(t, err, tc.name)
+			continue
+		}
+		require.NoError(t, err, tc.name)
+		require.Equal(t, tc.wantScope, key.Scope, tc.name)
+		require.Equal(t, tc.wantScope == models.APIKeyScopeReadOnly, key.ReadOnly, tc.name)
+	}
+
+	key, _, err := svc.CreateAPIKey(ctx, userID, models.RoleClient, CreateAPIKeyRequest{Name: "office", AllowedIPs: []string{" 203.0.113.7 ", "", "2001:db8::/32"}})
+	require.NoError(t, err)
+	require.Equal(t, []string{"203.0.113.7", "2001:db8::/32"}, key.AllowedIPs)
+	keys, err := svc.ListAPIKeys(ctx, userID)
+	require.NoError(t, err)
+	var stored *models.APIKey
+	for i := range keys {
+		if keys[i].ID == key.ID {
+			stored = &keys[i]
+		}
+	}
+	require.NotNil(t, stored)
+	require.Equal(t, key.AllowedIPs, stored.AllowedIPs)
 }
 
 func TestAPIKeyServiceRoleCap(t *testing.T) {

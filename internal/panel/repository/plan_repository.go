@@ -42,6 +42,17 @@ func (r *PlanRepository) Update(ctx context.Context, plan *models.Plan) error {
 	return r.db.WithContext(ctx).Save(plan).Error
 }
 
+// SetNodeGroup writes a plan's hypervisor group by table name: the model
+// field is read-only.
+func (r *PlanRepository) SetNodeGroup(ctx context.Context, id, group string) error {
+	return r.db.WithContext(ctx).Table("plans").Where("id = ?", id).Update("node_group", group).Error
+}
+
+// SetColumns writes columns the model only reads, by table name.
+func (r *PlanRepository) SetColumns(ctx context.Context, id string, cols map[string]any) error {
+	return r.db.WithContext(ctx).Table("plans").Where("id = ?", id).Updates(cols).Error
+}
+
 func (r *PlanRepository) Delete(ctx context.Context, id string) error {
 	return r.db.WithContext(ctx).Delete(&models.Plan{}, "id = ?", id).Error
 }

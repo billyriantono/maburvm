@@ -16,6 +16,8 @@ import { useCopy } from "@/lib/use-feedback"
 import { useFleetVMs, type FleetVM } from "@/lib/hooks/use-dashboard"
 import { useDeleteVM, useVMActions, useVMStatusStream } from "@/lib/hooks/use-vms"
 import { useNodes } from "@/lib/hooks/use-nodes"
+import { Checkbox } from "@/components/ui/checkbox"
+import { BulkBar } from "@/components/vm-bulk"
 
 // The VM list is for finding a machine and acting on it. It can be searched
 // by what an operator actually has in hand (a name, a customer's email, an
@@ -64,6 +66,8 @@ export default function VMsListPage() {
   const [node, setNode] = useState("")
   const [sort, setSort] = useState("name")
   const [page, setPage] = useState(1)
+  const [tag, setTag] = useState("")
+  const [selected, setSelected] = useState<Set<string>>(new Set())
   const [busy, setBusy] = useState<Record<string, Power>>({})
   const [deletingVM, setDeletingVM] = useState<{ id: string; hostname: string } | null>(null)
 
@@ -77,7 +81,7 @@ export default function VMsListPage() {
   }, [typed])
 
   useVMStatusStream()
-  const { data, isLoading, error, refetch, isPlaceholderData } = useFleetVMs({ search, status, node, sort, page, pageSize: PAGE_SIZE })
+  const { data, isLoading, error, refetch, isPlaceholderData } = useFleetVMs({ search, status, node, tag, sort, page, pageSize: PAGE_SIZE })
   const { data: nodes } = useNodes()
   const vmActions = useVMActions()
   const deleteVM = useDeleteVM()
@@ -86,7 +90,15 @@ export default function VMsListPage() {
   const total = data?.total ?? 0
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE))
   const { transitionOf, begin, cancel } = useVMTransitions(rows)
-  const filtered = Boolean(search || status || node)
+  const filtered = Boolean(search || status || node || tag)
+  const allOnPage = rows.length > 0 && rows.every((vm) => selected.has(vm.id))
+  const toggle = (id: string) =>
+    setSelected((s) => {
+      const next = new Set(s)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
 
   const power = useCallback(
     async (vm: FleetVM, action: Power) => {
@@ -182,6 +194,11 @@ export default function VMsListPage() {
             </option>
           ))}
         </select>
+        {tag && (
+          <Button size="sm" variant="outline" onClick={() => { setTag(""); setPage(1) }} aria-label={`Stop filtering by the tag ${tag}`}>
+            Tag: <span className="font-mono">{tag}</span> (clear)
+          </Button>
+        )}
         <label htmlFor="vm-sort" className="sr-only">
           Order
         </label>
@@ -222,7 +239,25 @@ export default function VMsListPage() {
         </div>
       )}
 
+      {selected.size > 0 && <BulkBar ids={[...selected]} onClear={() => { setSelected(new Set()); refetch() }} />}
+
       <section aria-label="Virtual machines" className="rounded-lg border bg-card text-card-foreground">
+        {rows.length > 0 && (
+          <div className="flex items-center gap-3 border-b px-5 py-2 text-sm text-muted-foreground">
+            <Checkbox
+              id="vm-select-page"
+              checked={allOnPage}
+              onCheckedChange={(on) =>
+                setSelected((s) => {
+                  const next = new Set(s)
+                  rows.forEach((vm) => (on ? next.add(vm.id) : next.delete(vm.id)))
+                  return next
+                })
+              }
+            />
+            <label htmlFor="vm-select-page">Choose every VM on this page</label>
+          </div>
+        )}
         {isLoading ? (
           <div className="space-y-3 p-5" aria-busy="true">
             {[0, 1, 2, 3, 4].map((i) => (
@@ -251,6 +286,7 @@ export default function VMsListPage() {
                     setTyped("")
                     setStatus("")
                     setNode("")
+                    setTag("")
                     setPage(1)
                   }}
                 >
@@ -275,13 +311,27 @@ export default function VMsListPage() {
                   key={vm.id}
                   className="grid grid-cols-2 gap-x-6 gap-y-3 px-5 py-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1.2fr)_minmax(0,1.5fr)_minmax(0,0.7fr)_9.5rem] lg:items-center"
                 >
-                  <div className="col-span-2 min-w-0 lg:col-span-1">
+                  <div className="col-span-2 flex min-w-0 items-start gap-3 lg:col-span-1">
+                    <Checkbox className="mt-1.5" checked={selected.has(vm.id)} onCheckedChange={() => toggle(vm.id)} aria-label={`Choose ${vm.hostname}`} />
+                    <div className="min-w-0">
                     <Link href={`/vms/${vm.id}`} className="break-all text-base font-semibold underline-offset-4 hover:underline [font-stretch:112%]">
                       {vm.hostname}
                     </Link>
                     <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
                       <StatusBadge status={vmStatus(vm)} transition={transitionOf(vm.id)} />
                       {vm.rescue_mode && <span className="text-xs font-medium text-warning">Rescue mode</span>}
+                      {vm.delete_lock && <span className="text-xs text-muted-foreground">Locked by {vm.delete_lock}</span>}
+                    </div>
+                    {vm.tags && vm.tags.length > 0 && (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {vm.tags.map((t) => (
+                          <button key={t} type="button" onClick={() => { setTag(t); setPage(1) }} title={`Show VMs tagged ${t}`}
+                            className="rounded border px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground hover:border-foreground hover:text-foreground">
+                            {t}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     </div>
                   </div>
 

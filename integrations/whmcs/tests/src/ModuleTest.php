@@ -577,4 +577,151 @@ class ModuleTest extends TestCase
         Properties::$store[41] = ['vm_id' => 'vm-uuid', 'panel_user_id' => 'user-uuid'];
         $this->assertStringContainsString('connection refused', maburvm_TerminateAccount($this->params()));
     }
+
+    public function testUsageSyncWritesDiskAndTheOtherFiguresToTheService(): void
+    {
+        Properties::$store[41] = ['vm_id' => 'vm-uuid'];
+        Capsule::table('tblhosting')->where('id', 41)->update(['dedicatedip' => '203.0.113.10']);
+        $this->panel->ok('vm.usage', ['metadata' => ['bandwidth_used_mb' => '10', 'bandwidth_limit_mb' => '20', 'disk_limit_mb' => '61440',
+            'disk_allocated_mb' => '81920', 'snapshot_count' => '2', 'backup_count' => '3', 'backup_size_mb' => '4096',
+            'extra_ips' => '1', 'floating_ips' => '0', 'uptime_hours' => '71', 'uptime_since' => '2026-11-01T00:00:00Z']]);
+
+        maburvm_UsageUpdate($this->params());
+
+        $this->assertSame(81920, $this->service()->diskusage, 'the disk the VM holds, data disks included');
+        $this->assertSame(61440, $this->service()->disklimit);
+        $props = new Properties(41);
+        $this->assertSame('2', $props->get('Snapshots'));
+        $this->assertSame('3', $props->get('Backups'));
+        $this->assertSame('4096', $props->get('Backup size (MB)'));
+        $this->assertSame('1', $props->get('Extra IPs'));
+        $this->assertSame('0', $props->get('Floating IPs'));
+        $this->assertSame('71', $props->get('Uptime hours'));
+    }
+
+    public function testUsageSyncFromAnOlderPanelLeavesDiskUsageAlone(): void
+    {
+        Properties::$store[41] = ['vm_id' => 'vm-uuid'];
+        Capsule::table('tblhosting')->where('id', 41)->update(['dedicatedip' => '203.0.113.10', 'diskusage' => 5]);
+        $this->panel->ok('vm.usage', ['metadata' => ['bandwidth_used_mb' => '10', 'bandwidth_limit_mb' => '20', 'disk_limit_mb' => '61440']]);
+
+        maburvm_UsageUpdate($this->params());
+
+        $this->assertSame(5, $this->service()->diskusage);
+        $this->assertNull((new Properties(41))->get('Snapshots'));
+    }
+
+    public function testTheCustomerGetsPowerButtonsThatActOnTheirOwnServiceOnly(): void
+    {
+        Properties::$store[41] = ['vm_id' => 'vm-uuid', 'panel_user_id' => 'user-uuid'];
+        $this->panel->ok('vm.start')->ok('vm.stop')->ok('vm.restart');
+
+        $this->assertSame(['Start' => 'clientStart', 'Shut down' => 'clientStop', 'Restart' => 'clientRestart'], maburvm_ClientAreaCustomButtonArray());
+        foreach (['clientStart', 'clientStop', 'clientRestart', 'clientReinstall', 'clientResetPassword', 'clientConsole'] as $fn) {
+            $this->assertContains($fn, maburvm_ClientAreaAllowedFunctions());
+            $this->assertTrue(function_exists('maburvm_' . $fn), $fn);
+        }
+        $this->assertSame('success', maburvm_clientStart($this->params()));
+        $this->assertSame('success', maburvm_clientStop($this->params()));
+        $this->assertSame('success', maburvm_clientRestart($this->params()));
+        $this->assertSame(['vm.start', 'vm.stop', 'vm.restart'], $this->panel->events());
+        $this->assertSame(['user_id' => 'user-uuid', 'vm_id' => 'vm-uuid', 'external_ref' => 'whmcs-41'], $this->panel->sent('vm.start')['data'],
+            'the panel checks the VM belongs to this account and this service');
+
+        $this->assertStringContainsString('suspended', maburvm_clientStart($this->params(['status' => 'Suspended'])));
+        $this->assertCount(3, $this->panel->requests, 'a suspended service sends nothing');
+    }
+
+    public function testAPanelRefusalIsReadFromTheErrorEnvelope(): void
+    {
+        Properties::$store[41] = ['vm_id' => 'vm-uuid', 'panel_user_id' => 'user-uuid'];
+        $this->panel->answer('vm.start', 409, ['success' => false, 'message' => 'The VM is suspended',
+            'error' => ['code' => 'conflict', 'message' => 'The VM is suspended']]);
+        $this->assertSame('MaburVM vm.start failed: The VM is suspended', maburvm_clientStart($this->params()));
+        $this->assertSame('Only in the envelope', maburvm_errorMessage(['error' => ['code' => 'x', 'message' => 'Only in the envelope']], 400));
+        $this->assertSame('Before the envelope', maburvm_errorMessage(['message' => 'Before the envelope'], 400));
+        $this->assertSame('HTTP 502', maburvm_errorMessage(['raw' => '<html>'], 502));
+    }
+
+    public function testReinstallNeedsAConfirmationAndATemplateAndSavesTheNewPassword(): void
+    {
+        Properties::$store[41] = ['vm_id' => 'vm-uuid', 'panel_user_id' => 'user-uuid'];
+        $template = '6f1c2a54-0d4e-4f8e-9a63-2d7b1c9e0a11';
+        $this->panel->ok('vm.rebuild', ['metadata' => ['job_id' => '9', 'password' => 'N3wRootPass']]);
+
+        $GLOBALS['maburvm_request'] = ['template_id' => $template];
+        $this->assertStringContainsString('confirm', maburvm_clientReinstall($this->params()));
+        $GLOBALS['maburvm_request'] = ['confirm' => '1', 'template_id' => 'not-a-template'];
+        $this->assertStringContainsString('Choose an operating system', maburvm_clientReinstall($this->params()));
+        $this->assertSame([], $this->panel->events(), 'nothing is sent until both are right');
+
+        $GLOBALS['maburvm_request'] = ['confirm' => '1', 'template_id' => $template];
+        $this->assertSame('success', maburvm_clientReinstall($this->params()));
+        $this->assertSame(['user_id' => 'user-uuid', 'vm_id' => 'vm-uuid', 'external_ref' => 'whmcs-41', 'template_id' => $template,
+            'regenerate_password' => true], $this->panel->sent('vm.rebuild')['data']);
+        $this->assertSame('enc:N3wRootPass', $this->service()->password, 'the customer reads the new password on the service');
+        unset($GLOBALS['maburvm_request']);
+    }
+
+    public function testANewRootPasswordIsSavedOnlyWhenThePanelSetIt(): void
+    {
+        Properties::$store[41] = ['vm_id' => 'vm-uuid', 'panel_user_id' => 'user-uuid'];
+        $this->panel->answer('vm.reset_password', 409, ['success' => false, 'message' => 'The VM is not running']);
+        $this->assertStringContainsString('not running', maburvm_clientResetPassword($this->params()));
+        $this->assertSame('enc:Sup3rSecret!', $this->service()->password);
+
+        $this->panel->answers['vm.reset_password'] = [[200, ['success' => true]]];
+        $this->assertSame('success', maburvm_clientResetPassword($this->params()));
+        $sent = $this->panel->sent('vm.reset_password', 1)['data']['password'];
+        $this->assertGreaterThanOrEqual(16, strlen($sent));
+        $this->assertSame('enc:' . $sent, $this->service()->password);
+    }
+
+    public function testTheConsoleOpensThroughAOneTimeLinkToTheConsolePage(): void
+    {
+        Properties::$store[41] = ['vm_id' => 'vm-uuid', 'panel_user_id' => 'user-uuid'];
+        $this->panel->ok('user.sso', ['metadata' => ['path' => '/api/v1/auth/billing-sso?token=t', 'expires_in' => '60']]);
+        $went = null;
+        $GLOBALS['maburvm_redirect'] = function (string $url) use (&$went) {
+            $went = $url;
+            return 'redirected';
+        };
+
+        $this->assertSame('redirected', maburvm_clientConsole($this->params()));
+        $this->assertSame('https://panel.example.test/api/v1/auth/billing-sso?token=t', $went);
+        $this->assertSame(['user_id' => 'user-uuid', 'vm_id' => 'vm-uuid', 'page' => 'console', 'external_ref' => 'whmcs-41'],
+            $this->panel->sent('user.sso')['data']);
+        unset($GLOBALS['maburvm_redirect']);
+    }
+
+    public function testTheClientAreaDrawsGraphsAndOffersTheTemplatesOfThePlan(): void
+    {
+        Properties::$store[41] = ['vm_id' => 'vm-uuid', 'panel_user_id' => 'user-uuid'];
+        $this->panel
+            ->ok('vm.status', ['metadata' => ['state' => 'ready', 'status' => 'stopped', 'ip' => '203.0.113.10']])
+            ->ok('vm.metrics', ['data' => ['points' => [
+                ['cpu_percent' => 10, 'memory_percent' => 40, 'network_in_bps' => 0, 'network_out_bps' => 2048],
+                ['cpu_percent' => 50, 'memory_percent' => 45, 'network_in_bps' => 2000000, 'network_out_bps' => 1024],
+            ]]])
+            ->ok('catalog.list', ['data' => ['templates' => [
+                ['id' => 't-any', 'name' => 'Debian', 'version' => '12', 'plan_ids' => []],
+                ['id' => 't-plan', 'name' => 'Windows', 'version' => '2022', 'plan_ids' => ['plan-big']],
+                ['id' => 't-other', 'name' => 'Windows', 'version' => '2025', 'plan_ids' => ['plan-other']],
+            ]]]);
+
+        $vars = maburvm_ClientArea($this->params(['configoption5' => 'plan-big']))['vars'];
+
+        $this->assertSame('stopped', $vars['vmPower']);
+        $this->assertSame(['CPU', 'Memory', 'Network in', 'Network out'], array_column($vars['graphs'], 'label'));
+        $this->assertSame('0,53.2 300,30', $vars['graphs'][0]['points']);
+        $this->assertSame('50%', $vars['graphs'][0]['now']);
+        $this->assertSame('1.9 MB/s', $vars['graphs'][2]['now']);
+        $this->assertSame([['id' => 't-any', 'name' => 'Debian 12'], ['id' => 't-plan', 'name' => 'Windows 2022']], $vars['templates']);
+        $this->assertSame(['vm_id' => 'vm-uuid', 'user_id' => 'user-uuid', 'external_ref' => 'whmcs-41', 'hours' => 24],
+            $this->panel->sent('vm.metrics')['data']);
+        $template = file_get_contents(__DIR__ . '/../../modules/servers/maburvm/templates/clientarea.tpl');
+        foreach (['clientStart', 'clientStop', 'clientRestart', 'clientConsole', 'clientResetPassword', 'clientReinstall', 'name="token"'] as $needle) {
+            $this->assertStringContainsString($needle, $template);
+        }
+    }
 }

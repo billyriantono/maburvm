@@ -247,8 +247,29 @@ func TestDrivesAndRewrite(t *testing.T) {
 	if _, err := RewriteForTarget(sampleDomain, map[string]string{"vdz": "/x"}); err == nil {
 		t.Fatal("unknown drive accepted")
 	}
-	if _, err := RewriteForTarget(sampleDomain, map[string]string{"vdc": "/x"}); err == nil {
-		t.Fatal("a block device was rewritten as a file")
+	// A qcow2 file cannot become a block device without saying it is raw there.
+	if _, err := RewriteForTarget(sampleDomain, map[string]string{"vda": "/dev/vg/a"}); err == nil {
+		t.Fatal("a qcow2 disk was put on a block device")
+	}
+}
+
+func TestRewriteDisksBetweenFilesAndVolumes(t *testing.T) {
+	out, err := RewriteDisks(sampleDomain, map[string]Dest{
+		"vda": {Path: "/dev/vg1/maburvm-a-vda", Format: "raw"},
+		"vdc": {Path: "/data/a-vdc.qcow2", Format: "qcow2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := Drives(out)
+	if got[0].SourceType != "block" || got[0].Path != "/dev/vg1/maburvm-a-vda" || got[0].Format != "raw" {
+		t.Fatalf("vda: %+v", got[0])
+	}
+	if got[3].SourceType != "file" || got[3].Path != "/data/a-vdc.qcow2" || got[3].Format != "qcow2" {
+		t.Fatalf("vdc: %+v", got[3])
+	}
+	if !strings.Contains(out, `cache="none"`) || !strings.Contains(out, `io="native"`) {
+		t.Fatalf("a new block device is not read past the page cache:\n%s", out)
 	}
 }
 
@@ -392,5 +413,36 @@ func TestRegistry(t *testing.T) {
 	r.Finish(vmID, "m2", nil)
 	if p := r.Get(vmID, "m2"); p.State != StateCompleted {
 		t.Fatalf("state %s", p.State)
+	}
+}
+
+func TestCopyAllOverwritesOldContent(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "old")
+	if err := os.WriteFile(p, bytes.Repeat([]byte{0xff}, 4096), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dst, err := os.OpenFile(p, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := make([]byte, 4096)
+	src[10] = 1
+	if n, err := CopyAll(dst, bytes.NewReader(src), 1024, nil); err != nil || n != 4096 {
+		t.Fatal(n, err)
+	}
+	dst.Close()
+	if got, _ := os.ReadFile(p); !bytes.Equal(got, src) {
+		t.Fatal("the destination's old bytes showed through")
+	}
+}
+
+func TestDevicesAreLeftOutOfRemovable(t *testing.T) {
+	p := Prepared{VMID: vmID, MigrationID: "m1", Files: []string{"/dev/vg0/maburvm-" + vmID + "-vda", "/nonexistent/x.qcow2"}}
+	files, err := Removable(p, "m1", nil)
+	if err != nil || len(files) != 0 {
+		t.Fatalf("Removable = %v, %v", files, err)
+	}
+	if d := Devices(p); len(d) != 1 || d[0] != "/dev/vg0/maburvm-"+vmID+"-vda" {
+		t.Fatalf("Devices = %v", d)
 	}
 }

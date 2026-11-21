@@ -2,15 +2,19 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/maburvm/panel/internal/shared/models"
 )
 
 // Routes a staff account reaches whatever its role: its own account, keys
@@ -26,6 +30,10 @@ var (
 		"/api/v1/ssh-keys": true, "/api/v1/ssh-keys/:id": true, "/api/v1/ssh-keys/generate": true,
 		"/api/v1/recipes": true, "/api/v1/recipes/:id": true,
 		"/api/v1/notifications/:id/read": true, "/api/v1/notifications/read-all": true,
+		"/api/v1/settings/email-preferences": true, "/api/v1/unsubscribe": true,
+		"/api/v1/account/members": true, "/api/v1/account/members/:id": true, "/api/v1/account/memberships/:id": true,
+		"/api/v1/account/projects": true, "/api/v1/account/projects/:id": true, "/api/v1/account/invitations/accept": true,
+		"/api/v1/account/invitations/lookup": true,
 	}
 	anyStaffReadRoutes = map[string]bool{
 		"/api/v1/auth/client-ip": true, "/api/v1/auth/me": true, "/api/v1/auth/oidc/config": true,
@@ -38,7 +46,9 @@ var (
 		"/api/v1/ssh-keys": true, "/api/v1/plans": true, "/api/v1/plans/:id": true, "/api/v1/regions": true,
 		"/api/v1/templates": true, "/api/v1/templates/:id": true,
 		"/api/v1/nodes/agent-binary": true, "/api/v1/nodes/agent-binary/checksum": true,
-		"/api/v1/openapi.json": true,
+		"/api/v1/openapi.json": true, "/api/v1/maintenance": true, "/api/v1/announcements/current": true,
+		"/api/v1/portal": true, "/api/v1/account/members": true, "/api/v1/account/memberships": true,
+		"/api/v1/account/projects": true,
 	}
 )
 
@@ -51,7 +61,17 @@ func TestStaffRolesOnEveryRoute(t *testing.T) {
 	require.NoError(t, f.db.Exec(`UPDATE users SET staff_role = 'readonly' WHERE id = ?`, f.support.ID.String()).Error)
 	require.NoError(t, f.db.Exec(`INSERT INTO staff_roles (id, name, permissions) VALUES ('nothing', 'Nothing', '[]')`).Error)
 	require.NoError(t, f.db.Exec(`UPDATE users SET staff_role = 'nothing' WHERE id = ?`, f.billing.ID.String()).Error)
-	readOnly, nothing := f.support, f.billing
+	// A fresh account of the same role per request keeps the per-account API
+	// rate limit out of a walk this long.
+	seq := 0
+	fresh := func(role string) *models.User {
+		seq++
+		u := &models.User{ID: uuid.New(), Email: fmt.Sprintf("walk%d@example.com", seq), Role: models.RoleAdmin}
+		later := time.Now().Add(time.Hour)
+		require.NoError(t, f.db.Exec(`INSERT INTO users (id, email, password_hash, role, staff_role, created_at, updated_at) VALUES (?, ?, 'x', 'admin', ?, ?, ?)`,
+			u.ID.String(), u.Email, role, later, later).Error)
+		return u
+	}
 
 	s := NewServer(f.db, f.s.cfg)
 	s.SetupRoutes()
@@ -61,13 +81,14 @@ func TestStaffRolesOnEveryRoute(t *testing.T) {
 		if !strings.HasPrefix(r.Path, "/api/v1/") || r.Method == "echo_route_not_found" || r.Path == "/api/v1/events/vm-status" {
 			continue
 		}
-		who, allowed := readOnly, ownWriteRoutes[r.Path]
+		role, allowed := "readonly", ownWriteRoutes[r.Path]
 		if r.Method == http.MethodGet {
-			who, allowed = nothing, anyStaffReadRoutes[r.Path]
+			role, allowed = "nothing", anyStaffReadRoutes[r.Path]
 		}
 		if allowed {
 			continue
 		}
+		who := fresh(role)
 		path := r.Path
 		for _, seg := range strings.Split(path, "/") {
 			if strings.HasPrefix(seg, ":") {

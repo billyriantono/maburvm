@@ -39,6 +39,7 @@ import { toast } from "sonner"
 import { StatusBadge, useVMTransitions, vmStatus } from "@/components/status-badge"
 import { useCopy } from "@/lib/use-feedback"
 import { NodeStoragePools } from "@/components/pool-allocation"
+import { NodeGroupCard } from "@/components/node-group"
 import { NodeAllocationCard } from "@/components/node-allocation"
 import { NodeInstallCommand } from "@/components/node-install-command"
 import { NodePreflight } from "@/components/node-preflight"
@@ -507,6 +508,7 @@ export default function NodeDetailPage() {
           {/* Outside the live readings: what is stored and promised on a node
               matters most when the node is not answering. */}
           <NodeAllocationCard node={node} />
+          <NodeGroupCard node={node} />
           <NodeStoragePools nodeId={node.id} />
           <NodePreflight nodeId={node.id} />
           <NodeNATPorts nodeId={node.id} />

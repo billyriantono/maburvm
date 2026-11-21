@@ -19,7 +19,7 @@ func TestSuspendedAccountSessionsAndAPIKeysStop(t *testing.T) {
 	db := setupAuthTestDB(t)
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS api_keys (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL,
 		key_hash TEXT NOT NULL UNIQUE, prefix TEXT NOT NULL, last_used_at DATETIME, expires_at DATETIME, is_active BOOLEAN DEFAULT 1,
-		role TEXT, read_only BOOLEAN NOT NULL DEFAULT 0, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`).Error)
+		role TEXT, read_only BOOLEAN NOT NULL DEFAULT 0, scope TEXT NOT NULL DEFAULT '', allowed_ips TEXT, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`).Error)
 	t.Cleanup(func() { db.Exec(`DROP TABLE api_keys`) })
 
 	user := &models.User{Email: "suspend-me@example.com", PasswordHash: "x", Role: models.RoleClient}

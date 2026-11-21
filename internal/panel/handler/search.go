@@ -8,6 +8,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/maburvm/panel/internal/panel/middleware"
+	"github.com/maburvm/panel/internal/panel/service"
 	"github.com/maburvm/panel/internal/shared/models"
 )
 
@@ -76,7 +77,8 @@ func searchHandler(db *gorm.DB) echo.HandlerFunc {
 			Where("LOWER(vms.hostname) LIKE ? ESCAPE '\\' OR LOWER(CAST(vms.id AS TEXT)) LIKE ? ESCAPE '\\' OR CAST(networks.ip_address AS TEXT) LIKE ? ESCAPE '\\'", like, like, like).
 			Group("vms.id, vms.hostname, vms.status").Order("vms.hostname").Limit(searchLimit)
 		if !admin {
-			vmQuery = vmQuery.Where("vms.user_id = ?", user.ID.String())
+			cond, args := service.CustomerVMScope(ctx, db, user.ID.String()).SQL(func(col string) string { return "vms." + col })
+			vmQuery = vmQuery.Where(cond, args...)
 		}
 		var vms []SearchVM
 		if err := vmQuery.Scan(&vms).Error; err != nil {

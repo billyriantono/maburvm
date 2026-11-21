@@ -12,16 +12,23 @@
 #   --skip-offsite-backup  skip the panel-backup run even when panel-backup is configured
 #   --timeout SECONDS      how long the new panel has to become healthy (default 1800)
 #   --keep N               pre-upgrade dumps kept in backups/ (default 5)
+#   --drain-timeout SECONDS  how long running jobs have to finish first (default 900)
+#   --no-drain             do not wait for running jobs (the restart cancels them;
+#                          they are retried after it)
 #
 # First an off-host backup (when panel-backup is configured). After the pull or
-# build, the panel is stopped and the database dumped into backups/ and recorded,
+# build, maintenance mode goes on (customers and the billing system wait, new
+# jobs are held) and running jobs get --drain-timeout to finish; if some are
+# still running then, maintenance is switched off and nothing else changes.
+# Then the panel is stopped and the database dumped into backups/ and recorded,
 # which a panel with MIGRATION_REQUIRE_BACKUP_WITHIN set needs before it migrates.
-# If the new panel or web does not become healthy, the previous images are put
-# back and, when migrations ran, the dump is restored (asked first, unless --yes).
+# Maintenance ends once the new panel is healthy. If the new panel or web does
+# not become healthy, the previous images are put back and, when migrations ran,
+# the dump is restored (asked first, unless --yes).
 set -euo pipefail
 
 usage() {
-  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
   exit 2
 }
 log() { printf '==> %s\n' "$*"; }
@@ -30,7 +37,7 @@ die() {
   exit 1
 }
 
-VERSION="" BUILD="" YES="" NO_RESTORE="" SKIP_OFFSITE="" TIMEOUT=1800 KEEP=5
+VERSION="" BUILD="" YES="" NO_RESTORE="" SKIP_OFFSITE="" TIMEOUT=1800 KEEP=5 DRAIN_TIMEOUT=900 NO_DRAIN=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --version) VERSION="${2:-}"; shift ;;
@@ -40,12 +47,15 @@ while [ $# -gt 0 ]; do
     --skip-offsite-backup) SKIP_OFFSITE=1 ;;
     --timeout) TIMEOUT="${2:-}"; shift ;;
     --keep) KEEP="${2:-}"; shift ;;
+    --drain-timeout) DRAIN_TIMEOUT="${2:-}"; shift ;;
+    --no-drain) NO_DRAIN=1 ;;
     -h | --help) usage ;;
     *) echo "unknown option $1" >&2; usage ;;
   esac
   shift
 done
-[[ "$TIMEOUT" =~ ^[0-9]+$ && "$KEEP" =~ ^[1-9][0-9]*$ ]] || die "--timeout and --keep take whole numbers (--keep at least 1)"
+[[ "$TIMEOUT" =~ ^[0-9]+$ && "$KEEP" =~ ^[1-9][0-9]*$ && "$DRAIN_TIMEOUT" =~ ^[0-9]+$ ]] ||
+  die "--timeout, --keep and --drain-timeout take whole numbers (--keep at least 1)"
 [ -z "$VERSION" ] || [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]] || die "--version takes a release tag such as v1.3.0"
 [ -z "$VERSION" ] || [ -z "$BUILD" ] || die "--version and --build cannot be used together"
 
@@ -124,6 +134,42 @@ if [ -z "$SKIP_OFFSITE" ] && [ -n "$(env_get BACKUP_DEST)" ] && [ -n "$(env_get 
 fi
 
 restore_env() { cp -p "backups/env.production.$TS" "$ENV_FILE"; }
+
+# Maintenance mode, when this run switched it on. The running panel switches it
+# off through its own command, so its job queue resumes at once; a stopped one
+# is switched off in the database, which the next panel to start reads. Only a
+# binary that carries the command may be given it: an older one would start a
+# second panel (with its own job workers). The running binary is asked, not the
+# database, which is migrated past the binary after a rollback without restore.
+MAINT=""
+panel_has_maintenance() {
+  compose exec -T panel grep -q 'usage: maintenance on' /app/panel > /dev/null 2>&1
+}
+maint_off_db() {
+  [ -n "$MAINT" ] || return 0
+  psql_q "$PGDB_" "DELETE FROM system_settings WHERE section = 'maintenance'; UPDATE river_queue SET paused_at = NULL WHERE paused_at IS NOT NULL" > /dev/null ||
+    log "WARNING: maintenance mode could not be switched off; switch it off under System settings or with: docker compose ... exec panel /app/panel maintenance off"
+  MAINT=""
+}
+maint_off_running() {
+  [ -n "$MAINT" ] || return 0
+  if compose exec -T panel /app/panel maintenance off > /dev/null; then
+    MAINT=""
+  else
+    log "WARNING: maintenance mode could not be switched off; switch it off under System settings or with: docker compose ... exec panel /app/panel maintenance off"
+  fi
+}
+# A run that stops part-way leaves maintenance off: through the panel while it
+# runs, in the database otherwise.
+maint_cleanup() {
+  [ -n "$MAINT" ] || return 0
+  if [ "$(state .State.Running maburvm-panel)" = true ] && panel_has_maintenance; then
+    maint_off_running
+  else
+    maint_off_db
+  fi
+}
+trap maint_cleanup EXIT
 # The env file and the image tags as they were (a build moves :local).
 put_back() {
   restore_env
@@ -148,6 +194,35 @@ else
   compose pull panel web || { restore_env; die "the pull failed; the running panel was not touched"; }
 fi
 
+# Running jobs (a backup, a move) would be cancelled by the restart: hold new
+# ones and let the running ones finish first.
+if [ -n "$NO_DRAIN" ]; then
+  log "Not waiting for running jobs (--no-drain): the restart cancels them, and they are retried after it"
+elif ! panel_has_maintenance; then
+  log "This panel predates maintenance mode: jobs running now are cancelled by the restart, and retried after it"
+else
+  log "Maintenance mode on: customers and the billing system wait, new jobs are held (running ones get ${DRAIN_TIMEOUT}s)"
+  MAINT=1
+  set +e
+  compose exec -T panel /app/panel maintenance on --hold-jobs --wait "$DRAIN_TIMEOUT" \
+    --message "The panel is being upgraded. Changes are paused for a few minutes; your servers keep running."
+  rc=$?
+  set -e
+  case "$rc" in
+    0) ;;
+    3)
+      maint_off_running
+      put_back
+      die "jobs were still running after ${DRAIN_TIMEOUT}s (listed above); maintenance was switched off and nothing else changed. Wait for them (Job queue page), or rerun with a longer --drain-timeout or --no-drain"
+      ;;
+    *)
+      maint_cleanup
+      put_back
+      die "maintenance mode could not be switched on; nothing else changed (or rerun with --no-drain)"
+      ;;
+  esac
+fi
+
 # Dumped with the panel stopped and only after the slow build or pull, so a
 # restore loses nothing the current version wrote (a VM a billing system
 # created a minute ago, say), only what the new version did.
@@ -159,6 +234,7 @@ if ! (umask 077 && compose exec -T postgres pg_dump -U "$PGUSER_" -d "$PGDB_" --
   ! compose exec -T postgres pg_restore --list < "$DUMP" > /dev/null; then
   rm -f "$DUMP"
   put_back
+  maint_off_db
   compose start panel || true
   die "the database dump failed or does not read back; the previous panel was started again and nothing else changed"
 fi
@@ -213,6 +289,10 @@ rollback() {
   # The :rollback tags by name, whatever .env.production says: an env file
   # edited before this run (MABURVM_IMAGE_PREFIX/VERSION) would otherwise start
   # the failed version again.
+  # The previous panel starts out of maintenance, also from a restored dump
+  # (it was taken in maintenance).
+  compose stop panel > /dev/null 2>&1 || true
+  maint_off_db
   log "Starting the previous panel and web (maburvm-panel:rollback, maburvm-web:rollback)"
   MABURVM_IMAGE_PREFIX=maburvm MABURVM_VERSION=rollback compose up -d --no-deps --no-build --force-recreate panel || true
   if wait_healthy maburvm-panel "$TIMEOUT"; then
@@ -232,6 +312,7 @@ rollback() {
 log "Starting the new panel; pending migrations run now (up to ${TIMEOUT}s)"
 if compose up -d --no-deps --no-build panel && wait_healthy maburvm-panel "$TIMEOUT" &&
   compose up -d --no-deps --no-build web && wait_healthy maburvm-web 300; then
+  maint_off_running
   log "Upgrade done: $(state .Config.Image maburvm-panel), migrations $LAST_BEFORE -> $(psql_q "$PGDB_" 'SELECT max(version) FROM schema_migrations')"
   echo "The previous images stay tagged maburvm-panel:rollback and maburvm-web:rollback, and the dump is $DUMP,"
   echo "until the next upgrade. Rolling back by hand: docs/DEPLOYMENT.md, Rolling back."

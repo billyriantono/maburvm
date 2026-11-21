@@ -8,6 +8,7 @@ import { GlobalSearch } from "@/components/global-search"
 import { Button } from "@/components/ui/button"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { ClientNotifications } from "@/components/client-notifications"
+import { MaintenanceBanner } from "@/components/maintenance-banner"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -142,6 +143,7 @@ export default function ClientLayout({
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
+          <MaintenanceBanner staff={false} />
         </header>
 
         <main className="p-4 lg:p-8">{children}</main>

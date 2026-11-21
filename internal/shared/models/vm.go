@@ -61,6 +61,9 @@ type VM struct {
 	// read-only here; VMService.SetBillingLink is the writer.
 	PlanID     *string `json:"plan_id,omitempty" gorm:"column:plan_id;->"`
 	BillingRef *string `json:"billing_ref,omitempty" gorm:"column:billing_ref;->"`
+	// ProjectID groups the VM inside its owner's account. Read-only here;
+	// written by table name (service.SetVMProject).
+	ProjectID *string `json:"project_id,omitempty" gorm:"column:project_id;->"`
 	// Network policy, read-only here (written by NetworkService by table
 	// name). FirewallDefault is models.FirewallDefault*; empty on a database
 	// without the column, which reads as drop.
@@ -75,9 +78,14 @@ type VM struct {
 	// LimitsNote says why the node does not have them yet. All read-only here;
 	// VMService writes them by table name. The throttle and the note are for
 	// staff, so only the VM detail response carries them.
-	Limits     VMLimits       `json:"limits" gorm:"column:limits;type:jsonb;serializer:json;->"`
-	Throttle   *VMLimits      `json:"-" gorm:"column:throttle;type:jsonb;serializer:json;->"`
-	LimitsNote *string        `json:"-" gorm:"column:limits_note;->"`
+	Limits     VMLimits  `json:"limits" gorm:"column:limits;type:jsonb;serializer:json;->"`
+	Throttle   *VMLimits `json:"-" gorm:"column:throttle;type:jsonb;serializer:json;->"`
+	LimitsNote *string   `json:"-" gorm:"column:limits_note;->"`
+	// DeleteLock is VMDeleteLock*: who locked the VM against deletion and
+	// reinstall. Tags are the owner's labels. Both read-only here; written by
+	// table name (VMService.SetDeleteLock, SetTags).
+	DeleteLock string         `json:"delete_lock" gorm:"column:delete_lock;->"`
+	Tags       []string       `json:"tags" gorm:"column:tags;type:jsonb;serializer:json;->"`
 	CreatedAt  time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
 	UpdatedAt  time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
 	DeletedAt  gorm.DeletedAt `json:"-" gorm:"index"`
@@ -90,6 +98,15 @@ type VM struct {
 	RegionName    string `json:"region_name,omitempty" gorm:"-"`
 	RegionCountry string `json:"region_country,omitempty" gorm:"-"`
 }
+
+// Delete locks. A staff lock stops every removal, the billing system's
+// included; an owner lock stops everyone but the billing system, so a
+// customer cannot use it to keep a VM they stopped paying for.
+const (
+	VMDeleteLockNone  = ""
+	VMDeleteLockOwner = "owner"
+	VMDeleteLockStaff = "staff"
+)
 
 // BillingManaged reports a VM a billing service pays for.
 func (v *VM) BillingManaged() bool {

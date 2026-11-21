@@ -209,12 +209,21 @@ type UpdateNodeRequest struct {
 	// VCPURatio, when set, is the node's own vCPU overcommit ratio; 0 returns
 	// it to the panel-wide one.
 	VCPURatio *float64 `json:"vcpu_ratio,omitempty"`
+	// NodeGroup, when set, puts the node in a hypervisor group; "" takes it out.
+	NodeGroup *string `json:"node_group,omitempty"`
 }
 
 // UpdateNode updates an existing node's information
 func (s *NodeService) UpdateNode(ctx context.Context, id string, req *UpdateNodeRequest) (*models.Node, error) {
 	if req.VCPURatio != nil && (*req.VCPURatio < 0 || *req.VCPURatio > 100) {
 		return nil, fmt.Errorf("%w: the vCPU ratio must be between 0 and 100", ErrInvalidNodeRatio)
+	}
+	if req.NodeGroup != nil {
+		g, err := NormalizeNodeGroup(*req.NodeGroup)
+		if err != nil {
+			return nil, err
+		}
+		req.NodeGroup = &g
 	}
 	// Get existing node
 	node, err := s.repo.GetByID(ctx, id)
@@ -279,6 +288,13 @@ func (s *NodeService) UpdateNode(ctx context.Context, id string, req *UpdateNode
 			return nil, fmt.Errorf("failed to update node: %w", err)
 		}
 		node.VCPURatio = *req.VCPURatio
+	}
+	if req.NodeGroup != nil {
+		if err := s.db.WithContext(ctx).Table("nodes").Where("id = ?", node.ID).
+			Update("node_group", *req.NodeGroup).Error; err != nil {
+			return nil, fmt.Errorf("failed to update node: %w", err)
+		}
+		node.NodeGroup = *req.NodeGroup
 	}
 
 	return node, nil

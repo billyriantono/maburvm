@@ -294,6 +294,12 @@ func (s *IPAMService) ListPools(ctx context.Context, limit, offset int) ([]model
 	return s.repo.ListPools(ctx, limit, offset)
 }
 
+// CountPools and CountAddresses are the totals of the windowed lists.
+func (s *IPAMService) CountPools(ctx context.Context) (int64, error) { return s.repo.CountPools(ctx) }
+func (s *IPAMService) CountAddresses(ctx context.Context, poolID string) (int64, error) {
+	return s.repo.CountAddresses(ctx, poolID)
+}
+
 // ListPoolsForNode returns the pools usable on a given node: those bound to it
 // (junction table or legacy node_id) plus global pools. Used to auto-assign a
 // public IP when the caller didn't pick a pool (e.g. client self-service orders).

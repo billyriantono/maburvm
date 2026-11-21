@@ -248,3 +248,20 @@ jobs:
         run: |
           composer install --no-interaction --no-progress
           vendor/bin/phpunit
+      # The Paymenter and FOSSBilling modules ride in this job (its name is
+      # kept so required checks stay as they are).
+      - name: Lint Paymenter and FOSSBilling modules
+        working-directory: integrations
+        run: find paymenter fossbilling -name '*.php' -not -path '*/vendor/*' -print0 | xargs -0 -n1 php -l
+      - name: Paymenter unit tests
+        # Against stand-ins for Paymenter's extension classes, not a Paymenter install.
+        working-directory: integrations/paymenter/tests
+        run: |
+          composer install --no-interaction --no-progress
+          vendor/bin/phpunit
+      - name: FOSSBilling unit tests
+        # Against stand-ins for FOSSBilling's server manager classes, not a FOSSBilling install.
+        working-directory: integrations/fossbilling/tests
+        run: |
+          composer install --no-interaction --no-progress
+          vendor/bin/phpunit

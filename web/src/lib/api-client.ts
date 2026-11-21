@@ -1,4 +1,5 @@
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
+import { apiErrorCode, apiErrorMessage } from './api-error';
 
 // API Response wrapper matching Go backend structure
 export interface ApiResponse<T> {
@@ -7,12 +8,7 @@ export interface ApiResponse<T> {
   success: boolean;
 }
 
-// API Error structure
-export interface ApiError {
-  message: string;
-  code?: string;
-  details?: Record<string, string[]>;
-}
+export type { ApiError, PageMeta } from '@/types/api';
 
 // Create axios instance with default config.
 // Same-origin: requests to /api are proxied server-side to the panel via
@@ -52,11 +48,12 @@ apiClient.interceptors.response.use(
     // 502" tells the person nothing about what happened or what to do.
     const status: number | undefined = error.response?.status;
     const body = error.response?.data;
-    const fromServer =
-      (typeof body?.message === 'string' && body.message) ||
-      (typeof body?.error === 'string' && body.error) ||
-      '';
-    if (!error.response || status === 502 || status === 503 || status === 504) {
+    const fromServer = apiErrorMessage(body);
+    const code = apiErrorCode(body);
+    if (status === 503 && code === 'maintenance' && fromServer) {
+      // Maintenance mode: the panel is up and says why the change waits.
+      error.message = fromServer;
+    } else if (!error.response || status === 502 || status === 503 || status === 504) {
       error.message = 'The panel did not answer. It may be restarting. Try again in a moment.';
     } else if (fromServer) {
       error.message = fromServer;
@@ -66,7 +63,7 @@ apiClient.interceptors.response.use(
       sessionEnded();
     } else if (
       status === 403 &&
-      body?.code === 'two_factor_required' &&
+      code === 'two_factor_required' &&
       typeof window !== 'undefined' &&
       window.location.pathname !== TWO_FACTOR_SETUP_PATH
     ) {

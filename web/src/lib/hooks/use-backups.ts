@@ -27,6 +27,23 @@ export function useBackups(vmId: string) {
   })
 }
 
+export const BACKUP_PAGE = 20
+
+// useBackupPage reads one page of a VM's backups, newest first, with the total.
+export function useBackupPage(vmId: string, page: number) {
+  return useQuery<{ items: Backup[]; total: number }>({
+    queryKey: ['backups', 'list', vmId, page],
+    queryFn: async () => {
+      const response = await api.get<Backup[]>(`/api/v1/vms/${vmId}/backups`, { params: { limit: BACKUP_PAGE, offset: (page - 1) * BACKUP_PAGE } })
+      const body = response.data as unknown as { data: Backup[]; total?: number }
+      return { items: body.data ?? [], total: body.total ?? body.data?.length ?? 0 }
+    },
+    enabled: !!vmId,
+    refetchInterval: (query) =>
+      query.state.data?.items.some((b) => b.status === 'pending' || b.status === 'in_progress') ? 5000 : false,
+  })
+}
+
 export function useBackupSchedules(vmId: string) {
   return useQuery<BackupSchedule[]>({
     queryKey: ['backups', 'schedules', vmId],

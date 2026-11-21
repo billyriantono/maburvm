@@ -13,12 +13,16 @@ is the order of work and the cautions.
 2. **Make sure the panel's off-host backup works** (`panel-backup check`;
    [DEPLOYMENT.md §9](DEPLOYMENT.md#9-backups--restore)). The upgrade script
    takes one more before it starts and stops if it fails.
-3. **Pick a quiet time.** There is no maintenance mode, and a panel restart
-   cancels the background jobs that are running; they are tried again when the
-   panel is back, and a long one (a backup, an image capture) may start over.
-   Check the Job queue and the Backups page and let long jobs finish first. VMs
-   keep running throughout; customers lose only the panel pages and API while
-   it restarts.
+3. **Pick a quiet time.** A panel restart cancels the background jobs that are
+   running; they are tried again when the panel is back, and a long one (a
+   backup, an image capture) may start over. The upgrade script therefore turns
+   **maintenance mode** on first: customers and the billing system can read but
+   not change anything, new jobs are held, and the running ones get
+   `--drain-timeout` seconds (default 900) to finish. If some are still running
+   then, it switches maintenance off again and stops without changing anything;
+   check the Job queue and the Backups page and run it again later, with a longer
+   `--drain-timeout`, or with `--no-drain` to restart anyway. VMs keep running
+   throughout; customers lose only the panel pages and API while it restarts.
 4. **Check disk space on the panel host** for the database dump the script
    writes to `backups/` (the newest five are kept).
 
@@ -31,10 +35,27 @@ scripts/upgrade-panel.sh --build            # built from this directory
 
 In order, the script tags the running images for rollback, takes the off-host
 backup, pulls or builds the new images while the old panel keeps serving,
-stops the panel, dumps the database and checks the dump reads back, then starts
-the new panel, which applies pending migrations as it boots, and waits for the
-health checks. If the new panel or web app does not become healthy, it puts the
-previous images back and offers to restore the dump.
+turns maintenance mode on and waits for running jobs, stops the panel, dumps
+the database and checks the dump reads back, then starts the new panel, which
+applies pending migrations as it boots, and waits for the health checks. Once
+the new panel and web app are healthy it turns maintenance mode off and the
+held jobs start. If either does not become healthy, it puts the previous images
+back, switches maintenance off in the database and offers to restore the dump.
+A panel from before maintenance mode is upgraded without it (the script says
+so): its running jobs are cancelled by the restart and retried after it.
+
+Maintenance mode can also be switched by hand: Settings, **Maintenance** (the
+Owner), or on the host:
+
+```bash
+DC="docker compose -f docker-compose.production.yml --env-file .env.production"
+$DC exec -T panel /app/panel maintenance on --hold-jobs --wait 900   # exits 3 if jobs still run
+$DC exec -T panel /app/panel maintenance status
+$DC exec -T panel /app/panel maintenance off
+```
+
+The pre-upgrade dump is taken in maintenance mode; a panel restored from it by
+hand starts in maintenance mode with jobs held until it is switched off.
 
 With `MIGRATION_REQUIRE_BACKUP_WITHIN` set (the installer sets `6h`), a panel
 refuses to migrate a database with accounts in it unless such a dump was
@@ -111,6 +132,8 @@ back across them.
 | **Moves and drains** (080) | Move and drain records are dropped. The migration keys the agents installed in root's `authorized_keys` on each node stay until removed by hand. |
 | **Backup destinations and incremental backups** (082) | An older panel knows only the S3 store in each node's environment: backups kept on an SFTP server or a node directory become unreachable from the panel, and an incremental backup looks like a full one. **Restoring an incremental backup on an older panel produces a broken disk.** Take a full backup of every VM you care about after rolling back. |
 | **Firewall groups and NAT VPS** (083) | Groups, NAT port blocks and hostnames are dropped. A VM that relied on a group's rules loses them at its next network change; NAT VMs lose their public ports and hostnames. Do not roll back past it while either is in use. |
+| **API key limits and outbound webhooks** (086) | Keys lose their scope and address list, so the down migration switches off every **Power only** or **Billing** key and every key limited to some addresses rather than let it act as a full key from anywhere. Make replacements after rolling back. The outbound webhooks and their logs are dropped. Error answers go back to `error` as a string. |
+| **Admin console extras** (085) | Tags, delete locks, hypervisor groups, staff notes, announcements, marketing opt-outs and the daily capacity history are dropped. A locked VM can be deleted again; plans place VMs on any node. |
 | **Panel settings saved on Settings, System, Panel** | Read only by this version and later. On an older panel the environment variables apply again, so keep them in `.env.production` until you no longer expect to go back. |
 | **Data a newer version wrote** | Any down migration that drops a table or column drops what was stored there. |
 
@@ -122,4 +145,4 @@ back across them.
   know them.
 - Re-check staff accounts and suspended customers (above).
 - Tell the people who use the API: answers may have lost fields that the newer
-  version added.
+  version added (`meta` on lists, the `error` object on errors).

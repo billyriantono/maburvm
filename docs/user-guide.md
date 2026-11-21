@@ -18,6 +18,8 @@ features below off; where something is missing, ask them.
 10. [Transfer and speed](#10-transfer-and-speed)
 11. [API keys and automation](#11-api-keys-and-automation)
 12. [When something goes wrong](#12-when-something-goes-wrong)
+13. [Teams and projects](#13-teams-and-projects)
+14. [Recipes and the app catalog](#14-recipes-and-the-app-catalog)
 
 ## 1. Signing in
 
@@ -38,36 +40,61 @@ features below off; where something is missing, ask them.
 
 **Profile** (`/client/settings/profile`):
 
-- Change your name, email (needs your current password) and password.
-  Changing your password signs you out everywhere.
+- **Your details**: name, company, phone, time zone and the language dates and
+  numbers are written in. Change your email (needs your current password) and
+  password below. Changing your password signs you out everywhere.
 - **Two-step sign-in**: scan the code with an authenticator app, enter a code
   to confirm, and keep the backup codes somewhere safe. Each backup code signs
   you in once if you lose the phone. Turning it off needs a fresh code.
 - **Sessions**: every place you are signed in, with where and when. Sign one
   out, or "sign out everywhere else".
 - **Sign-in history**: every attempt on your account, good or bad.
+- **Email**: whether you get news and offers by email. Notices about your
+  servers (planned maintenance, an incident) reach you either way. The link at
+  the bottom of a news email turns news off too.
 
 **SSH Keys**: public keys you can install on new servers. Add one you have, or
 let the panel generate a pair (the private key is shown once and not kept).
 
 **Notifications** (the bell): your server was suspended or restored, a backup
 failed, your transfer reached a warning level, your password or two-step
-sign-in changed, an API key was made. The same events are emailed to you.
+sign-in changed, an API key was made, a request for an address was answered.
+The same events are emailed to you. **Notifications** in the menu lists every
+one from the last 90 days, a page at a time.
+
+**Help** in the menu links to your provider's support, billing and service
+status pages, when they have set them.
+
+**Announcements** from your provider, such as planned maintenance on the host
+your server runs on, appear at the top of your Dashboard while they apply. Hide
+one once you have read it. While the panel itself is under maintenance, a
+banner says so: you can look around, but changes wait until it ends, and your
+servers keep running.
 
 ## 3. Ordering a server
 
 **Order VM** (if your provider allows ordering here; otherwise order through
 their billing area):
 
+0. **Account** (only when you work in a team, see section 13): your own
+   account or a team's, and optionally one of its projects.
 1. **Location.** Where the server runs. It cannot move to another location
    later.
-2. **Plan.** The size: CPU, memory, disk, speed, monthly transfer, and price if
-   your provider shows one.
+2. **Plan.** The size: CPU, memory, disk, speed, monthly transfer, what each
+   server may keep (snapshots, backups, extra addresses, disks), and the price
+   if your provider shows one. The summary lists the price of the extras and
+   links to your billing account.
 3. **Operating system**, or one of your images.
 4. **Hostname.**
 5. **Network** (optional): a public address, or one of your private networks in
    that location.
-6. **SSH keys** (optional, Linux): installed for `root`.
+6. **Apps and first-boot script** (optional, Linux): one of your provider's
+   apps, one of your recipes, or a script you paste. It runs once, as root,
+   on the first boot. An app may ask for values such as a domain name.
+7. **Extras** (optional, when the plan includes them): **IPv6**, a routed /64
+   beside the IPv4 address (the order says so if the location has none), and
+   **automatic backups**, daily or weekly.
+8. **SSH keys** (optional, Linux): installed for `root`.
 
 The order page then shows the login password **once**: `root` for Linux,
 `Administrator` for Windows (Remote Desktop; Windows needs about ten minutes to
@@ -92,16 +119,26 @@ tabs:
 | Backups | Backups, schedules, restore. |
 | Firewall | Inbound rules, default policy, firewall groups. |
 | Activity | What was done to the server, by whom, and when. |
-| Settings | Name, reinstall, rescue, ISO, extra disks, clone, delete. |
+| Settings | Name, tags, lock, reinstall, rescue, ISO, extra disks, clone, delete. |
 
 **Power.** Start, Stop (asks the system to shut down), Restart and Power off
 (cuts power, like pulling the plug). A server that is **suspended** by your
 provider cannot be started until they restore it; usually a billing matter.
 
 **Extra disks** (if allowed): Settings, Add disk. **Detaching a disk deletes
-it** and everything on it.
+it** and everything on it. An extra disk can also grow (`POST
+/api/v1/vms/{id}/disks/{device}/resize`), while the server runs too; disks never
+shrink. A grown disk is bigger at once, but its partition and filesystem are
+not: grow them inside the server (on Linux `growpart` then `resize2fs` or
+`xfs_growfs`, which cloud images do at their next start; on Windows, extend
+the volume in Disk Management). Your system disk grows with your plan.
 
 **Clone** (if allowed) makes a copy of the server as a new one.
+
+**Tags** are your own labels (such as `web` or `env:prod`, up to 10); the
+list of servers can be filtered by them. **Lock** protects a server from being
+deleted or reinstalled by mistake, until you unlock it. Your provider can also
+lock a server; only they can unlock that.
 
 **Delete** removes the server and its disks. A server your billing account pays
 for usually cannot be deleted here: cancel it in the billing area instead, and
@@ -132,10 +169,25 @@ server may well be running; your provider has been alerted.
   its disk from the console. **Leave rescue** boots it normally again. Your
   provider chooses the rescue system; if the button is disabled, rescue is not
   offered.
-- **Attach ISO**: boot from an installer by URL. The URL must be public; very
-  large files and private addresses are refused. Detach it when done.
+- **Attach ISO**: pick one of the installers your provider lists, or (if they
+  allow it) give the address of your own. Your own address must be public;
+  very large files and private addresses are refused. Detach it when done. A
+  server has two CD drives: drive 1 boots first while it holds a disc, drive 2
+  is for drivers or files. A running server takes a disc at once in a drive it
+  already has; otherwise stop it first.
+- **Install from an ISO**: when your provider offers ISOs as a system to order,
+  the server starts with an empty disk and the installer in drive 1. Install
+  it from the console; nothing is set up for you and no password is generated.
+  For Windows, the drivers disc in drive 2 lets the installer see the disk.
+  Unmount the installer once the system is installed.
 
 ## 7. Networking
+
+**More addresses.** On the Network tab, **Request address** asks for another
+IPv4 address, or IPv6 if the server has none, within what its plan includes.
+Depending on your provider it is assigned straight away or after staff look
+at it; either way you are notified. The server is not restarted. Withdraw a
+request while it waits.
 
 - **Addresses.** The Network tab lists your server's IPv4 and IPv6 addresses.
   If your provider adds or changes one, the server takes it at once when its
@@ -195,13 +247,23 @@ extra, as your provider's plan says.
 
 ## 11. API keys and automation
 
-**API Keys** makes keys (`mvk_...`) for your own scripts. A key acts as you and
-reaches only your own servers. Send it as `X-API-Key: mvk_...` or
-`Authorization: Bearer mvk_...`. The full key is shown once. A **read-only**
-key can only read. The panel's API reference is at `/docs/api` on the panel,
-and AI agents can use the panel's MCP endpoint with a key
-([api.md](api.md)). Your provider may limit how many requests a minute a key
-may make, or switch keys off.
+**API Keys** (under Settings) makes keys (`mvk_...`) for your own scripts. A
+key acts as you and reaches only your own servers. Send it as
+`X-API-Key: mvk_...` or `Authorization: Bearer mvk_...`. The full key is shown
+once. When you make one you choose:
+
+- what it may do: **Full access** (everything you can do), **Read only** (look,
+  never change), or **Power only** (list your servers and start, shut down or
+  restart them, nothing else);
+- optionally, the addresses it works from (one address or range per line);
+  requests from anywhere else are refused, and such a key cannot make keys or
+  change your account settings;
+- optionally, when it stops working.
+
+Revoke a key you no longer use. The panel's API reference is at `/docs/api` on
+the panel, and AI agents can use the panel's MCP endpoint with a key; it lists
+only the tools that key may use ([api.md](api.md)). Your provider may limit
+how many requests a minute a key may make, or switch keys off.
 
 ## 12. When something goes wrong
 
@@ -213,3 +275,42 @@ may make, or switch keys off.
 | A note about an address change not in the guest yet | Restart the server from the panel, or wait for its guest agent. |
 | Too many requests | You went over the request limit; wait the seconds the answer gives. |
 | Account locked | Wait the time shown, or reset your password. |
+
+## 13. Teams and projects
+
+**Team** (`/client/team`) lets colleagues into your account with their own
+sign-in and two-step sign-in, instead of sharing yours. The servers, quota
+and billing stay your account's.
+
+- **Invite** by email, with a role:
+
+  | Role | May |
+  |---|---|
+  | Admin | Everything you do, including the team and projects. |
+  | Technical | Run the servers: power, console, reinstall, backups, networking, ordering. |
+  | Billing | See usage and billing; sees the servers, changes nothing. |
+  | Read-only | See the servers; change nothing. |
+
+  and the servers they reach: every server, chosen servers, or chosen
+  projects. The email link works for 7 days. Someone without an account
+  chooses a password when they accept; that account can work in your team
+  but cannot order servers of its own until your provider allows it.
+- **Change** a member's role or reach, **Remove** them, or **Revoke** an
+  invitation not yet accepted. It takes effect at once.
+- **Projects** group servers. Move a server into one from its Settings tab.
+  A member limited to projects reaches the servers in them, and orders new
+  servers into one of them.
+
+If you work in someone else's account, its servers are in **My VMs** next to
+your own (filter by **Account**), and **Team** lists the accounts you work in,
+where you can **Leave** one. What a server's page lets you do follows your
+role there: a read-only member sees the readings and settings but no power
+buttons, console or passwords.
+
+## 14. Recipes and the app catalog
+
+**Recipes** (`/client/recipes`) are scripts that run once when a new server
+first boots. Save your own here to pick them on the order page; only you see
+them. **App catalog** lists the apps your provider publishes, with the values
+each asks for and the script it runs (open **Show script** to read it).
+

@@ -9884,6 +9884,10 @@ type MigrationDiskMap struct {
 	Copy bool `protobuf:"varint,3,opt,name=copy,proto3" json:"copy,omitempty"`
 	// expected_bytes is the source file's length, checked after an offline copy.
 	ExpectedBytes int64 `protobuf:"varint,4,opt,name=expected_bytes,json=expectedBytes,proto3" json:"expected_bytes,omitempty"`
+	// source_format is the drive's format on the source and dest_format the one
+	// it has here (a logical volume is raw). Empty keeps the format.
+	SourceFormat  string `protobuf:"bytes,5,opt,name=source_format,json=sourceFormat,proto3" json:"source_format,omitempty"`
+	DestFormat    string `protobuf:"bytes,6,opt,name=dest_format,json=destFormat,proto3" json:"dest_format,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -9944,6 +9948,20 @@ func (x *MigrationDiskMap) GetExpectedBytes() int64 {
 		return x.ExpectedBytes
 	}
 	return 0
+}
+
+func (x *MigrationDiskMap) GetSourceFormat() string {
+	if x != nil {
+		return x.SourceFormat
+	}
+	return ""
+}
+
+func (x *MigrationDiskMap) GetDestFormat() string {
+	if x != nil {
+		return x.DestFormat
+	}
+	return ""
 }
 
 type GetMigrationInfoRequest struct {
@@ -10607,8 +10625,14 @@ type PrepareMigrationTargetRequest struct {
 	DryRun bool `protobuf:"varint,10,opt,name=dry_run,json=dryRun,proto3" json:"dry_run,omitempty"`
 	// free_bytes_needed must be free on the pool's filesystem.
 	FreeBytesNeeded int64 `protobuf:"varint,11,opt,name=free_bytes_needed,json=freeBytesNeeded,proto3" json:"free_bytes_needed,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// pool_type is "" or "dir" for a directory, "lvm" or "lvmthin" for an LVM
+	// pool named by pool_path: each disk then becomes a logical volume.
+	PoolType string `protobuf:"bytes,12,opt,name=pool_type,json=poolType,proto3" json:"pool_type,omitempty"`
+	// scratch_bytes_needed is room an offline copy into a logical volume needs
+	// beside it: the image is fetched there, then written onto the volume.
+	ScratchBytesNeeded int64 `protobuf:"varint,13,opt,name=scratch_bytes_needed,json=scratchBytesNeeded,proto3" json:"scratch_bytes_needed,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *PrepareMigrationTargetRequest) Reset() {
@@ -10714,6 +10738,20 @@ func (x *PrepareMigrationTargetRequest) GetDryRun() bool {
 func (x *PrepareMigrationTargetRequest) GetFreeBytesNeeded() int64 {
 	if x != nil {
 		return x.FreeBytesNeeded
+	}
+	return 0
+}
+
+func (x *PrepareMigrationTargetRequest) GetPoolType() string {
+	if x != nil {
+		return x.PoolType
+	}
+	return ""
+}
+
+func (x *PrepareMigrationTargetRequest) GetScratchBytesNeeded() int64 {
+	if x != nil {
+		return x.ScratchBytesNeeded
 	}
 	return 0
 }
@@ -11293,9 +11331,12 @@ func (x *FinishMigrationTargetResponse) GetRemoved() []string {
 }
 
 type FinishMigrationSourceRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	VmId          string                 `protobuf:"bytes,1,opt,name=vm_id,json=vmId,proto3" json:"vm_id,omitempty"`
-	MigrationId   string                 `protobuf:"bytes,2,opt,name=migration_id,json=migrationId,proto3" json:"migration_id,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	VmId        string                 `protobuf:"bytes,1,opt,name=vm_id,json=vmId,proto3" json:"vm_id,omitempty"`
+	MigrationId string                 `protobuf:"bytes,2,opt,name=migration_id,json=migrationId,proto3" json:"migration_id,omitempty"`
+	// lvm_pools are the LVM pools registered on this node: the moved VM's
+	// logical volumes MaburVM created in them are removed too.
+	LvmPools      []*LVMPool `protobuf:"bytes,3,rep,name=lvm_pools,json=lvmPools,proto3" json:"lvm_pools,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -11342,6 +11383,13 @@ func (x *FinishMigrationSourceRequest) GetMigrationId() string {
 		return x.MigrationId
 	}
 	return ""
+}
+
+func (x *FinishMigrationSourceRequest) GetLvmPools() []*LVMPool {
+	if x != nil {
+		return x.LvmPools
+	}
+	return nil
 }
 
 type FinishMigrationSourceResponse struct {
@@ -11402,6 +11450,795 @@ func (x *FinishMigrationSourceResponse) GetRemoved() []string {
 		return x.Removed
 	}
 	return nil
+}
+
+type ResizeVMDiskRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	VmId  string                 `protobuf:"bytes,1,opt,name=vm_id,json=vmId,proto3" json:"vm_id,omitempty"`
+	// target is the disk's target: vda for the primary disk, vdb... for others.
+	Target string `protobuf:"bytes,2,opt,name=target,proto3" json:"target,omitempty"`
+	SizeGb int64  `protobuf:"varint,3,opt,name=size_gb,json=sizeGb,proto3" json:"size_gb,omitempty"`
+	// lvm_pools are the registered LVM pools; a logical volume is grown only in one.
+	LvmPools      []*LVMPool `protobuf:"bytes,4,rep,name=lvm_pools,json=lvmPools,proto3" json:"lvm_pools,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResizeVMDiskRequest) Reset() {
+	*x = ResizeVMDiskRequest{}
+	mi := &file_api_proto_agent_proto_msgTypes[129]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResizeVMDiskRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResizeVMDiskRequest) ProtoMessage() {}
+
+func (x *ResizeVMDiskRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_agent_proto_msgTypes[129]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResizeVMDiskRequest.ProtoReflect.Descriptor instead.
+func (*ResizeVMDiskRequest) Descriptor() ([]byte, []int) {
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{129}
+}
+
+func (x *ResizeVMDiskRequest) GetVmId() string {
+	if x != nil {
+		return x.VmId
+	}
+	return ""
+}
+
+func (x *ResizeVMDiskRequest) GetTarget() string {
+	if x != nil {
+		return x.Target
+	}
+	return ""
+}
+
+func (x *ResizeVMDiskRequest) GetSizeGb() int64 {
+	if x != nil {
+		return x.SizeGb
+	}
+	return 0
+}
+
+func (x *ResizeVMDiskRequest) GetLvmPools() []*LVMPool {
+	if x != nil {
+		return x.LvmPools
+	}
+	return nil
+}
+
+type ResizeVMDiskResponse struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Success bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Error   *ErrorResponse         `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	// live is true when the running VM was given the new size at once.
+	Live          bool  `protobuf:"varint,3,opt,name=live,proto3" json:"live,omitempty"`
+	SizeBytes     int64 `protobuf:"varint,4,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResizeVMDiskResponse) Reset() {
+	*x = ResizeVMDiskResponse{}
+	mi := &file_api_proto_agent_proto_msgTypes[130]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResizeVMDiskResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResizeVMDiskResponse) ProtoMessage() {}
+
+func (x *ResizeVMDiskResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_agent_proto_msgTypes[130]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResizeVMDiskResponse.ProtoReflect.Descriptor instead.
+func (*ResizeVMDiskResponse) Descriptor() ([]byte, []int) {
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{130}
+}
+
+func (x *ResizeVMDiskResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *ResizeVMDiskResponse) GetError() *ErrorResponse {
+	if x != nil {
+		return x.Error
+	}
+	return nil
+}
+
+func (x *ResizeVMDiskResponse) GetLive() bool {
+	if x != nil {
+		return x.Live
+	}
+	return false
+}
+
+func (x *ResizeVMDiskResponse) GetSizeBytes() int64 {
+	if x != nil {
+		return x.SizeBytes
+	}
+	return 0
+}
+
+type MoveVMDiskRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	VmId  string                 `protobuf:"bytes,1,opt,name=vm_id,json=vmId,proto3" json:"vm_id,omitempty"`
+	// move_id names this move for GetMigrationProgress and AbortMigration.
+	MoveId string `protobuf:"bytes,2,opt,name=move_id,json=moveId,proto3" json:"move_id,omitempty"`
+	Target string `protobuf:"bytes,3,opt,name=target,proto3" json:"target,omitempty"`
+	// dest_pool_type and dest_pool_path name the pool the disk goes to, as
+	// pool_type and pool_path do on VMCommandRequest.
+	DestPoolType string `protobuf:"bytes,4,opt,name=dest_pool_type,json=destPoolType,proto3" json:"dest_pool_type,omitempty"`
+	DestPoolPath string `protobuf:"bytes,5,opt,name=dest_pool_path,json=destPoolPath,proto3" json:"dest_pool_path,omitempty"`
+	// lvm_pools are the registered LVM pools: the old disk is removed only from
+	// one, and only when MaburVM created it.
+	LvmPools      []*LVMPool `protobuf:"bytes,6,rep,name=lvm_pools,json=lvmPools,proto3" json:"lvm_pools,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MoveVMDiskRequest) Reset() {
+	*x = MoveVMDiskRequest{}
+	mi := &file_api_proto_agent_proto_msgTypes[131]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MoveVMDiskRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MoveVMDiskRequest) ProtoMessage() {}
+
+func (x *MoveVMDiskRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_agent_proto_msgTypes[131]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MoveVMDiskRequest.ProtoReflect.Descriptor instead.
+func (*MoveVMDiskRequest) Descriptor() ([]byte, []int) {
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{131}
+}
+
+func (x *MoveVMDiskRequest) GetVmId() string {
+	if x != nil {
+		return x.VmId
+	}
+	return ""
+}
+
+func (x *MoveVMDiskRequest) GetMoveId() string {
+	if x != nil {
+		return x.MoveId
+	}
+	return ""
+}
+
+func (x *MoveVMDiskRequest) GetTarget() string {
+	if x != nil {
+		return x.Target
+	}
+	return ""
+}
+
+func (x *MoveVMDiskRequest) GetDestPoolType() string {
+	if x != nil {
+		return x.DestPoolType
+	}
+	return ""
+}
+
+func (x *MoveVMDiskRequest) GetDestPoolPath() string {
+	if x != nil {
+		return x.DestPoolPath
+	}
+	return ""
+}
+
+func (x *MoveVMDiskRequest) GetLvmPools() []*LVMPool {
+	if x != nil {
+		return x.LvmPools
+	}
+	return nil
+}
+
+type MoveVMDiskResponse struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Success bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Error   *ErrorResponse         `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	// live is true for a block copy of a running VM.
+	Live bool `protobuf:"varint,3,opt,name=live,proto3" json:"live,omitempty"`
+	// dest_path is where the disk will be.
+	DestPath      string `protobuf:"bytes,4,opt,name=dest_path,json=destPath,proto3" json:"dest_path,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MoveVMDiskResponse) Reset() {
+	*x = MoveVMDiskResponse{}
+	mi := &file_api_proto_agent_proto_msgTypes[132]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MoveVMDiskResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MoveVMDiskResponse) ProtoMessage() {}
+
+func (x *MoveVMDiskResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_agent_proto_msgTypes[132]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MoveVMDiskResponse.ProtoReflect.Descriptor instead.
+func (*MoveVMDiskResponse) Descriptor() ([]byte, []int) {
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{132}
+}
+
+func (x *MoveVMDiskResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *MoveVMDiskResponse) GetError() *ErrorResponse {
+	if x != nil {
+		return x.Error
+	}
+	return nil
+}
+
+func (x *MoveVMDiskResponse) GetLive() bool {
+	if x != nil {
+		return x.Live
+	}
+	return false
+}
+
+func (x *MoveVMDiskResponse) GetDestPath() string {
+	if x != nil {
+		return x.DestPath
+	}
+	return ""
+}
+
+type ListOrphanDisksRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// dir_pools are the directory pools to look in (their own files only).
+	DirPools      []string   `protobuf:"bytes,1,rep,name=dir_pools,json=dirPools,proto3" json:"dir_pools,omitempty"`
+	LvmPools      []*LVMPool `protobuf:"bytes,2,rep,name=lvm_pools,json=lvmPools,proto3" json:"lvm_pools,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListOrphanDisksRequest) Reset() {
+	*x = ListOrphanDisksRequest{}
+	mi := &file_api_proto_agent_proto_msgTypes[133]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListOrphanDisksRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListOrphanDisksRequest) ProtoMessage() {}
+
+func (x *ListOrphanDisksRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_agent_proto_msgTypes[133]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListOrphanDisksRequest.ProtoReflect.Descriptor instead.
+func (*ListOrphanDisksRequest) Descriptor() ([]byte, []int) {
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{133}
+}
+
+func (x *ListOrphanDisksRequest) GetDirPools() []string {
+	if x != nil {
+		return x.DirPools
+	}
+	return nil
+}
+
+func (x *ListOrphanDisksRequest) GetLvmPools() []*LVMPool {
+	if x != nil {
+		return x.LvmPools
+	}
+	return nil
+}
+
+// OrphanDisk is a disk file or logical volume no domain uses.
+type OrphanDisk struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Path  string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
+	// kind is "file" or "lv".
+	Kind      string `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
+	SizeBytes int64  `protobuf:"varint,3,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	// modified_unix is a file's modification time; 0 for a volume.
+	ModifiedUnix int64 `protobuf:"varint,4,opt,name=modified_unix,json=modifiedUnix,proto3" json:"modified_unix,omitempty"`
+	// reason says what it looks like: a VM disk, a backup left mid-way...
+	Reason string `protobuf:"bytes,5,opt,name=reason,proto3" json:"reason,omitempty"`
+	// vm_id is the VM its name says it belonged to, when it names one.
+	VmId string `protobuf:"bytes,6,opt,name=vm_id,json=vmId,proto3" json:"vm_id,omitempty"`
+	// maburvm is true for a name MaburVM gives, or a volume it tagged.
+	Maburvm bool `protobuf:"varint,7,opt,name=maburvm,proto3" json:"maburvm,omitempty"`
+	// pool is the pool directory, or vg[/thin pool], it is in.
+	Pool          string `protobuf:"bytes,8,opt,name=pool,proto3" json:"pool,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OrphanDisk) Reset() {
+	*x = OrphanDisk{}
+	mi := &file_api_proto_agent_proto_msgTypes[134]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OrphanDisk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OrphanDisk) ProtoMessage() {}
+
+func (x *OrphanDisk) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_agent_proto_msgTypes[134]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OrphanDisk.ProtoReflect.Descriptor instead.
+func (*OrphanDisk) Descriptor() ([]byte, []int) {
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{134}
+}
+
+func (x *OrphanDisk) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *OrphanDisk) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *OrphanDisk) GetSizeBytes() int64 {
+	if x != nil {
+		return x.SizeBytes
+	}
+	return 0
+}
+
+func (x *OrphanDisk) GetModifiedUnix() int64 {
+	if x != nil {
+		return x.ModifiedUnix
+	}
+	return 0
+}
+
+func (x *OrphanDisk) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *OrphanDisk) GetVmId() string {
+	if x != nil {
+		return x.VmId
+	}
+	return ""
+}
+
+func (x *OrphanDisk) GetMaburvm() bool {
+	if x != nil {
+		return x.Maburvm
+	}
+	return false
+}
+
+func (x *OrphanDisk) GetPool() string {
+	if x != nil {
+		return x.Pool
+	}
+	return ""
+}
+
+type ListOrphanDisksResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Error         *ErrorResponse         `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	Disks         []*OrphanDisk          `protobuf:"bytes,3,rep,name=disks,proto3" json:"disks,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListOrphanDisksResponse) Reset() {
+	*x = ListOrphanDisksResponse{}
+	mi := &file_api_proto_agent_proto_msgTypes[135]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListOrphanDisksResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListOrphanDisksResponse) ProtoMessage() {}
+
+func (x *ListOrphanDisksResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_agent_proto_msgTypes[135]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListOrphanDisksResponse.ProtoReflect.Descriptor instead.
+func (*ListOrphanDisksResponse) Descriptor() ([]byte, []int) {
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{135}
+}
+
+func (x *ListOrphanDisksResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *ListOrphanDisksResponse) GetError() *ErrorResponse {
+	if x != nil {
+		return x.Error
+	}
+	return nil
+}
+
+func (x *ListOrphanDisksResponse) GetDisks() []*OrphanDisk {
+	if x != nil {
+		return x.Disks
+	}
+	return nil
+}
+
+type DeleteOrphanDiskRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Path  string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
+	// size_bytes and modified_unix are what the listing showed; something that
+	// changed since is kept.
+	SizeBytes    int64      `protobuf:"varint,2,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	ModifiedUnix int64      `protobuf:"varint,3,opt,name=modified_unix,json=modifiedUnix,proto3" json:"modified_unix,omitempty"`
+	DirPools     []string   `protobuf:"bytes,4,rep,name=dir_pools,json=dirPools,proto3" json:"dir_pools,omitempty"`
+	LvmPools     []*LVMPool `protobuf:"bytes,5,rep,name=lvm_pools,json=lvmPools,proto3" json:"lvm_pools,omitempty"`
+	// allow_foreign also removes a volume or file MaburVM did not make; the
+	// operator confirmed it.
+	AllowForeign  bool `protobuf:"varint,6,opt,name=allow_foreign,json=allowForeign,proto3" json:"allow_foreign,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteOrphanDiskRequest) Reset() {
+	*x = DeleteOrphanDiskRequest{}
+	mi := &file_api_proto_agent_proto_msgTypes[136]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteOrphanDiskRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteOrphanDiskRequest) ProtoMessage() {}
+
+func (x *DeleteOrphanDiskRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_agent_proto_msgTypes[136]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteOrphanDiskRequest.ProtoReflect.Descriptor instead.
+func (*DeleteOrphanDiskRequest) Descriptor() ([]byte, []int) {
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{136}
+}
+
+func (x *DeleteOrphanDiskRequest) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *DeleteOrphanDiskRequest) GetSizeBytes() int64 {
+	if x != nil {
+		return x.SizeBytes
+	}
+	return 0
+}
+
+func (x *DeleteOrphanDiskRequest) GetModifiedUnix() int64 {
+	if x != nil {
+		return x.ModifiedUnix
+	}
+	return 0
+}
+
+func (x *DeleteOrphanDiskRequest) GetDirPools() []string {
+	if x != nil {
+		return x.DirPools
+	}
+	return nil
+}
+
+func (x *DeleteOrphanDiskRequest) GetLvmPools() []*LVMPool {
+	if x != nil {
+		return x.LvmPools
+	}
+	return nil
+}
+
+func (x *DeleteOrphanDiskRequest) GetAllowForeign() bool {
+	if x != nil {
+		return x.AllowForeign
+	}
+	return false
+}
+
+type DeleteOrphanDiskResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Error         *ErrorResponse         `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteOrphanDiskResponse) Reset() {
+	*x = DeleteOrphanDiskResponse{}
+	mi := &file_api_proto_agent_proto_msgTypes[137]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteOrphanDiskResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteOrphanDiskResponse) ProtoMessage() {}
+
+func (x *DeleteOrphanDiskResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_agent_proto_msgTypes[137]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteOrphanDiskResponse.ProtoReflect.Descriptor instead.
+func (*DeleteOrphanDiskResponse) Descriptor() ([]byte, []int) {
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{137}
+}
+
+func (x *DeleteOrphanDiskResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *DeleteOrphanDiskResponse) GetError() *ErrorResponse {
+	if x != nil {
+		return x.Error
+	}
+	return nil
+}
+
+// ImageChunk is part of a PutImage upload. The first names the file (name,
+// sha256 and size_bytes); every chunk may carry data.
+type ImageChunk struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Sha256        string                 `protobuf:"bytes,2,opt,name=sha256,proto3" json:"sha256,omitempty"`
+	SizeBytes     int64                  `protobuf:"varint,3,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	Data          []byte                 `protobuf:"bytes,4,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ImageChunk) Reset() {
+	*x = ImageChunk{}
+	mi := &file_api_proto_agent_proto_msgTypes[138]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ImageChunk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ImageChunk) ProtoMessage() {}
+
+func (x *ImageChunk) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_agent_proto_msgTypes[138]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ImageChunk.ProtoReflect.Descriptor instead.
+func (*ImageChunk) Descriptor() ([]byte, []int) {
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{138}
+}
+
+func (x *ImageChunk) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ImageChunk) GetSha256() string {
+	if x != nil {
+		return x.Sha256
+	}
+	return ""
+}
+
+func (x *ImageChunk) GetSizeBytes() int64 {
+	if x != nil {
+		return x.SizeBytes
+	}
+	return 0
+}
+
+func (x *ImageChunk) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+type PutImageResponse struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Success bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Error   *ErrorResponse         `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	// local_path is where the file is kept on this node.
+	LocalPath     string `protobuf:"bytes,3,opt,name=local_path,json=localPath,proto3" json:"local_path,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PutImageResponse) Reset() {
+	*x = PutImageResponse{}
+	mi := &file_api_proto_agent_proto_msgTypes[139]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PutImageResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PutImageResponse) ProtoMessage() {}
+
+func (x *PutImageResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_agent_proto_msgTypes[139]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PutImageResponse.ProtoReflect.Descriptor instead.
+func (*PutImageResponse) Descriptor() ([]byte, []int) {
+	return file_api_proto_agent_proto_rawDescGZIP(), []int{139}
+}
+
+func (x *PutImageResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *PutImageResponse) GetError() *ErrorResponse {
+	if x != nil {
+		return x.Error
+	}
+	return nil
+}
+
+func (x *PutImageResponse) GetLocalPath() string {
+	if x != nil {
+		return x.LocalPath
+	}
+	return ""
 }
 
 var File_api_proto_agent_proto protoreflect.FileDescriptor
@@ -12193,12 +13030,15 @@ const file_api_proto_agent_proto_rawDesc = "" +
 	"\x11PreflightResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12-\n" +
 	"\x06checks\x18\x02 \x03(\v2\x15.agent.PreflightCheckR\x06checks\x12*\n" +
-	"\x05error\x18\x03 \x01(\v2\x14.agent.ErrorResponseR\x05error\"\x82\x01\n" +
+	"\x05error\x18\x03 \x01(\v2\x14.agent.ErrorResponseR\x05error\"\xc8\x01\n" +
 	"\x10MigrationDiskMap\x12\x16\n" +
 	"\x06target\x18\x01 \x01(\tR\x06target\x12\x1b\n" +
 	"\tdest_path\x18\x02 \x01(\tR\bdestPath\x12\x12\n" +
 	"\x04copy\x18\x03 \x01(\bR\x04copy\x12%\n" +
-	"\x0eexpected_bytes\x18\x04 \x01(\x03R\rexpectedBytes\"z\n" +
+	"\x0eexpected_bytes\x18\x04 \x01(\x03R\rexpectedBytes\x12#\n" +
+	"\rsource_format\x18\x05 \x01(\tR\fsourceFormat\x12\x1f\n" +
+	"\vdest_format\x18\x06 \x01(\tR\n" +
+	"destFormat\"z\n" +
 	"\x17GetMigrationInfoRequest\x12\x13\n" +
 	"\x05vm_id\x18\x01 \x01(\tR\x04vmId\x12!\n" +
 	"\fpeer_address\x18\x02 \x01(\tR\vpeerAddress\x12'\n" +
@@ -12259,7 +13099,7 @@ const file_api_proto_agent_proto_rawDesc = "" +
 	"\x06target\x18\x01 \x01(\tR\x06target\x12\x1b\n" +
 	"\tfile_name\x18\x02 \x01(\tR\bfileName\x12,\n" +
 	"\x12virtual_size_bytes\x18\x03 \x01(\x03R\x10virtualSizeBytes\x12\x16\n" +
-	"\x06format\x18\x04 \x01(\tR\x06format\"\x86\x03\n" +
+	"\x06format\x18\x04 \x01(\tR\x06format\"\xd5\x03\n" +
 	"\x1dPrepareMigrationTargetRequest\x12\x13\n" +
 	"\x05vm_id\x18\x01 \x01(\tR\x04vmId\x12!\n" +
 	"\fmigration_id\x18\x02 \x01(\tR\vmigrationId\x12\x1b\n" +
@@ -12273,7 +13113,9 @@ const file_api_proto_agent_proto_rawDesc = "" +
 	"\acpu_xml\x18\t \x01(\tR\x06cpuXml\x12\x17\n" +
 	"\adry_run\x18\n" +
 	" \x01(\bR\x06dryRun\x12*\n" +
-	"\x11free_bytes_needed\x18\v \x01(\x03R\x0ffreeBytesNeeded\"\xa1\x02\n" +
+	"\x11free_bytes_needed\x18\v \x01(\x03R\x0ffreeBytesNeeded\x12\x1b\n" +
+	"\tpool_type\x18\f \x01(\tR\bpoolType\x120\n" +
+	"\x14scratch_bytes_needed\x18\r \x01(\x03R\x12scratchBytesNeeded\"\xa1\x02\n" +
 	"\x1ePrepareMigrationTargetResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12*\n" +
 	"\x05error\x18\x02 \x01(\v2\x14.agent.ErrorResponseR\x05error\x12F\n" +
@@ -12318,14 +13160,79 @@ const file_api_proto_agent_proto_rawDesc = "" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12*\n" +
 	"\x05error\x18\x02 \x01(\v2\x14.agent.ErrorResponseR\x05error\x12\x19\n" +
 	"\bvm_state\x18\x03 \x01(\tR\avmState\x12\x18\n" +
-	"\aremoved\x18\x04 \x03(\tR\aremoved\"V\n" +
+	"\aremoved\x18\x04 \x03(\tR\aremoved\"\x83\x01\n" +
 	"\x1cFinishMigrationSourceRequest\x12\x13\n" +
 	"\x05vm_id\x18\x01 \x01(\tR\x04vmId\x12!\n" +
-	"\fmigration_id\x18\x02 \x01(\tR\vmigrationId\"\x7f\n" +
+	"\fmigration_id\x18\x02 \x01(\tR\vmigrationId\x12+\n" +
+	"\tlvm_pools\x18\x03 \x03(\v2\x0e.agent.LVMPoolR\blvmPools\"\x7f\n" +
 	"\x1dFinishMigrationSourceResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12*\n" +
 	"\x05error\x18\x02 \x01(\v2\x14.agent.ErrorResponseR\x05error\x12\x18\n" +
-	"\aremoved\x18\x03 \x03(\tR\aremoved*\xd3\x03\n" +
+	"\aremoved\x18\x03 \x03(\tR\aremoved\"\x88\x01\n" +
+	"\x13ResizeVMDiskRequest\x12\x13\n" +
+	"\x05vm_id\x18\x01 \x01(\tR\x04vmId\x12\x16\n" +
+	"\x06target\x18\x02 \x01(\tR\x06target\x12\x17\n" +
+	"\asize_gb\x18\x03 \x01(\x03R\x06sizeGb\x12+\n" +
+	"\tlvm_pools\x18\x04 \x03(\v2\x0e.agent.LVMPoolR\blvmPools\"\x8f\x01\n" +
+	"\x14ResizeVMDiskResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12*\n" +
+	"\x05error\x18\x02 \x01(\v2\x14.agent.ErrorResponseR\x05error\x12\x12\n" +
+	"\x04live\x18\x03 \x01(\bR\x04live\x12\x1d\n" +
+	"\n" +
+	"size_bytes\x18\x04 \x01(\x03R\tsizeBytes\"\xd2\x01\n" +
+	"\x11MoveVMDiskRequest\x12\x13\n" +
+	"\x05vm_id\x18\x01 \x01(\tR\x04vmId\x12\x17\n" +
+	"\amove_id\x18\x02 \x01(\tR\x06moveId\x12\x16\n" +
+	"\x06target\x18\x03 \x01(\tR\x06target\x12$\n" +
+	"\x0edest_pool_type\x18\x04 \x01(\tR\fdestPoolType\x12$\n" +
+	"\x0edest_pool_path\x18\x05 \x01(\tR\fdestPoolPath\x12+\n" +
+	"\tlvm_pools\x18\x06 \x03(\v2\x0e.agent.LVMPoolR\blvmPools\"\x8b\x01\n" +
+	"\x12MoveVMDiskResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12*\n" +
+	"\x05error\x18\x02 \x01(\v2\x14.agent.ErrorResponseR\x05error\x12\x12\n" +
+	"\x04live\x18\x03 \x01(\bR\x04live\x12\x1b\n" +
+	"\tdest_path\x18\x04 \x01(\tR\bdestPath\"b\n" +
+	"\x16ListOrphanDisksRequest\x12\x1b\n" +
+	"\tdir_pools\x18\x01 \x03(\tR\bdirPools\x12+\n" +
+	"\tlvm_pools\x18\x02 \x03(\v2\x0e.agent.LVMPoolR\blvmPools\"\xd3\x01\n" +
+	"\n" +
+	"OrphanDisk\x12\x12\n" +
+	"\x04path\x18\x01 \x01(\tR\x04path\x12\x12\n" +
+	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x1d\n" +
+	"\n" +
+	"size_bytes\x18\x03 \x01(\x03R\tsizeBytes\x12#\n" +
+	"\rmodified_unix\x18\x04 \x01(\x03R\fmodifiedUnix\x12\x16\n" +
+	"\x06reason\x18\x05 \x01(\tR\x06reason\x12\x13\n" +
+	"\x05vm_id\x18\x06 \x01(\tR\x04vmId\x12\x18\n" +
+	"\amaburvm\x18\a \x01(\bR\amaburvm\x12\x12\n" +
+	"\x04pool\x18\b \x01(\tR\x04pool\"\x88\x01\n" +
+	"\x17ListOrphanDisksResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12*\n" +
+	"\x05error\x18\x02 \x01(\v2\x14.agent.ErrorResponseR\x05error\x12'\n" +
+	"\x05disks\x18\x03 \x03(\v2\x11.agent.OrphanDiskR\x05disks\"\xe0\x01\n" +
+	"\x17DeleteOrphanDiskRequest\x12\x12\n" +
+	"\x04path\x18\x01 \x01(\tR\x04path\x12\x1d\n" +
+	"\n" +
+	"size_bytes\x18\x02 \x01(\x03R\tsizeBytes\x12#\n" +
+	"\rmodified_unix\x18\x03 \x01(\x03R\fmodifiedUnix\x12\x1b\n" +
+	"\tdir_pools\x18\x04 \x03(\tR\bdirPools\x12+\n" +
+	"\tlvm_pools\x18\x05 \x03(\v2\x0e.agent.LVMPoolR\blvmPools\x12#\n" +
+	"\rallow_foreign\x18\x06 \x01(\bR\fallowForeign\"`\n" +
+	"\x18DeleteOrphanDiskResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12*\n" +
+	"\x05error\x18\x02 \x01(\v2\x14.agent.ErrorResponseR\x05error\"k\n" +
+	"\n" +
+	"ImageChunk\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
+	"\x06sha256\x18\x02 \x01(\tR\x06sha256\x12\x1d\n" +
+	"\n" +
+	"size_bytes\x18\x03 \x01(\x03R\tsizeBytes\x12\x12\n" +
+	"\x04data\x18\x04 \x01(\fR\x04data\"w\n" +
+	"\x10PutImageResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12*\n" +
+	"\x05error\x18\x02 \x01(\v2\x14.agent.ErrorResponseR\x05error\x12\x1d\n" +
+	"\n" +
+	"local_path\x18\x03 \x01(\tR\tlocalPath*\xd3\x03\n" +
 	"\rVMCommandType\x12\x1f\n" +
 	"\x1bVM_COMMAND_TYPE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16VM_COMMAND_TYPE_CREATE\x10\x01\x12\x19\n" +
@@ -12415,7 +13322,7 @@ const file_api_proto_agent_proto_rawDesc = "" +
 	"\x12ERROR_CODE_TIMEOUT\x10\b\x12\x17\n" +
 	"\x13ERROR_CODE_CONFLICT\x10\t\x12\x1e\n" +
 	"\x1aERROR_CODE_UNAUTHENTICATED\x10\n" +
-	"2\xbe\x1a\n" +
+	"2\xab\x1d\n" +
 	"\tNodeAgent\x12G\n" +
 	"\fRegisterNode\x12\x1a.agent.RegisterNodeRequest\x1a\x1b.agent.RegisterNodeResponse\x12B\n" +
 	"\tHeartbeat\x12\x17.agent.HeartbeatRequest\x1a\x18.agent.HeartbeatResponse(\x010\x01\x12E\n" +
@@ -12464,7 +13371,13 @@ const file_api_proto_agent_proto_rawDesc = "" +
 	"\x14GetMigrationProgress\x12\".agent.GetMigrationProgressRequest\x1a#.agent.GetMigrationProgressResponse\x12M\n" +
 	"\x0eAbortMigration\x12\x1c.agent.AbortMigrationRequest\x1a\x1d.agent.AbortMigrationResponse\x12b\n" +
 	"\x15FinishMigrationTarget\x12#.agent.FinishMigrationTargetRequest\x1a$.agent.FinishMigrationTargetResponse\x12b\n" +
-	"\x15FinishMigrationSource\x12#.agent.FinishMigrationSourceRequest\x1a$.agent.FinishMigrationSourceResponseB7Z5github.com/maburvm/maburvm/internal/shared/grpc/pb;pbb\x06proto3"
+	"\x15FinishMigrationSource\x12#.agent.FinishMigrationSourceRequest\x1a$.agent.FinishMigrationSourceResponse\x12G\n" +
+	"\fResizeVMDisk\x12\x1a.agent.ResizeVMDiskRequest\x1a\x1b.agent.ResizeVMDiskResponse\x12A\n" +
+	"\n" +
+	"MoveVMDisk\x12\x18.agent.MoveVMDiskRequest\x1a\x19.agent.MoveVMDiskResponse\x12P\n" +
+	"\x0fListOrphanDisks\x12\x1d.agent.ListOrphanDisksRequest\x1a\x1e.agent.ListOrphanDisksResponse\x12S\n" +
+	"\x10DeleteOrphanDisk\x12\x1e.agent.DeleteOrphanDiskRequest\x1a\x1f.agent.DeleteOrphanDiskResponse\x128\n" +
+	"\bPutImage\x12\x11.agent.ImageChunk\x1a\x17.agent.PutImageResponse(\x01B7Z5github.com/maburvm/maburvm/internal/shared/grpc/pb;pbb\x06proto3"
 
 var (
 	file_api_proto_agent_proto_rawDescOnce sync.Once
@@ -12479,7 +13392,7 @@ func file_api_proto_agent_proto_rawDescGZIP() []byte {
 }
 
 var file_api_proto_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 11)
-var file_api_proto_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 134)
+var file_api_proto_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 145)
 var file_api_proto_agent_proto_goTypes = []any{
 	(VMCommandType)(0),                     // 0: agent.VMCommandType
 	(DiskStorageDisposition)(0),            // 1: agent.DiskStorageDisposition
@@ -12621,24 +13534,35 @@ var file_api_proto_agent_proto_goTypes = []any{
 	(*FinishMigrationTargetResponse)(nil),  // 137: agent.FinishMigrationTargetResponse
 	(*FinishMigrationSourceRequest)(nil),   // 138: agent.FinishMigrationSourceRequest
 	(*FinishMigrationSourceResponse)(nil),  // 139: agent.FinishMigrationSourceResponse
-	nil,                                    // 140: agent.RegisterNodeRequest.LabelsEntry
-	nil,                                    // 141: agent.VMConfig.MetadataEntry
-	nil,                                    // 142: agent.ErrorResponse.DetailsEntry
-	nil,                                    // 143: agent.GetNodeInfoResponse.AgentSettingsEntry
-	nil,                                    // 144: agent.PrepareMigrationTargetResponse.PathsEntry
-	(*durationpb.Duration)(nil),            // 145: google.protobuf.Duration
-	(*timestamppb.Timestamp)(nil),          // 146: google.protobuf.Timestamp
+	(*ResizeVMDiskRequest)(nil),            // 140: agent.ResizeVMDiskRequest
+	(*ResizeVMDiskResponse)(nil),           // 141: agent.ResizeVMDiskResponse
+	(*MoveVMDiskRequest)(nil),              // 142: agent.MoveVMDiskRequest
+	(*MoveVMDiskResponse)(nil),             // 143: agent.MoveVMDiskResponse
+	(*ListOrphanDisksRequest)(nil),         // 144: agent.ListOrphanDisksRequest
+	(*OrphanDisk)(nil),                     // 145: agent.OrphanDisk
+	(*ListOrphanDisksResponse)(nil),        // 146: agent.ListOrphanDisksResponse
+	(*DeleteOrphanDiskRequest)(nil),        // 147: agent.DeleteOrphanDiskRequest
+	(*DeleteOrphanDiskResponse)(nil),       // 148: agent.DeleteOrphanDiskResponse
+	(*ImageChunk)(nil),                     // 149: agent.ImageChunk
+	(*PutImageResponse)(nil),               // 150: agent.PutImageResponse
+	nil,                                    // 151: agent.RegisterNodeRequest.LabelsEntry
+	nil,                                    // 152: agent.VMConfig.MetadataEntry
+	nil,                                    // 153: agent.ErrorResponse.DetailsEntry
+	nil,                                    // 154: agent.GetNodeInfoResponse.AgentSettingsEntry
+	nil,                                    // 155: agent.PrepareMigrationTargetResponse.PathsEntry
+	(*durationpb.Duration)(nil),            // 156: google.protobuf.Duration
+	(*timestamppb.Timestamp)(nil),          // 157: google.protobuf.Timestamp
 }
 var file_api_proto_agent_proto_depIdxs = []int32{
 	18,  // 0: agent.RegisterNodeRequest.total_resources:type_name -> agent.VMResources
-	140, // 1: agent.RegisterNodeRequest.labels:type_name -> agent.RegisterNodeRequest.LabelsEntry
-	145, // 2: agent.RegisterNodeResponse.refresh_interval:type_name -> google.protobuf.Duration
-	145, // 3: agent.RegisterNodeResponse.metrics_interval:type_name -> google.protobuf.Duration
-	146, // 4: agent.HeartbeatRequest.timestamp:type_name -> google.protobuf.Timestamp
+	151, // 1: agent.RegisterNodeRequest.labels:type_name -> agent.RegisterNodeRequest.LabelsEntry
+	156, // 2: agent.RegisterNodeResponse.refresh_interval:type_name -> google.protobuf.Duration
+	156, // 3: agent.RegisterNodeResponse.metrics_interval:type_name -> google.protobuf.Duration
+	157, // 4: agent.HeartbeatRequest.timestamp:type_name -> google.protobuf.Timestamp
 	18,  // 5: agent.HeartbeatRequest.available_resources:type_name -> agent.VMResources
 	17,  // 6: agent.HeartbeatRequest.system_load:type_name -> agent.SystemLoad
 	15,  // 7: agent.HeartbeatRequest.vm_bandwidth_usage:type_name -> agent.VMBandwidthReport
-	146, // 8: agent.HeartbeatResponse.timestamp:type_name -> google.protobuf.Timestamp
+	157, // 8: agent.HeartbeatResponse.timestamp:type_name -> google.protobuf.Timestamp
 	19,  // 9: agent.VMResources.limits:type_name -> agent.VMLimits
 	19,  // 10: agent.SetVMLimitsRequest.limits:type_name -> agent.VMLimits
 	52,  // 11: agent.SetVMLimitsResponse.error:type_name -> agent.ErrorResponse
@@ -12655,15 +13579,15 @@ var file_api_proto_agent_proto_depIdxs = []int32{
 	18,  // 22: agent.VMConfig.resources:type_name -> agent.VMResources
 	40,  // 23: agent.VMConfig.network_config:type_name -> agent.VMNetworkConfig
 	48,  // 24: agent.VMConfig.storage_config:type_name -> agent.StorageConfig
-	141, // 25: agent.VMConfig.metadata:type_name -> agent.VMConfig.MetadataEntry
+	152, // 25: agent.VMConfig.metadata:type_name -> agent.VMConfig.MetadataEntry
 	60,  // 26: agent.VMConfig.restore_disks:type_name -> agent.BackupDiskFile
 	61,  // 27: agent.VMConfig.restore_layers:type_name -> agent.BackupLayer
 	2,   // 28: agent.VMStatusResponse.state:type_name -> agent.VMState
 	29,  // 29: agent.VMStatusResponse.current_resources:type_name -> agent.VMResourceUsage
-	146, // 30: agent.VMStatusResponse.last_state_change:type_name -> google.protobuf.Timestamp
+	157, // 30: agent.VMStatusResponse.last_state_change:type_name -> google.protobuf.Timestamp
 	18,  // 31: agent.VMStatusResponse.configured_resources:type_name -> agent.VMResources
 	3,   // 32: agent.VMMetricsRequest.metric_types:type_name -> agent.MetricType
-	146, // 33: agent.VMMetricsResponse.timestamp:type_name -> google.protobuf.Timestamp
+	157, // 33: agent.VMMetricsResponse.timestamp:type_name -> google.protobuf.Timestamp
 	32,  // 34: agent.VMMetricsResponse.cpu:type_name -> agent.CPUMetrics
 	33,  // 35: agent.VMMetricsResponse.memory:type_name -> agent.MemoryMetrics
 	34,  // 36: agent.VMMetricsResponse.disk:type_name -> agent.DiskMetrics
@@ -12674,7 +13598,7 @@ var file_api_proto_agent_proto_depIdxs = []int32{
 	39,  // 41: agent.SnapshotResponse.snapshot:type_name -> agent.SnapshotInfo
 	39,  // 42: agent.SnapshotResponse.snapshots:type_name -> agent.SnapshotInfo
 	52,  // 43: agent.SnapshotResponse.error:type_name -> agent.ErrorResponse
-	146, // 44: agent.SnapshotInfo.created_at:type_name -> google.protobuf.Timestamp
+	157, // 44: agent.SnapshotInfo.created_at:type_name -> google.protobuf.Timestamp
 	2,   // 45: agent.SnapshotInfo.vm_state:type_name -> agent.VMState
 	43,  // 46: agent.VMNetworkConfig.interfaces:type_name -> agent.NetworkInterface
 	44,  // 47: agent.VMNetworkConfig.firewall_rules:type_name -> agent.FirewallRule
@@ -12691,13 +13615,13 @@ var file_api_proto_agent_proto_depIdxs = []int32{
 	49,  // 58: agent.StorageConfig.additional_volumes:type_name -> agent.DiskConfig
 	8,   // 59: agent.DiskConfig.format:type_name -> agent.DiskFormat
 	9,   // 60: agent.DiskConfig.backend:type_name -> agent.StorageBackend
-	146, // 61: agent.VNCProxyResponse.expires_at:type_name -> google.protobuf.Timestamp
+	157, // 61: agent.VNCProxyResponse.expires_at:type_name -> google.protobuf.Timestamp
 	52,  // 62: agent.VNCProxyResponse.error:type_name -> agent.ErrorResponse
 	10,  // 63: agent.ErrorResponse.code:type_name -> agent.ErrorCode
-	142, // 64: agent.ErrorResponse.details:type_name -> agent.ErrorResponse.DetailsEntry
+	153, // 64: agent.ErrorResponse.details:type_name -> agent.ErrorResponse.DetailsEntry
 	55,  // 65: agent.GetNodeInfoResponse.os_info:type_name -> agent.OSInfo
 	56,  // 66: agent.GetNodeInfoResponse.cpu_info:type_name -> agent.CPUInfo
-	143, // 67: agent.GetNodeInfoResponse.agent_settings:type_name -> agent.GetNodeInfoResponse.AgentSettingsEntry
+	154, // 67: agent.GetNodeInfoResponse.agent_settings:type_name -> agent.GetNodeInfoResponse.AgentSettingsEntry
 	52,  // 68: agent.GetNodeInfoResponse.error:type_name -> agent.ErrorResponse
 	52,  // 69: agent.DiskImportResponse.error:type_name -> agent.ErrorResponse
 	64,  // 70: agent.BackupDiskRequest.object_store:type_name -> agent.ObjectStore
@@ -12737,7 +13661,7 @@ var file_api_proto_agent_proto_depIdxs = []int32{
 	100, // 104: agent.ScannedVM.networks:type_name -> agent.ScannedNetwork
 	52,  // 105: agent.FloatingIPResponse.error:type_name -> agent.ErrorResponse
 	52,  // 106: agent.VPCResponse.error:type_name -> agent.ErrorResponse
-	146, // 107: agent.ExportProgress.started_at:type_name -> google.protobuf.Timestamp
+	157, // 107: agent.ExportProgress.started_at:type_name -> google.protobuf.Timestamp
 	109, // 108: agent.GetExportProgressResponse.exports:type_name -> agent.ExportProgress
 	52,  // 109: agent.GetExportProgressResponse.error:type_name -> agent.ErrorResponse
 	52,  // 110: agent.SetConsoleAccessResponse.error:type_name -> agent.ErrorResponse
@@ -12751,105 +13675,126 @@ var file_api_proto_agent_proto_depIdxs = []int32{
 	52,  // 118: agent.SetMigrationPeersResponse.error:type_name -> agent.ErrorResponse
 	127, // 119: agent.PrepareMigrationTargetRequest.disks:type_name -> agent.MigrationTargetDisk
 	52,  // 120: agent.PrepareMigrationTargetResponse.error:type_name -> agent.ErrorResponse
-	144, // 121: agent.PrepareMigrationTargetResponse.paths:type_name -> agent.PrepareMigrationTargetResponse.PathsEntry
+	155, // 121: agent.PrepareMigrationTargetResponse.paths:type_name -> agent.PrepareMigrationTargetResponse.PathsEntry
 	120, // 122: agent.PullMigratedVMRequest.disks:type_name -> agent.MigrationDiskMap
 	52,  // 123: agent.PullMigratedVMResponse.error:type_name -> agent.ErrorResponse
 	52,  // 124: agent.AbortMigrationResponse.error:type_name -> agent.ErrorResponse
 	52,  // 125: agent.FinishMigrationTargetResponse.error:type_name -> agent.ErrorResponse
-	52,  // 126: agent.FinishMigrationSourceResponse.error:type_name -> agent.ErrorResponse
-	11,  // 127: agent.NodeAgent.RegisterNode:input_type -> agent.RegisterNodeRequest
-	13,  // 128: agent.NodeAgent.Heartbeat:input_type -> agent.HeartbeatRequest
-	22,  // 129: agent.NodeAgent.ExecuteVMCommand:input_type -> agent.VMCommandRequest
-	27,  // 130: agent.NodeAgent.GetVMStatus:input_type -> agent.VMStatusRequest
-	30,  // 131: agent.NodeAgent.StreamVMMetrics:input_type -> agent.VMMetricsRequest
-	37,  // 132: agent.NodeAgent.CreateSnapshot:input_type -> agent.SnapshotRequest
-	46,  // 133: agent.NodeAgent.ApplyNetworkConfig:input_type -> agent.NetworkConfigRequest
-	50,  // 134: agent.NodeAgent.StartVNCProxy:input_type -> agent.VNCProxyRequest
-	53,  // 135: agent.NodeAgent.GetNodeInfo:input_type -> agent.GetNodeInfoRequest
-	57,  // 136: agent.NodeAgent.ImportDisk:input_type -> agent.DiskImportRequest
-	59,  // 137: agent.NodeAgent.BackupDisk:input_type -> agent.BackupDiskRequest
-	63,  // 138: agent.NodeAgent.RestoreDisk:input_type -> agent.RestoreDiskRequest
-	68,  // 139: agent.NodeAgent.TestObjectStore:input_type -> agent.TestObjectStoreRequest
-	66,  // 140: agent.NodeAgent.DeleteBackupFiles:input_type -> agent.DeleteBackupFilesRequest
-	92,  // 141: agent.NodeAgent.GetLiveMetrics:input_type -> agent.GetLiveMetricsRequest
-	96,  // 142: agent.NodeAgent.ScanVMs:input_type -> agent.ScanVMsRequest
-	71,  // 143: agent.NodeAgent.CreateStorageVolume:input_type -> agent.CreateStorageVolumeRequest
-	73,  // 144: agent.NodeAgent.DeleteStorageVolume:input_type -> agent.DeleteStorageVolumeRequest
-	87,  // 145: agent.NodeAgent.GetStorageReport:input_type -> agent.GetStorageReportRequest
-	83,  // 146: agent.NodeAgent.MigrateVM:input_type -> agent.MigrateVMRequest
-	85,  // 147: agent.NodeAgent.SyncTemplate:input_type -> agent.SyncTemplateRequest
-	75,  // 148: agent.NodeAgent.AttachDisk:input_type -> agent.AttachDiskRequest
-	77,  // 149: agent.NodeAgent.DetachDisk:input_type -> agent.DetachDiskRequest
-	79,  // 150: agent.NodeAgent.DefineNetwork:input_type -> agent.DefineNetworkRequest
-	81,  // 151: agent.NodeAgent.UndefineNetwork:input_type -> agent.UndefineNetworkRequest
-	101, // 152: agent.NodeAgent.ProbeIPs:input_type -> agent.ProbeIPsRequest
-	103, // 153: agent.NodeAgent.ConfigureFloatingIP:input_type -> agent.FloatingIPRequest
-	105, // 154: agent.NodeAgent.ConfigureVPC:input_type -> agent.VPCRequest
-	107, // 155: agent.NodeAgent.SetQuarantine:input_type -> agent.SetQuarantineRequest
-	111, // 156: agent.NodeAgent.SetConsoleAccess:input_type -> agent.SetConsoleAccessRequest
-	112, // 157: agent.NodeAgent.ConsoleStream:input_type -> agent.ConsoleData
-	108, // 158: agent.NodeAgent.GetExportProgress:input_type -> agent.GetExportProgressRequest
-	94,  // 159: agent.NodeAgent.GetGuestConnections:input_type -> agent.GetGuestConnectionsRequest
-	115, // 160: agent.NodeAgent.UpdateAgent:input_type -> agent.AgentUpdateChunk
-	20,  // 161: agent.NodeAgent.SetVMLimits:input_type -> agent.SetVMLimitsRequest
-	117, // 162: agent.NodeAgent.GetPreflight:input_type -> agent.PreflightRequest
-	121, // 163: agent.NodeAgent.GetMigrationInfo:input_type -> agent.GetMigrationInfoRequest
-	125, // 164: agent.NodeAgent.SetMigrationPeers:input_type -> agent.SetMigrationPeersRequest
-	128, // 165: agent.NodeAgent.PrepareMigrationTarget:input_type -> agent.PrepareMigrationTargetRequest
-	130, // 166: agent.NodeAgent.PullMigratedVM:input_type -> agent.PullMigratedVMRequest
-	132, // 167: agent.NodeAgent.GetMigrationProgress:input_type -> agent.GetMigrationProgressRequest
-	134, // 168: agent.NodeAgent.AbortMigration:input_type -> agent.AbortMigrationRequest
-	136, // 169: agent.NodeAgent.FinishMigrationTarget:input_type -> agent.FinishMigrationTargetRequest
-	138, // 170: agent.NodeAgent.FinishMigrationSource:input_type -> agent.FinishMigrationSourceRequest
-	12,  // 171: agent.NodeAgent.RegisterNode:output_type -> agent.RegisterNodeResponse
-	16,  // 172: agent.NodeAgent.Heartbeat:output_type -> agent.HeartbeatResponse
-	25,  // 173: agent.NodeAgent.ExecuteVMCommand:output_type -> agent.VMCommandResponse
-	28,  // 174: agent.NodeAgent.GetVMStatus:output_type -> agent.VMStatusResponse
-	31,  // 175: agent.NodeAgent.StreamVMMetrics:output_type -> agent.VMMetricsResponse
-	38,  // 176: agent.NodeAgent.CreateSnapshot:output_type -> agent.SnapshotResponse
-	47,  // 177: agent.NodeAgent.ApplyNetworkConfig:output_type -> agent.NetworkConfigResponse
-	51,  // 178: agent.NodeAgent.StartVNCProxy:output_type -> agent.VNCProxyResponse
-	54,  // 179: agent.NodeAgent.GetNodeInfo:output_type -> agent.GetNodeInfoResponse
-	58,  // 180: agent.NodeAgent.ImportDisk:output_type -> agent.DiskImportResponse
-	62,  // 181: agent.NodeAgent.BackupDisk:output_type -> agent.BackupDiskResponse
-	70,  // 182: agent.NodeAgent.RestoreDisk:output_type -> agent.RestoreDiskResponse
-	69,  // 183: agent.NodeAgent.TestObjectStore:output_type -> agent.TestObjectStoreResponse
-	67,  // 184: agent.NodeAgent.DeleteBackupFiles:output_type -> agent.DeleteBackupFilesResponse
-	93,  // 185: agent.NodeAgent.GetLiveMetrics:output_type -> agent.GetLiveMetricsResponse
-	97,  // 186: agent.NodeAgent.ScanVMs:output_type -> agent.ScanVMsResponse
-	72,  // 187: agent.NodeAgent.CreateStorageVolume:output_type -> agent.CreateStorageVolumeResponse
-	74,  // 188: agent.NodeAgent.DeleteStorageVolume:output_type -> agent.DeleteStorageVolumeResponse
-	91,  // 189: agent.NodeAgent.GetStorageReport:output_type -> agent.GetStorageReportResponse
-	84,  // 190: agent.NodeAgent.MigrateVM:output_type -> agent.MigrateVMResponse
-	86,  // 191: agent.NodeAgent.SyncTemplate:output_type -> agent.SyncTemplateResponse
-	76,  // 192: agent.NodeAgent.AttachDisk:output_type -> agent.AttachDiskResponse
-	78,  // 193: agent.NodeAgent.DetachDisk:output_type -> agent.DetachDiskResponse
-	80,  // 194: agent.NodeAgent.DefineNetwork:output_type -> agent.DefineNetworkResponse
-	82,  // 195: agent.NodeAgent.UndefineNetwork:output_type -> agent.UndefineNetworkResponse
-	102, // 196: agent.NodeAgent.ProbeIPs:output_type -> agent.ProbeIPsResponse
-	104, // 197: agent.NodeAgent.ConfigureFloatingIP:output_type -> agent.FloatingIPResponse
-	106, // 198: agent.NodeAgent.ConfigureVPC:output_type -> agent.VPCResponse
-	114, // 199: agent.NodeAgent.SetQuarantine:output_type -> agent.SetQuarantineResponse
-	113, // 200: agent.NodeAgent.SetConsoleAccess:output_type -> agent.SetConsoleAccessResponse
-	112, // 201: agent.NodeAgent.ConsoleStream:output_type -> agent.ConsoleData
-	110, // 202: agent.NodeAgent.GetExportProgress:output_type -> agent.GetExportProgressResponse
-	95,  // 203: agent.NodeAgent.GetGuestConnections:output_type -> agent.GetGuestConnectionsResponse
-	116, // 204: agent.NodeAgent.UpdateAgent:output_type -> agent.AgentUpdateResponse
-	21,  // 205: agent.NodeAgent.SetVMLimits:output_type -> agent.SetVMLimitsResponse
-	119, // 206: agent.NodeAgent.GetPreflight:output_type -> agent.PreflightResponse
-	123, // 207: agent.NodeAgent.GetMigrationInfo:output_type -> agent.GetMigrationInfoResponse
-	126, // 208: agent.NodeAgent.SetMigrationPeers:output_type -> agent.SetMigrationPeersResponse
-	129, // 209: agent.NodeAgent.PrepareMigrationTarget:output_type -> agent.PrepareMigrationTargetResponse
-	131, // 210: agent.NodeAgent.PullMigratedVM:output_type -> agent.PullMigratedVMResponse
-	133, // 211: agent.NodeAgent.GetMigrationProgress:output_type -> agent.GetMigrationProgressResponse
-	135, // 212: agent.NodeAgent.AbortMigration:output_type -> agent.AbortMigrationResponse
-	137, // 213: agent.NodeAgent.FinishMigrationTarget:output_type -> agent.FinishMigrationTargetResponse
-	139, // 214: agent.NodeAgent.FinishMigrationSource:output_type -> agent.FinishMigrationSourceResponse
-	171, // [171:215] is the sub-list for method output_type
-	127, // [127:171] is the sub-list for method input_type
-	127, // [127:127] is the sub-list for extension type_name
-	127, // [127:127] is the sub-list for extension extendee
-	0,   // [0:127] is the sub-list for field type_name
+	23,  // 126: agent.FinishMigrationSourceRequest.lvm_pools:type_name -> agent.LVMPool
+	52,  // 127: agent.FinishMigrationSourceResponse.error:type_name -> agent.ErrorResponse
+	23,  // 128: agent.ResizeVMDiskRequest.lvm_pools:type_name -> agent.LVMPool
+	52,  // 129: agent.ResizeVMDiskResponse.error:type_name -> agent.ErrorResponse
+	23,  // 130: agent.MoveVMDiskRequest.lvm_pools:type_name -> agent.LVMPool
+	52,  // 131: agent.MoveVMDiskResponse.error:type_name -> agent.ErrorResponse
+	23,  // 132: agent.ListOrphanDisksRequest.lvm_pools:type_name -> agent.LVMPool
+	52,  // 133: agent.ListOrphanDisksResponse.error:type_name -> agent.ErrorResponse
+	145, // 134: agent.ListOrphanDisksResponse.disks:type_name -> agent.OrphanDisk
+	23,  // 135: agent.DeleteOrphanDiskRequest.lvm_pools:type_name -> agent.LVMPool
+	52,  // 136: agent.DeleteOrphanDiskResponse.error:type_name -> agent.ErrorResponse
+	52,  // 137: agent.PutImageResponse.error:type_name -> agent.ErrorResponse
+	11,  // 138: agent.NodeAgent.RegisterNode:input_type -> agent.RegisterNodeRequest
+	13,  // 139: agent.NodeAgent.Heartbeat:input_type -> agent.HeartbeatRequest
+	22,  // 140: agent.NodeAgent.ExecuteVMCommand:input_type -> agent.VMCommandRequest
+	27,  // 141: agent.NodeAgent.GetVMStatus:input_type -> agent.VMStatusRequest
+	30,  // 142: agent.NodeAgent.StreamVMMetrics:input_type -> agent.VMMetricsRequest
+	37,  // 143: agent.NodeAgent.CreateSnapshot:input_type -> agent.SnapshotRequest
+	46,  // 144: agent.NodeAgent.ApplyNetworkConfig:input_type -> agent.NetworkConfigRequest
+	50,  // 145: agent.NodeAgent.StartVNCProxy:input_type -> agent.VNCProxyRequest
+	53,  // 146: agent.NodeAgent.GetNodeInfo:input_type -> agent.GetNodeInfoRequest
+	57,  // 147: agent.NodeAgent.ImportDisk:input_type -> agent.DiskImportRequest
+	59,  // 148: agent.NodeAgent.BackupDisk:input_type -> agent.BackupDiskRequest
+	63,  // 149: agent.NodeAgent.RestoreDisk:input_type -> agent.RestoreDiskRequest
+	68,  // 150: agent.NodeAgent.TestObjectStore:input_type -> agent.TestObjectStoreRequest
+	66,  // 151: agent.NodeAgent.DeleteBackupFiles:input_type -> agent.DeleteBackupFilesRequest
+	92,  // 152: agent.NodeAgent.GetLiveMetrics:input_type -> agent.GetLiveMetricsRequest
+	96,  // 153: agent.NodeAgent.ScanVMs:input_type -> agent.ScanVMsRequest
+	71,  // 154: agent.NodeAgent.CreateStorageVolume:input_type -> agent.CreateStorageVolumeRequest
+	73,  // 155: agent.NodeAgent.DeleteStorageVolume:input_type -> agent.DeleteStorageVolumeRequest
+	87,  // 156: agent.NodeAgent.GetStorageReport:input_type -> agent.GetStorageReportRequest
+	83,  // 157: agent.NodeAgent.MigrateVM:input_type -> agent.MigrateVMRequest
+	85,  // 158: agent.NodeAgent.SyncTemplate:input_type -> agent.SyncTemplateRequest
+	75,  // 159: agent.NodeAgent.AttachDisk:input_type -> agent.AttachDiskRequest
+	77,  // 160: agent.NodeAgent.DetachDisk:input_type -> agent.DetachDiskRequest
+	79,  // 161: agent.NodeAgent.DefineNetwork:input_type -> agent.DefineNetworkRequest
+	81,  // 162: agent.NodeAgent.UndefineNetwork:input_type -> agent.UndefineNetworkRequest
+	101, // 163: agent.NodeAgent.ProbeIPs:input_type -> agent.ProbeIPsRequest
+	103, // 164: agent.NodeAgent.ConfigureFloatingIP:input_type -> agent.FloatingIPRequest
+	105, // 165: agent.NodeAgent.ConfigureVPC:input_type -> agent.VPCRequest
+	107, // 166: agent.NodeAgent.SetQuarantine:input_type -> agent.SetQuarantineRequest
+	111, // 167: agent.NodeAgent.SetConsoleAccess:input_type -> agent.SetConsoleAccessRequest
+	112, // 168: agent.NodeAgent.ConsoleStream:input_type -> agent.ConsoleData
+	108, // 169: agent.NodeAgent.GetExportProgress:input_type -> agent.GetExportProgressRequest
+	94,  // 170: agent.NodeAgent.GetGuestConnections:input_type -> agent.GetGuestConnectionsRequest
+	115, // 171: agent.NodeAgent.UpdateAgent:input_type -> agent.AgentUpdateChunk
+	20,  // 172: agent.NodeAgent.SetVMLimits:input_type -> agent.SetVMLimitsRequest
+	117, // 173: agent.NodeAgent.GetPreflight:input_type -> agent.PreflightRequest
+	121, // 174: agent.NodeAgent.GetMigrationInfo:input_type -> agent.GetMigrationInfoRequest
+	125, // 175: agent.NodeAgent.SetMigrationPeers:input_type -> agent.SetMigrationPeersRequest
+	128, // 176: agent.NodeAgent.PrepareMigrationTarget:input_type -> agent.PrepareMigrationTargetRequest
+	130, // 177: agent.NodeAgent.PullMigratedVM:input_type -> agent.PullMigratedVMRequest
+	132, // 178: agent.NodeAgent.GetMigrationProgress:input_type -> agent.GetMigrationProgressRequest
+	134, // 179: agent.NodeAgent.AbortMigration:input_type -> agent.AbortMigrationRequest
+	136, // 180: agent.NodeAgent.FinishMigrationTarget:input_type -> agent.FinishMigrationTargetRequest
+	138, // 181: agent.NodeAgent.FinishMigrationSource:input_type -> agent.FinishMigrationSourceRequest
+	140, // 182: agent.NodeAgent.ResizeVMDisk:input_type -> agent.ResizeVMDiskRequest
+	142, // 183: agent.NodeAgent.MoveVMDisk:input_type -> agent.MoveVMDiskRequest
+	144, // 184: agent.NodeAgent.ListOrphanDisks:input_type -> agent.ListOrphanDisksRequest
+	147, // 185: agent.NodeAgent.DeleteOrphanDisk:input_type -> agent.DeleteOrphanDiskRequest
+	149, // 186: agent.NodeAgent.PutImage:input_type -> agent.ImageChunk
+	12,  // 187: agent.NodeAgent.RegisterNode:output_type -> agent.RegisterNodeResponse
+	16,  // 188: agent.NodeAgent.Heartbeat:output_type -> agent.HeartbeatResponse
+	25,  // 189: agent.NodeAgent.ExecuteVMCommand:output_type -> agent.VMCommandResponse
+	28,  // 190: agent.NodeAgent.GetVMStatus:output_type -> agent.VMStatusResponse
+	31,  // 191: agent.NodeAgent.StreamVMMetrics:output_type -> agent.VMMetricsResponse
+	38,  // 192: agent.NodeAgent.CreateSnapshot:output_type -> agent.SnapshotResponse
+	47,  // 193: agent.NodeAgent.ApplyNetworkConfig:output_type -> agent.NetworkConfigResponse
+	51,  // 194: agent.NodeAgent.StartVNCProxy:output_type -> agent.VNCProxyResponse
+	54,  // 195: agent.NodeAgent.GetNodeInfo:output_type -> agent.GetNodeInfoResponse
+	58,  // 196: agent.NodeAgent.ImportDisk:output_type -> agent.DiskImportResponse
+	62,  // 197: agent.NodeAgent.BackupDisk:output_type -> agent.BackupDiskResponse
+	70,  // 198: agent.NodeAgent.RestoreDisk:output_type -> agent.RestoreDiskResponse
+	69,  // 199: agent.NodeAgent.TestObjectStore:output_type -> agent.TestObjectStoreResponse
+	67,  // 200: agent.NodeAgent.DeleteBackupFiles:output_type -> agent.DeleteBackupFilesResponse
+	93,  // 201: agent.NodeAgent.GetLiveMetrics:output_type -> agent.GetLiveMetricsResponse
+	97,  // 202: agent.NodeAgent.ScanVMs:output_type -> agent.ScanVMsResponse
+	72,  // 203: agent.NodeAgent.CreateStorageVolume:output_type -> agent.CreateStorageVolumeResponse
+	74,  // 204: agent.NodeAgent.DeleteStorageVolume:output_type -> agent.DeleteStorageVolumeResponse
+	91,  // 205: agent.NodeAgent.GetStorageReport:output_type -> agent.GetStorageReportResponse
+	84,  // 206: agent.NodeAgent.MigrateVM:output_type -> agent.MigrateVMResponse
+	86,  // 207: agent.NodeAgent.SyncTemplate:output_type -> agent.SyncTemplateResponse
+	76,  // 208: agent.NodeAgent.AttachDisk:output_type -> agent.AttachDiskResponse
+	78,  // 209: agent.NodeAgent.DetachDisk:output_type -> agent.DetachDiskResponse
+	80,  // 210: agent.NodeAgent.DefineNetwork:output_type -> agent.DefineNetworkResponse
+	82,  // 211: agent.NodeAgent.UndefineNetwork:output_type -> agent.UndefineNetworkResponse
+	102, // 212: agent.NodeAgent.ProbeIPs:output_type -> agent.ProbeIPsResponse
+	104, // 213: agent.NodeAgent.ConfigureFloatingIP:output_type -> agent.FloatingIPResponse
+	106, // 214: agent.NodeAgent.ConfigureVPC:output_type -> agent.VPCResponse
+	114, // 215: agent.NodeAgent.SetQuarantine:output_type -> agent.SetQuarantineResponse
+	113, // 216: agent.NodeAgent.SetConsoleAccess:output_type -> agent.SetConsoleAccessResponse
+	112, // 217: agent.NodeAgent.ConsoleStream:output_type -> agent.ConsoleData
+	110, // 218: agent.NodeAgent.GetExportProgress:output_type -> agent.GetExportProgressResponse
+	95,  // 219: agent.NodeAgent.GetGuestConnections:output_type -> agent.GetGuestConnectionsResponse
+	116, // 220: agent.NodeAgent.UpdateAgent:output_type -> agent.AgentUpdateResponse
+	21,  // 221: agent.NodeAgent.SetVMLimits:output_type -> agent.SetVMLimitsResponse
+	119, // 222: agent.NodeAgent.GetPreflight:output_type -> agent.PreflightResponse
+	123, // 223: agent.NodeAgent.GetMigrationInfo:output_type -> agent.GetMigrationInfoResponse
+	126, // 224: agent.NodeAgent.SetMigrationPeers:output_type -> agent.SetMigrationPeersResponse
+	129, // 225: agent.NodeAgent.PrepareMigrationTarget:output_type -> agent.PrepareMigrationTargetResponse
+	131, // 226: agent.NodeAgent.PullMigratedVM:output_type -> agent.PullMigratedVMResponse
+	133, // 227: agent.NodeAgent.GetMigrationProgress:output_type -> agent.GetMigrationProgressResponse
+	135, // 228: agent.NodeAgent.AbortMigration:output_type -> agent.AbortMigrationResponse
+	137, // 229: agent.NodeAgent.FinishMigrationTarget:output_type -> agent.FinishMigrationTargetResponse
+	139, // 230: agent.NodeAgent.FinishMigrationSource:output_type -> agent.FinishMigrationSourceResponse
+	141, // 231: agent.NodeAgent.ResizeVMDisk:output_type -> agent.ResizeVMDiskResponse
+	143, // 232: agent.NodeAgent.MoveVMDisk:output_type -> agent.MoveVMDiskResponse
+	146, // 233: agent.NodeAgent.ListOrphanDisks:output_type -> agent.ListOrphanDisksResponse
+	148, // 234: agent.NodeAgent.DeleteOrphanDisk:output_type -> agent.DeleteOrphanDiskResponse
+	150, // 235: agent.NodeAgent.PutImage:output_type -> agent.PutImageResponse
+	187, // [187:236] is the sub-list for method output_type
+	138, // [138:187] is the sub-list for method input_type
+	138, // [138:138] is the sub-list for extension type_name
+	138, // [138:138] is the sub-list for extension extendee
+	0,   // [0:138] is the sub-list for field type_name
 }
 
 func init() { file_api_proto_agent_proto_init() }
@@ -12863,7 +13808,7 @@ func file_api_proto_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_proto_agent_proto_rawDesc), len(file_api_proto_agent_proto_rawDesc)),
 			NumEnums:      11,
-			NumMessages:   134,
+			NumMessages:   145,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

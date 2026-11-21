@@ -53,3 +53,22 @@ export function useMarkAllNotificationsRead() {
     onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
   })
 }
+
+export interface NotificationPage {
+  items: UserNotification[]
+  unread: number
+  total: number
+}
+
+// useNotificationPage reads one page of the customer's notifications, for the
+// notifications page; the bell keeps the latest 30.
+export function useNotificationPage(page: number, pageSize = 25) {
+  return useQuery<NotificationPage>({
+    queryKey: [...KEY, 'page', page, pageSize],
+    queryFn: async () => {
+      const res = await api.get<UserNotification[]>('/api/v1/notifications', { params: { limit: pageSize, offset: (page - 1) * pageSize } })
+      const body = res.data as unknown as { data: UserNotification[]; unread?: number; total?: number }
+      return { items: body.data ?? [], unread: body.unread ?? 0, total: body.total ?? 0 }
+    },
+  })
+}

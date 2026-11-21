@@ -220,7 +220,7 @@ node's page in the panel lists what the agent runs with.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `TEMPLATE_CACHE_DIR` | `/var/lib/libvirt/templates` | Where downloaded templates, clone copies and disk scratch space go. Absolute path; put it on a data volume. |
+| `TEMPLATE_CACHE_DIR` | `/var/lib/libvirt/templates` | Where downloaded templates, ISOs uploaded to the panel, clone copies and disk scratch space go (an offline move of a qcow2 disk onto a logical volume fetches it here first). Absolute path; put it on a data volume. A template with a checksum is cached under it; a refreshed one is downloaded beside the old copy, which goes once nothing uses it. |
 | `TEMPLATE_CACHE_MAX_GB` | no limit | Keeps downloads under this size, least recently used first. A download a VM uses, or used in the last six hours, is never removed. |
 | `CUSTOMER_ISO_MAX_GB` | `8` | Largest ISO a customer may attach by URL. |
 | `CUSTOMER_ISO_MIN_FREE_GB` | `10` | A customer ISO download is refused, or stopped, rather than leave less than this free. |

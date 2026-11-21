@@ -17,13 +17,15 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { usePlans, useCreatePlan, useUpdatePlan, useDeletePlan } from "@/lib/hooks/use-plans"
-import type { CreatePlanRequest, Plan } from "@/types/plan"
+import type { AddonKey, CreatePlanRequest, Plan } from "@/types/plan"
 import { useConfirm } from "@/components/confirm-provider"
 import { useCan } from "@/lib/hooks/use-auth"
 import { LimitsFields, NO_LIMITS, limitsProblem, limitsSummary } from "@/components/vm-limits"
 import { PlanRolloutDialog } from "@/components/plan-rollout"
 import { planAllowances, planPrice } from "@/lib/plans"
 import { useFirewallGroups } from "@/lib/hooks/use-firewall-groups"
+import { useNodeGroups } from "@/lib/hooks/use-admin-extras"
+import { useStorageTiers } from "@/lib/hooks/use-storage"
 
 // An empty number field is "not set" (no price, no limit), never 0.
 const numOrNull = (v: string) => (v.trim() === "" ? null : Number(v))
@@ -47,13 +49,29 @@ const emptyForm: CreatePlanRequest = {
   max_backups: null,
   max_extra_ipv4: null,
   max_extra_ipv6: null,
+  max_extra_disks: null,
+  max_images: null,
+  max_floating_ips: null,
+  addon_prices: {},
   default_firewall_group_id: "",
   network_type: "public",
   nat_ports: 20,
   nat_hostnames: 0,
+  node_group: "",
+  storage_tier: "",
   description: "",
   is_active: true,
 }
+
+const ADDONS: { key: AddonKey; label: string }[] = [
+  { key: "snapshot", label: "Snapshot" },
+  { key: "backup", label: "Backup" },
+  { key: "image", label: "Saved image" },
+  { key: "extra_disk_gb", label: "Extra disk, per GB" },
+  { key: "floating_ip", label: "Floating IP" },
+  { key: "extra_ipv4", label: "Extra IPv4 address" },
+  { key: "extra_ipv6", label: "IPv6" },
+]
 
 export default function PlansPage() {
   const confirm = useConfirm()
@@ -67,6 +85,8 @@ export default function PlansPage() {
   const updatePlan = useUpdatePlan()
   const deletePlan = useDeletePlan()
   const { data: globalGroups } = useFirewallGroups("global", mayEdit && can("firewall_group:read"))
+  const { data: nodeGroups } = useNodeGroups(mayEdit && can("node:read"))
+  const { data: storageTiers } = useStorageTiers(mayEdit && can("node:read"))
 
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -98,10 +118,16 @@ export default function PlansPage() {
       max_backups: plan.max_backups ?? null,
       max_extra_ipv4: plan.max_extra_ipv4 ?? null,
       max_extra_ipv6: plan.max_extra_ipv6 ?? null,
+      max_extra_disks: plan.max_extra_disks ?? null,
+      max_images: plan.max_images ?? null,
+      max_floating_ips: plan.max_floating_ips ?? null,
+      addon_prices: { ...plan.addon_prices },
       default_firewall_group_id: plan.default_firewall_group_id ?? "",
       network_type: plan.network_type ?? "public",
       nat_ports: plan.nat_ports || 20,
       nat_hostnames: plan.nat_hostnames ?? 0,
+      node_group: plan.node_group ?? "",
+      storage_tier: plan.storage_tier ?? "",
       description: plan.description ?? "",
       is_active: plan.is_active,
     })
@@ -141,7 +167,7 @@ export default function PlansPage() {
 
   const saving = createPlan.isPending || updatePlan.isPending
   const limitsError = limitsProblem(form.limits ?? NO_LIMITS)
-  const priced = form.price_monthly != null || form.price_hourly != null
+  const priced = form.price_monthly != null || form.price_hourly != null || Object.keys(form.addon_prices ?? {}).length > 0
   const priceError = priced && !/^[A-Z]{3}$/.test(form.currency ?? "") ? "A price needs a three-letter currency code." : null
 
   return (
@@ -287,6 +313,40 @@ export default function PlansPage() {
                 </select>
                 <p className="mt-1 text-[10px] text-muted-foreground">A VM holds one IPv6 at most.</p>
               </div>
+              <div>
+                <label htmlFor="plan-max-disks" className="mb-1 block text-xs font-medium text-muted-foreground">Extra disks (at most 16)</label>
+                <Input id="plan-max-disks" type="number" min={0} max={16} placeholder="No limit" value={fieldValue(form.max_extra_disks)} onChange={(e) => setForm({ ...form, max_extra_disks: numOrNull(e.target.value) })} />
+              </div>
+              <div>
+                <label htmlFor="plan-max-images" className="mb-1 block text-xs font-medium text-muted-foreground">Saved images, per VM</label>
+                <Input id="plan-max-images" type="number" min={0} max={1000} placeholder="No limit" value={fieldValue(form.max_images)} onChange={(e) => setForm({ ...form, max_images: numOrNull(e.target.value) })} />
+              </div>
+              <div>
+                <label htmlFor="plan-max-fips" className="mb-1 block text-xs font-medium text-muted-foreground">Floating IPs, per VM</label>
+                <Input id="plan-max-fips" type="number" min={0} max={256} placeholder="No limit" value={fieldValue(form.max_floating_ips)} onChange={(e) => setForm({ ...form, max_floating_ips: numOrNull(e.target.value) })} />
+              </div>
+            </div>
+            <p className="mt-2 text-[10px] text-muted-foreground">
+              Images and floating IPs belong to the account, not one VM: each VM on this plan adds its figure to the account&apos;s total. An account with any VM on no plan, or on a plan with no limit, is not limited.
+            </p>
+          </div>
+          <div className="mt-5 border-t pt-4">
+            <h3 className="text-sm font-medium">Prices of extras shown to customers</h3>
+            <p className="mb-3 text-xs text-muted-foreground">Monthly, in the plan&apos;s currency, shown beside the plan on the order page. Empty shows none.</p>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
+              {ADDONS.map((a) => (
+                <div key={a.key}>
+                  <label htmlFor={`plan-addon-${a.key}`} className="mb-1 block text-xs font-medium text-muted-foreground">{a.label}</label>
+                  <Input id={`plan-addon-${a.key}`} type="number" min={0} step="0.01" value={fieldValue(form.addon_prices?.[a.key] ?? null)}
+                    onChange={(e) => {
+                      const v = numOrNull(e.target.value)
+                      const next = { ...form.addon_prices }
+                      if (v == null) delete next[a.key]
+                      else next[a.key] = v
+                      setForm({ ...form, addon_prices: next })
+                    }} />
+                </div>
+              ))}
             </div>
           </div>
           <div className="mt-5 border-t pt-4">
@@ -337,6 +397,34 @@ export default function PlansPage() {
                   {(globalGroups ?? []).map((g) => <option key={g.id} value={g.id}>Group: {g.name} ({g.rule_count} rules)</option>)}
                 </select>
                 <p className="mt-1 text-[10px] text-muted-foreground">A group is placed after the VM&apos;s own rules, so customers can still add their own. Groups are under Firewall groups.</p>
+              </div>
+              <div>
+                <label htmlFor="plan-node-group" className="mb-1 block text-xs font-medium text-muted-foreground">Hypervisor group</label>
+                <select
+                  id="plan-node-group"
+                  value={form.node_group ?? ""}
+                  onChange={(e) => setForm({ ...form, node_group: e.target.value })}
+                  className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                >
+                  <option value="">Any node</option>
+                  {form.node_group && !nodeGroups?.some((g) => g.name === form.node_group) && <option value={form.node_group}>{form.node_group}</option>}
+                  {(nodeGroups ?? []).map((g) => <option key={g.name} value={g.name}>{g.name} ({g.nodes.length} {g.nodes.length === 1 ? "node" : "nodes"})</option>)}
+                </select>
+                <p className="mt-1 text-[10px] text-muted-foreground">New VMs on the plan go only to nodes in the group. A node&apos;s group is set on its page.</p>
+              </div>
+              <div>
+                <label htmlFor="plan-storage-tier" className="mb-1 block text-xs font-medium text-muted-foreground">Storage tier</label>
+                <select
+                  id="plan-storage-tier"
+                  value={form.storage_tier ?? ""}
+                  onChange={(e) => setForm({ ...form, storage_tier: e.target.value })}
+                  className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                >
+                  <option value="">Each node&apos;s primary pool</option>
+                  {form.storage_tier && !storageTiers?.includes(form.storage_tier) && <option value={form.storage_tier}>{form.storage_tier}</option>}
+                  {(storageTiers ?? []).map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+                <p className="mt-1 text-[10px] text-muted-foreground">New VMs&apos; disks go only into pools of the tier, on nodes that have one with room. A pool&apos;s tier is set under Storage.</p>
               </div>
             </div>
           </div>
@@ -414,6 +502,8 @@ export default function PlansPage() {
                 <div className="text-[11px] text-muted-foreground">{plan.data_quota_gb ? `${plan.data_quota_gb}GB·${plan.over_quota_policy[0].toUpperCase()}` : "∞ data"}</div>
                 {plan.smtp_policy === "blocked" && <div className="text-[11px] text-muted-foreground">Port 25 blocked</div>}
                 {plan.default_firewall_group_id && <div className="text-[11px] text-muted-foreground">Firewall: {globalGroups?.find((g) => g.id === plan.default_firewall_group_id)?.name ?? "a group"}</div>}
+                {plan.node_group && <div className="text-[11px] text-muted-foreground">Nodes: {plan.node_group}</div>}
+                {plan.storage_tier && <div className="text-[11px] text-muted-foreground">Storage: {plan.storage_tier}</div>}
                 {limitsSummary(plan.limits).map((line) => <div key={line} className="text-[11px] text-muted-foreground">{line}</div>)}
                 {planAllowances(plan).map((line) => <div key={line} className="text-[11px] text-muted-foreground">{line}</div>)}
               </div>

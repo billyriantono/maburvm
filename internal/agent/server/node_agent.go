@@ -267,6 +267,11 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 				log.Printf("[NodeAgent] VM %s: synced NIC bridge to %q before start", req.VmId, bridge)
 			}
 		}
+		if err == nil && migrations.Busy(req.VmId) {
+			// A disk being copied while the VM is off is whole only while it
+			// stays off.
+			err = fmt.Errorf("a disk of this VM is being moved or copied; start it when that has finished")
+		}
 		if err == nil {
 			s.applyPendingGuestBeforeStart(ctx, req.VmId)
 			err = libvirt.StartVM(req.VmId)
@@ -350,11 +355,18 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 	case pb.VMCommandType_VM_COMMAND_TYPE_ATTACH_ISO:
 		err = s.attachISO(req)
 		state = pb.VMState_VM_STATE_STOPPED
+		// A running VM takes a disc too now, and stays running.
+		if st, serr := libvirt.GetVMStatus(req.VmId); err == nil && serr == nil {
+			state = mapVMStatusToPBState(st)
+		}
 	case pb.VMCommandType_VM_COMMAND_TYPE_DETACH_ISO:
-		err = libvirt.DetachISO(req.VmId)
+		err = libvirt.DetachISOSlot(req.VmId, isoSlot(req.GetConfig()))
 		state = pb.VMState_VM_STATE_STOPPED
 		if err == nil {
 			sweepCustomerISOs(0)
+			if st, serr := libvirt.GetVMStatus(req.VmId); serr == nil {
+				state = mapVMStatusToPBState(st)
+			}
 		}
 	case pb.VMCommandType_VM_COMMAND_TYPE_REPAIR_CONSOLE:
 		// Inject a VNC graphics device into a domain that lacks one (common for
@@ -1106,8 +1118,10 @@ func injectGuestConfig(diskPath, hostname string, vmCfg libvirt.VMConfig, rootPa
 // resolveTemplateImage returns a local path to the template image. If ref is an
 // HTTP(S) URL (e.g. a catalog cloud-image), the image is downloaded into the
 // node's template cache once and the cached path is returned. Otherwise ref is
-// treated as an existing local file path.
-func resolveTemplateImage(ref string, store *pb.ObjectStore) (string, error) {
+// treated as an existing local file path. wantSHA, when set, is the sha256 a
+// download must have: it is checked before the image is kept, and names the
+// cached copy, so a refreshed image is downloaded again beside the old one.
+func resolveTemplateImage(ref string, store *pb.ObjectStore, wantSHA string) (string, error) {
 	// vm://... resolves to a source VM's primary disk for the clone flow (source
 	// must be stopped for a consistent copy):
 	//   vm://<vmId>            → that VM's disk on THIS node (same-node clone)
@@ -1128,7 +1142,7 @@ func resolveTemplateImage(ref string, store *pb.ObjectStore) (string, error) {
 			log.Printf("[NodeAgent] clone: pulling the disk of %s from %s", srcID, srcIP)
 			// Its own name: two copies of the same VM at once must not share a file.
 			part := fmt.Sprintf("%s.%d.part", dstPath, time.Now().UnixNano())
-			if _, err := pullDisk(context.Background(), migrationLayout(), srcIP, srcID, migration.PrimaryDrive, part, nil); err != nil {
+			if _, err := pullDisk(context.Background(), migrationLayout(), srcIP, srcID, migration.PrimaryDrive, part, false, nil); err != nil {
 				_ = os.Remove(part)
 				return "", fmt.Errorf("failed to pull the source disk from %s: %w", srcIP, err)
 			}
@@ -1210,25 +1224,25 @@ func resolveTemplateImage(ref string, store *pb.ObjectStore) (string, error) {
 	}
 
 	if !strings.HasPrefix(ref, "http://") && !strings.HasPrefix(ref, "https://") {
+		if sha, name, ok := models.SplitUploadImageRef(ref); ok {
+			p := filepath.Join(templateCacheDir, storage.UploadCacheName(sha, name))
+			if _, err := os.Stat(p); err != nil {
+				return "", fmt.Errorf("the image %s has not been copied to this node yet; sync it to the node from the panel", name)
+			}
+			return p, nil
+		}
 		if _, err := os.Stat(ref); err != nil {
 			return "", fmt.Errorf("template image not found at %s: %w", ref, err)
 		}
 		return ref, nil
 	}
 
-	// Derive a stable cache filename from the URL so the same source maps to the
-	// same cached file across creations.
-	sum := sha256.Sum256([]byte(ref))
-	base := filepath.Base(ref)
-	if i := strings.IndexAny(base, "?#"); i >= 0 {
-		base = base[:i]
+	wantSHA = strings.ToLower(strings.TrimSpace(wantSHA))
+	if wantSHA != "" && !models.ValidSHA256(wantSHA) {
+		return "", fmt.Errorf("the image checksum %q is not a sha256", wantSHA)
 	}
-	if base == "" || base == "/" || base == "." {
-		base = "image.qcow2"
-	}
-	// An archive is unpacked below, so the cached file is the image itself.
-	base = strings.TrimSuffix(base, ".zip")
-	cachePath := filepath.Join(templateCacheDir, fmt.Sprintf("%x-%s", sum[:6], base))
+	// A stable name per source (and checksum) maps every create to one file.
+	cachePath := filepath.Join(templateCacheDir, storage.TemplateCacheName(ref, wantSHA))
 
 	// Reuse the cached image if it was already downloaded.
 	if cachedTemplate(cachePath) {
@@ -1248,6 +1262,13 @@ func resolveTemplateImage(ref string, store *pb.ObjectStore) (string, error) {
 	if err := storage.NewTemplateManager().DownloadTemplate(ref, partPath); err != nil {
 		return "", fmt.Errorf("failed to download template image from %s: %w", ref, err)
 	}
+	// The checksum is of the file as published, before any unpacking.
+	if wantSHA != "" {
+		if err := storage.VerifySHA256(partPath, wantSHA); err != nil {
+			_ = os.Remove(partPath)
+			return "", fmt.Errorf("template image from %s: %w", ref, err)
+		}
+	}
 	if err := storage.UnpackIfZip(partPath); err != nil {
 		_ = os.Remove(partPath)
 		return "", fmt.Errorf("template image from %s: %w", ref, err)
@@ -1257,8 +1278,40 @@ func resolveTemplateImage(ref string, store *pb.ObjectStore) (string, error) {
 		return "", fmt.Errorf("failed to store template image: %w", err)
 	}
 	log.Printf("[NodeAgent] Cached template image at %s", cachePath)
+	if wantSHA != "" {
+		evictStaleTemplateCopies(ref, filepath.Base(cachePath))
+	}
 	evictTemplateCache()
 	return cachePath, nil
+}
+
+// evictStaleTemplateCopies removes the copies of a template cached under an
+// earlier checksum once a new one is in, unless a VM uses one (as a disc) or
+// one was used lately (a create may still be copying it). VMs built from an
+// old copy are independent of it.
+func evictStaleTemplateCopies(ref, keep string) {
+	templateCacheMu.Lock()
+	defer templateCacheMu.Unlock()
+	stale := storage.StaleTemplateCopies(templateCacheDir, ref, keep)
+	if len(stale) == 0 {
+		return
+	}
+	// Backing chains count: a disk made by an older agent may be built on a
+	// cached image rather than copied from it.
+	used, err := usedPaths(context.Background())
+	if err != nil {
+		log.Printf("[NodeAgent] WARNING: old copies of %s kept, could not list what VMs use: %v", ref, err)
+		return
+	}
+	for _, p := range stale {
+		info, err := os.Stat(p)
+		if err != nil || used[p] || time.Since(info.ModTime()) < templateCacheKeep {
+			continue
+		}
+		if err := os.Remove(p); err == nil {
+			log.Printf("[NodeAgent] removed %s: superseded by a refreshed copy of %s", p, ref)
+		}
+	}
 }
 
 // createVM provisions a VM disk from the OS template image and defines a libvirt
@@ -1344,6 +1397,18 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 	if !guestos.Known(osType) {
 		return fmt.Errorf("this node's agent cannot install %q systems; update the agent", osType)
 	}
+	// An empty disk and an installer: whoever installs it sets it up.
+	blank := imageRef == models.BlankImageRef
+	var installISO, driversISO string
+	if blank {
+		var err error
+		if installISO, err = resolveISO(cfg.GetMetadata()[models.InstallISOKey], cfg.GetMetadata()[models.InstallISOSHA256Key]); err != nil {
+			return err
+		}
+		if driversISO, err = resolveISO(cfg.GetMetadata()[models.DriversISOKey], cfg.GetMetadata()[models.DriversISOSHA256Key]); err != nil {
+			return err
+		}
+	}
 	diskGB := int(cfg.Resources.DiskGb)
 	lvPool, onLVM, err := requestLVMPool(req.GetPoolType(), req.GetPoolPath())
 	if err != nil {
@@ -1375,7 +1440,18 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 	}
 
 	qcow := storage.NewQCOW2Manager()
-	if onLVM {
+	if blank && onLVM {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Hour)
+		diskPath, err = lvm.Provision(ctx, lvPool, models.LVMDiskName(req.VmId, "vda"), int64(diskGB)<<30, "", "")
+		cancel()
+		if err != nil {
+			return fmt.Errorf("failed to create the empty disk: %w", err)
+		}
+	} else if blank {
+		if err := qcow.CreateImage(diskPath, diskGB); err != nil {
+			return fmt.Errorf("failed to create the empty disk: %w", err)
+		}
+	} else if onLVM {
 		if diskPath, err = provisionLVMDisk(req, imageRef, lvPool, restored); err != nil {
 			return err
 		}
@@ -1410,7 +1486,7 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 		}
 		*restored = extra
 	} else {
-		templatePath, err := resolveTemplateImage(imageRef, req.GetObjectStore())
+		templatePath, err := resolveTemplateImage(imageRef, req.GetObjectStore(), cfg.GetMetadata()[models.ImageSHA256Key])
 		if err != nil {
 			return err
 		}
@@ -1420,7 +1496,7 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 			return fmt.Errorf("failed to provision disk from template: %w", err)
 		}
 	}
-	if diskGB > 0 && !onLVM {
+	if diskGB > 0 && !onLVM && !blank {
 		// qcow2 cannot shrink below the image's virtual size without data loss,
 		// and `qemu-img resize` errors on a shrink. If the requested size is
 		// smaller than the template's virtual size, keep the template size
@@ -1473,6 +1549,9 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 		}
 	}
 	vmCfg.OSType = osType
+	if blank {
+		vmCfg.ISODrives, vmCfg.InstallISO, vmCfg.DriversISO = true, installISO, driversISO
+	}
 
 	// Apply the primary network interface from the network config.
 	if cfg.NetworkConfig != nil {
@@ -1513,7 +1592,10 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 	// the root filesystem outlives nothing useful and is missed by every cleanup
 	// that walks the pool.
 	seedPath := filepath.Join(imageDir, req.VmId+"-seed.iso")
-	if osType == guestos.RouterOS {
+	if blank {
+		// Nothing is installed yet to read a setup disc or a script.
+		seedPath = ""
+	} else if osType == guestos.RouterOS {
 		// No cloud-init in RouterOS: its address, name and admin password go
 		// onto the disk as a script it runs on first boot. This one is not
 		// best-effort. A router that boots without it has an empty admin
@@ -1556,7 +1638,7 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 	// a common host-side provisioning technique). The cloud-init seed above is kept as a
 	// belt-and-suspenders for images where it does work. Best-effort: on failure
 	// we log and still create the VM (it just may lack static networking).
-	if osType == guestos.Linux {
+	if osType == guestos.Linux && !blank {
 		if err := injectGuestConfig(diskPath, hostname, vmCfg, cfg.RootPassword, cfg.SshPublicKey, cfg.UserData); err != nil {
 			log.Printf("[NodeAgent] guest config injection failed for VM %s (guest may lack static networking): %v", req.VmId, err)
 		}
@@ -1591,7 +1673,7 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 		// guest_IP→guest_MAC without waiting for a reboot.
 		bridge, ip, mac, vmID := vmCfg.Bridge, vmCfg.IPAddress, vmCfg.MACAddress, domainUUID
 		go func() {
-			if osType != guestos.Linux {
+			if osType != guestos.Linux || blank {
 				// The restart below exists for Linux images edited on disk. A
 				// router is configured within seconds of its first boot, and
 				// Windows spends its first minutes finishing its own setup and
@@ -1666,27 +1748,47 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 	return nil
 }
 
-// attachISO resolves the ISO reference (downloading if it's a URL) and attaches
-// it as a bootable cdrom.
+// attachISO resolves the ISO reference (downloading if it's a URL) and puts it
+// in the CD drive the request names (ISOSlotKey).
 func (s *NodeAgentService) attachISO(req *pb.VMCommandRequest) error {
 	if req.Config == nil || req.Config.ImageId == "" {
 		return fmt.Errorf("ISO image is required for ATTACH_ISO")
 	}
+	slot := isoSlot(req.Config)
 	// Attaching replaces what was in the drive, and a failed attach leaves a
 	// download nobody uses; either way there may be a customer's ISO to evict.
 	defer sweepCustomerISOs(0)
 	if isoURL, customer := models.SplitCustomerISORef(req.Config.ImageId); customer {
-		return attachCustomerISO(req.VmId, isoURL)
+		return attachCustomerISO(req.VmId, isoURL, slot)
 	}
-	// vm:// and s3:// are disk sources for clone and image deploy, never ISOs.
-	if strings.HasPrefix(req.Config.ImageId, "vm://") || strings.HasPrefix(req.Config.ImageId, "s3://") {
-		return fmt.Errorf("unsupported ISO source")
-	}
-	isoPath, err := resolveTemplateImage(req.Config.ImageId, nil)
+	isoPath, err := resolveISO(req.Config.ImageId, req.Config.GetMetadata()[models.ISOSHA256Key])
 	if err != nil {
 		return err
 	}
-	return libvirt.AttachISO(req.VmId, isoPath)
+	return libvirt.AttachISOSlot(req.VmId, isoPath, slot)
+}
+
+// isoSlot is the CD drive a command names: 1 (the install drive) unless the
+// panel asked for another.
+func isoSlot(cfg *pb.VMConfig) int {
+	if n, err := strconv.Atoi(cfg.GetMetadata()[models.ISOSlotKey]); err == nil {
+		return n
+	}
+	return models.ISOSlotInstall
+}
+
+// resolveISO finds an ISO the operator chose on this node, fetching it into
+// the cache when it is a URL; "" is no ISO.
+func resolveISO(ref, wantSHA string) (string, error) {
+	if ref == "" {
+		return "", nil
+	}
+	// vm:// and s3:// are disk sources for clone and image deploy, never ISOs;
+	// a customer's address is fetched under its own rules, by attach alone.
+	if strings.HasPrefix(ref, "vm://") || strings.HasPrefix(ref, "s3://") || strings.HasPrefix(ref, "customer:") || ref == models.BlankImageRef {
+		return "", fmt.Errorf("unsupported ISO source")
+	}
+	return resolveTemplateImage(ref, nil, wantSHA)
 }
 
 // customerISODir holds ISOs downloaded from URLs that customers typed. It is
@@ -1730,7 +1832,7 @@ var customerISOFetches sync.Map
 // attachCustomerISO downloads an ISO from a URL a customer supplied, under the
 // rules for such URLs (public addresses only, a size cap, a free-space floor),
 // and attaches it.
-func attachCustomerISO(vmID, isoURL string) error {
+func attachCustomerISO(vmID, isoURL string, slot int) error {
 	u, err := url.Parse(isoURL)
 	if err != nil {
 		return fmt.Errorf("the ISO address is not a URL")
@@ -1776,7 +1878,7 @@ func attachCustomerISO(vmID, isoURL string) error {
 			return fmt.Errorf("failed to download the ISO: %w", err)
 		}
 	}
-	return libvirt.AttachISO(vmID, cachePath)
+	return libvirt.AttachISOSlot(vmID, cachePath, slot)
 }
 
 // sweepCustomerISOs removes the customer ISO downloads that no VM uses and
@@ -1839,7 +1941,7 @@ func (s *NodeAgentService) rebuildVM(req *pb.VMCommandRequest) error {
 	if !guestos.Known(osType) {
 		return fmt.Errorf("this node's agent cannot install %q systems; update the agent", osType)
 	}
-	templatePath, err := resolveTemplateImage(imageRef, req.GetObjectStore())
+	templatePath, err := resolveTemplateImage(imageRef, req.GetObjectStore(), req.Config.GetMetadata()[models.ImageSHA256Key])
 	if err != nil {
 		return err
 	}
@@ -2388,8 +2490,14 @@ func backupDiskErr(code pb.ErrorCode, msg string) *pb.BackupDiskResponse {
 // agentFeatures are reported in GetNodeInfo (see the proto). "backup_targets":
 // SFTP and mounted-path destinations, DeleteBackupFiles. "incremental_backup":
 // checkpoints, and restores of chains of backups. "hostname_proxy": routes
-// VMNetworkConfig.hostname_forwards on ports 80 and 443.
-var agentFeatures = []string{"restore_disks", "lvm_disks", "backup_targets", "incremental_backup", "hostname_proxy"}
+// VMNetworkConfig.hostname_forwards on ports 80 and 443. "template_checksum":
+// images are checked against the sha256 sent with them and cached under it.
+// "blank_install": BlankImageRef creates a VM from an empty disk and ISOs.
+// "iso_slots": a second CD drive (ISOSlotKey), and discs changed while a VM
+// runs. "lvm_migration": VMs whose disks are logical volumes move between
+// nodes, and onto LVM pools.
+var agentFeatures = []string{"restore_disks", "lvm_disks", "backup_targets", "incremental_backup", "hostname_proxy",
+	"template_checksum", "blank_install", "iso_slots", "lvm_migration"}
 
 // volumeReserveBytes is the room an export or a restore must leave free on the
 // volume it writes to. qemu pauses a VM the moment a write fails, so filling a
@@ -3188,16 +3296,26 @@ func (s *NodeAgentService) SyncTemplate(ctx context.Context, req *pb.SyncTemplat
 		return &pb.SyncTemplateResponse{Success: false, Error: &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: "image_url is required"}}, nil
 	}
 
-	localPath, err := resolveTemplateImage(req.ImageUrl, nil)
+	localPath, err := resolveTemplateImage(req.ImageUrl, nil, req.ExpectedChecksum)
 	if err != nil {
 		return &pb.SyncTemplateResponse{Success: false, Error: &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: err.Error()}}, nil
 	}
-	checksum, size, err := fileSHA256(localPath)
-	if err != nil {
-		return &pb.SyncTemplateResponse{Success: false, Error: &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: fmt.Sprintf("checksum failed: %v", err)}}, nil
-	}
-	if req.ExpectedChecksum != "" && !strings.EqualFold(req.ExpectedChecksum, checksum) {
-		return &pb.SyncTemplateResponse{Success: false, Error: &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: fmt.Sprintf("checksum mismatch: want %s, got %s", req.ExpectedChecksum, checksum)}}, nil
+	var checksum string
+	var size int64
+	if want := strings.ToLower(req.ExpectedChecksum); want != "" && (strings.HasPrefix(req.ImageUrl, "http://") || strings.HasPrefix(req.ImageUrl, "https://")) {
+		// Checked against it when it was downloaded, and cached under it. The
+		// cached file is the image unpacked, whose own hash is another one.
+		checksum = want
+		if fi, serr := os.Stat(localPath); serr == nil {
+			size = fi.Size()
+		}
+	} else {
+		if checksum, size, err = fileSHA256(localPath); err != nil {
+			return &pb.SyncTemplateResponse{Success: false, Error: &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: fmt.Sprintf("checksum failed: %v", err)}}, nil
+		}
+		if req.ExpectedChecksum != "" && !strings.EqualFold(req.ExpectedChecksum, checksum) {
+			return &pb.SyncTemplateResponse{Success: false, Error: &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: fmt.Sprintf("checksum mismatch: want %s, got %s", req.ExpectedChecksum, checksum)}}, nil
+		}
 	}
 
 	log.Printf("[NodeAgent] Template synced: %s -> %s (%d bytes, sha256=%s)", req.ImageUrl, localPath, size, checksum)

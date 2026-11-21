@@ -176,13 +176,32 @@ func mapperPath(dev string) string {
 	return "/dev/mapper/" + strings.TrimSpace(string(name))
 }
 
+// List returns every volume in a volume group.
+func (l *LVM) List(ctx context.Context, vg string) ([]LV, error) {
+	if !models.ValidLVMName(vg) {
+		return nil, fmt.Errorf("%q is not a volume group name", vg)
+	}
+	out, err := l.exec(ctx, "lvs", "--noheadings", "--nosuffix", "--units", "b", "--separator", "|", "-o", lvsFields, "--", vg)
+	if err != nil {
+		return nil, err
+	}
+	return parseLVs(out)
+}
+
+// FreeName returns name when the pool's volume group has no volume called
+// that, else name with a short unique tag in place of its suffix (a disk
+// moving within one group keeps its old volume until the copy is done).
+func (l *LVM) FreeName(ctx context.Context, pool LVMPool, vmID, suffix string) (string, error) {
+	name := models.LVMDiskName(vmID, suffix)
+	if _, exists, err := l.find(ctx, pool, name); err != nil || !exists {
+		return name, err
+	}
+	return models.LVMDiskName(vmID, "m"+strconv.FormatInt(time.Now().UnixNano(), 36)), nil
+}
+
 // find returns the volume called name in the pool's volume group, if any.
 func (l *LVM) find(ctx context.Context, pool LVMPool, name string) (LV, bool, error) {
-	out, err := l.exec(ctx, "lvs", "--noheadings", "--nosuffix", "--units", "b", "--separator", "|", "-o", lvsFields, "--", pool.VG)
-	if err != nil {
-		return LV{}, false, err
-	}
-	lvs, err := parseLVs(out)
+	lvs, err := l.List(ctx, pool.VG)
 	if err != nil {
 		return LV{}, false, err
 	}

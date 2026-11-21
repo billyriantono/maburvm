@@ -38,6 +38,12 @@ describe('middleware', () => {
     }
   });
 
+  it('opens an unsubscribe link from any mail client, signed in or not', () => {
+    for (const r of [req('/unsubscribe?token=x'), req('/unsubscribe?token=x', 'GET', 'accessToken=t')]) {
+      expect(middleware(r).headers.get('location')).toBeNull();
+    }
+  });
+
   it('lets a page with a session cookie through', () => {
     const res = middleware(req('/vms', 'GET', 'accessToken=t'));
     expect(res.headers.get('location')).toBeNull();

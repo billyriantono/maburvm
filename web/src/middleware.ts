@@ -4,8 +4,10 @@ import { contentSecurityPolicy } from './lib/security-headers'
 
 // Paths that don't require authentication
 const PUBLIC_PATHS = ['/login', '/forgot-password', '/reset-password', '/first-run']
-// Open to everyone, signed in or not: the API reference holds no data.
-const OPEN_PATHS = ['/docs']
+// Open to everyone, signed in or not: the API reference holds no data, an
+// unsubscribe link must work from any mail client, and a team invitation is
+// accepted by someone who may or may not have an account.
+const OPEN_PATHS = ['/docs', '/unsubscribe', '/accept-invite']
 const CAPTCHA_PATHS = ['/login', '/forgot-password']
 
 export function middleware(request: NextRequest) {

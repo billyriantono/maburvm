@@ -61,6 +61,8 @@ export interface VM {
   region_country?: string;
   id: string;
   user_id: string;
+  /** The project the VM is in within its account. */
+  project_id?: string;
   node_id: string;
   node_name?: string;
   node_status?: VMNodeStatus;
@@ -78,9 +80,15 @@ export interface VM {
   /** ISO in the VM's drive as last confirmed by the node: null/absent = not
    *  known, "" = none, otherwise the image URL or path. Detail response only. */
   attached_iso?: string | null;
+  // The second (drivers) CD drive, the same way.
+  attached_iso_2?: string | null;
   console_enabled?: boolean;
   /** Service suspended by billing or staff: the owner can view but not change it. */
   suspended?: boolean;
+  /** Locked against deletion and reinstall: "" (no), "owner" or "staff". */
+  delete_lock?: string;
+  /** The owner's labels. */
+  tags?: string[] | null;
   /** The plan the VM was ordered on or last changed to. Detail response only. */
   plan_id?: string;
   plan_name?: string;
@@ -164,6 +172,12 @@ export interface CreateVMRequest {
   regenerate_password?: boolean; // generate a root password and return it once
   ssh_key_ids?: string[];  // saved SSH keys to inject into the new guest
   ssh_public_keys?: string[];  // raw public keys pasted at create time
+  account_id?: string;     // a team account the caller orders into; empty = their own
+  project_id?: string;     // one of that account's projects
+  ipv6?: boolean;          // a routed IPv6 prefix from the location, where the plan includes one
+  recipe_inputs?: Record<string, string>; // fill the recipe's {{key}} placeholders
+  storage_pool_id?: string;  // staff: the pool the disk goes in, and so its node
+  drivers_iso?: boolean;     // with an ISO template: the drivers disc in drive 2
 }
 
 // UpdateVMRequest for updating VMs

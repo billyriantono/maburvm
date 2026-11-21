@@ -26,10 +26,11 @@ var (
 	ErrSelfServiceDisabled = errors.New("not available for self-service")
 )
 
-// OwnerAccess is the one rule for what a VM's owner may do with it: nothing to
-// a VM that is not theirs, and nothing but read it or delete it while it is
-// suspended. change is false for reads and for deleting the VM itself; a
-// clone, an image, a disk, a backup or a restore are all changes. Admins pass.
+// OwnerAccess is the owner's half of CheckVMAccess: nothing to a VM that is
+// not theirs, and nothing but read it or delete it while it is suspended.
+// change is false for reads and for deleting the VM itself; a clone, an
+// image, a disk, a backup or a restore are all changes. Admins pass. Callers
+// outside this file use CheckVMAccess, which also lets team members in.
 func OwnerAccess(vm *models.VM, userID string, isAdmin, change bool) error {
 	if isAdmin {
 		return nil
@@ -43,7 +44,7 @@ func OwnerAccess(vm *models.VM, userID string, isAdmin, change bool) error {
 	return nil
 }
 
-func checkOwnerAccess(ctx context.Context, vmRepo *repository.VMRepository, vmID, userID string, isAdmin, change bool) error {
+func checkVMAccessByID(ctx context.Context, db *gorm.DB, vmRepo *repository.VMRepository, vmID, userID string, isAdmin bool, need AccessNeed) error {
 	if isAdmin {
 		return nil
 	}
@@ -54,17 +55,17 @@ func checkOwnerAccess(ctx context.Context, vmRepo *repository.VMRepository, vmID
 		}
 		return fmt.Errorf("failed to get VM: %w", err)
 	}
-	return OwnerAccess(vm, userID, false, change)
+	return CheckVMAccess(ctx, db, vm, userID, false, need)
 }
 
-// CheckOwnerAccess applies OwnerAccess to a VM by id.
-func (s *VMService) CheckOwnerAccess(ctx context.Context, vmID, userID string, isAdmin, change bool) error {
-	return checkOwnerAccess(ctx, s.vmRepo, vmID, userID, isAdmin, change)
+// AccessVM applies CheckVMAccess to a VM by id.
+func (s *VMService) AccessVM(ctx context.Context, vmID, userID string, isAdmin bool, need AccessNeed) error {
+	return checkVMAccessByID(ctx, s.db, s.vmRepo, vmID, userID, isAdmin, need)
 }
 
-// CheckOwnerAccess applies OwnerAccess to a VM by id.
-func (s *BackupService) CheckOwnerAccess(ctx context.Context, vmID, userID string, isAdmin, change bool) error {
-	return checkOwnerAccess(ctx, s.vmRepo, vmID, userID, isAdmin, change)
+// AccessVM applies CheckVMAccess to a VM by id.
+func (s *BackupService) AccessVM(ctx context.Context, vmID, userID string, isAdmin bool, need AccessNeed) error {
+	return checkVMAccessByID(ctx, s.db, s.vmRepo, vmID, userID, isAdmin, need)
 }
 
 // SelfServiceAction is something a customer can do without the operator or the

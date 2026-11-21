@@ -2,10 +2,13 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/maburvm/panel/internal/panel/repository"
@@ -55,6 +58,12 @@ type PlanRequest struct {
 	MaxBackups   *int     `json:"max_backups"`
 	MaxExtraIPv4 *int     `json:"max_extra_ipv4"`
 	MaxExtraIPv6 *int     `json:"max_extra_ipv6"`
+	// More allowances and the extras' display prices, replaced as a whole
+	// the same way.
+	MaxExtraDisks  *int               `json:"max_extra_disks"`
+	MaxImages      *int               `json:"max_images"`
+	MaxFloatingIPs *int               `json:"max_floating_ips"`
+	AddonPrices    map[string]float64 `json:"addon_prices"`
 	// DefaultFirewallGroupID is a group for everyone that new VMs on the plan
 	// get instead of the built-in rules; "" goes back to those, and leaving it
 	// out keeps the plan's current choice.
@@ -65,8 +74,14 @@ type PlanRequest struct {
 	NetworkType  string `json:"network_type"`
 	NATPorts     int    `json:"nat_ports"`
 	NATHostnames int    `json:"nat_hostnames"`
-	Description  string `json:"description"`
-	IsActive     *bool  `json:"is_active"`
+	// NodeGroup is the hypervisor group new VMs on the plan are placed in;
+	// "" places them on any node, and leaving it out keeps the plan's choice.
+	NodeGroup *string `json:"node_group"`
+	// StorageTier puts new VMs' disks only in pools of that tier; "" uses
+	// each node's primary pool, and leaving it out keeps the plan's choice.
+	StorageTier *string `json:"storage_tier"`
+	Description string  `json:"description"`
+	IsActive    *bool   `json:"is_active"`
 }
 
 // maxPrice bounds a display price, well inside numeric(14,4).
@@ -99,10 +114,24 @@ func (r *PlanRequest) validatePriceAndAllowances() error {
 		{r.MaxExtraIPv4, 256, "max_extra_ipv4"},
 		// A VM holds one IPv6 (a prefix or an address) at most.
 		{r.MaxExtraIPv6, 1, "max_extra_ipv6"},
+		{r.MaxExtraDisks, 16, "max_extra_disks"},
+		{r.MaxImages, 1000, "max_images"},
+		{r.MaxFloatingIPs, 256, "max_floating_ips"},
 	} {
 		if a.v != nil && (*a.v < 0 || *a.v > a.max) {
 			return fmt.Errorf("%s must be between 0 and %d, or empty for no limit", a.what, a.max)
 		}
+	}
+	for k, v := range r.AddonPrices {
+		if !slices.Contains(models.AddonPriceKeys, k) {
+			return fmt.Errorf("addon_prices: %q is not an extra a price can be shown for", k)
+		}
+		if math.IsNaN(v) || v < 0 || v > maxPrice {
+			return fmt.Errorf("a price must be between 0 and 1000000000")
+		}
+	}
+	if len(r.AddonPrices) > 0 && r.Currency == "" {
+		return fmt.Errorf("a price needs a currency (a three-letter code such as USD or IDR)")
 	}
 	return nil
 }
@@ -178,6 +207,20 @@ func (r *PlanRequest) validate() error {
 	if r.NATHostnames < 0 || r.NATHostnames > 100 {
 		return fmt.Errorf("nat_hostnames must be between 0 and 100")
 	}
+	if r.NodeGroup != nil {
+		g, err := NormalizeNodeGroup(*r.NodeGroup)
+		if err != nil {
+			return err
+		}
+		r.NodeGroup = &g
+	}
+	if r.StorageTier != nil {
+		t, err := NormalizeStorageTier(*r.StorageTier)
+		if err != nil {
+			return err
+		}
+		r.StorageTier = &t
+	}
 	return r.validatePriceAndAllowances()
 }
 
@@ -247,6 +290,15 @@ func (s *PlanService) CreatePlan(ctx context.Context, req *PlanRequest) (*models
 	if err := s.repo.Create(ctx, plan); err != nil {
 		return nil, fmt.Errorf("failed to create plan: %w", err)
 	}
+	if err := s.saveNodeGroup(ctx, plan, req.NodeGroup); err != nil {
+		return nil, err
+	}
+	if err := s.saveStorageTier(ctx, plan, req.StorageTier); err != nil {
+		return nil, err
+	}
+	if err := s.saveExtras(ctx, plan, req); err != nil {
+		return nil, err
+	}
 	return plan, nil
 }
 
@@ -301,8 +353,74 @@ func (s *PlanService) UpdatePlan(ctx context.Context, id string, req *PlanReques
 	if err := s.repo.Update(ctx, plan); err != nil {
 		return nil, fmt.Errorf("failed to update plan: %w", err)
 	}
+	if err := s.saveNodeGroup(ctx, plan, req.NodeGroup); err != nil {
+		return nil, err
+	}
+	if err := s.saveStorageTier(ctx, plan, req.StorageTier); err != nil {
+		return nil, err
+	}
+	if err := s.saveExtras(ctx, plan, req); err != nil {
+		return nil, err
+	}
 	return plan, nil
 }
+
+// saveNodeGroup writes a changed hypervisor group; an unchanged or omitted one
+// costs nothing.
+func (s *PlanService) saveNodeGroup(ctx context.Context, plan *models.Plan, group *string) error {
+	if group == nil || *group == plan.NodeGroup {
+		return nil
+	}
+	if err := s.repo.SetNodeGroup(ctx, plan.ID, *group); err != nil {
+		return fmt.Errorf("failed to save the plan's node group: %w", err)
+	}
+	plan.NodeGroup = *group
+	return nil
+}
+
+// saveStorageTier writes a changed storage tier.
+func (s *PlanService) saveStorageTier(ctx context.Context, plan *models.Plan, tier *string) error {
+	if tier == nil || *tier == plan.StorageTier {
+		return nil
+	}
+	if err := s.repo.SetColumns(ctx, plan.ID, map[string]any{"storage_tier": *tier}); err != nil {
+		return fmt.Errorf("failed to save the plan's storage tier: %w", err)
+	}
+	plan.StorageTier = *tier
+	return nil
+}
+
+// saveExtras writes the allowances and add-on prices that live outside the
+// model's writable fields, and only when they changed, so a plan saved
+// without them never touches those columns.
+func (s *PlanService) saveExtras(ctx context.Context, plan *models.Plan, req *PlanRequest) error {
+	prices := req.AddonPrices
+	if prices == nil {
+		prices = map[string]float64{}
+	}
+	stored := plan.AddonPrices
+	if stored == nil {
+		stored = map[string]float64{}
+	}
+	if intPtrEqual(plan.MaxExtraDisks, req.MaxExtraDisks) && intPtrEqual(plan.MaxImages, req.MaxImages) &&
+		intPtrEqual(plan.MaxFloatingIPs, req.MaxFloatingIPs) && maps.Equal(stored, prices) {
+		return nil
+	}
+	raw, err := json.Marshal(prices)
+	if err != nil {
+		return err
+	}
+	if err := s.repo.SetColumns(ctx, plan.ID, map[string]any{
+		"max_extra_disks": req.MaxExtraDisks, "max_images": req.MaxImages, "max_floating_ips": req.MaxFloatingIPs,
+		"addon_prices": string(raw),
+	}); err != nil {
+		return fmt.Errorf("failed to save the plan's allowances: %w", err)
+	}
+	plan.MaxExtraDisks, plan.MaxImages, plan.MaxFloatingIPs, plan.AddonPrices = req.MaxExtraDisks, req.MaxImages, req.MaxFloatingIPs, prices
+	return nil
+}
+
+func intPtrEqual(a, b *int) bool { return (a == nil) == (b == nil) && (a == nil || *a == *b) }
 
 // DeletePlan removes a plan.
 func (s *PlanService) DeletePlan(ctx context.Context, id string) error {

@@ -69,6 +69,9 @@ var (
 	ErrRebuildNotPossible = errors.New("reinstall not possible")
 	// ErrVMCannotBeModified is returned when trying to modify a VM that's not stopped
 	ErrVMCannotBeModified = errors.New("VM cannot be modified while running")
+	// ErrUEFINotSupported refuses a template that boots with UEFI on a node
+	// whose agent does not boot UEFI guests (models.FeatureUEFI).
+	ErrUEFINotSupported = errors.New("this template boots with UEFI, which this node's agent cannot boot yet; use a BIOS template, or a node whose agent boots UEFI guests")
 )
 
 // isInstallableImagePath reports whether a template image path can seed a new VM.
@@ -242,7 +245,20 @@ type CreateVMRequest struct {
 	// SSHPublicKeys are authorized_keys lines to inject into the new guest
 	// (resolved from the user's saved keys by the handler). Empty means none.
 	SSHPublicKeys []string `json:"-"`
+	// AutoIPv6 delegates a /64 from a routed IPv6 pool on the chosen node
+	// when IPv6PoolID is empty: what a customer gets by ticking IPv6.
+	AutoIPv6 bool `json:"-"`
+	// StoragePoolID puts the VM's disk in that pool (staff only); its node is
+	// then the VM's node. Empty takes the plan's storage tier, else the node's
+	// primary pool.
+	StoragePoolID string `json:"-"`
+	// DriversISO, for a VM installed from an ISO, also puts the drivers ISO
+	// staff chose (System settings) in the second CD drive.
+	DriversISO bool `json:"-"`
 }
+
+// ErrNoIPv6Here refuses an order for IPv6 where the location has none.
+var ErrNoIPv6Here = errors.New("IPv6 is not offered in this location yet: order without it, or pick another location")
 
 // CreateVMResponse contains the created VM and job information
 type CreateVMResponse struct {
@@ -312,6 +328,9 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		if plan.DefaultFirewallGroupID != nil {
 			defaultGroup = *plan.DefaultFirewallGroupID
 		}
+		if req.AutoIPv6 && plan.MaxExtraIPv6 != nil && *plan.MaxExtraIPv6 == 0 {
+			return nil, &AllowanceError{Message: "This plan does not include IPv6."}
+		}
 	}
 	if req.OverQuotaPolicy == "" {
 		req.OverQuotaPolicy = models.OverQuotaThrottle
@@ -374,6 +393,25 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 	if (req.PlanRequired && !template.OfferedOn(req.PlanID)) || (req.Billed && template.RestrictedFrom(req.PlanID)) {
 		return nil, ErrTemplateNotOffered
 	}
+	// An ISO is installed from onto an empty disk; it is never a disk itself.
+	fromISO := template.IsISO()
+	if fromISO && (req.CloneSourceRef != "" || req.Restore != nil) {
+		return nil, fmt.Errorf("%w: an ISO cannot be the source of a copy", ErrTemplateNotInstallable)
+	}
+
+	// The plan's storage tier, or the pool staff named, decides where the disk
+	// goes; a named pool also names the node.
+	storageTier := planStorageTier(ctx, s.db, req.PlanID)
+	if req.StoragePoolID != "" {
+		var p models.StoragePool
+		if err := s.db.WithContext(ctx).Where("id = ?", req.StoragePoolID).First(&p).Error; err != nil {
+			return nil, fmt.Errorf("%w: storage pool %s not found", ErrInvalidStoragePool, req.StoragePoolID)
+		}
+		if req.NodeID != "" && req.NodeID != p.NodeID {
+			return nil, fmt.Errorf("%w: storage pool %s is on another node than the one chosen", ErrInvalidStoragePool, p.Name)
+		}
+		req.NodeID, storageTier = p.NodeID, ""
+	}
 
 	// Select node for VM placement
 	// Resolve the region BEFORE node selection: it constrains which nodes are
@@ -412,26 +450,30 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		req.NodeID = vpcNode
 	}
 
+	// The plan's hypervisor group narrows every automatic choice of node; a
+	// node chosen by staff or a VPC is taken as given.
+	group := planNodeGroup(ctx, s.db, req.PlanID)
+
 	// A NAT VM needs a node with a NAT pool to take its address from.
 	if natSize > 0 && req.NodeID == "" && req.IPPoolID == "" {
 		regionID := ""
 		if orderRegion != nil {
 			regionID = orderRegion.ID
 		}
-		if req.NodeID, err = s.selectNATNode(ctx, regionID, req.Resources); err != nil {
+		if req.NodeID, err = s.selectNATNode(ctx, regionID, group, storageTier, req.Resources); err != nil {
 			return nil, err
 		}
 	}
 
 	nodeID := req.NodeID
 	if nodeID == "" && orderRegion != nil {
-		nodeID, err = s.selectNodeInRegion(ctx, orderRegion.ID, req.Resources)
+		nodeID, err = s.selectNodeInRegion(ctx, orderRegion.ID, group, storageTier, req.Resources)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if nodeID == "" {
-		nodeID, err = s.selectNode(ctx, req.Resources)
+		nodeID, err = s.selectNode(ctx, group, storageTier, req.Resources)
 		if err != nil {
 			return nil, err
 		}
@@ -450,6 +492,12 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		if node.CreationPaused {
 			return nil, fmt.Errorf("selected node is not taking new VMs (creation is paused on it)")
 		}
+	}
+
+	// A UEFI image boots only on a node whose agent boots UEFI guests.
+	uefi := req.CloneSourceRef == "" && template.Firmware == models.FirmwareUEFI
+	if uefi && !s.nodeHasFeature(ctx, nodeID, models.FeatureUEFI) {
+		return nil, ErrUEFINotSupported
 	}
 
 	// Generate VNC credentials
@@ -542,6 +590,22 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		}
 	}
 
+	if req.AutoIPv6 && req.IPv6PoolID == "" && len(poolCandidates) > 0 {
+		pools, perr := s.ipamService.ListPoolsForNode(ctx, nodeID)
+		if perr != nil {
+			return nil, fmt.Errorf("failed to list IP pools for node: %w", perr)
+		}
+		for i := range pools {
+			if pools[i].Family == models.IPFamilyIPv6 && pools[i].IsDelegated() {
+				req.IPv6PoolID = pools[i].ID
+				break
+			}
+		}
+		if req.IPv6PoolID == "" {
+			return nil, ErrNoIPv6Here
+		}
+	}
+
 	// A delegated IPv6 prefix travels on the IPv4 interface's config, so it
 	// needs one to travel on. Checked before the transaction so a bad pool id
 	// fails fast instead of after the VM row exists.
@@ -578,7 +642,18 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		}
 		// Storage is admitted here, not only at placement: a node the caller
 		// named, or one picked without a region, never went through placement.
-		diskPool = PrimaryPool(ctx, tx, vm.NodeID)
+		var perr error
+		if req.StoragePoolID != "" {
+			diskPool, perr = chosenPool(ctx, tx, req.StoragePoolID, vm.NodeID)
+		} else {
+			diskPool, perr = NodeDiskPool(ctx, tx, vm.NodeID, storageTier)
+		}
+		if perr != nil {
+			return perr
+		}
+		if err := lvmPoolUsable(diskPool); err != nil {
+			return err
+		}
 		if err := AdmitPoolDisk(ctx, tx, diskPool, req.Resources.Disk); err != nil {
 			return err
 		}
@@ -696,10 +771,38 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		return nil, fmt.Errorf("%w: Windows Server needs at least %d GB of memory and a %d GB disk; choose a larger size",
 			ErrInvalidResources, models.WindowsMinRAMMB/1024, models.WindowsMinDiskGB)
 	}
+	// What the node checks the download against, and the ISOs an install
+	// from an ISO starts with.
+	metadata := map[string]string{}
+	if fromISO {
+		metadata[models.InstallISOKey], imagePath = template.ImagePath, models.BlankImageRef
+		if template.ChecksumSHA256 != "" {
+			metadata[models.InstallISOSHA256Key] = template.ChecksumSHA256
+		}
+		if req.DriversISO {
+			drivers, derr := DriversISOTemplate(ctx, s.db)
+			if derr != nil {
+				return nil, derr
+			}
+			metadata[models.DriversISOKey] = drivers.ImagePath
+			if drivers.ChecksumSHA256 != "" {
+				metadata[models.DriversISOSHA256Key] = drivers.ChecksumSHA256
+			}
+		}
+	} else if req.CloneSourceRef == "" && template.ChecksumSHA256 != "" {
+		metadata[models.ImageSHA256Key] = template.ChecksumSHA256
+	}
+	if uefi {
+		metadata[models.FirmwareKey] = models.FirmwareUEFI
+	}
 	// The node is told what kind of system this is with the image itself.
 	imagePath = models.GuestImageRef(template.OSType, imagePath)
 	linuxGuest := template.OSType == "" || template.OSType == models.OSTypeLinux
-	if !linuxGuest {
+	if fromISO {
+		// Nothing is installed to take a password, keys or a script: whoever
+		// installs it from the console sets it up.
+		req.UserData, req.SSHPublicKeys, req.Password, req.RegeneratePassword = "", nil, "", false
+	} else if !linuxGuest {
 		// First-boot scripts and SSH keys are delivered through cloud-init and
 		// the Linux filesystem. Another kind of system has neither, and an
 		// order that carries them (billing sends a fixed set) must not fail.
@@ -776,7 +879,7 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 	rootPassword := req.Password
 	// A router's image has an empty admin password, a Windows one a password
 	// nobody knows, and neither has keys to fall back on: both always get one.
-	generatePassword := req.RegeneratePassword || !linuxGuest
+	generatePassword := (req.RegeneratePassword || !linuxGuest) && !fromISO
 	if rootPassword == "" && generatePassword {
 		rootPassword = generateRootPassword()
 	}
@@ -802,6 +905,9 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		if models.IsLVMPoolType(diskPool.Type) {
 			params["pool_type"] = diskPool.Type
 		}
+	}
+	if len(metadata) > 0 {
+		params["metadata"] = metadata
 	}
 	if req.Restore != nil {
 		req.Restore.apply(params)
@@ -925,7 +1031,7 @@ func (s *VMService) attachDefaultGroup(ctx context.Context, vmID, groupID, osTyp
 
 // selectNATNode places a NAT VM on an active node (in the region, when given)
 // that offers NAT ports and has a NAT pool to take its address from.
-func (s *VMService) selectNATNode(ctx context.Context, regionID string, res models.Resources) (string, error) {
+func (s *VMService) selectNATNode(ctx context.Context, regionID, group, tier string, res models.Resources) (string, error) {
 	q := s.db.WithContext(ctx).Where("status = ? AND nat_port_end > 0", models.NodeStatusActive)
 	if regionID != "" {
 		q = q.Where("region_id = ?", regionID)
@@ -942,7 +1048,11 @@ func (s *VMService) selectNATNode(ctx context.Context, regionID string, res mode
 	if len(withPool) == 0 {
 		return "", ErrNoNATPool
 	}
-	return s.placeVM(ctx, withPool, res, true)
+	withPool, err := inNodeGroup(withPool, group)
+	if err != nil {
+		return "", err
+	}
+	return s.placeVMTier(ctx, withPool, res, true, tier)
 }
 
 // portInSpec reports whether a rule's port spec ("22", "20-30", "22,80")
@@ -1155,14 +1265,18 @@ func (s *VMService) validateResources(resources *models.Resources) error {
 // selectNodeInRegion picks a node inside one region. A region with no node
 // that can take the VM fails loudly here rather than silently spilling the
 // order into a different city.
-func (s *VMService) selectNodeInRegion(ctx context.Context, regionID string, res models.Resources) (string, error) {
+func (s *VMService) selectNodeInRegion(ctx context.Context, regionID, group, tier string, res models.Resources) (string, error) {
 	var nodes []models.Node
 	if err := s.db.WithContext(ctx).
 		Where("status = ? AND region_id = ?", models.NodeStatusActive, regionID).
 		Find(&nodes).Error; err != nil {
 		return "", err
 	}
-	id, err := s.placeVM(ctx, nodes, res, true)
+	nodes, err := inNodeGroup(nodes, group)
+	if err != nil {
+		return "", err
+	}
+	id, err := s.placeVMTier(ctx, nodes, res, true, tier)
 	if errors.Is(err, ErrNoAvailableNodes) {
 		return "", ErrRegionNoCapacity
 	}
@@ -1177,6 +1291,12 @@ func (s *VMService) selectNodeInRegion(ctx context.Context, regionID string, res
 // When no node fits, strict refuses; otherwise the best node is returned
 // anyway, so admission refuses with the reason, which says more than "no nodes".
 func (s *VMService) placeVM(ctx context.Context, nodes []models.Node, res models.Resources, strict bool) (string, error) {
+	return s.placeVMTier(ctx, nodes, res, strict, "")
+}
+
+// placeVMTier is placeVM for a disk that must go in a pool of the storage
+// tier ("" for the node's primary pool): a node with no room there does not fit.
+func (s *VMService) placeVMTier(ctx context.Context, nodes []models.Node, res models.Resources, strict bool, tier string) (string, error) {
 	nodes = nodesTakingVMs(nodes)
 	if len(nodes) == 0 {
 		return "", ErrNoAvailableNodes
@@ -1193,8 +1313,12 @@ func (s *VMService) placeVM(ctx context.Context, nodes []models.Node, res models
 			reason = "RAM allocation would pass the overcommit ratio"
 		case !n.vcpuFits(res.CPU):
 			reason = "vCPU allocation would pass the overcommit ratio"
-		case res.Disk > 0:
-			if err := AdmitPoolDisk(ctx, s.db, PrimaryPool(ctx, s.db, n.Node.ID), res.Disk); err != nil {
+		case res.Disk > 0 || tier != "":
+			pool, err := NodeDiskPool(ctx, s.db, n.Node.ID, tier)
+			if err == nil {
+				err = AdmitPoolDisk(ctx, s.db, pool, res.Disk)
+			}
+			if err != nil {
 				reason = err.Error()
 			}
 		}
@@ -1250,12 +1374,15 @@ func nodesReporting(nodes []models.Node) []models.Node {
 }
 
 // selectNode picks a node among all active ones for an order with no region.
-func (s *VMService) selectNode(ctx context.Context, res models.Resources) (string, error) {
+func (s *VMService) selectNode(ctx context.Context, group, tier string, res models.Resources) (string, error) {
 	nodes, err := s.nodeRepo.ListActive(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to list active nodes: %w", err)
 	}
-	return s.placeVM(ctx, nodes, res, false)
+	if nodes, err = inNodeGroup(nodes, group); err != nil {
+		return "", err
+	}
+	return s.placeVMTier(ctx, nodes, res, false, tier)
 }
 
 // generateVNCCredentials generates VNC port and password. Port 0 means
@@ -1346,8 +1473,15 @@ type ListVMsRequest struct {
 	// Search matches hostname or VM id across the whole result set, not just the
 	// page being returned.
 	Search string `json:"search,omitempty" validate:"omitempty,max=253"`
-	Limit  int    `json:"limit,omitempty" validate:"omitempty,min=1,max=100"`
-	Offset int    `json:"offset,omitempty" validate:"omitempty,min=0"`
+	// Tag keeps VMs carrying this tag.
+	Tag string `json:"tag,omitempty" validate:"omitempty,max=32"`
+	// Access lists a customer's own VMs and those their team memberships
+	// cover, instead of UserID.
+	Access *repository.VMAccessScope `json:"-"`
+	// ProjectID keeps the VMs in one project.
+	ProjectID string `json:"project_id,omitempty" validate:"omitempty,uuid"`
+	Limit     int    `json:"limit,omitempty" validate:"omitempty,min=1,max=100"`
+	Offset    int    `json:"offset,omitempty" validate:"omitempty,min=0"`
 }
 
 // ListVMsResponse contains the list of VMs and pagination info
@@ -1372,10 +1506,13 @@ func (s *VMService) ListVMs(ctx context.Context, req *ListVMsRequest) (*ListVMsR
 	// tenant isolation — had their status and node filters silently ignored,
 	// and searching returned results that did not match what was asked for.
 	filter := repository.VMFilter{
-		UserID: req.UserID,
-		NodeID: req.NodeID,
-		Status: req.Status,
-		Search: req.Search,
+		UserID:    req.UserID,
+		NodeID:    req.NodeID,
+		Status:    req.Status,
+		Search:    req.Search,
+		Tag:       req.Tag,
+		Access:    req.Access,
+		ProjectID: req.ProjectID,
 	}
 
 	vms, err := s.vmRepo.ListFiltered(ctx, filter, limit, req.Offset)
@@ -1713,6 +1850,10 @@ func (s *VMService) AttachDisk(ctx context.Context, vmID string, sizeGB int) (*m
 		return nil, fmt.Errorf("failed to get VM: %w", err)
 	}
 
+	if err := checkExtraDiskAllowance(ctx, s.db, vm); err != nil {
+		return nil, err
+	}
+
 	// The disk goes beside the VM's own, never onto the node's root filesystem,
 	// and its pool must have room for it as it would for a new VM.
 	pool := VMPool(ctx, s.db, vm.ID, vm.NodeID)
@@ -1803,6 +1944,9 @@ var ErrDetachKeepsNoVolume = errors.New("a detached disk is not kept: detaching 
 func (s *VMService) DetachDisk(ctx context.Context, vmID, device string, deleteVolume bool) error {
 	if VMMigrating(ctx, s.db, vmID) {
 		return ErrVMMigrating
+	}
+	if diskMoveActive(ctx, s.db, vmID) {
+		return ErrDiskMoveActive
 	}
 	if !deleteVolume {
 		return ErrDetachKeepsNoVolume
@@ -1953,9 +2097,21 @@ func (s *VMService) UpdateVM(ctx context.Context, req *UpdateVMRequest) (*models
 		return nil, fmt.Errorf("failed to get VM: %w", err)
 	}
 
-	// VM must be stopped to modify resources
+	// VM must be stopped to modify resources, except to grow its disk, which
+	// a running VM takes at once. A caller that stopped the VM to have the
+	// resize job boot it again (StartAfter) keeps that path: a VM still
+	// shutting down would otherwise be grown live and left off.
 	if req.Resources != nil && vm.Status != models.VMStatusStopped {
-		return nil, ErrVMCannotBeModified
+		if vm.Status != models.VMStatusRunning || req.StartAfter || !diskOnlyGrowth(vm.Resources, *req.Resources) {
+			return nil, ErrVMCannotBeModified
+		}
+		if _, err := s.ResizeDisk(ctx, vm.ID, "vda", req.Resources.Disk, req.Billed); err != nil {
+			return nil, err
+		}
+		if vm, err = s.vmRepo.GetByID(ctx, req.VMID); err != nil {
+			return nil, fmt.Errorf("failed to get VM: %w", err)
+		}
+		req.Resources = nil
 	}
 
 	// Update hostname if provided. Unique among the owner's VMs, counting the
@@ -2023,6 +2179,9 @@ func (s *VMService) UpdateVM(ctx context.Context, req *UpdateVMRequest) (*models
 			if err := s.vmRepo.WithDB(tx).Update(ctx, vm); err != nil {
 				return err
 			}
+			if err := clearForeignProject(ctx, tx, vm.ID, vm.UserID); err != nil {
+				return err
+			}
 			return reownVMGroups(ctx, tx, vm.ID, vm.UserID)
 		}); err != nil {
 			return nil, err
@@ -2040,6 +2199,9 @@ func (s *VMService) UpdateVM(ctx context.Context, req *UpdateVMRequest) (*models
 	// Hostname-only (or no-op) update.
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := s.vmRepo.WithDB(tx).Update(ctx, vm); err != nil {
+			return err
+		}
+		if err := clearForeignProject(ctx, tx, vm.ID, vm.UserID); err != nil {
 			return err
 		}
 		return reownVMGroups(ctx, tx, vm.ID, vm.UserID)
@@ -2066,12 +2228,18 @@ func (s *VMService) DeleteVMWithVolumes(ctx context.Context, vmID string, remove
 	if VMMigrating(ctx, s.db, vmID) {
 		return ErrVMMigrating
 	}
+	if diskMoveActive(ctx, s.db, vmID) {
+		return ErrDiskMoveActive
+	}
 	vm, err := s.vmRepo.GetByID(ctx, vmID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrVMNotFound
 		}
 		return fmt.Errorf("failed to get VM: %w", err)
+	}
+	if err := deleteLockErr(ctx, vm); err != nil {
+		return err
 	}
 
 	if s.riverClient != nil {
@@ -2162,6 +2330,11 @@ type LifecycleResponse struct {
 func (s *VMService) ExecuteLifecycleCommand(ctx context.Context, req *LifecycleRequest) (*LifecycleResponse, error) {
 	if VMMigrating(ctx, s.db, req.VMID) {
 		return nil, ErrVMMigrating
+	}
+	// A disk copied while the VM is off is whole only while it stays off. (A
+	// live copy ends if the VM stops, and the disk stays where it was.)
+	if req.Command == LifecycleStart && diskMoveActive(ctx, s.db, req.VMID) {
+		return nil, ErrDiskMoveActive
 	}
 	vm, err := s.vmRepo.GetByID(ctx, req.VMID)
 	if err != nil {
@@ -2595,11 +2768,36 @@ func (s *VMService) ResetPassword(ctx context.Context, req *VMResetPasswordReque
 // image; anything else is a URL a customer typed, which the node fetches only
 // from public addresses and within its size limit.
 func (s *VMService) AttachISO(ctx context.Context, vmID, isoImage string, operatorSupplied bool) (int64, error) {
+	return s.AttachISOSlot(ctx, vmID, ISOAttach{Image: isoImage, OperatorSupplied: operatorSupplied, Slot: models.ISOSlotInstall})
+}
+
+// ISOAttach is an ISO going into a VM's CD drive.
+type ISOAttach struct {
+	Image string
+	// OperatorSupplied marks an ISO staff chose (fetched without the rules for
+	// a customer's address).
+	OperatorSupplied bool
+	// Slot is the drive: models.ISOSlotInstall or models.ISOSlotDrivers.
+	Slot int
+	// SHA256 is what the node checks the ISO against, when known.
+	SHA256 string
+	// WhileRunning lets a running VM take it at once, where its node can.
+	WhileRunning bool
+}
+
+// AttachISOSlot enqueues putting an ISO in one of a VM's CD drives.
+func (s *VMService) AttachISOSlot(ctx context.Context, vmID string, a ISOAttach) (int64, error) {
 	if VMMigrating(ctx, s.db, vmID) {
 		return 0, ErrVMMigrating
 	}
-	if isoImage == "" {
+	if a.Image == "" {
 		return 0, fmt.Errorf("iso image is required")
+	}
+	if a.Slot == 0 {
+		a.Slot = models.ISOSlotInstall
+	}
+	if a.Slot != models.ISOSlotInstall && a.Slot != models.ISOSlotDrivers {
+		return 0, fmt.Errorf("drive must be 1 (install) or 2 (drivers)")
 	}
 	vm, err := s.vmRepo.GetByID(ctx, vmID)
 	if err != nil {
@@ -2608,15 +2806,25 @@ func (s *VMService) AttachISO(ctx context.Context, vmID, isoImage string, operat
 		}
 		return 0, fmt.Errorf("failed to get VM: %w", err)
 	}
-	if vm.Status == models.VMStatusRunning {
-		return 0, fmt.Errorf("stop the VM before attaching an ISO")
+	if err := s.isoSlotsUsable(ctx, vm, a.Slot, a.WhileRunning); err != nil {
+		return 0, err
 	}
 	if s.riverClient == nil {
 		return 0, fmt.Errorf("job queue unavailable")
 	}
-	params := map[string]interface{}{"image_path": isoImage}
-	if operatorSupplied {
+	params := map[string]interface{}{"image_path": a.Image}
+	if a.OperatorSupplied {
 		params["iso_source"] = queue.ISOSourceOperator
+	}
+	meta := map[string]string{}
+	if a.Slot != models.ISOSlotInstall {
+		meta[models.ISOSlotKey] = strconv.Itoa(a.Slot)
+	}
+	if a.SHA256 != "" {
+		meta[models.ISOSHA256Key] = a.SHA256
+	}
+	if len(meta) > 0 {
+		params["metadata"] = meta
 	}
 	paramsJSON, _ := json.Marshal(params)
 	res, err := s.riverClient.Insert(ctx, queue.VMOperationJob{
@@ -2628,8 +2836,49 @@ func (s *VMService) AttachISO(ctx context.Context, vmID, isoImage string, operat
 	return res.Job.ID, nil
 }
 
+// isoSlotsUsable refuses what the VM's node cannot do: the second drive, or
+// changing a disc while the VM runs, need an agent that has them.
+func (s *VMService) isoSlotsUsable(ctx context.Context, vm *models.VM, slot int, whileRunning bool) error {
+	running := vm.Status == models.VMStatusRunning
+	if running && !whileRunning {
+		return fmt.Errorf("stop the VM before attaching an ISO")
+	}
+	if !running && slot == models.ISOSlotInstall {
+		return nil
+	}
+	if !s.nodeHasFeature(ctx, vm.NodeID, "iso_slots") {
+		if slot != models.ISOSlotInstall {
+			return fmt.Errorf("this VM's node needs an agent update before it has a second CD drive")
+		}
+		return fmt.Errorf("stop the VM before attaching an ISO; its node needs an agent update to change discs while a VM runs")
+	}
+	return nil
+}
+
+// nodeHasFeature asks a node's agent whether it can do something an older one
+// cannot. A node that cannot be asked is taken not to.
+func (s *VMService) nodeHasFeature(ctx context.Context, nodeID, feature string) bool {
+	client, err := s.getAgentClient(ctx, nodeID)
+	if err != nil {
+		return false
+	}
+	actx, err := s.agentAuthContext(ctx, nodeID)
+	if err != nil {
+		return false
+	}
+	cctx, cancel := context.WithTimeout(actx, 15*time.Second)
+	defer cancel()
+	features, err := nodeFeatures(cctx, client)
+	return err == nil && hasFeature(features, feature)
+}
+
 // DetachISO enqueues removing the install/rescue ISO from a VM.
 func (s *VMService) DetachISO(ctx context.Context, vmID string) (int64, error) {
+	return s.DetachISOSlot(ctx, vmID, models.ISOSlotInstall)
+}
+
+// DetachISOSlot enqueues emptying one of a VM's CD drives.
+func (s *VMService) DetachISOSlot(ctx context.Context, vmID string, slot int) (int64, error) {
 	if VMMigrating(ctx, s.db, vmID) {
 		return 0, ErrVMMigrating
 	}
@@ -2640,11 +2889,24 @@ func (s *VMService) DetachISO(ctx context.Context, vmID string) (int64, error) {
 		}
 		return 0, fmt.Errorf("failed to get VM: %w", err)
 	}
+	if slot == 0 {
+		slot = models.ISOSlotInstall
+	}
+	if slot != models.ISOSlotInstall && slot != models.ISOSlotDrivers {
+		return 0, fmt.Errorf("drive must be 1 (install) or 2 (drivers)")
+	}
+	if slot != models.ISOSlotInstall && !s.nodeHasFeature(ctx, vm.NodeID, "iso_slots") {
+		return 0, fmt.Errorf("this VM's node needs an agent update before it has a second CD drive")
+	}
 	if s.riverClient == nil {
 		return 0, fmt.Errorf("job queue unavailable")
 	}
+	var params []byte
+	if slot != models.ISOSlotInstall {
+		params, _ = json.Marshal(map[string]interface{}{"metadata": map[string]string{models.ISOSlotKey: strconv.Itoa(slot)}})
+	}
 	res, err := s.riverClient.Insert(ctx, queue.VMOperationJob{
-		VMID: vm.ID, Operation: queue.VMOpDetachISO, NodeID: vm.NodeID,
+		VMID: vm.ID, Operation: queue.VMOpDetachISO, NodeID: vm.NodeID, Params: params,
 	}, nil)
 	if err != nil {
 		return 0, fmt.Errorf("failed to enqueue detach-iso job: %w", err)
@@ -2726,12 +2988,18 @@ func (s *VMService) RebuildVM(ctx context.Context, req *RebuildVMRequest) (*Rebu
 	if VMMigrating(ctx, s.db, req.VMID) {
 		return nil, ErrVMMigrating
 	}
+	if diskMoveActive(ctx, s.db, req.VMID) {
+		return nil, ErrDiskMoveActive
+	}
 	vm, err := s.vmRepo.GetByID(ctx, req.VMID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrVMNotFound
 		}
 		return nil, fmt.Errorf("failed to get VM: %w", err)
+	}
+	if err := deleteLockErr(ctx, vm); err != nil {
+		return nil, err
 	}
 
 	// VM must be stopped for rebuild
@@ -2752,6 +3020,12 @@ func (s *VMService) RebuildVM(ctx context.Context, req *RebuildVMRequest) (*Rebu
 		}
 		if !template.IsActive {
 			return nil, fmt.Errorf("OS template is not active")
+		}
+		if template.IsISO() {
+			return nil, fmt.Errorf("%w: %s is an ISO; attach it to the VM and install from the console instead", ErrRebuildNotPossible, template.Name)
+		}
+		if template.Firmware == models.FirmwareUEFI && !s.nodeHasFeature(ctx, vm.NodeID, models.FeatureUEFI) {
+			return nil, ErrUEFINotSupported
 		}
 		if planID := ""; req.ByCustomer && req.TemplateID != vm.OSTemplateID {
 			if vm.PlanID != nil {
@@ -2802,6 +3076,10 @@ func (s *VMService) RebuildVM(ctx context.Context, req *RebuildVMRequest) (*Rebu
 	if err != nil {
 		return nil, fmt.Errorf("failed to load template for rebuild: %w", err)
 	}
+	// A VM installed from an ISO is reinstalled from a disk template only.
+	if rebuildTmpl.IsISO() {
+		return nil, fmt.Errorf("%w: choose a system to reinstall the VM with", ErrRebuildNotPossible)
+	}
 
 	// Resolve the root password: explicit wins, else generate one when asked.
 	rootPassword := req.Password
@@ -2838,6 +3116,16 @@ func (s *VMService) RebuildVM(ctx context.Context, req *RebuildVMRequest) (*Rebu
 		params["ipv6_prefix"] = p.Prefix
 		params["ipv6_address"] = p.Address()
 		params["ipv6_gateway"] = models.IPv6LinkLocalGateway
+	}
+	rebuildMeta := map[string]string{}
+	if rebuildTmpl.ChecksumSHA256 != "" {
+		rebuildMeta[models.ImageSHA256Key] = rebuildTmpl.ChecksumSHA256
+	}
+	if rebuildTmpl.Firmware == models.FirmwareUEFI {
+		rebuildMeta[models.FirmwareKey] = models.FirmwareUEFI
+	}
+	if len(rebuildMeta) > 0 {
+		params["metadata"] = rebuildMeta
 	}
 	sealJobSecrets(params)
 	paramsJSON, _ := json.Marshal(params)

@@ -10,3 +10,5 @@
 | [Runbooks](runbooks.md) | Node down, panel restore, failed backups, failed moves, full pool, abuse reports, lost Owner access. |
 | [API](api.md) | Authentication, answers and errors, rate limits, MCP, and the webhook payloads. The full reference is at `/docs/api` on every panel. |
 | [WHMCS](../integrations/whmcs/README.md) | The provisioning module and events addon. |
+| [Paymenter](../integrations/paymenter/README.md) | The server extension (not yet run inside Paymenter). |
+| [FOSSBilling](../integrations/fossbilling/README.md) | The server manager (not yet run inside FOSSBilling). |

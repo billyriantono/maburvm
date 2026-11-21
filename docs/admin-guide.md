@@ -27,6 +27,7 @@ permission names it in `code`, as listed on the Staff roles page.
 13. [Security settings](#13-security-settings)
 14. [Importing from another panel](#14-importing-from-another-panel)
 15. [Where each setting lives](#15-where-each-setting-lives)
+16. [Day-to-day tools](#16-day-to-day-tools)
 
 ## 1. Concepts
 
@@ -101,7 +102,7 @@ the host and changes nothing.
 - **Status**: `active`, `maintenance` (no node alerts are raised) or
   `offline`. The panel sets `offline` and `active` itself from its checks.
 - **vCPU ratio**: how many vCPUs the node may carry per CPU thread. Overrides
-  the panel-wide ratio ([section 4.3](#43-what-a-node-and-pool-accept)).
+  the panel-wide ratio ([section 4.6](#46-what-a-node-and-pool-accept)).
 - **NAT ports**: the public port range for NAT VMs ([section 5.6](#56-port-forwards-and-nat-vps)).
 - **Agent settings**: what the agent runs with, read from the node (secrets
   only as set or not set). Change them on the node; see
@@ -156,8 +157,9 @@ pool on the Storage page. Capacity and free space are measured by the node
 every minute, never typed in. The pool marked **primary** is where that node
 creates new disks; a VM's extra disks go beside its own.
 
-VMs on LVM cannot take snapshots, always get full backups, and cannot move to
-another node. A backup or restore of a disk on a block device needs scratch
+VMs on LVM cannot take snapshots and always get full backups. They move to
+other nodes like any VM (section 10). A backup or restore of a disk on a block
+device, and an offline move of a qcow2 disk onto a logical volume, need scratch
 space as a file; it is kept under the agent's `TEMPLATE_CACHE_DIR`, so put that
 on a data volume on such nodes.
 
@@ -165,7 +167,51 @@ An agent of this version refuses to create a disk in a directory pool whose
 directory does not exist on the node; it never falls back to the root
 filesystem.
 
-### 4.2 Pool alerts
+### 4.2 Storage tiers
+
+A pool can carry a **tier**, a short label such as `nvme` or `hdd` (the
+**Tier** button on its card; `storage:update`). A plan naming a tier
+(`storage_tier`) puts its VMs' disks only in pools of that tier: placement
+picks among nodes that have an online pool of the tier with room, and the
+order is refused when none has. Without a tier a VM goes in its node's primary
+pool, as before. Staff creating a VM may also name the pool itself, which
+names its node too. A VM moved to another node lands in a pool of the same
+tier and kind when the destination has one. A VM whose plan changes keeps its
+disk where it is: move the disk to a pool of the new tier from its page
+(section 4.3).
+
+### 4.3 Moving a disk to another pool
+
+On a VM's page (Disks, **Move**; `vm:migrate`) a disk moves to another pool of
+the same node: between directories, onto or off a volume group or thin pool.
+A running VM keeps running: the disk is block-copied and the VM switches to
+the copy when every block is there. A stopped VM is copied while off and
+cannot be started until the copy is done. The destination is admitted like a
+new disk, a VM with snapshots cannot move its disks, and the old disk is
+removed afterwards, except a volume MaburVM did not make (an imported VM's),
+which is kept and listed under orphaned disks. A move can be cancelled; the
+disk then stays where it was. **Cancel** also makes the panel ask the node
+again about a move that seems stuck (for example after the node was
+unreachable for a long time), and records how it ended. The next backup is a
+full one. A move blocks node migration, snapshots, rebuilds and disk changes
+of that VM until it ends.
+
+### 4.4 Orphaned disks
+
+**Storage, Orphaned disks** asks a node for the disk files and logical volumes
+in its registered pools that no VM on the node uses and no panel record names:
+what failed creates, restores, moves and removed VMs left. Each shows what it
+looks like, the VM its name points to and whether MaburVM made it. Deleting
+one (`storage:delete`) needs its path typed out, and one MaburVM did not make
+needs a second confirmation. Both the panel and the node list it again first
+and refuse if it is in use, no longer in a registered pool, or has changed size
+or time since it was listed. Files written in the last six hours, and the
+disks of VMs being created or moved, are never listed. Neither are the disk
+files and volumes named for a VM the panel still has on that node (a create
+may be about to use them); once the VM is deleted or recorded on another node,
+what it left there is listed.
+
+### 4.5 Pool alerts
 
 Each pool has an alert level (`alert_threshold`, 90% by default) that raises a
 warning, and the Alerts page has a panel-wide critical level
@@ -173,7 +219,7 @@ warning, and the Alerts page has a panel-wide critical level
 disks are thin, so a pool fills later without any new order. See
 [runbooks.md, Pool full](runbooks.md#5-storage-pool-full).
 
-### 4.3 What a node and pool accept
+### 4.6 What a node and pool accept
 
 Settings, System, Quotas, **Node overcommit**. All three are off (0) by
 default, because live nodes already carry more than any ratio you might pick
@@ -189,7 +235,9 @@ figure shown.
 
 Whatever the ratios, a new or grown disk must fit in the pool's real free
 space with 20 GB to spare. Disks of machines the panel does not manage are not
-counted.
+counted. A disk on a volume group (thick LVM) that grows has its new space
+zeroed before the VM sees it, which takes as long as writing that much on
+slow disks.
 
 ## 5. Networking
 
@@ -349,8 +397,48 @@ page. Before turning enforcement on, check the quotas your plans carry.
 marked as needing a paid licence. RouterOS and Windows notes, and how to build
 a Windows image on a node, are in [DEPLOYMENT.md §12](DEPLOYMENT.md#12-templates-that-are-not-linux).
 
-**ISOs** lists install media staff define. Customers may also attach an ISO by
-URL: the node fetches only public addresses, bounded by the agent settings
+**Checksums.** A template fetched over http(s) needs its sha256, or the address
+of a checksum list (a `SHA256SUMS` or `CHECKSUM` file naming the image), when
+it is added; only a publisher that gives none may be confirmed as such. Every
+node checks its download against it and refuses one that does not match, and
+keeps the copy under the checksum. Plain http is refused unless allowed for
+the template. Templates added before this keep working without one; add it on
+the template's page.
+
+**Refresh.** A template's page shows each node's copy. **Check for a new
+image** reads the checksum list again; when the image changed the panel
+records the new checksum and every active node fetches it. **Refresh on
+nodes** fetches it in any case. With **Refresh every day** the panel checks the
+list daily by itself. VMs built from the old image are copies of it and are
+not touched; a node removes its old copy once nothing uses it.
+
+**Boot firmware.** A template is BIOS or UEFI. A VM is created or reinstalled
+from a UEFI template only on a node whose agent boots UEFI guests; agents of
+this version boot BIOS guests only, so such orders are refused with that
+reason. `scripts/build-windows-template.sh --uefi` already builds UEFI images.
+
+**ISOs** lists install media: added from an address (with a checksum, as
+templates) or uploaded from your computer (**Upload a file**, sent to the panel
+in pieces, kept under `MABURVM_DATA_DIR/images` and copied to every node, which
+checks it). An ISO is offered to customers like a template, by plan. **Drivers
+disc** marks the ISO put in a Windows install's second drive (the virtio
+drivers, for example `virtio-win.iso`).
+
+**Installing from an ISO.** Choosing an ISO as the system when creating a VM
+gives it an empty disk and that ISO in its first CD drive, which boots first;
+whoever installs it does so from the console, and no password is generated.
+For a Windows ISO the drivers disc can go in the second drive. A VM has two CD
+drives: drive 1 boots first while it holds a disc, drive 2 is for drivers and
+files. A running VM takes a disc at once in a drive it has (VMs installed from
+an ISO have both; others gain drive 1 the first time a disc goes in while they
+are stopped).
+
+**Settings, Customer area** holds
+the list of ISOs customers pick from when they mount one (a name, an http(s)
+address the node downloads from, a description); mounting one of those counts
+as staff-supplied. Customers may also attach an ISO by their own URL unless
+"Customers may also mount an ISO from an address of their own" is cleared: the
+node fetches only public addresses, bounded by the agent settings
 `CUSTOMER_ISO_MAX_GB`, `CUSTOMER_ISO_MIN_FREE_GB` and
 `CUSTOMER_ISO_RETENTION_DAYS`.
 
@@ -370,9 +458,12 @@ saved). With neither, customers are told rescue is not available.
 | Limits | CPU cap and weight, disk IOPS and MB/s. |
 | Mail policy (`smtp_policy`) | Port 25 allowed or blocked for new VMs. |
 | Price (`price_monthly`, `price_hourly`, `currency`) | Shown to customers; nothing is charged by the panel. |
-| Allowances (`max_snapshots`, `max_backups`, `max_extra_ipv4`, `max_extra_ipv6`) | Per VM. Empty is no limit, 0 is none. Read from the plan at each use, so a change reaches every VM on it at once. Lowering `max_backups` removes the oldest completed scheduled backups above it at the next hourly pass; manual backups are never removed, nor a backup a kept incremental one builds on. |
+| Allowances (`max_snapshots`, `max_backups`, `max_extra_ipv4`, `max_extra_ipv6`, `max_extra_disks`) | Per VM. Empty is no limit, 0 is none. Read from the plan at each use, so a change reaches every VM on it at once. Lowering `max_backups` removes the oldest completed scheduled backups above it at the next hourly pass; manual backups are never removed, nor a backup a kept incremental one builds on. |
+| Account allowances (`max_images`, `max_floating_ips`) | Images and floating IPs belong to the account: each of its VMs adds its plan's figure. An account with a VM on no plan or on a plan without the limit, or with no VMs at all, is not limited by plans (the floating-IP limit under Settings, System, Quotas still applies). |
+| Prices of extras (`addon_prices`) | Monthly display prices, in the plan's currency, for `snapshot`, `backup`, `image`, `extra_disk_gb`, `floating_ip`, `extra_ipv4` and `extra_ipv6`; shown on the order page. |
 | Network type (`network_type`), `nat_ports`, `nat_hostnames` | Public or NAT. |
 | Default firewall group | What new VMs get instead of the built-in rules. |
+| Hypervisor group (`node_group`) | New VMs on the plan are placed only on nodes in this group (set on each node's page, such as `nvme`), inside the region the customer chose; with no such node that can take the VM, the order is refused rather than placed elsewhere. A drain moves such a VM only within the group. A node staff choose by hand is taken as given. |
 | Active | Inactive plans are not offered. |
 
 Size, limits, speed, quota and mail policy reach existing VMs only through
@@ -383,6 +474,11 @@ Settings, System, Quotas, "Starting quota for new customer accounts".
 
 What customers may do without the billing system (order servers, clone, add
 disks, delete billed servers) is switched under Settings, System, Quotas.
+
+**Settings, Customer area** also sets the links shown in the customer menu
+and on the order page (billing, service status; support is under Branding),
+and how many days of hourly graph averages are kept (default 90, see
+[section 11.5](#115-graph-history)).
 
 ## 8. Customers and staff
 
@@ -403,6 +499,31 @@ disks, delete billed servers) is switched under Settings, System, Quotas.
 
 A single VM is suspended or unsuspended from its page (`vm:lifecycle`);
 customers cannot undo it.
+
+**Teams.** A customer can let others into their account (Team in the customer
+area): Admin, Technical, Billing or Read-only, reaching every VM, chosen VMs
+or chosen projects. Every VM-scoped check (the VM handlers, backups,
+snapshots, networking, console, SSH console, metrics, images) goes through one
+rule, `service.CheckVMAccess`: the owner, or a member whose membership covers
+the VM, with changes and the console only for Admin and Technical. The VMs
+stay the account's, so quotas, plans, billing and notifications are the
+owner's. A suspended or deleted account's members reach nothing. Invitations
+go out by email (template "Team invitation") and expire after 7 days; every
+invite, change, removal, acceptance and project change is in the audit log.
+An account made by accepting an invitation is *member-only*: it cannot order
+VMs or floating IPs of its own until you click **Let it order** in the Team
+card on its user page (`PUT /api/v1/users/{id}/member-only`).
+
+**Address requests** (`network:read` to see, `network:update` to decide).
+Customers ask for another IPv4 address or IPv6 on a VM within its plan's
+allowance. Settings, Customer area chooses whether staff decide each one
+(the default), they are granted at once, or customers cannot ask. "Granted
+at once" applies only within a number the plan sets: an IPv4 request on a VM
+whose plan sets no number of extra IPv4 addresses waits for staff, so no
+customer can empty a pool a request at a time. Granting
+assigns from a pool on the VM's node exactly as **Assign IP address** does,
+and never restarts the VM; one that cannot be assigned waits in the queue
+with the reason.
 
 ### 8.2 Staff roles
 
@@ -520,9 +641,18 @@ moves live (a pause of about a second at the end), a stopped one offline. The
 VM stays on its node until it runs on the new one; a failed or cancelled move
 leaves it where it was. **Check** shows before anything starts why a VM cannot
 move: floating IPs or a private network, snapshots, an ISO, rescue mode, a
-running backup, a pool or port the destination lacks, a NAT VM, a disk on LVM,
-no room, or a different CPU for a live move of a `host-passthrough` VM (move it
-offline instead).
+running backup, a pool or port the destination lacks, a NAT VM, no room, or a
+different CPU for a live move of a `host-passthrough` VM (move it offline
+instead).
+
+Disks on logical volumes move too, and a VM can move onto an LVM pool: the
+destination makes the volumes first (named and tagged as its own), a live move
+copies into them, and an offline move writes a raw disk into its volume
+directly or a qcow2 one through scratch space beside it. A disk on a volume
+moving to a directory pool becomes a qcow2 file (live) or a raw file
+(offline). Both nodes need the current agent. The source's volumes MaburVM
+made are removed after the move; an imported VM's are kept and listed under
+orphaned disks.
 
 A **drain** pauses the node for new VMs, plans a destination for every VM,
 moves them one to three at a time with two tries each, and reports what moved
@@ -585,11 +715,32 @@ their bell instead.
 
 ### 11.4 Audit log and job queue
 
-**Audit log** (`audit:read`) records every write by staff, customers, API keys,
-MCP and the billing webhook, with who, from where, the route, the outcome and
-the redacted body. **Job queue** (`ops:read`, `ops:update`) shows queued,
-running and failed jobs with retry and cancel, and the workers per queue
-(applied at the next panel restart).
+**Audit log** (`audit:read`, in the sidebar) records every write by staff,
+customers, API keys, MCP and the billing webhook, with who, from where, the
+route, the outcome and the redacted body; filter it by action, kind of
+resource and dates. **Job queue** (`ops:read`, `ops:update`) lists jobs 50 a
+page, filtered by state and kind and searched by job number, VM or node id,
+operation or error; a job opens with its arguments (passwords, keys and
+scripts shown as `[REDACTED]`) and the error of every failed try. Retry,
+cancel, and the workers per queue (applied at the next panel restart) are
+there too.
+
+**Logs** (in the sidebar) gathers three logs, each behind its own permission:
+**API requests** (`audit:read`: the last 10,000 requests to the API and the
+billing webhook with method, path, answer, time taken, account or API key and
+address; kept in memory, so a restart empties it, and query strings are never
+recorded), **Addresses** (`network:read`: every assignment and release of an
+address, from the address history) and **Emails** (`settings:read`: the email
+log, searchable by recipient or subject).
+
+### 11.5 Graph history
+
+The metrics collector keeps each VM's raw readings for 7 days and, once an
+hour, averages each finished hour into `vm_metrics_hourly`, kept for the days
+set under Settings, Customer area (8 to 400, default 90). VM graphs offer 30
+and 90 days within that. The first run after an upgrade averages what the raw
+readings still hold, so the week before the upgrade is not lost. Node graphs
+stay at 7 days.
 
 ## 12. Billing integration
 
@@ -614,13 +765,33 @@ retried up to 10 times over about four hours, and listed with its outcome on
 the same page (`billing:read`, `billing:update` to resend). A delivery that
 fails for good raises an alert.
 
+**Outbound webhooks of your own**: the same page, **Outbound webhooks**, adds
+any number of further receivers (a chat bridge, a monitoring system, your own
+automation). Each has its own URL, signing secret (stored encrypted; **Make
+one** fills in a random one to give the receiver), the events it wants (VM
+lifecycle, backups, alerts, billing events, accounts, or every event) and its
+own delivery log with **Send again**. **Send test** posts a `webhook.test`
+event at once and says whether it arrived. Seeing them needs `webhook:read`;
+adding, changing, testing and resending need `webhook:update`. Events and their
+fields: [api.md](api.md#outbound-webhooks-an-operator-adds).
+
 **WHMCS**: `integrations/whmcs` holds a provisioning module (orders, suspends,
 resizes, removes VMs, usage, power buttons, and **Open control panel** single
 sign-on through the `user.sso` event: a one-time link valid 60 seconds,
 customer accounts only, the panel's own two-factor still applies) and an
 optional events addon (bills floating IPs, records failed installs and
 overage). Installation and a first-run checklist:
-[integrations/whmcs/README.md](../integrations/whmcs/README.md).
+[integrations/whmcs/README.md](../integrations/whmcs/README.md). The module's
+client area also gives customers their VM's state, power buttons, the console
+(through a one-time sign-in link), a new root password, a reinstall with the
+systems their plan offers and the last day's graphs; its daily usage update
+writes disk, snapshot, backup, address and uptime figures beside traffic.
+
+**Paymenter and FOSSBilling**: `integrations/paymenter` and
+`integrations/fossbilling` hold provisioning modules with the same lifecycle
+(create, suspend, unsuspend, terminate, change package, single sign-on). They
+are tested against stand-ins and the real webhook only, not yet inside those
+systems; each README has a first-run checklist.
 
 Things to set before taking orders:
 
@@ -642,7 +813,7 @@ Things to set before taking orders:
 | Sign-in check (captcha) | Same | Cloudflare Turnstile or hCaptcha, site key and secret key, and after how many failures from one address or for one email in 15 minutes it is asked (0: always). The panel must reach the provider; while it cannot, those attempts wait. |
 | Sessions | Profile; user pages | Each sign-in is a session its owner and staff can end. "Sign out everywhere else" keeps only the current one. |
 | IP whitelist | User page | An account may sign in only from the listed addresses or ranges, whatever the method. |
-| API keys | Settings, API Keys; Settings, System, API | Keys (`mvk_...`) act as their owner. **Read-only** keys may only read; **own resources only** makes a staff key act as a customer. "Accept API keys" switches them all off. |
+| API keys | Settings, API Keys (staff and customers); Settings, System, API | Keys (`mvk_...`) act as their owner and never more. Each has a scope (**Full access**; **Read only**; **Power only**: list VMs and start, shut down or restart them; **Billing**, staff only: billing, plans, customer accounts and usage, never staff accounts or roles), an optional list of addresses it works from, and an optional expiry. **Own resources only** makes a staff key act as a customer. "Accept API keys" switches them all off. |
 | API rate limit | Settings, System, API | Requests per minute per signed-in account or key (default 1200, 0 off); past it, 429 with `Retry-After`. Sign-in, password reset, single sign-on, first-run and node enrollment are limited per address on their own. |
 | Single sign-on | Settings, System, Panel | Any OpenID Connect provider (`OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_BUTTON_LABEL`). Matches an existing account by verified email; creates nobody. Two-factor and allow-lists still apply. |
 | Agent allow-list | Node's environment | `AGENT_ALLOWED_PANEL_IPS`: the agent closes connections from anywhere else before TLS. |
@@ -703,3 +874,74 @@ its environment variable while nothing is saved there and showing where the
 value in force comes from; only the Owner or a role with `staff:manage` changes
 them. Agent settings live in each node's `/etc/maburvm-agent.env`
 ([node-setup.md §6](node-setup.md#6-agent-settings-reference)).
+
+## 16. Day-to-day tools
+
+### 16.1 Acting on several VMs
+
+On **Virtual Machines**, tick VMs (or every VM on the page) and choose an
+action: start, shut down, restart (`vm:power`), suspend, unsuspend
+(`vm:lifecycle`), lock or unlock against deletion (`vm:update`), move to a plan
+(`vm:update` and `billing:update`), add a firewall group (`vm:update` and
+`firewall_group:read`), or move to another node (`vm:migrate`). **Check what
+happens** shows what the action does to each VM, and which ones it skips and
+why, before anything changes; the result lists what happened to each. Up to
+100 VMs at once. Moving to a plan works as Apply to VMs does: a running VM
+keeps its size until it is stopped, and a VM the billing system bills keeps its
+package there until it is changed in the billing system. Moves are planned
+together, so two VMs are never both sent to room only one fits in, and run a
+few at a time on the long-jobs queue, like a drain.
+
+### 16.2 Tags, delete locks and staff notes
+
+A VM's Settings tab holds its **tags** (up to 10 short labels, filterable on
+both VM lists and through the API's `tag` parameter) and its **lock against
+deletion**. A locked VM cannot be deleted or reinstalled until it is unlocked.
+A customer may lock and unlock their own VM; their lock does not stop the
+billing system terminating it, so it cannot be used to keep a server that is
+no longer paid for. A staff lock stops every removal, the billing system
+included, and only staff lift it. Deleting an account together with its VMs
+is refused while any of them is locked; nothing changes until they are unlocked.
+
+**Staff notes** sit on a VM's Settings tab and on a customer's page: staff
+only, never shown to the customer, each with its author and time, and every
+change recorded in the audit log (`vm:read` or `user:read` to read,
+`vm:update` or `user:update` to write).
+
+### 16.3 Announcements
+
+**Announcements** (`announcement:read` to see, `announcement:update` to write) appear at
+the top of the customer dashboard while they run, to every customer or only to
+the owners of VMs on chosen nodes, regions, plans or VMs and the members of
+their teams: the way to warn the customers of one node about its maintenance.
+**Preview** shows how many
+customers an email would reach and the message. **Email it** queues one email
+per customer through the email log, spread at the rate chosen (60 a minute by
+default); sending again reaches only those who have not had it, and is refused
+while the previous send is still being queued. A **service
+notice** reaches everyone in the audience. A **news or offer** skips customers
+who unsubscribed and carries an unsubscribe link (it needs the panel's public
+address); customers also switch news off on their profile.
+
+### 16.4 Reports
+
+**Reports** (`report:read`) shows capacity by node, storage pool or region over
+up to two years (allocated vCPU, memory and disk against what there is, disk
+used and the day's average use, recorded hourly into one row a day), and what
+each customer holds and transferred in a month. Both download as CSV.
+
+### 16.5 Maintenance mode and the update notice
+
+Settings, **Maintenance**. Maintenance mode (the Owner switches it) lets
+customers and the billing system read but not change anything: changes answer
+503 with the message shown in their banner, and the billing module reports the
+refusal and tries again on its next run. Staff carry on. **Hold jobs** stops new
+jobs from starting while running ones finish. `scripts/upgrade-panel.sh` uses
+it around every upgrade ([upgrading.md](upgrading.md#2-upgrading-the-panel)).
+
+The **update notice** is off until the Owner turns it on with the GitHub
+repository the panel is released from. The panel then reads that repository's
+release list once a day (the request carries nothing about the panel) and
+shows the Owner a notice when a newer release is out, flagged when a newer
+release mentions a security fix, with its notes and a link to the upgrade
+instructions.

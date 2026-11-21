@@ -108,3 +108,32 @@ func ApplyVMNetworkConfig(ctx context.Context, client pb.NodeAgentClient, node *
 	job := &river.Job[VMOperationJob]{Args: VMOperationJob{VMID: vm.ID, NodeID: node.ID, Operation: VMOpConfigureNetwork, Params: params}}
 	return w.handleConfigureNetwork(ctx, client, node, vm, job)
 }
+
+// DiskMoveJob follows one move of a VM's disk to another pool of its node.
+// Its record (vm_disk_moves) holds the progress.
+type DiskMoveJob struct {
+	MoveID string `json:"move_id" river:"unique"`
+}
+
+func (DiskMoveJob) Kind() string { return "vm_disk_move" }
+
+func (DiskMoveJob) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{Queue: QueueBatch, Priority: PriorityHigh, MaxAttempts: 10, UniqueOpts: river.UniqueOpts{ByArgs: true}}
+}
+
+// DiskMoveHook runs a disk move job; the panel sets it.
+var DiskMoveHook func(ctx context.Context, moveID string) error
+
+type diskMoveWorker struct {
+	river.WorkerDefaults[DiskMoveJob]
+}
+
+func (*diskMoveWorker) Work(ctx context.Context, job *river.Job[DiskMoveJob]) error {
+	if DiskMoveHook == nil {
+		return river.JobSnooze(10 * time.Second)
+	}
+	return DiskMoveHook(ctx, job.Args.MoveID)
+}
+
+// A large disk takes hours; past this the next try follows the node again.
+func (*diskMoveWorker) Timeout(*river.Job[DiskMoveJob]) time.Duration { return 24 * time.Hour }

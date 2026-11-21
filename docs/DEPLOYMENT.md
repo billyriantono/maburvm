@@ -1397,6 +1397,15 @@ offer it, or be served from a URL the nodes can reach.
 - An image built another way must carry the virtio drivers, the QEMU guest
   agent and cloudbase-init reading the NoCloud disc, and must have
   `RealTimeIsUniversal` set, or its clock will be off by its time-zone offset.
+- `--uefi` builds an image that boots with UEFI (a GPT disk with an EFI system
+  partition) under OVMF, which the build host needs (the `ovmf` package). Add
+  it with the template's boot firmware set to UEFI. The node agents boot BIOS
+  guests only for now, so the panel refuses VMs from a UEFI template until
+  they boot UEFI too; BIOS images (the default) work everywhere.
+- To install Windows by hand instead, add the installer as an ISO, mark the
+  virtio drivers ISO (`virtio-win.iso`) as the drivers disc on the ISOs page,
+  and create a VM with the Windows ISO as its system: it gets an empty disk,
+  the installer in drive 1 and the drivers in drive 2.
 
 ## 13. Storage pools and disk overcommit
 
@@ -1667,22 +1676,30 @@ In order, it:
 2. runs an off-host backup now (`panel-backup once`) when panel-backup is
    configured (§9), and stops if that fails (`--skip-offsite-backup` to go on);
 3. pulls (or builds) the new images while the current panel keeps running;
-4. stops the panel (web stays up) and dumps the database through the postgres
+4. turns maintenance mode on (`panel maintenance on --hold-jobs`): customers and
+   the billing webhook can read but not change anything, new jobs are held, and
+   running ones get `--drain-timeout` seconds (default 900) to finish. If some
+   are still running then, maintenance is switched off and the script stops with
+   nothing else changed (`--no-drain` skips this step; a panel from before
+   maintenance mode is upgraded without it);
+5. stops the panel (web stays up) and dumps the database through the postgres
    container into `backups/pre-upgrade-<time>.dump` (mode 0600, the newest five
    kept), checks the dump reads back, and records it in the database. If the
-   dump fails, the previous panel is started again and nothing else changes;
-5. starts the new panel alone, which applies pending migrations as it starts,
+   dump fails, maintenance is switched off, the previous panel is started again
+   and nothing else changes;
+6. starts the new panel alone, which applies pending migrations as it starts,
    then web, and waits for both health checks (`--timeout`, default 30 minutes
-   for the panel).
+   for the panel), then switches maintenance off so the held jobs start.
 
 If the panel or web does not become healthy, it puts the previous images and
 `.env.production` back. If migrations ran, it asks whether to restore the dump
 (`--yes` restores without asking, `--no-restore` never does): the dump is
 restored into a new database which then replaces the current one, kept as
 `<db>_replaced_<time>` until you drop it. The panel was stopped for the dump, so
-a restore loses only what the new version wrote. Then it starts the previous
-images (by their `:rollback` tags, whatever `.env.production` names) and exits
-non-zero.
+a restore loses only what the new version wrote. Then it switches maintenance
+off in the database (the dump was taken in maintenance mode), starts the
+previous images (by their `:rollback` tags, whatever `.env.production` names)
+and exits non-zero.
 
 A restore with `scripts/panel-restore.sh` (§9) records the restored archive the
 same way, so a newer panel image may migrate the restored database.

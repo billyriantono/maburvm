@@ -654,6 +654,16 @@ func (w *VMOperationWorker) run(ctx context.Context, job *river.Job[VMOperationJ
 		}
 	}
 
+	// DETACH_ISO names the drive it empties when it is not the first.
+	if job.Args.Operation == VMOpDetachISO && len(job.Args.Params) > 0 {
+		var p struct {
+			Metadata map[string]string `json:"metadata"`
+		}
+		if err := json.Unmarshal(job.Args.Params, &p); err == nil && len(p.Metadata) > 0 {
+			vmConfig = &pb.VMConfig{Metadata: p.Metadata}
+		}
+	}
+
 	// Track a delete as a multi-step operation so the UI can show progress and
 	// whether it actually finished (delete = destroy on host → release IP/network
 	// → remove records). Best-effort: never blocks the real work.
@@ -791,6 +801,13 @@ func (w *VMOperationWorker) run(ctx context.Context, job *river.Job[VMOperationJ
 			strings.Contains(detail, "template image not found at guest:") {
 			detail = fmt.Sprintf("the agent on node %s is older than the panel and cannot install %s systems; update it under Settings, System and try again", node.Name, kind)
 		}
+		// An agent from before installs from ISOs, or images uploaded to the
+		// panel, takes those references for file paths too.
+		if strings.Contains(detail, "template image not found at "+models.BlankImageRef) {
+			detail = fmt.Sprintf("the agent on node %s is older than the panel and cannot install a VM from an ISO; update it under Nodes and try again", node.Name)
+		} else if strings.Contains(detail, "template image not found at upload:") {
+			detail = fmt.Sprintf("the agent on node %s is older than the panel and cannot use images uploaded to the panel; update it under Nodes and try again", node.Name)
+		}
 		// Likewise an agent from before customer URLs were fetched under their
 		// own rules: it does not fetch one at all, which is the point.
 		if _, customer := models.SplitCustomerISORef(vmConfig.GetImageId()); customer &&
@@ -810,8 +827,10 @@ func (w *VMOperationWorker) run(ctx context.Context, job *river.Job[VMOperationJ
 			"error_message", detail,
 		)
 
-		// Update VM status to error
-		vmRepo.UpdateStatus(ctx, vm.ID, models.VMStatusError)
+		// A disc that did not go in or come out leaves the VM as it was.
+		if !isoOperation(job.Args.Operation) {
+			vmRepo.UpdateStatus(ctx, vm.ID, models.VMStatusError)
+		}
 		failVMOperation(ctx, opDB, deleteOpID, detail)
 
 		if w.metrics != nil {
@@ -937,22 +956,36 @@ func (w *VMOperationWorker) run(ctx context.Context, job *river.Job[VMOperationJ
 	// the command succeeded, rather than when the job was queued: a failed
 	// detach must not make the panel claim the drive is empty.
 	if opDB != nil {
+		var p struct {
+			ImagePath string            `json:"image_path"`
+			Metadata  map[string]string `json:"metadata"`
+		}
+		_ = json.Unmarshal(job.Args.Params, &p)
+		// The second drive has its own column; the first keeps the old one.
+		column := "attached_iso"
+		if p.Metadata[models.ISOSlotKey] == strconv.Itoa(models.ISOSlotDrivers) {
+			column = "attached_iso_2"
+		}
 		var iso *string
 		switch job.Args.Operation {
 		case VMOpAttachISO:
-			var p struct {
-				ImagePath string `json:"image_path"`
-			}
-			_ = json.Unmarshal(job.Args.Params, &p)
 			iso = &p.ImagePath
-		case VMOpDetachISO, VMOpCreate:
+		case VMOpCreate:
+			installed := p.Metadata[models.InstallISOKey]
+			iso = &installed
+			if drivers := p.Metadata[models.DriversISOKey]; drivers != "" {
+				if err := opDB.WithContext(ctx).Table("vms").Where("id = ?", vm.ID).Update("attached_iso_2", drivers).Error; err != nil {
+					w.logger.ErrorContext(ctx, "failed to record attached ISO", "error", err, "vm_id", vm.ID)
+				}
+			}
+		case VMOpDetachISO:
 			empty := ""
 			iso = &empty
 		}
 		if iso != nil {
 			// Table() rather than Model(): the field is read-only on the model
 			// (see models.VM.AttachedISO), so a model update would skip it.
-			if err := opDB.WithContext(ctx).Table("vms").Where("id = ?", vm.ID).Update("attached_iso", *iso).Error; err != nil {
+			if err := opDB.WithContext(ctx).Table("vms").Where("id = ?", vm.ID).Update(column, *iso).Error; err != nil {
 				w.logger.ErrorContext(ctx, "failed to record attached ISO", "error", err, "vm_id", vm.ID)
 			}
 		}
@@ -1416,6 +1449,9 @@ func modelActionToProto(a string) pb.FirewallAction {
 	}
 }
 
+// isoOperation reports a job that only changes a VM's CD drives.
+func isoOperation(op VMOperationType) bool { return op == VMOpAttachISO || op == VMOpDetachISO }
+
 // TemplateSyncWorker handles OS template synchronization
 // Queue: default (50 workers)
 type TemplateSyncWorker struct {
@@ -1444,6 +1480,10 @@ func NewTemplateSyncWorker(logger *slog.Logger, templateRepo *repository.Templat
 
 	return w
 }
+
+// Timeout lets a node fetch a large image (a Windows ISO, a refreshed cloud
+// image) or take one uploaded to the panel; River's default is a minute.
+func (w *TemplateSyncWorker) Timeout(*river.Job[TemplateSyncJob]) time.Duration { return 3 * time.Hour }
 
 // Work implements the template sync job handler
 func (w *TemplateSyncWorker) Work(ctx context.Context, job *river.Job[TemplateSyncJob]) error {
@@ -1546,12 +1586,25 @@ func (w *TemplateSyncWorker) syncTemplateToNode(ctx context.Context, template *m
 	}
 
 	// Template images can be large; allow a generous timeout for the download.
-	syncCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	syncCtx, cancel := context.WithTimeout(ctx, 2*time.Hour)
 	defer cancel()
 
-	resp, err := client.SyncTemplate(agentAuthContext(syncCtx, node), &pb.SyncTemplateRequest{
-		ImageUrl: template.ImagePath,
-	})
+	// An image uploaded to the panel is copied over from here.
+	if sha, name, ok := models.SplitUploadImageRef(template.ImagePath); ok {
+		if err := PushUploadedImage(agentAuthContext(syncCtx, node), client, sha, name); err != nil {
+			w.updateSyncStatus(ctx, template.ID, nodeID, "error", err.Error())
+			return err
+		}
+		w.updateSyncStatusChecksum(ctx, template.ID, nodeID, "available", "", sha)
+		return nil
+	}
+	req := &pb.SyncTemplateRequest{ImageUrl: template.ImagePath}
+	// An agent from before checksums compares the unpacked image, which is
+	// not what a published checksum is of.
+	if template.ChecksumSHA256 != "" && agentHasFeature(agentAuthContext(syncCtx, node), client, "template_checksum") {
+		req.ExpectedChecksum = template.ChecksumSHA256
+	}
+	resp, err := client.SyncTemplate(agentAuthContext(syncCtx, node), req)
 	if err != nil {
 		w.updateSyncStatus(ctx, template.ID, nodeID, "error", err.Error())
 		return fmt.Errorf("template sync RPC failed: %w", err)
@@ -1572,32 +1625,29 @@ func (w *TemplateSyncWorker) syncTemplateToNode(ctx context.Context, template *m
 		"size_bytes", resp.SizeBytes,
 		"checksum", resp.Checksum,
 	)
-	w.updateSyncStatus(ctx, template.ID, nodeID, "available", "")
+	w.updateSyncStatusChecksum(ctx, template.ID, nodeID, "available", "", req.ExpectedChecksum)
 	return nil
 }
 
 func (w *TemplateSyncWorker) updateSyncStatus(ctx context.Context, templateID, nodeID string, status string, errorMsg string) error {
-	type TemplateNodeStatus struct {
-		TemplateID string `gorm:"type:uuid;not null;primaryKey"`
-		NodeID     string `gorm:"type:uuid;not null;primaryKey"`
-		Status     string `gorm:"type:varchar(20);not null"`
-		ErrorMsg   string `gorm:"type:text"`
-		SyncedAt   *time.Time
-	}
+	return w.updateSyncStatusChecksum(ctx, templateID, nodeID, status, errorMsg, "")
+}
 
-	now := time.Now()
-	record := TemplateNodeStatus{
-		TemplateID: templateID,
-		NodeID:     nodeID,
-		Status:     status,
-		ErrorMsg:   errorMsg,
-	}
-
+// updateSyncStatusChecksum records where a node stands with an image; an
+// available copy also records the checksum it was checked against.
+func (w *TemplateSyncWorker) updateSyncStatusChecksum(ctx context.Context, templateID, nodeID, status, errorMsg, checksum string) error {
+	var synced *time.Time
 	if status == "available" {
-		record.SyncedAt = &now
+		now := time.Now()
+		synced = &now
 	}
-
-	return w.db.WithContext(ctx).Save(&record).Error
+	return w.db.WithContext(ctx).Exec(`INSERT INTO template_node_status (template_id, node_id, status, error_msg, synced_at, checksum, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT (template_id, node_id) DO UPDATE SET status = EXCLUDED.status, error_msg = EXCLUDED.error_msg,
+			synced_at = COALESCE(EXCLUDED.synced_at, template_node_status.synced_at),
+			checksum = CASE WHEN EXCLUDED.status = 'available' THEN EXCLUDED.checksum ELSE template_node_status.checksum END,
+			updated_at = CURRENT_TIMESTAMP`,
+		templateID, nodeID, status, errorMsg, synced, checksum).Error
 }
 
 // RestoreWorker restores a VM disk from a backup via the agent RestoreDisk RPC.
@@ -1972,6 +2022,7 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 				"error", err,
 			)
 		}
+		backupDone(ctx, job.Args.BackupID, "")
 	}
 
 	latency := time.Since(startTime)

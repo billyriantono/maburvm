@@ -12,6 +12,8 @@ export interface StoragePool {
   alert_threshold: number; // 0-100
   overcommit: number; // bytes, 0 = disabled
   is_primary: boolean;
+  // A label for placement (nvme, hdd); plans naming it put disks only here.
+  tier?: string;
   // Why the node cannot use the pool; empty when it can.
   status_note?: string;
   // A thin pool's metadata use, 0-100. Absent for other pools.
@@ -57,4 +59,49 @@ export interface CreateStorageVolumeRequest {
   pool_id: string;
   size: number;
   format?: string;
+}
+
+// OrphanDisk is a disk file or logical volume on a node that no VM there and
+// no panel record uses.
+export interface OrphanDisk {
+  node_id: string;
+  path: string;
+  kind: 'file' | 'lv';
+  size_bytes: number;
+  modified_unix: number;
+  reason: string;
+  pool: string;
+  // Made by MaburVM (its name, or a volume's tag).
+  maburvm: boolean;
+  vm_id?: string;
+  vm_hostname?: string;
+  vm_deleted: boolean;
+}
+
+// VMDiskMove is one move of a VM's disk to another pool of its node.
+export interface VMDiskMove {
+  id: string;
+  vm_id: string;
+  target: string;
+  size_gb: number;
+  dest_pool_id: string;
+  source_path: string;
+  dest_path: string;
+  live: boolean;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  phase: string;
+  total_bytes: number;
+  done_bytes: number;
+  error: string;
+  note: string;
+  created_at: string;
+  finished_at?: string | null;
+}
+
+export interface DiskResizeResult {
+  device: string;
+  size_gb: number;
+  live: boolean;
+  queued: boolean;
+  note: string;
 }

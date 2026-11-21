@@ -21,6 +21,7 @@ func sealSecretsAtRest(ctx context.Context, db *gorm.DB) (int, error) {
 	var errs []error
 	for _, col := range []struct{ table, column string }{
 		{"nodes", "token"}, {"vms", "vnc_password"}, {"import_sources", "api_key"}, {"import_sources", "api_pass"},
+		{"webhook_endpoints", "secret"},
 	} {
 		var rows []struct{ ID, Value string }
 		q := fmt.Sprintf("SELECT id, %s AS value FROM %s WHERE %s IS NOT NULL AND %s <> ''", col.column, col.table, col.column, col.column)

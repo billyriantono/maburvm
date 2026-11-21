@@ -5,6 +5,8 @@ export type OverQuotaPolicy = 'throttle' | 'overage' | 'suspend'
 /** Whether new VMs on the plan may send mail out on port 25. */
 export type SMTPPolicy = 'allowed' | 'blocked'
 export type PlanNetworkType = 'public' | 'nat'
+/** The extras a plan shows a monthly price for. */
+export type AddonKey = 'snapshot' | 'backup' | 'image' | 'extra_disk_gb' | 'floating_ip' | 'extra_ipv4' | 'extra_ipv6'
 
 export interface Plan {
   id: string
@@ -30,12 +32,23 @@ export interface Plan {
   max_extra_ipv4?: number | null
   /** A VM holds one IPv6 at most, so 0 (none may be added) or 1. */
   max_extra_ipv6?: number | null
+  /** Extra disks per VM. */
+  max_extra_disks?: number | null
+  /** What each VM on the plan adds to its account's images and floating IPs. */
+  max_images?: number | null
+  max_floating_ips?: number | null
+  /** Monthly display prices of the extras, in `currency`. */
+  addon_prices?: Partial<Record<AddonKey, number>> | null
   /** Firewall group new VMs get instead of the built-in rules; null keeps those. */
   default_firewall_group_id?: string | null
   /** nat: a private address and a block of nat_ports public ports per VM. */
   network_type?: PlanNetworkType
   nat_ports?: number
   nat_hostnames?: number
+  /** Hypervisor group new VMs on the plan are placed in; "" for any node. */
+  node_group?: string
+  /** Storage tier new VMs' disks go in; "" for each node's primary pool. */
+  storage_tier?: string
   description?: string
   is_active: boolean
   created_at: string
@@ -80,11 +93,19 @@ export interface CreatePlanRequest {
   max_backups?: number | null
   max_extra_ipv4?: number | null
   max_extra_ipv6?: number | null
+  max_extra_disks?: number | null
+  max_images?: number | null
+  max_floating_ips?: number | null
+  addon_prices?: Partial<Record<AddonKey, number>>
   /** "" goes back to the built-in rules; left out keeps the plan's choice. */
   default_firewall_group_id?: string
   network_type?: PlanNetworkType
   nat_ports?: number
   nat_hostnames?: number
+  /** "" places new VMs on any node; left out keeps the plan's choice. */
+  node_group?: string
+  /** "" uses each node's primary pool; left out keeps the plan's choice. */
+  storage_tier?: string
   description?: string
   is_active?: boolean
 }

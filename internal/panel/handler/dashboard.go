@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/maburvm/panel/internal/panel/middleware"
+	"github.com/maburvm/panel/internal/panel/service"
 )
 
 // The two dashboards. Both are "ask the database, show the answer": no node is
@@ -124,6 +125,9 @@ type dashVMRow struct {
 	MemNow *float64 `json:"memory_now" gorm:"column:mem_now"`
 	// StateUnknown: the node is offline, so Status is only what the panel last saw.
 	StateUnknown bool `json:"state_unknown" gorm:"column:state_unknown"`
+	// Tags are the owner's labels; DeleteLock who locked it against deletion.
+	Tags       []string `json:"tags" gorm:"column:tags;serializer:json"`
+	DeleteLock string   `json:"delete_lock" gorm:"column:delete_lock"`
 }
 
 // How the staff VM list may be ordered. The key comes from the request; the
@@ -253,6 +257,7 @@ func RegisterDashboardRoutes(e *echo.Echo, db *gorm.DB) {
 		search := strings.TrimSpace(c.QueryParam("search"))
 		status := c.QueryParam("status")
 		node := c.QueryParam("node")
+		tag := strings.ToLower(strings.TrimSpace(c.QueryParam("tag")))
 		order, ok := dashVMOrder[c.QueryParam("sort")]
 		if !ok {
 			order = dashVMOrder["name"]
@@ -269,10 +274,11 @@ func RegisterDashboardRoutes(e *echo.Echo, db *gorm.DB) {
 			WHERE v.deleted_at IS NULL
 			AND (@search = '' OR v.hostname ILIKE @like OR u.email ILIKE @like OR v.id::text ILIKE @like
 				OR EXISTS (SELECT 1 FROM networks x WHERE x.vm_id = v.id AND x.deleted_at IS NULL AND host(x.ip_address) LIKE @like))
-			AND (@node = '' OR v.node_id::text = @node)`
+			AND (@node = '' OR v.node_id::text = @node)
+			AND (@tag = '' OR v.tags @> jsonb_build_array(CAST(@tag AS TEXT)))`
 		// "suspended" is a flag beside the power state, so it is filtered on its own.
 		const byStatus = ` AND (@status = '' OR (@status = 'suspended' AND v.suspended) OR (@status <> 'suspended' AND v.status::text = @status AND NOT v.suspended))`
-		args := map[string]interface{}{"search": search, "like": likePattern(search), "node": node, "status": status}
+		args := map[string]interface{}{"search": search, "like": likePattern(search), "node": node, "status": status, "tag": tag}
 
 		rows := []dashVMRow{}
 		if err := q.Raw(`SELECT v.id, v.hostname, v.status::text AS status, v.suspended, coalesce(v.rescue_mode, false) AS rescue_mode,
@@ -280,7 +286,8 @@ func RegisterDashboardRoutes(e *echo.Echo, db *gorm.DB) {
 				v.created_at, v.user_id::text AS owner_id, coalesce(u.email, '') AS owner_email,
 				v.node_id::text AS node_id, coalesce(n.name, '') AS node_name, coalesce(n.status::text, '') AS node_status,
 				coalesce(n.status::text = 'offline', false) AS state_unknown,
-				coalesce(t.name, '') AS system, coalesce(ip.addr, '') AS ip, m.cpu_usage AS cpu_now, m.memory_usage AS mem_now
+				coalesce(t.name, '') AS system, coalesce(ip.addr, '') AS ip, m.cpu_usage AS cpu_now, m.memory_usage AS mem_now,
+				v.tags, v.delete_lock
 			`+from+byStatus+` ORDER BY `+order+` LIMIT @limit OFFSET @offset`,
 			mergeArgs(args, map[string]interface{}{"limit": size, "offset": (page - 1) * size})).Scan(&rows).Error; err != nil {
 			return fail(c, err)
@@ -303,7 +310,7 @@ func RegisterDashboardRoutes(e *echo.Echo, db *gorm.DB) {
 		if status != "" {
 			total = byState[status]
 		}
-		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "meta": PageMeta(page, size, total), "data": map[string]interface{}{
 			"vms": rows, "total": total, "page": page, "page_size": size, "all": all, "by_status": byState,
 		}})
 	}, auth, middleware.RequirePermission(middleware.PermStaff), middleware.RequirePermission("vm:read"))
@@ -315,7 +322,8 @@ func RegisterDashboardRoutes(e *echo.Echo, db *gorm.DB) {
 		}
 		q := db.WithContext(c.Request().Context())
 
-		// Only the caller's own VMs, and nothing that names a node.
+		// Only the caller's own VMs and their team's, and nothing that names a node.
+		mineCond, mineArgs := service.CustomerVMScope(c.Request().Context(), db, user.ID.String()).SQL(func(col string) string { return "v." + col })
 		vms := []dashMineVM{}
 		if err := q.Raw(`SELECT v.id, v.hostname, v.status, v.suspended, coalesce(nd.status::text = 'offline', false) AS state_unknown,
 				(v.resources->>'cpu')::int AS cpu, (v.resources->>'ram')::int AS rammb, (v.resources->>'disk')::int AS diskgb,
@@ -332,8 +340,8 @@ func RegisterDashboardRoutes(e *echo.Echo, db *gorm.DB) {
 				ORDER BY period_start DESC LIMIT 1) b ON true
 			LEFT JOIN LATERAL (SELECT status, created_at FROM backups
 				WHERE vm_id = v.id AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1) lb ON true
-			WHERE v.deleted_at IS NULL AND v.user_id = ?
-			ORDER BY v.hostname LIMIT 100`, user.ID).Scan(&vms).Error; err != nil {
+			WHERE v.deleted_at IS NULL AND `+mineCond+`
+			ORDER BY v.hostname LIMIT 100`, mineArgs...).Scan(&vms).Error; err != nil {
 			return fail(c, err)
 		}
 

@@ -26,6 +26,12 @@ interface VMListParams {
   status?: string;
   /** Matched against hostname or VM id by the API, across every page. */
   search?: string;
+  /** Only VMs carrying this tag. */
+  tag?: string;
+  /** A customer: only the VMs of this account (their own id, or a team's). */
+  accountId?: string;
+  /** Only the VMs in this project. */
+  projectId?: string;
 }
 
 // useVMOperation polls the VM's latest multi-step operation (e.g. a delete),
@@ -49,10 +55,10 @@ export function useVMOperation(vmId: string | null, enabled: boolean) {
 }
 
 export function useVMs(params: VMListParams = {}) {
-  const { page = 1, pageSize = 20, userId, nodeId, status, search } = params
+  const { page = 1, pageSize = 20, userId, nodeId, status, search, tag, accountId, projectId } = params
 
   return useQuery<PaginatedResponse<VM>>({
-    queryKey: ['vms', 'list', { page, pageSize, userId, nodeId, status, search }],
+    queryKey: ['vms', 'list', { page, pageSize, userId, nodeId, status, search, tag, accountId, projectId }],
     queryFn: async () => {
       const response = await api.get<PaginatedResponse<VM>>('/api/v1/vms', {
         params: {
@@ -62,6 +68,9 @@ export function useVMs(params: VMListParams = {}) {
           node_id: nodeId,
           status,
           search: search || undefined,
+          tag: tag || undefined,
+          account_id: accountId || undefined,
+          project_id: projectId || undefined,
         },
       })
       return response.data as unknown as PaginatedResponse<VM>
@@ -200,9 +209,11 @@ export function useVMActions() {
 // useAttachISO attaches a bootable ISO (by URL) to a VM for install/rescue.
 export function useAttachISO(id: string) {
   const queryClient = useQueryClient()
-  return useMutation<void, Error, string>({
-    mutationFn: async (isoUrl) => {
-      await api.post(`/api/v1/vms/${id}/iso/attach`, { iso_url: isoUrl })
+  // A URL, one of the ISOs staff publish (iso_id), one from the ISOs page
+  // (template_id), or the drivers disc; slot 2 is the second CD drive.
+  return useMutation<void, Error, string | { iso_id?: string; iso_url?: string; template_id?: string; drivers?: boolean; slot?: number }>({
+    mutationFn: async (iso) => {
+      await api.post(`/api/v1/vms/${id}/iso/attach`, typeof iso === "string" ? { iso_url: iso } : iso)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['vms', 'detail', id] })
@@ -213,9 +224,10 @@ export function useAttachISO(id: string) {
 // useDetachISO removes the install/rescue ISO and restores HD boot order.
 export function useDetachISO(id: string) {
   const queryClient = useQueryClient()
-  return useMutation<void, Error, void>({
-    mutationFn: async () => {
-      await api.post(`/api/v1/vms/${id}/iso/detach`)
+  // Empties drive 1 (the install drive) unless told another.
+  return useMutation<void, Error, number | void>({
+    mutationFn: async (slot) => {
+      await api.post(`/api/v1/vms/${id}/iso/detach`, slot ? { slot } : undefined)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['vms', 'detail', id] })

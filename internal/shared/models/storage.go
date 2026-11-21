@@ -25,6 +25,10 @@ type StoragePool struct {
 	AlertThreshold int    `json:"alert_threshold" gorm:"not null;default:90"`                 // 0-100 percent
 	Overcommit     int64  `json:"overcommit" gorm:"not null;default:0"`                       // bytes, 0 = disabled
 	IsPrimary      bool   `json:"is_primary" gorm:"not null;default:false"`
+	// Tier labels the pool for placement (nvme, hdd): a plan naming a tier has
+	// its VMs' disks put only in pools of that tier. "" is untiered. Read-only
+	// here, written by table name (storageService.SetPoolTier).
+	Tier string `json:"tier" gorm:"column:tier;->"`
 	// StatusNote says why the node cannot use the pool; MetadataPercent is a
 	// thin pool's metadata use. Both are measured, not set.
 	StatusNote      string         `json:"status_note" gorm:"type:text;not null;default:''"`

@@ -5,6 +5,7 @@ import Link from "next/link"
 import { AlertTriangle, CheckCircle2, Loader2 } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
+import { apiErrorMessage } from "@/lib/api-error"
 
 const ENDPOINT = "/api/v1/auth/first-run"
 
@@ -47,7 +48,7 @@ export default function FirstRunPage() {
       })
       const body = await res.json().catch(() => ({}))
       if (!res.ok) {
-        setError(body.error || `The panel answered ${res.status}.`)
+        setError(apiErrorMessage(body, `The panel answered ${res.status}.`))
         return
       }
       // Drop the token from the address bar and history.

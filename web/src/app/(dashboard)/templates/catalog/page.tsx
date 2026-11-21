@@ -31,6 +31,10 @@ interface CatalogEntry {
   description: string
   url: string
   osType?: OSType
+  // A checksum list the vendor publishes beside the image. The image is
+  // refreshed from it daily, since these addresses always name the newest
+  // build. Without one the nodes cannot check the download.
+  checksumUrl?: string
 }
 
 // Stable "latest"/"current" image URLs from each distro's official cloud-image
@@ -45,6 +49,7 @@ const OS_CATALOG: CatalogEntry[] = [
     sizeHint: "~600 MB",
     description: "Noble Numbat, cloud image with cloud-init",
     url: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img",
+    checksumUrl: "https://cloud-images.ubuntu.com/noble/current/SHA256SUMS",
   },
   {
     id: "ubuntu-2204",
@@ -55,6 +60,7 @@ const OS_CATALOG: CatalogEntry[] = [
     sizeHint: "~600 MB",
     description: "Jammy Jellyfish, cloud image with cloud-init",
     url: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img",
+    checksumUrl: "https://cloud-images.ubuntu.com/jammy/current/SHA256SUMS",
   },
   {
     id: "debian-12",
@@ -125,6 +131,7 @@ const OS_CATALOG: CatalogEntry[] = [
     sizeHint: "~550 MB",
     description: "Latest rolling cloud image (qcow2)",
     url: "https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2",
+    checksumUrl: "https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2.SHA256",
   },
   {
     id: "opensuse-leap-156",
@@ -135,6 +142,7 @@ const OS_CATALOG: CatalogEntry[] = [
     sizeHint: "~500 MB",
     description: "NoCloud image (qcow2)",
     url: "https://download.opensuse.org/repositories/Cloud:/Images:/Leap_15.6/images/openSUSE-Leap-15.6.x86_64-NoCloud.qcow2",
+    checksumUrl: "https://download.opensuse.org/repositories/Cloud:/Images:/Leap_15.6/images/openSUSE-Leap-15.6.x86_64-NoCloud.qcow2.sha256",
   },
   // The two RouterOS builds below were each started, configured, restarted and
   // signed in to on this platform before being listed. 6.49.21 to 6.49.23 are
@@ -204,6 +212,10 @@ export default function TemplateCatalogPage() {
         file_url: entry.url,
         description: `${entry.description} (${entry.arch})`,
         os_type: entry.osType ?? "linux",
+        checksum_url: entry.checksumUrl,
+        auto_refresh: !!entry.checksumUrl,
+        // The vendor publishes no sha256 list next to this address.
+        skip_checksum: !entry.checksumUrl,
       })
       setStates((s) => ({ ...s, [entry.id]: "added" }))
       toast.success(`${entry.name} ${entry.version} added to library`)

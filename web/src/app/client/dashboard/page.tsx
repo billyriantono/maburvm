@@ -10,6 +10,7 @@ import { Sparkline } from "@/components/ui/sparkline"
 import { StatusBadge, vmStatus } from "@/components/status-badge"
 import { CountryFlag } from "@/components/country-flag"
 import { useCopy } from "@/lib/use-feedback"
+import { ClientAnnouncements } from "@/components/client-announcements"
 
 // The customer's home page answers two questions for every server they rent:
 // is it healthy, and is it about to hit a limit. One row per server, and a
@@ -166,6 +167,8 @@ export default function ClientDashboardPage() {
           </Button>
         )}
       </div>
+
+      <ClientAnnouncements />
 
       {needs.length > 0 && (
         <section aria-labelledby="needs-attention" className="rounded-lg border bg-card text-card-foreground">

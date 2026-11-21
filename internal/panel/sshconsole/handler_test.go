@@ -3,6 +3,7 @@ package sshconsole
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -28,8 +29,14 @@ type stubOwner struct {
 	err   error
 }
 
-func (s stubOwner) VMOwner(_ context.Context, _ string) (string, error) {
-	return s.owner, s.err
+func (s stubOwner) MayOpenConsole(_ context.Context, _ string, userID string) error {
+	if s.err != nil {
+		return s.err
+	}
+	if s.owner != userID {
+		return errors.New("not found")
+	}
+	return nil
 }
 
 // TestGenerateTokenRejectsForeignVM verifies a non-admin cannot mint an SSH

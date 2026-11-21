@@ -4,7 +4,6 @@ package handler
 import (
 	"errors"
 	"net/http"
-	"strconv"
 
 	"github.com/labstack/echo/v4"
 	"gorm.io/gorm"
@@ -127,6 +126,8 @@ func (h *SnapshotHandler) CreateSnapshot(c echo.Context) error {
 			})
 		case errors.Is(err, service.ErrSnapshotsNeedQcow2):
 			return c.JSON(http.StatusUnprocessableEntity, map[string]interface{}{"error": "Unprocessable Entity", "message": err.Error()})
+		case errors.Is(err, service.ErrDiskMoveActive):
+			return vmMoving(c, err)
 		default:
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
 				"error":   "Internal Server Error",
@@ -176,16 +177,7 @@ func (h *SnapshotHandler) ListSnapshots(c echo.Context) error {
 
 	// Parse query parameters
 	status := c.QueryParam("status")
-	limitStr := c.QueryParam("limit")
-	offsetStr := c.QueryParam("offset")
-
-	var limit, offset int
-	if limitStr != "" {
-		limit, _ = strconv.Atoi(limitStr)
-	}
-	if offsetStr != "" {
-		offset, _ = strconv.Atoi(offsetStr)
-	}
+	limit, offset := listWindow(c)
 
 	// Enforce owner-or-admin access to the route VM (401 missing auth, 404
 	// non-owner/nonexistent). Admin support is preserved.
@@ -247,8 +239,10 @@ func (h *SnapshotHandler) ListSnapshots(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
+		"success":  true,
 		"message":  "Snapshots retrieved successfully",
 		"data":     items,
+		"meta":     OffsetPageMeta(resp.Limit, resp.Offset, resp.Total),
 		"total":    resp.Total,
 		"limit":    resp.Limit,
 		"offset":   resp.Offset,

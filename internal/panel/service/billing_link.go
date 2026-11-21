@@ -103,7 +103,7 @@ func ClientMayDeleteBilledVMs(ctx context.Context, db *gorm.DB) bool {
 // theirs, suspended or not, except one a billing service pays for while the
 // operator has not allowed that.
 func (s *VMService) OwnerMayDelete(ctx context.Context, vm *models.VM, userID string) error {
-	if err := OwnerAccess(vm, userID, false, false); err != nil {
+	if err := CheckVMAccess(ctx, s.db, vm, userID, false, AccessOperate); err != nil {
 		return err
 	}
 	if vm.BillingManaged() && !ClientMayDeleteBilledVMs(ctx, s.db) {

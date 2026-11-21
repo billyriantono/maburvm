@@ -21,7 +21,19 @@ import { useSelfService } from "@/lib/hooks/use-quota"
 import type { OSTemplate } from "@/types"
 import { templateOfferedOn } from "@/types/template"
 import type { Plan } from "@/types/plan"
-import { planAllowances, planPrice } from "@/lib/plans"
+import { addonPrices, planAllowances, planPrice } from "@/lib/plans"
+import { usePortal } from "@/lib/hooks/use-portal"
+import { useMemberships, useProjects } from "@/lib/hooks/use-team"
+import { useRecipes } from "@/lib/hooks/use-recipes"
+import { missingInputs } from "@/lib/recipes"
+import { api } from "@/lib/api-client"
+
+// Automatic backups chosen at order time, set up once the server exists.
+const BACKUP_CHOICES = [
+  { value: "", label: "No automatic backups" },
+  { value: "daily", label: "Daily, keep the last 7", cron: "0 3 * * *", keep: 7 },
+  { value: "weekly", label: "Weekly, keep the last 4", cron: "0 3 * * 0", keep: 4 },
+] as const
 
 // A client orders a VM by picking a plan (resource flavor) + an OS template and a
 // hostname. Ownership is forced server-side to the caller, and quota is enforced,
@@ -43,6 +55,26 @@ function OrderVMForm() {
   const { data: sshKeys } = useSSHKeys()
   const { data: selfService } = useSelfService()
   const createVM = useCreateVM()
+  const { data: portal } = usePortal()
+  const { data: teams } = useMemberships()
+  const { data: recipes } = useRecipes()
+  // Team accounts the customer may order into: a role that operates, and not
+  // limited to chosen servers (a new one would be out of their reach).
+  const orderable = (teams?.memberships ?? []).filter((m) => m.can.includes("operate") && !m.vm_ids.length)
+  const ownBlocked = !!teams?.member_only
+  const [accountChoice, setAccountChoice] = useState<string | null>(null)
+  const accountId = accountChoice ?? (ownBlocked && orderable.length ? orderable[0].account_id : "")
+  const team = orderable.find((m) => m.account_id === accountId)
+  const { data: allProjects } = useProjects(accountId || undefined)
+  // A member limited to projects orders into one of theirs.
+  const projects = (allProjects ?? []).filter((p) => !team?.project_ids.length || team.project_ids.includes(p.id))
+  const [projectId, setProjectId] = useState("")
+  const projectNeeded = !!team?.project_ids.length
+  const [recipeId, setRecipeId] = useState("")
+  const [userData, setUserData] = useState("")
+  const [recipeValues, setRecipeValues] = useState<Record<string, string>>({})
+  const [backups, setBackups] = useState<"" | "daily" | "weekly">("")
+  const [ipv6, setIPv6] = useState(false)
 
   const [planId, setPlanId] = useState<string>("")
   const [templateId, setTemplateId] = useState<string>("")
@@ -84,12 +116,18 @@ function OrderVMForm() {
   const isWindows = orderOS === "windows"
   const takesKeys = orderOS === "linux"
   const loginUser = isRouter ? "admin" : isWindows ? "Administrator" : "root"
+  const recipe = (recipes ?? []).find((r) => r.id === recipeId)
+  const recipeMissing = takesKeys && recipe ? missingInputs(recipe.inputs, recipeValues) : []
+  const offersIPv6 = !!selectedPlan && selectedPlan.max_extra_ipv6 !== 0
+  const offersBackups = !!selectedPlan && selectedPlan.max_backups !== 0
+  const extras = selectedPlan ? addonPrices(selectedPlan) : []
 
   const hostnameValid = /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/.test(hostname)
   // Region is required: it is a physical location with real latency
   // consequences, so the platform must not choose one silently.
   const canSubmit =
-    !!planId && (!!templateId || !!sourceImageId) && hostnameValid && !!region && !createVM.isPending
+    !!planId && (!!templateId || !!sourceImageId) && hostnameValid && !!region && !createVM.isPending &&
+    recipeMissing.length === 0 && (!projectNeeded || !!projectId) && !(ownBlocked && !accountId)
 
   const handleSubmit = () => {
     setError("")
@@ -125,9 +163,20 @@ function OrderVMForm() {
         // lands on, since a private network lives on one host.
         vpc_id: vpcId || undefined,
         region,
+        account_id: accountId || undefined,
+        project_id: projectId || undefined,
+        ipv6: offersIPv6 && ipv6 ? true : undefined,
+        // A first-boot script runs through cloud-init, which only the Linux images carry.
+        ...(takesKeys && recipeId === "custom" && userData.trim() ? { user_data: userData } : {}),
+        ...(takesKeys && recipe ? { recipe_id: recipe.id, recipe_inputs: recipeValues } : {}),
       },
       {
         onSuccess: (data: CreateVMResult) => {
+          const plan = BACKUP_CHOICES.find((b) => b.value === backups)
+          if (offersBackups && plan && "cron" in plan) {
+            api.put(`/api/v1/vms/${data.id}/backup-schedule`, { schedule: plan.cron, retention_policy: { keep_last: plan.keep } })
+              .catch((e: Error) => toast.warning(`The server is being created, but automatic backups could not be set up: ${e.message}. Set them on its Backups tab.`))
+          }
           // The server always generates a root password, with or without SSH
           // keys. Show it ONCE: it is the way in when the key is not at hand.
           if (data.root_password) {
@@ -202,6 +251,8 @@ function OrderVMForm() {
     !planId && "a plan",
     !osDone && "an operating system",
     !hostnameValid && "a hostname",
+    projectNeeded && !projectId && "a project",
+    recipeMissing.length > 0 && `the recipe's ${recipeMissing.join(", ")}`,
   ].filter(Boolean) as string[]
 
   return (
@@ -222,6 +273,46 @@ function OrderVMForm() {
 
       <div className="lg:grid lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-start lg:gap-10">
         <div>
+          {(orderable.length > 0 || ownBlocked) && (
+            <Step title="Account" optional={!ownBlocked} hint="Which account the server belongs to. Its quota and billing apply, and everyone in its team can see it.">
+              {ownBlocked && !orderable.length ? (
+                <p className="text-sm text-muted-foreground">
+                  This account was made when you accepted a team invitation, so it cannot order servers of its own, and no team you work in lets you order.
+                </p>
+              ) : (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {!ownBlocked && (
+                    <button type="button" aria-pressed={accountId === ""} onClick={() => { setAccountChoice(""); setProjectId("") }} className={choiceClass(accountId === "", "flex items-start gap-3 p-4")}>
+                      <span className="text-sm font-semibold">Your own account</span>
+                      <SelectedMark show={accountId === ""} className="ml-auto" />
+                    </button>
+                  )}
+                  {orderable.map((m) => (
+                    <button key={m.account_id} type="button" aria-pressed={accountId === m.account_id} onClick={() => { setAccountChoice(m.account_id); setProjectId("") }}
+                      className={choiceClass(accountId === m.account_id, "flex items-start gap-3 p-4")}>
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-semibold">{m.account_name || m.account_email}</span>
+                        <span className="block text-xs text-muted-foreground">Team account</span>
+                      </span>
+                      <SelectedMark show={accountId === m.account_id} className="ml-auto" />
+                    </button>
+                  ))}
+                </div>
+              )}
+              {projects.length > 0 && (
+                <div className="mt-4 max-w-sm">
+                  <label htmlFor="order-project" className="text-sm font-medium">Project{projectNeeded ? "" : " (optional)"}</label>
+                  <select id="order-project" value={projectId} onChange={(e) => setProjectId(e.target.value)}
+                    className="mt-1 h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
+                    {!projectNeeded && <option value="">No project</option>}
+                    {projectNeeded && <option value="">Choose a project</option>}
+                    {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </div>
+              )}
+            </Step>
+          )}
+
           <Step n={1} title="Location" done={!!region} hint="Where your VM runs. Pick the one closest to your users. A VM cannot be moved to another location later.">
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
               {(regions ?? []).map((r) => {
@@ -383,6 +474,75 @@ function OrderVMForm() {
             </Step>
           )}
 
+          {takesKeys && (
+            <Step title="Apps and first-boot script" optional hint="Runs once, as root, when the server first boots. Leave it on None for a clean system.">
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                {[{ id: "", name: "None", description: "A clean install." },
+                  ...(recipes ?? []).filter((r) => r.is_public),
+                  ...(recipes ?? []).filter((r) => !r.is_public),
+                  { id: "custom", name: "Your own script", description: "Paste a shell script or cloud-config." }].map((r) => (
+                  <button key={r.id || "none"} type="button" aria-pressed={recipeId === r.id} onClick={() => { setRecipeId(r.id); setRecipeValues({}) }}
+                    className={choiceClass(recipeId === r.id, "flex items-start gap-3 p-4")}>
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-semibold">{r.name}</span>
+                      {r.description && <span className="mt-0.5 block text-xs text-muted-foreground">{r.description}</span>}
+                      {"is_public" in r && !r.is_public && <span className="mt-1 block text-xs text-muted-foreground">Your recipe</span>}
+                    </span>
+                    <SelectedMark show={recipeId === r.id} className="ml-auto" />
+                  </button>
+                ))}
+              </div>
+              {recipe && !!recipe.inputs?.length && (
+                <div className="mt-4 grid max-w-2xl gap-3 sm:grid-cols-2">
+                  {recipe.inputs.map((input) => (
+                    <div key={input.key}>
+                      <label htmlFor={`ri-${input.key}`} className="text-sm font-medium">{input.label}{input.required ? "" : " (optional)"}</label>
+                      <Input id={`ri-${input.key}`} type={input.secret ? "password" : "text"} value={recipeValues[input.key] ?? ""} placeholder={input.default}
+                        onChange={(e) => setRecipeValues((v) => ({ ...v, [input.key]: e.target.value }))} className="mt-1" autoComplete="off" />
+                      {input.description && <p className="mt-1 text-xs text-muted-foreground">{input.description}</p>}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {recipeId === "custom" && (
+                <div className="mt-4">
+                  <label htmlFor="order-userdata" className="sr-only">Your first-boot script</label>
+                  <textarea id="order-userdata" value={userData} onChange={(e) => setUserData(e.target.value)} rows={8} spellCheck={false}
+                    placeholder={"#!/bin/bash\napt-get update && apt-get install -y nginx"}
+                    className="w-full max-w-2xl rounded-md border border-input bg-background px-3 py-2 font-mono text-xs" />
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Save scripts you reuse under <Link href="/client/recipes" className="font-medium text-foreground underline underline-offset-4">Recipes</Link>.
+                  </p>
+                </div>
+              )}
+            </Step>
+          )}
+
+          {(offersIPv6 || offersBackups) && (
+            <Step title="Extras" optional hint="Both can also be added later from the server's page.">
+              <div className="space-y-4">
+                {offersIPv6 && (
+                  <label className="flex min-h-11 cursor-pointer items-start gap-3 rounded-lg border bg-card px-3 py-2">
+                    <input type="checkbox" checked={ipv6} onChange={(e) => setIPv6(e.target.checked)} className="mt-1 h-4 w-4 shrink-0 accent-[hsl(var(--primary))]" />
+                    <span>
+                      <span className="block text-sm font-medium">IPv6</span>
+                      <span className="block text-xs text-muted-foreground">A routed /64 alongside the IPv4 address. If the location has none, the order says so.</span>
+                    </span>
+                  </label>
+                )}
+                {offersBackups && (
+                  <div className="max-w-sm">
+                    <label htmlFor="order-backups" className="text-sm font-medium">Automatic backups</label>
+                    <select id="order-backups" value={backups} onChange={(e) => setBackups(e.target.value as typeof backups)}
+                      className="mt-1 h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
+                      {BACKUP_CHOICES.map((b) => <option key={b.value} value={b.value}>{b.label}</option>)}
+                    </select>
+                  </div>
+                )}
+              </div>
+            </Step>
+          )}
+
           <Step title="SSH keys" optional last hint={isRouter ? "Not used for a router: you sign in as admin with a password that is generated and shown once." : isWindows ? "Not used for Windows: you sign in as Administrator with a password that is generated and shown once." : "Keys ticked here are installed for root. A root password is also generated and shown once, so you can still get in without the key."}>
             {isRouter ? (
               <p className="text-sm text-muted-foreground">
@@ -440,9 +600,18 @@ function OrderVMForm() {
                 value={selectedPlan?.name}
                 detail={selectedPlan && `${selectedPlan.cpu} vCPU, ${formatRAM(selectedPlan.ram)}, ${selectedPlan.disk} GB disk`}
               />
+              {(orderable.length > 0 || ownBlocked) && (
+                <SummaryRow label="Account" value={team ? (team.account_name || team.account_email) : ownBlocked ? undefined : "Your own"}
+                  detail={projectId ? projects.find((p) => p.id === projectId)?.name : undefined} />
+              )}
               {selectedPlan && planPrice(selectedPlan) && (
                 <SummaryRow label="Price" value={planPrice(selectedPlan)!} detail="Billed by your billing account" />
               )}
+              {takesKeys && recipeId && (
+                <SummaryRow label="First boot" value={recipeId === "custom" ? "Your own script" : recipe?.name} />
+              )}
+              {offersIPv6 && ipv6 && <SummaryRow label="IPv6" value="Routed /64" />}
+              {offersBackups && backups && <SummaryRow label="Backups" value={BACKUP_CHOICES.find((b) => b.value === backups)?.label} />}
               <SummaryRow
                 label={sourceImageId ? "Image" : "System"}
                 value={sourceImageId ? (sourceImage?.name ?? "Saved image") : selectedTemplate && templateLabel(selectedTemplate.name, selectedTemplate.version)}
@@ -454,6 +623,26 @@ function OrderVMForm() {
                 value={isRouter ? "Admin password" : isWindows ? "Administrator password" : selectedKeyIds.length ? `${selectedKeyIds.length} SSH ${selectedKeyIds.length === 1 ? "key" : "keys"} and a password` : "Root password"}
               />
             </dl>
+            {(extras.length > 0 || portal?.billing_url) && (
+              <div className="space-y-2 border-t px-5 py-4 text-xs text-muted-foreground">
+                {extras.length > 0 && (
+                  <>
+                    <p className="font-medium text-foreground">Extras on this plan</p>
+                    <ul className="space-y-1">
+                      {extras.map((x) => (
+                        <li key={x.key} className="flex justify-between gap-3"><span>{x.label}</span><span className="tabular-nums">{x.price}</span></li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                {portal?.billing_url && (
+                  <p>
+                    Invoices and payment are handled in your{" "}
+                    <a href={portal.billing_url} target="_blank" rel="noopener noreferrer" className="font-medium text-foreground underline underline-offset-4">billing account</a>.
+                  </p>
+                )}
+              </div>
+            )}
             <div className="border-t p-5">
               {error && (
                 <p role="alert" className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm font-medium text-destructive">

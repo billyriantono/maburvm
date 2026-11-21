@@ -182,6 +182,17 @@ func lastDiskAttempt(attempt, maxAttempts int) bool {
 	return attempt >= DiskJobMaxAttempts || attempt >= maxAttempts
 }
 
+// BackupDoneHook tells the panel a backup is over: failure is "" when it
+// completed, else why it failed for good. The panel sends it to the outbound
+// webhooks; nil in tests.
+var BackupDoneHook func(ctx context.Context, backupID string, failure string)
+
+func backupDone(ctx context.Context, backupID, failure string) {
+	if hook := BackupDoneHook; hook != nil && backupID != "" {
+		hook(context.WithoutCancel(ctx), backupID, failure)
+	}
+}
+
 // recordBackupOutcome writes a backup's failure on its row: failed, when it is
 // over, or pending with the reason while another try is still coming. A row
 // left failed between tries would let a second backup of the same VM start.
@@ -202,4 +213,7 @@ func recordBackupOutcome(ctx context.Context, backupID string, final bool, reaso
 		Model(&models.Backup{}).
 		Where("id = ?", backupID).
 		Updates(map[string]interface{}{"status": state, "error_message": reason}).Error
+	if final {
+		backupDone(ctx, backupID, reason)
+	}
 }

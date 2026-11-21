@@ -18,10 +18,18 @@ export interface User {
   /** A staff account's role id (owner, administrator, support, billing, readonly or a custom role's id). */
   staff_role?: string;
   staff_role_name?: string;
+  /** The account unsubscribed from news and offers by email. */
+  marketing_opt_out?: boolean;
   /** From /auth/me: what this account may do. The panel checks every request regardless. */
   permissions?: string[];
   /** From /auth/me: the staff member viewing the panel as this customer. */
   impersonator?: { id: string; email: string };
+  /** Profile details the account holder edits. */
+  phone?: string;
+  company?: string;
+  /** IANA name such as Asia/Jakarta; empty follows the browser. */
+  timezone?: string;
+  locale?: string;
   created_at: string;
   updated_at: string;
 }

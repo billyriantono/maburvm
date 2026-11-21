@@ -115,6 +115,12 @@ func MigrationInfo(uuidStr string, payload bool) (*MigrationVM, error) {
 					md.VirtualSize, md.BackingFile = info.VirtualSize, info.BackingFile
 				}
 			}
+			if d.SourceType == "block" && d.Device == "disk" && d.Path != "" {
+				// A device is raw: its size is the disk, and all of it is copied.
+				if n, err := storage.DeviceSize(d.Path); err == nil {
+					md.VirtualSize, md.FileSize = n, n
+				}
+			}
 			out.Drives = append(out.Drives, md)
 			if d.Seed && payload {
 				if md.FileSize > maxSeedImage {
@@ -212,10 +218,11 @@ func TestRemote(uri string) error {
 }
 
 // LiveMigrate moves a running domain to another node, copying the disks in
-// paths whose copy flag is set. The source definition is kept (switched to not
+// paths whose copy flag is set (to a file, or a logical volume made ready
+// there). The source definition is kept (switched to not
 // start on boot) until the panel has seen the VM run on the destination. ctx
 // ending aborts the move, and the VM carries on here.
-func LiveMigrate(ctx context.Context, uuidStr, destURI, dataURI string, disks []migration.Drive, paths map[string]string, bandwidthMiB uint64, progress func(total, done int64)) error {
+func LiveMigrate(ctx context.Context, uuidStr, destURI, dataURI string, disks []migration.Drive, paths map[string]migration.Dest, bandwidthMiB uint64, progress func(total, done int64)) error {
 	if _, err := uuid.Parse(uuidStr); err != nil {
 		return fmt.Errorf("invalid UUID format: %w", err)
 	}
@@ -241,10 +248,10 @@ func LiveMigrate(ctx context.Context, uuidStr, destURI, dataURI string, disks []
 		if err != nil {
 			return fmt.Errorf("failed to get domain XML: %w", err)
 		}
-		if live, err = migration.RewriteForTarget(live, paths); err != nil {
+		if live, err = migration.RewriteDisks(live, paths); err != nil {
 			return err
 		}
-		if persist, err = migration.RewriteForTarget(persist, paths); err != nil {
+		if persist, err = migration.RewriteDisks(persist, paths); err != nil {
 			return err
 		}
 		var copyTargets []string
@@ -441,7 +448,8 @@ func UndefineStopped(uuidStr string) error {
 	})
 }
 
-// StoppedDrivePath returns the file behind a drive of a VM that is shut off.
+// StoppedDrivePath returns the file or device behind a drive of a VM that is
+// shut off.
 // It opens its own connection: the caller is the migration shell, a separate
 // process without the agent's pool.
 func StoppedDrivePath(uuidStr, target string) (string, error) {
@@ -478,8 +486,8 @@ func StoppedDrivePath(uuidStr, target string) (string, error) {
 			target = d.Target
 		}
 		if d.Target == target {
-			if !d.Copied() || d.SourceType != "file" {
-				return "", fmt.Errorf("drive %s is not a file disk", target)
+			if !d.Copied() || (d.SourceType != "file" && d.SourceType != "block") {
+				return "", fmt.Errorf("drive %s is not a file or block disk", target)
 			}
 			return d.Path, nil
 		}

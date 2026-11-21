@@ -24,12 +24,16 @@ const defaultThrottleMbps = 10
 // MetricsService serves persisted node metric history to the API.
 type MetricsService struct {
 	repo *repository.MetricsRepository
+	db   *gorm.DB
 }
 
 // NewMetricsService creates a new MetricsService.
 func NewMetricsService(db *gorm.DB) *MetricsService {
-	return &MetricsService{repo: repository.NewMetricsRepository(db)}
+	return &MetricsService{repo: repository.NewMetricsRepository(db), db: db}
 }
+
+// DB is the service's database, for the settings the handler reads.
+func (s *MetricsService) DB() *gorm.DB { return s.db }
 
 // NodeHistory returns a node's readings within the trailing window, oldest
 // first, averaged down to at most limit points.
@@ -102,8 +106,16 @@ func downsampleNode(rows []models.NodeMetricSample, since time.Time, window time
 
 // VMHistory returns a VM's samples within the trailing window, oldest first,
 // averaged down to at most limit points so a week reads as fast as an hour.
+// Beyond the week of raw samples it reads the hourly averages.
 func (s *MetricsService) VMHistory(ctx context.Context, vmID string, window time.Duration, limit int) ([]models.VMMetricSample, error) {
 	since := time.Now().Add(-window)
+	if window > RawMetricsWindow {
+		rows, err := s.repo.ListVMHours(ctx, vmID, since)
+		if err != nil {
+			return nil, err
+		}
+		return downsampleVM(rows, since, window, limit), nil
+	}
 	rows, err := s.repo.ListVMSamples(ctx, vmID, since, 0)
 	if err != nil {
 		return nil, err
@@ -185,7 +197,8 @@ type MetricsCollector struct {
 	abuse          *AbuseService
 	reputation     *ReputationService
 	logger         *slog.Logger
-	tick           int // collectOnce counter, for slower-cadence work (IP reconcile)
+	tick           int       // collectOnce counter, for slower-cadence work (IP reconcile)
+	rolledHour     time.Time // the last hour averaged into vm_metrics_hourly
 	alerts         *AlertService
 
 	onlineMu sync.Mutex
@@ -672,6 +685,8 @@ func (c *MetricsCollector) collectOnce(ctx context.Context) {
 		}
 		cancel()
 	}
+
+	c.rollupHours(ctx)
 
 	if c.retention > 0 {
 		cutoff := time.Now().Add(-c.retention)

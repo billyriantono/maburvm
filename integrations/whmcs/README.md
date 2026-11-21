@@ -32,6 +32,11 @@ webhook** (`POST /webhooks/billing`):
 | Usage update (cron) | `vm.usage` (and `vm.status` for a service with no address yet) |
 | Start / Stop / Reboot buttons | `vm.start` / `vm.stop` / `vm.restart` |
 | Test Connection, product settings lists | `catalog.list` |
+| Client area: state, address, graphs | `vm.status`, `vm.metrics` |
+| Client area: Start / Shut down / Restart | `vm.start` / `vm.stop` / `vm.restart` |
+| Client area: Open console | `user.sso` with `page: console` |
+| Client area: Reinstall | `catalog.list` (the systems of the product's plan), then `vm.rebuild` |
+| Client area: Set a new root password | `vm.reset_password` |
 
 A created VM gets a public address from the node's pools and a root password:
 the service's own password, or one the module generates and saves on the
@@ -43,8 +48,14 @@ unsuspended. An upgrade shuts a running VM down, applies the new CPU and memory,
 and boots it again; the disk only ever grows. With a plan on the product an
 upgrade also applies the plan's speed cap and transfer quota, and a change of
 those alone does not restart the VM. Change Password needs a running VM with
-the guest agent. The usage update fills bandwidth used and allowed and the disk
-allowance; disk used is not reported.
+the guest agent. The usage update fills bandwidth used and allowed, the disk
+allowance and the disk the VM holds (its disk with its data disks; disks are
+thin, so what the guest wrote is not measured), and writes the rest of the
+panel's usage report into service fields WHMCS creates on first use:
+*Snapshots*, *Backups*, *Backup size (MB)*, *Extra IPs*, *Floating IPs* and
+*Uptime hours* (hours the VM was seen running this transfer period, at most the
+last seven days). A panel from before this report sends bandwidth only, and
+the module then leaves disk usage alone.
 
 Requests are authenticated with a shared **API key** (`X-API-Key`) and an
 **HMAC-SHA256 signature** (`X-Webhook-Signature: sha256=<hex>`) over the raw JSON
@@ -243,10 +254,26 @@ switched under System settings, Quotas.
 ### Client area
 
 The service detail page (`templates/clientarea.tpl`) shows the VM's state,
-address and login user, read live from the panel. **Open control panel** signs
-the customer in to the MaburVM **client portal** with one click and opens the
-service's VM there, for day-to-day operation (start/stop/reboot/console).
-Real-time VM control lives in the portal rather than being duplicated in WHMCS.
+power state, address and login user, read live from the panel with a short
+wait, so the page still loads when the panel cannot be reached. For a ready VM
+on an active service it also offers:
+
+- **Start**, **Shut down** and **Restart** (also as WHMCS's own client-area
+  buttons);
+- **Open console**: a one-time sign-in link that lands on the VM's console in
+  the panel (the panel still asks for its own two-factor code);
+- **Set a new root password** on a running VM, saved on the service where the
+  customer reads it;
+- **Reinstall** a stopped VM with a system the product's plan offers, after a
+  confirmation tick; the addresses stay and the new root password is saved on
+  the service;
+- the last 24 hours of CPU, memory and network as small graphs.
+
+**Open control panel** signs the customer in to the MaburVM client portal for
+everything else. Every action is the module calling the panel with the billing
+credentials for this service's VM, its panel account and its service
+reference; the panel refuses a VM that belongs to another account or another
+service, and a suspended or cancelled service gets no controls.
 
 ### Single sign-on
 
@@ -416,7 +443,15 @@ Lifecycle
 - [ ] A service created by the previous version of the module (with
       `Panel User ID` filled in) can still be suspended, unsuspended and
       terminated.
-- [ ] The daily cron fills bandwidth usage on the service.
+- [ ] The daily cron fills bandwidth and disk usage on the service, and the
+      Snapshots, Backups, Backup size (MB), Extra IPs, Floating IPs and Uptime
+      hours fields appear with the panel's figures.
+- [ ] In the client area, Start, Shut down and Restart act on the VM; Open
+      console opens its console in a new tab; Set a new root password changes
+      it and the new one shows on the service; Reinstall on a stopped VM
+      offers only the plan's systems, needs the tick, and saves the new
+      password; the graphs show the last day.
+- [ ] A suspended service's client area shows no controls.
 - [ ] The client area shows the VM's state and address. Open control panel
       lands on the VM in the portal without a password prompt (or with the
       two-factor prompt, for an account that has it); opening the same link a

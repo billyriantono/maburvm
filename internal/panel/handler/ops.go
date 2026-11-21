@@ -266,6 +266,31 @@ type QueueJob struct {
 	LastError string `json:"last_error"`
 }
 
+// JobDetail is one job with its arguments (credentials redacted) and the
+// error of every failed attempt.
+type JobDetail struct {
+	QueueJob
+	Priority    int        `json:"priority"`
+	ScheduledAt *time.Time `json:"scheduled_at,omitempty"`
+	AttemptedAt *time.Time `json:"attempted_at,omitempty"`
+	Args        any        `json:"args"`
+	Errors      []JobError `json:"errors"`
+}
+
+// JobError is one failed attempt of a job.
+type JobError struct {
+	At      time.Time `json:"at"`
+	Attempt int       `json:"attempt"`
+	Error   string    `json:"error"`
+}
+
+// jobErrors reads the queue's per-attempt errors, leaving out the stack traces.
+func jobErrors(raw []byte) []JobError {
+	out := []JobError{}
+	_ = json.Unmarshal(raw, &out)
+	return out
+}
+
 // queueWorkerLimits is what an operator may set per queue. Applied when the
 // panel starts; see queue.ApplyWorkerOverrides.
 var queueWorkerLimits = []string{queue.QueueCritical, queue.QueueDefault, queue.QueueBatch, queue.QueueAudit}
@@ -457,33 +482,87 @@ func RegisterOpsRoutes(e *echo.Echo, db *gorm.DB, riverClient *river.Client[pgx.
 		counts := []count{}
 		_ = db.WithContext(ctx).Raw("SELECT state::text AS state, COUNT(*) AS n FROM river_job GROUP BY state").Scan(&counts).Error
 
-		state := c.QueryParam("state")
-		q := db.WithContext(ctx).Table("river_job").Select(
-			`id, kind, queue, state::text AS state, attempt, max_attempts, created_at, finalized_at,
-			 TRIM(COALESCE(args->>'operation', args->>'type', '') || ' ' || COALESCE(args->>'vm_id', '')) AS subject,
-			 COALESCE(errors[array_upper(errors, 1)]->>'error', '') AS last_error`).
-			Order("id DESC").Limit(100)
-		switch state {
+		q := db.WithContext(ctx).Session(&gorm.Session{}).Table("river_job")
+		switch state := c.QueryParam("state"); state {
 		case "":
 		case "waiting":
 			q = q.Where("state IN ('available','scheduled','pending','retryable')")
-		case "running", "completed", "cancelled", "discarded":
+		case "running", "completed", "cancelled", "discarded", "retryable", "scheduled":
 			q = q.Where("state = ?", state)
 		default:
 			return bad(c, "Unknown state")
 		}
-		jobs := []QueueJob{}
-		if err := q.Scan(&jobs).Error; err != nil {
+		if kind := c.QueryParam("kind"); kind != "" {
+			q = q.Where("kind = ?", kind)
+		}
+		if v := c.QueryParam("vm_id"); v != "" {
+			q = q.Where("args->>'vm_id' = ?", v)
+		}
+		if n := c.QueryParam("node_id"); n != "" {
+			q = q.Where("args->>'node_id' = ?", n)
+		}
+		// Search the job number, what it is about and its last error, not the
+		// arguments as a whole: those can hold credentials.
+		if s := strings.TrimSpace(c.QueryParam("q")); s != "" {
+			like := "%" + s + "%"
+			q = q.Where(`CAST(id AS TEXT) = ? OR kind ILIKE ? OR args->>'vm_id' = ? OR args->>'node_id' = ?
+				OR args->>'operation' ILIKE ? OR args->>'type' ILIKE ? OR COALESCE(errors[array_upper(errors, 1)]->>'error', '') ILIKE ?`,
+				s, like, s, s, like, like, like)
+		}
+		page, size := pageParams(c)
+		var total int64
+		if err := q.Count(&total).Error; err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "The queue could not be read"})
 		}
+		jobs := []QueueJob{}
+		if err := q.Select(
+			`id, kind, queue, state::text AS state, attempt, max_attempts, created_at, finalized_at,
+			 TRIM(COALESCE(args->>'operation', args->>'type', '') || ' ' || COALESCE(args->>'vm_id', '')) AS subject,
+			 COALESCE(errors[array_upper(errors, 1)]->>'error', '') AS last_error`).
+			Order("id DESC").Limit(size).Offset((page - 1) * size).Scan(&jobs).Error; err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "The queue could not be read"})
+		}
+		kinds := []string{}
+		_ = db.WithContext(ctx).Raw("SELECT DISTINCT kind FROM river_job ORDER BY kind").Scan(&kinds).Error
+		var held int64
+		_ = db.WithContext(ctx).Raw("SELECT COUNT(*) FROM river_queue WHERE paused_at IS NOT NULL").Scan(&held).Error
 
 		workers := map[string]int{
 			queue.QueueCritical: running.CriticalWorkers, queue.QueueDefault: running.DefaultWorkers,
 			queue.QueueBatch: running.BatchWorkers, queue.QueueAudit: running.AuditWorkers,
 		}
-		return ok(c, map[string]interface{}{
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "meta": PageMeta(page, size, total), "data": map[string]interface{}{
 			"counts": counts, "jobs": jobs, "workers": workers, "saved_workers": queue.LoadWorkerOverrides(db.WithContext(ctx)),
-		})
+			"total": total, "page": page, "page_size": size, "kinds": kinds, "held": held > 0,
+		}})
+	}, middleware.RequirePermission("ops:read"))
+	g.GET("/queue/jobs/:id", func(c echo.Context) error {
+		id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+		if err != nil {
+			return bad(c, "Invalid job number")
+		}
+		var row struct {
+			QueueJob
+			Priority    int
+			ScheduledAt *time.Time
+			AttemptedAt *time.Time
+			Args        []byte
+			Errors      []byte
+		}
+		res := db.WithContext(c.Request().Context()).Raw(`SELECT id, kind, queue, state::text AS state, attempt, max_attempts, priority,
+			created_at, scheduled_at, attempted_at, finalized_at,
+			TRIM(COALESCE(args->>'operation', args->>'type', '') || ' ' || COALESCE(args->>'vm_id', '')) AS subject,
+			COALESCE(errors[array_upper(errors, 1)]->>'error', '') AS last_error,
+			args, COALESCE(array_to_json(errors), '[]'::json) AS errors
+			FROM river_job WHERE id = ?`, id).Scan(&row)
+		if res.Error != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "The job could not be read"})
+		}
+		if res.RowsAffected == 0 {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "No such job; finished jobs are kept for a while, then removed"})
+		}
+		return ok(c, JobDetail{QueueJob: row.QueueJob, Priority: row.Priority, ScheduledAt: row.ScheduledAt, AttemptedAt: row.AttemptedAt,
+			Args: middleware.RedactJSON(row.Args), Errors: jobErrors(row.Errors)})
 	}, middleware.RequirePermission("ops:read"))
 	g.PUT("/queue/workers", func(c echo.Context) error {
 		var req map[string]int

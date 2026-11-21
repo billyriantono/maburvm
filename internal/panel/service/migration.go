@@ -130,6 +130,35 @@ type planDisk struct {
 	Format   string
 	Virtual  int64
 	FileSize int64
+	// Block is a disk on a block device (a logical volume): raw, copied whole.
+	Block bool
+}
+
+// destFormat is the format a disk has on the destination pool: raw on a
+// logical volume; in a directory, a block device becomes a qcow2 file when
+// copied live (an image made ready for it) and a raw file offline (its bytes
+// as they are); a file keeps its format.
+func (d planDisk) destFormat(pool *models.StoragePool, mode string) string {
+	switch {
+	case pool != nil && models.IsLVMPoolType(pool.Type):
+		return "raw"
+	case d.Block && mode == models.MigrationLive:
+		return "qcow2"
+	case d.Block:
+		return "raw"
+	}
+	return d.Format
+}
+
+// destFileName is the disk's file name in a directory pool.
+func (d planDisk) destFileName(pool *models.StoragePool, mode string) string {
+	if !d.Block {
+		return d.FileName
+	}
+	if d.destFormat(pool, mode) == "qcow2" {
+		return d.FileName + ".qcow2"
+	}
+	return d.FileName + ".img"
 }
 
 type migrationPlan struct {
@@ -259,6 +288,8 @@ type srcFacts struct {
 	disks   []planDisk
 	seed    *planDisk
 	blocked []string
+	// blockDisks is set when a disk is a logical volume.
+	blockDisks bool
 	// ownMigration is the move doing this check, whose own prepared files
 	// on the destination are not in the way.
 	ownMigration string
@@ -344,6 +375,9 @@ func (m *MigrationService) sourceFacts(ctx context.Context, req MigrationRequest
 	} else if active != nil && active.ID != ownMigrationID {
 		block("the VM is already being moved")
 	}
+	if diskMoveActive(ctx, m.db, vm.ID) {
+		block("a disk of the VM is moving to another pool")
+	}
 	if src.Status == models.NodeStatusOffline {
 		block("the VM's node %s is offline", src.Name)
 	}
@@ -424,8 +458,12 @@ func (m *MigrationService) sourceFacts(ctx context.Context, req MigrationRequest
 			}
 			continue
 		}
-		if d.SourceType != "file" {
-			block("disk %s is a %s volume; only disks kept as files can move", d.Target, d.SourceType)
+		if d.SourceType != "file" && d.SourceType != "block" {
+			block("disk %s is a %s volume; only disks kept as files or logical volumes can move", d.Target, d.SourceType)
+			continue
+		}
+		if d.SourceType == "block" && d.Format != "raw" {
+			block("disk %s is a %s block device; only raw ones can move", d.Target, d.Format)
 			continue
 		}
 		if d.Format != "qcow2" && d.Format != "raw" {
@@ -444,7 +482,11 @@ func (m *MigrationService) sourceFacts(ctx context.Context, req MigrationRequest
 			block("two of the VM's disks are both named %s", name)
 		}
 		names[name] = true
-		f.disks = append(f.disks, planDisk{Target: d.Target, Path: d.Path, FileName: name, Format: d.Format, Virtual: d.VirtualSizeBytes, FileSize: d.FileSizeBytes})
+		f.disks = append(f.disks, planDisk{Target: d.Target, Path: d.Path, FileName: name, Format: d.Format, Virtual: d.VirtualSizeBytes,
+			FileSize: d.FileSizeBytes, Block: d.SourceType == "block"})
+		if d.SourceType == "block" {
+			f.blockDisks = true
+		}
 	}
 	if f.seed != nil && names[f.seed.FileName] {
 		block("the VM's setup image has the same name as one of its disks")
@@ -490,15 +532,40 @@ func hostAddrs(in []string) []string {
 	return out
 }
 
-// movePool is where a VM lands on nodeID when no pool is chosen: its best
-// online directory pool, since VMs move only into directory pools.
-func movePool(ctx context.Context, db *gorm.DB, nodeID string) *models.StoragePool {
+// movePool is where a VM lands on nodeID when no pool is chosen: the best
+// online pool of the tier its disk is in now, of the same kind (a directory,
+// or LVM) when there is one, else any directory pool, since a directory takes
+// any disk.
+func movePool(ctx context.Context, db *gorm.DB, nodeID string, like *models.StoragePool) *models.StoragePool {
 	var pools []models.StoragePool
-	if err := db.WithContext(ctx).Where("node_id = ? AND status = ? AND COALESCE(type, '') IN ?", nodeID, "online", []string{"", "dir", "file"}).
-		Find(&pools).Error; err != nil {
+	if err := db.WithContext(ctx).Where("node_id = ? AND status = ? AND COALESCE(type, '') IN ?", nodeID, "online",
+		[]string{"", "dir", "file", models.PoolTypeLVM, models.PoolTypeLVMThin}).Find(&pools).Error; err != nil {
 		return nil
 	}
-	return pickPool(pools)
+	isLVM := func(p models.StoragePool) bool { return models.IsLVMPoolType(p.Type) }
+	tier, wantLVM := "", false
+	if like != nil {
+		tier, wantLVM = like.Tier, isLVM(*like)
+	}
+	pick := func(keep func(models.StoragePool) bool) *models.StoragePool {
+		var out []models.StoragePool
+		for _, p := range pools {
+			if keep(p) {
+				out = append(out, p)
+			}
+		}
+		return pickPool(out)
+	}
+	for _, keep := range []func(models.StoragePool) bool{
+		func(p models.StoragePool) bool { return p.Tier == tier && isLVM(p) == wantLVM },
+		func(p models.StoragePool) bool { return p.Tier == tier && !isLVM(p) },
+		func(p models.StoragePool) bool { return !isLVM(p) },
+	} {
+		if p := pick(keep); p != nil {
+			return p
+		}
+	}
+	return nil
 }
 
 // forwardsBlockedOn are the VM's port forwards nodeID cannot publish: the
@@ -558,6 +625,12 @@ func (m *MigrationService) candidates(ctx context.Context, f *srcFacts, env *che
 			others = append(others, n)
 		}
 	}
+	// A VM on a plan tied to a hypervisor group only moves within it.
+	if f.vm.PlanID != nil {
+		if others, err = inNodeGroup(others, planNodeGroup(ctx, m.db, *f.vm.PlanID)); err != nil {
+			return nil, nil
+		}
+	}
 	if len(others) == 0 {
 		return nil, nil
 	}
@@ -567,7 +640,7 @@ func (m *MigrationService) candidates(ctx context.Context, f *srcFacts, env *che
 	}
 	var fit []nodeLoad
 	for _, l := range loads {
-		pool := movePool(ctx, m.db, l.Node.ID)
+		pool := movePool(ctx, m.db, l.Node.ID, VMPool(ctx, m.db, f.vm.ID, f.src.ID))
 		if pool == nil {
 			continue
 		}
@@ -650,16 +723,24 @@ func (m *MigrationService) destinationChecks(ctx context.Context, f *srcFacts, d
 		} else {
 			pool = &p
 		}
-	} else if pool = movePool(ctx, m.db, dst.ID); pool == nil {
-		chk.block("the panel knows no online directory storage pool on node %s, and VMs move only into directory pools", dst.Name)
+	} else if pool = movePool(ctx, m.db, dst.ID, VMPool(ctx, m.db, f.vm.ID, f.src.ID)); pool == nil {
+		chk.block("the panel knows no online storage pool on node %s to put the VM's disks in", dst.Name)
 	}
 	if pool != nil {
 		chk.DestPoolID, chk.DestPoolName, chk.DestPoolPath = pool.ID, pool.Name, pool.Path
-		if pool.Type != "" && pool.Type != "dir" && pool.Type != "file" {
-			chk.block("storage pool %s is %s storage; VMs move only into directory pools", pool.Name, pool.Type)
+		if pool.Type != "" && pool.Type != "dir" && pool.Type != "file" && !models.IsLVMPoolType(pool.Type) {
+			chk.block("storage pool %s is %s storage, which holds no VM disks", pool.Name, pool.Type)
 		}
 		if pool.Status != "online" {
 			chk.block("storage pool %s is %s", pool.Name, pool.Status)
+		}
+		// Logical volumes on either side need both agents to know them.
+		if models.IsLVMPoolType(pool.Type) || f.blockDisks {
+			for _, n := range []*models.Node{f.src, dst} {
+				if !m.nodeHasFeature(ctx, n, "lvm_migration") {
+					chk.block("node %s needs an agent update before VMs on logical volumes, or onto them, can move", n.Name)
+				}
+			}
 		}
 		for _, b := range m.capacityBlockers(ctx, f.vm, dst, pool, f.diskGB, env) {
 			chk.block("%s", b)
@@ -769,17 +850,41 @@ func (m *MigrationService) targetRequest(f *srcFacts, pool *models.StoragePool, 
 		VmId: f.vm.ID, MigrationId: migrationID, PoolPath: pool.Path, DryRun: dryRun,
 		CreateDisks: f.mode == models.MigrationLive,
 	}
+	onLVM := models.IsLVMPoolType(pool.Type)
+	if onLVM {
+		req.PoolType = pool.Type
+	}
 	if f.info != nil {
 		req.Bridges = f.info.Bridges
 	}
 	for _, d := range f.disks {
-		req.Disks = append(req.Disks, &pb.MigrationTargetDisk{Target: d.Target, FileName: d.FileName, VirtualSizeBytes: d.Virtual, Format: d.Format})
-		req.FreeBytesNeeded += d.FileSize
+		req.Disks = append(req.Disks, &pb.MigrationTargetDisk{Target: d.Target, FileName: d.destFileName(pool, f.mode),
+			VirtualSizeBytes: d.Virtual, Format: d.destFormat(pool, f.mode)})
+		switch {
+		case !onLVM:
+			req.FreeBytesNeeded += d.FileSize
+		case f.mode == models.MigrationOffline && d.Format != "raw":
+			// A qcow2 image is fetched beside its volume, then written onto it.
+			req.ScratchBytesNeeded += d.FileSize
+		}
 	}
 	if f.seed != nil {
 		req.SeedFileName = f.seed.FileName
 	}
 	return req
+}
+
+// nodeHasFeature asks a node's agent whether it can do something an older
+// one cannot. A node that cannot be asked is taken not to.
+func (m *MigrationService) nodeHasFeature(ctx context.Context, node *models.Node, feature string) bool {
+	client, actx, err := m.agent(ctx, node)
+	if err != nil {
+		return false
+	}
+	cctx, cancel := context.WithTimeout(actx, 15*time.Second)
+	defer cancel()
+	features, err := nodeFeatures(cctx, client)
+	return err == nil && hasFeature(features, feature)
 }
 
 // sameCPU reports two hosts with the same CPU, as far as a guest given the

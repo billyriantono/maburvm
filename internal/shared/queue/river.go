@@ -188,6 +188,7 @@ func (c *Client) initRiver() error {
 	river.AddWorker(workers, &emailDeliveryWorker{})
 	river.AddWorker(workers, &migrationWorker{})
 	river.AddWorker(workers, &drainWorker{})
+	river.AddWorker(workers, &diskMoveWorker{})
 
 	riverClient, err := river.NewClient(riverpgxv5.New(c.pool), &river.Config{
 		Queues: map[string]river.QueueConfig{

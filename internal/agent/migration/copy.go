@@ -14,10 +14,21 @@ import (
 	"strings"
 )
 
-// CopySparse copies src into dst, a new empty file, seeking over blocks that
-// are all zero so a thin image stays thin on the destination. It returns the
-// bytes copied; progress, when set, is told the running total.
+// CopySparse copies src into dst, a new empty file or a device that reads as
+// zeroes, seeking over blocks that are all zero so a thin image stays thin on
+// the destination. It returns the bytes copied; progress, when set, is told
+// the running total.
 func CopySparse(dst *os.File, src io.Reader, block int, progress func(int64)) (int64, error) {
+	return copyBlocks(dst, src, block, true, progress)
+}
+
+// CopyAll is CopySparse writing every block, zeroes too: the destination is a
+// device whose old content must not show through (a thick logical volume).
+func CopyAll(dst *os.File, src io.Reader, block int, progress func(int64)) (int64, error) {
+	return copyBlocks(dst, src, block, false, progress)
+}
+
+func copyBlocks(dst *os.File, src io.Reader, block int, sparse bool, progress func(int64)) (int64, error) {
 	if block <= 0 {
 		block = 1 << 20
 	}
@@ -26,7 +37,7 @@ func CopySparse(dst *os.File, src io.Reader, block int, progress func(int64)) (i
 	for {
 		n, err := io.ReadFull(src, buf)
 		if n > 0 {
-			if allZero(buf[:n]) {
+			if sparse && allZero(buf[:n]) {
 				if _, serr := dst.Seek(int64(n), io.SeekCurrent); serr != nil {
 					return total, serr
 				}
@@ -45,7 +56,11 @@ func CopySparse(dst *os.File, src io.Reader, block int, progress func(int64)) (i
 			return total, err
 		}
 	}
-	// A file ending in a hole needs its length set; the seeks did not.
+	// A file ending in a hole needs its length set; the seeks did not. A
+	// device has its own length.
+	if fi, err := dst.Stat(); err == nil && fi.Mode()&os.ModeDevice != 0 {
+		return total, nil
+	}
 	return total, dst.Truncate(total)
 }
 
@@ -98,6 +113,9 @@ type Prepared struct {
 	VMID        string   `json:"vm_id"`
 	MigrationID string   `json:"migration_id"`
 	Files       []string `json:"files"`
+	// PoolType and PoolPath name an LVM pool the files (logical volumes) are in.
+	PoolType string `json:"pool_type,omitempty"`
+	PoolPath string `json:"pool_path,omitempty"`
 }
 
 func preparedPath(l Layout, vmID string) string {
@@ -141,7 +159,8 @@ func ClearPrepared(l Layout, vmID string) {
 
 // Removable returns the recorded files that are safe to delete for a failed
 // migration: recorded for this very migration, plain files (not links or
-// devices), and used by no domain on the node.
+// devices), and used by no domain on the node. Recorded logical volumes are
+// left to Devices.
 func Removable(p Prepared, migrationID string, inUse map[string]bool) ([]string, error) {
 	if p.MigrationID != migrationID {
 		return nil, fmt.Errorf("the files here were prepared by another migration (%s)", p.MigrationID)
@@ -151,6 +170,9 @@ func Removable(p Prepared, migrationID string, inUse map[string]bool) ([]string,
 		f = filepath.Clean(f)
 		if inUse[f] {
 			return nil, fmt.Errorf("%s is in use by a VM on this node", f)
+		}
+		if strings.HasPrefix(f, "/dev/") {
+			continue
 		}
 		fi, err := os.Lstat(f)
 		if errors.Is(err, fs.ErrNotExist) {
@@ -165,4 +187,16 @@ func Removable(p Prepared, migrationID string, inUse map[string]bool) ([]string,
 		out = append(out, f)
 	}
 	return out, nil
+}
+
+// Devices are the logical volumes a migration recorded. Whoever removes one
+// checks it is the VM's own first.
+func Devices(p Prepared) []string {
+	var out []string
+	for _, f := range p.Files {
+		if f = filepath.Clean(f); strings.HasPrefix(f, "/dev/") {
+			out = append(out, f)
+		}
+	}
+	return out
 }

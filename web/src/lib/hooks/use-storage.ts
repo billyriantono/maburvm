@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api-client'
 import type { CreateStoragePoolRequest, CreateStorageVolumeRequest, StoragePool, StorageVolume } from '@/types'
+import type { OrphanDisk } from '@/types/storage'
 
 export function useStoragePools() {
   return useQuery<StoragePool[]>({
@@ -101,6 +102,61 @@ export function useDeleteStorageVolume(poolId: string) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['storage', 'volumes', poolId] })
+    },
+  })
+}
+
+// useSetPoolTier labels a pool with a storage tier ("" clears it).
+export function useSetPoolTier() {
+  const queryClient = useQueryClient()
+  return useMutation<StoragePool, Error, { id: string; tier: string }>({
+    mutationFn: async ({ id, tier }) => {
+      const response = await api.put<StoragePool>(`/api/v1/storage/pools/${id}/tier`, { tier })
+      return response.data.data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['storage'] })
+    },
+  })
+}
+
+// useStorageTiers lists the tiers pools are labelled with, for pickers.
+export function useStorageTiers(enabled = true) {
+  return useQuery<string[]>({
+    queryKey: ['storage', 'tiers'],
+    queryFn: async () => {
+      const response = await api.get<string[]>('/api/v1/storage/tiers')
+      return response.data.data ?? []
+    },
+    enabled,
+  })
+}
+
+// useOrphanDisks asks a node for the disks in its pools nothing uses. Asked on
+// purpose only: the node reads every pool to answer.
+export function useOrphanDisks(nodeId: string, enabled: boolean) {
+  return useQuery<OrphanDisk[]>({
+    queryKey: ['storage', 'orphans', nodeId],
+    queryFn: async () => {
+      const response = await api.get<OrphanDisk[]>('/api/v1/storage/orphans', { params: { node_id: nodeId } })
+      return response.data.data ?? []
+    },
+    enabled: !!nodeId && enabled,
+    staleTime: Infinity,
+  })
+}
+
+export function useDeleteOrphanDisk() {
+  const queryClient = useQueryClient()
+  return useMutation<void, Error, { disk: OrphanDisk; allowForeign: boolean }>({
+    mutationFn: async ({ disk, allowForeign }) => {
+      await api.post('/api/v1/storage/orphans/delete', {
+        node_id: disk.node_id, path: disk.path, size_bytes: disk.size_bytes, modified_unix: disk.modified_unix,
+        confirm: disk.path, allow_foreign: allowForeign,
+      })
+    },
+    onSuccess: (_, { disk }) => {
+      queryClient.invalidateQueries({ queryKey: ['storage', 'orphans', disk.node_id] })
     },
   })
 }

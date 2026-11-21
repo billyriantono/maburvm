@@ -157,6 +157,18 @@ func (r *IPAMRepository) GetAddress(ctx context.Context, id string) (*models.IPA
 	return &address, nil
 }
 
+// CountPools counts every pool, for a windowed pool list's total.
+func (r *IPAMRepository) CountPools(ctx context.Context) (int64, error) {
+	var n int64
+	return n, r.db.WithContext(ctx).Model(&models.IPPool{}).Count(&n).Error
+}
+
+// CountAddresses counts a pool's addresses, for a windowed address list's total.
+func (r *IPAMRepository) CountAddresses(ctx context.Context, poolID string) (int64, error) {
+	var n int64
+	return n, r.db.WithContext(ctx).Model(&models.IPAddress{}).Where("pool_id = ?", poolID).Count(&n).Error
+}
+
 func (r *IPAMRepository) ListAddresses(ctx context.Context, poolID string, limit, offset int) ([]models.IPAddress, error) {
 	var addresses []models.IPAddress
 	query := r.db.WithContext(ctx).Where("pool_id = ?", poolID).Order("address ASC")

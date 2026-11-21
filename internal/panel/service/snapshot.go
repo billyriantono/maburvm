@@ -103,6 +103,10 @@ func (s *SnapshotService) CreateSnapshot(ctx context.Context, req *CreateSnapsho
 	if VMOnBlockStorage(ctx, s.db, vm) {
 		return nil, ErrSnapshotsNeedQcow2
 	}
+	// A snapshot taken mid-move would stay in the disk the move removes.
+	if diskMoveActive(ctx, s.db, vm.ID) {
+		return nil, ErrDiskMoveActive
+	}
 
 	// Check if snapshot name already exists for this VM
 	exists, err := s.snapshotRepo.NameExists(ctx, req.VMID, req.Name)

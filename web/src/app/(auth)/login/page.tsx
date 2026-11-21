@@ -10,6 +10,7 @@ import { useBranding } from "@/lib/branding/provider"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Captcha, captchaChallenge, type CaptchaChallenge } from "@/components/captcha"
+import { apiErrorCode, apiErrorMessage } from "@/lib/api-error"
 
 const loginSchema = z.object({
   email: z.string().email("Please enter a valid email address"),
@@ -108,7 +109,7 @@ export default function LoginPage() {
       })
       const result = await response.json()
       if (!response.ok) {
-        setError({ message: result.error || "Invalid verification code" })
+        setError({ message: apiErrorMessage(result, "Invalid verification code") })
         return
       }
       // The panel set the session as an HttpOnly cookie on this response. A
@@ -158,15 +159,15 @@ export default function LoginPage() {
         const asked = captchaChallenge(result)
         if (asked) {
           setChallenge(asked)
-          setError({ message: result.error })
+          setError({ message: apiErrorMessage(result, "Complete the check to sign in.") })
           return
         }
         // A 403 is the IP allow-list, unless the account is suspended.
-        if (response.status === 403 && result.code !== "account_suspended") {
-          setIpWarning({ message: result.error || "Your IP address is not whitelisted" })
+        if (response.status === 403 && apiErrorCode(result) !== "account_suspended") {
+          setIpWarning({ message: apiErrorMessage(result, "Your IP address is not whitelisted") })
           return
         }
-        setError({ message: result.error || "Login failed. Please try again." })
+        setError({ message: apiErrorMessage(result, "Login failed. Please try again.") })
         return
       }
 
@@ -213,7 +214,7 @@ export default function LoginPage() {
       if (!response.ok) {
         const asked = captchaChallenge(result)
         if (asked) setChallenge(asked)
-        setError({ message: result.error || "Invalid verification code" })
+        setError({ message: apiErrorMessage(result, "Invalid verification code") })
         return
       }
 

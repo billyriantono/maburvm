@@ -109,10 +109,27 @@ func Bridges(domXML string) ([]string, error) {
 	return out, nil
 }
 
+// Dest is where a drive goes on the destination: a file, or a block device
+// for a path under /dev. Format is the driver format there; "" keeps it.
+type Dest struct {
+	Path   string
+	Format string
+}
+
 // RewriteForTarget returns the domain with each drive in paths moved to its
 // path on the destination, and its console on a port the destination picks
 // (a fixed port may be taken there). Every target in paths must exist.
 func RewriteForTarget(domXML string, paths map[string]string) (string, error) {
+	dests := make(map[string]Dest, len(paths))
+	for t, p := range paths {
+		dests[t] = Dest{Path: p}
+	}
+	return RewriteDisks(domXML, dests)
+}
+
+// RewriteDisks is RewriteForTarget with a format per drive: a disk moving
+// between a file and a logical volume changes both its source and its format.
+func RewriteDisks(domXML string, dests map[string]Dest) (string, error) {
 	var dom libvirtxml.Domain
 	if err := dom.Unmarshal(domXML); err != nil {
 		return "", fmt.Errorf("failed to parse domain XML: %w", err)
@@ -126,21 +143,20 @@ func RewriteForTarget(domXML string, paths map[string]string) (string, error) {
 		if d.Target == nil {
 			continue
 		}
-		p, ok := paths[d.Target.Dev]
+		dst, ok := dests[d.Target.Dev]
 		if !ok {
 			continue
 		}
-		if d.Source == nil || d.Source.File == nil {
-			return "", fmt.Errorf("drive %s is not a file and cannot be moved", d.Target.Dev)
+		if d.Source == nil || (d.Source.File == nil && d.Source.Block == nil) {
+			return "", fmt.Errorf("drive %s is neither a file nor a block device and cannot be moved", d.Target.Dev)
 		}
-		d.Source.File.File = p
-		// The file on the destination is a whole image; a chain from here would
-		// name files that are not there.
-		d.BackingStore = nil
+		if err := repoint(d, dst); err != nil {
+			return "", err
+		}
 		done[d.Target.Dev] = true
 	}
-	targets := make([]string, 0, len(paths))
-	for t := range paths {
+	targets := make([]string, 0, len(dests))
+	for t := range dests {
 		targets = append(targets, t)
 	}
 	sort.Strings(targets)
@@ -162,6 +178,47 @@ func RewriteForTarget(domXML string, paths map[string]string) (string, error) {
 		}
 	}
 	return dom.Marshal()
+}
+
+// repoint points one drive at dst. A drive that becomes a block device is
+// tuned the way storage.DiskDevice defines new ones; one that stays what it
+// was keeps its own definition.
+func repoint(d *libvirtxml.DomainDisk, dst Dest) error {
+	block := strings.HasPrefix(dst.Path, "/dev/")
+	format := dst.Format
+	if format == "" && d.Driver != nil {
+		format = d.Driver.Type
+	}
+	if block && format != "raw" {
+		return fmt.Errorf("drive %s would be a %q block device; a logical volume holds a raw disk", d.Target.Dev, format)
+	}
+	wasBlock := d.Source.Block != nil
+	switch {
+	case block && wasBlock:
+		d.Source.Block.Dev = dst.Path
+	case block:
+		d.Source = &libvirtxml.DomainDiskSource{Block: &libvirtxml.DomainDiskSourceBlock{Dev: dst.Path}}
+	case d.Source.File != nil:
+		d.Source.File.File = dst.Path
+	default:
+		d.Source = &libvirtxml.DomainDiskSource{File: &libvirtxml.DomainDiskSourceFile{File: dst.Path}}
+	}
+	if d.Driver == nil {
+		d.Driver = &libvirtxml.DomainDiskDriver{Name: "qemu"}
+	}
+	if format != "" {
+		d.Driver.Type = format
+	}
+	if block && !wasBlock {
+		d.Driver.Cache, d.Driver.IO = "none", "native"
+	} else if !block && wasBlock {
+		// Native I/O needs the page cache bypassed, which a file need not do.
+		d.Driver.Cache, d.Driver.IO = "", ""
+	}
+	// The image on the destination is whole; a chain from here would name
+	// files that are not there.
+	d.BackingStore = nil
+	return nil
 }
 
 // portableListen keeps a console address every node has, and turns any other

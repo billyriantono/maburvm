@@ -7,6 +7,7 @@ import { toast } from "sonner"
 import { api } from "@/lib/api-client"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 
 // One email the panel sent a customer, or is still trying to.
 interface LoggedEmail {
@@ -50,10 +51,13 @@ export function EmailLog() {
   const queryClient = useQueryClient()
   const [failedOnly, setFailedOnly] = useState(false)
   const [page, setPage] = useState(1)
+  const [q, setQ] = useState("")
   const { data, isLoading, error, refetch, isPlaceholderData } = useQuery<EmailPage>({
-    queryKey: ["email-log", failedOnly, page],
+    queryKey: ["email-log", failedOnly, page, q],
     queryFn: async () =>
-      (await api.get<EmailPage>(`/api/v1/settings/system/emails?page=${page}&page_size=10${failedOnly ? "&status=failed" : ""}`)).data.data,
+      (await api.get<EmailPage>("/api/v1/settings/system/emails", {
+        params: { page, page_size: 10, ...(failedOnly ? { status: "failed" } : {}), ...(q.trim() ? { q: q.trim() } : {}) },
+      })).data.data,
     placeholderData: keepPreviousData,
     refetchInterval: 30_000,
   })
@@ -89,7 +93,10 @@ export function EmailLog() {
             for 90 days. Test sends and alerts to staff are not listed here.
           </p>
         </div>
-        <div className="flex gap-2" role="group" aria-label="Which emails to show">
+        <div className="flex flex-wrap gap-2" role="group" aria-label="Which emails to show">
+          <label htmlFor="email-log-q" className="sr-only">Search by recipient or subject</label>
+          <Input id="email-log-q" type="search" className="h-9 w-56" placeholder="Recipient or subject" value={q}
+            onChange={(e) => { setQ(e.target.value); setPage(1) }} />
           <Button type="button" size="sm" variant={failedOnly ? "outline" : "default"} aria-pressed={!failedOnly} onClick={() => show(false)}>
             All
           </Button>
@@ -112,8 +119,8 @@ export function EmailLog() {
           </div>
         ) : rows.length === 0 ? (
           <div className="p-5">
-            <p className="text-sm font-medium">{failedOnly ? "No email has failed." : "No emails sent yet."}</p>
-            {!failedOnly && (
+            <p className="text-sm font-medium">{q.trim() ? "No email matches." : failedOnly ? "No email has failed." : "No emails sent yet."}</p>
+            {!failedOnly && !q.trim() && (
               <p className="mt-1 text-sm text-muted-foreground">Nothing is sent, or recorded here, until a mail server is saved above.</p>
             )}
           </div>

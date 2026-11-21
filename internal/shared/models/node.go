@@ -53,6 +53,10 @@ type Node struct {
 	// and NodeService.UpdateNode write them by table name.
 	CPUCount  int     `json:"cpu_count" gorm:"column:cpu_count;->"`
 	VCPURatio float64 `json:"vcpu_ratio" gorm:"column:vcpu_ratio;->"`
+	// NodeGroup is the hypervisor group the node belongs to ("" for none); a
+	// plan naming a group is placed only on its nodes. Read-only here,
+	// written by table name in NodeService.UpdateNode.
+	NodeGroup string `json:"node_group" gorm:"column:node_group;->"`
 	// LastReportAt is when the node's agent last answered the collector with
 	// real figures; FailedPolls is how many checks in a row it has missed since.
 	// Read-only here, like CreationPaused: the collector writes them by table name.

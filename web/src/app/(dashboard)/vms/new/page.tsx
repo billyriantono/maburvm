@@ -33,6 +33,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { UserPicker } from "@/components/user-picker"
 import type { User } from "@/types"
 import { useTemplates } from "@/lib/hooks/use-templates"
+import { useStoragePools } from "@/lib/hooks/use-storage"
 import { useNodes } from "@/lib/hooks/use-nodes"
 import { useIPPools } from "@/lib/hooks/use-ipam"
 import { useNetworks } from "@/lib/hooks/use-networks"
@@ -47,6 +48,7 @@ import { OperationProgress, vmProvisionSteps } from "@/components/operation-prog
 import { useCopy } from "@/lib/use-feedback"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
+import { apiErrorMessage } from "@/lib/api-error"
 
 // Validation schemas for each step
 const step1Schema = z.object({
@@ -63,6 +65,7 @@ const step2Schema = z.object({
   ramGB: z.number().min(1, "Minimum 1 GB RAM").max(512, "Maximum 512 GB RAM"),
   diskGB: z.number().min(10, "Minimum 10 GB disk").max(2000, "Maximum 2 TB disk"),
   nodeId: z.string().optional(),
+  storagePoolId: z.string().optional(),
   cpuModel: z.string().optional(),
   userData: z.string().optional(),
 })
@@ -172,6 +175,8 @@ function NewVMForm() {
   const { data: managedNets } = useNetworks()
   const { data: plansData, isError: plansError, refetch: refetchPlans } = usePlans(true)
   const createVM = useCreateVM()
+  const { data: storagePools } = useStoragePools()
+  const [driversISO, setDriversISO] = useState(true)
 
   const templates = useMemo(() => templatesData || [], [templatesData])
   // Only templates with a real base image can provision a new VM. Imported
@@ -226,6 +231,7 @@ function NewVMForm() {
       diskGB: 50,
       templateId: "",
       nodeId: "",
+      storagePoolId: "",
       cpuModel: "",
       userData: "",
       ipPoolId: "",
@@ -345,6 +351,8 @@ function NewVMForm() {
         os_template_id: sourceImageId ? undefined : data.templateId,
         source_image_id: sourceImageId || undefined,
         node_id: data.nodeId || undefined,
+        storage_pool_id: data.nodeId && data.storagePoolId ? data.storagePoolId : undefined,
+        drivers_iso: installsFromISO && isWindows ? driversISO : undefined,
         // With a plan the backend overwrites resources from the plan. Moving a
         // slider clears planId, so hand-edited resources are sent as custom.
         plan_id: data.planId || undefined,
@@ -383,8 +391,7 @@ function NewVMForm() {
     } catch (error) {
       // Prefer the backend's message (e.g. "IP pool not assigned to this node")
       // over the generic axios "status code 4xx".
-      const axiosErr = error as { response?: { data?: { message?: string; error?: string } } }
-      const backendMsg = axiosErr.response?.data?.message || axiosErr.response?.data?.error
+      const backendMsg = apiErrorMessage((error as { response?: { data?: unknown } }).response?.data)
       setSubmitError(backendMsg || (error as Error).message || "Failed to create VM. Please try again.")
     }
   }
@@ -398,6 +405,8 @@ function NewVMForm() {
   const isWindows = selectedOS === "windows"
   // Neither a router nor Windows is set up through Linux's cloud-init.
   const notLinux = isRouter || isWindows
+  // An ISO template installs onto an empty disk from the console.
+  const installsFromISO = !sourceImageId && getSelectedTemplate()?.kind === "iso"
   const loginUser = isRouter ? "admin" : isWindows ? "Administrator" : "root"
 
   const getSelectedNode = () => {
@@ -657,6 +666,24 @@ function NewVMForm() {
                   />
                 )}
               </div>
+
+              {/* Storage pool (optional, once a node is chosen) */}
+              {watchedValues.nodeId && (
+                <div className="space-y-2">
+                  <label htmlFor="storagePoolId" className="text-sm font-medium">
+                    Storage pool <span className="text-muted-foreground">(optional: the plan&apos;s storage tier, else the node&apos;s primary pool)</span>
+                  </label>
+                  <select id="storagePoolId" {...register("storagePoolId")}
+                    className="h-12 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
+                    <option value="">Automatic</option>
+                    {(storagePools ?? []).filter((p) => p.node_id === watchedValues.nodeId && p.status === "online").map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}{p.tier ? ` (${p.tier})` : ""}, {Math.floor(p.available_space / 1073741824)} GB free
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
             </div>
           )}
 
@@ -998,6 +1025,7 @@ function NewVMForm() {
                         <div className="mb-2 flex justify-center"><OSIcon name={template.name} className="w-10 h-10" /></div>
                         <p className="font-semibold text-sm leading-tight">{template.name}</p>
                         <p className="text-xs text-muted-foreground mt-1">v{template.version}</p>
+                        {template.kind === "iso" && <p className="text-xs font-medium mt-1">Install from ISO</p>}
                         {template.description && (
                           <span className="inline-block mt-2 px-2 py-0.5 rounded-md bg-muted text-muted-foreground text-xs font-medium">
                             {template.description}
@@ -1016,7 +1044,22 @@ function NewVMForm() {
                 </p>
               )}
 
-              {isWindows && (
+              {installsFromISO && (
+                <div className="border-t pt-5 space-y-3 text-sm text-muted-foreground">
+                  <p>
+                    The VM starts with an empty disk and this ISO in its first CD drive, which boots first. Open its
+                    console to install the system; nothing is set up for you, so no password is generated. Unmount the
+                    ISO once the install is done.
+                  </p>
+                  {isWindows && (
+                    <label className="flex items-start gap-2 text-foreground">
+                      <input type="checkbox" className="mt-1" checked={driversISO} onChange={(e) => setDriversISO(e.target.checked)} />
+                      <span>Put the Windows drivers disc in the second drive (chosen on the ISOs page), so the installer finds the virtio disk.</span>
+                    </label>
+                  )}
+                </div>
+              )}
+              {isWindows && !installsFromISO && (
                 <p className="border-t pt-5 text-sm text-muted-foreground">
                   Windows gets its name, address and a generated Administrator password on first start, which takes
                   about ten minutes. SSH keys and start-up scripts are for Linux images and are not used. It needs at

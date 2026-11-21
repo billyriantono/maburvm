@@ -65,6 +65,8 @@ var EmailPlaceholders = []struct {
 	{"{{backup}}", "Which backup failed: \u201cThe scheduled backup\u201d or \u201cA backup\u201d (backup emails only)"},
 	{"{{who}}", "Where a change came from: an address, or an administrator (account emails only)"},
 	{"{{key}}", "The name of the new API key (API key emails only)"},
+	{"{{account}}", "The account someone was invited to (invitation emails only)"},
+	{"{{role}}", "What the invited person may do there (invitation emails only)"},
 }
 
 const (
@@ -85,6 +87,8 @@ const (
 	EmailAPIKeyCreated     = "api_key_created"
 	// EmailAccountImported invites an account an import from another panel made.
 	EmailAccountImported = "account_imported"
+	// EmailAccountInvite invites someone to work in another customer's account.
+	EmailAccountInvite = "account_invite"
 )
 
 // serverSample fills the server placeholders in previews and test sends.
@@ -300,6 +304,21 @@ var emailTemplateDefs = []EmailTemplateDef{
 			Button: "Sign in",
 		},
 		Sample: accountSample, SampleLink: "https://panel.example.com/login", LinkMeaning: accountLinkMeaning,
+	},
+	{
+		Key:      EmailAccountInvite,
+		Name:     "Team invitation",
+		SentWhen: "Sent when a customer invites someone to work in their account.",
+		Default: EmailTemplate{
+			Subject: "You are invited to {{account}} on {{brand}}",
+			Body: "{{greeting}},\n\n{{account}} invited you to work in their {{brand}} account as {{role}}.\n\n" +
+				"Accept with the button below. It works for 7 days. You sign in with your own password, and you can turn on two-factor sign-in for it.\n\n" +
+				"If you did not expect this, ignore this email: nothing happens until you accept.",
+			Button: "Accept the invitation",
+		},
+		Sample:      map[string]string{"name": "", "email": "dewi@example.com", "account": "Acme Ltd (ops@acme.example)", "role": "Technical: runs the servers"},
+		SampleLink:  "https://panel.example.com/accept-invite?token=example",
+		LinkMeaning: "The button opens the page where they accept, and choose a password if they have no account yet.",
 	},
 }
 

@@ -131,7 +131,7 @@ func collectPools(ctx context.Context, db *gorm.DB, ch chan<- prometheus.Metric)
 		Total, Free    float64
 	}
 	if err := db.Raw(`SELECT p.id::text AS id, p.name, n.name AS node, p.total_space AS total, p.available_space AS free
-		FROM storage_pools p JOIN nodes n ON n.id = p.node_id
+		FROM storage_pools p JOIN nodes n ON n.id::text = p.node_id::text
 		WHERE p.deleted_at IS NULL AND n.deleted_at IS NULL`).Scan(&pools).Error; err != nil {
 		return err
 	}

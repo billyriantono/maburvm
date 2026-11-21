@@ -13,10 +13,17 @@ import {
   KeySquare,
   User as UserIcon,
   BrickWall,
+  Users,
+  ScrollText,
+  Bell,
+  LifeBuoy,
+  Receipt,
+  Activity,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useNavDrawer } from "@/components/nav-drawer"
 import { BrandMark, useBranding } from "@/lib/branding/provider"
+import { usePortal } from "@/lib/hooks/use-portal"
 import type { User } from "@/types"
 
 // Client-facing navigation. Deliberately narrow: an end user only ever sees
@@ -31,6 +38,8 @@ const navItems = [
   { href: "/client/vpcs", label: "Private Networks", icon: Boxes },
   { href: "/client/floating-ips", label: "Floating IPs", icon: Network },
   { href: "/client/firewall-groups", label: "Firewall groups", icon: BrickWall },
+  { href: "/client/recipes", label: "Recipes", icon: ScrollText },
+  { href: "/client/team", label: "Team", icon: Users },
   { href: "/client/order", label: "Order VM", icon: PlusCircle },
 ]
 
@@ -38,6 +47,7 @@ const settingsNav = [
   { href: "/client/settings/profile", label: "Profile", icon: UserIcon },
   { href: "/client/settings/api-keys", label: "API Keys", icon: KeyRound },
   { href: "/client/settings/ssh-keys", label: "SSH Keys", icon: KeySquare },
+  { href: "/client/notifications", label: "Notifications", icon: Bell },
 ]
 
 interface ClientSidebarProps {
@@ -53,6 +63,13 @@ export function ClientSidebar({ user }: ClientSidebarProps) {
   const pathname = usePathname()
   const { branding } = useBranding()
   const drawer = useNavDrawer()
+  const { data: portal } = usePortal()
+  // The operator's own pages for help, billing and service status, when set.
+  const links = [
+    { href: portal?.support_url || (portal?.support_email ? `mailto:${portal.support_email}` : ""), label: "Support", icon: LifeBuoy },
+    { href: portal?.billing_url ?? "", label: "Billing", icon: Receipt },
+    { href: portal?.status_url ?? "", label: "Service status", icon: Activity },
+  ].filter((l) => l.href)
   const isSettingsActive = pathname.startsWith("/client/settings") || pathname.startsWith("/settings")
 
   return (
@@ -124,6 +141,29 @@ export function ClientSidebar({ user }: ClientSidebarProps) {
               })}
             </div>
           </div>
+
+          {links.length > 0 && (
+            <div className="pt-4">
+              <p className="px-3 pb-2 text-xs font-semibold text-muted-foreground">Help</p>
+              <div className="space-y-1">
+                {links.map((item) => {
+                  const Icon = item.icon
+                  return (
+                    <a
+                      key={item.label}
+                      href={item.href}
+                      target={item.href.startsWith("mailto:") ? undefined : "_blank"}
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                    >
+                      <Icon className="w-5 h-5" />
+                      {item.label}
+                    </a>
+                  )
+                })}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* User footer */}

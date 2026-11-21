@@ -109,12 +109,17 @@ func described(s js, d string) js {
 	return out
 }
 
-// Response envelopes. API-04 tracks making these one shape; until then each
-// route says which one it answers with.
+// Response envelopes. New routes answer ok, okList or a paginated list with
+// meta; older ones keep their own fields for the clients that read them, and
+// their paginated lists add success and meta beside those fields.
 func ok(data any) js { return obj("success", tTrue, "data", data) }
 func okList(item any) js {
 	return obj("success", tTrue, "data", arr(item))
 }
+
+// pageMeta is the pagination block every paginated list carries.
+var pageMeta = described(obj("page", tInt, "per_page", tInt, "total", js{"type": "integer", "format": "int64"}),
+	"Pagination: the page (from 1), the items per page, and the items in all pages.")
 
 var (
 	okMsg  = obj("success", tTrue, "message", tStr)
@@ -125,19 +130,26 @@ var (
 func msgData(data any) js { return obj("message", tStr, "data", data) }
 func bare(data any) js    { return obj("data", data) }
 
+// okListMeta is a list answered whole unless limit/offset or page/page_size
+// ask for a window; meta says which part it is.
+func okListMeta(item any) js { return obj("success", tTrue, "data", arr(item), "meta", pageMeta) }
+
+// okPaged is ok with meta beside data, for paginated lists nested in data.
+func okPaged(data any) js { return obj("success", tTrue, "meta", pageMeta, "data", data) }
+
 // pageOffset is the limit/offset list (backups, snapshots).
 func pageOffset(item any) js {
-	return obj("message", tStr, "data", arr(item), "total", tInt, "limit", tInt, "offset", tInt, "has_more", tBool)
+	return obj("success", tTrue, "message", tStr, "data", arr(item), "meta", pageMeta, "total", tInt, "limit", tInt, "offset", tInt, "has_more", tBool)
 }
 
 // pageNum is the page/page_size list (users, audit log).
 func pageNum(item any) js {
-	return obj("data", arr(item), "total", tInt, "page", tInt, "page_size", tInt, "totalPages", tInt)
+	return obj("success", tTrue, "data", arr(item), "meta", pageMeta, "total", tInt, "page", tInt, "page_size", tInt, "totalPages", tInt)
 }
 
-// pageIn is the list nested under data (alerts, deliveries, emails).
+// pageIn is the list nested under data (alerts, deliveries, emails, queue).
 func pageIn(key string, item any) js {
-	return ok(obj(key, arr(item), "total", tInt, "page", tInt, "page_size", tInt))
+	return obj("success", tTrue, "meta", pageMeta, "data", obj(key, arr(item), "total", tInt, "page", tInt, "page_size", tInt))
 }
 
 var jobQueued = obj("job_id", tStr, "status", tStr)
@@ -146,6 +158,7 @@ var jobQueued = obj("job_id", tStr, "status", tStr)
 var queryParams = map[string]js{
 	"page":      {"schema": js{"type": "integer", "minimum": 1}, "description": "Page number, from 1."},
 	"page_size": {"schema": js{"type": "integer", "minimum": 1}, "description": "Items per page."},
+	"per_page":  {"schema": js{"type": "integer", "minimum": 1}, "description": "Items per page; the same as page_size, which wins when both are sent."},
 	"limit":     {"schema": js{"type": "integer", "minimum": 1}, "description": "Items to return."},
 	"offset":    {"schema": js{"type": "integer", "minimum": 0}, "description": "Items to skip."},
 	"search":    {"schema": tStr, "description": "Text to match."},
@@ -441,7 +454,13 @@ func openAPIDocument(routes []*apiRoute) js {
 		if strings.Contains(r.path, "*") {
 			params = append(params, js{"name": "path", "in": "path", "required": true, "schema": tStr})
 		}
+		query := r.query
 		for _, name := range r.query {
+			if name == "page_size" {
+				query = append(append([]string{}, r.query...), "per_page")
+			}
+		}
+		for _, name := range query {
 			qp := js{"name": name, "in": "query", "schema": tStr}
 			for k, v := range queryParams[name] {
 				qp[k] = v
@@ -576,12 +595,21 @@ func mergeSchemas(a, b js) js {
 }
 
 var errorSchema = js{
-	"type":        "object",
-	"description": "Error answers are not yet one shape: most carry `error` (a short title, a machine code, or the whole message), many add a human `message`, and some add a machine `code`. Read `message` when present, else `error`.",
+	"type": "object",
+	"description": "Every error answer: `success` is false, `error.code` is a stable machine code (a route's own, such as `two_factor_required`, " +
+		"else one for the HTTP status: `bad_request`, `unauthorized`, `forbidden`, `not_found`, `conflict`, `rate_limited`, `unavailable`, `internal_error`...), " +
+		"`error.message` says what went wrong in words and `error.details` is there when the route has more to say. " +
+		"The top-level `message` repeats `error.message`, and a route's other top-level fields (such as `code` or `request_id`) stay where they were.",
+	"required": []any{"success", "error", "message"},
 	"properties": js{
-		"error":   tStr,
+		"success": js{"type": "boolean", "const": false},
+		"error": js{"type": "object", "required": []any{"code", "message"}, "properties": js{
+			"code":    tStr,
+			"message": tStr,
+			"details": described(tAny, "More about the error, when the route gives it."),
+		}},
 		"message": tStr,
-		"code":    tStr,
+		"code":    described(tStr, "Kept on the routes that sent a top-level code before the envelope: the same as error.code."),
 	},
 }
 

@@ -32,7 +32,7 @@ func RegisterAlertRoutes(e *echo.Echo, db *gorm.DB, alerts *service.AlertService
 		if err != nil {
 			return refused(c, err)
 		}
-		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "meta": PageMeta(page, size, total), "data": map[string]interface{}{
 			"alerts": rows, "total": total, "page": page, "page_size": size,
 		}})
 	}, auth, perm("ops:read"))

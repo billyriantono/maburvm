@@ -13,6 +13,10 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "migrate" {
 		os.Exit(server.MigrateCommand(os.Args[2:], os.Stdout, os.Stderr))
 	}
+	// "panel maintenance on --hold-jobs --wait 900": scripts/upgrade-panel.sh.
+	if len(os.Args) > 1 && os.Args[1] == "maintenance" {
+		os.Exit(server.MaintenanceCommand(os.Args[2:], os.Stdout, os.Stderr))
+	}
 	if err := server.Run(); err != nil {
 		slog.Default().Error("failed to start server", "error", err)
 		os.Exit(1)

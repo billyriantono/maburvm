@@ -60,8 +60,13 @@ type UserContext struct {
 	// owner (read-only or downgraded role); such keys can't manage credentials.
 	APIKeyReadOnly   bool
 	APIKeyRestricted bool
+	// APIKeyAddressLimited: the key has its own address list, so it must not
+	// mint a key or change the sign-in that would work from anywhere.
+	APIKeyAddressLimited bool
 	// APIKeyID is the key the request was made with; "" for sessions.
 	APIKeyID string
+	// APIKeyScope is the key's scope (models.APIKeyScope*); "" for sessions.
+	APIKeyScope string
 	// TwoFactorEnabled is the account's own setting. TwoFactorSetupRequired is
 	// set on a session held to the setup pages until two-factor is on.
 	TwoFactorEnabled       bool
@@ -226,46 +231,58 @@ func APIAccessEnabled(db *gorm.DB) bool {
 	return cfg.EnableAPI == nil || *cfg.EnableAPI
 }
 
+// errAPIKeyAddress refuses a valid key used from an address its owner or the
+// key itself does not allow.
+var errAPIKeyAddress = errors.New("api key used from an address it may not be used from")
+
 // authenticateAPIKey validates a presented API token against the database and,
 // on success, returns a populated UserContext. This lets automation clients call
 // the API with a long-lived key instead of a session JWT. The lookup is done
 // directly here (not via the service layer) to keep the middleware dependency-free.
-func authenticateAPIKey(db *gorm.DB, token string, clientIP string) (*UserContext, bool) {
+// A nil context with a nil error is an unknown, revoked or expired key.
+func authenticateAPIKey(db *gorm.DB, token string, clientIP string) (*UserContext, error) {
 	if db == nil {
-		return nil, false
+		return nil, nil
 	}
 	var key models.APIKey
 	if err := db.Where("key_hash = ?", models.HashAPIToken(token)).First(&key).Error; err != nil {
-		return nil, false
+		return nil, nil
 	}
 	if !key.IsValid() {
-		return nil, false
+		return nil, nil
 	}
 	var user models.User
 	if err := db.Where("id = ?", key.UserID).First(&user).Error; err != nil || user.DeletedAt.Valid || user.Locked() {
-		return nil, false
+		return nil, nil
 	}
 	if len(user.IPWhitelist) > 0 && !isIPWhitelisted(clientIP, user.IPWhitelist) {
-		return nil, false
+		return nil, nil
+	}
+	if len(key.AllowedIPs) > 0 && !isIPWhitelisted(clientIP, key.AllowedIPs) {
+		return nil, errAPIKeyAddress
 	}
 	// Best-effort last-used bookkeeping; never blocks auth.
 	db.Model(&models.APIKey{}).Where("id = ?", key.ID).Update("last_used_at", time.Now())
 
 	role := key.EffectiveRole(user.Role)
+	scope := key.EffectiveScope()
 	u := &UserContext{
-		ID:               user.ID,
-		Email:            user.Email,
-		Role:             role,
-		Permissions:      GetPermissionsForRole(role),
-		APIKeyReadOnly:   key.ReadOnly,
-		APIKeyRestricted: key.ReadOnly || role != user.Role,
-		APIKeyID:         key.ID,
+		ID:                   user.ID,
+		Email:                user.Email,
+		Role:                 role,
+		Permissions:          GetPermissionsForRole(role),
+		APIKeyReadOnly:       scope == models.APIKeyScopeReadOnly,
+		APIKeyRestricted:     scope != models.APIKeyScopeFull || role != user.Role,
+		APIKeyAddressLimited: len(key.AllowedIPs) > 0,
+		APIKeyID:             key.ID,
+		APIKeyScope:          scope,
 	}
 	// A staff key does what its owner's staff role allows, as it is now.
 	if role == models.RoleAdmin {
 		u.StaffRole, u.Permissions = ResolveStaffRole(context.Background(), db, &user)
 	}
-	return u, true
+	u.Permissions = ScopePermissions(scope, u.Permissions)
+	return u, nil
 }
 
 // allowReadOnlyKeyCtx marks a route whose unsafe method is only a transport
@@ -285,14 +302,19 @@ func AllowReadOnlyKey(next echo.HandlerFunc) echo.HandlerFunc {
 // apiKeyScopeError returns why a scoped key may not make this request, or "".
 func apiKeyScopeError(c echo.Context, u *UserContext) string {
 	req := c.Request()
-	if u.APIKeyReadOnly && c.Get(allowReadOnlyKeyCtx) == nil &&
+	transport := c.Get(allowReadOnlyKeyCtx) != nil
+	if u.APIKeyReadOnly && !transport &&
 		req.Method != http.MethodGet && req.Method != http.MethodHead && req.Method != http.MethodOptions {
 		return "This API key is read-only"
 	}
+	if !transport && !ScopeAllowsRoute(u.APIKeyScope, req.Method, c.Path()) {
+		return apiKeyScopeWords[u.APIKeyScope]
+	}
 	// A restricted key must not be able to mint a broader key or take over
-	// the account (password, 2FA, profile).
-	if u.APIKeyRestricted {
-		for _, p := range []string{"/api/v1/api-keys", "/api/v1/settings"} {
+	// the account (password, 2FA, profile), nor let someone else in through
+	// the account's team.
+	if u.APIKeyRestricted || u.APIKeyAddressLimited {
+		for _, p := range []string{"/api/v1/api-keys", "/api/v1/settings", "/api/v1/account"} {
 			if req.URL.Path == p || strings.HasPrefix(req.URL.Path, p+"/") {
 				return "This API key may not manage account settings or API keys"
 			}
@@ -314,8 +336,15 @@ func RequireAuth(db *gorm.DB) echo.MiddlewareFunc {
 						"message": "API access is turned off on this panel",
 					})
 				}
-				userCtx, ok := authenticateAPIKey(db, token, c.RealIP())
-				if !ok {
+				userCtx, kerr := authenticateAPIKey(db, token, c.RealIP())
+				if kerr != nil {
+					return c.JSON(http.StatusForbidden, map[string]interface{}{
+						"error":   "Forbidden",
+						"code":    "api_key_address",
+						"message": "This API key may not be used from this address",
+					})
+				}
+				if userCtx == nil {
 					return c.JSON(http.StatusUnauthorized, map[string]interface{}{
 						"error":   "Unauthorized",
 						"message": "Invalid or expired API key",
@@ -331,6 +360,9 @@ func RequireAuth(db *gorm.DB) echo.MiddlewareFunc {
 					return err
 				}
 				c.Set(UserContextKey, userCtx)
+				if refused, err := refuseInMaintenance(c, db, userCtx); refused {
+					return err
+				}
 				return next(c)
 			}
 
@@ -531,6 +563,9 @@ func RequireAuth(db *gorm.DB) echo.MiddlewareFunc {
 
 			if u, _ := GetUserContext(c); u != nil {
 				if limited, err := limitAPI(c, db, "user:"+u.ID.String()); limited {
+					return err
+				}
+				if refused, err := refuseInMaintenance(c, db, u); refused {
 					return err
 				}
 			}

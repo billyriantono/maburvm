@@ -205,6 +205,8 @@ make docker-prod-validate
 | [Runbooks](docs/runbooks.md) | Node down, panel restore, failed backups and moves, full pool, abuse reports, lost Owner access |
 | [API](docs/api.md) | Authentication, errors, rate limits, MCP and webhook payloads |
 | [WHMCS](integrations/whmcs/README.md) | The provisioning module and events addon |
+| [Paymenter](integrations/paymenter/README.md) | The server extension (not yet run inside Paymenter) |
+| [FOSSBilling](integrations/fossbilling/README.md) | The server manager (not yet run inside FOSSBilling) |
 
 ## Configuration
 

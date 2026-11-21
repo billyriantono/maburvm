@@ -18,8 +18,42 @@ export interface OSTemplate {
   licensed?: boolean;
   // The plans the template is offered on. Empty or null means every plan.
   plan_ids?: string[] | null;
+  // "disk" (a disk image VMs are built from) or "iso" (an installer).
+  kind?: TemplateKind;
+  // The sha256 every node checks its download against; empty when none.
+  checksum_sha256?: string;
+  // A checksum list (SHA256SUMS) the checksum is read from again on refresh.
+  checksum_url?: string;
+  checksum_checked_at?: string | null;
+  // Plain http accepted for the image address.
+  allow_http?: boolean;
+  // Checked against checksum_url daily, and fetched again when it changed.
+  auto_refresh?: boolean;
+  firmware?: Firmware;
+  // Per node, with include_nodes: whether the image is there, and its checksum.
+  nodes?: TemplateNodeStatus[];
   created_at: string;
   updated_at: string;
+}
+
+export type TemplateKind = 'disk' | 'iso';
+export type Firmware = 'bios' | 'uefi';
+
+export interface TemplateNodeStatus {
+  node_id: string;
+  node_name: string;
+  status: 'pending' | 'syncing' | 'available' | 'error';
+  error_msg?: string;
+  synced_at?: string | null;
+  checksum?: string;
+}
+
+export interface TemplateRefreshResult {
+  template_id: string;
+  changed: boolean;
+  old_checksum: string;
+  checksum: string;
+  node_ids?: string[] | null;
 }
 
 // Whether a customer may install the template on a server of this plan. The
@@ -38,6 +72,14 @@ export interface CreateTemplateRequest {
   file_url: string;
   description?: string;
   os_type?: OSType;
+  kind?: TemplateKind;
+  // One of these is required for an http(s) image, unless skip_checksum.
+  checksum_sha256?: string;
+  checksum_url?: string;
+  skip_checksum?: boolean;
+  allow_http?: boolean;
+  auto_refresh?: boolean;
+  firmware?: Firmware;
 }
 
 // UpdateTemplateRequest for updating OS templates
@@ -49,4 +91,9 @@ export interface UpdateTemplateRequest {
   description?: string;
   licensed?: boolean;
   plan_ids?: string[];
+  checksum_sha256?: string;
+  checksum_url?: string;
+  allow_http?: boolean;
+  auto_refresh?: boolean;
+  firmware?: Firmware;
 }

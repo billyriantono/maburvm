@@ -74,4 +74,12 @@ func TestVMServiceAdmitsStorageOnCreateAndGrow(t *testing.T) {
 	var stored models.VM
 	require.NoError(t, db.First(&stored, "id = ?", resp.VM.ID).Error)
 	require.Equal(t, 10, stored.Resources.Disk, "a refused grow changes nothing")
+
+	// A running VM grows its disk live, but only its disk, and not for a
+	// caller that stopped it to have the resize job boot it again (billing).
+	require.NoError(t, db.Model(&models.VM{}).Where("id = ?", resp.VM.ID).Update("status", models.VMStatusRunning).Error)
+	_, err = svc.UpdateVM(ctx, &UpdateVMRequest{VMID: resp.VM.ID, Resources: &models.Resources{CPU: 2, RAM: 512, Disk: 20}})
+	require.ErrorIs(t, err, ErrVMCannotBeModified)
+	_, err = svc.UpdateVM(ctx, &UpdateVMRequest{VMID: resp.VM.ID, Resources: &models.Resources{CPU: 1, RAM: 512, Disk: 20}, StartAfter: true})
+	require.ErrorIs(t, err, ErrVMCannotBeModified)
 }

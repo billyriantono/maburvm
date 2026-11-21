@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation"
 import { Eye, EyeOff, Loader2, AlertTriangle, CheckCircle2 } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
+import { apiErrorMessage } from "@/lib/api-error"
 
 function ResetPasswordForm() {
   const router = useRouter()
@@ -35,7 +36,7 @@ function ResetPasswordForm() {
       })
       if (!response.ok) {
         const result = await response.json().catch(() => ({}))
-        setError(result.error || "Failed to reset password.")
+        setError(apiErrorMessage(result, "Failed to reset password."))
         return
       }
       setDone(true)

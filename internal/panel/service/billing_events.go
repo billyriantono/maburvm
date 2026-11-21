@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/maburvm/panel/internal/shared/models"
 	"github.com/maburvm/panel/internal/shared/queue"
@@ -64,6 +63,8 @@ type WebhookDelivery struct {
 	CreatedAt     time.Time  `json:"created_at"`
 	LastAttemptAt *time.Time `json:"last_attempt_at"`
 	DeliveredAt   *time.Time `json:"delivered_at"`
+	// EndpointID is the outbound webhook it is for; nil is the billing system's.
+	EndpointID *string `json:"endpoint_id,omitempty" gorm:"type:uuid"`
 }
 
 func (WebhookDelivery) TableName() string { return "webhook_deliveries" }
@@ -86,34 +87,26 @@ func EmitBillingEvent(ctx context.Context, db *gorm.DB, rc *river.Client[pgx.Tx]
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if url, _ := resolveBillingWebhook(ctx, db); url == "" {
+	// The operator's own webhooks that asked for this event get it too.
+	endpoints := endpointsFor(ctx, db, event)
+	for _, w := range endpoints {
+		recordDelivery(ctx, db, rc, logger, &w.ID, event, resourceID, fields)
+	}
+	url, _ := resolveBillingWebhook(ctx, db)
+	if url != "" {
+		recordDelivery(ctx, db, rc, logger, nil, event, resourceID, fields)
+	} else {
 		logger.InfoContext(ctx, "billing event not sent: no webhook URL configured", "event", event, "resource_id", resourceID)
-		return
 	}
-	now := time.Now().UTC()
-	payload := map[string]any{}
-	for k, v := range fields {
-		payload[k] = v
+	if url != "" || len(endpoints) > 0 {
+		pruneDeliveries(ctx, db)
 	}
-	id := uuid.New().String()
-	payload["id"], payload["event"], payload["sent_at"] = id, event, now
-	body, err := json.Marshal(payload)
-	if err != nil {
-		logger.ErrorContext(ctx, "billing event: could not encode", "event", event, "error", err)
-		return
-	}
-	row := &WebhookDelivery{ID: id, Event: event, Body: string(body), Status: DeliveryPending, ResourceID: resourceID, CreatedAt: now}
-	if err := db.WithContext(ctx).Create(row).Error; err != nil {
-		logger.ErrorContext(ctx, "billing event: could not record", "event", event, "error", err)
-		return
-	}
-	if err := enqueueDelivery(ctx, rc, id); err != nil {
-		logger.ErrorContext(ctx, "billing event: could not queue", "event", event, "error", err)
-		db.WithContext(ctx).Model(&WebhookDelivery{}).Where("id = ?", id).
-			Updates(map[string]any{"status": DeliveryFailed, "last_error": "could not be queued: " + err.Error()})
-	}
-	// ponytail: pruned on write; move to a scheduled job if the log grows large.
-	db.WithContext(ctx).Where("created_at < ?", now.Add(-deliveryLogRetention)).Delete(&WebhookDelivery{})
+}
+
+// pruneDeliveries drops delivery rows past the retention, every receiver's.
+// ponytail: pruned on write; move to a scheduled job if the log grows large.
+func pruneDeliveries(ctx context.Context, db *gorm.DB) {
+	db.WithContext(ctx).Where("created_at < ?", time.Now().UTC().Add(-deliveryLogRetention)).Delete(&WebhookDelivery{})
 }
 
 func enqueueDelivery(ctx context.Context, rc *river.Client[pgx.Tx], id string) error {
@@ -158,8 +151,15 @@ func DeliverBillingEvent(ctx context.Context, db *gorm.DB, id string, final bool
 	}
 
 	// Read on every attempt, so a corrected URL or secret applies to the retries.
-	url, secret := resolveBillingWebhook(ctx, db)
-	if url == "" {
+	var url, secret string
+	if row.EndpointID != nil {
+		var err error
+		if url, secret, err = endpointTarget(ctx, db, *row.EndpointID, row.Event == EventWebhookTest); err != nil {
+			final = true
+			_ = finish(err, 0)
+			return nil
+		}
+	} else if url, secret = resolveBillingWebhook(ctx, db); url == "" {
 		final = true
 		_ = finish(errors.New("no webhook URL is configured"), 0)
 		return nil // a retry would find the same
@@ -183,15 +183,32 @@ func DeliverBillingEvent(ctx context.Context, db *gorm.DB, id string, final bool
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		reply, _ := io.ReadAll(io.LimitReader(resp.Body, 300))
-		return finish(fmt.Errorf("the billing system answered HTTP %d: %s", resp.StatusCode,
+		return finish(fmt.Errorf("the receiver answered HTTP %d: %s", resp.StatusCode,
 			strings.ToValidUTF8(strings.TrimSpace(string(reply)), "")), resp.StatusCode)
 	}
 	return finish(nil, resp.StatusCode)
 }
 
-// ListBillingDeliveries returns the delivery log, newest first.
+// ListBillingDeliveries returns the billing webhook's delivery log, newest first.
 func ListBillingDeliveries(ctx context.Context, db *gorm.DB, status string, limit, offset int) ([]WebhookDelivery, int64, error) {
-	q := db.WithContext(ctx).Model(&WebhookDelivery{})
+	return listDeliveries(ctx, db, nil, status, limit, offset)
+}
+
+// ListEndpointDeliveries returns one outbound webhook's delivery log, newest first.
+func ListEndpointDeliveries(ctx context.Context, db *gorm.DB, endpointID, status string, limit, offset int) ([]WebhookDelivery, int64, error) {
+	return listDeliveries(ctx, db, &endpointID, status, limit, offset)
+}
+
+// scopeDeliveries narrows to one receiver's rows: an endpoint's, or (nil) the billing webhook's.
+func scopeDeliveries(q *gorm.DB, endpointID *string) *gorm.DB {
+	if endpointID == nil {
+		return q.Where("endpoint_id IS NULL")
+	}
+	return q.Where("endpoint_id = ?", *endpointID)
+}
+
+func listDeliveries(ctx context.Context, db *gorm.DB, endpointID *string, status string, limit, offset int) ([]WebhookDelivery, int64, error) {
+	q := scopeDeliveries(db.WithContext(ctx).Model(&WebhookDelivery{}), endpointID)
 	if status != "" {
 		q = q.Where("status = ?", status)
 	}
@@ -204,9 +221,18 @@ func ListBillingDeliveries(ctx context.Context, db *gorm.DB, status string, limi
 	return rows, total, err
 }
 
-// RetryBillingDelivery queues a stored event again, with a full set of tries.
+// RetryBillingDelivery queues a stored billing event again, with a full set of tries.
 func RetryBillingDelivery(ctx context.Context, db *gorm.DB, rc *river.Client[pgx.Tx], id string) error {
-	res := db.WithContext(ctx).Model(&WebhookDelivery{}).Where("id = ? AND status <> ?", id, DeliveryDelivered).
+	return retryDelivery(ctx, db, rc, nil, id)
+}
+
+// RetryEndpointDelivery queues one outbound webhook's stored event again.
+func RetryEndpointDelivery(ctx context.Context, db *gorm.DB, rc *river.Client[pgx.Tx], endpointID, id string) error {
+	return retryDelivery(ctx, db, rc, &endpointID, id)
+}
+
+func retryDelivery(ctx context.Context, db *gorm.DB, rc *river.Client[pgx.Tx], endpointID *string, id string) error {
+	res := scopeDeliveries(db.WithContext(ctx).Model(&WebhookDelivery{}), endpointID).Where("id = ? AND status <> ?", id, DeliveryDelivered).
 		Updates(map[string]any{"status": DeliveryPending, "last_error": ""})
 	if res.Error != nil {
 		return res.Error
@@ -214,7 +240,7 @@ func RetryBillingDelivery(ctx context.Context, db *gorm.DB, rc *river.Client[pgx
 	if res.RowsAffected == 0 {
 		return ErrDeliveryNotFound
 	}
-	return enqueueDelivery(ctx, rc, id)
+	return enqueueDelivery(ctx, queueOr(rc), id)
 }
 
 // vmEventFields describes a VM to the billing system: who owns it, which
@@ -245,7 +271,7 @@ func EmitVMBillingEvent(ctx context.Context, db *gorm.DB, rc *river.Client[pgx.T
 	if db == nil {
 		return
 	}
-	if url, _ := resolveBillingWebhook(ctx, db); url == "" {
+	if url, _ := resolveBillingWebhook(ctx, db); url == "" && len(endpointsFor(ctx, db, event)) == 0 {
 		return // skip the lookups: nobody is listening
 	}
 	fields := vmEventFields(ctx, db, vmID)

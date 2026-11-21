@@ -63,6 +63,9 @@ func (h *ImageHandler) CreateImage(c echo.Context) error {
 		if errors.Is(err, service.ErrVMSuspended) {
 			return vmSuspended(c)
 		}
+		if refusedByAccount(c, err) {
+			return nil
+		}
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Internal Server Error", "message": err.Error()})
 	}
 	return c.JSON(http.StatusAccepted, map[string]interface{}{"data": img})

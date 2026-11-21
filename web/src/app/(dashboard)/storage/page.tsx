@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useMemo, useRef } from "react"
+import Link from "next/link"
 import {
   Database,
   Plus,
@@ -21,6 +22,7 @@ import {
   useStoragePools,
   useCreateStoragePool,
   useSetPrimaryPool,
+  useSetPoolTier,
   useDeleteStoragePool,
   useStorageVolumes,
   useCreateStorageVolume,
@@ -264,6 +266,9 @@ export default function StorageListPage() {
   )
   const createPool = useCreateStoragePool()
   const setPrimary = useSetPrimaryPool()
+  const setTier = useSetPoolTier()
+  const [tierPool, setTierPool] = useState<{ id: string; name: string } | null>(null)
+  const [tierValue, setTierValue] = useState("")
   const deletePool = useDeleteStoragePool()
   const [searchQuery, setSearchQuery] = useState("")
   const [showAddPool, setShowAddPool] = useState(false)
@@ -382,11 +387,37 @@ export default function StorageListPage() {
             {stats.totalPools} pools
           </p>
         </div>
-        <Button className="gap-2" onClick={() => setShowAddPool(true)}>
-          <Plus className="w-4 h-4" />
-          Add Pool
-        </Button>
+        <div className="flex gap-2">
+          <Link href="/storage/orphans"><Button variant="outline">Orphaned disks</Button></Link>
+          <Button className="gap-2" onClick={() => setShowAddPool(true)}>
+            <Plus className="w-4 h-4" />
+            Add Pool
+          </Button>
+        </div>
       </div>
+      <Dialog open={!!tierPool} onOpenChange={(o) => { if (!o) setTierPool(null) }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Storage tier of {tierPool?.name}</DialogTitle>
+            <DialogDescription>Plans naming this tier put their VMs&apos; disks only in pools of it. Leave empty for no tier.</DialogDescription>
+          </DialogHeader>
+          <label htmlFor="pool-tier" className="text-sm font-medium">Tier</label>
+          <Input id="pool-tier" value={tierValue} onChange={(e) => setTierValue(e.target.value)} placeholder="nvme" />
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setTierPool(null)}>Cancel</Button>
+            <Button disabled={setTier.isPending} onClick={async () => {
+              if (!tierPool) return
+              try {
+                await setTier.mutateAsync({ id: tierPool.id, tier: tierValue })
+                toast.success(tierValue.trim() ? `${tierPool.name} is in tier ${tierValue.trim().toLowerCase()}` : `${tierPool.name} has no tier`)
+                setTierPool(null)
+              } catch (err) {
+                toast.error((err as Error).message)
+              }
+            }}>Save</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
         <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm">
@@ -463,6 +494,7 @@ export default function StorageListPage() {
                   <div>
                     <h3 className="text-lg font-semibold">{pool.name}</h3>
                     <p className="text-sm font-mono text-muted-foreground">{pool.path}</p>
+                    <p className="text-xs text-muted-foreground mt-1">{pool.tier ? `Tier ${pool.tier}` : "No tier"}</p>
                   </div>
                   <div className="flex items-center gap-2">
                     {/* Where this node puts new VMs. Worth showing on the card
@@ -541,6 +573,10 @@ export default function StorageListPage() {
                   >
                     <Settings className="w-4 h-4" />
                     <span className="ml-1">Volumes</span>
+                  </Button>
+
+                  <Button variant="outline" size="sm" onClick={() => { setTierPool({ id: pool.id, name: pool.name }); setTierValue(pool.tier ?? "") }}>
+                    Tier
                   </Button>
 
                   {!pool.is_primary && pool.status === "online" && (

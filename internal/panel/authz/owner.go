@@ -4,10 +4,11 @@
 // containment close to the resource it protects and preserves the existing
 // per-resource ownership model used by the VM handler.
 //
-// Semantics (Phase 1 accepted policy):
+// Semantics:
 //   - Admins may act on any VM (the current admin role semantics are reused; no
 //     new RBAC roles are invented here).
-//   - Every non-admin user may act only on VMs they own.
+//   - Every non-admin user may act on VMs they own, and on the VMs their team
+//     memberships cover as their member role allows (service.CheckVMAccess).
 //   - Anti-enumeration: a non-owner and a nonexistent VM-scoped resource map
 //     IDENTICALLY to 404 ("Not Found"). Missing authentication maps to 401.
 //   - Sub-resource operations (network/port-forward/firewall) are additionally
@@ -22,6 +23,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/maburvm/panel/internal/panel/middleware"
+	"github.com/maburvm/panel/internal/panel/service"
 	"github.com/maburvm/panel/internal/shared/models"
 	"gorm.io/gorm"
 )
@@ -62,11 +64,29 @@ func Forbidden(c echo.Context) {
 	})
 }
 
-// AuthorizeVM enforces per-resource tenant isolation for a VM-scoped request.
-// It returns true when the caller is authorized. When not, it writes the
-// appropriate response (401 if unauthenticated, 404 otherwise) and returns
-// false. The caller should then `return nil`, as the response is committed.
+// AuthorizeVM enforces per-resource tenant isolation for a VM-scoped request,
+// as service.CheckVMAccess decides: a read needs the VM to be the caller's or
+// covered by one of their team memberships; anything else also needs a role
+// that operates and a VM that is not suspended. It returns true when the
+// caller is authorized. When not, it writes the response (401 if
+// unauthenticated, 403 for a suspended VM or a view-only member, 404
+// otherwise) and returns false. The caller should then `return nil`, as the
+// response is committed.
 func (a *Authorizer) AuthorizeVM(c echo.Context, vmID string) bool {
+	need := service.AccessChange
+	if m := c.Request().Method; m == http.MethodGet || m == http.MethodHead {
+		need = service.AccessRead
+	}
+	return a.authorize(c, vmID, need)
+}
+
+// AuthorizeVMOperate is AuthorizeVM for a read that hands over control or a
+// secret: it needs a role that operates, but not a VM that is running.
+func (a *Authorizer) AuthorizeVMOperate(c echo.Context, vmID string) bool {
+	return a.authorize(c, vmID, service.AccessOperate)
+}
+
+func (a *Authorizer) authorize(c echo.Context, vmID string, need service.AccessNeed) bool {
 	userCtx, ok := middleware.GetUserContext(c)
 	if !ok {
 		Unauthorized(c)
@@ -80,22 +100,29 @@ func (a *Authorizer) AuthorizeVM(c echo.Context, vmID string) bool {
 	err := errors.New("authorizer has no database")
 	if a.db != nil {
 		err = a.db.WithContext(c.Request().Context()).Model(&models.VM{}).
-			Select("user_id", "status", "suspended").Where("id = ?", vmID).First(&vm).Error
+			Select("id", "user_id", "status", "suspended").Where("id = ?", vmID).First(&vm).Error
 	}
-	if err != nil || vm.UserID != userCtx.ID.String() {
-		NotFound(c)
-		return false
+	if err == nil {
+		err = service.CheckVMAccess(c.Request().Context(), a.db, &vm, userCtx.ID.String(), false, need)
 	}
-	// A suspended VM is read-only to its owner: every route that changes it, or
-	// makes something out of it (clone, image, restore), is a non-GET.
-	if m := c.Request().Method; (vm.Suspended || vm.Status == models.VMStatusSuspended) && m != http.MethodGet && m != http.MethodHead {
+	switch {
+	case err == nil:
+		return true
+	case errors.Is(err, service.ErrVMSuspended):
 		_ = c.JSON(http.StatusForbidden, map[string]interface{}{
 			"error":   "Forbidden",
 			"message": "This VM is suspended. Contact support to restore service.",
 		})
-		return false
+	case errors.Is(err, service.ErrMemberReadOnly):
+		_ = c.JSON(http.StatusForbidden, map[string]interface{}{
+			"error":   "Forbidden",
+			"code":    "member_read_only",
+			"message": "Your role in this account lets you view this VM, not change it.",
+		})
+	default:
+		NotFound(c)
 	}
-	return true
+	return false
 }
 
 // AuthorizeAdmin restricts an action to administrators. It returns true when the
