@@ -496,7 +496,7 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 			// overcommit ratio) is the fix, not a quota change.
 			return c.JSON(http.StatusServiceUnavailable, map[string]interface{}{
 				"error":   "Node Capacity Exceeded",
-				"message": err.Error(),
+				"message": capacityMessage(c, err),
 			})
 		default:
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
@@ -545,6 +545,9 @@ type VMListItem struct {
 	UserID       string      `json:"user_id"`
 	OSTemplateID string      `json:"os_template_id"`
 	Resources    VMResources `json:"resources"`
+	// StateUnknown: the node is offline, so Status is only what the panel last
+	// saw and must not be shown as the VM's state.
+	StateUnknown bool `json:"state_unknown"`
 	// Where the VM physically runs. Customers reason in regions, never in nodes,
 	// so this is what pairs a VM with the private networks and floating IPs it
 	// can actually use.
@@ -655,6 +658,7 @@ func (h *VMHandler) ListVMs(c echo.Context) error {
 			NodeID:        vm.NodeID,
 			NodeName:      node.Name,
 			NodeStatus:    string(node.Status),
+			StateUnknown:  node.Status == models.NodeStatusOffline,
 			UserID:        vm.UserID,
 			OSTemplateID:  vm.OSTemplateID,
 			Resources: VMResources{
@@ -717,6 +721,9 @@ type VMDetailResponse struct {
 	AttachedISO *string                `json:"attached_iso"`
 	Suspended   bool                   `json:"suspended"`
 	AgentStatus map[string]interface{} `json:"agent_status,omitempty"`
+	// StateUnknown: the node is offline, so Status is only what the panel last saw.
+	NodeStatus   string `json:"node_status,omitempty"`
+	StateUnknown bool   `json:"state_unknown"`
 	// Routed IPv6 delegated to the VM; all empty when it has none.
 	IPv6Prefix  string `json:"ipv6_prefix,omitempty"`
 	IPv6Address string `json:"ipv6_address,omitempty"`
@@ -778,6 +785,10 @@ func (h *VMHandler) GetVM(c echo.Context) error {
 		UpdatedAt:      vm.VM.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 	}
 
+	if vm.Node != nil {
+		resp.NodeStatus = string(vm.Node.Status)
+		resp.StateUnknown = vm.Node.Status == models.NodeStatusOffline
+	}
 	if vm.VM.VNCPort != nil {
 		resp.VNCPort = *vm.VM.VNCPort
 	}
@@ -920,7 +931,7 @@ func (h *VMHandler) UpdateVM(c echo.Context) error {
 			// overcommit ratio) is the fix, not a quota change.
 			return c.JSON(http.StatusServiceUnavailable, map[string]interface{}{
 				"error":   "Node Capacity Exceeded",
-				"message": err.Error(),
+				"message": capacityMessage(c, err),
 			})
 		default:
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
@@ -1313,6 +1324,8 @@ func (h *VMHandler) CloneVM(c echo.Context) error {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "OS template not found"})
 		case errors.Is(err, service.ErrQuotaExceeded):
 			return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "Quota Exceeded", "message": err.Error()})
+		case errors.Is(err, service.ErrNodeCapacityExceeded):
+			return c.JSON(http.StatusServiceUnavailable, map[string]interface{}{"error": "Node Capacity Exceeded", "message": capacityMessage(c, err)})
 		default:
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
 		}
@@ -1326,6 +1339,15 @@ func (h *VMHandler) CloneVM(c echo.Context) error {
 			"status": resp.Status,
 		},
 	})
+}
+
+// capacityMessage says why a node refused: in full to staff, and without the
+// node's pool names and free space to a customer.
+func capacityMessage(c echo.Context, err error) string {
+	if isClientRole(c) {
+		return "There is no room for this on the server's node right now. Contact support."
+	}
+	return err.Error()
 }
 
 // ListVMDisks handles GET /api/vms/:id/disks - list extra data disks.
@@ -1358,6 +1380,9 @@ func (h *VMHandler) AttachVMDisk(c echo.Context) error {
 	if err != nil {
 		if errors.Is(err, service.ErrVMNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
+		}
+		if errors.Is(err, service.ErrNodeCapacityExceeded) {
+			return c.JSON(http.StatusServiceUnavailable, map[string]interface{}{"error": "Node Capacity Exceeded", "message": capacityMessage(c, err)})
 		}
 		// Disk admission rejection is a client-side quota condition, not a server
 		// fault: map it to 400 without leaking policy/cap detail or a generic 500.

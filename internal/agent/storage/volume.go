@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -38,6 +39,34 @@ func normalizePoolType(t string) string {
 	default:
 		return strings.ToLower(strings.TrimSpace(t)) // unsupported -> errors below
 	}
+}
+
+// DataDiskDir picks the directory an extra disk is created in: the pool the
+// panel named, else the directory holding the VM's own disk, else fallback.
+//
+// The fallback is the node's default image directory, on its root filesystem,
+// which is why it comes last: a data disk filling that volume takes libvirt
+// and the agent down with it. A named pool that is not an existing directory
+// is skipped, not created, so a bad path cannot become a write location.
+func DataDiskDir(poolPath, primaryDisk, fallback string) string {
+	isDir := func(p string) bool {
+		if p == "" || !filepath.IsAbs(p) {
+			return false
+		}
+		info, err := os.Stat(p)
+		return err == nil && info.IsDir()
+	}
+	if p := strings.TrimSpace(poolPath); isDir(p) {
+		return filepath.Clean(p)
+	}
+	// A VM on a block device (/dev/vg/lv) has no directory to share: /dev is
+	// memory, not storage.
+	if primaryDisk = strings.TrimSpace(primaryDisk); primaryDisk != "" && !strings.HasPrefix(primaryDisk, "/dev/") {
+		if dir := filepath.Dir(primaryDisk); isDir(dir) {
+			return dir
+		}
+	}
+	return fallback
 }
 
 // lvCreateArgs builds args for `lvcreate -L <size>G -n <name> <vg>`.

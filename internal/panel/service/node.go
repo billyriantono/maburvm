@@ -406,22 +406,12 @@ func (s *NodeService) GetNodesWithHealth(ctx context.Context) ([]NodeWithHealth,
 	}
 	wg.Wait()
 
+	// The stored status is the collector's to change: it marks a node offline
+	// after several missed checks and tells operators. Loading this page must
+	// not flip it on a single dial.
 	result := make([]NodeWithHealth, len(nodes))
 	for i, node := range nodes {
-		online := onlineByIdx[i]
-		result[i] = NodeWithHealth{
-			Node:   node,
-			Online: online,
-		}
-
-		// Auto-sync status based on health check
-		if online && node.Status == models.NodeStatusOffline {
-			_ = s.repo.UpdateStatus(ctx, node.ID, models.NodeStatusActive)
-			result[i].Node.Status = models.NodeStatusActive
-		} else if !online && node.Status == models.NodeStatusActive {
-			_ = s.repo.UpdateStatus(ctx, node.ID, models.NodeStatusOffline)
-			result[i].Node.Status = models.NodeStatusOffline
-		}
+		result[i] = NodeWithHealth{Node: node, Online: onlineByIdx[i]}
 	}
 
 	return result, nil
@@ -475,10 +465,27 @@ func (s *NodeService) GetNodeMetrics(ctx context.Context, id string) (*NodeMetri
 	if err != nil {
 		return nil, fmt.Errorf("failed to check node health: %w", err)
 	}
+	return s.nodeMetrics(ctx, node, online), nil
+}
+
+// PollNodeMetrics is GetNodeMetrics for the collector: it dials the node now
+// instead of trusting the answer a page cached, because marking a node offline
+// is decided on what this returns.
+func (s *NodeService) PollNodeMetrics(ctx context.Context, node *models.Node) *NodeMetrics {
+	online := s.dialNode(ctx, fmt.Sprintf("%s:%d", node.IPAddress, s.agentPort))
+	return s.nodeMetrics(ctx, node, online)
+}
+
+// nodeMetrics asks a node for its figures. online is whether its agent port
+// answered; a node that did not gets zeros marked "offline", never an error.
+func (s *NodeService) nodeMetrics(ctx context.Context, node *models.Node, online bool) *NodeMetrics {
+	id := node.ID
 
 	// Get VM count from database
 	var vmCount int64
-	s.db.WithContext(ctx).Model(&models.VM{}).Where("node_id = ?", id).Count(&vmCount)
+	if s.db != nil {
+		s.db.WithContext(ctx).Model(&models.VM{}).Where("node_id = ?", id).Count(&vmCount)
+	}
 
 	if !online {
 		return &NodeMetrics{
@@ -491,7 +498,7 @@ func (s *NodeService) GetNodeMetrics(ctx context.Context, id string) (*NodeMetri
 			Status:      "offline",
 
 			FirewallEnforcement: models.FirewallUnknown,
-		}, nil
+		}
 	}
 
 	// Register node with agent client and try to get metrics
@@ -537,7 +544,7 @@ func (s *NodeService) GetNodeMetrics(ctx context.Context, id string) (*NodeMetri
 				NATAddress:           liveInfo.NATAddress,
 				Live:                 true,
 				Status:               "online",
-			}, nil
+			}
 		}
 		// If gRPC call fails, fall through to return online with zero metrics
 	}
@@ -563,7 +570,7 @@ func (s *NodeService) GetNodeMetrics(ctx context.Context, id string) (*NodeMetri
 		LoadAvg:              []float64{0, 0, 0},
 		Status:               "online",
 		FirewallEnforcement:  models.FirewallUnknown,
-	}, nil
+	}
 }
 
 // NodeMetrics represents node performance metrics

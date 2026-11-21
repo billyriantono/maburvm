@@ -1,0 +1,21 @@
+# Secret scanning rules for CI (.github/workflows/ci.yml): the gitleaks defaults,
+# minus the placeholders listed here. Every entry is a value that is not a
+# secret. Never allow a whole file or directory: a real key in a test file is
+# still a leaked key.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Fixed placeholder keys used by tests"
+regexTarget = "secret"
+regexes = [
+  '''^(0123456789abcdef)+$''',
+  '''^test-jwt-secret-key-for-oidc-tests-0123456789$''',
+]
+
+[[allowlists]]
+description = "Mock node tokens in the first UI prototype, long since removed"
+commits = ["3beb2b89c61d1e73fe5887cbb7af0c6f08023c43"]
+regexTarget = "secret"
+regexes = ['''^tok_[a-z]{3}[0-9]{3}[a-z]{3}$''']
+condition = "AND"

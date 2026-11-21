@@ -9,6 +9,10 @@ export interface Node {
   status: NodeStatus;
   /** No new VMs are placed on the node; the ones already there are unaffected. */
   creation_paused?: boolean;
+  /** When the node's agent last reported to the panel; absent if it never has. */
+  last_report_at?: string | null;
+  /** Checks in a row the node has missed. 0 while it is reporting. */
+  failed_polls?: number;
   created_at: string;
   updated_at: string;
 }

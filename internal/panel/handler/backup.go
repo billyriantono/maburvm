@@ -9,6 +9,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/maburvm/panel/internal/panel/middleware"
+	"github.com/maburvm/panel/internal/panel/repository"
 	"github.com/maburvm/panel/internal/panel/service"
 	"github.com/maburvm/panel/internal/shared/models"
 	"gorm.io/gorm"
@@ -17,6 +18,8 @@ import (
 // BackupHandler handles HTTP requests for backup management
 type BackupHandler struct {
 	service *service.BackupService
+	// audit records restores that create a VM. Set by RegisterBackupRoutes.
+	audit *repository.AuditRepository
 }
 
 // NewBackupHandler creates a new BackupHandler instance
@@ -338,15 +341,34 @@ func (h *BackupHandler) DeleteBackup(c echo.Context) error {
 	}
 
 	// Delete backup
-	if err := h.service.DeleteBackup(c.Request().Context(), backupID); err != nil {
+	fileNotDeleted, err := h.service.DeleteBackup(c.Request().Context(), backupID)
+	if err != nil {
+		if errors.Is(err, service.ErrBackupFileKept) {
+			// Why is for staff: it can name the storage endpoint and bucket.
+			msg := service.ErrBackupFileKept.Error() + ". Try again later."
+			if !isClientRole(c) {
+				msg = err.Error()
+			}
+			return c.JSON(http.StatusConflict, map[string]interface{}{
+				"error":   "Conflict",
+				"code":    "backup_file_kept",
+				"message": msg,
+			})
+		}
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
 			"error":   "Internal Server Error",
 			"message": err.Error(),
 		})
 	}
 
+	msg := "Backup deleted successfully"
+	if fileNotDeleted && !isClientRole(c) {
+		msg = "Backup removed from the panel. Its file was not found in the backup destination, so nothing was deleted from storage. A file kept in a node's own storage is still there."
+	}
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"message": "Backup deleted successfully",
+		"success":          true,
+		"message":          msg,
+		"file_not_deleted": fileNotDeleted && !isClientRole(c),
 	})
 }
 
@@ -440,6 +462,73 @@ func (h *BackupHandler) RestoreBackup(c echo.Context) error {
 			BackupID: resp.BackupID,
 			JobID:    resp.JobID,
 			Status:   "pending",
+		},
+	})
+}
+
+// RestoreAsNewRequest is the body of a restore onto another node.
+type RestoreAsNewRequest struct {
+	NodeID   string `json:"node_id"`
+	Hostname string `json:"hostname,omitempty"`
+	IPPoolID string `json:"ip_pool_id,omitempty"`
+}
+
+// RestoreAsNew handles POST /api/v1/vms/:id/backups/:backup_id/restore-new:
+// the backup becomes a new VM on the chosen node. Administrators only.
+func (h *BackupHandler) RestoreAsNew(c echo.Context) error {
+	vmID, backupID := c.Param("id"), c.Param("backup_id")
+	var req RestoreAsNewRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Invalid request body"})
+	}
+	if req.NodeID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Choose the node to restore onto"})
+	}
+	ctx := c.Request().Context()
+	backup, err := h.service.GetBackup(ctx, backupID)
+	if err != nil || backup.VMID != vmID {
+		if err != nil && !errors.Is(err, service.ErrBackupNotFound) {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Internal Server Error", "message": err.Error()})
+		}
+		return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "Backup not found for this VM"})
+	}
+
+	resp, err := h.service.RestoreAsNewVM(ctx, &service.RestoreAsNewRequest{
+		BackupID: backupID, NodeID: req.NodeID, Hostname: req.Hostname, IPPoolID: req.IPPoolID,
+	})
+	if err != nil {
+		status := http.StatusBadRequest
+		switch {
+		case errors.Is(err, service.ErrVMNotFound), errors.Is(err, service.ErrBackupNotFound), errors.Is(err, service.ErrNodeNotFound), errors.Is(err, service.ErrTemplateNotFound):
+			status = http.StatusNotFound
+		case errors.Is(err, service.ErrHostnameExists):
+			status = http.StatusConflict
+		case errors.Is(err, service.ErrNodeCapacityExceeded):
+			status = http.StatusServiceUnavailable
+		}
+		return c.JSON(status, map[string]interface{}{"error": http.StatusText(status), "message": err.Error()})
+	}
+
+	if h.audit != nil {
+		entry := &models.AuditLog{
+			Action: "vm.restore_as_new", ResourceType: "vm", ResourceID: &resp.VM.ID,
+			IPAddress: c.RealIP(), UserAgent: c.Request().UserAgent(),
+			Details: map[string]any{"backup_id": backupID, "source_vm_id": vmID, "node_id": req.NodeID, "hostname": resp.VM.Hostname},
+		}
+		if uc, ok := middleware.GetUserContext(c); ok {
+			uid := uc.ID.String()
+			entry.UserID = &uid
+		}
+		_ = h.audit.Create(ctx, entry)
+	}
+
+	return c.JSON(http.StatusAccepted, map[string]interface{}{
+		"success": true,
+		"message": "Restore as a new VM started",
+		"data": map[string]interface{}{
+			"vm":     resp.VM,
+			"job_id": resp.JobID,
+			"status": resp.Status,
 		},
 	})
 }
@@ -725,6 +814,9 @@ func RegisterBackupRoutes(e *echo.Echo, handler *BackupHandler, db *gorm.DB) {
 
 	// Apply authentication middleware
 	vms.Use(middleware.RequireAuth(db))
+	if handler.audit == nil && db != nil {
+		handler.audit = repository.NewAuditRepository(db)
+	}
 
 	backups := vms.Group("/:id/backups")
 	{
@@ -733,6 +825,9 @@ func RegisterBackupRoutes(e *echo.Echo, handler *BackupHandler, db *gorm.DB) {
 		backups.GET("/:backup_id", handler.GetBackup, middleware.RequirePermission("backup:read"))
 		backups.DELETE("/:backup_id", handler.DeleteBackup, middleware.RequirePermission("backup:delete"))
 		backups.POST("/:backup_id/restore", handler.RestoreBackup, middleware.RequirePermission("backup:update"))
+		// Choosing a node is an operator's decision, and the new VM is not
+		// checked against the owner's quota.
+		backups.POST("/:backup_id/restore-new", handler.RestoreAsNew, middleware.RequirePermission("admin:access"))
 	}
 
 	schedule := vms.Group("/:id/backup-schedule")

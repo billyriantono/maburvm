@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useMemo } from "react"
+import { useState, useEffect } from "react"
 import { useSystemVersion, useUpdateAgent } from "@/lib/hooks/use-version"
 import { OperationProgress, type ProgressStep } from "@/components/operation-progress"
 import { useSystemSettings, useSaveSystemSettings, useTestEmail } from "@/lib/hooks/use-settings"
@@ -10,7 +10,6 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
 import { z } from "zod"
 import {
-  Globe,
   Shield,
   Database,
   Key,
@@ -23,9 +22,6 @@ import {
   EyeOff,
   RotateCcw,
 
-  Clock,
-  Calendar,
-  Timer,
   Link,
   Lock,
   Server,
@@ -36,29 +32,14 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { DNSProviderSettings } from "@/components/dns-provider-settings"
+import { BackupDestinationSettings } from "@/components/backup-destination-settings"
 
-// General settings schema
-const generalSchema = z.object({
-  panelName: z.string().min(1, "Panel name is required"),
-  timezone: z.string().min(1, "Timezone is required"),
-})
-
-// Security settings schema
+// The password policy. Read by LoadPasswordPolicy in internal/panel/service/user.go.
 const securitySchema = z.object({
-  sessionTimeout: z.number().min(5, "Minimum 5 minutes").max(1440, "Maximum 1440 minutes"),
-  minPasswordLength: z.number().min(8, "Minimum 8 characters").max(128, "Maximum 128 characters"),
+  minPasswordLength: z.number().int().min(8, "Minimum 8 characters").max(128, "Maximum 128 characters"),
   requireUppercase: z.boolean(),
   requireNumbers: z.boolean(),
   requireSpecial: z.boolean(),
-  maxLoginAttempts: z.number().min(3).max(10),
-  lockoutDuration: z.number().min(1).max(60),
-})
-
-// Backup settings schema
-const backupSchema = z.object({
-  defaultRetention: z.number().min(1, "Minimum 1 day").max(365, "Maximum 365 days"),
-  schedule: z.string().min(1, "Schedule is required"),
-  autoCleanup: z.boolean(),
 })
 
 // API settings schema
@@ -66,7 +47,6 @@ const apiSchema = z.object({
   webhookUrl: z.string().url("Invalid URL").or(z.literal("")),
   hmacSecret: z.string().min(32, "HMAC secret must be at least 32 characters").or(z.literal("")),
   enableApi: z.boolean(),
-  rateLimit: z.number().min(10).max(1000),
   abuseipdbToken: z.string().or(z.literal("")),
 })
 
@@ -89,7 +69,7 @@ const quotaSchema = z.object({
   // Overcommit ratios allow 0, unlike the limits above: for these, 0 is a
   // meaningful setting ("do not enforce") rather than an accidental lockout.
   ramOvercommitRatio: z.number().min(0).max(20),
-  diskOvercommitRatio: z.number().min(0).max(20),
+  diskAllocationRatio: z.number().min(0).max(20),
 })
 
 // Email settings schema
@@ -103,40 +83,23 @@ const emailSchema = z.object({
   enableTls: z.boolean(),
 })
 
-type GeneralFormData = z.infer<typeof generalSchema>
 type SecurityFormData = z.infer<typeof securitySchema>
-type BackupFormData = z.infer<typeof backupSchema>
 type APIFormData = z.infer<typeof apiSchema>
 type QuotaFormData = z.infer<typeof quotaSchema>
 type EmailFormData = z.infer<typeof emailSchema>
 
-// Default form values — will be populated from API when system settings endpoint is available
-const defaultGeneralSettings = {
-  panelName: "MaburVM",
-  timezone: "UTC",
-}
-
+// Must mirror LoadPasswordPolicy's built-in values.
 const defaultSecuritySettings = {
-  sessionTimeout: 60,
   minPasswordLength: 12,
   requireUppercase: true,
   requireNumbers: true,
   requireSpecial: true,
-  maxLoginAttempts: 5,
-  lockoutDuration: 15,
-}
-
-const defaultBackupSettings = {
-  defaultRetention: 30,
-  schedule: "0 2 * * *",
-  autoCleanup: true,
 }
 
 const defaultApiSettings = {
   webhookUrl: "",
   hmacSecret: "",
   enableApi: true,
-  rateLimit: 100,
   abuseipdbToken: "",
 }
 
@@ -153,11 +116,10 @@ const defaultQuotaSettings = {
   newClientMaxVcpu: 4,
   newClientMaxRamMb: 8192,
   newClientMaxDiskGb: 100,
-  // Must mirror DefaultRAMOvercommitRatio / DefaultDiskOvercommitRatio in
-  // internal/panel/service/settings.go: 0 = RAM unenforced, 1 = disk admitted
-  // against real free space.
+  // Must mirror DefaultRAMOvercommitRatio / DefaultDiskAllocationRatio in
+  // internal/panel/service/settings.go: 0 = not enforced.
   ramOvercommitRatio: 0,
-  diskOvercommitRatio: 1,
+  diskAllocationRatio: 0,
 }
 
 const defaultEmailSettings = {
@@ -169,54 +131,6 @@ const defaultEmailSettings = {
   smtpFromName: "",
   enableTls: true,
 }
-
-// Every timezone the browser knows (the IANA list, about 400), grouped by
-// region and labelled with the city and its current UTC offset. The short
-// list is only the fallback for a browser too old to enumerate them.
-const FALLBACK_ZONES = ["UTC", "Asia/Jakarta", "Asia/Singapore", "Asia/Tokyo", "Europe/London", "Europe/Paris", "America/New_York", "America/Los_Angeles", "Australia/Sydney"]
-
-function utcOffset(zone: string): { minutes: number; text: string } {
-  try {
-    const part = new Intl.DateTimeFormat("en-US", { timeZone: zone, timeZoneName: "longOffset" })
-      .formatToParts(new Date()).find((p) => p.type === "timeZoneName")?.value ?? "GMT"
-    const m = part.match(/GMT([+-])(\d{2}):?(\d{2})?/)
-    if (!m) return { minutes: 0, text: "UTC+00:00" }
-    const minutes = (m[1] === "-" ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3] ?? 0))
-    return { minutes, text: `UTC${m[1]}${m[2]}:${m[3] ?? "00"}` }
-  } catch {
-    return { minutes: 0, text: "UTC+00:00" }
-  }
-}
-
-function timezoneGroups(): { region: string; zones: { value: string; label: string }[] }[] {
-  const supported = (Intl as unknown as { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf
-  const all = supported ? supported("timeZone") : FALLBACK_ZONES
-  const groups = new Map<string, { value: string; label: string; minutes: number }[]>()
-  for (const zone of all) {
-    if (zone === "UTC") continue
-    const slash = zone.indexOf("/")
-    const region = slash > 0 ? zone.slice(0, slash) : "Other"
-    const city = (slash > 0 ? zone.slice(slash + 1) : zone).replace(/_/g, " ").replace(/\//g, ", ")
-    const off = utcOffset(zone)
-    if (!groups.has(region)) groups.set(region, [])
-    groups.get(region)!.push({ value: zone, label: `${city} (${off.text})`, minutes: off.minutes })
-  }
-  return [...groups.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([region, zones]) => ({
-      region,
-      zones: zones.sort((a, b) => a.minutes - b.minutes || a.label.localeCompare(b.label)),
-    }))
-}
-
-// Backup schedule presets
-const schedulePresets = [
-  { value: "0 2 * * *", label: "Daily at 2:00 AM" },
-  { value: "0 2 * * 0", label: "Weekly on Sunday at 2:00 AM" },
-  { value: "0 2 1 * *", label: "Monthly on the 1st at 2:00 AM" },
-  { value: "0 */6 * * *", label: "Every 6 hours" },
-  { value: "0 */12 * * *", label: "Every 12 hours" },
-]
 
 // BuildPanel shows the panel's build and each node's agent build.
 //
@@ -416,27 +330,10 @@ export default function SystemSettingsPage() {
   const saveSettings = useSaveSystemSettings()
   const testEmail = useTestEmail()
 
-  // General form
-  // Built in the browser: the zone list and "this computer's zone" depend on it.
-  const zoneGroups = useMemo(() => timezoneGroups(), [])
-  const [browserZone, setBrowserZone] = useState("")
-  useEffect(() => { setBrowserZone(Intl.DateTimeFormat().resolvedOptions().timeZone || "") }, [])
-
-  const generalForm = useForm<GeneralFormData>({
-    resolver: zodResolver(generalSchema),
-    defaultValues: defaultGeneralSettings,
-  })
-
   // Security form
   const securityForm = useForm<SecurityFormData>({
     resolver: zodResolver(securitySchema),
     defaultValues: defaultSecuritySettings,
-  })
-
-  // Backup form
-  const backupForm = useForm<BackupFormData>({
-    resolver: zodResolver(backupSchema),
-    defaultValues: defaultBackupSettings,
   })
 
   // API form
@@ -459,9 +356,7 @@ export default function SystemSettingsPage() {
   // Populate forms from persisted settings once loaded.
   useEffect(() => {
     if (!sysSettings) return
-    if (sysSettings.general) generalForm.reset({ ...defaultGeneralSettings, ...sysSettings.general })
     if (sysSettings.security) securityForm.reset({ ...defaultSecuritySettings, ...sysSettings.security })
-    if (sysSettings.backup) backupForm.reset({ ...defaultBackupSettings, ...sysSettings.backup })
     if (sysSettings.api) apiForm.reset({ ...defaultApiSettings, ...sysSettings.api })
     if (sysSettings.quotas) quotaForm.reset({ ...defaultQuotaSettings, ...sysSettings.quotas })
     if (sysSettings.email) emailForm.reset({ ...defaultEmailSettings, ...sysSettings.email })
@@ -483,17 +378,11 @@ export default function SystemSettingsPage() {
     }
   }
 
-  const handleSaveGeneral = (data: GeneralFormData) =>
-    saveSection("general", data, "General settings", `Panel name: ${data.panelName}, Timezone: ${data.timezone}`)
-
   const handleSaveSecurity = (data: SecurityFormData) =>
-    saveSection("security", data, "Security settings", `Session timeout: ${data.sessionTimeout} minutes`)
-
-  const handleSaveBackup = (data: BackupFormData) =>
-    saveSection("backup", data, "Backup settings", `Retention: ${data.defaultRetention} days`)
+    saveSection("security", data, "Password policy", `New passwords need at least ${data.minPasswordLength} characters`)
 
   const handleSaveApi = (data: APIFormData) =>
-    saveSection("api", data, "API settings", data.enableApi ? "API access is enabled" : "API access is disabled")
+    saveSection("api", data, "API settings", data.enableApi ? "API keys are accepted" : "API keys are refused")
 
   const handleSaveEmail = (data: EmailFormData) =>
     saveSection("email", data, "Email settings", `SMTP configured for ${data.smtpHost}`)
@@ -511,6 +400,7 @@ export default function SystemSettingsPage() {
         smtpPassword: v.smtpPassword,
         smtpFrom: v.smtpFrom,
         smtpFromName: v.smtpFromName,
+        enableTls: v.enableTls,
       })
       toast.success("Test email sent", { description: res.message })
     } catch (err) {
@@ -520,9 +410,7 @@ export default function SystemSettingsPage() {
 
   const handleResetSettings = (type: string) => {
     const resets: Record<string, () => void> = {
-      General: () => generalForm.reset(defaultGeneralSettings),
       Security: () => securityForm.reset(defaultSecuritySettings),
-      Backup: () => backupForm.reset(defaultBackupSettings),
       API: () => apiForm.reset(defaultApiSettings),
       Quotas: () => quotaForm.reset(defaultQuotaSettings),
       Email: () => emailForm.reset(defaultEmailSettings),
@@ -584,8 +472,8 @@ export default function SystemSettingsPage() {
       <Tabs defaultValue="general" className="space-y-6">
         <TabsList>
           <TabsTrigger value="general" className="text-xs">
-            <Globe className="w-4 h-4 mr-2" />
-            General
+            <Server className="w-4 h-4 mr-2" />
+            Version
           </TabsTrigger>
           <TabsTrigger value="security" className="text-xs">
             <Shield className="w-4 h-4 mr-2" />
@@ -609,200 +497,64 @@ export default function SystemSettingsPage() {
           </TabsTrigger>
         </TabsList>
 
-        {/* General Settings */}
+        {/* Which build is actually running, on the panel and on each node.
+            The panel's name and logo are set under Settings, Branding. */}
         <TabsContent value="general">
           <Card>
             <CardHeader className="border-b">
               <CardTitle className="flex items-center gap-2">
-                <Globe className="w-5 h-5" />
-                General Settings
+                <Server className="w-5 h-5" />
+                Version
               </CardTitle>
-              <CardDescription>Basic panel configuration</CardDescription>
+              <CardDescription>
+                The build the panel and each node&apos;s agent are running. The panel&apos;s name and
+                logo are set under Branding.
+              </CardDescription>
             </CardHeader>
             <CardContent className="p-6">
-              <form onSubmit={generalForm.handleSubmit(handleSaveGeneral)} className="space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  {/* Panel Name */}
-                  <div>
-                    <label htmlFor="panelName" className="block text-sm font-medium text-muted-foreground mb-2">
-                      Panel Name
-                    </label>
-                    <Input
-                      id="panelName"
-                      {...generalForm.register("panelName")}
-                      placeholder="MaburVM"
-                    />
-                    {generalForm.formState.errors.panelName && (
-                      <p className="text-destructive text-sm mt-1">
-                        {generalForm.formState.errors.panelName.message}
-                      </p>
-                    )}
-                  </div>
-
-                  {/* Timezone */}
-                  <div>
-                    <label htmlFor="timezone" className="block text-sm font-medium text-muted-foreground mb-2">
-                      Timezone
-                    </label>
-                    <select
-                      id="timezone"
-                      {...generalForm.register("timezone")}
-                      className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                    >
-                      <option value="UTC">UTC (UTC+00:00)</option>
-                      {zoneGroups.map((g) => (
-                        <optgroup key={g.region} label={g.region}>
-                          {g.zones.map((tz) => (
-                            <option key={tz.value} value={tz.value}>
-                              {tz.label}
-                            </option>
-                          ))}
-                        </optgroup>
-                      ))}
-                    </select>
-                    <p className="text-xs text-muted-foreground mt-1.5">
-                      Type a city name with the list open to jump to it.
-                      {browserZone && browserZone !== generalForm.watch("timezone") && (
-                        <>
-                          {" "}
-                          <button
-                            type="button"
-                            onClick={() => generalForm.setValue("timezone", browserZone, { shouldDirty: true })}
-                            className="underline underline-offset-2 text-foreground cursor-pointer"
-                          >
-                            Use this computer&apos;s zone ({browserZone.replace(/_/g, " ")})
-                          </button>
-                        </>
-                      )}
-                    </p>
-                    {generalForm.formState.errors.timezone && (
-                      <p className="text-destructive text-sm mt-1">
-                        {generalForm.formState.errors.timezone.message}
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                {/* Which build is actually running. Replaces a hardcoded
-                    "Version: 1.0.0 | Nodes: 3" that never changed, and so could
-                    not answer the only question it was there to answer. */}
-                <BuildPanel />
-
-                <div className="flex items-center justify-between pt-4 border-t">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    onClick={() => handleResetSettings("General")}
-                  >
-                    <RotateCcw className="w-4 h-4 mr-2" />
-                    Reset to Defaults
-                  </Button>
-                  <Button type="submit" disabled={isSaving === "general"}>
-                    {isSaving === "general" ? (
-                      <>
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                        Saving...
-                      </>
-                    ) : (
-                      <>
-                        {saved.active("general") ? <Check className="w-4 h-4 mr-2" aria-hidden="true" /> : <Save className="w-4 h-4 mr-2" aria-hidden="true" />}
-                        {saved.active("general") ? "Saved" : "Save Settings"}
-                      </>
-                    )}
-                  </Button>
-                </div>
-              </form>
+              <BuildPanel />
             </CardContent>
           </Card>
         </TabsContent>
 
-        {/* Security Settings */}
+        {/* Password policy. Account lockout and session lifetime are not
+            enforced by the panel yet, so they have no controls here. */}
         <TabsContent value="security">
           <Card>
             <CardHeader className="border-b">
               <CardTitle className="flex items-center gap-2">
                 <Shield className="w-5 h-5" />
-                Security Settings
+                Password policy
               </CardTitle>
-              <CardDescription>Configure security policies</CardDescription>
+              <CardDescription>
+                What a new password must contain. It applies to accounts created, and passwords
+                changed or reset, from now on. Passwords already set keep working.
+              </CardDescription>
             </CardHeader>
             <CardContent className="p-6">
               <form onSubmit={securityForm.handleSubmit(handleSaveSecurity)} className="space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  {/* Session Timeout */}
-                  <div>
-                    <label htmlFor="sessionTimeout" className="block text-sm font-medium text-muted-foreground mb-2">
-                      Session Timeout (minutes)
-                    </label>
-                    <div className="relative">
-                      <Timer className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                      <Input
-                        id="sessionTimeout"
-                        type="number"
-                        {...securityForm.register("sessionTimeout")}
-                        className="pl-10"
-                        min={5}
-                        max={1440}
-                      />
-                    </div>
-                    {securityForm.formState.errors.sessionTimeout && (
-                      <p className="text-destructive text-sm mt-1">
-                        {securityForm.formState.errors.sessionTimeout.message}
-                      </p>
-                    )}
-                  </div>
-
-                  {/* Min Password Length */}
-                  <div>
-                    <label htmlFor="minPasswordLength" className="block text-sm font-medium text-muted-foreground mb-2">
-                      Minimum Password Length
-                    </label>
-                    <Input
-                      id="minPasswordLength"
-                      type="number"
-                      {...securityForm.register("minPasswordLength")}
-                      min={8}
-                      max={128}
-                    />
-                    {securityForm.formState.errors.minPasswordLength && (
-                      <p className="text-destructive text-sm mt-1">
-                        {securityForm.formState.errors.minPasswordLength.message}
-                      </p>
-                    )}
-                  </div>
-
-                  {/* Max Login Attempts */}
-                  <div>
-                    <label htmlFor="maxLoginAttempts" className="block text-sm font-medium text-muted-foreground mb-2">
-                      Max Login Attempts
-                    </label>
-                    <Input
-                      id="maxLoginAttempts"
-                      type="number"
-                      {...securityForm.register("maxLoginAttempts")}
-                      min={3}
-                      max={10}
-                    />
-                  </div>
-
-                  {/* Lockout Duration */}
-                  <div>
-                    <label htmlFor="lockoutDuration" className="block text-sm font-medium text-muted-foreground mb-2">
-                      Lockout Duration (minutes)
-                    </label>
-                    <Input
-                      id="lockoutDuration"
-                      type="number"
-                      {...securityForm.register("lockoutDuration")}
-                      min={1}
-                      max={60}
-                    />
-                  </div>
+                <div className="max-w-xs">
+                  <label htmlFor="minPasswordLength" className="block text-sm font-medium text-muted-foreground mb-2">
+                    Minimum length
+                  </label>
+                  <Input
+                    id="minPasswordLength"
+                    type="number"
+                    {...securityForm.register("minPasswordLength", { valueAsNumber: true })}
+                    min={8}
+                    max={128}
+                  />
+                  <p className="text-xs text-muted-foreground mt-1.5">Between 8 and 128 characters.</p>
+                  {securityForm.formState.errors.minPasswordLength && (
+                    <p className="text-destructive text-sm mt-1">
+                      {securityForm.formState.errors.minPasswordLength.message}
+                    </p>
+                  )}
                 </div>
 
-                {/* Password Policy Checkboxes */}
                 <div className="p-4 rounded-md border bg-muted">
-                  <p className="text-sm font-medium mb-4">Password Requirements</p>
+                  <p className="text-sm font-medium mb-1">A password must also contain</p>
+                  <p className="text-xs text-muted-foreground mb-4">A lowercase letter is always required.</p>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <label className="flex items-center gap-3 cursor-pointer">
                       <input
@@ -810,7 +562,7 @@ export default function SystemSettingsPage() {
                         {...securityForm.register("requireUppercase")}
                         className="w-5 h-5 accent-primary"
                       />
-                      <span className="font-medium">Require Uppercase</span>
+                      <span className="text-sm font-medium">An uppercase letter</span>
                     </label>
                     <label className="flex items-center gap-3 cursor-pointer">
                       <input
@@ -818,7 +570,7 @@ export default function SystemSettingsPage() {
                         {...securityForm.register("requireNumbers")}
                         className="w-5 h-5 accent-primary"
                       />
-                      <span className="font-medium">Require Numbers</span>
+                      <span className="text-sm font-medium">A digit</span>
                     </label>
                     <label className="flex items-center gap-3 cursor-pointer">
                       <input
@@ -826,7 +578,7 @@ export default function SystemSettingsPage() {
                         {...securityForm.register("requireSpecial")}
                         className="w-5 h-5 accent-primary"
                       />
-                      <span className="font-medium">Require Special Characters</span>
+                      <span className="text-sm font-medium">A symbol</span>
                     </label>
                   </div>
                 </div>
@@ -859,102 +611,9 @@ export default function SystemSettingsPage() {
           </Card>
         </TabsContent>
 
-        {/* Backup Settings */}
+        {/* Where backups are kept. Schedules and retention are set per VM. */}
         <TabsContent value="backup">
-          <Card>
-            <CardHeader className="border-b">
-              <CardTitle className="flex items-center gap-2">
-                <Database className="w-5 h-5" />
-                Backup Settings
-              </CardTitle>
-              <CardDescription>Configure automated backups</CardDescription>
-            </CardHeader>
-            <CardContent className="p-6">
-              <form onSubmit={backupForm.handleSubmit(handleSaveBackup)} className="space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  {/* Default Retention */}
-                  <div>
-                    <label htmlFor="defaultRetention" className="block text-sm font-medium text-muted-foreground mb-2">
-                      Default Retention (days)
-                    </label>
-                    <div className="relative">
-                      <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                      <Input
-                        id="defaultRetention"
-                        type="number"
-                        {...backupForm.register("defaultRetention")}
-                        className="pl-10"
-                        min={1}
-                        max={365}
-                      />
-                    </div>
-                  </div>
-
-                  {/* Schedule */}
-                  <div>
-                    <label htmlFor="schedule" className="block text-sm font-medium text-muted-foreground mb-2">
-                      Backup Schedule
-                    </label>
-                    <div className="relative">
-                      <Clock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                      <select
-                        id="schedule"
-                        {...backupForm.register("schedule")}
-                        className="w-full h-10 pl-10 pr-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                      >
-                        {schedulePresets.map((preset) => (
-                          <option key={preset.value} value={preset.value}>
-                            {preset.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Auto Cleanup */}
-                <div className="p-4 rounded-md border bg-muted">
-                  <label className="flex items-center gap-3 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      {...backupForm.register("autoCleanup")}
-                      className="w-5 h-5 accent-primary"
-                    />
-                    <div>
-                      <span className="font-medium">Auto Cleanup</span>
-                      <p className="text-xs text-muted-foreground">
-                        Automatically delete backups older than retention period
-                      </p>
-                    </div>
-                  </label>
-                </div>
-
-                <div className="flex items-center justify-between pt-4 border-t">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    onClick={() => handleResetSettings("Backup")}
-                  >
-                    <RotateCcw className="w-4 h-4 mr-2" />
-                    Reset to Defaults
-                  </Button>
-                  <Button type="submit" disabled={isSaving === "backup"}>
-                    {isSaving === "backup" ? (
-                      <>
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                        Saving...
-                      </>
-                    ) : (
-                      <>
-                        {saved.active("backup") ? <Check className="w-4 h-4 mr-2" aria-hidden="true" /> : <Save className="w-4 h-4 mr-2" aria-hidden="true" />}
-                        {saved.active("backup") ? "Saved" : "Save Settings"}
-                      </>
-                    )}
-                  </Button>
-                </div>
-              </form>
-            </CardContent>
-          </Card>
+          <BackupDestinationSettings />
         </TabsContent>
 
         {/* API Settings */}
@@ -1143,23 +802,26 @@ export default function SystemSettingsPage() {
                       )}
                     </div>
                     <div className="space-y-2">
-                      <label htmlFor="diskOvercommitRatio" className="block text-sm font-medium text-muted-foreground mb-2">
+                      <label htmlFor="diskAllocationRatio" className="block text-sm font-medium text-muted-foreground mb-2">
                         Disk overcommit ratio
                       </label>
                       <Input
-                        id="diskOvercommitRatio"
+                        id="diskAllocationRatio"
                         type="number"
                         step="0.1"
-                        {...quotaForm.register("diskOvercommitRatio", { valueAsNumber: true })}
+                        {...quotaForm.register("diskAllocationRatio", { valueAsNumber: true })}
                       />
                       <p className="text-xs text-muted-foreground">
-                        Multiplies a pool&apos;s free space when placing or growing a disk. 1 admits
-                        only what exists. Disk images are thin, so higher ratios are usually safe —
-                        a full pool is still recoverable, unlike full RAM.
+                        How many times a storage pool&apos;s capacity may be promised to VM disks. 0
+                        means no limit, the default. At 2, a 1 TB pool accepts 2 TB of disks. Disks
+                        are thin, so a pool fills as guests write, and a full pool pauses every VM
+                        on it. Set this above what the Storage page shows as allocated on each
+                        pool, or new orders there are refused. A new disk must always fit in real
+                        free space with 20 GB to spare.
                       </p>
-                      {quotaForm.formState.errors.diskOvercommitRatio && (
+                      {quotaForm.formState.errors.diskAllocationRatio && (
                         <p className="text-xs text-destructive">
-                          {quotaForm.formState.errors.diskOvercommitRatio.message}
+                          {quotaForm.formState.errors.diskAllocationRatio.message}
                         </p>
                       )}
                     </div>
@@ -1188,7 +850,7 @@ export default function SystemSettingsPage() {
                 <Key className="w-5 h-5" />
                 API Settings
               </CardTitle>
-              <CardDescription>Configure API access and webhooks</CardDescription>
+              <CardDescription>API keys, and the events the panel sends to your billing system</CardDescription>
             </CardHeader>
             <CardContent className="p-6">
               <form onSubmit={apiForm.handleSubmit(handleSaveApi)} className="space-y-6">
@@ -1201,9 +863,11 @@ export default function SystemSettingsPage() {
                       className="w-5 h-5 accent-primary"
                     />
                     <div>
-                      <span className="font-medium">Enable API Access</span>
+                      <span className="font-medium">Accept API keys</span>
                       <p className="text-xs text-muted-foreground">
-                        Allow external applications to access the API
+                        When this is off, every request made with an API key is refused, including
+                        the MCP endpoint. Signing in through the browser is not affected. Keys are
+                        kept, and work again when this is turned back on.
                       </p>
                     </div>
                   </label>
@@ -1253,19 +917,6 @@ export default function SystemSettingsPage() {
                     </p>
                   </div>
 
-                  {/* Rate Limit */}
-                  <div>
-                    <label htmlFor="rateLimit" className="block text-sm font-medium text-muted-foreground mb-2">
-                      Rate Limit (requests/min)
-                    </label>
-                    <Input
-                      id="rateLimit"
-                      type="number"
-                      {...apiForm.register("rateLimit")}
-                      min={10}
-                      max={1000}
-                    />
-                  </div>
                 </div>
 
                 {/* HMAC Secret */}
@@ -1294,7 +945,8 @@ export default function SystemSettingsPage() {
                     </button>
                   </div>
                   <p className="text-xs text-muted-foreground mt-1">
-                    Used to sign API requests. Keep this secret!
+                    Signs the events sent to the webhook URL, so the receiver can check they came
+                    from this panel. At least 32 characters.
                   </p>
                 </div>
 
@@ -1369,7 +1021,7 @@ export default function SystemSettingsPage() {
                     <Input
                       id="smtpPort"
                       type="number"
-                      {...emailForm.register("smtpPort")}
+                      {...emailForm.register("smtpPort", { valueAsNumber: true })}
                       min={1}
                       max={65535}
                     />
@@ -1439,9 +1091,12 @@ export default function SystemSettingsPage() {
                       className="w-5 h-5 accent-primary"
                     />
                     <div>
-                      <span className="font-medium">Enable TLS</span>
+                      <span className="font-medium">Require TLS</span>
                       <p className="text-xs text-muted-foreground">
-                        Use TLS encryption for SMTP connections
+                        Send only over an encrypted connection: STARTTLS, or TLS from the start on
+                        port 465. If the mail server offers neither, nothing is sent and the test
+                        email says so. When this is off, mail is still encrypted when the server
+                        offers it, and sent in the clear when it does not.
                       </p>
                     </div>
                   </label>

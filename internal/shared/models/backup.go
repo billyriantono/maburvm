@@ -159,3 +159,14 @@ func (bs *BackupSchedule) Validate() ValidationErrors {
 func (bs *BackupSchedule) IsActive() bool {
 	return bs.Status == BackupScheduleStatusActive
 }
+
+// Where a finished backup's file is, recorded in Backup.StorageProvider.
+const (
+	// BackupStoreDestination: the destination set in the panel, which every
+	// node and the panel itself can reach.
+	BackupStoreDestination = "s3"
+	// BackupStoreNode: storage only the VM's node knows, from its environment
+	// file. Backups made before the panel had a destination, or by an agent
+	// too old to be given one.
+	BackupStoreNode = "node"
+)

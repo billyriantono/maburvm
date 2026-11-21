@@ -2,14 +2,17 @@ package service
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"mime"
+	"net"
 	"net/mail"
 	"net/smtp"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/maburvm/panel/internal/shared/models"
 	"gorm.io/gorm"
@@ -20,7 +23,7 @@ import (
 // ok is false when no email settings have been configured yet.
 func LoadSMTPSettings(db *gorm.DB) (cfg SMTPSettings, ok bool, err error) {
 	var raw string
-	q := db.Raw("SELECT data::text FROM system_settings WHERE section = 'email'").Scan(&raw)
+	q := db.Raw("SELECT CAST(data AS TEXT) FROM system_settings WHERE section = 'email'").Scan(&raw)
 	if q.Error != nil {
 		return SMTPSettings{}, false, q.Error
 	}
@@ -34,6 +37,7 @@ func LoadSMTPSettings(db *gorm.DB) (cfg SMTPSettings, ok bool, err error) {
 		SMTPPassword string `json:"smtpPassword"`
 		SMTPFrom     string `json:"smtpFrom"`
 		SMTPFromName string `json:"smtpFromName"`
+		EnableTLS    bool   `json:"enableTls"`
 	}
 	if err := json.Unmarshal([]byte(raw), &d); err != nil {
 		return SMTPSettings{}, false, err
@@ -44,7 +48,7 @@ func LoadSMTPSettings(db *gorm.DB) (cfg SMTPSettings, ok bool, err error) {
 	return SMTPSettings{
 		Host: d.SMTPHost, Port: d.SMTPPort, Username: d.SMTPUser,
 		Password: d.SMTPPassword, From: d.SMTPFrom, FromName: d.SMTPFromName,
-		Brand: LoadBranding(db), Templates: LoadEmailTemplates(db),
+		Brand: LoadBranding(db), Templates: LoadEmailTemplates(db), RequireTLS: d.EnableTLS,
 	}, true, nil
 }
 
@@ -57,6 +61,10 @@ type SMTPSettings struct {
 	Password string
 	From     string
 	FromName string
+	// RequireTLS refuses to send unless the connection is encrypted. Off, the
+	// message still goes over TLS when the server offers it, and in the clear
+	// when it does not.
+	RequireTLS bool
 	// Brand and Templates come from the same database read as the SMTP
 	// settings, so one load is enough to send a finished message.
 	Brand     Branding
@@ -119,9 +127,9 @@ func SendTestEmail(cfg SMTPSettings, to string) error {
 }
 
 // SendMail sends one rendered message as HTML with a plain-text alternative.
-// It uses PlainAuth when a username is set and lets net/smtp upgrade to TLS
-// through STARTTLS when the server offers it (the common submission port, 587).
-// Errors are descriptive so the UI can say why a send failed.
+// It uses PlainAuth when a username is set. Without RequireTLS, net/smtp
+// upgrades to TLS through STARTTLS when the server offers it; with it, see
+// sendOverTLS. Errors are descriptive so the UI can say why a send failed.
 func SendMail(cfg SMTPSettings, to string, msg RenderedEmail) error {
 	if cfg.Host == "" || cfg.Port == 0 {
 		return fmt.Errorf("SMTP host and port are required")
@@ -165,10 +173,78 @@ func SendMail(cfg SMTPSettings, to string, msg RenderedEmail) error {
 	if cfg.Username != "" {
 		auth = smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.Host)
 	}
-	if err := smtp.SendMail(addr, auth, from, []string{to}, []byte(b.String())); err != nil {
+	send := smtp.SendMail
+	if cfg.RequireTLS {
+		send = sendOverTLS
+	}
+	if err := send(addr, auth, from, []string{to}, []byte(b.String())); err != nil {
 		return fmt.Errorf("SMTP send failed: %w", err)
 	}
 	return nil
+}
+
+// sendOverTLS is smtp.SendMail that will not talk to the server in the clear:
+// TLS from the first byte on port 465, STARTTLS on any other port, and an
+// error when the server offers neither.
+func sendOverTLS(addr string, auth smtp.Auth, from string, to []string, msg []byte) error {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return err
+	}
+	tlsConfig := &tls.Config{ServerName: host}
+	dialer := &net.Dialer{Timeout: 30 * time.Second}
+
+	var conn net.Conn
+	if port == "465" {
+		conn, err = tls.DialWithDialer(dialer, "tcp", addr, tlsConfig)
+	} else {
+		conn, err = dialer.Dial("tcp", addr)
+	}
+	if err != nil {
+		return err
+	}
+	c, err := smtp.NewClient(conn, host)
+	if err != nil {
+		conn.Close()
+		return err
+	}
+	defer c.Close()
+
+	if port != "465" {
+		if ok, _ := c.Extension("STARTTLS"); !ok {
+			return fmt.Errorf("the mail server does not offer TLS on port %s. Use a port that does (587 or 465), or turn off \"Require TLS\"", port)
+		}
+		if err := c.StartTLS(tlsConfig); err != nil {
+			return err
+		}
+	}
+	if auth != nil {
+		if ok, _ := c.Extension("AUTH"); !ok {
+			return fmt.Errorf("the mail server does not accept a username and password")
+		}
+		if err := c.Auth(auth); err != nil {
+			return err
+		}
+	}
+	if err := c.Mail(from); err != nil {
+		return err
+	}
+	for _, rcpt := range to {
+		if err := c.Rcpt(rcpt); err != nil {
+			return err
+		}
+	}
+	w, err := c.Data()
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write(msg); err != nil {
+		return err
+	}
+	if err := w.Close(); err != nil {
+		return err
+	}
+	return c.Quit()
 }
 
 // NotifyVMOwner emails a server's owner about something that happened to it:

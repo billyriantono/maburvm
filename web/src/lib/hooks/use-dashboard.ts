@@ -100,6 +100,8 @@ export interface MyVM {
   hostname: string
   status: string
   suspended: boolean
+  /** The host is not answering, so `status` is only what the panel last saw. */
+  state_unknown?: boolean
   cpu: number
   ram_mb: number
   disk_gb: number
@@ -148,6 +150,8 @@ export interface FleetVM {
   node_id: string
   node_name: string
   node_status: string
+  /** The node is offline, so `status` is only what the panel last saw. */
+  state_unknown?: boolean
   system: string
   ip: string
   /** The newest reading from the last three minutes; null when there is none. */

@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -187,6 +188,24 @@ func extractAPIToken(c echo.Context) (string, bool) {
 	return "", false
 }
 
+// APIAccessEnabled reports whether API keys may be used: the "Enable API
+// access" switch under Settings, System, API. On unless an operator turned it
+// off; a missing or unreadable setting never locks the API.
+func APIAccessEnabled(db *gorm.DB) bool {
+	if db == nil {
+		return true
+	}
+	var raw string
+	if err := db.Raw("SELECT CAST(data AS TEXT) FROM system_settings WHERE section = 'api'").Scan(&raw).Error; err != nil || raw == "" {
+		return true
+	}
+	var cfg struct {
+		EnableAPI *bool `json:"enableApi"`
+	}
+	_ = json.Unmarshal([]byte(raw), &cfg)
+	return cfg.EnableAPI == nil || *cfg.EnableAPI
+}
+
 // authenticateAPIKey validates a presented API token against the database and,
 // on success, returns a populated UserContext. This lets automation clients call
 // the API with a long-lived key instead of a session JWT. The lookup is done
@@ -263,6 +282,12 @@ func RequireAuth(db *gorm.DB) echo.MiddlewareFunc {
 			// API-key auth (automation clients) takes precedence when a key is
 			// explicitly presented; an invalid key is rejected, not fallen through.
 			if token, ok := extractAPIToken(c); ok {
+				if !APIAccessEnabled(db) {
+					return c.JSON(http.StatusForbidden, map[string]interface{}{
+						"error":   "Forbidden",
+						"message": "API access is turned off on this panel",
+					})
+				}
 				userCtx, ok := authenticateAPIKey(db, token, c.RealIP())
 				if !ok {
 					return c.JSON(http.StatusUnauthorized, map[string]interface{}{

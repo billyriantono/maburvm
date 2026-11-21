@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { useVM, useVMMetrics, useVMAction, useDeleteVM, useAttachISO, useDetachISO, useRescueVM, useUnrescueVM, useMigrateVM, useRegenerateVNCPassword, useSetConsoleEnabled, useRepairConsole, useRebuildVM, useResetPassword, useCloneVM, useUpdateVM, useAssignVMIP, useReleaseVMIP, useAssignVMIPv6, useReleaseVMIPv6, useInitialPassword, useRevealInitialPassword, useForgetInitialPassword } from "@/lib/hooks/use-vms"
+import { useVM, useVMMetrics, useVMAction, useDeleteVM, useAttachISO, useDetachISO, useRescueVM, useUnrescueVM, useRegenerateVNCPassword, useSetConsoleEnabled, useRepairConsole, useRebuildVM, useResetPassword, useCloneVM, useUpdateVM, useAssignVMIP, useReleaseVMIP, useAssignVMIPv6, useReleaseVMIPv6, useInitialPassword, useRevealInitialPassword, useForgetInitialPassword } from "@/lib/hooks/use-vms"
 import { useIPPools } from "@/lib/hooks/use-ipam"
 import { DeleteProgressDialog } from "@/components/vm-delete-progress"
 import { VMNameEditor } from "@/components/vm-name-editor"
@@ -25,7 +25,7 @@ import { useSSHKeys } from "@/lib/hooks/use-ssh-keys"
 import { useNodes } from "@/lib/hooks/use-nodes"
 import { useSnapshots, useCreateSnapshot, useRestoreSnapshot, useDeleteSnapshot } from "@/lib/hooks/use-snapshots"
 import { useCreateImage } from "@/lib/hooks/use-images"
-import { useBackups, useCreateBackup, useDeleteBackup, useRestoreBackup, useBackupSchedules, useCreateBackupSchedule, useDeleteBackupSchedule } from "@/lib/hooks/use-backups"
+import { useBackups, useCreateBackup, useDeleteBackup, useRestoreBackup, useRestoreBackupAsNew, useBackupSchedules, useCreateBackupSchedule, useDeleteBackupSchedule } from "@/lib/hooks/use-backups"
 import { useFirewallRules, useDeleteFirewallRule, useCreateFirewallRule, useVMNetworks, useSetVMBandwidth, useSetVMRDNS, usePortForwards, useCreatePortForward, useDeletePortForward, useSetAntiSpoofing, useFirewallStatus } from "@/lib/hooks/use-networks"
 import type { Network as NetworkIface } from "@/types"
 import { useTemplates } from "@/lib/hooks/use-templates"
@@ -37,7 +37,7 @@ import { VMTelemetry } from "@/components/vm-telemetry"
 import { OSLogoTile } from "@/components/os-icon"
 import type { Snapshot, Backup, FirewallRule } from "@/types"
 import { useConfirm } from "@/components/confirm-provider"
-import { StatusBadge, useVMTransitions } from "@/components/status-badge"
+import { StatusBadge, useVMTransitions, vmStatus } from "@/components/status-badge"
 import { OperationProgress, vmProvisionSteps } from "@/components/operation-progress"
 import { useCopy, useFlash } from "@/lib/use-feedback"
 import { CountryFlag } from "@/components/country-flag"
@@ -304,7 +304,7 @@ function RDNSCell({ vmId, ipAddress, rdns, verified }: { vmId: string; ipAddress
 
 // One action per row: what it does on the left, the button on the right. Used
 // where an action sits beside the thing it changes instead of in a button wall.
-function ActionRow({ title, description, children }: { title: string; description: React.ReactNode; children: React.ReactNode }) {
+function ActionRow({ title, description, children }: { title: string; description: React.ReactNode; children?: React.ReactNode }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-6 py-4">
       <div className="min-w-0 flex-1 basis-64">
@@ -453,6 +453,80 @@ function describeCron(cron: string): { every: "daily" | "weekly" | "monthly"; ho
   if (m[2] === "*" && m[3] !== "*") return { every: "weekly", hour, text: `Every ${WEEKDAYS[Number(m[3])]} at ${at}` }
   if (m[2] === "*" && m[3] === "*") return { every: "daily", hour, text: `Every day at ${at}` }
   return null
+}
+
+// Restore a backup as a new VM on a chosen node: what a backup is for when the
+// VM's own node is gone. The address is picked by the panel from that node's pools.
+function RestoreAsNewDialog({ vmId, hostname, nodeId, backup, nodes, onClose }: {
+  vmId: string
+  hostname: string
+  nodeId: string
+  backup: Backup | null
+  nodes: { id: string; name: string }[]
+  onClose: () => void
+}) {
+  const router = useRouter()
+  const restore = useRestoreBackupAsNew(vmId)
+  const [target, setTarget] = useState("")
+  const [name, setName] = useState("")
+  const [err, setErr] = useState<string | null>(null)
+  useEffect(() => { setTarget(""); setName(""); setErr(null) }, [backup?.id])
+
+  const submit = async () => {
+    if (!backup) return
+    setErr(null)
+    try {
+      const res = await restore.mutateAsync({ backupId: backup.id, node_id: target, hostname: name.trim() || undefined })
+      toast.success(`Restoring as ${res.vm.hostname}`, { action: { label: "Open", onClick: () => router.push(`/vms/${res.vm.id}`) } })
+      onClose()
+    } catch (e) {
+      setErr((e as Error).message)
+    }
+  }
+
+  return (
+    <Dialog open={!!backup} onOpenChange={(open) => { if (!open && !restore.isPending) onClose() }}>
+      <DialogContent className="max-w-md border shadow-lg">
+        <DialogHeader>
+          <DialogTitle className="text-lg font-semibold">Restore as a new VM</DialogTitle>
+          <DialogDescription className="text-sm text-muted-foreground">
+            Creates a new VM from the backup of {backup ? formatDate(backup.created_at) : ""}. It belongs to the same owner and has the same size, limits and firewall rules, with a new IP address. This VM and the backup are not changed.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 py-2">
+          <label htmlFor="restore-new-node" className="text-xs font-medium text-muted-foreground block">Node</label>
+          {nodes.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No active node to restore onto.</p>
+          ) : (
+            <select
+              id="restore-new-node"
+              value={target}
+              onChange={(e) => setTarget(e.target.value)}
+              className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm"
+            >
+              <option value="">Select a node…</option>
+              {nodes.map((n) => (
+                <option key={n.id} value={n.id}>{n.name}{n.id === nodeId ? " (this VM's node)" : ""}</option>
+              ))}
+            </select>
+          )}
+          <label htmlFor="restore-new-hostname" className="text-xs font-medium text-muted-foreground block">Hostname (optional)</label>
+          <Input id="restore-new-hostname" value={name} onChange={(e) => setName(e.target.value)} placeholder={`restored-${hostname}`} className="border" />
+          <p className="text-xs text-muted-foreground">
+            The node downloads the backup and checks it before the VM is created. A large disk takes a while; the new VM shows as creating until then.
+          </p>
+          {err && <p role="alert" className="text-xs text-destructive font-medium break-words">{err}</p>}
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose} disabled={restore.isPending}>Cancel</Button>
+          <Button onClick={submit} disabled={restore.isPending || !target}>
+            {restore.isPending && <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />}
+            Restore as a new VM
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 function BackupScheduleCard({ vmId }: { vmId: string }) {
@@ -912,7 +986,7 @@ function TransferSummary({ vmId, onOpen }: { vmId: string; onOpen: () => void })
 
 // VMDetail is the VM page for both audiences. Admin mode is the operator view.
 // Client mode is a customer's own VM: it leaves out everything the API refuses
-// customers (resize, migrate, clone, owner, IP and bandwidth changes, VLAN,
+// customers (resize, clone, owner, IP and bandwidth changes, VLAN,
 // console repair), the data disks, and anything that names a node.
 export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const isAdmin = mode === "admin"
@@ -953,8 +1027,6 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const [isoDialogOpen, setIsoDialogOpen] = useState(false)
   const [selectedISOUrl, setSelectedISOUrl] = useState("")
   const [manualISOUrl, setManualISOUrl] = useState("")
-  const [migrateOpen, setMigrateOpen] = useState(false)
-  const [migrateNodeId, setMigrateNodeId] = useState("")
   // Resize (admin-only, VM must be stopped). Kept as strings so the inputs can
   // be cleared while typing instead of snapping back to 0.
   const [resizeOpen, setResizeOpen] = useState(false)
@@ -990,7 +1062,6 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const detachISO = useDetachISO(vmId)
   const rescueVM = useRescueVM(vmId)
   const unrescueVM = useUnrescueVM(vmId)
-  const migrateVM = useMigrateVM(vmId)
   const regenerateVNC = useRegenerateVNCPassword(vmId)
   const setConsole = useSetConsoleEnabled(vmId)
   const repairConsole = useRepairConsole(vmId)
@@ -1022,6 +1093,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const createBackup = useCreateBackup(vmId)
   const deleteBackupMutation = useDeleteBackup(vmId)
   const restoreBackup = useRestoreBackup(vmId)
+  const [restoreNewBackup, setRestoreNewBackup] = useState<Backup | null>(null)
   const { data: firewallRules, isLoading: firewallLoading, error: firewallError, refetch: refetchFirewall } = useFirewallRules(vmId)
   const deleteFirewallRule = useDeleteFirewallRule(vmId)
   const { data: firewallStatus } = useFirewallStatus(vmId)
@@ -1044,9 +1116,8 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const rebuildOS = installableTemplates.find((t) => t.id === selectedTemplate)?.os_type || osType
   const rebuildUser = rebuildOS === "routeros" ? "admin" : rebuildOS === "windows" ? "Administrator" : "root"
   const rebuildTooSmall = rebuildOS === "windows" && !!vm && (vm.resources.ram < 2048 || vm.resources.disk < 32)
-  // Only nodes that can take work; migrating also needs a node other than this one.
+  // Only nodes that can take work.
   const activeNodes = (allNodes ?? []).filter((n) => n.status === "active")
-  const migrateTargets = activeNodes.filter((n) => n.id !== vm?.node_id)
   const cloneTarget = cloneNodeId || vm?.node_id || ""
   const cloneTargetValid = activeNodes.some((n) => n.id === cloneTarget)
   const { data: isoTemplates } = useTemplates({ type: "iso" }, isAdmin)
@@ -1162,20 +1233,6 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
     }
   }, [setConsole])
 
-  const handleMigrate = useCallback(async () => {
-    if (!migrateNodeId) {
-      toast.error("Select a destination node")
-      return
-    }
-    try {
-      await migrateVM.mutateAsync({ dest_node_id: migrateNodeId, live: true, copy_storage: true })
-      toast.success("VM migrated to destination node")
-      setMigrateOpen(false)
-      setMigrateNodeId("")
-    } catch (err) {
-      toast.error(`Migration failed: ${(err as Error).message}`)
-    }
-  }, [migrateVM, migrateNodeId])
 
   // Prefill from the VM's current spec each time the dialog opens, so the
   // fields always start from reality rather than a stale previous edit.
@@ -1272,8 +1329,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
 
   const handleDeleteBackup = useCallback(async (backupId: string) => {
     try {
-      await deleteBackupMutation.mutateAsync(backupId)
-      toast.success("Backup deleted")
+      toast.success(await deleteBackupMutation.mutateAsync(backupId))
       refetchBackups()
     } catch (err) {
       toast.error(`Failed to delete backup: ${(err as Error).message}`)
@@ -1403,7 +1459,9 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   // A suspended VM is frozen for customers until support restores it.
   const suspended = vm.suspended || vm.status === "suspended"
   const locked = !isAdmin && suspended
-  const powerBusy = locked || actionLoading !== null || !!transitionOf(vm.id)
+  // The node is offline: power actions would only fail, and the state is a guess.
+  const stateUnknown = !!vm.state_unknown
+  const powerBusy = locked || stateUnknown || actionLoading !== null || !!transitionOf(vm.id)
   // A text button beside a value people paste elsewhere.
   const copyLink = (text: string, key: string, what: string) => (
     <button
@@ -1434,12 +1492,21 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
         </div>
       )}
 
+      {stateUnknown && (
+        <div role="status" className="mb-6 flex items-center gap-3 rounded-lg border border-warning/50 bg-warning/10 p-4 text-sm font-medium text-foreground">
+          <AlertCircle className="w-5 h-5 shrink-0" aria-hidden="true" />
+          {isAdmin
+            ? "The node this VM runs on is offline, so the panel cannot tell whether the VM is running. What is shown here is what it last saw."
+            : "We cannot reach the host this server runs on right now, so its state is unknown. It may still be running. Power controls come back when the host answers again."}
+        </div>
+      )}
+
       {/* Faceplate: what this machine is, its state, and its power controls.
           Dark in both themes; its colours come from .faceplate in globals.css. */}
       <div className="faceplate mb-6 rounded-lg border bg-card px-5 pb-4 pt-5">
         <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-4">
           <div className="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
-            <StatusBadge variant="lamp" status={suspended ? "suspended" : vm.status} transition={transitionOf(vm.id)} />
+            <StatusBadge variant="lamp" status={vmStatus({ status: vm.status, suspended, state_unknown: stateUnknown })} transition={transitionOf(vm.id)} />
             <VMNameEditor
               hostname={vm.hostname}
               headingClassName="text-2xl font-semibold text-foreground [font-stretch:118%] break-all"
@@ -1804,46 +1871,6 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                   <Button variant="ghost" onClick={() => setResizeOpen(false)}>Cancel</Button>
                   <Button onClick={handleResize} disabled={updateVM.isPending || vm.status !== "stopped"}>
                     {updateVM.isPending ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Resizing…</> : <><Cpu className="w-4 h-4 mr-2" />Resize</>}
-                  </Button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
-
-            <Dialog open={migrateOpen} onOpenChange={setMigrateOpen}>
-              <DialogContent className="max-w-md border shadow-lg">
-                <DialogHeader>
-                  <DialogTitle className="text-lg font-semibold">Live Migrate VM</DialogTitle>
-                  <DialogDescription className="text-sm text-muted-foreground">
-                    Move this VM to another node with no downtime (block migration copies the disk).
-                  </DialogDescription>
-                </DialogHeader>
-                <div className="space-y-4 py-4">
-                  <div>
-                    <span className="text-xs font-medium text-muted-foreground mb-2 block">Destination Node</span>
-                    {migrateTargets.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">No other active node to migrate to.</p>
-                    ) : (
-                      <select
-                        value={migrateNodeId}
-                        onChange={(e) => setMigrateNodeId(e.target.value)}
-                        className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm"
-                      >
-                        <option value="">Select a node…</option>
-                        {migrateTargets.map((n) => (
-                          <option key={n.id} value={n.id}>{n.name} ({n.ip_address})</option>
-                        ))}
-                      </select>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2 p-3 bg-muted border">
-                    <Server className="w-4 h-4 shrink-0" />
-                    <p className="text-xs font-medium">Requires node-to-node libvirt connectivity (SSH). The VM stays running during transfer.</p>
-                  </div>
-                </div>
-                <DialogFooter>
-                  <Button variant="ghost" onClick={() => setMigrateOpen(false)}>Cancel</Button>
-                  <Button onClick={handleMigrate} disabled={migrateVM.isPending || !migrateTargets.some((n) => n.id === migrateNodeId)}>
-                    {migrateVM.isPending ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Migrating…</> : <><ArrowRightLeft className="w-4 h-4 mr-2" />Migrate</>}
                   </Button>
                 </DialogFooter>
               </DialogContent>
@@ -2562,8 +2589,11 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                         <span className="font-semibold">{backup.backup_type === "scheduled" ? "Scheduled backup" : "Manual backup"}</span>
                         <span className="text-xs text-muted-foreground ml-2">{formatDate(backup.created_at)}</span>
                       </div>
-                      {backup.status === "failed" && backup.error_message && (
-                        <p className="mt-0.5 text-xs text-destructive break-words">{backup.error_message}</p>
+                      {isAdmin && backup.status === "completed" && backup.storage_provider === "node" && (
+                        <p className="mt-0.5 text-xs text-muted-foreground">Kept in the node&apos;s own storage, not the backup destination.</p>
+                      )}
+                      {backup.status !== "completed" && backup.error_message && (
+                        <p className={`mt-0.5 text-xs break-words ${backup.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}>{backup.error_message}</p>
                       )}
                     </div>
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -2588,6 +2618,11 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                           Restore
                         </Button>
                       )}
+                      {isAdmin && backup.status === "completed" && (
+                        <Button variant="outline" size="sm" onClick={() => setRestoreNewBackup(backup)}>
+                          Restore as a new VM
+                        </Button>
+                      )}
                       <Button variant="ghost" size="sm" onClick={async () => {
                         const ok = await confirm({
                           title: "Delete this backup?",
@@ -2606,6 +2641,9 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
               </div>
             )}
           </div>
+          {isAdmin && (
+            <RestoreAsNewDialog vmId={vmId} hostname={vm.hostname} nodeId={vm.node_id} backup={restoreNewBackup} nodes={activeNodes} onClose={() => setRestoreNewBackup(null)} />
+          )}
         </TabsContent>
 
         {/* Firewall Tab */}
@@ -2805,11 +2843,9 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                 <User className="w-4 h-4" />Reassign
               </Button>
             </ActionRow>
-            <ActionRow title="Node" description={<>Runs on <span className="font-medium text-foreground">{allNodes?.find((n) => n.id === vm.node_id)?.name || vm.node_name || "an unnamed node"}</span>. Move it to another node while it keeps running.</>}>
-              <Button variant="outline" size="sm" onClick={() => setMigrateOpen(true)}>
-                <ArrowRightLeft className="w-4 h-4" />Migrate
-              </Button>
-            </ActionRow>
+            {/* No Migrate action here: moving a VM between nodes is not
+                reliable yet for disks outside the default directory. */}
+            <ActionRow title="Node" description={<>Runs on <span className="font-medium text-foreground">{allNodes?.find((n) => n.id === vm.node_id)?.name || vm.node_name || "an unnamed node"}</span>.</>} />
             <ActionRow title="Clone" description="Create a new VM that starts as a copy of this one.">
               <Button variant="outline" size="sm" onClick={() => setCloneOpen(true)}>
                 <Copy className="w-4 h-4" />Clone

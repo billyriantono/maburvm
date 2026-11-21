@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -348,20 +349,6 @@ func agentAuthContext(ctx context.Context, node *models.Node) context.Context {
 	return metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+node.Token, "x-node-id", node.ID)
 }
 
-// markBackupFailed records a failed backup status (best-effort).
-func markBackupFailed(ctx context.Context, backupID, msg string) {
-	if backupID == "" || globalWorkerContext == nil {
-		return
-	}
-	_ = globalWorkerContext.DB.WithContext(ctx).
-		Model(&models.Backup{}).
-		Where("id = ?", backupID).
-		Updates(map[string]interface{}{
-			"status":        models.BackupStatusFailed,
-			"error_message": msg,
-		}).Error
-}
-
 // attachISORef is the image reference an attach-ISO job sends its node. Only a
 // job that says the operator chose the ISO is sent as given; any other, one
 // queued before the marker existed included, is sent as a customer's URL.
@@ -481,6 +468,9 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 	// from VMConfig because it describes placement on the node, not the shape of
 	// the machine.
 	var poolPath string
+	// Set when the disk is a backup in the panel's destination: the node is
+	// then given the destination to read it from.
+	var wantsObjectStore bool
 	needsConfig := job.Args.Operation == VMOpCreate || job.Args.Operation == VMOpRebuild ||
 		job.Args.Operation == VMOpResize || job.Args.Operation == VMOpResetPassword ||
 		job.Args.Operation == VMOpAttachISO
@@ -512,6 +502,9 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 			// ISOSource is ISOSourceOperator when the operator chose the ISO
 			// being attached. Anything else is treated as a customer's URL.
 			ISOSource string `json:"iso_source"`
+			// ObjectStore asks for the panel's backup destination to be sent
+			// along, for a disk restored from a backup kept there.
+			ObjectStore bool `json:"object_store"`
 		}
 
 		if err := json.Unmarshal(job.Args.Params, &params); err != nil {
@@ -520,6 +513,7 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 			)
 		} else {
 			poolPath = params.PoolPath
+			wantsObjectStore = params.ObjectStore
 			metadata := params.Metadata
 			if metadata == nil {
 				metadata = map[string]string{}
@@ -636,6 +630,10 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 	timeout := 5 * time.Minute
 	if command == pb.VMCommandType_VM_COMMAND_TYPE_CREATE {
 		timeout = time.Hour
+		// A backup is a whole disk, downloaded before the node answers.
+		if restoresBackup(vmConfig) {
+			timeout = diskTransferTimeout
+		}
 	}
 	cmdCtx, cancelCmd := context.WithTimeout(ctx, timeout)
 	defer cancelCmd()
@@ -647,6 +645,19 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 		Config:         vmConfig,
 		TimeoutSeconds: int32(timeout.Seconds()),
 		PoolPath:       poolPath,
+	}
+	if wantsObjectStore {
+		store, serr := panelObjectStore(ctx)
+		if serr != nil {
+			serr = fmt.Errorf("the backup destination saved in the panel cannot be read: %w", serr)
+			// Nothing was downloaded, so a few tries cost nothing.
+			if len(job.Errors)+1 < DiskJobMaxAttempts {
+				return serr
+			}
+			vmRepo.UpdateStatus(ctx, vm.ID, models.VMStatusError)
+			return river.JobCancel(serr)
+		}
+		req.ObjectStore = store
 	}
 
 	// Attach the node's auth token + id; the agent's auth interceptor requires a
@@ -679,7 +690,13 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 		)
 
 		// Check if error is retryable
-		if IsRetryableError(err) {
+		retry := IsRetryableError(err)
+		if restoresBackup(vmConfig) {
+			// Each new try may download the disk again, so only a failure
+			// that can clear, and only a few times.
+			retry = !permanentDiskFailure(err, nil) && len(job.Errors)+1 < DiskJobMaxAttempts
+		}
+		if retry {
 			if w.metrics != nil {
 				w.metrics.RecordJobRetried()
 			}
@@ -719,6 +736,13 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 			strings.Contains(detail, "template image not found at "+models.CustomerISORef("")) {
 			detail = "this server's node cannot fetch an ISO from a URL until its agent is updated; ask support to update it"
 		}
+		// An earlier try of this restore is still downloading on the node (the
+		// panel restarted, or lost the connection). It has not failed: ask again
+		// later, without using up a try, and finish the VM when it is done.
+		if restoresBackup(vmConfig) && createStillRunning(detail) && time.Since(job.CreatedAt) < 2*diskTransferTimeout {
+			w.logger.InfoContext(ctx, "the node is still restoring this VM's disk; asking again later", "vm_id", vm.ID)
+			return river.JobSnooze(2 * time.Minute)
+		}
 		w.logger.ErrorContext(ctx, "VM command failed",
 			"vm_id", vm.ID,
 			"error_code", resp.Error.GetCode(),
@@ -734,7 +758,7 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 		}
 		// The node has already retried the transfer itself, and a refusal does
 		// not change: trying again only downloads the file again.
-		if job.Args.Operation == VMOpAttachISO {
+		if job.Args.Operation == VMOpAttachISO || restoresBackup(vmConfig) {
 			return river.JobCancel(fmt.Errorf("VM command failed: %s", detail))
 		}
 		return fmt.Errorf("VM command failed: %s", detail)
@@ -1000,6 +1024,9 @@ func (w *VMOperationWorker) Timeout(job *river.Job[VMOperationJob]) time.Duratio
 	// default is one minute, which cancelled the panel side of a long create
 	// or rebuild while the agent carried on.
 	if job.Args.Operation == VMOpCreate {
+		if createRestoresBackup(job.Args) {
+			return diskTransferTimeout + 5*time.Minute
+		}
 		return 65 * time.Minute
 	}
 	return 6 * time.Minute
@@ -1440,32 +1467,44 @@ func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreJob]) er
 	if globalWorkerContext == nil {
 		return fmt.Errorf("worker context not initialized")
 	}
+	// fail ends an attempt: a failure that will not change, or the last try,
+	// cancels the job instead of leaving River to repeat the download.
+	fail := func(permanent bool, err error) error {
+		if permanent || lastDiskAttempt(job.Attempt, job.MaxAttempts) {
+			return river.JobCancel(err)
+		}
+		return err
+	}
 	vm, err := globalWorkerContext.VMRepo.GetByID(ctx, job.Args.VMID)
 	if err != nil {
-		return fmt.Errorf("failed to get VM: %w", err)
+		return fail(errors.Is(err, gorm.ErrRecordNotFound), fmt.Errorf("failed to get VM: %w", err))
 	}
 	node, err := globalWorkerContext.NodeRepo.GetByID(ctx, job.Args.NodeID)
 	if err != nil {
-		return fmt.Errorf("failed to get node: %w", err)
+		return fail(errors.Is(err, gorm.ErrRecordNotFound), fmt.Errorf("failed to get node: %w", err))
 	}
 	if node.Status != models.NodeStatusActive {
-		return fmt.Errorf("node %s is not active (status: %s)", node.ID, node.Status)
+		return fail(false, fmt.Errorf("node %s is not active (status: %s)", node.ID, node.Status))
+	}
+	var store *pb.ObjectStore
+	if !job.Args.NodeStore {
+		if store, err = panelObjectStore(ctx); err != nil {
+			return fail(false, fmt.Errorf("the backup destination saved in the panel cannot be read: %w", err))
+		}
 	}
 	client, err := w.agentClient.GetClient(node.ID, node.IPAddress)
 	if err != nil {
-		return err
+		return fail(false, err)
 	}
 
 	resp, err := client.RestoreDisk(agentAuthContext(ctx, node), &pb.RestoreDiskRequest{
 		VmId:             vm.ID,
 		SourceKey:        job.Args.SourceKey,
 		ExpectedChecksum: job.Args.Checksum,
+		ObjectStore:      store,
 	})
 	if err != nil {
-		if IsRetryableError(err) {
-			return fmt.Errorf("retryable error restoring disk: %w", err)
-		}
-		return river.JobCancel(fmt.Errorf("non-retryable error restoring disk: %w", err))
+		return fail(permanentDiskFailure(err, nil), fmt.Errorf("error restoring disk: %w", err))
 	}
 	if !resp.Success {
 		msg := "disk restore failed"
@@ -1522,6 +1561,27 @@ func NewBackupWorker(logger *slog.Logger) *BackupWorker {
 // cost more.
 func (w *BackupWorker) Timeout(*river.Job[BackupJob]) time.Duration { return 8 * time.Hour }
 
+// fail ends a backup attempt and writes the reason on the backup's row. A
+// failure that will not change, or the last attempt, cancels the job: left to
+// River it would be retried, and every retry exports the whole disk again.
+func (w *BackupWorker) fail(ctx context.Context, job *river.Job[BackupJob], permanent bool, reason string) error {
+	final := permanent || lastDiskAttempt(job.Attempt, job.MaxAttempts)
+	recordBackupOutcome(ctx, job.Args.BackupID, final, reason)
+	if w.metrics != nil {
+		if final {
+			w.metrics.RecordJobFailed()
+		} else {
+			w.metrics.RecordJobRetried()
+		}
+	}
+	w.logger.ErrorContext(ctx, "backup failed",
+		"backup_id", job.Args.BackupID, "vm_id", job.Args.VMID, "attempt", job.Attempt, "final", final, "reason", reason)
+	if final {
+		return river.JobCancel(errors.New(reason))
+	}
+	return errors.New(reason)
+}
+
 // Work implements the backup job handler
 func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) error {
 	startTime := time.Now()
@@ -1531,56 +1591,45 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 		"job_id", jobID,
 		"vm_id", job.Args.VMID,
 		"backup_type", job.Args.BackupType,
-		"storage", job.Args.StorageProvider,
 		"destination", job.Args.Destination,
 		"attempt", job.Attempt,
 	)
 
-	// Validate backup type
-	if err := ValidateBackupType(job.Args.BackupType); err != nil {
-		w.logger.ErrorContext(ctx, "invalid backup type",
-			"error", err,
-			"backup_type", job.Args.BackupType,
-		)
-		return fmt.Errorf("invalid backup type: %w", err)
-	}
-
-	// Get dependencies
 	if globalWorkerContext == nil {
 		return fmt.Errorf("worker context not initialized")
 	}
 
-	vmRepo := globalWorkerContext.VMRepo
-	nodeRepo := globalWorkerContext.NodeRepo
-
-	// Get VM details
-	vm, err := vmRepo.GetByIDWithNode(ctx, job.Args.VMID)
-	if err != nil {
-		w.logger.ErrorContext(ctx, "failed to get VM",
-			"error", err,
-			"vm_id", job.Args.VMID,
-		)
-		if w.metrics != nil {
-			w.metrics.RecordJobFailed()
-		}
-		return fmt.Errorf("failed to get VM: %w", err)
+	if err := ValidateBackupType(job.Args.BackupType); err != nil {
+		return w.fail(ctx, job, true, err.Error())
 	}
 
-	// Get node details
-	node, err := nodeRepo.GetByID(ctx, vm.NodeID)
+	vm, err := globalWorkerContext.VMRepo.GetByIDWithNode(ctx, job.Args.VMID)
 	if err != nil {
-		w.logger.ErrorContext(ctx, "failed to get node",
-			"error", err,
-			"node_id", vm.NodeID,
-		)
-		if w.metrics != nil {
-			w.metrics.RecordJobFailed()
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return w.fail(ctx, job, true, "the VM no longer exists")
 		}
-		return fmt.Errorf("failed to get node: %w", err)
+		return w.fail(ctx, job, false, fmt.Sprintf("failed to get VM: %v", err))
+	}
+
+	node, err := globalWorkerContext.NodeRepo.GetByID(ctx, vm.NodeID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return w.fail(ctx, job, true, "the VM's node no longer exists")
+		}
+		return w.fail(ctx, job, false, fmt.Sprintf("failed to get node: %v", err))
 	}
 
 	if node.Status != models.NodeStatusActive {
-		return fmt.Errorf("node %s is not active (status: %s)", node.ID, node.Status)
+		return w.fail(ctx, job, false, fmt.Sprintf("node %s is not active (status: %s)", node.Name, node.Status))
+	}
+
+	// A destination that is saved but cannot be read must stop the backup, not
+	// send it quietly to whatever the node has in its environment file. Tried
+	// again all the same: nothing has been exported yet, and the reason may be
+	// the database not answering for a moment.
+	store, err := panelObjectStore(ctx)
+	if err != nil {
+		return w.fail(ctx, job, false, fmt.Sprintf("the backup destination saved in the panel cannot be read: %v", err))
 	}
 
 	if job.Args.BackupID != "" {
@@ -1600,26 +1649,16 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 		}
 	}
 
-	// Get gRPC client for node
 	client, err := globalWorkerContext.AgentClient.GetClient(node.ID, node.IPAddress)
 	if err != nil {
-		w.logger.ErrorContext(ctx, "failed to get agent client",
-			"error", err,
-			"node_address", node.IPAddress,
-		)
-		if w.metrics != nil {
-			w.metrics.RecordJobFailed()
-		}
-		return err
+		return w.fail(ctx, job, false, err.Error())
 	}
 
 	// Full-disk backup (the only type real flows enqueue) exports the qcow2
 	// directly via BackupDisk below. We deliberately DO NOT take a libvirt
 	// snapshot first: imported domains have no snapshot metadata and
-	// CreateSnapshot hangs/errors on them, and the retryable-error path here would
-	// then loop through River's default 25 attempts while the backup row sits stuck
-	// at in_progress/0 B forever. A direct qcow2 export is crash-consistent and is
-	// exactly what the working RestoreDisk path expects.
+	// CreateSnapshot hangs/errors on them. A direct qcow2 export is
+	// crash-consistent and is exactly what the working RestoreDisk path expects.
 	// ponytail: crash-consistent copy of a running disk; add fs-quiesce only if a
 	// restored image ever shows dirty-fs corruption in the field.
 	var snapshotName string
@@ -1634,44 +1673,15 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 
 		resp, err := client.CreateSnapshot(agentAuthContext(ctx, node), req)
 		if err != nil {
-			w.logger.ErrorContext(ctx, "failed to create backup snapshot",
-				"error", err,
-				"vm_id", vm.ID,
-			)
-
-			// Only keep retrying while there are attempts left; on the final
-			// attempt mark the row failed so it never lingers in_progress.
-			if IsRetryableError(err) && job.Attempt < job.MaxAttempts {
-				if w.metrics != nil {
-					w.metrics.RecordJobRetried()
-				}
-				return fmt.Errorf("retryable error creating snapshot: %w", err)
-			}
-
-			if w.metrics != nil {
-				w.metrics.RecordJobFailed()
-			}
-			markBackupFailed(ctx, job.Args.BackupID, err.Error())
-			return river.JobCancel(fmt.Errorf("error creating snapshot: %w", err))
+			return w.fail(ctx, job, permanentDiskFailure(err, nil), fmt.Sprintf("error creating snapshot: %v", err))
 		}
-
 		if !resp.Success {
-			w.logger.ErrorContext(ctx, "backup snapshot creation failed",
-				"vm_id", vm.ID,
-				"error_code", resp.Error.GetCode(),
-				"error_message", resp.Error.GetMessage(),
-			)
-			if w.metrics != nil {
-				w.metrics.RecordJobFailed()
-			}
-			markBackupFailed(ctx, job.Args.BackupID, resp.Error.GetMessage())
-			return fmt.Errorf("snapshot creation failed: %s", resp.Error.GetMessage())
+			return w.fail(ctx, job, true, agentFailureMessage(resp.Error, "snapshot creation failed"))
 		}
 
 		// Reap the snapshot this attempt created, on every return path. Without
-		// this, each River retry leaks a host snapshot (fresh name per attempt)
-		// and even successful backups leave it behind. The agent already
-		// implements SNAPSHOT_OPERATION_TYPE_DELETE, so no agent redeploy needed.
+		// this, each retry leaks a host snapshot (fresh name per attempt) and
+		// even successful backups leave it behind.
 		snapshotName = resp.Snapshot.GetSnapshotId()
 		defer func() {
 			reapCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1687,30 +1697,29 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 	}
 
 	// Export the actual disk image and upload it to object storage VIA THE AGENT
-	// (the agent has the disk file and storage credentials). This replaces the
-	// old manifest-only archive, which contained no disk data.
+	// (the agent has the disk file). The destination travels with the request,
+	// so the node needs no storage keys of its own.
 	backupResp, err := client.BackupDisk(agentAuthContext(ctx, node), &pb.BackupDiskRequest{
 		VmId:           vm.ID,
 		DestinationKey: job.Args.Destination,
 		Compress:       true,
+		ObjectStore:    store,
 	})
 	if err != nil {
-		if w.metrics != nil {
-			w.metrics.RecordJobFailed()
-		}
-		markBackupFailed(ctx, job.Args.BackupID, err.Error())
-		return fmt.Errorf("failed to back up disk: %w", err)
+		return w.fail(ctx, job, permanentDiskFailure(err, nil), fmt.Sprintf("failed to back up disk: %v", err))
 	}
 	if !backupResp.Success {
-		msg := "disk backup failed"
-		if backupResp.Error != nil {
-			msg = backupResp.Error.GetMessage()
-		}
-		if w.metrics != nil {
-			w.metrics.RecordJobFailed()
-		}
-		markBackupFailed(ctx, job.Args.BackupID, msg)
-		return fmt.Errorf("disk backup failed: %s", msg)
+		return w.fail(ctx, job, permanentDiskFailure(nil, backupResp.Error), agentFailureMessage(backupResp.Error, "disk backup failed"))
+	}
+
+	// Where the file went decides who can restore and delete it later. An agent
+	// that predates the destination ignored it and used its own storage.
+	location := models.BackupStoreNode
+	if store != nil && backupResp.GetUsedRequestStore() {
+		location = models.BackupStoreDestination
+	} else if store != nil {
+		w.logger.WarnContext(ctx, "the node's agent is older than the panel and kept this backup in its own storage, not the destination set in the panel",
+			"backup_id", job.Args.BackupID, "node", node.Name)
 	}
 
 	if job.Args.BackupID != "" {
@@ -1719,10 +1728,12 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 			Model(&models.Backup{}).
 			Where("id = ?", job.Args.BackupID).
 			Updates(map[string]interface{}{
-				"status":       models.BackupStatusCompleted,
-				"size":         backupResp.SizeBytes,
-				"checksum":     backupResp.Checksum,
-				"completed_at": completedAt,
+				"status":           models.BackupStatusCompleted,
+				"storage_provider": location,
+				"size":             backupResp.SizeBytes,
+				"checksum":         backupResp.Checksum,
+				"error_message":    "",
+				"completed_at":     completedAt,
 			}).Error; err != nil {
 			w.logger.WarnContext(ctx, "failed to update completed backup metadata",
 				"backup_id", job.Args.BackupID,
@@ -1743,6 +1754,7 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 		"backup_type", job.Args.BackupType,
 		"backup_id", job.Args.BackupID,
 		"backup_size", backupResp.SizeBytes,
+		"stored_in", location,
 		"latency_ms", latency.Milliseconds(),
 	)
 
@@ -1827,31 +1839,26 @@ func (w *ImageWorker) Work(ctx context.Context, job *river.Job[ImageJob]) error 
 		DestinationKey: job.Args.Destination,
 		Compress:       true,
 	})
-	if err != nil {
-		// Retry while attempts remain; otherwise mark failed so the row never
-		// lingers pending.
-		if IsRetryableError(err) && job.Attempt < job.MaxAttempts {
+	if err != nil || !resp.Success {
+		// Like a backup: only a failure that can clear on its own is tried
+		// again, and never more than a few times. Each try exports the disk.
+		permanent, msg := permanentDiskFailure(err, nil), ""
+		if err != nil {
+			msg = err.Error()
+		} else {
+			permanent, msg = permanentDiskFailure(nil, resp.Error), agentFailureMessage(resp.Error, "disk export failed")
+		}
+		if !permanent && !lastDiskAttempt(job.Attempt, job.MaxAttempts) {
 			if w.metrics != nil {
 				w.metrics.RecordJobRetried()
 			}
-			return fmt.Errorf("retryable error capturing image: %w", err)
-		}
-		if w.metrics != nil {
-			w.metrics.RecordJobFailed()
-		}
-		markImageFailed(ctx, job.Args.ImageID, err.Error())
-		return river.JobCancel(fmt.Errorf("failed to capture image: %w", err))
-	}
-	if !resp.Success {
-		msg := "disk export failed"
-		if resp.Error != nil {
-			msg = resp.Error.GetMessage()
+			return fmt.Errorf("image capture failed, will be tried again: %s", msg)
 		}
 		if w.metrics != nil {
 			w.metrics.RecordJobFailed()
 		}
 		markImageFailed(ctx, job.Args.ImageID, msg)
-		return fmt.Errorf("image capture failed: %s", msg)
+		return river.JobCancel(fmt.Errorf("image capture failed: %s", msg))
 	}
 
 	if err := globalWorkerContext.DB.WithContext(ctx).

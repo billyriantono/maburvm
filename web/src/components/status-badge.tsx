@@ -23,6 +23,8 @@ const STATUSES: Record<string, { tone: Tone; label: string; busy?: boolean }> = 
   starting: { tone: "info", label: "Starting", busy: true },
   stopping: { tone: "info", label: "Stopping", busy: true },
   restarting: { tone: "info", label: "Restarting", busy: true },
+  // The node is offline: what the panel last saw is not the VM's state.
+  unknown: { tone: "warn", label: "State unknown" },
   // Backups, snapshots and other jobs
   completed: { tone: "ok", label: "Completed" },
   failed: { tone: "bad", label: "Failed" },
@@ -35,6 +37,13 @@ const STATUSES: Record<string, { tone: Tone; label: string; busy?: boolean }> = 
   active: { tone: "ok", label: "Active" },
   maintenance: { tone: "warn", label: "Maintenance" },
   offline: { tone: "bad", label: "Offline" },
+}
+
+// vmStatus is the status to show for a VM. A VM on a node that is not
+// answering is "unknown", whatever the panel last recorded for it.
+export function vmStatus(vm: { status: string; suspended?: boolean; state_unknown?: boolean }): string {
+  if (vm.state_unknown) return "unknown"
+  return vm.suspended ? "suspended" : vm.status
 }
 
 // Lamp colours come from the theme tokens, so they stay readable on the dark

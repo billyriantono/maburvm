@@ -195,6 +195,7 @@ func (c *Client) initRiver() error {
 		Workers:              workers,
 		Logger:               c.logger,
 		RescueStuckJobsAfter: c.config.RescueStuckJobsAfter,
+		Middleware:           []rivertype.Middleware{&jobFailureReporter{}},
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create River client: %w", err)

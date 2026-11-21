@@ -44,10 +44,15 @@ type Node struct {
 	// collector. Only overcommit admission reads it. 0 means "not measured
 	// yet" and is treated as unlimited, so a node the panel has not polled
 	// yet keeps provisioning rather than failing closed.
-	MemoryTotalBytes int64          `json:"memory_total_bytes" gorm:"not null;default:0"`
-	CreatedAt        time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
-	UpdatedAt        time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
-	DeletedAt        gorm.DeletedAt `json:"-" gorm:"index"`
+	MemoryTotalBytes int64 `json:"memory_total_bytes" gorm:"not null;default:0"`
+	// LastReportAt is when the node's agent last answered the collector with
+	// real figures; FailedPolls is how many checks in a row it has missed since.
+	// Read-only here, like CreationPaused: the collector writes them by table name.
+	LastReportAt *time.Time     `json:"last_report_at" gorm:"column:last_report_at;->"`
+	FailedPolls  int            `json:"failed_polls" gorm:"column:failed_polls;->"`
+	CreatedAt    time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
+	UpdatedAt    time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
+	DeletedAt    gorm.DeletedAt `json:"-" gorm:"index"`
 }
 
 // Firewall enforcement of a node, kept in nodes.firewall_enforcement by the

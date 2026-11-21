@@ -17,7 +17,6 @@ import (
 	"github.com/maburvm/panel/internal/panel/repository"
 	"github.com/maburvm/panel/internal/shared/models"
 	"github.com/maburvm/panel/internal/shared/queue"
-	"github.com/maburvm/panel/internal/shared/storage"
 )
 
 var (
@@ -27,6 +26,9 @@ var (
 	ErrScheduleAlreadyExists = errors.New("backup schedule already exists for this VM")
 	ErrBackupInProgress      = errors.New("backup already in progress for this VM")
 	ErrStorageUploadFailed   = errors.New("storage upload failed")
+	// ErrBackupFileKept is returned when a backup's file could not be removed
+	// from storage. The backup is kept, so the delete can be tried again.
+	ErrBackupFileKept = errors.New("the backup's file could not be removed from storage, so the backup was kept")
 )
 
 // BackupService handles backup-related business operations
@@ -37,7 +39,9 @@ type BackupService struct {
 	vmRepo          *repository.VMRepository
 	nodeRepo        *repository.NodeRepository
 	riverClient     *river.Client[pgx.Tx]
-	storageClient   *storage.Client
+	dest            *BackupDestinations
+	objectStore     backupObjectStore // replaces the destination's client in tests
+	vmService       *VMService
 	logger          *slog.Logger
 	cron            *cron.Cron
 	cronParser      cron.Parser
@@ -45,7 +49,8 @@ type BackupService struct {
 	scheduleEntries map[string]cron.EntryID
 }
 
-// NewBackupService creates a new BackupService instance
+// NewBackupService creates a new BackupService instance. dest is where backups
+// are kept; nil means only what each node has in its own environment file.
 func NewBackupService(
 	db *gorm.DB,
 	backupRepo *repository.BackupRepository,
@@ -53,7 +58,7 @@ func NewBackupService(
 	vmRepo *repository.VMRepository,
 	nodeRepo *repository.NodeRepository,
 	riverClient *river.Client[pgx.Tx],
-	storageClient *storage.Client,
+	dest *BackupDestinations,
 	logger *slog.Logger,
 ) *BackupService {
 	cronParser := cron.NewParser(
@@ -73,7 +78,7 @@ func NewBackupService(
 		vmRepo:          vmRepo,
 		nodeRepo:        nodeRepo,
 		riverClient:     riverClient,
-		storageClient:   storageClient,
+		dest:            dest,
 		logger:          logger,
 		cron:            cron.New(cron.WithParser(cronParser)),
 		cronParser:      cronParser,
@@ -158,16 +163,6 @@ func (s *BackupService) CreateBackup(ctx context.Context, req *CreateBackupReque
 	// ux_backups_active_per_vm partial unique index (see backupRepo.Create below),
 	// which covers both this path and the scheduled path with no TOCTOU window.
 
-	// Determine storage provider
-	storageProvider := req.StorageProvider
-	if storageProvider == "" {
-		if s.storageClient != nil {
-			storageProvider = string(s.storageClient.GetProvider())
-		} else {
-			storageProvider = "s3"
-		}
-	}
-
 	// Determine compression
 	compression := req.Compression
 	if compression == "" {
@@ -176,12 +171,13 @@ func (s *BackupService) CreateBackup(ctx context.Context, req *CreateBackupReque
 
 	// Generate storage path
 	timestamp := time.Now().UTC().Format("20060102_150405")
-	storagePath := fmt.Sprintf("backups/%s/%s_%s.%s", vm.ID, vm.ID, timestamp, backupFileSuffix(compression))
+	storagePath := s.dest.Key(ctx, fmt.Sprintf("backups/%s/%s_%s.%s", vm.ID, vm.ID, timestamp, backupFileSuffix(compression)))
 
-	// Create backup record
+	// Create backup record. Where the file ends up is the worker's to record,
+	// once the node has said where it put it.
 	backup := &models.Backup{
 		VMID:            req.VMID,
-		StorageProvider: storageProvider,
+		StorageProvider: models.BackupStoreDestination,
 		StoragePath:     storagePath,
 		BackupType:      models.BackupTypeManual,
 		Status:          models.BackupStatusPending,
@@ -321,39 +317,96 @@ func (s *BackupService) GetBackup(ctx context.Context, backupID string) (*models
 // Delete Backup
 // ============================================================================
 
-// DeleteBackup deletes a backup and removes it from storage
-func (s *BackupService) DeleteBackup(ctx context.Context, backupID string) error {
+// DeleteBackup deletes a backup and its file in storage. fileNotDeleted is
+// true when the record was removed but no file was: it is not where the panel
+// can look (a node's own storage, or a bucket used before the destination was
+// changed).
+func (s *BackupService) DeleteBackup(ctx context.Context, backupID string) (fileNotDeleted bool, err error) {
 	backup, err := s.backupRepo.GetByID(ctx, backupID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrBackupNotFound
+			return false, ErrBackupNotFound
 		}
-		return fmt.Errorf("failed to get backup: %w", err)
+		return false, fmt.Errorf("failed to get backup: %w", err)
 	}
 
-	// Delete from storage if backup is completed
-	if backup.Status == models.BackupStatusCompleted && s.storageClient != nil {
-		if err := s.storageClient.Delete(ctx, backup.StoragePath); err != nil {
-			s.logger.WarnContext(ctx, "failed to delete backup from storage",
-				"backup_id", backupID,
-				"storage_path", backup.StoragePath,
-				"error", err,
-			)
-			// Continue to delete the record even if storage deletion fails
-		}
+	// The file goes first. If it cannot be removed the record stays, so the
+	// delete can be tried again: a record removed on its own leaves a file
+	// nothing points to any more, kept and paid for indefinitely.
+	notDeleted, err := s.removeBackupFile(ctx, backup)
+	if err != nil {
+		s.logger.WarnContext(ctx, "backup kept: its file could not be removed from storage",
+			"backup_id", backupID, "storage_path", backup.StoragePath, "error", err)
+		return false, fmt.Errorf("%w: %v", ErrBackupFileKept, err)
 	}
 
 	// Delete backup record
 	if err := s.backupRepo.Delete(ctx, backupID); err != nil {
-		return fmt.Errorf("failed to delete backup: %w", err)
+		return false, fmt.Errorf("failed to delete backup: %w", err)
 	}
 
 	s.logger.InfoContext(ctx, "backup deleted",
 		"backup_id", backupID,
 		"vm_id", backup.VMID,
+		"storage_path", backup.StoragePath,
+		"file_not_deleted", notDeleted,
 	)
 
-	return nil
+	return notDeleted, nil
+}
+
+// removeBackupFile deletes a backup's file from the destination. notDeleted is
+// true when there was no file there to delete: it is in storage only its node
+// knows, or in a bucket the destination pointed at before it was changed. The
+// caller says so instead of claiming the file is gone.
+// ponytail: one destination. Record the destination per backup if operators
+// start moving between stores and need the panel to clean up the old one.
+func (s *BackupService) removeBackupFile(ctx context.Context, backup *models.Backup) (notDeleted bool, err error) {
+	if backup.Status != models.BackupStatusCompleted || backup.StoragePath == "" {
+		return false, nil // never uploaded
+	}
+	client, err := s.destinationStore(ctx)
+	if err != nil {
+		return false, err
+	}
+	if client == nil {
+		if backup.StorageProvider == models.BackupStoreNode {
+			return true, nil
+		}
+		return false, errors.New("no backup destination is set; set it under System settings, Backup")
+	}
+	// A delete of a file that is not there succeeds on S3, so look first: only
+	// a file that was found can be said to have been deleted.
+	found, err := client.Exists(ctx, backup.StoragePath)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return true, nil
+	}
+	return false, client.Delete(ctx, backup.StoragePath)
+}
+
+// destinationStore returns the panel's client for the backup destination, or
+// nil when none is set.
+func (s *BackupService) destinationStore(ctx context.Context) (backupObjectStore, error) {
+	if s.objectStore != nil {
+		return s.objectStore, nil
+	}
+	if s.dest == nil {
+		return nil, nil
+	}
+	c, err := s.dest.Client(ctx)
+	if err != nil || c == nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// backupObjectStore is the part of the storage client deleting a backup uses.
+type backupObjectStore interface {
+	Exists(ctx context.Context, key string) (bool, error)
+	Delete(ctx context.Context, key string) error
 }
 
 // ============================================================================
@@ -413,6 +466,7 @@ func (s *BackupService) RestoreBackup(ctx context.Context, req *RestoreBackupReq
 		BackupID:  backup.ID,
 		SourceKey: backup.StoragePath,
 		Checksum:  backup.Checksum,
+		NodeStore: backup.StorageProvider == models.BackupStoreNode,
 	}
 
 	result, err := s.riverClient.Insert(ctx, job, nil)
@@ -466,15 +520,7 @@ func (s *BackupService) ConfigureSchedule(ctx context.Context, req *ConfigureSch
 		return nil, fmt.Errorf("failed to get VM: %w", err)
 	}
 
-	// Determine storage provider
-	storageProvider := req.StorageProvider
-	if storageProvider == "" {
-		if s.storageClient != nil {
-			storageProvider = string(s.storageClient.GetProvider())
-		} else {
-			storageProvider = "s3"
-		}
-	}
+	storageProvider := models.BackupStoreDestination
 
 	// Determine compression
 	compression := req.Compression
@@ -666,12 +712,12 @@ func (s *BackupService) executeScheduledBackup(scheduleID string) {
 
 	// Generate storage path
 	timestamp := time.Now().UTC().Format("20060102_150405")
-	storagePath := fmt.Sprintf("backups/%s/scheduled_%s.%s", vm.ID, timestamp, backupFileSuffix(schedule.Compression))
+	storagePath := s.dest.Key(ctx, fmt.Sprintf("backups/%s/scheduled_%s.%s", vm.ID, timestamp, backupFileSuffix(schedule.Compression)))
 
 	// Create backup record
 	backup := &models.Backup{
 		VMID:            schedule.VMID,
-		StorageProvider: schedule.StorageProvider,
+		StorageProvider: models.BackupStoreDestination,
 		StoragePath:     storagePath,
 		BackupType:      models.BackupTypeSchedule,
 		Status:          models.BackupStatusPending,
@@ -782,7 +828,7 @@ func (s *BackupService) applyRetentionPolicy(ctx context.Context, schedule *mode
 				continue
 			}
 
-			if err := s.DeleteBackup(ctx, b.ID); err != nil {
+			if _, err := s.DeleteBackup(ctx, b.ID); err != nil {
 				s.logger.Error("failed to delete backup per retention policy",
 					"backup_id", b.ID,
 					"error", err,
@@ -831,8 +877,15 @@ func (s *BackupService) shouldKeepBackup(backup models.Backup, allBackups []mode
 
 // GetBackupDownloadURL generates a presigned URL for downloading a backup
 func (s *BackupService) GetBackupDownloadURL(ctx context.Context, backupID string, expiration time.Duration) (string, error) {
-	if s.storageClient == nil {
-		return "", errors.New("storage client not configured")
+	if s.dest == nil {
+		return "", errors.New("no backup destination is set")
+	}
+	client, err := s.dest.Client(ctx)
+	if err != nil {
+		return "", err
+	}
+	if client == nil {
+		return "", errors.New("no backup destination is set")
 	}
 
 	backup, err := s.backupRepo.GetByID(ctx, backupID)
@@ -847,7 +900,7 @@ func (s *BackupService) GetBackupDownloadURL(ctx context.Context, backupID strin
 		return "", fmt.Errorf("backup is not completed")
 	}
 
-	url, err := s.storageClient.GeneratePresignedURL(ctx, backup.StoragePath, expiration)
+	url, err := client.GeneratePresignedURL(ctx, backup.StoragePath, expiration)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate download URL: %w", err)
 	}

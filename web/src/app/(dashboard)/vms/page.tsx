@@ -9,7 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Meter } from "@/components/ui/meter"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { DeleteProgressDialog } from "@/components/vm-delete-progress"
-import { StatusBadge, useVMTransitions } from "@/components/status-badge"
+import { StatusBadge, useVMTransitions, vmStatus } from "@/components/status-badge"
 import { OSLogoTile } from "@/components/os-icon"
 import { useConfirm } from "@/components/confirm-provider"
 import { useCopy } from "@/lib/use-feedback"
@@ -268,7 +268,7 @@ export default function VMsListPage() {
           <ul className={`divide-y divide-hair ${isPlaceholderData ? "opacity-60" : ""}`}>
             {rows.map((vm) => {
               const moving = !!transitionOf(vm.id) || !!busy[vm.id] || vm.status === "creating" || vm.status === "deleting"
-              const running = vm.status === "running" && !vm.suspended
+              const running = vm.status === "running" && !vm.suspended && !vm.state_unknown
               const nodeDown = vm.node_status === "offline"
               return (
                 <li
@@ -280,7 +280,7 @@ export default function VMsListPage() {
                       {vm.hostname}
                     </Link>
                     <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
-                      <StatusBadge status={vm.suspended ? "suspended" : vm.status} transition={transitionOf(vm.id)} />
+                      <StatusBadge status={vmStatus(vm)} transition={transitionOf(vm.id)} />
                       {vm.rescue_mode && <span className="text-xs font-medium text-warning">Rescue mode</span>}
                     </div>
                   </div>
@@ -342,7 +342,7 @@ export default function VMsListPage() {
                         {vm.memory_now ? <p className="mt-1 whitespace-nowrap text-xs text-muted-foreground">Memory {Math.round(vm.memory_now)}%</p> : null}
                       </>
                     ) : (
-                      <p className="text-sm text-muted-foreground">{running ? "No reading" : "Off"}</p>
+                      <p className="text-sm text-muted-foreground">{running ? "No reading" : vm.state_unknown ? "Not known" : "Off"}</p>
                     )}
                   </div>
 
@@ -351,7 +351,7 @@ export default function VMsListPage() {
                       <Button size="sm" variant="outline" disabled={moving} onClick={() => power(vm, "restart")}>
                         Restart
                       </Button>
-                    ) : vm.status === "stopped" && !vm.suspended ? (
+                    ) : vm.status === "stopped" && !vm.suspended && !vm.state_unknown ? (
                       <Button size="sm" variant="outline" disabled={moving} onClick={() => power(vm, "start")}>
                         Start
                       </Button>

@@ -16,7 +16,8 @@
 #   * reviewing every image tag before deploy (see .env.production.example),
 #   * terminating TLS at a reverse proxy in front of the web service,
 #   * providing real secrets via the *_FILE secret mounts (not inline env),
-#   * backing up PostgreSQL and object storage (see docs/DEPLOYMENT.md),
+#   * configuring the `panel-backup` service (it idles until you do) and
+#     rehearsing a restore (see docs/DEPLOYMENT.md section 9),
 #   * deploying the KVM agent separately on each hypervisor host.
 #
 # IMPORTANT — least-privilege topology:
@@ -290,6 +291,73 @@ services:
         max-size: "20m"
         max-file: "5"
 
+  panel-backup:
+    # Nightly, encrypted, OFF-HOST backup of the panel database and the panel
+    # data volume (secrets.json, without which a restored database cannot
+    # decrypt 2FA secrets or stored keys). It idles, and says so in its log,
+    # until BACKUP_DEST and BACKUP_AGE_RECIPIENTS are set. Only age PUBLIC keys
+    # live here: nothing on this host can decrypt a backup. See
+    # docs/DEPLOYMENT.md section 9.
+    build:
+      context: ./docker/panel-backup
+      args:
+        # Keep equal to the postgres service image: pg_dump must match the server.
+        POSTGRES_IMAGE: postgres:16.14
+    image: maburvm-panel-backup:local
+    container_name: maburvm-panel-backup
+    restart: unless-stopped
+    environment: &backup-db-env
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-maburvm}
+      PGDATABASE: ${POSTGRES_DB:-maburvm}
+      DB_PASSWORD_FILE: /run/secrets/postgres_password
+      BACKUP_DEST: ${BACKUP_DEST:-}
+      BACKUP_AGE_RECIPIENTS: ${BACKUP_AGE_RECIPIENTS:-}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+      BACKUP_TIME: ${BACKUP_TIME:-02:30}
+      BACKUP_HEARTBEAT_URL: ${BACKUP_HEARTBEAT_URL:-}
+    # `data` reaches postgres; `backup-egress` is the only way out, for the upload.
+    networks:
+      - data
+      - backup-egress
+    volumes:
+      - panel_data:/panel-data:ro
+      # Read-only view of this directory: .env.production and deploy/secrets go
+      # into the (encrypted) backup, and deploy/secrets/rclone.conf names the
+      # destination.
+      - .:/host:ro
+    secrets:
+      - postgres_password
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # Unhealthy after a failed backup or a failed start-up check.
+      test: ["CMD", "panel-backup", "healthcheck"]
+      interval: 5m
+      timeout: 10s
+      retries: 1
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  panel-restore:
+    # One-shot restore, run only by scripts/panel-restore.sh. The `restore`
+    # profile keeps it out of every `up`.
+    profiles: ["restore"]
+    image: maburvm-panel-backup:local
+    restart: "no"
+    entrypoint: ["panel-backup", "restore"]
+    environment: *backup-db-env
+    networks:
+      - data
+    volumes:
+      - panel_data:/panel-data
+    secrets:
+      - postgres_password
+
   # ---------------------------------------------------------------------------
   # Agent deployment (READ-ONLY NOTE — not started by this file)
   # ---------------------------------------------------------------------------
@@ -339,6 +407,9 @@ networks:
   # No data service attaches here. A Docker network is NOT a complete
   # host/firewall policy — enforce agent ingress separately.
   agent-egress:
+    driver: bridge
+  # Outbound for panel-backup only: the upload to the off-host destination.
+  backup-egress:
     driver: bridge
 
 volumes:

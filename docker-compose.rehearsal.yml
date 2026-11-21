@@ -1,0 +1,13 @@
+# Overlay for a RESTORE REHEARSAL (scripts/panel-restore.sh --rehearsal). Never
+# use it for the real panel.
+#
+# A panel restored from a production backup believes it runs production: left
+# connected it would drive the real nodes, send mail, call the DNS provider and
+# the billing system, and upload its own "backups" over the real ones. Making
+# these two networks internal removes every route out, so the copy can be
+# inspected safely. Nodes show as offline in it; that is expected.
+networks:
+  agent-egress:
+    internal: true
+  backup-egress:
+    internal: true

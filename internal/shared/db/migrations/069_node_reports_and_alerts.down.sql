@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS alerts;
+ALTER TABLE nodes DROP COLUMN IF EXISTS failed_polls;
+ALTER TABLE nodes DROP COLUMN IF EXISTS last_report_at;

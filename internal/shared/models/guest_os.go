@@ -73,3 +73,12 @@ func CustomerISORef(isoURL string) string {
 func SplitCustomerISORef(ref string) (isoURL string, customer bool) {
 	return strings.CutPrefix(ref, customerISOPrefix)
 }
+
+// Metadata the panel sends with a create whose "s3://" image is a backup.
+const (
+	// ImageOnceKey marks an image that is used for this VM only: the node
+	// downloads it straight to the new disk and does not cache it.
+	ImageOnceKey = "image_once"
+	// ImageSHA256Key is the checksum the downloaded image must have.
+	ImageSHA256Key = "image_sha256"
+)

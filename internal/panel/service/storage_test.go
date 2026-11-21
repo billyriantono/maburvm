@@ -8,6 +8,7 @@ import (
 
 	"github.com/maburvm/panel/internal/panel/repository"
 	"github.com/maburvm/panel/internal/shared/models"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -137,4 +138,60 @@ func TestStorageServiceDeleteRemovesFileFirst(t *testing.T) {
 	okSvc := NewStorageServiceWithProvisioner(repository.NewStorageRepository(db), repository.NewNodeRepository(db), okDel)
 	require.NoError(t, okSvc.DeleteVolume(vol.ID))
 	require.True(t, okDel.deleteCalled)
+}
+
+func TestCreatePoolOnlyRegistersWhatCanHoldDisks(t *testing.T) {
+	db := setupStorageTestDB(t)
+	svc := NewStorageService(repository.NewStorageRepository(db))
+	const node = "11111111-1111-1111-1111-111111111111"
+
+	for _, typ := range []string{"ceph", "nfs", "lvm", "lvmthin", "zfs", "zfsthin", "zfscompressed"} {
+		err := svc.CreatePool(&models.StoragePool{ID: "p-" + typ, Name: typ, NodeID: node, Path: "/data", Type: typ})
+		assert.ErrorIs(t, err, ErrInvalidStoragePool, "%s has no backend on the node and must not become a row", typ)
+	}
+	assert.ErrorIs(t, svc.CreatePool(&models.StoragePool{ID: "p-rel", Name: "rel", NodeID: node, Path: "data"}), ErrInvalidStoragePool)
+	var count int64
+	require.NoError(t, db.Model(&models.StoragePool{}).Count(&count).Error)
+	assert.Zero(t, count)
+
+	// Capacity is measured on the node, so a size in the request is not kept.
+	first := &models.StoragePool{ID: "p-1", Name: "data", NodeID: node, Path: "/data/", TotalSpace: 500 * gib, AvailableSpace: 500 * gib, Status: "online", IsPrimary: true}
+	require.NoError(t, svc.CreatePool(first))
+	var stored models.StoragePool
+	require.NoError(t, db.First(&stored, "id = ?", "p-1").Error)
+	assert.Equal(t, "dir", stored.Type)
+	assert.Equal(t, "/data", stored.Path)
+	assert.Zero(t, stored.TotalSpace)
+	assert.Equal(t, "offline", stored.Status, "not measured yet is not online")
+	assert.False(t, stored.IsPrimary, "an unmeasured pool must not take over provisioning from one that works")
+	assert.ErrorIs(t, svc.UpdatePool("p-1", &models.StoragePool{IsPrimary: true}), ErrInvalidStoragePool, "nor be promoted before the node has seen it")
+	assert.ErrorIs(t, svc.CreatePool(&models.StoragePool{ID: "p-2", Name: "again", NodeID: node, Path: "/data"}), ErrInvalidStoragePool, "one directory is one pool")
+	assert.NoError(t, svc.CreatePool(&models.StoragePool{ID: "p-3", Name: "data", NodeID: "another-node", Path: "/data"}), "the same path on another node is another directory")
+}
+
+func TestPoolMeasurementAndEditsDoNotOverwriteEachOther(t *testing.T) {
+	db := setupStorageTestDB(t)
+	pool := seedStoragePool(t, db)
+	repo := repository.NewStorageRepository(db)
+	svc := NewStorageService(repo)
+
+	// The collector read the pool, then the operator renamed it and made it
+	// primary while the node was being asked.
+	stale := *pool
+	require.NoError(t, svc.UpdatePool(pool.ID, &models.StoragePool{Name: "renamed", IsPrimary: true, TotalSpace: 1}))
+	stale.TotalSpace, stale.UsedSpace, stale.AvailableSpace, stale.Status = 900*gib, 300*gib, 600*gib, "online"
+	require.NoError(t, repo.UpdatePoolMeasurement(&stale))
+
+	var stored models.StoragePool
+	require.NoError(t, db.First(&stored, "id = ?", pool.ID).Error)
+	assert.Equal(t, "renamed", stored.Name)
+	assert.True(t, stored.IsPrimary)
+	assert.Equal(t, 900*gib, stored.TotalSpace, "capacity is what the node measured, not what a request said")
+
+	// And an edit after a measurement keeps the measurement.
+	require.NoError(t, svc.UpdatePool(pool.ID, &models.StoragePool{AlertThreshold: 80, TotalSpace: 5 * gib}))
+	require.NoError(t, db.First(&stored, "id = ?", pool.ID).Error)
+	assert.Equal(t, 80, stored.AlertThreshold)
+	assert.Equal(t, 900*gib, stored.TotalSpace)
+	assert.Equal(t, "online", stored.Status)
 }

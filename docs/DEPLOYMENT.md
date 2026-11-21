@@ -17,6 +17,9 @@
 | `.dockerignore` | Keeps secrets/host artifacts out of build contexts. |
 | `docker/panel-entrypoint.sh` | Chowns `/data`, resolves `*_FILE` secrets, then `su-exec maburvm`. |
 | `docker/minio-init.sh` | One-shot `mc` initializer: bucket + immutable versioned policy (`maburvm-bucket-rw-v1`) + restricted user (`maburvm-app-v1`) + access proof. |
+| `docker/panel-backup/` | Image and script behind the `panel-backup` service: nightly encrypted off-host backup of the panel (§9). |
+| `scripts/panel-restore.sh` | Rebuilds a panel from a backup on a fresh host, or as a rehearsal (§9). |
+| `docker-compose.rehearsal.yml` | Overlay used only by a restore rehearsal: cuts the restored panel off from nodes and the internet. |
 | `docs/DEPLOYMENT.md` | This guide. |
 | `deploy/secrets/` | Host secret files (created by you, never committed). |
 
@@ -397,22 +400,34 @@ docker compose -f docker-compose.production.yml --env-file .env.production build
 docker compose -f docker-compose.production.yml --env-file .env.production up -d panel web
 ```
 
-`.env.production` is **not** in git. If it is ever lost, reconstruct it from the
+`deploy-panel.sh` ships source only. `docker-compose.production.yml`,
+`docker-compose.rehearsal.yml`, `docker/` and `scripts/panel-restore.sh` change
+rarely and are copied by hand: compare the host's copy with the repo's first
+(`diff`), then copy each file to its own path. The `panel-backup` service (§9)
+needs all of them.
+
+`.env.production` is **not** in git. Every panel backup carries a copy (§9). If
+it is lost and there is no backup, reconstruct it from the
 running containers' resolved env (`docker inspect maburvm-panel` /
 `maburvm-minio` → `.Config.Env`) — the required keys are `POSTGRES_USER`,
 `POSTGRES_DB`, `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `PANEL_PUBLIC_URL`,
 `ALLOWED_ORIGINS`. Validate before deploy with
 `docker compose -f docker-compose.production.yml --env-file .env.production config`.
 
-Object storage differs by role: **nodes** back up VM disks / capture images to
-their own configured store (e.g. Cloudflare R2 via `STORAGE_*`/`S3_*` env), while
-the **panel** stack ships a local MinIO for panel-side storage operations.
+Object storage differs by role. Backups of customers' VMs go to the backup
+destination set in the panel (§9.6), which the panel sends to each node with
+every backup and restore. Captured images still use the store in each node's
+own environment file (`STORAGE_*`/`S3_*`). The local MinIO in the **panel**
+stack is on the panel's internal network and cannot be reached by nodes, so it
+is not a backup destination.
 
 ## 8. Image / tag review
 
 Before each deploy, confirm every tag in `docker-compose.production.yml` is the
 exact pinned version you intend:
-- `postgres:16.14`
+- `postgres:16.14` (also the base of `maburvm-panel-backup:local`, through the
+  `POSTGRES_IMAGE` build argument: change both together so `pg_dump` matches the
+  server)
 - `minio/minio:RELEASE.2025-09-07T16-13-09Z` (same image used for `minio-init`)
 - `node:22.23.1-alpine3.24` (Dockerfile.web build/runtime)
 - `alpine:3.24` (Dockerfile.panel / Dockerfile.agent runtime)
@@ -431,24 +446,281 @@ validation; set `DB_SSL_MODE` there accordingly and verify the cert chain.
 
 ## 9. Backups & restore
 
-### PostgreSQL
-```bash
-# Backup
-docker compose -f docker-compose.production.yml --env-file .env.production \
-  exec -T postgres pg_dumpall -U "${POSTGRES_USER:-maburvm}" \
-  > backup-$(date +%F).sql
+The panel host has to be rebuildable from nothing. Four things make a panel, and
+all four must survive the loss of the host:
 
-# Restore (into a stopped/clean DB or a fresh volume)
-docker compose -f docker-compose.production.yml --env-file .env.production \
-  exec -T postgres psql -U "${POSTGRES_USER:-maburvm}" < backup.sql
+| What | Where it lives | Without it |
+|------|----------------|------------|
+| Panel database | `postgres_data` volume | Every VM, user, IP and setting record is gone. |
+| `secrets.json` | `panel_data` volume (`/data` in the panel container) | The database restores but **cannot be decrypted**: 2FA secrets, the DNS provider key, kept initial passwords and every other stored secret are lost, and all sessions are invalid. |
+| `.env.production` and `deploy/secrets/` | The repo directory on the host | The stack has to be reconfigured by hand. |
+| The age private key | **Not on the host.** With you. | No backup can be read by anyone. |
+
+`secrets.json` holds the AES key the panel generated on first boot. A database
+restored next to a *new* `secrets.json` is a database full of ciphertext nobody
+can read. The two are only useful together, so they are backed up together.
+
+The `panel-backup` service in `docker-compose.production.yml` takes that backup
+every night and sends it off the host. **It does nothing until you configure
+it**, and its log says so (`NOT CONFIGURED ... NO PANEL BACKUPS ARE BEING TAKEN`).
+
+This backup rebuilds the **panel**. VM disks live on the nodes and are covered by
+VM backups, not by this.
+
+### 9.1 What a backup is
+
+One file per night, `maburvm-panel-<UTC time>.tar.age`, holding:
+
+- `db.dump`, a `pg_dump` of the panel database (custom format),
+- `panel-data.tar`, the whole panel data volume including `secrets.json`,
+- `host-config/`, a copy of `.env.production` and `deploy/secrets/`,
+- `MANIFEST`, when it was taken and the last migration it contains.
+
+The file is encrypted with [age](https://age-encryption.org) to a **public** key.
+The panel host only ever holds that public key, so nothing on the host, and
+nobody who takes the host or the storage, can read a backup. Only the private key
+can, and it never goes near either.
+
+### 9.2 Set up the nightly backup
+
+**1. Make the key pair on your own machine, not on the panel host.**
+
+```bash
+age-keygen -o maburvm-backup.key
+# Public key: age1...        <- this line goes to the panel host
 ```
 
-### Object storage (MinIO / S3)
-Back up the `minio_data` volume or use `mc mirror` against the bucket:
+Put `maburvm-backup.key` in your password manager and in one more place that
+does not depend on the panel host or the backup storage. If you lose it, every
+backup is unreadable. If you keep a copy on the panel host, the backups protect
+nothing from whoever takes the host.
+
+**2. Choose a destination that is not the panel host.** Any storage
+[rclone](https://rclone.org) can write to: S3-compatible object storage, SFTP,
+and many others. It must be different hardware, ideally a different provider and
+account. The stack's own MinIO does not count: it dies with the host.
+
+Describe it in `deploy/secrets/rclone.conf` on the panel host (mode `0600`):
+
+```ini
+# S3-compatible object storage
+[offsite]
+type = s3
+provider = Other
+endpoint = https://s3.example.com
+access_key_id = <access key>
+secret_access_key = <secret key>
+```
+
+```ini
+# or an SFTP server
+[offsite]
+type = sftp
+host = backup.example.com
+user = maburvm
+key_file = /host/deploy/secrets/backup_ssh_key
+known_hosts_file = /host/deploy/secrets/backup_known_hosts
+```
+
+The repo directory is mounted read-only at `/host` in the container, so files in
+`deploy/secrets/` are reachable as `/host/deploy/secrets/...`.
+
+These credentials stay on the panel host, so whoever takes the host can use
+them. Limit what they can do:
+
+- Give them access to that one bucket or directory and nothing else. An S3 key
+  that may not create buckets usually needs `no_check_bucket = true` in its
+  section of `rclone.conf`: without it rclone tries to create the bucket before
+  each upload and is refused. `panel-backup check` (step 4) shows whether it
+  works.
+- Turn on object versioning or object lock if the storage has it. That is what
+  keeps older backups when someone deletes or overwrites them with these
+  credentials.
+- If the credentials cannot delete, set `BACKUP_RETENTION_DAYS=0` and let the
+  storage expire old objects with its own lifecycle rule.
+
+**3. Point the service at it** in `.env.production`:
+
+```bash
+BACKUP_DEST=offsite:my-bucket/maburvm-panel
+BACKUP_AGE_RECIPIENTS=age1...
+# Optional, defaults shown. Days to keep (0 keeps all), daily time in UTC, and a
+# URL fetched after each successful backup.
+BACKUP_RETENTION_DAYS=30
+BACKUP_TIME=02:30
+BACKUP_HEARTBEAT_URL=
+```
+
+`BACKUP_DEST` has to name a remote from `rclone.conf` (`name:path`). A plain
+path is refused: it would be a directory inside the container, on this host.
+`BACKUP_AGE_RECIPIENTS` takes several keys separated by commas; each can decrypt
+on its own. The service refuses to start a backup if a private key is pasted
+there.
+
+**4. Start it and take the first backup now.**
+
+```bash
+C="docker compose -f docker-compose.production.yml --env-file .env.production"
+$C up -d --build panel-backup
+$C exec panel-backup panel-backup check    # database reachable, destination writable?
+$C exec panel-backup panel-backup once     # one backup, now
+```
+
+`check` uploads a one-line file, `panel-backup-check.txt`, to prove the
+credentials can write. It also runs each time the container starts.
+
+**5. Know when it stops working.** A backup that failed last week is the usual
+way to discover there is no backup.
+
+- `docker compose ... logs panel-backup` shows every run (`backup ok: <file>` or
+  `ERROR: backup FAILED`). A failed run is tried once more an hour later.
+- The container turns `unhealthy` after a failed backup or a failed start-up
+  check, and healthy again after the next good run.
+- Set `BACKUP_HEARTBEAT_URL` to a monitor that alerts when the nightly fetch does
+  not arrive. This is the only one of the three that also catches a host that is
+  down.
+
+Then do 9.4 once. Until a backup has been restored, you do not know that you
+have one.
+
+### 9.3 Restore onto a fresh host
+
+You need: a host with Docker and the Compose plugin, this repository at the
+version that took the backup **or newer** (the panel migrates a database forward
+on boot; never start an older panel on a newer database), the backup file, and
+the age private key.
+
+```bash
+# Anywhere with access to the storage: fetch the newest backup.
+rclone lsf --include 'maburvm-panel-*.tar.age' offsite:my-bucket/maburvm-panel/ | sort | tail -1
+rclone copy offsite:my-bucket/maburvm-panel/maburvm-panel-<time>.tar.age .
+
+# On the new host, in the repo directory, with the backup and the key copied over:
+scripts/panel-restore.sh maburvm-panel-<time>.tar.age maburvm-backup.key
+```
+
+The script:
+
+1. puts back `.env.production` and `deploy/secrets/` from the backup where they
+   are missing (it never overwrites a file that exists),
+2. starts PostgreSQL and restores the database,
+3. restores the panel data volume, `secrets.json` included,
+4. starts the whole stack, `panel-backup` included, and prints what to do next:
+   switch off the old host for good, delete the key from the new host, move DNS
+   and the TLS proxy (section 7), allow the new address on each node's agent
+   port, sign in with a two-factor account, check every node comes online.
+
+It refuses, before changing anything, when a panel is already running on the
+host, when the database already holds tables, or when the data volume already
+holds a different `secrets.json` (which happens if the stack was started once
+before the restore). `--force` overrides all three: the database is replaced,
+and the old `secrets.json` is kept beside the restored one as
+`secrets.json.replaced-<time>`.
+
+**The restored panel knows the nodes as they were when the backup was taken**,
+up to a day earlier. Everything done since is missing from it: a VM created
+after the backup still runs on its node but is not in the panel, which does
+not know its addresses are taken; a VM deleted after the backup is listed but gone; a
+password, firewall rule or plan changed since is back at its old value; jobs
+that were queued at backup time run again. Before letting customers back in or
+creating VMs, compare each node's VM list (`virsh list --all`) with the panel's
+and settle the differences.
+
+Only restore files that came from your own destination. Encryption keeps a
+backup secret; it does not prove who made it.
+
+To look inside a backup without restoring it:
+`age -d -i maburvm-backup.key maburvm-panel-<time>.tar.age | tar -x`.
+
+### 9.4 Rehearse a restore
+
+Do this after first setting up backups, after every PostgreSQL major upgrade, and
+at least once a quarter. Use a scratch machine or VM with Docker, **never the
+production host**.
+
+```bash
+scripts/panel-restore.sh --rehearsal maburvm-panel-<time>.tar.age maburvm-backup.key
+```
+
+A panel restored from a production backup believes it is production. Left
+connected it would drive the real nodes, send mail, call the DNS provider and
+billing, and upload its own backups over the real ones. `--rehearsal` adds
+`docker-compose.rehearsal.yml`, which removes the panel's route to anything
+outside the machine, and does not start `panel-backup`. With `--rehearsal` the
+script refuses to run on a host where a panel is running, `--force` or not.
+
+Then check, through an SSH tunnel to the scratch machine's loopback web port
+(`ssh -L 3000:127.0.0.1:3000 scratch-host`, open `http://localhost:3000`):
+
+1. Sign in with an account that has two-factor authentication. An accepted code
+   proves `secrets.json` matches the database, which is the part a plain
+   database dump never covers.
+2. The VM, node and user lists match production as of the backup time. Nodes
+   show offline; they are unreachable on purpose.
+
+Write down the date and how long it took, then destroy the copy:
+
+```bash
+docker compose -f docker-compose.production.yml -f docker-compose.rehearsal.yml \
+  --env-file .env.production down -v
+```
+
+The script also put production's `.env.production` and `deploy/secrets/` on the
+scratch machine. Delete them there, with the key and the backup file.
+
+`scripts/test-panel-backup.sh` runs the same dump, encrypt, decrypt and restore
+round trip against any PostgreSQL with throwaway databases, without Docker. CI
+runs it inside the backup image on every push.
+
+### 9.5 Object storage (MinIO / S3)
+
+The bundled MinIO is not covered by the panel backup. Back up the `minio_data`
+volume or use `mc mirror` against the bucket, to a different host:
 ```bash
 mc mirror maburvm/ /mnt/backups/maburvm-$(date +%F)/
 ```
 If using external S3, use your provider's snapshot/versioning.
+
+### 9.6 Backups of customers' VMs
+
+Where VM backups are kept is set in the panel: **Settings, System, Backup**.
+It is one S3-compatible bucket (endpoint, region, bucket, optional path prefix,
+access key, secret key, HTTPS on or off). The secret key is stored encrypted
+with the panel's AES key and is never shown again.
+
+- The bucket must be reachable from **every node** (they write and read the
+  backups) and from the **panel** (it deletes them, by hand or by a schedule's
+  retention). Use a store outside the panel host and outside the nodes.
+- **Test destination** on that page connects from the panel and from each
+  selected node, writes a small file, reads it back and deletes it. A node
+  that answers "Needs an agent update" runs an agent from before this setting:
+  update it under Nodes. Until then that node keeps using the keys in its own
+  environment file, and its backups are marked as kept in the node's storage.
+- A node checks that the store accepts a write before it exports a disk, so a
+  wrong key fails in seconds. A failed backup is tried at most three times, and
+  not at all when the reason will not change (no destination, refused
+  credentials, missing VM or disk). The reason is shown on the backup.
+- Deleting a backup deletes its file first. If the store cannot be reached the
+  backup stays listed and the delete can be repeated.
+- Backups made before a destination was set are marked as kept in the node's
+  own storage. The panel deletes a backup's file only when it finds it in the
+  destination's bucket; otherwise the backup is removed from the panel and the
+  administrator is told that no file was deleted.
+
+**Restore as a new VM** (VM page, Backups, administrators only) creates a new
+VM from a backup on any active node: the case where the original node is gone.
+The new VM belongs to the same owner, has the same size, limits and firewall
+rules, and gets a new address from the chosen node's pools. The node must pass
+the destination test first; nothing is created on a node that cannot read the
+bucket, on a node whose agent predates this feature, or for a backup whose file
+is no longer in the bucket. A backup kept in a node's own storage can only be
+restored on a node whose environment file reaches that storage. The download
+may take hours for a large disk; the new VM shows as creating until it is done,
+and a panel restart in the meantime does not interrupt it. The original VM and
+the backup are not changed.
+
+After setting a destination, prove it once per node with a throwaway VM: make a
+backup, restore it in place, and restore it as a new VM on another node.
 
 ## 10. Static validation
 
@@ -541,3 +813,137 @@ offer it, or be served from a URL the nodes can reach.
 - An image built another way must carry the virtio drivers, the QEMU guest
   agent and cloudbase-init reading the NoCloud disc, and must have
   `RealTimeIsUniversal` set, or its clock will be off by its time-zone offset.
+
+## 13. Storage pools and disk overcommit
+
+A storage pool is a directory on a node that holds VM disks as qcow2 files. To
+keep disks on a ZFS dataset, an NFS export or CephFS, mount it on the node and
+register the mount point under Storage, Add Pool. The panel measures each
+pool's capacity and free space on the node every minute; they are not set by
+hand. The pool marked for new VMs is where that node creates disks, and a VM's
+extra disks are created beside its own.
+
+Disks are thin: a 100 GB disk takes a few GB on the day it is created and grows
+as the guest writes. So a pool can be promised more disk than it holds, and it
+fills later, without a new order. A pool that fills pauses every VM on it. The
+Storage page and each node's page show, per pool, how much is allocated next to
+its capacity.
+
+Two rules decide whether a new or grown disk is accepted:
+
+- The whole disk must fit in the pool's free space right now, with 20 GB kept
+  free. This always applies.
+- With a disk overcommit ratio set (Settings, System, Quotas), everything
+  allocated on the pool, plus the new disk, must stay within capacity times
+  that ratio. It is not set by default, because a pool that is already past the
+  ratio you pick would refuse every new order. Read the allocated figure for
+  each pool first and set the ratio above the highest one.
+
+The count covers the VMs the panel manages. Disks of machines on the node that
+the panel does not know about are not in it.
+
+## 14. Alerts and node monitoring
+
+The panel checks every node once a minute, all at the same time and each under
+its own time limit, so a node that hangs does not delay the others. A node that
+misses three checks in a row is marked offline: no new VM is placed on it, and
+its VMs are shown as "State unknown" to staff and to their owners, because the
+panel can no longer tell whether they run. It is marked active again on the
+first check it answers. The number of checks is a setting.
+
+Set up delivery on the Alerts page. Until you do, alerts are only listed there.
+
+| Alert | Raised when | Closes |
+|---|---|---|
+| Node offline | the agent port stops answering for the set number of checks | when the node has answered again for the settle time |
+| Node not reporting | the port answers but the agent sends no figures (hung, refusing the panel, or too old) | same |
+| Storage pool | a pool passes its own alert level (warning) or the panel-wide critical level | when it is back under |
+| Node not filtering guest traffic | a node reports bridge netfilter off | when it reports it on |
+| Backup failed | a backup fails with no retry left | one message, not a state |
+| Job failed | any other background job fails for good | one message, not a state |
+
+An alert is sent once when it opens and once when it closes. A node that goes
+up and down inside the settle time (ten minutes by default) is one alert, and
+the recovery is sent only after it has stayed up that long. The same backup or
+job failing again within the settle time is recorded but not sent again.
+Alerts raised in the same minute arrive as one message. Open alerts are kept
+in the database, so a panel restart neither loses nor repeats them. A node in
+maintenance raises no node alerts.
+
+Email uses the mail server under Settings, System, Email. Note that the panel
+cannot report its own death, and cannot send mail through a mail server that
+runs on the node that just went down: keep one check of the panel from outside.
+
+### Webhook
+
+Choose Slack or Discord to post a line of text to that service's incoming
+webhook. The JSON format posts this body to any receiver:
+
+```json
+{
+  "version": "1",
+  "source": "MaburVM",
+  "panel_url": "https://panel.example.com",
+  "sent_at": "2026-01-01T10:00:00Z",
+  "text": "Critical: Node node1 is offline\nIt has missed 3 checks in a row. ...",
+  "alerts": [
+    {
+      "id": "0b6f...",
+      "key": "node_offline:<node id>",
+      "kind": "node_offline",
+      "status": "firing",
+      "severity": "critical",
+      "title": "Node node1 is offline",
+      "detail": "It has missed 3 checks in a row. ...",
+      "resource": { "type": "node", "id": "<node id>", "name": "node1" },
+      "fired_at": "2026-01-01T09:59:00Z",
+      "resolved_at": null
+    }
+  ]
+}
+```
+
+`status` is `firing`, `resolved` or `event` (a failure that has no "resolved").
+`kind` is one of `node_offline`, `node_silent`, `storage_pool`, `firewall_off`,
+`backup_failed`, `job_failed`. `severity` is `critical` or `warning`. `key` is
+the same for the firing and the resolved message of one alert. A test alert
+has `"test": true`. Fields may be added; none of these are renamed or removed.
+
+With a signing secret saved, each request carries `X-Webhook-Signature`: the
+HMAC-SHA256 of the raw body with that secret, in hex. A receiver must answer
+2xx within ten seconds; anything else is tried again a minute later, five times
+in all. After that a backup or job failure is left to the Alerts page, while an
+alert that is still open keeps being tried about every fifteen minutes until it
+is delivered or closes. The address and the secret are stored encrypted with the
+panel's AES key and are never shown again.
+
+### Prometheus
+
+With `METRICS_TOKEN` set, `/metrics` (bearer token) carries two signals made
+for alerting on a node, both taken from the panel's own checks:
+
+- `maburvm_node_up{node}` is 1 when the node's agent reported on the last
+  check and 0 when that check got no report.
+- `maburvm_node_last_report_timestamp_seconds{node}` is when it last reported.
+  It stops advancing the moment a node goes quiet.
+
+```yaml
+groups:
+  - name: maburvm
+    rules:
+      - alert: NodeDown
+        expr: maburvm_node_up == 0
+        for: 3m
+      - alert: NodeNotReporting
+        expr: time() - maburvm_node_last_report_timestamp_seconds > 300
+      - alert: PanelCollectorStalled
+        expr: time() - max(maburvm_node_last_report_timestamp_seconds) > 300
+      - alert: PanelDown
+        expr: up{job="maburvm"} == 0
+        for: 2m
+```
+
+The usage gauges (`maburvm_node_cpu_usage_percent` and the rest) are absent for
+a node with no reading in the last five minutes, instead of holding their last
+value. `maburvm_node_status` is the status the panel stores, which follows the
+checks above.

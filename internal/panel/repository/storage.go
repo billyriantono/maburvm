@@ -2,6 +2,7 @@ package repository
 
 import (
 	"errors"
+	"time"
 
 	"github.com/maburvm/panel/internal/shared/models"
 	"gorm.io/gorm"
@@ -15,6 +16,7 @@ type StorageRepository interface {
 	GetPoolsByNodeID(nodeID string) ([]models.StoragePool, error)
 	CreatePool(pool *models.StoragePool) error
 	UpdatePool(pool *models.StoragePool) error
+	UpdatePoolMeasurement(pool *models.StoragePool) error
 	SetPrimaryPool(nodeID, poolID string) error
 	DeletePool(id string) error
 
@@ -89,9 +91,25 @@ func (r *storageRepository) CreatePool(pool *models.StoragePool) error {
 	return r.db.Create(pool).Error
 }
 
-// UpdatePool updates an existing storage pool
+// UpdatePool updates the fields an operator sets. Capacity and status are
+// left out: they belong to UpdatePoolMeasurement, and a full-row save here
+// would write back a stale reading.
 func (r *storageRepository) UpdatePool(pool *models.StoragePool) error {
-	return r.db.Save(pool).Error
+	return r.db.Model(&models.StoragePool{}).Where("id = ?", pool.ID).
+		Select("name", "alert_threshold", "updated_at").
+		Updates(&models.StoragePool{Name: pool.Name, AlertThreshold: pool.AlertThreshold, UpdatedAt: time.Now()}).Error
+}
+
+// UpdatePoolMeasurement stores what the node reported for a pool, and nothing
+// else: a full-row save would undo a rename or a change of primary pool made
+// while the node was being asked.
+func (r *storageRepository) UpdatePoolMeasurement(pool *models.StoragePool) error {
+	return r.db.Model(&models.StoragePool{}).Where("id = ?", pool.ID).
+		Select("total_space", "used_space", "available_space", "status", "updated_at").
+		Updates(&models.StoragePool{
+			TotalSpace: pool.TotalSpace, UsedSpace: pool.UsedSpace, AvailableSpace: pool.AvailableSpace,
+			Status: pool.Status, UpdatedAt: time.Now(),
+		}).Error
 }
 
 // DeletePool soft deletes a storage pool

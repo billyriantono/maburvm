@@ -154,14 +154,20 @@ func (j ImageJob) Kind() string { return "image" }
 // InsertOpts routes image capture to the batch queue with the same
 // long-transfer characteristics as backups.
 func (j ImageJob) InsertOpts() *river.InsertOpts {
-	return &river.InsertOpts{Queue: QueueBatch, Priority: PriorityLow}
+	return &river.InsertOpts{Queue: QueueBatch, Priority: PriorityLow, MaxAttempts: DiskJobMaxAttempts}
 }
+
+// DiskJobMaxAttempts is how many times a backup, a restore or an image capture
+// is tried. Each attempt moves a whole disk, so River's default of 25 is not
+// persistence, it is 25 exports of the same disk.
+const DiskJobMaxAttempts = 3
 
 // InsertOpts returns insert options for backup (batch queue)
 func (j BackupJob) InsertOpts() *river.InsertOpts {
 	return &river.InsertOpts{
-		Queue:    QueueBatch,
-		Priority: PriorityLow,
+		Queue:       QueueBatch,
+		Priority:    PriorityLow,
+		MaxAttempts: DiskJobMaxAttempts,
 	}
 }
 
@@ -173,12 +179,15 @@ type RestoreJob struct {
 	BackupID  string `json:"backup_id"`
 	SourceKey string `json:"source_key"`
 	Checksum  string `json:"checksum"`
+	// NodeStore is true for a backup kept in the node's own storage: the node
+	// is not sent the panel's destination, where the file is not.
+	NodeStore bool `json:"node_store,omitempty"`
 }
 
 func (j RestoreJob) Kind() string { return "restore" }
 
 func (j RestoreJob) InsertOpts() *river.InsertOpts {
-	return &river.InsertOpts{Queue: QueueCritical, Priority: PriorityCritical}
+	return &river.InsertOpts{Queue: QueueCritical, Priority: PriorityCritical, MaxAttempts: DiskJobMaxAttempts}
 }
 
 // ImportSource represents the source of import

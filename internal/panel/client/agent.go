@@ -295,26 +295,25 @@ func (c *AgentClient) getConnection(ctx context.Context, node NodeInfo) (*Pooled
 		return conn, nil
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Double-check after acquiring write lock
-	if conn, exists := c.connections[node.ID]; exists && conn.IsHealthy() {
-		atomic.StoreInt64(&conn.lastUsed, time.Now().UnixNano())
-		return conn, nil
-	}
-
-	// Close existing connection if unhealthy
-	if exists && conn != nil {
-		_ = conn.Close()
-	}
-
-	// Create new connection with retry
+	// Dial without the lock. Held across the dial, one node that accepts the
+	// connection and then hangs stalled every call to every other node until
+	// its dial timed out.
 	newConn, err := c.connectWithRetry(ctx, node)
 	if err != nil {
 		return nil, err
 	}
 
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cur, ok := c.connections[node.ID]; ok && cur != nil {
+		if cur.IsHealthy() {
+			// Another caller connected while this one dialed: keep theirs.
+			_ = newConn.Close()
+			atomic.StoreInt64(&cur.lastUsed, time.Now().UnixNano())
+			return cur, nil
+		}
+		_ = cur.Close()
+	}
 	c.connections[node.ID] = newConn
 	return newConn, nil
 }

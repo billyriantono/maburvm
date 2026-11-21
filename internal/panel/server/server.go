@@ -51,6 +51,15 @@ type Server struct {
 	// forward zones; see dnsProviderInstance.
 	dnsProvider *service.SettingsDNSProvider
 
+	// backupDest is where backups are kept, shared by the backup service, the
+	// queue workers and the settings page; see backupDestinationInstance.
+	backupDest *service.BackupDestinations
+	backupVMs  *service.VMService
+
+	// alerts tells operators about nodes, pools and jobs; one instance, shared
+	// by the collector, the job queue and the settings page. See alertsInstance.
+	alerts *service.AlertService
+
 	// readinessCheckTimeout bounds each dependency ping during /readyz.
 	readinessCheckTimeout time.Duration
 
@@ -594,7 +603,7 @@ func (s *Server) setupStorageRoutes(g *echo.Group) {
 		repository.NewNodeRepository(s.db),
 		service.NewAgentVolumeProvisioner(0),
 	)
-	storageHandler := handler.NewStorageHandler(storageService, authz.NewAuthorizer(s.db))
+	storageHandler := handler.NewStorageHandler(storageService, authz.NewAuthorizer(s.db)).WithAllocations(s.db)
 
 	storage := g.Group("/storage")
 	storage.Use(panelMiddleware.RequireAuth(s.db))
@@ -743,6 +752,15 @@ func (s *Server) setupMetricsRoutes() {
 	}
 }
 
+// alertsInstance returns the operator alert service. Run sets it before the
+// job queue starts; anything else that builds a server gets one on first use.
+func (s *Server) alertsInstance() *service.AlertService {
+	if s.alerts == nil {
+		s.alerts = service.NewAlertService(s.db, slog.Default(), s.cfg.JWT.AESKey, s.cfg.JWT.AESPreviousKeys...)
+	}
+	return s.alerts
+}
+
 // dnsProviderInstance returns the nameserver connection, configured from the
 // admin settings page (encrypted at rest) or, when nothing is saved there, from
 // the PDNS_* environment variables.
@@ -772,6 +790,19 @@ func (s *Server) setupSnapshotRoutes() {
 	handler.RegisterSnapshotRoutes(s.echo, snapshotHandler, s.db)
 }
 
+// backupDestinationInstance returns where backups are kept, as set on the admin
+// settings page (secret key encrypted at rest). The VM service beside it is
+// its connection to the nodes, and the create pipeline a restore onto another
+// node goes through.
+func (s *Server) backupDestinationInstance() *service.BackupDestinations {
+	if s.backupDest == nil {
+		s.backupVMs = service.NewVMService(s.db, repository.NewVMRepository(s.db), repository.NewNodeRepository(s.db),
+			repository.NewTemplateRepository(s.db), s.riverClient, slog.Default())
+		s.backupDest = service.NewBackupDestinations(s.db, s.backupVMs.AgentFor, s.cfg.JWT.AESKey, s.cfg.JWT.AESPreviousKeys...)
+	}
+	return s.backupDest
+}
+
 // setupBackupRoutes configures backup-related routes
 func (s *Server) setupBackupRoutes() {
 	logger := slog.Default()
@@ -779,7 +810,12 @@ func (s *Server) setupBackupRoutes() {
 	scheduleRepo := repository.NewBackupScheduleRepository(s.db)
 	vmRepo := repository.NewVMRepository(s.db)
 	nodeRepo := repository.NewNodeRepository(s.db)
-	backupService := service.NewBackupService(s.db, backupRepo, scheduleRepo, vmRepo, nodeRepo, s.riverClient, nil, logger)
+	dest := s.backupDestinationInstance()
+	backupService := service.NewBackupService(s.db, backupRepo, scheduleRepo, vmRepo, nodeRepo, s.riverClient, dest, logger)
+	backupService.SetVMService(s.backupVMs)
+	// The workers send the destination to a node with each backup and restore.
+	// They live in a package that cannot reach the settings, so they call back here.
+	queue.ObjectStoreHook = dest.ObjectStore
 	// Keep a reference so the scheduler (cron) is started at boot and stopped on
 	// shutdown — without Start() scheduled backups never fire.
 	s.backupService = backupService
@@ -788,6 +824,7 @@ func (s *Server) setupBackupRoutes() {
 	handler.RegisterSearchRoutes(s.echo, s.db)
 	handler.RegisterOpsRoutes(s.echo, s.db, s.riverClient, s.queueConfig)
 	handler.RegisterDashboardRoutes(s.echo, s.db)
+	handler.RegisterAlertRoutes(s.echo, s.db, s.alertsInstance())
 }
 
 // setupImportRoutes configures VM import routes
@@ -877,7 +914,7 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 		if req.Email == "" || req.Password == "" {
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Email and password are required"})
 		}
-		if err := service.ValidatePasswordStrength(req.Password); err != nil {
+		if err := service.ValidatePasswordStrength(s.db, req.Password); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 		}
 		if req.Role == "" {
@@ -1497,7 +1534,7 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.CurrentPassword)); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Current password is incorrect"})
 		}
-		if err := service.ValidatePasswordStrength(req.NewPassword); err != nil {
+		if err := service.ValidatePasswordStrength(s.db, req.NewPassword); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 		}
 		// Hash new password
@@ -1599,7 +1636,7 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		if err := s.db.WithContext(c.Request().Context()).
 			// The nameserver connection holds a credential and has its own
 			// endpoints below that never return it.
-			Raw("SELECT section, data::text AS data FROM system_settings WHERE section NOT IN (?, ?, ?)", service.DNSProviderSection, service.BrandingSection, service.EmailTemplatesSection).Scan(&rows).Error; err != nil {
+			Raw("SELECT section, data::text AS data FROM system_settings WHERE section NOT IN (?, ?, ?, ?, ?)", service.DNSProviderSection, service.BrandingSection, service.EmailTemplatesSection, service.BackupDestinationSection, service.AlertSettingsSection).Scan(&rows).Error; err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to load settings"})
 		}
 		out := map[string]json.RawMessage{}
@@ -1622,6 +1659,12 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 			}
 			if section == service.EmailTemplatesSection {
 				return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Emails are saved through their own page"})
+			}
+			if section == service.BackupDestinationSection {
+				return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "The backup destination is saved through its own form"})
+			}
+			if section == service.AlertSettingsSection {
+				return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Alerts are saved on the Alerts page"})
 			}
 			var stored string
 			_ = s.db.WithContext(c.Request().Context()).
@@ -1824,6 +1867,63 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "The nameserver answered"})
 	})
 
+	// Backup destination (admin-only). The secret key goes in and never comes
+	// back out: responses say only whether one is stored.
+	backupDest := s.backupDestinationInstance()
+	backupDestError := func(c echo.Context, err error) error {
+		if errors.Is(err, service.ErrBackupDestinationInvalid) || errors.Is(err, service.ErrBackupDestinationUnreadable) {
+			msg := strings.TrimPrefix(err.Error(), service.ErrBackupDestinationInvalid.Error()+": ")
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": strings.ToUpper(msg[:1]) + msg[1:]})
+		}
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to save the backup destination"})
+	}
+	backupDestStatus := func(c echo.Context) error {
+		st, err := backupDest.Status(c.Request().Context())
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to load the backup destination"})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": st})
+	}
+	sys.GET("/backup-destination", backupDestStatus)
+	sys.PUT("/backup-destination", func(c echo.Context) error {
+		var req service.BackupDestinationInput
+		if err := c.Bind(&req); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request body"})
+		}
+		if err := backupDest.Save(c.Request().Context(), req); err != nil {
+			return backupDestError(c, err)
+		}
+		return backupDestStatus(c)
+	})
+	sys.DELETE("/backup-destination", func(c echo.Context) error {
+		if err := backupDest.Clear(c.Request().Context()); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to remove the backup destination"})
+		}
+		return backupDestStatus(c)
+	})
+	// Test the form's current values, unsaved, from the panel and from each
+	// chosen node: they reach the store over different networks.
+	sys.POST("/backup-destination/test", func(c echo.Context) error {
+		var req struct {
+			service.BackupDestinationInput
+			NodeIDs []string `json:"node_ids"`
+		}
+		if err := c.Bind(&req); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request body"})
+		}
+		var nodes []models.Node
+		if len(req.NodeIDs) > 0 {
+			if err := s.db.WithContext(c.Request().Context()).Where("id IN ?", req.NodeIDs).Order("name").Find(&nodes).Error; err != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to load the nodes"})
+			}
+		}
+		results, err := backupDest.Test(c.Request().Context(), req.BackupDestinationInput, nodes)
+		if err != nil {
+			return backupDestError(c, err)
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{"results": results}})
+	})
+
 	// POST /settings/system/email/test — send a test email with the given SMTP
 	// settings (the form's current values) to verify they actually work.
 	sys.POST("/email/test", func(c echo.Context) error {
@@ -1834,6 +1934,7 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 			SMTPPassword string `json:"smtpPassword"`
 			SMTPFrom     string `json:"smtpFrom"`
 			SMTPFromName string `json:"smtpFromName"`
+			EnableTLS    bool   `json:"enableTls"`
 			To           string `json:"to"`
 		}
 		if err := c.Bind(&body); err != nil {
@@ -1860,7 +1961,9 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 			Password: body.SMTPPassword,
 			From:     body.SMTPFrom,
 			FromName: body.SMTPFromName,
-			Brand:    service.LoadBranding(s.db.WithContext(c.Request().Context())),
+			// The test sends the way the form is set, saved or not.
+			RequireTLS: body.EnableTLS,
+			Brand:      service.LoadBranding(s.db.WithContext(c.Request().Context())),
 		}, to); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 		}
@@ -1893,12 +1996,23 @@ func maskSettingSecrets(data json.RawMessage) json.RawMessage {
 }
 
 // keepSettingSecrets carries stored credentials over a save that left them
-// blank, which is what the form sends for a field it was never given.
+// blank, which is what the form sends for a field it was never given. It also
+// keeps every stored field the save does not mention: a section holds values
+// the form does not show (a default region, settings from an older form), and
+// saving the form must not erase them.
 // ponytail: a stored secret cannot be cleared from the UI, only replaced.
 func keepSettingSecrets(incoming, stored json.RawMessage) json.RawMessage {
 	var in, old map[string]interface{}
 	if json.Unmarshal(incoming, &in) != nil || json.Unmarshal(stored, &old) != nil {
 		return incoming
+	}
+	if in == nil { // a JSON null: nothing sent, so nothing changes
+		in = map[string]interface{}{}
+	}
+	for k, v := range old {
+		if _, sent := in[k]; !sent {
+			in[k] = v
+		}
 	}
 	for _, k := range settingSecretKeys {
 		delete(in, k+"Set")
@@ -1961,7 +2075,9 @@ func (s *Server) Start() error {
 	// Start the background node-metrics collector (persists samples for history).
 	collectorCtx, stopCollector := context.WithCancel(context.Background())
 	defer stopCollector()
-	go service.NewMetricsCollector(s.db, s.riverClient, 60*time.Second, 7*24*time.Hour, slog.Default()).Run(collectorCtx)
+	collector := service.NewMetricsCollector(s.db, s.riverClient, 60*time.Second, 7*24*time.Hour, slog.Default())
+	collector.SetAlerts(s.alertsInstance())
+	go collector.Run(collectorCtx)
 
 	// Start the backup scheduler: starts the cron and (re)loads active schedules
 	// from the DB so they survive restarts. Without this, scheduled backups never run.
@@ -2039,6 +2155,13 @@ func Run() error {
 		return fmt.Errorf("failed to run queue migrations: %w", err)
 	}
 	migrateCancel()
+	// Workers take jobs the moment the queue starts, before the routes that set
+	// this again are built: a backup left from before a restart must not run
+	// without its destination.
+	queue.ObjectStoreHook = service.NewBackupDestinations(db, nil, cfg.JWT.AESKey, cfg.JWT.AESPreviousKeys...).ObjectStore
+	// Likewise a job that fails for good in the first seconds must be reported.
+	alerts := service.NewAlertService(db, slog.Default(), cfg.JWT.AESKey, cfg.JWT.AESPreviousKeys...)
+	queue.JobFailedHook = alerts.JobFailed
 	if err := queueClient.Start(context.Background()); err != nil {
 		_ = queueClient.Stop(context.Background())
 		return fmt.Errorf("failed to start queue: %w", err)
@@ -2053,6 +2176,7 @@ func Run() error {
 
 	// Create and start server
 	server := NewServer(db, cfg)
+	server.alerts = alerts
 	server.queueConfig = queueCfg
 	server.SetQueueClient(queueClient)
 	fmt.Printf("Panel server starting on %s:%d\n", cfg.Server.Host, cfg.Server.Port)

@@ -2,8 +2,10 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -274,8 +276,11 @@ func (c *Client) Exists(ctx context.Context, key string) (bool, error) {
 
 	_, err := c.s3Client.HeadObject(ctx, input)
 	if err != nil {
+		// The SDK wraps the answer, so the type has to be looked for. Stores
+		// that are not AWS answer a plain 404 with no error code at all.
 		var notFound *types.NotFound
-		if ok := fmt.Sprintf("%T", err) == "*types.NotFound"; ok || notFound != nil {
+		var httpErr interface{ HTTPStatusCode() int }
+		if errors.As(err, &notFound) || (errors.As(err, &httpErr) && httpErr.HTTPStatusCode() == http.StatusNotFound) {
 			return false, nil
 		}
 		return false, fmt.Errorf("failed to check object existence: %w", err)

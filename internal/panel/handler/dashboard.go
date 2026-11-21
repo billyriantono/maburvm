@@ -96,6 +96,8 @@ type dashMineVM struct {
 	// The last hour, one point a minute, oldest first. Empty while the VM is off.
 	CPUSeries []float64 `json:"cpu_series" gorm:"-"`
 	MemoryNow *float64  `json:"memory_now" gorm:"-"`
+	// StateUnknown: the node is offline, so Status is only what the panel last saw.
+	StateUnknown bool `json:"state_unknown" gorm:"column:state_unknown"`
 }
 
 // dashVMRow is one line of the staff VM list: who owns the VM, where it runs,
@@ -120,6 +122,8 @@ type dashVMRow struct {
 	// The newest reading from the last three minutes; nil when there is none.
 	CPUNow *float64 `json:"cpu_now" gorm:"column:cpu_now"`
 	MemNow *float64 `json:"memory_now" gorm:"column:mem_now"`
+	// StateUnknown: the node is offline, so Status is only what the panel last saw.
+	StateUnknown bool `json:"state_unknown" gorm:"column:state_unknown"`
 }
 
 // How the staff VM list may be ordered. The key comes from the request; the
@@ -275,6 +279,7 @@ func RegisterDashboardRoutes(e *echo.Echo, db *gorm.DB) {
 				(v.resources->>'cpu')::int AS cpu, (v.resources->>'ram')::int AS rammb, (v.resources->>'disk')::int AS diskgb,
 				v.created_at, v.user_id::text AS owner_id, coalesce(u.email, '') AS owner_email,
 				v.node_id::text AS node_id, coalesce(n.name, '') AS node_name, coalesce(n.status::text, '') AS node_status,
+				coalesce(n.status::text = 'offline', false) AS state_unknown,
 				coalesce(t.name, '') AS system, coalesce(ip.addr, '') AS ip, m.cpu_usage AS cpu_now, m.memory_usage AS mem_now
 			`+from+byStatus+` ORDER BY `+order+` LIMIT @limit OFFSET @offset`,
 			mergeArgs(args, map[string]interface{}{"limit": size, "offset": (page - 1) * size})).Scan(&rows).Error; err != nil {
@@ -312,7 +317,7 @@ func RegisterDashboardRoutes(e *echo.Echo, db *gorm.DB) {
 
 		// Only the caller's own VMs, and nothing that names a node.
 		vms := []dashMineVM{}
-		if err := q.Raw(`SELECT v.id, v.hostname, v.status, v.suspended,
+		if err := q.Raw(`SELECT v.id, v.hostname, v.status, v.suspended, coalesce(nd.status::text = 'offline', false) AS state_unknown,
 				(v.resources->>'cpu')::int AS cpu, (v.resources->>'ram')::int AS rammb, (v.resources->>'disk')::int AS diskgb,
 				coalesce(rg.name, '') AS region_name, coalesce(rg.country::text, '') AS region_country,
 				(SELECT host(n.ip_address) FROM networks n WHERE n.vm_id = v.id AND n.deleted_at IS NULL ORDER BY n.created_at LIMIT 1) AS ip,

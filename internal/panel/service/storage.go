@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
+	"strings"
 	"time"
 
 	"github.com/maburvm/panel/internal/panel/repository"
@@ -11,6 +13,13 @@ import (
 )
 
 const bytesPerGB = 1024 * 1024 * 1024
+
+// ErrInvalidStoragePool marks a pool the panel refuses to register.
+var ErrInvalidStoragePool = errors.New("invalid storage pool")
+
+// PoolTypeDir is the one pool type that can hold VM disks: a directory on the
+// node. A mounted ZFS dataset, NFS export or CephFS is registered as one too.
+const PoolTypeDir = "dir"
 
 // StorageService defines the interface for storage business logic
 type StorageService interface {
@@ -72,30 +81,56 @@ func (s *storageService) GetPoolsByNodeID(nodeID string) ([]models.StoragePool, 
 	return s.repo.GetPoolsByNodeID(nodeID)
 }
 
-// CreatePool creates a new storage pool
+// CreatePool registers a directory on a node as a storage pool.
+//
+// Only the name, node, path and alert threshold are the operator's to set.
+// Capacity and status are measured on the node by the metrics collector, so
+// whatever the request says about them is dropped.
 func (s *storageService) CreatePool(pool *models.StoragePool) error {
+	pool.Name = strings.TrimSpace(pool.Name)
+	pool.Path = strings.TrimSpace(pool.Path)
 	if pool.Name == "" {
-		return errors.New("pool name is required")
+		return fmt.Errorf("%w: pool name is required", ErrInvalidStoragePool)
 	}
 	if pool.NodeID == "" {
-		return errors.New("node ID is required")
+		return fmt.Errorf("%w: node ID is required", ErrInvalidStoragePool)
 	}
-	if pool.Path == "" {
-		return errors.New("pool path is required")
+	if pool.Type == "" {
+		pool.Type = PoolTypeDir
+	}
+	if pool.Type != PoolTypeDir {
+		return fmt.Errorf("%w: pool type %q is not supported. Mount the storage on the node and register its mount point as a directory pool", ErrInvalidStoragePool, pool.Type)
+	}
+	if !path.IsAbs(pool.Path) {
+		return fmt.Errorf("%w: the path must be an absolute directory on the node, such as /data", ErrInvalidStoragePool)
+	}
+	pool.Path = path.Clean(pool.Path)
+	siblings, err := s.repo.GetPoolsByNodeID(pool.NodeID)
+	if err != nil {
+		return err
+	}
+	for _, other := range siblings {
+		if path.Clean(other.Path) == pool.Path {
+			return fmt.Errorf("%w: %s is already registered on this node as %q", ErrInvalidStoragePool, pool.Path, other.Name)
+		}
+	}
+	if pool.AlertThreshold <= 0 || pool.AlertThreshold > 100 {
+		pool.AlertThreshold = 90
 	}
 
-	// Set defaults
-	if pool.Type == "" {
-		pool.Type = "dir"
-	}
-	if pool.Status == "" {
-		pool.Status = "offline"
-	}
+	pool.Status = "offline"
+	pool.TotalSpace, pool.UsedSpace, pool.AvailableSpace, pool.Overcommit = 0, 0, 0, 0
+	pool.FileFormat = "qcow2"
+	// Never primary at birth: until the node has measured it the pool is not
+	// online, and a node whose primary is not online provisions onto its root
+	// filesystem. It is promoted from its card once it is.
+	pool.IsPrimary = false
 
 	return s.repo.CreatePool(pool)
 }
 
-// UpdatePool updates an existing storage pool
+// UpdatePool renames a pool, changes its alert threshold, or makes it the
+// node's provisioning target. Capacity and status are measured, not set.
 func (s *storageService) UpdatePool(id string, pool *models.StoragePool) error {
 	if id == "" {
 		return errors.New("pool ID is required")
@@ -113,18 +148,6 @@ func (s *storageService) UpdatePool(id string, pool *models.StoragePool) error {
 	if pool.Name != "" {
 		existing.Name = pool.Name
 	}
-	if pool.Status != "" {
-		existing.Status = pool.Status
-	}
-	if pool.TotalSpace > 0 {
-		existing.TotalSpace = pool.TotalSpace
-	}
-	if pool.UsedSpace > 0 {
-		existing.UsedSpace = pool.UsedSpace
-	}
-	if pool.AvailableSpace > 0 {
-		existing.AvailableSpace = pool.AvailableSpace
-	}
 	if pool.AlertThreshold > 0 && pool.AlertThreshold <= 100 {
 		existing.AlertThreshold = pool.AlertThreshold
 	}
@@ -134,6 +157,11 @@ func (s *storageService) UpdatePool(id string, pool *models.StoragePool) error {
 	// only primary would silently send every new VM back to the node's root
 	// filesystem, which is the fault this exists to prevent.
 	if pool.IsPrimary && !existing.IsPrimary {
+		// A primary that is not online is skipped at provisioning, which
+		// falls back to the root filesystem just the same.
+		if existing.Status != "online" {
+			return fmt.Errorf("%w: %s is not online on its node, so it cannot take new VMs yet", ErrInvalidStoragePool, existing.Name)
+		}
 		if err := s.repo.SetPrimaryPool(existing.NodeID, existing.ID); err != nil {
 			return err
 		}

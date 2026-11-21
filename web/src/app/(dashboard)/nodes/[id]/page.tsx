@@ -36,8 +36,9 @@ import { useVMActions } from "@/lib/hooks/use-vms"
 import { UserPicker } from "@/components/user-picker"
 import { useTemplates } from "@/lib/hooks/use-templates"
 import { toast } from "sonner"
-import { StatusBadge, useVMTransitions } from "@/components/status-badge"
+import { StatusBadge, useVMTransitions, vmStatus } from "@/components/status-badge"
 import { useCopy } from "@/lib/use-feedback"
+import { NodeStoragePools } from "@/components/pool-allocation"
 
 // Resource gauge component
 function ResourceGauge({ value, label, detail, icon: Icon, color }: { value: number; label: string; detail?: string; icon: React.ElementType; color: string }) {
@@ -484,13 +485,22 @@ export default function NodeDetailPage() {
                     <XCircle className="w-6 h-6 text-red-600" />
                     <div>
                       <p className="font-semibold text-red-700 dark:text-red-300">Node Offline</p>
-                      <p className="text-sm text-muted-foreground">Cannot connect to this node. Check network connectivity and node status.</p>
+                      <p className="text-sm text-muted-foreground">
+                        {node.last_report_at
+                          ? `Its agent last reported ${new Date(node.last_report_at).toLocaleString()}.`
+                          : "Its agent has never reported."}{" "}
+                        No new VMs are placed on it, and the state of its VMs is unknown.
+                      </p>
                     </div>
                   </div>
                 </div>
               )}
             </>
           )}
+
+          {/* Outside the live readings: what is stored and promised on a node
+              matters most when the node is not answering. */}
+          <NodeStoragePools nodeId={node.id} />
 
           {/* Node Details */}
           <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm mb-6">
@@ -667,7 +677,7 @@ export default function NodeDetailPage() {
                       </div>
 
                       {/* Status */}
-                      <StatusBadge status={vm.status} transition={transitions.transitionOf(vm.id)} />
+                      <StatusBadge status={vmStatus(vm)} transition={transitions.transitionOf(vm.id)} />
 
                       {/* Actions */}
                       <div className="flex items-center gap-1">

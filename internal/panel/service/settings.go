@@ -39,10 +39,11 @@ const (
 	// real ratio would start rejecting provisioning that works today the
 	// moment this ships, so RAM overcommit is opt-in.
 	DefaultRAMOvercommitRatio = 0.0
-	// DefaultDiskOvercommitRatio is 1.0: admit against the pool's real free
-	// space, exactly as PoolFits did before. Raising it trades safety for
-	// density, betting that thin-provisioned guests will not all fill up.
-	DefaultDiskOvercommitRatio = 1.0
+	// DefaultDiskAllocationRatio is 0, meaning "no cap on allocated disk":
+	// live pools already carry more virtual disk than they have bytes, so any
+	// real default would refuse orders that work today. The free-space floor
+	// in PoolFits applies whatever this is.
+	DefaultDiskAllocationRatio = 0.0
 )
 
 // quotaSettings is the shape stored under the 'quotas' section. The JSON names
@@ -63,8 +64,11 @@ type quotaSettings struct {
 	// Overcommit ratios are node-capacity limits rather than per-account ones,
 	// but they live in the same section so the admin page keeps a single
 	// "limits" form instead of growing a tab for two numbers.
-	RAMOvercommitRatio  *float64 `json:"ramOvercommitRatio"`
-	DiskOvercommitRatio *float64 `json:"diskOvercommitRatio"`
+	RAMOvercommitRatio *float64 `json:"ramOvercommitRatio"`
+	// Stored under its own key: the older diskOvercommitRatio multiplied free
+	// space and was saved as 1 by the form's default, which under this meaning
+	// would refuse every order on a pool already past 1.0x.
+	DiskAllocationRatio *float64 `json:"diskAllocationRatio"`
 }
 
 // loadQuotaSettings reads the admin-managed limits. A missing row, unset field
@@ -123,14 +127,13 @@ func RAMOvercommitRatio(ctx context.Context, db *gorm.DB) float64 {
 	return DefaultRAMOvercommitRatio
 }
 
-// DiskOvercommitRatio multiplies a storage pool's free space when deciding
-// whether a new or grown disk fits. qcow2 images are thin-provisioned, so a
-// pool can safely carry far more allocated disk than it has bytes — but only
-// until the guests actually write. 1.0 keeps admission pinned to real free
-// space.
-func DiskOvercommitRatio(ctx context.Context, db *gorm.DB) float64 {
-	if v := loadQuotaSettings(ctx, db).DiskOvercommitRatio; v != nil && *v > 0 {
+// DiskAllocationRatio is how many times a storage pool's capacity may be
+// promised to VM disks. qcow2 images are thin, so a pool can carry more
+// allocated disk than it has bytes, but only until the guests write: a pool that
+// fills pauses every VM on it. 0 disables the cap, which is the default.
+func DiskAllocationRatio(ctx context.Context, db *gorm.DB) float64 {
+	if v := loadQuotaSettings(ctx, db).DiskAllocationRatio; v != nil && *v > 0 {
 		return *v
 	}
-	return DefaultDiskOvercommitRatio
+	return DefaultDiskAllocationRatio
 }

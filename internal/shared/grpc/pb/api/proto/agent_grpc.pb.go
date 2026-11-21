@@ -31,6 +31,7 @@ const (
 	NodeAgent_ImportDisk_FullMethodName          = "/agent.NodeAgent/ImportDisk"
 	NodeAgent_BackupDisk_FullMethodName          = "/agent.NodeAgent/BackupDisk"
 	NodeAgent_RestoreDisk_FullMethodName         = "/agent.NodeAgent/RestoreDisk"
+	NodeAgent_TestObjectStore_FullMethodName     = "/agent.NodeAgent/TestObjectStore"
 	NodeAgent_GetLiveMetrics_FullMethodName      = "/agent.NodeAgent/GetLiveMetrics"
 	NodeAgent_ScanVMs_FullMethodName             = "/agent.NodeAgent/ScanVMs"
 	NodeAgent_CreateStorageVolume_FullMethodName = "/agent.NodeAgent/CreateStorageVolume"
@@ -102,6 +103,10 @@ type NodeAgentClient interface {
 	// verifies its SHA256, and swaps it into the VM's primary disk. The VM MUST
 	// be shut off; the agent rejects the call otherwise.
 	RestoreDisk(ctx context.Context, in *RestoreDiskRequest, opts ...grpc.CallOption) (*RestoreDiskResponse, error)
+	// TestObjectStore checks that this node can use an object store: it writes a
+	// small object, reads it back and deletes it. An agent without it answers
+	// Unimplemented, which the panel reports as "needs an agent update".
+	TestObjectStore(ctx context.Context, in *TestObjectStoreRequest, opts ...grpc.CallOption) (*TestObjectStoreResponse, error)
 	// GetLiveMetrics retrieves real-time system metrics from the node including
 	// CPU usage, memory usage, disk usage, network I/O, disk I/O, and load average.
 	GetLiveMetrics(ctx context.Context, in *GetLiveMetricsRequest, opts ...grpc.CallOption) (*GetLiveMetricsResponse, error)
@@ -330,6 +335,16 @@ func (c *nodeAgentClient) RestoreDisk(ctx context.Context, in *RestoreDiskReques
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RestoreDiskResponse)
 	err := c.cc.Invoke(ctx, NodeAgent_RestoreDisk_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeAgentClient) TestObjectStore(ctx context.Context, in *TestObjectStoreRequest, opts ...grpc.CallOption) (*TestObjectStoreResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TestObjectStoreResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_TestObjectStore_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -591,6 +606,10 @@ type NodeAgentServer interface {
 	// verifies its SHA256, and swaps it into the VM's primary disk. The VM MUST
 	// be shut off; the agent rejects the call otherwise.
 	RestoreDisk(context.Context, *RestoreDiskRequest) (*RestoreDiskResponse, error)
+	// TestObjectStore checks that this node can use an object store: it writes a
+	// small object, reads it back and deletes it. An agent without it answers
+	// Unimplemented, which the panel reports as "needs an agent update".
+	TestObjectStore(context.Context, *TestObjectStoreRequest) (*TestObjectStoreResponse, error)
 	// GetLiveMetrics retrieves real-time system metrics from the node including
 	// CPU usage, memory usage, disk usage, network I/O, disk I/O, and load average.
 	GetLiveMetrics(context.Context, *GetLiveMetricsRequest) (*GetLiveMetricsResponse, error)
@@ -728,6 +747,9 @@ func (UnimplementedNodeAgentServer) BackupDisk(context.Context, *BackupDiskReque
 }
 func (UnimplementedNodeAgentServer) RestoreDisk(context.Context, *RestoreDiskRequest) (*RestoreDiskResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RestoreDisk not implemented")
+}
+func (UnimplementedNodeAgentServer) TestObjectStore(context.Context, *TestObjectStoreRequest) (*TestObjectStoreResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TestObjectStore not implemented")
 }
 func (UnimplementedNodeAgentServer) GetLiveMetrics(context.Context, *GetLiveMetricsRequest) (*GetLiveMetricsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetLiveMetrics not implemented")
@@ -1004,6 +1026,24 @@ func _NodeAgent_RestoreDisk_Handler(srv interface{}, ctx context.Context, dec fu
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(NodeAgentServer).RestoreDisk(ctx, req.(*RestoreDiskRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeAgent_TestObjectStore_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TestObjectStoreRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).TestObjectStore(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_TestObjectStore_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).TestObjectStore(ctx, req.(*TestObjectStoreRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1392,6 +1432,10 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RestoreDisk",
 			Handler:    _NodeAgent_RestoreDisk_Handler,
+		},
+		{
+			MethodName: "TestObjectStore",
+			Handler:    _NodeAgent_TestObjectStore_Handler,
 		},
 		{
 			MethodName: "GetLiveMetrics",

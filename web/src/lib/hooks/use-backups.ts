@@ -109,12 +109,28 @@ export function useRestoreBackup(vmId: string) {
   })
 }
 
+// Admin only: the backup becomes a new VM on the chosen node.
+export function useRestoreBackupAsNew(vmId: string) {
+  return useMutation<{ vm: { id: string; hostname: string } }, Error, { backupId: string; node_id: string; hostname?: string }>({
+    mutationFn: async ({ backupId, ...body }) => {
+      const response = await api.post<{ vm: { id: string; hostname: string } }>(
+        `/api/v1/vms/${vmId}/backups/${backupId}/restore-new`,
+        body
+      )
+      return response.data.data
+    },
+  })
+}
+
 export function useDeleteBackup(vmId: string) {
   const queryClient = useQueryClient()
 
-  return useMutation<void, Error, string>({
+  // Resolves to the panel's own words: a backup whose file the panel could not
+  // reach is removed from the list, and the message says the file was left.
+  return useMutation<string, Error, string>({
     mutationFn: async (backupId) => {
-      await api.delete(`/api/v1/vms/${vmId}/backups/${backupId}`)
+      const response = await api.delete(`/api/v1/vms/${vmId}/backups/${backupId}`)
+      return response.data.message || 'Backup deleted'
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backups', 'list', vmId] })

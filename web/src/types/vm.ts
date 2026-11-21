@@ -39,6 +39,8 @@ export interface VM {
   node_id: string;
   node_name?: string;
   node_status?: VMNodeStatus;
+  /** The node is offline, so `status` is only what the panel last saw. */
+  state_unknown?: boolean;
   hostname: string;
   os_template_id: string;
   resources: Resources;

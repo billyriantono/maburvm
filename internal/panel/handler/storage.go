@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -8,12 +9,20 @@ import (
 	"github.com/maburvm/panel/internal/panel/authz"
 	"github.com/maburvm/panel/internal/panel/service"
 	"github.com/maburvm/panel/internal/shared/models"
+	"gorm.io/gorm"
 )
 
 // StorageHandler handles storage-related HTTP requests
 type StorageHandler struct {
 	storageService service.StorageService
 	authz          *authz.Authorizer
+	db             *gorm.DB
+}
+
+// WithAllocations makes the pool list report what is allocated on each pool.
+func (h *StorageHandler) WithAllocations(db *gorm.DB) *StorageHandler {
+	h.db = db
+	return h
 }
 
 // NewStorageHandler creates a new storage handler
@@ -58,7 +67,23 @@ func (h *StorageHandler) GetPools(c echo.Context) error {
 		})
 	}
 
-	return c.JSON(http.StatusOK, map[string]interface{}{"data": pools})
+	// Allocation is left out, not zeroed, when it cannot be worked out: the
+	// page then says it is unknown.
+	if h.db != nil {
+		ctx := c.Request().Context()
+		if allocated, aerr := service.PoolAllocations(ctx, h.db, ""); aerr == nil {
+			ratio := service.DiskAllocationRatio(ctx, h.db)
+			for i := range pools {
+				bytes := allocated[pools[i].ID]
+				pools[i].AllocatedSpace = &bytes
+				if ratio > 0 {
+					pools[i].AllocationLimit = int64(float64(pools[i].TotalSpace) * ratio)
+				}
+			}
+		}
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": pools})
 }
 
 // GetPoolByID returns a specific storage pool
@@ -121,12 +146,15 @@ func (h *StorageHandler) CreatePool(c echo.Context) error {
 	}
 
 	if err := h.storageService.CreatePool(&pool); err != nil {
+		if errors.Is(err, service.ErrInvalidStoragePool) {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
+		}
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": err.Error(),
 		})
 	}
 
-	return c.JSON(http.StatusCreated, map[string]interface{}{"data": pool})
+	return c.JSON(http.StatusCreated, map[string]interface{}{"success": true, "data": pool})
 }
 
 // UpdatePool updates an existing storage pool
@@ -160,12 +188,19 @@ func (h *StorageHandler) UpdatePool(c echo.Context) error {
 	pool.ID = id
 
 	if err := h.storageService.UpdatePool(id, &pool); err != nil {
+		if errors.Is(err, service.ErrInvalidStoragePool) {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
+		}
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": "failed to update storage pool",
 		})
 	}
 
-	return c.JSON(http.StatusOK, pool)
+	// What is stored, not the request: capacity in the body is not kept.
+	if stored, err := h.storageService.GetPoolByID(id); err == nil && stored != nil {
+		pool = *stored
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": pool})
 }
 
 // DeletePool deletes a storage pool

@@ -114,9 +114,6 @@ var mcpTools = []mcpTool{
 		Props: withVM(map[string]any{"name": str("Snapshot name")}), Required: []string{"id", "name"}},
 	{Name: "restore_snapshot", Description: "Roll a VM back to a snapshot. Changes since the snapshot are lost.", Method: "POST", Path: "/api/v1/vms/{id}/snapshots/{snapshot_id}/restore", Destructive: true,
 		Props: withVM(map[string]any{"snapshot_id": str("Snapshot id")}), Required: []string{"id", "snapshot_id"}},
-	{Name: "migrate_vm", Description: "Move a VM to another node (admin).", Method: "POST", Path: "/api/v1/vms/{id}/migrate",
-		Props: withVM(map[string]any{"dest_node_id": str("Destination node id"), "live": flag("Live migrate (default true)"),
-			"copy_storage": flag("Copy the disk to the destination")}), Required: []string{"id", "dest_node_id"}},
 }
 
 var (

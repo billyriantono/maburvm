@@ -76,7 +76,7 @@ function ResetPasswordForm() {
     <div className="w-full">
       <h1 className="text-[2rem] font-semibold leading-tight tracking-[-0.01em] text-balance mb-2 text-foreground">Set a new password</h1>
       <p className="text-sm text-muted-foreground mb-6">
-        Choose a strong password — at least 12 characters with upper, lower, a digit and a symbol.
+        Choose a strong password. If it does not meet this panel&apos;s password rules, you are told which one.
       </p>
 
       {error && (

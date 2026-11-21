@@ -28,7 +28,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogT
 import { useUser, useUpdateUser, useDeleteUser } from "@/lib/hooks/use-users"
 import { useVMs } from "@/lib/hooks/use-vms"
 import type { VM } from "@/types"
-import { StatusBadge } from "@/components/status-badge"
+import { StatusBadge, vmStatus } from "@/components/status-badge"
 import { useConfirm } from "@/components/confirm-provider"
 
 function formatDate(dateString: string): string {
@@ -257,7 +257,7 @@ export default function UserDetailPage() {
                     <p className="font-medium text-sm">{vm.hostname}</p>
                     <p className="text-xs text-muted-foreground">{vm.resources.cpu} vCPU • {Math.round(vm.resources.ram / 1024)} GB RAM • {vm.resources.disk} GB Disk</p>
                   </div>
-                  <StatusBadge status={vm.status} />
+                  <StatusBadge status={vmStatus(vm)} />
                 </Link>
               ))}
             </div>

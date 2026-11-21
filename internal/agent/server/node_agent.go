@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -1027,7 +1028,7 @@ func injectGuestConfig(diskPath, hostname string, vmCfg libvirt.VMConfig, rootPa
 // HTTP(S) URL (e.g. a catalog cloud-image), the image is downloaded into the
 // node's template cache once and the cached path is returned. Otherwise ref is
 // treated as an existing local file path.
-func resolveTemplateImage(ref string) (string, error) {
+func resolveTemplateImage(ref string, store *pb.ObjectStore) (string, error) {
 	// vm://... resolves to a source VM's primary disk for the clone flow (source
 	// must be stopped for a consistent copy):
 	//   vm://<vmId>            → that VM's disk on THIS node (same-node clone)
@@ -1078,7 +1079,7 @@ func resolveTemplateImage(ref string) (string, error) {
 		if key == "" {
 			return "", fmt.Errorf("empty object key in image reference %q", ref)
 		}
-		client, err := backupStorageClientFromEnv()
+		client, _, err := objectStoreClient(store)
 		if err != nil {
 			return "", fmt.Errorf("object storage not configured for image source: %w", err)
 		}
@@ -1245,11 +1246,6 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 	if !guestos.Known(osType) {
 		return fmt.Errorf("this node's agent cannot install %q systems; update the agent", osType)
 	}
-	templatePath, err := resolveTemplateImage(imageRef)
-	if err != nil {
-		return err
-	}
-
 	diskGB := int(cfg.Resources.DiskGb)
 	imageDir := imageDirFor(req.GetPoolPath())
 	diskPath := filepath.Join(imageDir, req.VmId+".qcow2")
@@ -1265,11 +1261,39 @@ func (s *NodeAgentService) createVM(req *pb.VMCommandRequest) error {
 		}
 	}
 
-	// Provision the disk as an independent copy of the template, then grow it to
-	// the requested size.
 	qcow := storage.NewQCOW2Manager()
-	if err := qcow.CloneImage(templatePath, diskPath); err != nil {
-		return fmt.Errorf("failed to provision disk from template: %w", err)
+	if key, once := strings.CutPrefix(imageRef, "s3://"); once && cfg.Metadata[models.ImageOnceKey] != "" {
+		// A backup restored as a new VM is used once. It is downloaded beside
+		// the new disk and becomes it, like a restore in place: kept in the
+		// template cache it would sit on the root filesystem for good.
+		client, _, err := objectStoreClient(req.GetObjectStore())
+		if err != nil {
+			return fmt.Errorf("object storage not configured for the backup: %w", err)
+		}
+		partPath := diskPath + ".part"
+		// Not the caller's context: the download goes on when the panel
+		// restarts. Bounded all the same, or a stalled transfer would hold
+		// this VM's create for ever.
+		fetchCtx, cancelFetch := context.WithTimeout(context.Background(), 8*time.Hour)
+		_, err = fetchStoredDisk(fetchCtx, client, key, partPath, cfg.Metadata[models.ImageSHA256Key])
+		cancelFetch()
+		if err != nil {
+			return err
+		}
+		if err := os.Rename(partPath, diskPath); err != nil {
+			_ = os.Remove(partPath)
+			return fmt.Errorf("failed to install the restored disk: %w", err)
+		}
+	} else {
+		templatePath, err := resolveTemplateImage(imageRef, req.GetObjectStore())
+		if err != nil {
+			return err
+		}
+		// Provision the disk as an independent copy of the template, then grow
+		// it to the requested size.
+		if err := qcow.CloneImage(templatePath, diskPath); err != nil {
+			return fmt.Errorf("failed to provision disk from template: %w", err)
+		}
 	}
 	if diskGB > 0 {
 		// qcow2 cannot shrink below the image's virtual size without data loss,
@@ -1522,7 +1546,7 @@ func (s *NodeAgentService) attachISO(req *pb.VMCommandRequest) error {
 	if strings.HasPrefix(req.Config.ImageId, "vm://") || strings.HasPrefix(req.Config.ImageId, "s3://") {
 		return fmt.Errorf("unsupported ISO source")
 	}
-	isoPath, err := resolveTemplateImage(req.Config.ImageId)
+	isoPath, err := resolveTemplateImage(req.Config.ImageId, nil)
 	if err != nil {
 		return err
 	}
@@ -1675,7 +1699,7 @@ func (s *NodeAgentService) rebuildVM(req *pb.VMCommandRequest) error {
 	if !guestos.Known(osType) {
 		return fmt.Errorf("this node's agent cannot install %q systems; update the agent", osType)
 	}
-	templatePath, err := resolveTemplateImage(imageRef)
+	templatePath, err := resolveTemplateImage(imageRef, req.GetObjectStore())
 	if err != nil {
 		return err
 	}
@@ -1818,12 +1842,22 @@ func (s *NodeAgentService) BackupDisk(ctx context.Context, req *pb.BackupDiskReq
 
 	diskPath, err := libvirt.PrimaryDiskPath(req.VmId)
 	if err != nil {
-		return backupDiskErr(fmt.Sprintf("primary disk not found: %v", err)), nil
+		return backupDiskErr(pb.ErrorCode_ERROR_CODE_NOT_FOUND, fmt.Sprintf("primary disk not found: %v", err)), nil
 	}
 
 	key := req.DestinationKey
 	if key == "" {
 		key = fmt.Sprintf("backups/%s/%d.qcow2", req.VmId, time.Now().Unix())
+	}
+
+	// The store is checked before the export, not after it: an export takes
+	// hours, and one that cannot be uploaded was run for nothing.
+	client, fromRequest, err := objectStoreClient(req.GetObjectStore())
+	if err != nil {
+		return backupDiskErr(pb.ErrorCode_ERROR_CODE_INVALID_ARGUMENT, err.Error()), nil
+	}
+	if resp := checkStoreWritable(ctx, client, key); resp != nil {
+		return &pb.BackupDiskResponse{Error: resp}, nil
 	}
 
 	// Write the export beside the disk it came from, not into the default image
@@ -1867,12 +1901,11 @@ func (s *NodeAgentService) BackupDisk(ctx context.Context, req *pb.BackupDiskReq
 	// The compressed output is smaller than the source, so the source size is a
 	// generous bound, and the margin leaves room to act afterwards.
 	if cap := storage.Capacity(filepath.Dir(exportPath)); cap.Exists && cap.Total > 0 {
-		const exportHeadroomBytes = 20 * 1024 * 1024 * 1024 // 20 GiB
-		if cap.Available < sourceBytes+exportHeadroomBytes {
-			return backupDiskErr(fmt.Sprintf(
+		if cap.Available < sourceBytes+volumeReserveBytes {
+			return backupDiskErr(pb.ErrorCode_ERROR_CODE_RESOURCE_EXHAUSTED, fmt.Sprintf(
 				"not enough room on %s: %d bytes free, and this export could need up to %d plus a %d reserve. "+
 					"Free space or move the export elsewhere — running it would risk pausing every VM on this volume.",
-				cap.Filesystem, cap.Available, sourceBytes, int64(exportHeadroomBytes))), nil
+				cap.Filesystem, cap.Available, sourceBytes, int64(volumeReserveBytes))), nil
 		}
 	}
 
@@ -1880,36 +1913,148 @@ func (s *NodeAgentService) BackupDisk(ctx context.Context, req *pb.BackupDiskReq
 	defer doneTracking()
 
 	if err := qcowExport.ConvertCompressed(diskPath, exportPath); err != nil {
-		return backupDiskErr(fmt.Sprintf("disk export failed: %v", err)), nil
+		return backupDiskErr(pb.ErrorCode_ERROR_CODE_INTERNAL, fmt.Sprintf("disk export failed: %v", err)), nil
 	}
 
 	checksum, size, err := fileSHA256(exportPath)
 	if err != nil {
-		return backupDiskErr(fmt.Sprintf("checksum failed: %v", err)), nil
+		return backupDiskErr(pb.ErrorCode_ERROR_CODE_INTERNAL, fmt.Sprintf("checksum failed: %v", err)), nil
 	}
 
-	client, err := backupStorageClientFromEnv()
-	if err != nil {
-		return backupDiskErr(err.Error()), nil
-	}
 	f, err := os.Open(exportPath)
 	if err != nil {
-		return backupDiskErr(fmt.Sprintf("open export: %v", err)), nil
+		return backupDiskErr(pb.ErrorCode_ERROR_CODE_INTERNAL, fmt.Sprintf("open export: %v", err)), nil
 	}
 	defer f.Close()
 	if err := client.Upload(ctx, key, f, size, "application/octet-stream"); err != nil {
-		return backupDiskErr(fmt.Sprintf("upload failed: %v", err)), nil
+		return &pb.BackupDiskResponse{Error: storeFailure("upload failed", err)}, nil
 	}
 
 	log.Printf("[NodeAgent] Backed up VM %s disk -> %s (%d bytes, sha256=%s)", req.VmId, key, size, checksum)
-	return &pb.BackupDiskResponse{Success: true, ObjectKey: key, SizeBytes: size, Checksum: checksum}, nil
+	return &pb.BackupDiskResponse{Success: true, ObjectKey: key, SizeBytes: size, Checksum: checksum, UsedRequestStore: fromRequest}, nil
 }
 
-func backupDiskErr(msg string) *pb.BackupDiskResponse {
+func backupDiskErr(code pb.ErrorCode, msg string) *pb.BackupDiskResponse {
 	return &pb.BackupDiskResponse{
 		Success: false,
-		Error:   &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: msg},
+		Error:   &pb.ErrorResponse{Code: code, Message: msg},
 	}
+}
+
+// volumeReserveBytes is the room an export or a restore must leave free on the
+// volume it writes to. qemu pauses a VM the moment a write fails, so filling a
+// volume customers' disks live on stops every VM on it.
+const volumeReserveBytes = 20 * 1024 * 1024 * 1024
+
+// objectStoreClient builds the client for a request: the store the panel sent,
+// or, without one, the store in this node's own environment file. fromRequest
+// says which, so the panel knows where an upload went.
+func objectStoreClient(store *pb.ObjectStore) (client *sharedstorage.Client, fromRequest bool, err error) {
+	if store.GetBucket() == "" {
+		client, err = backupStorageClientFromEnv()
+		return client, false, err
+	}
+	client, err = sharedstorage.Destination{
+		Endpoint:  store.GetEndpoint(),
+		Region:    store.GetRegion(),
+		Bucket:    store.GetBucket(),
+		AccessKey: store.GetAccessKey(),
+		SecretKey: store.GetSecretKey(),
+		PlainHTTP: store.GetPlainHttp(),
+	}.Client()
+	return client, true, err
+}
+
+// storeFailure reports a failed object-storage call. A store that answered and
+// refused will refuse again; one that could not be reached may be back.
+func storeFailure(what string, err error) *pb.ErrorResponse {
+	if sharedstorage.Rejected(err) {
+		return &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_PERMISSION_DENIED, Message: fmt.Sprintf("%s: %v", what, err)}
+	}
+	return &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_UNAVAILABLE, Message: fmt.Sprintf("%s: %v", what, err), Retryable: true}
+}
+
+// checkStoreWritable writes a small object beside key and removes it. It
+// returns nil when the store took the write. Failing to read it back or delete
+// it is logged only: credentials that may only write can still back up.
+func checkStoreWritable(ctx context.Context, client *sharedstorage.Client, key string) *pb.ErrorResponse {
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	err := client.Probe(ctx, path.Join(path.Dir(key), ".write-test"))
+	var probe *sharedstorage.ProbeError
+	if err == nil || (errors.As(err, &probe) && probe.Step != sharedstorage.ProbeWrite) {
+		if err != nil {
+			log.Printf("[NodeAgent] object storage accepts writes, but: %v", err)
+		}
+		return nil
+	}
+	return storeFailure("the backup destination did not accept a test write", err)
+}
+
+// TestObjectStore proves this node can reach and use an object store: it
+// writes a small object, reads it back and deletes it.
+func (s *NodeAgentService) TestObjectStore(ctx context.Context, req *pb.TestObjectStoreRequest) (*pb.TestObjectStoreResponse, error) {
+	if req.GetKey() == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "key is required")
+	}
+	if _, authenticated := GetNodeIDFromContext(ctx); !authenticated {
+		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
+	}
+	client, _, err := objectStoreClient(req.GetObjectStore())
+	if err != nil {
+		return &pb.TestObjectStoreResponse{Error: &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INVALID_ARGUMENT, Message: err.Error()}}, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	if err := client.Probe(ctx, req.GetKey()); err != nil {
+		return &pb.TestObjectStoreResponse{Error: storeFailure("test failed", err)}, nil
+	}
+	return &pb.TestObjectStoreResponse{Success: true}, nil
+}
+
+// fetchStoredDisk downloads a disk image from object storage to tmpPath and
+// checks it against the checksum recorded when it was stored (when one is
+// given). It refuses to start when the volume has no room for the image, and
+// leaves nothing behind when it fails.
+func fetchStoredDisk(ctx context.Context, client *sharedstorage.Client, key, tmpPath, wantSHA256 string) (int64, error) {
+	want, err := client.GetSize(ctx, key)
+	if err != nil {
+		return 0, fmt.Errorf("could not read %s from object storage: %w", key, err)
+	}
+	if cap := storage.Capacity(filepath.Dir(tmpPath)); cap.Exists && cap.Total > 0 && cap.Available < want+volumeReserveBytes {
+		return 0, fmt.Errorf("not enough room on %s: %d bytes free, and this image needs %d plus a %d reserve",
+			cap.Filesystem, cap.Available, want, int64(volumeReserveBytes))
+	}
+	_ = os.Remove(tmpPath)
+	if err := func() error {
+		reader, err := client.Download(ctx, key)
+		if err != nil {
+			return fmt.Errorf("download failed: %w", err)
+		}
+		defer reader.Close()
+		out, err := os.Create(tmpPath)
+		if err != nil {
+			return fmt.Errorf("create temp: %w", err)
+		}
+		defer out.Close()
+		if _, err := io.Copy(out, reader); err != nil {
+			return fmt.Errorf("write temp: %w", err)
+		}
+		return out.Sync()
+	}(); err != nil {
+		_ = os.Remove(tmpPath)
+		return 0, err
+	}
+	checksum, size, err := fileSHA256(tmpPath)
+	if err != nil {
+		_ = os.Remove(tmpPath)
+		return 0, fmt.Errorf("checksum failed: %w", err)
+	}
+	if wantSHA256 != "" && !strings.EqualFold(wantSHA256, checksum) {
+		_ = os.Remove(tmpPath)
+		return 0, fmt.Errorf("checksum mismatch: got %s, want %s", checksum, wantSHA256)
+	}
+	return size, nil
 }
 
 // RestoreDisk downloads a backup qcow2 from object storage, verifies its
@@ -1939,43 +2084,17 @@ func (s *NodeAgentService) RestoreDisk(ctx context.Context, req *pb.RestoreDiskR
 		return restoreDiskErr(fmt.Sprintf("primary disk not found: %v", err)), nil
 	}
 
-	client, err := backupStorageClientFromEnv()
+	client, _, err := objectStoreClient(req.GetObjectStore())
 	if err != nil {
 		return restoreDiskErr(err.Error()), nil
 	}
 
-	// Download to a temp file next to the disk (same filesystem => rename is atomic).
+	// Download to a temp file next to the disk (same filesystem => rename is
+	// atomic), and verify it before touching the live disk.
 	tmpPath := filepath.Join(filepath.Dir(diskPath), req.VmId+"-restore.qcow2")
-	_ = os.Remove(tmpPath)
-	if err := func() error {
-		reader, err := client.Download(ctx, req.SourceKey)
-		if err != nil {
-			return fmt.Errorf("download failed: %w", err)
-		}
-		defer reader.Close()
-		out, err := os.Create(tmpPath)
-		if err != nil {
-			return fmt.Errorf("create temp: %w", err)
-		}
-		defer out.Close()
-		if _, err := io.Copy(out, reader); err != nil {
-			return fmt.Errorf("write temp: %w", err)
-		}
-		return out.Sync()
-	}(); err != nil {
-		_ = os.Remove(tmpPath)
-		return restoreDiskErr(err.Error()), nil
-	}
-
-	// Verify integrity before touching the live disk.
-	checksum, size, err := fileSHA256(tmpPath)
+	size, err := fetchStoredDisk(ctx, client, req.SourceKey, tmpPath, req.ExpectedChecksum)
 	if err != nil {
-		_ = os.Remove(tmpPath)
-		return restoreDiskErr(fmt.Sprintf("checksum failed: %v", err)), nil
-	}
-	if req.ExpectedChecksum != "" && !strings.EqualFold(req.ExpectedChecksum, checksum) {
-		_ = os.Remove(tmpPath)
-		return restoreDiskErr(fmt.Sprintf("checksum mismatch: got %s, want %s", checksum, req.ExpectedChecksum)), nil
+		return restoreDiskErr(err.Error()), nil
 	}
 
 	// Swap: move current disk aside, move restored image into place, roll back on failure.
@@ -1991,7 +2110,7 @@ func (s *NodeAgentService) RestoreDisk(ctx context.Context, req *pb.RestoreDiskR
 	}
 	_ = os.Remove(bakPath)
 
-	log.Printf("[NodeAgent] Restored VM %s disk from %s (%d bytes, sha256=%s)", req.VmId, req.SourceKey, size, checksum)
+	log.Printf("[NodeAgent] Restored VM %s disk from %s (%d bytes)", req.VmId, req.SourceKey, size)
 	return &pb.RestoreDiskResponse{Success: true, BytesRestored: size}, nil
 }
 
@@ -2061,8 +2180,16 @@ func (s *NodeAgentService) AttachDisk(ctx context.Context, req *pb.AttachDiskReq
 		return attachDiskErr("vm_id and a positive size_gb are required"), nil
 	}
 	poolPath := req.PoolPath
-	if poolPath == "" {
-		poolPath = defaultImageDir
+	switch req.PoolType {
+	case "", "dir", "file":
+		// Beside the VM's own disk when the panel names no pool, not on the
+		// root filesystem. An unreadable domain just leaves primary empty.
+		primary, _ := libvirt.PrimaryDiskPath(req.VmId)
+		poolPath = storage.DataDiskDir(req.PoolPath, primary, defaultImageDir)
+	default:
+		if poolPath == "" {
+			poolPath = defaultImageDir
+		}
 	}
 	name := fmt.Sprintf("%s-data-%d", req.VmId, time.Now().UnixNano())
 	path, _, err := storage.NewVolumeManager().CreateVolume(req.PoolType, poolPath, name, "qcow2", int(req.SizeGb))
@@ -2238,7 +2365,7 @@ func (s *NodeAgentService) SyncTemplate(ctx context.Context, req *pb.SyncTemplat
 		return &pb.SyncTemplateResponse{Success: false, Error: &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: "image_url is required"}}, nil
 	}
 
-	localPath, err := resolveTemplateImage(req.ImageUrl)
+	localPath, err := resolveTemplateImage(req.ImageUrl, nil)
 	if err != nil {
 		return &pb.SyncTemplateResponse{Success: false, Error: &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: err.Error()}}, nil
 	}

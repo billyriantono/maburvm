@@ -30,6 +30,7 @@ import {
   ListChecks,
   FileDown,
   Rocket,
+  BellRing,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useNavDrawer } from "@/components/nav-drawer"
@@ -52,6 +53,7 @@ const navItems = [
   { href: "/dns", label: "DNS", icon: Globe },
   { href: "/users", label: "Users", icon: Users },
   { href: "/monitoring", label: "Monitoring", icon: Activity },
+  { href: "/alerts", label: "Alerts", icon: BellRing },
   { href: "/abuse", label: "Abuse", icon: ShieldAlert },
   { href: "/ip-reputation", label: "IP Reputation", icon: ShieldX },
   { href: "/security", label: "Security", icon: ShieldCheck },

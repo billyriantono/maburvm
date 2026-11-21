@@ -2,7 +2,7 @@
 export interface StoragePool {
   id: string;
   name: string;
-  type: string; // dir, lvm, zfs, etc.
+  type: string; // "dir" is the only type that can be registered
   status: 'online' | 'offline' | 'degraded';
   total_space: number; // bytes
   used_space: number; // bytes
@@ -12,6 +12,10 @@ export interface StoragePool {
   alert_threshold: number; // 0-100
   overcommit: number; // bytes, 0 = disabled
   is_primary: boolean;
+  // Virtual disk size promised on the pool, in bytes. Absent when not known.
+  allocated_space?: number;
+  // The most the disk overcommit ratio allows, in bytes. 0 = no limit set.
+  allocation_limit?: number;
   node_id: string;
   node?: {
     id: string;
@@ -37,14 +41,9 @@ export interface StorageVolume {
 // CreateStoragePoolRequest for creating storage pools
 export interface CreateStoragePoolRequest {
   name: string;
-  type: string;
   path: string;
   node_id: string;
-  total_space: number;
-  file_format: string;
   alert_threshold: number;
-  overcommit: number;
-  is_primary: boolean;
 }
 
 // CreateStorageVolumeRequest for creating storage volumes

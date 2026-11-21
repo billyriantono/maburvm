@@ -5,7 +5,7 @@ import { useState } from "react"
 import { toast } from "sonner"
 import { Monitor, PlusCircle, Play, Square, RotateCw, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { StatusBadge, useVMTransitions } from "@/components/status-badge"
+import { StatusBadge, useVMTransitions, vmStatus } from "@/components/status-badge"
 import { useVMs, useVMStatusStream, useVMActions } from "@/lib/hooks/use-vms"
 import { CountryFlag } from "@/components/country-flag"
 import type { VM } from "@/types"
@@ -116,10 +116,10 @@ export default function ClientVMsPage() {
                   </div>
                 </Link>
                 <div className="flex items-center gap-2">
-                  <StatusBadge status={vm.status} transition={transitionOf(vm.id)} />
-                  {vm.status === "stopped" &&
+                  <StatusBadge status={vmStatus(vm)} transition={transitionOf(vm.id)} />
+                  {vm.status === "stopped" && !vm.state_unknown &&
                     powerButton({ vm, act: "start", label: "Start", doing: "Starting", icon: Play, variant: "success" })}
-                  {vm.status === "running" && (
+                  {vm.status === "running" && !vm.state_unknown && (
                     <>
                       {powerButton({ vm, act: "restart", label: "Reboot", doing: "Rebooting", icon: RotateCw, variant: "outline" })}
                       {powerButton({ vm, act: "stop", label: "Stop", doing: "Stopping", icon: Square, variant: "outline", className: "text-destructive hover:bg-destructive/10 hover:text-destructive" })}

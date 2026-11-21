@@ -50,7 +50,8 @@ var (
 	ErrInvalidIPWhitelist = errors.New("invalid IP whitelist entry")
 )
 
-// Password requirements
+// Password requirements. MinPasswordLength is the built-in minimum; the one
+// in force comes from LoadPasswordPolicy.
 const (
 	MinPasswordLength = 12
 	BcryptCost        = 12
@@ -164,38 +165,60 @@ func (s *UserService) Register(req *RegisterRequest) (*RegisterResponse, error) 
 	}, nil
 }
 
-// ValidatePasswordStrength is the password policy for callers that have no
-// UserService at hand.
-func ValidatePasswordStrength(password string) error {
-	return (*UserService)(nil).validatePasswordStrength(password)
+// PasswordPolicy is what a new password must satisfy. A lowercase letter is
+// always required; the rest is the operator's, under Settings, System, Security.
+type PasswordPolicy struct {
+	MinLength        int  `json:"minPasswordLength"`
+	RequireUppercase bool `json:"requireUppercase"`
+	RequireNumbers   bool `json:"requireNumbers"`
+	RequireSpecial   bool `json:"requireSpecial"`
 }
 
-// validatePasswordStrength checks password complexity
-func (s *UserService) validatePasswordStrength(password string) error {
-	if len(password) < MinPasswordLength {
-		return fmt.Errorf("%w: must be at least %d characters", ErrWeakPassword, MinPasswordLength)
+// LoadPasswordPolicy reads the operator's password policy. A field never saved
+// keeps its built-in value, and a length outside 8 to 128 is pulled back in.
+func LoadPasswordPolicy(db *gorm.DB) PasswordPolicy {
+	p := PasswordPolicy{MinLength: MinPasswordLength, RequireUppercase: true, RequireNumbers: true, RequireSpecial: true}
+	if db == nil {
+		return p
 	}
+	var raw string
+	if err := db.Raw("SELECT CAST(data AS TEXT) FROM system_settings WHERE section = 'security'").Scan(&raw).Error; err != nil || raw == "" {
+		return p
+	}
+	_ = json.Unmarshal([]byte(raw), &p)
+	p.MinLength = min(max(p.MinLength, 8), 128)
+	return p
+}
 
-	// Check for at least one uppercase letter
-	if !regexp.MustCompile(`[A-Z]`).MatchString(password) {
+// ValidatePasswordStrength checks a new password against the operator's policy.
+func ValidatePasswordStrength(db *gorm.DB, password string) error {
+	return LoadPasswordPolicy(db).Check(password)
+}
+
+func (s *UserService) validatePasswordStrength(password string) error {
+	if s == nil {
+		return ValidatePasswordStrength(nil, password)
+	}
+	return ValidatePasswordStrength(s.db, password)
+}
+
+// Check reports the first rule a password breaks.
+func (p PasswordPolicy) Check(password string) error {
+	if len(password) < p.MinLength {
+		return fmt.Errorf("%w: must be at least %d characters", ErrWeakPassword, p.MinLength)
+	}
+	if p.RequireUppercase && !regexp.MustCompile(`[A-Z]`).MatchString(password) {
 		return fmt.Errorf("%w: must contain at least one uppercase letter", ErrWeakPassword)
 	}
-
-	// Check for at least one lowercase letter
 	if !regexp.MustCompile(`[a-z]`).MatchString(password) {
 		return fmt.Errorf("%w: must contain at least one lowercase letter", ErrWeakPassword)
 	}
-
-	// Check for at least one digit
-	if !regexp.MustCompile(`[0-9]`).MatchString(password) {
+	if p.RequireNumbers && !regexp.MustCompile(`[0-9]`).MatchString(password) {
 		return fmt.Errorf("%w: must contain at least one digit", ErrWeakPassword)
 	}
-
-	// Check for at least one special character
-	if !regexp.MustCompile(`[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]`).MatchString(password) {
+	if p.RequireSpecial && !regexp.MustCompile(`[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]`).MatchString(password) {
 		return fmt.Errorf("%w: must contain at least one special character", ErrWeakPassword)
 	}
-
 	return nil
 }
 

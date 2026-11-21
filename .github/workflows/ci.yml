@@ -1,0 +1,175 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  schedule:
+    # New advisories appear without a push: rescan every Monday.
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The Go line the production images build with (Dockerfile.panel). Move both together.
+  GO_VERSION: "1.25.x"
+
+jobs:
+  go:
+    name: Go build, vet and tests (panel, shared, agent)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        # Same release as the production stack. Trust auth: a throwaway CI database, no password to keep.
+        image: postgres:16.14
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: maburvm_enroll_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Install libvirt headers and qemu-img
+        # The agent links libvirt through cgo; qemu-img lets the volume round-trip test run instead of skipping.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libvirt-dev pkg-config qemu-utils
+      - name: Build everything
+        run: go build ./...
+      - name: Build the panel the way the image does (no cgo)
+        run: CGO_ENABLED=0 go build -o /dev/null ./cmd/panel
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        # The pg tag adds the tests that run the whole migration chain on a real PostgreSQL.
+        env:
+          MABURVM_TEST_PG_DSN: postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable
+          PGHOST: 127.0.0.1
+          PGUSER: postgres
+          PGDATABASE: maburvm_enroll_test
+        run: go test -tags pg ./...
+
+  vulnerabilities:
+    name: Known vulnerabilities (govulncheck, npm audit)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Install libvirt headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libvirt-dev pkg-config
+      - name: Install govulncheck
+        # govulncheck needs a newer Go to build than the one the project builds with.
+        env:
+          GOTOOLCHAIN: auto
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.10.0
+      - name: Scan Go code
+        # Fails only for vulnerable code this project actually calls.
+        run: govulncheck ./...
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: always()
+        with:
+          node-version: "22"
+      - name: Scan the web app's shipped dependencies
+        if: always()
+        working-directory: web
+        run: npm audit --package-lock-only --omit=dev --audit-level=high
+
+  web:
+    name: Web type-check, tests and build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # The Node line Dockerfile.web builds with.
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm test
+      - run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+
+  secrets:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: "8.30.1"
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Every commit: a secret removed in a later commit is still published.
+          fetch-depth: 0
+      - name: Install gitleaks
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tar.gz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+      - name: Scan the whole history
+        # Findings are redacted in the log. Allowed test fixtures are listed in .gitleaks.toml.
+        run: '"$RUNNER_TEMP/gitleaks" git . --redact --verbose --no-banner'
+
+  panel-backup:
+    name: Panel backup image, restore round trip, compose files
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16.14
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Lint the scripts
+        run: shellcheck docker/panel-backup/panel-backup.sh scripts/panel-restore.sh scripts/test-panel-backup.sh
+      - name: Build the backup image
+        run: docker build -t maburvm-panel-backup:ci docker/panel-backup
+      - name: Back up and restore inside the image
+        run: |
+          docker run --rm --network host -e PGHOST=127.0.0.1 -e PGUSER=postgres \
+            -v "$PWD:/src:ro" --entrypoint bash maburvm-panel-backup:ci /src/scripts/test-panel-backup.sh
+      - name: Validate the production and rehearsal compose files
+        env:
+          MINIO_ROOT_USER: ci
+          MINIO_ROOT_PASSWORD: ci-not-a-secret
+          PANEL_PUBLIC_URL: https://panel.example.com
+          ALLOWED_ORIGINS: https://panel.example.com
+        run: |
+          mkdir -p deploy/secrets
+          touch deploy/secrets/postgres_password deploy/secrets/s3_restricted_password
+          docker compose -f docker-compose.production.yml --env-file .env.production.example config -q
+          docker compose -f docker-compose.production.yml -f docker-compose.rehearsal.yml --env-file .env.production.example config -q

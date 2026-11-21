@@ -26,6 +26,12 @@ type StoragePool struct {
 	UpdatedAt      time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
 	DeletedAt      gorm.DeletedAt `json:"-" gorm:"index"`
 
+	// AllocatedSpace is the virtual disk size promised on this pool, in bytes;
+	// nil when it could not be worked out. AllocationLimit is the most the
+	// operator's ratio allows, 0 when no ratio is set. Both are computed on read.
+	AllocatedSpace  *int64 `json:"allocated_space,omitempty" gorm:"-"`
+	AllocationLimit int64  `json:"allocation_limit" gorm:"-"`
+
 	// Relations
 	Node *Node `json:"node,omitempty" gorm:"foreignKey:NodeID"`
 }

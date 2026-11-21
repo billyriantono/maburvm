@@ -1,9 +1,38 @@
 package storage
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
+
+func TestDataDiskDir(t *testing.T) {
+	pool, vmDir, fallback := t.TempDir(), t.TempDir(), t.TempDir()
+	primary := filepath.Join(vmDir, "vm.qcow2")
+	file := filepath.Join(pool, "not-a-dir")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name, poolPath, primaryDisk, want string
+	}{
+		{"the pool the panel named", pool, primary, pool},
+		{"no pool named: beside the VM's own disk", "", primary, vmDir},
+		{"a missing pool is not created", filepath.Join(pool, "typo"), primary, vmDir},
+		{"a file is not a pool", file, primary, vmDir},
+		{"a relative path is not a pool", "data", primary, vmDir},
+		{"nothing known: the node default", "", "", fallback},
+		{"the VM's disk directory is gone", "", "/nonexistent-dir/vm.qcow2", fallback},
+		{"a VM on a block device: never a file in /dev", "", "/dev/null", fallback},
+	}
+	for _, c := range cases {
+		if got := DataDiskDir(c.poolPath, c.primaryDisk, fallback); got != c.want {
+			t.Errorf("%s: DataDiskDir(%q, %q) = %q, want %q", c.name, c.poolPath, c.primaryDisk, got, c.want)
+		}
+	}
+}
 
 func TestNormalizePoolType(t *testing.T) {
 	cases := map[string]string{

@@ -36,19 +36,6 @@ export function useCreateStoragePool() {
   })
 }
 
-export function useResizeStoragePool() {
-  const queryClient = useQueryClient()
-  return useMutation<StoragePool, Error, { id: string; total_space: number }>({
-    mutationFn: async ({ id, total_space }) => {
-      const response = await api.put<StoragePool>(`/api/v1/storage/pools/${id}`, { total_space })
-      return response.data.data
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['storage', 'pools'] })
-    },
-  })
-}
-
 // Promoting a pool is how an operator says "new VMs go here". Without one, the
 // node falls back to its root filesystem, which is where a full disk takes down
 // libvirt and the agent rather than merely failing the next order.

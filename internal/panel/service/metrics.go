@@ -7,10 +7,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -191,7 +193,16 @@ type MetricsCollector struct {
 	reputation     *ReputationService
 	logger         *slog.Logger
 	tick           int // collectOnce counter, for slower-cadence work (IP reconcile)
+	alerts         *AlertService
+
+	onlineMu sync.Mutex
+	online   map[string]bool // nodes whose agent port answered the last check
 }
+
+// SetAlerts gives the collector the service that tells operators about a node
+// going offline, a pool filling up or a node that stopped filtering traffic.
+// Without one the collector still marks nodes offline; nobody is told.
+func (c *MetricsCollector) SetAlerts(a *AlertService) { c.alerts = a }
 
 // NewMetricsCollector wires a collector. interval is the sampling period;
 // retention is how long samples are kept.
@@ -242,6 +253,11 @@ func (c *MetricsCollector) Run(ctx context.Context) {
 	defer ticker.Stop()
 
 	c.logger.Info("metrics collector started", "interval", c.interval.String(), "retention", c.retention.String())
+	c.pollNodes(ctx)
+	// Node checks keep their own clock. The work in collectOnce talks to every
+	// VM on every node and can take minutes when one of them hangs; a node
+	// going down must be noticed on time all the same.
+	go c.watchNodes(ctx)
 	c.collectOnce(ctx)
 	for {
 		select {
@@ -254,26 +270,120 @@ func (c *MetricsCollector) Run(ctx context.Context) {
 	}
 }
 
-// collectOnce samples all nodes (and running VMs on online nodes) once, then
-// prunes stale samples. Per-target failures are logged and skipped so one
-// unreachable node/VM never blocks the rest.
-func (c *MetricsCollector) collectOnce(ctx context.Context) {
+func (c *MetricsCollector) watchNodes(ctx context.Context) {
+	ticker := time.NewTicker(c.interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			c.pollNodes(ctx)
+		}
+	}
+}
+
+// nodeCheck is what one check of a node means for it.
+type nodeCheck struct {
+	// Failed is how many checks in a row have gone without a report.
+	Failed int
+	// Offline: enough checks missed and the agent port does not answer.
+	Offline bool
+	// Silent: enough checks missed although the port answers, which is an
+	// agent that is hung, refusing the panel, or too old to report.
+	Silent bool
+}
+
+// nodeHealthAfterPoll counts a check. A report resets the count; a node is
+// only called offline or silent once it has missed `after` checks in a row, so
+// one lost packet or a restarting agent does not mark it down.
+func nodeHealthAfterPoll(failed int, reported, reachable bool, after int) nodeCheck {
+	if reported {
+		return nodeCheck{}
+	}
+	if after < 1 {
+		after = 1
+	}
+	h := nodeCheck{Failed: failed + 1}
+	if h.Failed >= after {
+		h.Offline, h.Silent = !reachable, reachable
+	}
+	return h
+}
+
+// poolAlertSeverity is how loudly a pool's fill level should be announced:
+// nothing below the pool's own alert level, a warning from there, critical
+// from the panel-wide critical level. A pool with its alert level set to 0 has
+// alerts switched off.
+func poolAlertSeverity(used, total int64, warnPercent, criticalPercent int) string {
+	if total <= 0 || warnPercent <= 0 {
+		return ""
+	}
+	pct := float64(used) * 100 / float64(total)
+	switch {
+	case criticalPercent > 0 && pct >= float64(criticalPercent):
+		return models.AlertSeverityCritical
+	case pct >= float64(warnPercent):
+		return models.AlertSeverityWarning
+	}
+	return ""
+}
+
+// pollNodes checks every node at once, each under its own deadline, so a node
+// that hangs delays nothing but its own answer. It stores the readings, keeps
+// each node's status true and raises or clears the node alerts.
+func (c *MetricsCollector) pollNodes(ctx context.Context) {
 	nodes, err := c.nodeRepo.List(ctx, 0, 0)
 	if err != nil {
 		c.logger.Error("metrics collector: list nodes failed", "error", err)
 		return
 	}
-
-	online := make(map[string]bool, len(nodes))
+	polls := make([]*NodeMetrics, len(nodes))
+	var wg sync.WaitGroup
 	for i := range nodes {
-		nodeID := nodes[i].ID
-		mctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		m, err := c.nodeService.GetNodeMetrics(mctx, nodeID)
-		cancel()
-		if err != nil {
-			c.logger.Warn("metrics collector: get node metrics failed", "node_id", nodeID, "error", err)
-			continue
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			mctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			polls[i] = c.nodeService.PollNodeMetrics(mctx, &nodes[i])
+		}(i)
+	}
+	wg.Wait()
+	if ctx.Err() != nil {
+		return // shutting down: an interrupted check says nothing about a node
+	}
+
+	after := c.alerts.NodeOfflineAfter(ctx)
+	online := make(map[string]bool, len(nodes))
+	ids := make([]string, len(nodes))
+	for i := range nodes {
+		ids[i] = nodes[i].ID
+		if c.recordPoll(ctx, &nodes[i], polls[i], after) {
+			online[nodes[i].ID] = true
 		}
+	}
+	// A node deleted while its alert was open would otherwise fire for ever.
+	c.alerts.DropGone(ctx, "node", ids, "Closed: the node was removed")
+	c.onlineMu.Lock()
+	c.online = online
+	c.onlineMu.Unlock()
+
+	// Sending is slow and may hang on a mail server; it must not hold the next check.
+	go c.alerts.Flush(context.WithoutCancel(ctx))
+}
+
+// recordPoll stores one node's check and reports whether its agent port answered.
+func (c *MetricsCollector) recordPoll(ctx context.Context, node *models.Node, m *NodeMetrics, after int) bool {
+	nodeID := node.ID
+	reachable := m.Status == "online"
+	health := nodeHealthAfterPoll(node.FailedPolls, m.Live, reachable, after)
+	now := time.Now()
+
+	// Only a report is a reading. A node that did not answer used to get a row
+	// of zeros stamped with the current time, which drew a flat line in the
+	// charts and told Prometheus the node had just reported.
+	if m.Live {
 		sample := &models.NodeMetricSample{
 			NodeID:               nodeID,
 			CPUUsage:             m.CPUUsage,
@@ -285,7 +395,7 @@ func (c *MetricsCollector) collectOnce(ctx context.Context) {
 			Status:               m.Status,
 			ConntrackCount:       m.ConntrackCount,
 			ConntrackMax:         m.ConntrackMax,
-			RecordedAt:           time.Now(),
+			RecordedAt:           now,
 		}
 		if err := c.repo.InsertNodeSample(ctx, sample); err != nil {
 			c.logger.Error("metrics collector: insert node sample failed", "node_id", nodeID, "error", err)
@@ -295,7 +405,7 @@ func (c *MetricsCollector) collectOnce(ctx context.Context) {
 		// away — but admission runs inside a DB transaction and cannot call the
 		// agent. Only written when the node actually reported a total, so a
 		// failed read never overwrites a good value with 0 ("unmeasured").
-		if m.MemoryTotal > 0 && m.MemoryTotal != nodes[i].MemoryTotalBytes {
+		if m.MemoryTotal > 0 && m.MemoryTotal != node.MemoryTotalBytes {
 			if err := c.db.WithContext(ctx).Model(&models.Node{}).
 				Where("id = ?", nodeID).
 				Update("memory_total_bytes", m.MemoryTotal).Error; err != nil {
@@ -305,40 +415,160 @@ func (c *MetricsCollector) collectOnce(ctx context.Context) {
 		// Persist what the node says about its firewall, so the security centre
 		// and the VM firewall page can read it without calling the agent. Only
 		// from a live answer: a node that did not answer keeps its last state.
-		if m.Live {
-			stored := m.FirewallEnforcement
-			if stored == models.FirewallUnknown {
-				stored = ""
-			}
-			if err := c.db.WithContext(ctx).Table("nodes").
-				Where("id = ? AND firewall_enforcement <> ?", nodeID, stored).
-				Update("firewall_enforcement", stored).Error; err != nil {
-				c.logger.Warn("metrics collector: persist node firewall state failed", "node_id", nodeID, "error", err)
-			}
+		stored := m.FirewallEnforcement
+		if stored == models.FirewallUnknown {
+			stored = ""
 		}
-		if m.Status == "online" {
-			online[nodeID] = true
-			// A node marked offline stays offline, and every job for it fails with
-			// "node is not active", until something marks it active again; without
-			// this that was only the Nodes page (GetNodesWithHealth).
-			if nodes[i].Status == models.NodeStatusOffline {
-				if err := c.nodeRepo.UpdateStatus(ctx, nodeID, models.NodeStatusActive); err != nil {
-					c.logger.Warn("metrics collector: mark node active failed", "node_id", nodeID, "error", err)
-				} else {
-					c.logger.Info("metrics collector: node back online, marked active", "node_id", nodeID)
-				}
-			}
-			// Guest connection rates: the only view that catches a compromised
-			// guest, and the only one that sees guests the panel does not manage.
-			actx, acancel := context.WithTimeout(ctx, 20*time.Second)
-			if err := c.abuse.SampleNode(actx, nodeID); err != nil {
-				c.logger.Warn("metrics collector: guest connection sample failed", "node_id", nodeID, "error", err)
-			}
-			acancel()
-			// Keep each node's default storage pool present and its capacity
-			// live from the node's real disk, so /storage reflects the node.
-			c.syncStoragePools(ctx, &nodes[i])
+		if err := c.db.WithContext(ctx).Table("nodes").
+			Where("id = ? AND firewall_enforcement <> ?", nodeID, stored).
+			Update("firewall_enforcement", stored).Error; err != nil {
+			c.logger.Warn("metrics collector: persist node firewall state failed", "node_id", nodeID, "error", err)
 		}
+	}
+	// By table name: the model fields are read-only (see models.Node).
+	seen := map[string]interface{}{"failed_polls": health.Failed}
+	if m.Live {
+		seen["last_report_at"] = now
+	}
+	if err := c.db.WithContext(ctx).Table("nodes").Where("id = ?", nodeID).Updates(seen).Error; err != nil {
+		c.logger.Warn("metrics collector: persist node check failed", "node_id", nodeID, "error", err)
+	}
+
+	switch {
+	case health.Offline && node.Status == models.NodeStatusActive:
+		// Placement and every job read this status, so a dead node stops
+		// receiving orders here and not when someone opens the Nodes page.
+		if err := c.moveNodeStatus(ctx, nodeID, models.NodeStatusActive, models.NodeStatusOffline); err != nil {
+			c.logger.Warn("metrics collector: mark node offline failed", "node_id", nodeID, "error", err)
+		} else {
+			c.logger.Warn("metrics collector: node marked offline", "node_id", nodeID, "missed_checks", health.Failed)
+		}
+	case reachable && node.Status == models.NodeStatusOffline:
+		// A node marked offline stays offline, and every job for it fails with
+		// "node is not active", until something marks it active again.
+		if err := c.moveNodeStatus(ctx, nodeID, models.NodeStatusOffline, models.NodeStatusActive); err != nil {
+			c.logger.Warn("metrics collector: mark node active failed", "node_id", nodeID, "error", err)
+		} else {
+			c.logger.Info("metrics collector: node back online, marked active", "node_id", nodeID)
+		}
+	}
+
+	c.alertNode(ctx, node, m, health)
+	return reachable
+}
+
+// moveNodeStatus changes a node's status only while it is still what the check
+// read: a node put into maintenance during the check stays in maintenance.
+func (c *MetricsCollector) moveNodeStatus(ctx context.Context, nodeID string, from, to models.NodeStatus) error {
+	return c.db.WithContext(ctx).Model(&models.Node{}).Where("id = ? AND status = ?", nodeID, from).Update("status", to).Error
+}
+
+// alertNode raises and clears the alerts about one node from its last check.
+func (c *MetricsCollector) alertNode(ctx context.Context, node *models.Node, m *NodeMetrics, health nodeCheck) {
+	if c.alerts == nil {
+		return
+	}
+	offline, silent, firewall := "node_offline:"+node.ID, "node_silent:"+node.ID, "firewall_off:"+node.ID
+	if node.Status == models.NodeStatusMaintenance {
+		// The operator took it out of service and knows why it is quiet.
+		for _, key := range []string{offline, silent} {
+			c.alerts.Drop(ctx, key, "Closed: the node was put into maintenance")
+		}
+		return
+	}
+	lastReport := "It has never reported."
+	if node.LastReportAt != nil {
+		lastReport = "Last report " + node.LastReportAt.UTC().Format("2006-01-02 15:04 UTC") + "."
+	}
+	in := AlertInput{ResourceType: "node", ResourceID: node.ID, ResourceName: node.Name}
+
+	// A node that has never reported was added and not set up yet; it did not go down.
+	if health.Offline && node.LastReportAt != nil {
+		in.Key, in.Kind, in.Severity = offline, models.AlertKindNodeOffline, models.AlertSeverityCritical
+		in.Title = "Node " + node.Name + " is offline"
+		in.Detail = fmt.Sprintf("It has missed %d checks in a row. %s No new VMs are placed on it, and the state of the VMs on it is unknown.", health.Failed, lastReport)
+		c.alerts.Raise(ctx, in)
+	} else {
+		c.alerts.Clear(ctx, offline)
+	}
+	if health.Silent {
+		in.Key, in.Kind, in.Severity = silent, models.AlertKindNodeSilent, models.AlertSeverityWarning
+		in.Title = "Node " + node.Name + " is not reporting"
+		in.Detail = fmt.Sprintf("Its agent port answers, but the agent has not reported for %d checks. %s The agent may be hung, may refuse the panel, or may need an update.", health.Failed, lastReport)
+		c.alerts.Raise(ctx, in)
+	} else {
+		c.alerts.Clear(ctx, silent)
+	}
+	// Only a node that said so: no answer, or an agent too old to say, changes nothing.
+	if m.Live {
+		switch m.FirewallEnforcement {
+		case models.FirewallOff:
+			in.Key, in.Kind, in.Severity = firewall, models.AlertKindFirewallOff, models.AlertSeverityCritical
+			in.Title = "Node " + node.Name + " is not filtering guest traffic"
+			in.Detail = "Bridge netfilter is off on this node, so VM firewall rules and address-spoofing protection are not enforced there."
+			c.alerts.Raise(ctx, in)
+		case models.FirewallEnforced:
+			c.alerts.Clear(ctx, firewall)
+		}
+	}
+}
+
+// alertPool raises or clears the fill-level alert of a pool just measured.
+func (c *MetricsCollector) alertPool(ctx context.Context, node *models.Node, p *models.StoragePool) {
+	if c.alerts == nil {
+		return
+	}
+	key := "pool_usage:" + p.ID
+	severity := poolAlertSeverity(p.UsedSpace, p.TotalSpace, p.AlertThreshold, c.alerts.StorageCriticalPercent(ctx))
+	if severity == "" {
+		c.alerts.Clear(ctx, key)
+		return
+	}
+	const gb = 1 << 30
+	c.alerts.Raise(ctx, AlertInput{
+		Key: key, Kind: models.AlertKindStoragePool, Severity: severity,
+		Title: fmt.Sprintf("Storage pool %s on %s is %d%% full", p.Name, node.Name, p.UsedSpace*100/p.TotalSpace),
+		Detail: fmt.Sprintf("%.1f GB free of %.1f GB. A pool that fills up pauses every VM on it.",
+			float64(p.AvailableSpace)/gb, float64(p.TotalSpace)/gb),
+		ResourceType: "storage_pool", ResourceID: p.ID, ResourceName: p.Name,
+	})
+}
+
+// collectOnce does the per-node and per-VM work on every node that answered
+// the last check, then prunes stale samples. Per-target failures are logged
+// and skipped so one unreachable node/VM never blocks the rest.
+func (c *MetricsCollector) collectOnce(ctx context.Context) {
+	nodes, err := c.nodeRepo.List(ctx, 0, 0)
+	if err != nil {
+		c.logger.Error("metrics collector: list nodes failed", "error", err)
+		return
+	}
+	c.onlineMu.Lock()
+	online := make(map[string]bool, len(c.online))
+	for id := range c.online {
+		online[id] = true
+	}
+	c.onlineMu.Unlock()
+
+	for i := range nodes {
+		nodeID := nodes[i].ID
+		if !online[nodeID] {
+			continue
+		}
+		// Guest connection rates: the only view that catches a compromised
+		// guest, and the only one that sees guests the panel does not manage.
+		actx, acancel := context.WithTimeout(ctx, 20*time.Second)
+		if err := c.abuse.SampleNode(actx, nodeID); err != nil {
+			c.logger.Warn("metrics collector: guest connection sample failed", "node_id", nodeID, "error", err)
+		}
+		acancel()
+		// Keep each node's default storage pool present and its capacity
+		// live from the node's real disk, so /storage reflects the node.
+		c.syncStoragePools(ctx, &nodes[i])
+	}
+	var poolIDs []string
+	if err := c.db.WithContext(ctx).Model(&models.StoragePool{}).Pluck("id", &poolIDs).Error; err == nil {
+		c.alerts.DropGone(ctx, "storage_pool", poolIDs, "Closed: the pool was removed")
 	}
 
 	// Reconcile DB VM status against reality on every online node, so a VM
@@ -526,7 +756,7 @@ func (c *MetricsCollector) syncStoragePools(ctx context.Context, node *models.No
 		// and invite an operator to place VMs on storage that is not there.
 		if !cap.Exists {
 			pools[i].Status = "degraded"
-			if err := c.storageRepo.UpdatePool(&pools[i]); err != nil {
+			if err := c.storageRepo.UpdatePoolMeasurement(&pools[i]); err != nil {
 				c.logger.Error("storage sync: update pool failed", "pool_id", pools[i].ID, "error", err)
 			}
 			continue
@@ -535,20 +765,23 @@ func (c *MetricsCollector) syncStoragePools(ctx context.Context, node *models.No
 		pools[i].UsedSpace = cap.Used
 		pools[i].AvailableSpace = cap.Available
 		pools[i].Status = "online"
-		if err := c.storageRepo.UpdatePool(&pools[i]); err != nil {
+		if err := c.storageRepo.UpdatePoolMeasurement(&pools[i]); err != nil {
 			c.logger.Error("storage sync: update pool failed", "pool_id", pools[i].ID, "error", err)
 		}
+		c.alertPool(ctx, node, &pools[i])
 	}
 
 	if !seen[defaultPoolPath] {
 		if cap, ok := byPath[defaultPoolPath]; ok && cap.Exists {
+			// Primary only on a node with no pools: recreating a deleted 'local'
+			// as primary would send new VMs back to the root filesystem.
 			if err := c.storageRepo.CreatePool(&models.StoragePool{
 				Name:           "local",
 				Type:           "dir",
 				Status:         "online",
 				Path:           defaultPoolPath,
 				FileFormat:     "qcow2",
-				IsPrimary:      true,
+				IsPrimary:      len(pools) == 0,
 				NodeID:         node.ID,
 				TotalSpace:     cap.Total,
 				UsedSpace:      cap.Used,

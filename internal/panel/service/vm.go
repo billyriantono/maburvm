@@ -163,16 +163,10 @@ func (s *VMService) GetNodeSummaries(ctx context.Context) (map[string]NodeSummar
 		return nil, err
 	}
 	result := make(map[string]NodeSummary, len(nodes))
+	// The status is as the collector last set it. Dialling here made every VM
+	// list wait three seconds for each node that is down.
 	for _, n := range nodes {
-		status := n.Status
-		// If the DB still says offline but the agent port is reachable, self-heal
-		// the status before annotating VM list rows. This prevents active nodes from
-		// being shown as inactive just because no node-health page was opened yet.
-		if status == models.NodeStatusOffline && s.isAgentReachable(ctx, n.IPAddress) {
-			status = models.NodeStatusActive
-			_ = s.nodeRepo.UpdateStatus(ctx, n.ID, models.NodeStatusActive)
-		}
-		result[n.ID] = NodeSummary{Name: n.Name, Status: status}
+		result[n.ID] = NodeSummary{Name: n.Name, Status: n.Status}
 	}
 	return result, nil
 }
@@ -232,6 +226,9 @@ type CreateVMRequest struct {
 	// image — a "vm://<id>" (same node) or "vm://<srcNodeIP>/<id>" (cross-node)
 	// reference the agent resolves by copying/pulling that VM's disk. Set by CloneVM.
 	CloneSourceRef string `json:"-"`
+	// Restore, when set, says CloneSourceRef is a backup in object storage:
+	// the node uses it once, as the new disk, and checks it first.
+	Restore *RestoreSource `json:"-"`
 	// AutoAssignIP, when true and IPPoolID is empty, makes the service pick the
 	// first node-eligible pool with a free address and allocate a public IP from
 	// it. Set for self-service (client) orders so they never get an unusable
@@ -391,7 +388,7 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		}
 	}
 	if nodeID == "" {
-		nodeID, err = s.selectNode(ctx)
+		nodeID, err = s.selectNode(ctx, req.Resources.Disk)
 		if err != nil {
 			return nil, err
 		}
@@ -506,6 +503,7 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 
 	var allocatedIP *models.IPAddress
 	var allocatedV6 *models.VMIPv6Prefix
+	var diskPool *models.StoragePool
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Lane D admission: take the per-user lock and re-check quota against
 		// authoritative in-tx usage BEFORE inserting the VM row, so concurrent
@@ -514,13 +512,23 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 			return err
 		}
 		// Node RAM overcommit, checked in the same transaction for the same
-		// reason. Placement already filtered on storage; RAM had no ceiling
-		// at all until an operator sets a ratio.
+		// reason.
 		if err := s.quotaService.AdmitNodeRAMTx(ctx, tx, vm.NodeID, req.Resources.RAM); err != nil {
+			return err
+		}
+		// Storage is admitted here, not only at placement: a node the caller
+		// named, or one picked without a region, never went through placement.
+		diskPool = PrimaryPool(ctx, tx, vm.NodeID)
+		if err := AdmitPoolDisk(ctx, tx, diskPool, req.Resources.Disk); err != nil {
 			return err
 		}
 		if err := s.vmRepo.WithDB(tx).Create(ctx, vm); err != nil {
 			return fmt.Errorf("failed to create VM record: %w", err)
+		}
+		if diskPool != nil {
+			if err := tx.Exec("UPDATE vms SET storage_pool_id = ? WHERE id = ?", diskPool.ID, vm.ID).Error; err != nil {
+				return fmt.Errorf("failed to record the VM's storage pool: %w", err)
+			}
 		}
 		if req.RequestedIP != "" && req.IPPoolID == "" {
 			return fmt.Errorf("ip_pool_id is required when requested_ip is set")
@@ -699,8 +707,11 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 	// to /var/lib/libvirt/images — the node's ROOT filesystem — so every VM would
 	// land on the OS volume no matter what storage the operator provisioned, and
 	// filling that volume takes libvirt and the agent down with it.
-	if pool := PrimaryPool(ctx, s.db, nodeID); pool != nil {
-		params["pool_path"] = pool.Path
+	if diskPool != nil {
+		params["pool_path"] = diskPool.Path
+	}
+	if req.Restore != nil {
+		req.Restore.apply(params)
 	}
 
 	paramsJSON, _ := json.Marshal(params)
@@ -951,6 +962,7 @@ func (s *VMService) selectNodeInRegion(ctx context.Context, regionID string, dis
 	if len(nodes) == 0 {
 		return "", ErrRegionNoCapacity
 	}
+	nodes = nodesReporting(nodes)
 	nodes = s.nodesWithRoom(ctx, nodes, diskGB)
 	if len(nodes) == 0 {
 		return "", ErrRegionNoCapacity
@@ -971,20 +983,17 @@ func (s *VMService) nodesWithRoom(ctx context.Context, nodes []models.Node, disk
 	if diskGB <= 0 {
 		return nodes
 	}
-	// Use the operator's ratio here too, so placement and admission agree: a
-	// node filtered out at selection time that the create transaction would
-	// have accepted just means orders fail for no reason.
-	ratio := DiskOvercommitRatio(ctx, s.db)
+	// The same check the create transaction makes, so placement never picks a
+	// node that admission will then refuse while another node had room.
 	out := make([]models.Node, 0, len(nodes))
 	for i := range nodes {
 		pool := PrimaryPool(ctx, s.db, nodes[i].ID)
-		if PoolFitsRatio(pool, diskGB, ratio) {
-			out = append(out, nodes[i])
+		if err := AdmitPoolDisk(ctx, s.db, pool, diskGB); err != nil {
+			s.logger.WarnContext(ctx, "node skipped: provisioning pool has no room",
+				"node_id", nodes[i].ID, "requested_gb", diskGB, "reason", err.Error())
 			continue
 		}
-		s.logger.WarnContext(ctx, "node skipped: provisioning pool has no room",
-			"node_id", nodes[i].ID, "pool", pool.Path,
-			"available_bytes", pool.AvailableSpace, "requested_gb", diskGB)
+		out = append(out, nodes[i])
 	}
 	return out
 }
@@ -1004,8 +1013,24 @@ func nodesTakingVMs(nodes []models.Node) []models.Node {
 	return out
 }
 
+// nodesReporting drops nodes that missed their last check when another node
+// answered it: an active node whose agent has stopped answering would take the
+// order and fail it. When none answered, all are kept and the order is tried.
+func nodesReporting(nodes []models.Node) []models.Node {
+	out := nodes[:0:0]
+	for _, n := range nodes {
+		if n.FailedPolls == 0 {
+			out = append(out, n)
+		}
+	}
+	if len(out) == 0 {
+		return nodes
+	}
+	return out
+}
+
 // selectNode selects an available node for VM placement
-func (s *VMService) selectNode(ctx context.Context) (string, error) {
+func (s *VMService) selectNode(ctx context.Context, diskGB int) (string, error) {
 	nodes, err := s.nodeRepo.ListActive(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to list active nodes: %w", err)
@@ -1013,6 +1038,13 @@ func (s *VMService) selectNode(ctx context.Context) (string, error) {
 	nodes = nodesTakingVMs(nodes)
 	if len(nodes) == 0 {
 		return "", ErrNoAvailableNodes
+	}
+	nodes = nodesReporting(nodes)
+	// Skip nodes without room when another has it. When none has, keep them
+	// all: admission then refuses with the reason, which says more than
+	// "no nodes".
+	if roomy := s.nodesWithRoom(ctx, nodes, diskGB); len(roomy) > 0 {
+		nodes = roomy
 	}
 
 	s.nodeMutex.Lock()
@@ -1446,7 +1478,8 @@ func (s *VMService) ListDisks(ctx context.Context, vmID string) ([]models.VMDisk
 }
 
 // AttachDisk provisions and hot-plugs a new data disk of sizeGB onto the VM,
-// then records it. The agent picks the next free virtio target.
+// then records it. The agent picks the next free virtio target. The disk is
+// created in the VM's own storage pool.
 //
 // Gate-1 disk admission: capacity is reserved BEFORE the agent AttachDisk RPC so
 // a concurrent extra-disk admission cannot double-spend the user's disk quota.
@@ -1469,10 +1502,28 @@ func (s *VMService) AttachDisk(ctx context.Context, vmID string, sizeGB int) (*m
 		return nil, fmt.Errorf("failed to get VM: %w", err)
 	}
 
+	// The disk goes beside the VM's own, never onto the node's root filesystem,
+	// and its pool must have room for it as it would for a new VM.
+	pool := VMPool(ctx, s.db, vm.ID, vm.NodeID)
+	if !PoolFits(pool, sizeGB) {
+		return nil, fmt.Errorf("%w: storage pool %s has %d GB free, and a %d GB disk needs that much plus %d GB kept free",
+			ErrNodeCapacityExceeded, pool.Name, pool.AvailableSpace/bytesPerGB, sizeGB, diskHeadroomBytes/bytesPerGB)
+	}
+	poolPath := ""
+	if pool != nil {
+		poolPath = pool.Path
+	}
+
 	// 1) Reserve capacity (per-user admission lock + disk quota evaluation +
 	//    pending reservation insert) BEFORE driving the agent.
 	res, err := s.quotaService.ReserveDiskQuota(ctx, vm.UserID, vm.ID, sizeGB)
 	if err != nil {
+		return nil, err
+	}
+	// The reservation now counts toward the pool's allocation, so two attaches
+	// racing for the last room both see each other here.
+	if err := admitPoolRatio(ctx, s.db, pool, 0); err != nil {
+		_ = s.quotaService.ReleaseDiskReservation(ctx, res.ID)
 		return nil, err
 	}
 
@@ -1488,7 +1539,7 @@ func (s *VMService) AttachDisk(ctx context.Context, vmID string, sizeGB int) (*m
 		_ = s.quotaService.ReleaseDiskReservation(ctx, res.ID)
 		return nil, err
 	}
-	resp, err := client.AttachDisk(authCtx, &pb.AttachDiskRequest{VmId: vmID, SizeGb: int64(sizeGB)})
+	resp, err := client.AttachDisk(authCtx, &pb.AttachDiskRequest{VmId: vmID, SizeGb: int64(sizeGB), PoolPath: poolPath})
 	if err != nil {
 		_ = s.quotaService.ReleaseDiskReservation(ctx, res.ID)
 		return nil, fmt.Errorf("agent attach disk failed: %w", err)
@@ -1683,16 +1734,6 @@ func (s *VMService) UpdateVM(ctx context.Context, req *UpdateVMRequest) (*models
 		if req.Resources.Disk < vm.Resources.Disk {
 			return nil, fmt.Errorf("disk can only be grown (current %dGB, requested %dGB)", vm.Resources.Disk, req.Resources.Disk)
 		}
-		// Growing the disk consumes node storage the same way a new VM does, so
-		// apply the same check placement makes on create. Only the delta is new
-		// — the VM's current disk is already accounted for in the pool.
-		// An unmeasured pool fits, per PoolFits.
-		if grow := req.Resources.Disk - vm.Resources.Disk; grow > 0 {
-			ratio := DiskOvercommitRatio(ctx, s.db)
-			if !PoolFitsRatio(PrimaryPool(ctx, s.db, vm.NodeID), grow, ratio) {
-				return nil, fmt.Errorf("node has insufficient storage to grow disk by %dGB", grow)
-			}
-		}
 		oldRes := vm.Resources
 		// Admit + persist atomically: the per-user lock + authoritative in-tx quota
 		// check serialize with the resource write, so a resize can't overcommit.
@@ -1703,6 +1744,11 @@ func (s *VMService) UpdateVM(ctx context.Context, req *UpdateVMRequest) (*models
 			// Node capacity is checked in the same transaction as the user's
 			// quota, so the headroom two concurrent resizes see is serialized.
 			if err := s.quotaService.AdmitNodeRAMTx(ctx, tx, vm.NodeID, req.Resources.RAM-oldRes.RAM); err != nil {
+				return err
+			}
+			// Growing a disk draws on its pool as a new VM does. Only the
+			// growth is new; the current size is already counted there.
+			if err := AdmitPoolDisk(ctx, tx, VMPool(ctx, tx, vm.ID, vm.NodeID), req.Resources.Disk-oldRes.Disk); err != nil {
 				return err
 			}
 			vm.Resources = *req.Resources

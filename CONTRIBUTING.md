@@ -77,6 +77,17 @@ npm run lint
 
 Please make sure the relevant builds and tests pass before opening a pull request.
 
+Every push and pull request also runs CI (`.github/workflows/ci.yml`) on Linux,
+which is where the agent and its tests are compiled and run:
+
+| Job | What it runs |
+|-----|--------------|
+| Go | `go build`, `go vet` and `go test -tags pg` over the whole module with libvirt installed, against a real PostgreSQL |
+| Known vulnerabilities | `govulncheck ./...` and `npm audit` of the web app's shipped dependencies |
+| Web | `npm ci`, `tsc --noEmit`, `npm test`, `npm run build` |
+| Secret scan | `gitleaks` over every commit (placeholders that are not secrets are listed in `.gitleaks.toml`) |
+| Panel backup | builds the backup image and runs `scripts/test-panel-backup.sh` inside it; validates the compose files |
+
 ## Project Layout
 
 ```
