@@ -53,6 +53,7 @@ const (
 	NodeAgent_GetGuestConnections_FullMethodName = "/agent.NodeAgent/GetGuestConnections"
 	NodeAgent_UpdateAgent_FullMethodName         = "/agent.NodeAgent/UpdateAgent"
 	NodeAgent_SetVMLimits_FullMethodName         = "/agent.NodeAgent/SetVMLimits"
+	NodeAgent_GetPreflight_FullMethodName        = "/agent.NodeAgent/GetPreflight"
 )
 
 // NodeAgentClient is the client API for NodeAgent service.
@@ -204,6 +205,11 @@ type NodeAgentClient interface {
 	// is running, to the running guest, so one busy VM cannot starve the others
 	// on the node. An agent without it answers Unimplemented.
 	SetVMLimits(ctx context.Context, in *SetVMLimitsRequest, opts ...grpc.CallOption) (*SetVMLimitsResponse, error)
+	// GetPreflight checks that the host is set up the way the agent expects
+	// (KVM, libvirt, qemu-img, bridges, storage pool directories, bridge
+	// netfilter, tools, clock), one check at a time. Read-only. An agent
+	// without it answers Unimplemented.
+	GetPreflight(ctx context.Context, in *PreflightRequest, opts ...grpc.CallOption) (*PreflightResponse, error)
 }
 
 type nodeAgentClient struct {
@@ -572,6 +578,16 @@ func (c *nodeAgentClient) SetVMLimits(ctx context.Context, in *SetVMLimitsReques
 	return out, nil
 }
 
+func (c *nodeAgentClient) GetPreflight(ctx context.Context, in *PreflightRequest, opts ...grpc.CallOption) (*PreflightResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PreflightResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_GetPreflight_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // NodeAgentServer is the server API for NodeAgent service.
 // All implementations must embed UnimplementedNodeAgentServer
 // for forward compatibility.
@@ -721,6 +737,11 @@ type NodeAgentServer interface {
 	// is running, to the running guest, so one busy VM cannot starve the others
 	// on the node. An agent without it answers Unimplemented.
 	SetVMLimits(context.Context, *SetVMLimitsRequest) (*SetVMLimitsResponse, error)
+	// GetPreflight checks that the host is set up the way the agent expects
+	// (KVM, libvirt, qemu-img, bridges, storage pool directories, bridge
+	// netfilter, tools, clock), one check at a time. Read-only. An agent
+	// without it answers Unimplemented.
+	GetPreflight(context.Context, *PreflightRequest) (*PreflightResponse, error)
 	mustEmbedUnimplementedNodeAgentServer()
 }
 
@@ -832,6 +853,9 @@ func (UnimplementedNodeAgentServer) UpdateAgent(grpc.ClientStreamingServer[Agent
 }
 func (UnimplementedNodeAgentServer) SetVMLimits(context.Context, *SetVMLimitsRequest) (*SetVMLimitsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetVMLimits not implemented")
+}
+func (UnimplementedNodeAgentServer) GetPreflight(context.Context, *PreflightRequest) (*PreflightResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetPreflight not implemented")
 }
 func (UnimplementedNodeAgentServer) mustEmbedUnimplementedNodeAgentServer() {}
 func (UnimplementedNodeAgentServer) testEmbeddedByValue()                   {}
@@ -1426,6 +1450,24 @@ func _NodeAgent_SetVMLimits_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NodeAgent_GetPreflight_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PreflightRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).GetPreflight(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_GetPreflight_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).GetPreflight(ctx, req.(*PreflightRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // NodeAgent_ServiceDesc is the grpc.ServiceDesc for NodeAgent service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1552,6 +1594,10 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetVMLimits",
 			Handler:    _NodeAgent_SetVMLimits_Handler,
+		},
+		{
+			MethodName: "GetPreflight",
+			Handler:    _NodeAgent_GetPreflight_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

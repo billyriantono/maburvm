@@ -38,7 +38,7 @@ func newPolicyTestDB(t *testing.T) *gorm.DB {
 	for _, s := range []string{
 		`CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', email TEXT, password_hash TEXT, role TEXT DEFAULT 'client',
 			quota_mode TEXT NOT NULL DEFAULT 'legacy', two_factor_secret TEXT, two_factor_enabled BOOLEAN NOT NULL DEFAULT 0,
-			two_factor_backup_codes TEXT, ip_whitelist TEXT, expires_at DATETIME, support_note TEXT NOT NULL DEFAULT '',
+			two_factor_backup_codes TEXT, ip_whitelist TEXT, expires_at DATETIME, support_note TEXT NOT NULL DEFAULT '', staff_role TEXT,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, token_revoked_at DATETIME, suspended_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE vms (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, node_id TEXT NOT NULL, hostname TEXT,
 			os_template_id TEXT, resources TEXT, status TEXT DEFAULT 'stopped', suspended BOOLEAN NOT NULL DEFAULT 0,

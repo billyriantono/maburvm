@@ -50,6 +50,11 @@ type User struct {
 	IPWhitelist          []string   `json:"ip_whitelist" gorm:"type:jsonb;serializer:json" validate:"omitempty,dive,ip"`
 	CreatedAt            time.Time  `json:"created_at" gorm:"not null;default:NOW()"`
 	UpdatedAt            time.Time  `json:"updated_at" gorm:"not null;default:NOW()"`
+	// StaffRole is a staff account's role key (nil = administrator). Read-only
+	// here; written by table name so a stale full-row save cannot revert it.
+	StaffRole *string `json:"staff_role,omitempty" gorm:"column:staff_role;->"`
+	// StaffRoleName is filled for display, not stored.
+	StaffRoleName string `json:"staff_role_name,omitempty" gorm:"-"`
 	// TokenRevokedAt is the logout revocation cutoff. RequireAuth rejects any
 	// access token whose iat predates this instant, so logout invalidates all of a
 	// user's outstanding stateless JWTs server-side. NULL = nothing revoked.

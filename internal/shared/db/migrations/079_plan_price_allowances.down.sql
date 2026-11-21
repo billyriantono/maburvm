@@ -1,0 +1,8 @@
+DROP INDEX IF EXISTS idx_vms_plan_id;
+ALTER TABLE plans DROP COLUMN IF EXISTS max_extra_ipv6;
+ALTER TABLE plans DROP COLUMN IF EXISTS max_extra_ipv4;
+ALTER TABLE plans DROP COLUMN IF EXISTS max_backups;
+ALTER TABLE plans DROP COLUMN IF EXISTS max_snapshots;
+ALTER TABLE plans DROP COLUMN IF EXISTS currency;
+ALTER TABLE plans DROP COLUMN IF EXISTS price_hourly;
+ALTER TABLE plans DROP COLUMN IF EXISTS price_monthly;

@@ -14,7 +14,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -84,11 +83,13 @@ const (
 	EventVMStatus WebhookEventType = "vm.status"
 	// EventCatalogList lists the templates, plans and regions an order can name.
 	EventCatalogList WebhookEventType = "catalog.list"
+	// EventUserSSO returns a one-time sign-in link for a customer account.
+	EventUserSSO WebhookEventType = "user.sso"
 )
 
 // aboutUser reports an event that names an account, not a VM.
 func (e WebhookEventType) aboutUser() bool {
-	return e == EventUserSuspend || e == EventUserUnsuspend || e == EventUserEnsure
+	return e == EventUserSuspend || e == EventUserUnsuspend || e == EventUserEnsure || e == EventUserSSO
 }
 
 // aboutVM reports an event that acts on, or reads, one existing VM.
@@ -103,7 +104,7 @@ func (e WebhookEventType) IsValid() bool {
 		EventVMResize, EventVMResetPassword, EventVMUsage,
 		EventVMStart, EventVMStop, EventVMRestart,
 		EventUserSuspend, EventUserUnsuspend, EventUserEnsure,
-		EventVMStatus, EventCatalogList:
+		EventVMStatus, EventCatalogList, EventUserSSO:
 		return true
 	}
 	return false
@@ -117,7 +118,7 @@ func (e WebhookEventType) IsValid() bool {
 // Document for integrators:
 //
 //	{
-//	  "event": "vm.create|vm.suspend|vm.unsuspend|vm.destroy|vm.resize|vm.reset_password|vm.usage|vm.status|vm.start|vm.stop|vm.restart|user.ensure|user.suspend|user.unsuspend|catalog.list",
+//	  "event": "vm.create|vm.suspend|vm.unsuspend|vm.destroy|vm.resize|vm.reset_password|vm.usage|vm.status|vm.start|vm.stop|vm.restart|user.ensure|user.suspend|user.unsuspend|user.sso|catalog.list",
 //	  "timestamp": "2024-01-01T00:00:00Z",
 //	  "nonce": "a value that is new for every request",
 //	  "data": {
@@ -237,11 +238,9 @@ func (billingIdempotencyRow) TableName() string { return "billing_idempotency" }
 // persistent idempotency store; pass nil to disable deduplication.
 func NewBillingHandler(vmService *service.VMService, logger *slog.Logger, db *gorm.DB) *BillingHandler {
 	h := &BillingHandler{
-		vmService:     vmService,
-		logger:        logger,
-		webhookSecret: getWebhookSecret(),
-		apiKey:        getAPIKey(),
-		db:            db,
+		vmService: vmService,
+		logger:    logger,
+		db:        db,
 	}
 	if db != nil {
 		// Periodically evict expired idempotency rows for the life of the process.
@@ -260,18 +259,20 @@ func NewBillingHandler(vmService *service.VMService, logger *slog.Logger, db *go
 // cap and transfer quota.
 func (h *BillingHandler) SetNetworkService(n *service.NetworkService) { h.networkService = n }
 
-// getWebhookSecret retrieves the webhook HMAC secret from the environment. It
-// returns "" when unset — the webhook then fails closed (see RequireWebhookAuth)
-// rather than falling back to a public default that would let anyone forge
-// billing events (create/suspend/destroy VMs).
-func getWebhookSecret() string {
-	return os.Getenv("BILLING_WEBHOOK_SECRET")
-}
-
-// getAPIKey retrieves the billing API key from the environment. Empty when
-// unset; the webhook fails closed rather than accepting a known default key.
-func getAPIKey() string {
-	return os.Getenv("BILLING_API_KEY")
+// credentials are the webhook's API key and signing secret: the handler's own
+// when set (tests), else System settings, Panel, else BILLING_API_KEY and
+// BILLING_WEBHOOK_SECRET. Read per request so a change applies at once. Empty
+// when unset: the webhook then fails closed (see RequireWebhookAuth) rather
+// than accepting a known default that would let anyone forge billing events.
+func (h *BillingHandler) credentials() (apiKey, secret string) {
+	apiKey, secret = h.apiKey, h.webhookSecret
+	if apiKey == "" {
+		apiKey, _ = service.PanelValue("billingApiKey")
+	}
+	if secret == "" {
+		secret, _ = service.PanelValue("billingWebhookSecret")
+	}
+	return apiKey, secret
 }
 
 // ============================================================================
@@ -285,8 +286,9 @@ func (h *BillingHandler) RequireWebhookAuth() echo.MiddlewareFunc {
 			// 0. Fail closed if the billing credentials aren't configured. Without
 			// this, an unset BILLING_API_KEY/BILLING_WEBHOOK_SECRET would otherwise
 			// accept a publicly-known default, letting anyone provision/destroy VMs.
-			if h.apiKey == "" || h.webhookSecret == "" {
-				h.logger.Error("billing webhook is disabled: BILLING_API_KEY and BILLING_WEBHOOK_SECRET must both be set")
+			wantKey, secret := h.credentials()
+			if wantKey == "" || secret == "" {
+				h.logger.Error("billing webhook is disabled: set the billing API key and signing secret under System settings, Panel (or BILLING_API_KEY and BILLING_WEBHOOK_SECRET)")
 				return c.JSON(http.StatusServiceUnavailable, WebhookResponse{
 					Success:   false,
 					Message:   "billing webhook is not configured",
@@ -304,7 +306,7 @@ func (h *BillingHandler) RequireWebhookAuth() echo.MiddlewareFunc {
 				})
 			}
 
-			if subtle.ConstantTimeCompare([]byte(apiKey), []byte(h.apiKey)) != 1 {
+			if subtle.ConstantTimeCompare([]byte(apiKey), []byte(wantKey)) != 1 {
 				h.logger.Warn("Invalid API key attempt",
 					"ip", c.RealIP(),
 					"path", c.Path(),
@@ -384,7 +386,8 @@ func (h *BillingHandler) RequireWebhookAuth() echo.MiddlewareFunc {
 
 // sign returns the hex HMAC-SHA256 of the payload under the webhook secret.
 func (h *BillingHandler) sign(payload []byte) string {
-	mac := hmac.New(sha256.New, []byte(h.webhookSecret))
+	_, secret := h.credentials()
+	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(payload)
 	return hex.EncodeToString(mac.Sum(nil))
 }
@@ -611,8 +614,14 @@ func (h *BillingHandler) HandleWebhook(c echo.Context) error {
 
 	ctx := c.Request().Context()
 
+	// A sign-in link to a VM that is gone opens the customer's dashboard.
+	if payload.Event == EventUserSSO && payload.Data.VMID != "" {
+		if _, err := h.vmService.GetVMRecord(ctx, payload.Data.VMID); errors.Is(err, service.ErrVMNotFound) {
+			payload.Data.VMID = ""
+		}
+	}
 	// An event about an existing VM must come from the service that owns it.
-	if payload.Event.aboutVM() {
+	if payload.Event.aboutVM() || (payload.Event == EventUserSSO && payload.Data.VMID != "") {
 		if err := h.checkEventOwner(ctx, payload.Event, &payload.Data); err != nil {
 			status := http.StatusBadRequest
 			switch {
@@ -663,6 +672,8 @@ func (h *BillingHandler) HandleWebhook(c echo.Context) error {
 		response, err = h.handleVMStatus(ctx, &payload.Data, requestID)
 	case EventCatalogList:
 		response, err = h.handleCatalogList(ctx, requestID)
+	case EventUserSSO:
+		response, err = h.handleUserSSO(ctx, &payload.Data, requestID)
 	}
 
 	if err != nil {
@@ -682,6 +693,8 @@ func (h *BillingHandler) HandleWebhook(c echo.Context) error {
 			statusCode = http.StatusBadRequest
 		case errors.Is(err, service.ErrBillingStaffAccount), errors.Is(err, service.ErrRegionNoCapacity):
 			statusCode = http.StatusConflict
+		case errors.Is(err, errBillingSSORefused):
+			statusCode = http.StatusForbidden
 		}
 
 		response = WebhookResponse{
@@ -815,6 +828,16 @@ func (h *BillingHandler) validatePayload(payload *WebhookPayload) error {
 	case EventUserSuspend, EventUserUnsuspend:
 		if payload.Data.UserID == "" {
 			return fmt.Errorf("user_id is required for %s", payload.Event)
+		}
+
+	case EventUserSSO:
+		if payload.Data.UserID == "" {
+			return errors.New("user_id is required for user.sso")
+		}
+		if payload.Data.VMID != "" {
+			if _, err := uuid.Parse(payload.Data.VMID); err != nil {
+				return errors.New("vm_id must be a VM ID")
+			}
 		}
 
 	default:
@@ -1433,6 +1456,12 @@ func (h *BillingHandler) GetWebhookDocumentation(c echo.Context) error {
 			{
 				Type:        string(EventCatalogList),
 				Description: "The active templates (with licensed and plan_ids), plans and regions, in data",
+			},
+			{
+				Type:        string(EventUserSSO),
+				Description: "A one-time sign-in link for a customer account: metadata.path (and metadata.url when the panel knows its public address) lasts metadata.expires_in seconds and works once. Opening it signs the browser in and opens vm_id, or the dashboard; the panel still asks for its own two-factor code. Refused for staff, suspended, locked or expired accounts, and when vm_id belongs to someone else.",
+				Required:    []string{"user_id"},
+				Optional:    []string{"vm_id", "external_ref"},
 			},
 		},
 		PayloadExample: map[string]interface{}{

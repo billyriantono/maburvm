@@ -187,6 +187,12 @@ service NodeAgent {
   // is running, to the running guest, so one busy VM cannot starve the others
   // on the node. An agent without it answers Unimplemented.
   rpc SetVMLimits(SetVMLimitsRequest) returns (SetVMLimitsResponse);
+
+  // GetPreflight checks that the host is set up the way the agent expects
+  // (KVM, libvirt, qemu-img, bridges, storage pool directories, bridge
+  // netfilter, tools, clock), one check at a time. Read-only. An agent
+  // without it answers Unimplemented.
+  rpc GetPreflight(PreflightRequest) returns (PreflightResponse);
 }
 
 // ============================================================================
@@ -1254,6 +1260,11 @@ message GetNodeInfoResponse {
   // "restore_disks": creates a VM with every disk of a backup.
   repeated string features = 27;
 
+  // agent_settings is the agent's own configuration from its environment, by
+  // variable name, non-secret values only: a credential is reported as "set"
+  // or left out. Empty from an agent older than the field.
+  map<string, string> agent_settings = 28;
+
   // error details if failed
   ErrorResponse error = 7;
 
@@ -2091,5 +2102,33 @@ message AgentUpdateChunk {
 message AgentUpdateResponse {
   bool success = 1;
   string message = 2;
+  ErrorResponse error = 3;
+}
+
+// ============================================================================
+// Host preflight
+// ============================================================================
+
+message PreflightRequest {
+  // Directory storage pools the panel places disks in on this node. Empty
+  // checks the node's default image directory, where disks go then.
+  repeated string pool_paths = 1;
+  // Bridges the node's IP pools attach VMs to.
+  repeated string bridges = 2;
+}
+
+message PreflightCheck {
+  string id = 1;
+  string name = 2;
+  // pass, warn or fail.
+  string status = 3;
+  string detail = 4;
+  // How to fix it; empty on a pass.
+  string fix = 5;
+}
+
+message PreflightResponse {
+  bool success = 1;
+  repeated PreflightCheck checks = 2;
   ErrorResponse error = 3;
 }

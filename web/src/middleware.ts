@@ -3,7 +3,8 @@ import type { NextRequest } from 'next/server'
 import { contentSecurityPolicy } from './lib/security-headers'
 
 // Paths that don't require authentication
-const PUBLIC_PATHS = ['/login', '/forgot-password', '/reset-password']
+const PUBLIC_PATHS = ['/login', '/forgot-password', '/reset-password', '/first-run']
+const CAPTCHA_PATHS = ['/login', '/forgot-password']
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
@@ -53,7 +54,9 @@ function route(request: NextRequest): NextResponse {
 
 function withSecurityHeaders(res: NextResponse, request: NextRequest): NextResponse {
   const h = res.headers
-  h.set('Content-Security-Policy', contentSecurityPolicy(request.headers.get('host') ?? '', process.env.NODE_ENV === 'production'))
+  // The sign-in captcha, when the operator turns it on, loads from its provider.
+  const captcha = CAPTCHA_PATHS.includes(request.nextUrl.pathname)
+  h.set('Content-Security-Policy', contentSecurityPolicy(request.headers.get('host') ?? '', process.env.NODE_ENV === 'production', captcha))
   // Browsers ignore this over plain http, so it is safe to always send.
   h.set('Strict-Transport-Security', 'max-age=31536000')
   h.set('X-Frame-Options', 'DENY')

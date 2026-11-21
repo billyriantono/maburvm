@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"os"
 	"strings"
 	"time"
 
@@ -107,7 +106,7 @@ func NotifyAccount(ctx context.Context, db *gorm.DB, userID, key string, extra m
 		return nil
 	}
 	brand := LoadBranding(db.WithContext(ctx))
-	publicURL := strings.TrimRight(strings.TrimSpace(os.Getenv("PANEL_PUBLIC_URL")), "/")
+	publicURL := PublicURL()
 	link := ""
 	if publicURL != "" {
 		link = publicURL + "/login"

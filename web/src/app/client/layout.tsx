@@ -17,6 +17,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { useAuth, useLogout } from "@/lib/hooks/use-auth"
+import { useEndImpersonation } from "@/lib/hooks/use-staff"
+import { toast } from "sonner"
 
 const clientVmHref = (id: string) => `/client/vms/${id}`
 
@@ -28,6 +30,7 @@ export default function ClientLayout({
   const router = useRouter()
   const { data: user, isLoading, error, isError } = useAuth()
   const logout = useLogout()
+  const endView = useEndImpersonation()
 
   useEffect(() => {
     if (isError && !isLoading) {
@@ -42,7 +45,16 @@ export default function ClientLayout({
     }
   }, [user, router])
 
+  // A full page load after, so every query starts again as the staff account.
+  const handleEndView = () => {
+    endView.mutate(undefined, {
+      onSuccess: (res) => { window.location.href = res.redirect },
+      onError: (err) => toast.error(`The view did not end: ${err.message}`),
+    })
+  }
+
   const handleLogout = () => {
+    if (user?.impersonator) return handleEndView()
     logout.mutate(undefined, { onSuccess: () => router.push("/login") })
   }
 
@@ -76,6 +88,20 @@ export default function ClientLayout({
 
       <div className="lg:pl-64">
         <header className="sticky top-0 z-40 bg-card border-b">
+          {user.impersonator && (
+            <div role="status" className="flex flex-wrap items-center justify-between gap-3 border-b border-warning/60 bg-warning/15 px-4 py-2 text-sm lg:px-8">
+              <span className="flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-warning" aria-hidden="true" />
+                <span>
+                  You are viewing as <span className="font-semibold">{user.email}</span>
+                  <span className="text-muted-foreground"> (signed in as {user.impersonator.email}; every action is recorded under both)</span>
+                </span>
+              </span>
+              <Button size="sm" variant="outline" onClick={handleEndView} disabled={endView.isPending}>
+                {endView.isPending && <Loader2 className="w-4 h-4 animate-spin mr-2" />}End
+              </Button>
+            </div>
+          )}
           <div className="flex items-center justify-between h-16 pl-16 pr-4 lg:px-8">
             <span className="text-sm font-semibold text-foreground">
               Client Area
@@ -111,7 +137,7 @@ export default function ClientLayout({
                   className="cursor-pointer font-medium text-destructive"
                 >
                   <LogOut className="w-4 h-4 mr-2" />
-                  Log out
+                  {user.impersonator ? "End staff view" : "Log out"}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>

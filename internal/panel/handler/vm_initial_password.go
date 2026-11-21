@@ -75,7 +75,7 @@ func RegisterVMInitialPasswordRoutes(e *echo.Echo, db *gorm.DB, authorizer *auth
 		record(c, user, id, "vm.initial_password.view")
 		c.Response().Header().Set("Cache-Control", "no-store")
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{"password": password, "expires_at": until}})
-	})
+	}, middleware.RequirePermission("vm:credentials"))
 
 	g.DELETE("", func(c echo.Context) error {
 		id := c.Param("id")
@@ -91,5 +91,5 @@ func RegisterVMInitialPasswordRoutes(e *echo.Echo, db *gorm.DB, authorizer *auth
 		}
 		record(c, user, id, "vm.initial_password.erase")
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true})
-	})
+	}, middleware.RequirePermission("vm:credentials"))
 }

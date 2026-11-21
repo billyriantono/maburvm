@@ -20,6 +20,22 @@ export function useCurrentUser(
   })
 }
 
+/**
+ * Whether the account may do something, for showing or hiding a control. It
+ * mirrors middleware.Can: "admin:access" is the Administrator's wildcard,
+ * which leaves out staff management. The panel checks every request anyway.
+ */
+export function can(user: Pick<User, 'permissions'> | undefined, permission: string): boolean {
+  const held = user?.permissions ?? []
+  return held.includes(permission) || (held.includes('admin:access') && permission !== 'staff:manage')
+}
+
+/** can() for the signed-in account. */
+export function useCan() {
+  const { data } = useCurrentUser()
+  return (permission: string) => can(data, permission)
+}
+
 // Alias for useCurrentUser - provides a cleaner API for auth checks
 export function useAuth(
   options?: Omit<UseQueryOptions<User>, 'queryKey' | 'queryFn'>

@@ -247,7 +247,7 @@ func TestAccountSuspension(t *testing.T) {
 	require.ErrorIs(t, signIn(), ErrAccountSuspended)
 	_, err = users.Login(&LoginRequest{Email: "customer@example.test", Password: "wrong", ClientIP: "198.51.100.8"})
 	require.ErrorIs(t, err, ErrInvalidCredentials, "only someone with the password is told")
-	_, _, _, err = users.SSOLogin("customer@example.test", "198.51.100.8")
+	_, _, _, err = users.SSOLogin("customer@example.test", "198.51.100.8", "")
 	require.ErrorIs(t, err, ErrAccountSuspended)
 
 	// Asked again, with the VMs this time.

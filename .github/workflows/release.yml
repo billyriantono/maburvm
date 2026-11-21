@@ -1,0 +1,147 @@
+name: Release
+
+# Pushing a version tag (v1.2.0, v1.3.0-rc.1) builds and publishes:
+#   ghcr.io/<owner>/maburvm-panel:<tag> and maburvm-web:<tag> (linux/amd64, linux/arm64)
+#   the node agent binaries, SHA256SUMS and, when AGENT_SIGNING_KEY is set, signatures
+#   a draft GitHub release with notes drafted from the Conventional Commits.
+# Nothing is published as a release until someone reviews the draft and publishes it.
+#
+# Signing is optional. Set the repository secret AGENT_SIGNING_KEY to the contents
+# of a key file from `go run ./cmd/agent-sign keygen` to sign here, and the
+# repository variable AGENT_UPDATE_PUBKEY to its public key to check the result.
+# Without the secret the agents are published unsigned, to be signed offline
+# (docs/DEPLOYMENT.md section 6).
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: "1.25.x"
+  PLATFORMS: linux/amd64,linux/arm64
+
+jobs:
+  release:
+    name: Images, agent binaries and draft release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The release notes read the history back to the previous tag.
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Names and stamp
+        id: meta
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]] || { echo "$GITHUB_REF_NAME is not a version tag" >&2; exit 1; }
+          {
+            echo "prefix=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/maburvm"
+            echo "version=$GITHUB_REF_NAME"
+            echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            # A pre-release (v1.2.0-rc.1) never moves the latest tag.
+            if [[ "$GITHUB_REF_NAME" == *-* ]]; then echo "prerelease=true"; else echo "prerelease=false"; fi
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log in to the GitHub container registry
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Build the agent binaries
+        # The same stage, inputs and stamp as the panel image below, so the image
+        # bundles exactly these files (checked after the push).
+        run: |
+          docker buildx build -f Dockerfile.panel --target agent-bin \
+            --build-arg AGENT_ARM64=1 \
+            --build-arg GIT_COMMIT="$GITHUB_SHA" \
+            --build-arg BUILD_TIME="${{ steps.meta.outputs.build_time }}" \
+            --build-arg APP_VERSION="${{ steps.meta.outputs.version }}" \
+            --output type=local,dest=dist .
+          ls -l dist
+
+      - name: Sign the agent binaries
+        env:
+          AGENT_SIGNING_KEY: ${{ secrets.AGENT_SIGNING_KEY }}
+          AGENT_UPDATE_PUBKEY: ${{ vars.AGENT_UPDATE_PUBKEY }}
+        run: |
+          if [ -z "$AGENT_SIGNING_KEY" ]; then
+            echo "::notice::AGENT_SIGNING_KEY is not set: the agents are published unsigned. Sign them offline (docs/DEPLOYMENT.md section 6)."
+            exit 0
+          fi
+          key="$RUNNER_TEMP/agent-signing.key"
+          (umask 077 && printf '%s\n' "$AGENT_SIGNING_KEY" > "$key")
+          trap 'rm -f "$key"' EXIT
+          for a in dist/agent-amd64 dist/agent-arm64; do go run ./cmd/agent-sign sign "$key" "$a"; done
+          if [ -n "$AGENT_UPDATE_PUBKEY" ]; then
+            for a in dist/agent-amd64 dist/agent-arm64; do go run ./cmd/agent-sign verify "$AGENT_UPDATE_PUBKEY" "$a"; done
+          fi
+          # Built into the panel image beside the binaries, so a panel update pushes them.
+          cp dist/agent-*.sig docker/agent-sigs/
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum agent-* > SHA256SUMS && cat SHA256SUMS
+
+      - name: Build and push the panel image
+        run: |
+          prefix="${{ steps.meta.outputs.prefix }}" version="${{ steps.meta.outputs.version }}"
+          tags=(-t "$prefix-panel:$version")
+          [ "${{ steps.meta.outputs.prerelease }}" = true ] || tags+=(-t "$prefix-panel:latest")
+          docker buildx build -f Dockerfile.panel --platform "$PLATFORMS" "${tags[@]}" \
+            --build-arg AGENT_ARM64=1 \
+            --build-arg GIT_COMMIT="$GITHUB_SHA" \
+            --build-arg BUILD_TIME="${{ steps.meta.outputs.build_time }}" \
+            --build-arg APP_VERSION="$version" \
+            --label org.opencontainers.image.source="https://github.com/$GITHUB_REPOSITORY" \
+            --label org.opencontainers.image.version="$version" \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" \
+            --push .
+
+      - name: Build and push the web image
+        run: |
+          prefix="${{ steps.meta.outputs.prefix }}" version="${{ steps.meta.outputs.version }}"
+          tags=(-t "$prefix-web:$version")
+          [ "${{ steps.meta.outputs.prerelease }}" = true ] || tags+=(-t "$prefix-web:latest")
+          docker buildx build -f Dockerfile.web --platform "$PLATFORMS" "${tags[@]}" \
+            --build-arg API_BASE_URL=http://panel:8080 \
+            --build-arg ENFORCE_API_BASE_URL=1 \
+            --label org.opencontainers.image.source="https://github.com/$GITHUB_REPOSITORY" \
+            --label org.opencontainers.image.version="$version" \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" \
+            --push .
+
+      - name: Check the panel image bundles the released agents
+        run: |
+          image="${{ steps.meta.outputs.prefix }}-panel:${{ steps.meta.outputs.version }}"
+          for platform in ${PLATFORMS//,/ }; do
+            id="$(docker create --platform "$platform" "$image")"
+            for a in agent-amd64 agent-arm64; do
+              docker cp "$id:/app/bin/linux/$a" "$RUNNER_TEMP/$a"
+              cmp "$RUNNER_TEMP/$a" "dist/$a" || { echo "$platform image carries a different $a" >&2; exit 1; }
+            done
+            docker rm "$id" > /dev/null
+          done
+
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${{ steps.meta.outputs.version }}"
+          scripts/release-notes.sh "$version" "${{ steps.meta.outputs.prefix }}" > "$RUNNER_TEMP/notes.md"
+          flags=(--draft --title "MaburVM $version" --notes-file "$RUNNER_TEMP/notes.md")
+          [ "${{ steps.meta.outputs.prerelease }}" = false ] || flags+=(--prerelease)
+          gh release create "$version" "${flags[@]}" dist/*

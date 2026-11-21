@@ -306,6 +306,9 @@ func (s *Server) SetupRoutes() {
 	// User management routes
 	s.setupUserRoutes(v1)
 
+	// Staff roles and their permissions
+	s.setupStaffRoleRoutes(v1)
+
 	// Dashboard routes
 	s.setupDashboardRoutes(v1)
 
@@ -336,8 +339,17 @@ func (s *Server) setupHealthRoutes() {
 	// /readyz performs dependency readiness checks.
 	s.echo.GET("/readyz", s.readinessHandler)
 
-	// Prometheus scrape endpoint; off unless METRICS_TOKEN is set.
-	s.echo.GET("/metrics", metricsHandler(s.cfg.Server.MetricsToken, s.db))
+	// Prometheus scrape endpoint; off unless a metrics token is set (System
+	// settings, Panel, or METRICS_TOKEN), read per scrape.
+	s.echo.GET("/metrics", metricsHandler(s.metricsToken, s.db))
+}
+
+// metricsToken is the scrape token in force: System settings, Panel, else METRICS_TOKEN.
+func (s *Server) metricsToken() string {
+	if v, src := service.PanelValue("metricsToken"); src != "" {
+		return v
+	}
+	return s.cfg.Server.MetricsToken
 }
 
 // livenessHandler reports that the process is up. It intentionally performs NO
@@ -467,16 +479,46 @@ func (s *Server) setupAuthRoutes(g *echo.Group) {
 	auth.POST("/reset-password", authHandler.ResetPassword, panelMiddleware.LoginRateLimiter())
 	auth.POST("/logout", authHandler.Logout, panelMiddleware.DropSessionCookie, panelMiddleware.RequireAuth(s.db))
 	auth.GET("/me", authHandler.Me, panelMiddleware.RequireAuth(s.db))
+	auth.POST("/impersonation/end", authHandler.EndImpersonation, panelMiddleware.RequireAuth(s.db))
 	auth.GET("/client-ip", authHandler.ClientIP)
 
-	// Optional "Sign in with SSO" (OIDC_* settings); nil when not configured.
+	// Optional "Sign in with SSO": on while System settings, Panel (or OIDC_*)
+	// holds an issuer, client ID and secret.
 	oidc := handler.NewOIDCHandler(s.cfg.OIDC, userService)
 	auth.GET("/oidc/config", oidc.Config)
-	if oidc != nil {
-		auth.GET("/oidc/login", oidc.Login, panelMiddleware.LoginRateLimiter())
-		auth.GET("/oidc/callback", oidc.Callback, panelMiddleware.LoginRateLimiter())
-		auth.POST("/oidc/2fa", oidc.Verify2FA, panelMiddleware.LoginRateLimiter())
-	}
+	auth.GET("/oidc/login", oidc.Login, panelMiddleware.LoginRateLimiter())
+	auth.GET("/oidc/callback", oidc.Callback, panelMiddleware.LoginRateLimiter())
+	auth.POST("/oidc/2fa", oidc.Verify2FA, panelMiddleware.LoginRateLimiter())
+	// One-click sign-in links the billing module asks for (billing event user.sso).
+	auth.GET("/billing-sso", oidc.BillingSSO, panelMiddleware.LoginRateLimiter())
+
+	// The first administrator of a new install, created with the one-time
+	// token the installer prints. Closed for good once an administrator exists.
+	auth.GET("/first-run", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]bool{"open": service.FirstRunOpen(c.Request().Context(), s.db)}})
+	})
+	auth.POST("/first-run", func(c echo.Context) error {
+		var req struct {
+			Token    string `json:"token"`
+			Name     string `json:"name"`
+			Email    string `json:"email"`
+			Password string `json:"password"`
+		}
+		if err := c.Bind(&req); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request body"})
+		}
+		user, err := service.CreateFirstAdmin(c.Request().Context(), s.db, req.Token, req.Name, req.Email, req.Password)
+		switch {
+		case errors.Is(err, service.ErrFirstRunClosed):
+			return c.JSON(http.StatusConflict, map[string]interface{}{"error": err.Error()})
+		case errors.Is(err, service.ErrFirstRunToken):
+			return c.JSON(http.StatusForbidden, map[string]interface{}{"error": err.Error()})
+		case err != nil:
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": upperFirst(err.Error())})
+		}
+		slog.Default().Info("first administrator created", "user_id", user.ID, "ip", c.RealIP())
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]string{"email": user.Email}})
+	}, panelMiddleware.LoginRateLimiter())
 }
 
 // setupNodeRoutes configures node-related routes
@@ -520,6 +562,12 @@ func (s *Server) setupNodeRoutes(g *echo.Group) {
 
 	// Get node metrics - requires node:read permission
 	nodes.GET("/:id/metrics", nodeHandler.GetNodeMetrics, panelMiddleware.RequirePermission("node:read"))
+
+	// Host preflight: the stored report, and asking the node again (which
+	// replaces the stored report, so it takes a write permission).
+	nodes.GET("/:id/preflight", nodeHandler.GetPreflight, panelMiddleware.RequirePermission("node:read"))
+	nodes.POST("/:id/preflight", nodeHandler.RunPreflight, panelMiddleware.RequirePermission("node:update"))
+	nodes.GET("/:id/agent-settings", nodeHandler.GetAgentSettings, panelMiddleware.RequirePermission("node:read"))
 }
 
 // setupVMRoutes configures VM-related routes
@@ -645,13 +693,13 @@ func (s *Server) setupStorageRoutes(g *echo.Group) {
 	storage := g.Group("/storage")
 	storage.Use(panelMiddleware.RequireAuth(s.db))
 
-	storage.GET("/pools", storageHandler.GetPools)
-	storage.GET("/pools/:id", storageHandler.GetPoolByID)
+	storage.GET("/pools", storageHandler.GetPools, panelMiddleware.RequirePermission("node:read"))
+	storage.GET("/pools/:id", storageHandler.GetPoolByID, panelMiddleware.RequirePermission("node:read"))
 	storage.POST("/pools", storageHandler.CreatePool, panelMiddleware.RequirePermission("storage:create"))
 	storage.PUT("/pools/:id", storageHandler.UpdatePool, panelMiddleware.RequirePermission("storage:update"))
 	storage.DELETE("/pools/:id", storageHandler.DeletePool, panelMiddleware.RequirePermission("storage:delete"))
 
-	storage.GET("/pools/:poolId/volumes", storageHandler.GetVolumes)
+	storage.GET("/pools/:poolId/volumes", storageHandler.GetVolumes, panelMiddleware.RequirePermission("node:read"))
 	storage.POST("/pools/:poolId/volumes", storageHandler.CreateVolume, panelMiddleware.RequirePermission("storage:create"))
 	storage.DELETE("/pools/:poolId/volumes/:volumeId", storageHandler.DeleteVolume, panelMiddleware.RequirePermission("storage:delete"))
 }
@@ -685,7 +733,7 @@ func (s *Server) setupNetworkRoutes() {
 	mnService := service.NewManagedNetworkService(s.db)
 	networks := s.echo.Group("/api/v1/networks")
 	networks.Use(panelMiddleware.RequireAuth(s.db))
-	networks.GET("", s.handleListManagedNetworks(managedNetRepo))
+	networks.GET("", s.handleListManagedNetworks(managedNetRepo), panelMiddleware.RequirePermission("network:read"))
 	networks.POST("", func(c echo.Context) error {
 		var net models.ManagedNetwork
 		if err := c.Bind(&net); err != nil {
@@ -728,6 +776,10 @@ func (s *Server) setupPlanRoutes() {
 	planRepo := repository.NewPlanRepository(s.db)
 	planService := service.NewPlanService(planRepo)
 	planHandler := handler.NewPlanHandler(planService)
+	vmRepo, nodeRepo := repository.NewVMRepository(s.db), repository.NewNodeRepository(s.db)
+	planHandler.SetRollout(
+		service.NewVMService(s.db, vmRepo, nodeRepo, repository.NewTemplateRepository(s.db), s.riverClient, slog.Default()),
+		service.NewNetworkService(s.db, repository.NewNetworkRepository(s.db), repository.NewFirewallRepository(s.db), vmRepo, nodeRepo, s.riverClient))
 	handler.RegisterPlanRoutes(s.echo, planHandler, s.db)
 }
 
@@ -755,12 +807,10 @@ func (s *Server) setupRecipeRoutes() {
 	handler.RegisterRecipeRoutes(s.echo, recipeHandler, s.db)
 }
 
-// setupProvisionRoutes serves the node bootstrap installer + prebuilt agent
-// binary so a new node can be enrolled with a single copy-paste command.
+// setupProvisionRoutes serves the installer for new nodes, the agent binary it
+// installs and the single-use enrollment behind the Add node install command.
 func (s *Server) setupProvisionRoutes() {
-	binaryDir := os.Getenv("AGENT_BINARY_DIR")
-	publicURL := os.Getenv("PANEL_PUBLIC_URL")
-	handler.RegisterProvisionRoutes(s.echo, handler.NewProvisionHandler(binaryDir, publicURL))
+	handler.RegisterProvisionRoutes(s.echo, handler.NewProvisionHandler(s.db, os.Getenv("AGENT_BINARY_DIR"), ""))
 }
 
 // setupQuotaRoutes configures per-user resource quota routes.
@@ -914,6 +964,7 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to list users"})
 		}
+		s.fillStaffRoles(c.Request().Context(), userList)
 		total, err := userRepo.CountFiltered(c.Request().Context(), search, role)
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to count users"})
@@ -936,7 +987,9 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 		if err != nil {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "User not found"})
 		}
-		return c.JSON(http.StatusOK, map[string]interface{}{"data": user})
+		one := []models.User{*user}
+		s.fillStaffRoles(c.Request().Context(), one)
+		return c.JSON(http.StatusOK, map[string]interface{}{"data": one[0]})
 	})
 
 	users.POST("", func(c echo.Context) error {
@@ -947,6 +1000,8 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 			Role             models.UserRole `json:"role"`
 			IPWhitelist      []string        `json:"ip_whitelist"`
 			SendWelcomeEmail bool            `json:"send_welcome_email"`
+			// StaffRole is a new staff account's role; Administrator when empty.
+			StaffRole string `json:"staff_role"`
 		}
 		if err := c.Bind(&req); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request body"})
@@ -1009,7 +1064,7 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 			// Best-effort welcome email (never fails the creation).
 			if req.SendWelcomeEmail {
 				if cfg, ok, serr := service.LoadSMTPSettings(s.db); serr == nil && ok {
-					if werr := service.QueueWelcomeEmail(ctx, s.db, cfg, client.Email, client.Name, os.Getenv("PANEL_PUBLIC_URL")); werr != nil {
+					if werr := service.QueueWelcomeEmail(ctx, s.db, cfg, client.Email, client.Name, service.PublicURL()); werr != nil {
 						slog.Default().Warn("welcome email failed", "email", client.Email, "error", werr)
 					}
 				} else {
@@ -1026,6 +1081,15 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 		caller, ok := panelMiddleware.GetUserContext(c)
 		if !ok || caller.Role != models.RoleAdmin {
 			return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "Insufficient permissions"})
+		}
+		if req.StaffRole != "" {
+			r, found := panelMiddleware.LookupStaffRole(ctx, s.db, req.StaffRole)
+			if !found || req.StaffRole == panelMiddleware.StaffRoleOwner {
+				return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "unknown_role", "message": "Choose one of the roles on the Staff roles page"})
+			}
+			if !panelMiddleware.CanGrant(caller.Permissions, r.Permissions) {
+				return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "cannot_grant", "message": "You can only give a role whose permissions you hold yourself"})
+			}
 		}
 
 		var created models.User
@@ -1054,6 +1118,12 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 			}
 			if err := repo.Create(ctx, &created); err != nil {
 				return fmt.Errorf("create: %w", err)
+			}
+			if req.StaffRole != "" {
+				if err := tx.Table("users").Where("id = ?", created.ID).Update("staff_role", req.StaffRole).Error; err != nil {
+					return fmt.Errorf("staff role: %w", err)
+				}
+				created.StaffRole = &req.StaffRole
 			}
 			return nil
 		})
@@ -1255,6 +1325,7 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 	}, panelMiddleware.RequirePermission("user:update"))
 
 	s.setupUserAccountRoutes(users, userRepo)
+	s.setupStaffAccountRoutes(users, userRepo)
 
 	// Suspend a customer account without deleting it, and lift it again.
 	// with_vms does the same to the account's VMs.
@@ -1428,7 +1499,7 @@ func (s *Server) setupDashboardRoutes(g *echo.Group) {
 	// Admin-only: these stats are fleet-wide (all nodes/VMs) and include recent
 	// audit-log entries across all tenants. Clients use their own /client
 	// dashboard, which is scoped to their VMs.
-	dashboard.Use(panelMiddleware.RequirePermission("admin:access"))
+	dashboard.Use(panelMiddleware.RequirePermission(panelMiddleware.PermStaff))
 
 	dashboard.GET("/stats", func(c echo.Context) error {
 		ctx := c.Request().Context()
@@ -1446,8 +1517,11 @@ func (s *Server) setupDashboardRoutes(g *echo.Group) {
 		// Recent activity (last 10 audit logs), enriched for display with the
 		// actor's email and a human-readable resource name so the feed doesn't
 		// show bare UUIDs / "user".
-		recentLogs, _ := auditRepo.List(ctx, 10, 0)
-		recentActivity := enrichActivity(s.db, recentLogs)
+		recentActivity := []activityEntry{}
+		if u, _ := panelMiddleware.GetUserContext(c); u.Can("audit:read") {
+			recentLogs, _ := auditRepo.List(ctx, 10, 0)
+			recentActivity = enrichActivity(s.db, recentLogs)
+		}
 
 		// Calculate utilization
 		var utilization float64
@@ -1863,9 +1937,11 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "2FA disabled"})
 	})
 
-	// System settings (admin-only): one JSON row per section in system_settings.
+	s.setupOwnSessionRoutes(settings)
+
+	// System settings (staff): one JSON row per section in system_settings.
 	sys := settings.Group("/system")
-	sys.Use(panelMiddleware.RequirePermission("admin:access"))
+	sys.Use(panelMiddleware.RequireByMethod("settings:read", "settings:update"))
 	sys.GET("", func(c echo.Context) error {
 		type settingRow struct {
 			Section string
@@ -1875,7 +1951,7 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		if err := s.db.WithContext(c.Request().Context()).
 			// The nameserver connection holds a credential and has its own
 			// endpoints below that never return it.
-			Raw("SELECT section, data::text AS data FROM system_settings WHERE section NOT IN (?, ?, ?, ?, ?)", service.DNSProviderSection, service.BrandingSection, service.EmailTemplatesSection, service.BackupDestinationSection, service.AlertSettingsSection).Scan(&rows).Error; err != nil {
+			Raw("SELECT section, data::text AS data FROM system_settings WHERE section NOT IN (?)", ownFormSections).Scan(&rows).Error; err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to load settings"})
 		}
 		out := map[string]json.RawMessage{}
@@ -1904,6 +1980,9 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 			}
 			if section == service.AlertSettingsSection {
 				return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Alerts are saved on the Alerts page"})
+			}
+			if section == service.PanelSettingsSection || section == BackupMarkerSection {
+				return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Panel settings are saved through their own form"})
 			}
 			if section == queue.BackupPolicySection {
 				var p queue.BackupPolicy
@@ -1978,6 +2057,25 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{"iso_url": iso, "source": source}})
 	})
 
+	// Panel-wide settings that used to be environment variables: each value in
+	// force, where it comes from, and secrets only as "set".
+	sys.GET("/panel", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": service.PanelSettingsStatus()})
+	})
+	// A key left out stays as it is; an empty value hands the setting back to
+	// its environment variable. Applies at once, no restart. Owner-level: the
+	// SSO issuer decides who can sign in as anyone, and the billing key acts on VMs.
+	sys.PUT("/panel", func(c echo.Context) error {
+		var body map[string]*string
+		if err := json.NewDecoder(c.Request().Body).Decode(&body); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Invalid request body"})
+		}
+		if err := service.SavePanelSettings(c.Request().Context(), s.db, body); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": upperFirst(err.Error())})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": service.PanelSettingsStatus()})
+	}, panelMiddleware.RequirePermission(panelMiddleware.PermStaffManage))
+
 	// Branding (admin-only save). Reading it is public; see /api/v1/branding.
 	sys.PUT("/branding", func(c echo.Context) error {
 		var b service.Branding
@@ -2022,7 +2120,7 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 			logo = "no_logo"
 		case strings.HasPrefix(brand.Logo, "data:image/svg"):
 			logo = "svg"
-		case os.Getenv("PANEL_PUBLIC_URL") == "":
+		case service.PublicURL() == "":
 			logo = "no_public_url"
 		}
 		_, smtpReady, _ := service.LoadSMTPSettings(s.db.WithContext(c.Request().Context()))
@@ -2040,7 +2138,7 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		}
 		return service.RenderEmail(t, brand, service.EmailData{
 			Name: def.Sample["name"], Email: email, Link: def.SampleLink, Extra: def.Sample,
-			LogoURL: service.EmailLogoURL(brand, os.Getenv("PANEL_PUBLIC_URL")),
+			LogoURL: service.EmailLogoURL(brand, service.PublicURL()),
 		})
 	}
 	emailTpl.PUT("/:key", func(c echo.Context) error {
@@ -2301,7 +2399,20 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 
 // settingSecretKeys are the system-settings fields that hold credentials. They
 // go in through the settings form and never come back out.
-var settingSecretKeys = []string{"smtpPassword", "hmacSecret", "abuseipdbToken"}
+var settingSecretKeys = []string{"smtpPassword", "hmacSecret", "abuseipdbToken", "captchaSecret",
+	"billingApiKey", "billingWebhookSecret", "metricsToken", "oidcClientSecret"}
+
+// ownFormSections are settings rows with endpoints of their own, kept out of
+// the generic GET and PUT /settings/system.
+var ownFormSections = []string{service.DNSProviderSection, service.BrandingSection, service.EmailTemplatesSection,
+	service.BackupDestinationSection, service.AlertSettingsSection, service.PanelSettingsSection, BackupMarkerSection}
+
+func upperFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
 
 // maskSettingSecrets blanks credential fields in one settings section and adds
 // "<key>Set": true so the form can say a value is stored.
@@ -2397,7 +2508,7 @@ func (s *Server) setupNotificationRoutes(g *echo.Group) {
 		if !ok {
 			return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Not authenticated"})
 		}
-		if userCtx.Role == models.RoleAdmin {
+		if userCtx.Role == models.RoleAdmin && userCtx.Can("audit:read") {
 			logs, _ := auditRepo.List(ctx, 20, 0)
 			return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": logs})
 		}
@@ -2521,6 +2632,15 @@ func Run() error {
 		slog.Default().Error("encrypting stored credentials: some could not be processed", "encrypted", n, "error", err)
 	} else if n > 0 {
 		slog.Default().Info("encrypted stored credentials under the current AES key", "count", n)
+	}
+	// Settings that override their environment variables (System settings, Panel).
+	if err := service.LoadPanelSettings(context.Background(), db); err != nil {
+		slog.Default().Error("panel settings could not be read; the environment applies", "error", err)
+	}
+	if open, err := service.PrepareFirstRun(context.Background(), db); err != nil {
+		slog.Default().Error("first-run setup could not be prepared", "error", err)
+	} else if open {
+		slog.Default().Warn("this panel has no administrator yet: open /first-run with the token in first-run-token on the data volume (scripts/install-panel.sh prints the link)")
 	}
 
 	// Initialize River queue before routes are registered so services receive a non-nil client.

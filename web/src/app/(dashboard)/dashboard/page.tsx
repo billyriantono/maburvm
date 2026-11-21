@@ -1,6 +1,7 @@
 'use client'
 
 import { useDismissSetup, useSetup } from "@/lib/hooks/use-ops"
+import { useCan } from "@/lib/hooks/use-auth"
 import { useBranding } from "@/lib/branding/provider"
 import Link from 'next/link'
 import { useDashboardStats, useDashboardOverview, type DashboardNode } from '@/lib/hooks/use-dashboard'
@@ -222,6 +223,7 @@ export default function DashboardPage() {
   const { branding } = useBranding()
   const { data: stats } = useDashboardStats()
   const { data: o, isLoading, error, refetch } = useDashboardOverview()
+  const can = useCan()
 
   const head = (sub: React.ReactNode) => (
     <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
@@ -321,7 +323,7 @@ export default function DashboardPage() {
           carrying what, and one shared chart would hide each node's own shape. */}
       <NodeBandwidthSection />
 
-      <section aria-labelledby="recent-activity" className="rounded-lg border bg-card text-card-foreground">
+      {can('audit:read') && <section aria-labelledby="recent-activity" className="rounded-lg border bg-card text-card-foreground">
         <div className="flex items-center justify-between border-b border-hair px-5 py-3">
           <h2 id="recent-activity" className="text-sm font-semibold">Recent activity</h2>
           <Link href="/audit-logs" className="text-sm font-semibold underline underline-offset-4">Audit log</Link>
@@ -341,7 +343,7 @@ export default function DashboardPage() {
         ) : (
           <p className="px-5 py-4 text-sm text-muted-foreground">Nothing recorded yet. Actions on VMs appear here as they happen.</p>
         )}
-      </section>
+      </section>}
     </div>
   )
 }

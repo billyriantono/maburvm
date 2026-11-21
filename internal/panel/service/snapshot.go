@@ -114,6 +114,10 @@ func (s *SnapshotService) CreateSnapshot(ctx context.Context, req *CreateSnapsho
 	if count >= MaxSnapshotsPerVM {
 		return nil, ErrVMSnapshotLimitReached
 	}
+	if err := checkVMAllowance(ctx, s.db, vm, count, func(p *models.Plan) *int { return p.MaxSnapshots },
+		"snapshot", "snapshots", "Delete one to take another."); err != nil {
+		return nil, err
+	}
 
 	// Check if there's already a pending snapshot operation for this VM
 	pendingSnapshots, err := s.snapshotRepo.ListByStatus(ctx, models.SnapshotStatusPending, 0, 0)

@@ -181,7 +181,7 @@ func RegisterBandwidthRoutes(e *echo.Echo, h *BandwidthHandler, db *gorm.DB) {
 	bwGroup := e.Group("/api/v1/vms/:id/bandwidth")
 	bwGroup.Use(middleware.RequireAuth(db))
 
-	bwGroup.GET("", h.GetVMBandwidth)
-	bwGroup.GET("/history", h.GetVMBandwidthHistory)
-	bwGroup.PUT("/quota", h.SetVMBandwidthQuota)
+	bwGroup.GET("", h.GetVMBandwidth, middleware.RequirePermission("vm:read"))
+	bwGroup.GET("/history", h.GetVMBandwidthHistory, middleware.RequirePermission("vm:read"))
+	bwGroup.PUT("/quota", h.SetVMBandwidthQuota, middleware.RequirePermission("vm:update"))
 }

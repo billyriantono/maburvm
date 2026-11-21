@@ -1,5 +1,6 @@
 "use client"
 
+import { useCan } from "@/lib/hooks/use-auth"
 import { useState, useCallback, useEffect } from "react"
 import { useParams, useRouter } from "next/navigation"
 import Link from "next/link"
@@ -1224,6 +1225,8 @@ function FirewallPolicy({ vm, isAdmin, ruleCount, onDefault, onSMTP }: {
 // console repair), the data disks, and anything that names a node.
 export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const isAdmin = mode === "admin"
+  // What the signed-in role may do to this VM; the panel checks each request too.
+  const allow = useCan()
   const basePath = isAdmin ? "/vms" : "/client/vms"
   const backLabel = isAdmin ? "Back to VMs" : "Back to my VMs"
   const rebuildWord = isAdmin ? "Rebuild" : "Reinstall"
@@ -1706,7 +1709,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const locked = !isAdmin && suspended
   // The node is offline: power actions would only fail, and the state is a guess.
   const stateUnknown = !!vm.state_unknown
-  const powerBusy = locked || stateUnknown || actionLoading !== null || !!transitionOf(vm.id)
+  const powerBusy = locked || stateUnknown || actionLoading !== null || !!transitionOf(vm.id) || !allow("vm:power")
   // A text button beside a value people paste elsewhere.
   const copyLink = (text: string, key: string, what: string) => (
     <button
@@ -1812,6 +1815,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                 Start
               </Button>
             )}
+            {allow("vm:console") && (
             <Button
               variant="outline"
               size="sm"
@@ -1819,7 +1823,8 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
             >
               Console
             </Button>
-            {isAdmin && (
+            )}
+            {isAdmin && allow("vm:lifecycle") && (
               <Button
                 variant="outline"
                 size="sm"
@@ -2561,7 +2566,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                   Exit rescue
                 </Button>
               ) : (
-                <Button variant="outline" size="sm" onClick={handleRescue} disabled={locked || rescueVM.isPending || vm.status === "running" || vm.rescue_available === false}>
+                <Button variant="outline" size="sm" onClick={handleRescue} disabled={locked || !allow("vm:rescue") || rescueVM.isPending || vm.status === "running" || vm.rescue_available === false}>
                   {rescueVM.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <LifeBuoy className="w-4 h-4" />}
                   Enter rescue
                 </Button>
@@ -3192,7 +3197,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
               Danger zone
             </h2>
             <ActionRow title={rebuildWord} description="Reinstall the operating system. Everything on the disk is erased; the VM keeps its addresses.">
-              <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => setRebuildDialogOpen(true)} disabled={locked}>
+              <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => setRebuildDialogOpen(true)} disabled={locked || !allow("vm:lifecycle")}>
                 <RefreshCw className="w-4 h-4" />{rebuildWord}
               </Button>
             </ActionRow>
@@ -3200,7 +3205,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
               <ActionRow title="Delete" description="This server is managed by your billing account. Cancel the service there to remove it." />
             ) : (
             <ActionRow title="Delete" description="Remove this VM and its disks for good and release its addresses.">
-              <Button variant="destructive" size="sm" onClick={() => setDeleteDialogOpen(true)}>
+              <Button variant="destructive" size="sm" onClick={() => setDeleteDialogOpen(true)} disabled={!allow("vm:delete")}>
                 <Trash2 className="w-4 h-4" />Delete
               </Button>
             </ActionRow>

@@ -15,7 +15,8 @@ import (
 // RegisterAlertRoutes serves the operator alert history and its settings.
 // Staff only: an alert names nodes, pools and other customers' servers.
 func RegisterAlertRoutes(e *echo.Echo, db *gorm.DB, alerts *service.AlertService) {
-	admin := []echo.MiddlewareFunc{middleware.RequireAuth(db), middleware.RequirePermission("admin:access")}
+	auth := middleware.RequireAuth(db)
+	perm := middleware.RequirePermission
 	refused := func(c echo.Context, err error) error {
 		if errors.Is(err, service.ErrAlertSettings) {
 			msg := strings.TrimPrefix(err.Error(), service.ErrAlertSettings.Error()+": ")
@@ -34,7 +35,7 @@ func RegisterAlertRoutes(e *echo.Echo, db *gorm.DB, alerts *service.AlertService
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{
 			"alerts": rows, "total": total, "page": page, "page_size": size,
 		}})
-	}, admin...)
+	}, auth, perm("ops:read"))
 
 	e.POST("/api/v1/alerts/:id/close", func(c echo.Context) error {
 		err := gorm.ErrRecordNotFound // an id that is no id names no alert
@@ -48,11 +49,11 @@ func RegisterAlertRoutes(e *echo.Echo, db *gorm.DB, alerts *service.AlertService
 			return refused(c, err)
 		}
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{"closed": true}})
-	}, admin...)
+	}, auth, perm("ops:update"))
 
 	e.GET("/api/v1/settings/system/alerts", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": alerts.Status(c.Request().Context())})
-	}, admin...)
+	}, auth, perm("settings:read"))
 
 	e.PUT("/api/v1/settings/system/alerts", func(c echo.Context) error {
 		var in service.AlertSettingsInput
@@ -63,7 +64,7 @@ func RegisterAlertRoutes(e *echo.Echo, db *gorm.DB, alerts *service.AlertService
 			return refused(c, err)
 		}
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": alerts.Status(c.Request().Context())})
-	}, admin...)
+	}, auth, perm("settings:update"))
 
 	// Sends with the form as it stands, saved or not, and says how each channel answered.
 	e.POST("/api/v1/settings/system/alerts/test", func(c echo.Context) error {
@@ -76,5 +77,5 @@ func RegisterAlertRoutes(e *echo.Echo, db *gorm.DB, alerts *service.AlertService
 			return refused(c, err)
 		}
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{"results": results}})
-	}, admin...)
+	}, auth, perm("settings:update"))
 }

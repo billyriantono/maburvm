@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/mail"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -171,7 +170,7 @@ func (s *AlertService) resolve(ctx context.Context, st storedAlertSettings) aler
 		webhookSecret:       s.decrypt(st.WebhookSecretEnc),
 		cooldown:            time.Duration(st.CooldownMinutes) * time.Minute,
 		brand:               LoadBranding(s.db.WithContext(ctx)).Name,
-		publicURL:           strings.TrimRight(strings.TrimSpace(os.Getenv("PANEL_PUBLIC_URL")), "/"),
+		publicURL:           PublicURL(),
 	}
 }
 

@@ -28,7 +28,7 @@ func NewAbuseHandler(s *service.AbuseService, audit *repository.AuditRepository)
 func RegisterAbuseRoutes(e *echo.Echo, h *AbuseHandler, db *gorm.DB) {
 	g := e.Group("/api/v1/abuse")
 	g.Use(middleware.RequireAuth(db))
-	g.Use(middleware.RequirePermission("admin:access"))
+	g.Use(middleware.RequireByMethod("network:read", "network:update"))
 
 	g.GET("/guests", h.ListGuests)
 	g.POST("/guests/quarantine", h.SetQuarantine)

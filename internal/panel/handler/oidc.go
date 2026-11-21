@@ -18,7 +18,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +27,7 @@ import (
 	"github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/panel/service"
 	"github.com/maburvm/panel/internal/shared/config"
+	"github.com/maburvm/panel/internal/shared/models"
 )
 
 const (
@@ -38,57 +38,89 @@ const (
 )
 
 type OIDCHandler struct {
-	cfg         config.OIDCConfig
-	redirectURL string
-	users       *service.UserService
-	http        *http.Client
+	// base supplies the redirect URL and scopes; issuer, client and label are
+	// read per request (System settings, Panel, else OIDC_*).
+	base  config.OIDCConfig
+	users *service.UserService
+	http  *http.Client
 
-	once                       sync.Once
-	authURL, tokenURL, userURL string
-	discoveryErr               error
+	mu            sync.Mutex
+	discoveredFor string
+	endpoints     oidcEndpoints
 }
 
-// NewOIDCHandler returns nil when SSO isn't configured.
+type oidcEndpoints struct{ auth, token, user string }
+
+// NewOIDCHandler returns the SSO handler. SSO is on while issuer, client ID
+// and client secret are all set, so it can be turned on from the panel
+// without a restart.
 func NewOIDCHandler(cfg config.OIDCConfig, users *service.UserService) *OIDCHandler {
-	if !cfg.Enabled() {
-		return nil
-	}
-	redirect := cfg.RedirectURL
-	if redirect == "" {
-		redirect = strings.TrimRight(os.Getenv("PANEL_PUBLIC_URL"), "/") + oidcCookiePath + "/callback"
-	}
-	return &OIDCHandler{cfg: cfg, redirectURL: redirect, users: users, http: &http.Client{Timeout: 15 * time.Second}}
+	return &OIDCHandler{base: cfg, users: users, http: &http.Client{Timeout: 15 * time.Second}}
 }
 
-// Config tells the login page whether to show the SSO button. Safe on a nil
-// handler (SSO off).
+// current is the SSO configuration in force now.
+func (h *OIDCHandler) current() config.OIDCConfig {
+	c := h.base
+	c.Issuer, _ = service.PanelValue("oidcIssuer")
+	c.ClientID, _ = service.PanelValue("oidcClientId")
+	c.ClientSecret, _ = service.PanelValue("oidcClientSecret")
+	c.ButtonLabel, _ = service.PanelValue("oidcButtonLabel")
+	return c
+}
+
+func (h *OIDCHandler) redirectURL(c config.OIDCConfig) string {
+	if c.RedirectURL != "" {
+		return c.RedirectURL
+	}
+	return service.PublicURL() + oidcCookiePath + "/callback"
+}
+
+// Config tells the login page whether to show the SSO button.
 func (h *OIDCHandler) Config(c echo.Context) error {
-	if h == nil {
+	cfg := h.current()
+	if !cfg.Enabled() {
 		return c.JSON(http.StatusOK, map[string]any{"enabled": false})
 	}
-	return c.JSON(http.StatusOK, map[string]any{"enabled": true, "label": h.cfg.ButtonLabel})
+	return c.JSON(http.StatusOK, map[string]any{"enabled": true, "label": cfg.ButtonLabel})
 }
 
-func (h *OIDCHandler) discover(ctx context.Context) error {
-	h.once.Do(func() {
-		var d struct {
-			Auth  string `json:"authorization_endpoint"`
-			Token string `json:"token_endpoint"`
-			User  string `json:"userinfo_endpoint"`
-		}
-		issuer := strings.TrimRight(h.cfg.Issuer, "/")
-		h.discoveryErr = h.getJSON(ctx, issuer+"/.well-known/openid-configuration", "", &d)
-		h.authURL, h.tokenURL, h.userURL = d.Auth, d.Token, d.User
-		if h.discoveryErr == nil && (d.Auth == "" || d.Token == "" || d.User == "") {
-			h.discoveryErr = errors.New("incomplete OIDC discovery document")
-		}
-	})
-	return h.discoveryErr
+// discover returns the provider's endpoints, read once per issuer. A failure
+// is not kept, so a provider that was briefly down works on the next attempt.
+// Returned rather than re-read later, so a request never mixes two issuers.
+func (h *OIDCHandler) discover(ctx context.Context, issuer string) (oidcEndpoints, error) {
+	issuer = strings.TrimRight(issuer, "/")
+	h.mu.Lock()
+	ep, done := h.endpoints, h.discoveredFor == issuer
+	h.mu.Unlock()
+	if done {
+		return ep, nil
+	}
+	var d struct {
+		Auth  string `json:"authorization_endpoint"`
+		Token string `json:"token_endpoint"`
+		User  string `json:"userinfo_endpoint"`
+	}
+	if err := h.getJSON(ctx, issuer+"/.well-known/openid-configuration", "", &d); err != nil {
+		return oidcEndpoints{}, err
+	}
+	if d.Auth == "" || d.Token == "" || d.User == "" {
+		return oidcEndpoints{}, errors.New("incomplete OIDC discovery document")
+	}
+	ep = oidcEndpoints{auth: d.Auth, token: d.Token, user: d.User}
+	h.mu.Lock()
+	h.discoveredFor, h.endpoints = issuer, ep
+	h.mu.Unlock()
+	return ep, nil
 }
 
 // Login sends the browser to the provider.
 func (h *OIDCHandler) Login(c echo.Context) error {
-	if err := h.discover(c.Request().Context()); err != nil {
+	cfg := h.current()
+	if !cfg.Enabled() {
+		return c.Redirect(http.StatusFound, "/login?sso=error")
+	}
+	ep, err := h.discover(c.Request().Context(), cfg.Issuer)
+	if err != nil {
 		slog.Default().Error("oidc discovery failed", "error", err)
 		return c.Redirect(http.StatusFound, "/login?sso=error")
 	}
@@ -102,15 +134,15 @@ func (h *OIDCHandler) Login(c echo.Context) error {
 		MaxAge: int(oidcStateTTL.Seconds()), HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
 	sum := sha256.Sum256([]byte(st.Verifier))
 	q := url.Values{
-		"client_id":             {h.cfg.ClientID},
+		"client_id":             {cfg.ClientID},
 		"response_type":         {"code"},
-		"scope":                 {h.cfg.Scopes},
-		"redirect_uri":          {h.redirectURL},
+		"scope":                 {cfg.Scopes},
+		"redirect_uri":          {h.redirectURL(cfg)},
 		"state":                 {st.State},
 		"code_challenge":        {base64.RawURLEncoding.EncodeToString(sum[:])},
 		"code_challenge_method": {"S256"},
 	}
-	return c.Redirect(http.StatusFound, h.authURL+"?"+q.Encode())
+	return c.Redirect(http.StatusFound, ep.auth+"?"+q.Encode())
 }
 
 type oidcState struct {
@@ -132,16 +164,24 @@ func (h *OIDCHandler) Callback(c echo.Context) error {
 		slog.Default().Warn("oidc provider returned an error", "error", c.QueryParam("error"))
 		return c.Redirect(http.StatusFound, "/login?sso=error")
 	}
-	if err := h.discover(c.Request().Context()); err != nil {
+	cfg := h.current()
+	if !cfg.Enabled() {
 		return c.Redirect(http.StatusFound, "/login?sso=error")
 	}
-	email, err := h.email(c.Request().Context(), c.QueryParam("code"), st.Verifier)
+	ep, err := h.discover(c.Request().Context(), cfg.Issuer)
+	if err != nil {
+		return c.Redirect(http.StatusFound, "/login?sso=error")
+	}
+	email, err := h.email(c.Request().Context(), cfg, ep, c.QueryParam("code"), st.Verifier)
 	if err != nil {
 		slog.Default().Error("oidc sign-in failed", "error", err)
 		return c.Redirect(http.StatusFound, "/login?sso=error")
 	}
 
-	user, token, needs2FA, err := h.users.SSOLogin(email, c.RealIP())
+	user, token, needs2FA, err := h.users.SSOLogin(email, c.RealIP(), c.Request().UserAgent())
+	if err != nil || !needs2FA {
+		h.recordSignIn(c, user, email, middleware.SignInSSO, err)
+	}
 	switch {
 	case errors.Is(err, service.ErrNoSSOAccount):
 		slog.Default().Warn("sso sign-in refused: no panel user", "email", email, "ip", c.RealIP())
@@ -166,9 +206,26 @@ func (h *OIDCHandler) Callback(c echo.Context) error {
 	return c.Redirect(http.StatusFound, "/dashboard")
 }
 
+// recordSignIn adds an SSO attempt to the account's sign-in history.
+func (h *OIDCHandler) recordSignIn(c echo.Context, user *models.User, email, method string, err error) {
+	e := models.SignInEvent{Email: email, Method: method, Success: err == nil,
+		IPAddress: c.RealIP(), UserAgent: c.Request().UserAgent()}
+	if err != nil {
+		e.Note = signInFailure(err)
+	}
+	if user != nil {
+		e.UserID = &user.ID
+	}
+	service.RecordSignIn(c.Request().Context(), h.users.DB(), e)
+}
+
 type sso2FATicket struct {
 	UserID uuid.UUID `json:"u"`
 	Exp    int64     `json:"e"`
+	// Method is how the sign-in started (SignInSSO when empty); Next the page
+	// it lands on once the code is accepted.
+	Method string `json:"m,omitempty"`
+	Next   string `json:"n,omitempty"`
 }
 
 // Verify2FA completes an SSO sign-in for a user with panel two-factor on.
@@ -185,7 +242,12 @@ func (h *OIDCHandler) Verify2FA(c echo.Context) error {
 	if verifyJSON("sso-2fa", req.Ticket, &t) != nil || time.Now().Unix() > t.Exp {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "This sign-in expired. Start again with SSO."})
 	}
-	user, token, err := h.users.SSOVerify2FA(t.UserID, req.TOTPCode, c.RealIP())
+	method := middleware.SignInSSO
+	if t.Method == middleware.SignInBillingSSO {
+		method = t.Method
+	}
+	user, token, err := h.users.SSOVerify2FA(t.UserID, req.TOTPCode, c.RealIP(), c.Request().UserAgent(), method)
+	h.recordSignIn(c, &models.User{ID: t.UserID}, "", method, err)
 	if locked, out := accountLocked(c, err); locked {
 		return out
 	}
@@ -195,25 +257,28 @@ func (h *OIDCHandler) Verify2FA(c echo.Context) error {
 	case err != nil:
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Invalid 2FA code"})
 	}
-	slog.Default().Info("sso sign-in", "user_id", user.ID, "ip", c.RealIP(), "two_factor", true)
+	slog.Default().Info("sso sign-in", "user_id", user.ID, "ip", c.RealIP(), "two_factor", true, "method", method)
+	if method == middleware.SignInBillingSSO {
+		h.auditBillingSSO(c, user, t.Next, true)
+	}
 	middleware.SetSessionCookie(c, token, h.users.SessionLifetime())
-	return c.JSON(http.StatusOK, LoginResponse{User: user, Token: token, ExpiresIn: int(h.users.SessionLifetime().Seconds())})
+	return c.JSON(http.StatusOK, LoginResponse{User: user, Token: token, ExpiresIn: int(h.users.SessionLifetime().Seconds()), Redirect: t.Next})
 }
 
 // email swaps the code for a token and asks the provider whose it is.
-func (h *OIDCHandler) email(ctx context.Context, code, verifier string) (string, error) {
+func (h *OIDCHandler) email(ctx context.Context, cfg config.OIDCConfig, ep oidcEndpoints, code, verifier string) (string, error) {
 	form := url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
-		"redirect_uri":  {h.redirectURL},
+		"redirect_uri":  {h.redirectURL(cfg)},
 		"code_verifier": {verifier},
 	}
-	req, err := http.NewRequestWithContext(ctx, "POST", h.tokenURL, strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", ep.token, strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetBasicAuth(url.QueryEscape(h.cfg.ClientID), url.QueryEscape(h.cfg.ClientSecret))
+	req.SetBasicAuth(url.QueryEscape(cfg.ClientID), url.QueryEscape(cfg.ClientSecret))
 	var tok struct {
 		AccessToken string `json:"access_token"`
 	}
@@ -224,7 +289,7 @@ func (h *OIDCHandler) email(ctx context.Context, code, verifier string) (string,
 		Email    string `json:"email"`
 		Verified bool   `json:"email_verified"`
 	}
-	if err := h.getJSON(ctx, h.userURL, tok.AccessToken, &info); err != nil {
+	if err := h.getJSON(ctx, ep.user, tok.AccessToken, &info); err != nil {
 		return "", fmt.Errorf("userinfo: %w", err)
 	}
 	if info.Email == "" || !info.Verified {

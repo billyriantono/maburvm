@@ -46,7 +46,7 @@ func TestSignInPolicyDefaultsAndLimits(t *testing.T) {
 		require.NoError(t, db.Exec(`DELETE FROM system_settings`).Error)
 		require.NoError(t, db.Exec(`INSERT INTO system_settings (section, data) VALUES ('security', ?)`, data).Error)
 	}
-	assert.Equal(t, middleware.SignInPolicy{LockoutAttempts: 10, LockoutMinutes: 15, SessionHours: 24}, middleware.LoadSignInPolicy(db))
+	assert.Equal(t, middleware.SignInPolicy{LockoutAttempts: 10, LockoutMinutes: 15, SessionHours: 24, CaptchaAfterFailures: 3}, middleware.LoadSignInPolicy(db))
 	assert.Equal(t, middleware.DefaultSignInPolicy(), middleware.LoadSignInPolicy(nil))
 
 	// What the Security tab saved before any of it was enforced is not picked
@@ -56,11 +56,11 @@ func TestSignInPolicyDefaultsAndLimits(t *testing.T) {
 
 	save(`{"lockoutAttempts": 0, "lockoutMinutes": 5, "requireStaff2fa": true, "sessionHours": 72}`)
 	p := middleware.LoadSignInPolicy(db)
-	assert.Equal(t, middleware.SignInPolicy{LockoutAttempts: 0, LockoutMinutes: 5, RequireStaff2FA: true, SessionHours: 72}, p)
+	assert.Equal(t, middleware.SignInPolicy{LockoutAttempts: 0, LockoutMinutes: 5, RequireStaff2FA: true, SessionHours: 72, CaptchaAfterFailures: 3}, p)
 	assert.Equal(t, 72*time.Hour, p.SessionLifetime())
 
 	save(`{"lockoutAttempts": 1, "lockoutMinutes": 0, "sessionHours": 100000}`)
-	assert.Equal(t, middleware.SignInPolicy{LockoutAttempts: 3, LockoutMinutes: 1, SessionHours: 720}, middleware.LoadSignInPolicy(db))
+	assert.Equal(t, middleware.SignInPolicy{LockoutAttempts: 3, LockoutMinutes: 1, SessionHours: 720, CaptchaAfterFailures: 3}, middleware.LoadSignInPolicy(db))
 }
 
 func TestAccountLocksAfterFailedSignIns(t *testing.T) {

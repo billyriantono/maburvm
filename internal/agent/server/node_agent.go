@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maburvm/panel/internal/agent/agentenv"
 	"github.com/maburvm/panel/internal/agent/cloudinit"
 	"github.com/maburvm/panel/internal/agent/domtune"
 	"github.com/maburvm/panel/internal/agent/guestos"
@@ -441,25 +442,12 @@ func cleanStaleExports() {
 // to create another VM.
 const defaultImageDir = "/var/lib/libvirt/images"
 
-// imageDirFor resolves where a VM's disk and seed ISO are provisioned.
-//
-// The panel sends the path of the pool it placed the VM in. An empty value, or
-// anything that is not an existing absolute directory, falls back to the node's
-// default: the node owns its filesystem layout, and a malformed path from the
-// panel must not become an arbitrary write location on the hypervisor.
-func imageDirFor(poolPath string) string {
-	p := strings.TrimSpace(poolPath)
-	if p == "" || !filepath.IsAbs(p) {
-		return defaultImageDir
-	}
-	// Reject anything that is not already a real directory rather than creating
-	// it: a typo would otherwise silently provision onto the root filesystem
-	// under a plausible-looking path.
-	if info, err := os.Stat(p); err != nil || !info.IsDir() {
-		log.Printf("[NodeAgent] WARNING: pool path %q is not a directory on this node; using %s", p, defaultImageDir)
-		return defaultImageDir
-	}
-	return p
+// imageDirFor resolves where a VM's disk and seed ISO are provisioned: the
+// node's default when the panel names no pool, else the pool, which must be an
+// existing directory here. A pool that is missing is refused, never swapped for
+// the default (see storage.ResolvePoolDir); the node's preflight report names it.
+func imageDirFor(poolPath string) (string, error) {
+	return storage.ResolvePoolDir(poolPath, defaultImageDir)
 }
 
 // templateCacheDir is where downloaded OS template images are cached on the node
@@ -1332,7 +1320,10 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 		return fmt.Errorf("this node's agent cannot install %q systems; update the agent", osType)
 	}
 	diskGB := int(cfg.Resources.DiskGb)
-	imageDir := imageDirFor(req.GetPoolPath())
+	imageDir, err := imageDirFor(req.GetPoolPath())
+	if err != nil {
+		return err
+	}
 	diskPath := filepath.Join(imageDir, req.VmId+".qcow2")
 	if _, err := os.Stat(diskPath); err == nil {
 		// No domain uses this file: the check at the top of this function returned
@@ -2559,6 +2550,9 @@ func (s *NodeAgentService) AttachDisk(ctx context.Context, req *pb.AttachDiskReq
 	poolPath := req.PoolPath
 	switch req.PoolType {
 	case "", "dir", "file":
+		if _, err := storage.ResolvePoolDir(req.PoolPath, defaultImageDir); err != nil {
+			return attachDiskErr(err.Error()), nil
+		}
 		// Beside the VM's own disk when the panel names no pool, not on the
 		// root filesystem. An unreadable domain just leaves primary empty.
 		primary, _ := libvirt.PrimaryDiskPath(req.VmId)
@@ -3642,6 +3636,7 @@ func (s *NodeAgentService) GetNodeInfo(ctx context.Context, req *pb.GetNodeInfoR
 		AgentBuildTime:       agentBuild.BuildTime,
 		AgentVersion:         agentBuild.Version,
 		Features:             agentFeatures,
+		AgentSettings:        agentenv.Report(os.Getenv),
 		CpuPercent:           cpuPercent,
 		MemoryUsedBytes:      memUsedBytes,
 		MemoryUsedPercent:    memUsedPercent,

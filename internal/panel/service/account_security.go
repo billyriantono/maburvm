@@ -9,8 +9,6 @@ import (
 	"log/slog"
 	"math/big"
 	"net"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,7 +22,7 @@ var (
 	// ErrEmailNotConfigured means the panel cannot send mail yet.
 	ErrEmailNotConfigured = errors.New("email is not set up: add a mail server under Settings, System, Email")
 	// ErrPublicURLNotSet means the panel does not know the address to put in a link.
-	ErrPublicURLNotSet = errors.New("the panel does not know its public address (PANEL_PUBLIC_URL), so it cannot email a link")
+	ErrPublicURLNotSet = errors.New("the panel does not know its public address (System settings, Panel, or PANEL_PUBLIC_URL), so it cannot email a link")
 )
 
 // AuditUserEvent records something done to an account: user.locked,
@@ -121,7 +119,7 @@ func (s *UserService) SetTemporaryPassword(ctx context.Context, userID uuid.UUID
 // administrator's request. Unlike the public "forgot password" form it says
 // plainly when the mail could not be sent: the administrator is waiting on it.
 func (s *UserService) SendPasswordResetLink(ctx context.Context, user *models.User) error {
-	base := strings.TrimRight(strings.TrimSpace(os.Getenv("PANEL_PUBLIC_URL")), "/")
+	base := PublicURL()
 	if base == "" {
 		return ErrPublicURLNotSet
 	}
@@ -163,7 +161,7 @@ var NotifyEmailChanged = func(db *gorm.DB, oldEmail, newEmail, name string) {
 		Subject: "The email address of your {{brand}} account was changed",
 		Body: "{{greeting}},\n\nAn administrator changed the email address of your {{brand}} account from {{email}} to {{new_email}}.\n\n" +
 			"You now sign in with the new address, and password-reset messages go there. If you did not ask for this, contact support.",
-	}, cfg.Brand, EmailData{Name: name, Email: oldEmail, LogoURL: EmailLogoURL(cfg.Brand, os.Getenv("PANEL_PUBLIC_URL")),
+	}, cfg.Brand, EmailData{Name: name, Email: oldEmail, LogoURL: EmailLogoURL(cfg.Brand, PublicURL()),
 		Extra: map[string]string{"new_email": newEmail}})
 	if err := queueRendered(context.Background(), db, "email_changed", oldEmail, msg, emailRefs{}); err != nil {
 		slog.Default().Warn("account email changed, but the old address could not be told", "old_email", oldEmail, "error", err)

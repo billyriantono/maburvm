@@ -77,7 +77,7 @@ proto:
 # Run database migrations
 migrate:
 	@echo "Running migrations..."
-	@go run -tags migrate ./internal/shared/db/migrate.go
+	@go run ./cmd/migrate
 
 # Install dependencies (Go + Node)
 install:

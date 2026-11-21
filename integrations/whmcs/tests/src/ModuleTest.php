@@ -482,6 +482,91 @@ class ModuleTest extends TestCase
         $this->assertSame('', $vars['vmStateLabel']);
     }
 
+    public function testSingleSignOnAsksForALinkForTheServicesAccountAndVm(): void
+    {
+        Properties::$store[41] = ['vm_id' => 'vm-uuid', 'panel_user_id' => 'user-uuid'];
+        $this->panel->ok('user.sso', ['metadata' => [
+            'path' => '/api/v1/auth/billing-sso?token=t0k',
+            'url' => 'https://cp.example.test/api/v1/auth/billing-sso?token=t0k',
+            'expires_in' => '60',
+        ]]);
+
+        $result = maburvm_ServiceSingleSignOn($this->params());
+
+        $this->assertSame(['success' => true, 'redirectTo' => 'https://cp.example.test/api/v1/auth/billing-sso?token=t0k'], $result);
+        $request = $this->panel->sent('user.sso');
+        $this->assertSame(['user_id' => 'user-uuid', 'external_ref' => 'whmcs-41', 'vm_id' => 'vm-uuid'], $request['data']);
+        $this->assertSame(10, $request['timeout'], 'the customer is waiting on the click');
+        $this->assertStringStartsWith('whmcs-sso-', $request['idempotency']);
+    }
+
+    public function testSingleSignOnUsesTheServerAddressWhenThePanelKnowsNoPublicOne(): void
+    {
+        Properties::$store[41] = ['panel_user_id' => 'user-uuid'];
+        $this->panel->ok('user.sso', ['metadata' => ['path' => '/api/v1/auth/billing-sso?token=t0k', 'expires_in' => '60']]);
+
+        $result = maburvm_ServiceSingleSignOn($this->params());
+
+        $this->assertSame('https://panel.example.test/api/v1/auth/billing-sso?token=t0k', $result['redirectTo']);
+        $this->assertArrayNotHasKey('vm_id', $this->panel->sent('user.sso')['data'], 'no VM yet: the link opens the dashboard');
+    }
+
+    public function testSingleSignOnNeverMakesAnAccount(): void
+    {
+        $this->panel->ok('user.ensure', ['metadata' => ['user_id' => 'user-uuid']]);
+
+        $result = maburvm_ServiceSingleSignOn($this->params());
+
+        $this->assertFalse($result['success']);
+        $this->assertStringContainsString('no panel account', $result['errorMsg']);
+        $this->assertSame([], $this->panel->events());
+    }
+
+    public function testSingleSignOnPassesOnThePanelsRefusal(): void
+    {
+        Properties::$store[41] = ['vm_id' => 'vm-uuid', 'panel_user_id' => 'user-uuid'];
+        $this->panel->answer('user.sso', 403, ['success' => false, 'message' => 'single sign-on refused: the panel account is suspended']);
+
+        $result = maburvm_ServiceSingleSignOn($this->params());
+
+        $this->assertFalse($result['success']);
+        $this->assertStringContainsString('the panel account is suspended', $result['errorMsg']);
+    }
+
+    public function testSingleSignOnOnAnOlderPanelSaysToUpdateIt(): void
+    {
+        // No scripted answer: the fake panel says "Invalid event type", as an older panel does.
+        Properties::$store[41] = ['panel_user_id' => 'user-uuid'];
+
+        $result = maburvm_ServiceSingleSignOn($this->params());
+
+        $this->assertFalse($result['success']);
+        $this->assertStringContainsString('update the panel', $result['errorMsg']);
+    }
+
+    public function testSingleSignOnThatCannotReachThePanelIsAnErrorNotACrash(): void
+    {
+        Properties::$store[41] = ['panel_user_id' => 'user-uuid'];
+        $GLOBALS['maburvm_http'] = function (): array {
+            throw new \Exception('Failed to reach MaburVM panel: connection refused');
+        };
+
+        $result = maburvm_ServiceSingleSignOn($this->params());
+
+        $this->assertFalse($result['success']);
+        $this->assertStringContainsString('connection refused', $result['errorMsg']);
+    }
+
+    public function testTheClientAreaOpensThePanelThroughSingleSignOn(): void
+    {
+        Properties::$store[41] = ['vm_id' => 'vm-uuid', 'panel_user_id' => 'user-uuid'];
+        $this->panel->ok('vm.status', ['metadata' => ['state' => 'ready']]);
+
+        $this->assertSame(41, maburvm_ClientArea($this->params())['vars']['serviceId']);
+        $template = file_get_contents(__DIR__ . '/../../modules/servers/maburvm/templates/clientarea.tpl');
+        $this->assertStringContainsString('action=productdetails&amp;id={$serviceId|escape:\'url\'}&amp;dosinglesignon=1', $template);
+    }
+
     public function testAPanelThatCannotBeReachedIsAnErrorNotACrash(): void
     {
         $GLOBALS['maburvm_http'] = function (): array {

@@ -1024,7 +1024,7 @@ func RegisterNetworkRoutes(e *echo.Echo, handler *NetworkHandler, db *gorm.DB) {
 	// Who held an address when, for abuse reports.
 	history := e.Group("/api/v1/ip-history")
 	history.Use(middleware.RequireAuth(db))
-	history.GET("", handler.IPHistory, middleware.RequirePermission("admin:access"))
+	history.GET("", handler.IPHistory, middleware.RequirePermission("network:read"))
 }
 
 // SetFirewallDefault handles PUT /api/v1/vms/:id/firewall-default
@@ -1152,7 +1152,10 @@ func (h *NetworkHandler) AssignIPAddress(c echo.Context) error {
 
 	network, err := h.service.AssignIPAddress(c.Request().Context(), vmID, req.PoolID, req.IPAddress)
 	if err != nil {
+		var allowance *service.AllowanceError
 		switch {
+		case errors.As(err, &allowance):
+			return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "Forbidden", "message": allowance.Message})
 		case errors.Is(err, service.ErrIPAlreadyInUse):
 			return c.JSON(http.StatusConflict, map[string]interface{}{
 				"error": "Conflict", "message": err.Error(),
@@ -1199,7 +1202,10 @@ func (h *NetworkHandler) AssignIPv6Prefix(c echo.Context) error {
 	}
 	p, err := h.service.AssignIPv6Prefix(c.Request().Context(), vmID, req.PoolID)
 	if err != nil {
+		var allowance *service.AllowanceError
 		switch {
+		case errors.As(err, &allowance):
+			return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "Forbidden", "message": allowance.Message})
 		case errors.Is(err, service.ErrVMAlreadyHasIPv6Prefix), errors.Is(err, service.ErrNoAvailableIPv6Prefix):
 			return c.JSON(http.StatusConflict, map[string]interface{}{"error": "Conflict", "message": err.Error()})
 		case err.Error() == "VM not found":

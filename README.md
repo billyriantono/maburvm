@@ -145,6 +145,11 @@ Production is a separate, explicit composition — it is **not** started by the
 `docker compose up` development flow. See **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**
 for the full guide (secrets, TLS, agent deployment, backups, image review).
 
+On a new host, `scripts/install-panel.sh --url https://panel.example.com` does
+all of it (checks, secrets, start) and prints the link that creates the first
+administrator; `scripts/upgrade-panel.sh` upgrades with a backup first and a
+rollback on failure. See the guide's sections 3.0 and 16.
+
 <details>
 <summary><b>Short version</b></summary>
 

@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"os"
 
 	"github.com/maburvm/panel/internal/shared/models"
 	"gorm.io/gorm"
@@ -28,7 +27,7 @@ import (
 // admin-managed API settings, falling back to the env secret when unset — the
 // same resolution the overage webhook uses.
 func resolveBillingWebhook(ctx context.Context, db *gorm.DB) (url, secret string) {
-	secret = os.Getenv("BILLING_WEBHOOK_SECRET")
+	secret, _ = PanelValue("billingWebhookSecret")
 	if db == nil {
 		return "", secret
 	}

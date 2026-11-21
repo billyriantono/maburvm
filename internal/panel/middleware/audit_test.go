@@ -160,3 +160,17 @@ func TestAuditRecordsSSOCallback(t *testing.T) {
 	require.Equal(t, "/login?sso=2fa", j.Details["redirect"])
 	require.Equal(t, "/api/v1/auth/oidc/callback", j.Details["path"], "the code and state in the query are not kept")
 }
+
+// The panel settings form and the first-run form carry credentials.
+func TestAuditRedactsPanelSettingSecrets(t *testing.T) {
+	for _, k := range []string{"billingApiKey", "billingWebhookSecret", "metricsToken", "oidcClientSecret", "token", "password"} {
+		if !isSensitiveField(k) {
+			t.Fatalf("%s must be redacted in the audit log", k)
+		}
+	}
+	for _, k := range []string{"publicUrl", "oidcIssuer", "oidcClientId", "oidcButtonLabel", "email"} {
+		if isSensitiveField(k) {
+			t.Fatalf("%s is not a credential and should stay readable", k)
+		}
+	}
+}

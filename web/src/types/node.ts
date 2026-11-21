@@ -15,8 +15,38 @@ export interface Node {
   failed_polls?: number;
   /** What the node has promised to VMs against what it has (detail only). */
   allocation?: NodeAllocation;
+  /** No agent has ever answered for the node and no VM is on it, so the
+   *  installer may be offered (detail only). */
+  installer_allowed?: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export type PreflightStatus = "pass" | "warn" | "fail";
+
+/** One line of a node's host checks, in its agent's words. */
+export interface PreflightCheck {
+  id: string;
+  name: string;
+  status: PreflightStatus;
+  detail: string;
+  fix?: string;
+}
+
+/** A node's last host check report. checked_at null: never asked. */
+export interface NodePreflight {
+  /** False when the node's agent is too old to report one. */
+  supported: boolean;
+  checks: PreflightCheck[];
+  checked_at: string | null;
+}
+
+/** A node's single-use install command; the token is shown once. */
+export interface NodeInstallCommand {
+  token: string;
+  expires_at: string;
+  script_url: string;
+  command: string;
 }
 
 /** A node's allocation. A limit of 0 is no cap: no ratio set, or the node has

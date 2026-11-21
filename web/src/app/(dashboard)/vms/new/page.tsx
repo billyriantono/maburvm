@@ -38,6 +38,7 @@ import { useIPPools } from "@/lib/hooks/use-ipam"
 import { useNetworks } from "@/lib/hooks/use-networks"
 import { useSSHKeys } from "@/lib/hooks/use-ssh-keys"
 import { usePlans } from "@/lib/hooks/use-plans"
+import { planPrice } from "@/lib/plans"
 import { useRecipes } from "@/lib/hooks/use-recipes"
 import { useCreateVM, useVM } from "@/lib/hooks/use-vms"
 import { useImages } from "@/lib/hooks/use-images"
@@ -703,7 +704,7 @@ function NewVMForm() {
                         <SelectItem key={p.id} value={p.id}>
                           <span>{p.name}</span>
                           <span className="text-muted-foreground text-sm ml-2">
-                            ({p.cpu} vCPU · {Math.round(p.ram / 1024)} GB · {p.disk} GB)
+                            ({p.cpu} vCPU · {Math.round(p.ram / 1024)} GB · {p.disk} GB{planPrice(p) ? ` · ${planPrice(p)}` : ""})
                           </span>
                         </SelectItem>
                       ))}

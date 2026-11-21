@@ -32,7 +32,9 @@ import {
   useResetUserTwoFactor,
   useUnlockUser,
 } from "@/lib/hooks/use-users"
-import { useCurrentUser } from "@/lib/hooks/use-auth"
+import { can, useCurrentUser } from "@/lib/hooks/use-auth"
+import { useAssignStaffRole, useImpersonate, useStaffRoles } from "@/lib/hooks/use-staff"
+import { AccountSessions } from "@/components/account-sessions"
 import { useVMs } from "@/lib/hooks/use-vms"
 import { useCopy } from "@/lib/use-feedback"
 import { isSignInLocked, type VM } from "@/types"
@@ -73,6 +75,43 @@ export default function UserDetailPage() {
   // One's own password and two-factor are changed under Profile, with the
   // current password or a code; the panel refuses these actions on oneself.
   const isMe = !!me && me.id === userId
+  // What the signed-in role may do here; the panel checks each request too.
+  const mayUpdate = can(me, "user:update")
+  const mayRecover = can(me, "user:recover")
+  const mayDelete = can(me, "user:delete")
+  const mayImpersonate = can(me, "user:impersonate")
+  const mayManageStaff = can(me, "staff:manage")
+  // Another staff account is the Owner's to recover or sign out.
+  const mayRecoverThis = mayRecover && (user?.role !== "admin" || me?.staff_role === "owner")
+
+  const staffRoles = useStaffRoles(mayManageStaff && user?.role === "admin")
+  const assignRole = useAssignStaffRole(userId)
+  const [newRole, setNewRole] = useState("")
+  const grantable = (staffRoles.data?.roles ?? []).filter(
+    (r) => r.id !== "owner" && r.permissions.every((p) => can(me, p)),
+  )
+  const handleAssignRole = useCallback(async () => {
+    try {
+      await assignRole.mutateAsync(newRole)
+      toast.success("Role changed. It applies from their next request.")
+      setNewRole("")
+    } catch (err) {
+      toast.error(`Not changed: ${(err as Error).message}`)
+    }
+  }, [assignRole, newRole])
+
+  const impersonate = useImpersonate(userId)
+  const handleImpersonate = useCallback(async () => {
+    let target = ""
+    const ok = await confirm({
+      title: `View the panel as ${user?.email ?? ""}?`,
+      description:
+        "You see their client area for up to an hour. Everything you do is recorded under your name and theirs. Their password, email, two-factor, sessions, API keys and initial passwords stay out of reach. End the view from the banner at the top.",
+      confirmLabel: "View as customer",
+      action: async () => { target = (await impersonate.mutateAsync()).redirect },
+    })
+    if (ok && target) window.location.href = target
+  }, [confirm, user, impersonate])
 
   // Password reset: an emailed link, or a temporary password shown once.
   const [resetOpen, setResetOpen] = useState(false)
@@ -257,6 +296,12 @@ export default function UserDetailPage() {
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
+          {user.role === "client" && mayImpersonate && !suspended && (
+            <Button variant="outline" onClick={handleImpersonate} disabled={impersonate.isPending}>
+              {impersonate.isPending && <Loader2 className="w-4 h-4 animate-spin mr-2" />}View as customer
+            </Button>
+          )}
+          {mayUpdate && (
           <Dialog open={editOpen} onOpenChange={(open) => {
             setEditOpen(open)
             if (open) { setEditName(user.name ?? ""); setEditEmail(user.email); setEditRole(user.role) }
@@ -303,7 +348,8 @@ export default function UserDetailPage() {
               </DialogFooter>
             </DialogContent>
           </Dialog>
-          {!isMe && (
+          )}
+          {!isMe && mayRecoverThis && (
             <Dialog open={resetOpen} onOpenChange={(open) => {
               setResetOpen(open)
               if (open) { setResetMethod("email"); setTempPassword("") }
@@ -367,7 +413,7 @@ export default function UserDetailPage() {
               </DialogContent>
             </Dialog>
           )}
-          {user.role === "client" && (
+          {user.role === "client" && mayUpdate && (
             <Dialog open={suspendOpen} onOpenChange={(open) => {
               setSuspendOpen(open)
               if (open) { setWithVms(false); setReason("") }
@@ -421,7 +467,9 @@ export default function UserDetailPage() {
               </DialogContent>
             </Dialog>
           )}
-          <Button variant="destructive" onClick={() => handleDelete()} className="gap-2"><Trash2 className="w-4 h-4" />Delete</Button>
+          {mayDelete && (
+            <Button variant="destructive" onClick={() => handleDelete()} className="gap-2"><Trash2 className="w-4 h-4" />Delete</Button>
+          )}
           <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
             <DialogContent>
               <DialogHeader>
@@ -488,8 +536,35 @@ export default function UserDetailPage() {
             </div>
             <div className="flex items-center justify-between py-2 border-b">
               <span className="text-sm text-muted-foreground flex items-center gap-2"><Shield className="w-4 h-4" />Role</span>
-              <Badge variant={user.role === "admin" ? "default" : "secondary"} className="font-medium">{user.role}</Badge>
+              <Badge variant={user.role === "admin" ? "default" : "secondary"} className="font-medium">{user.role === "admin" ? "Staff" : "Customer"}</Badge>
             </div>
+            {user.role === "admin" && (
+              <div className="flex flex-wrap items-center justify-between gap-3 py-2 border-b">
+                <span className="text-sm text-muted-foreground">Staff role</span>
+                <span className="flex flex-wrap items-center justify-end gap-2">
+                  <span className="font-medium">{user.staff_role_name ?? "Administrator"}</span>
+                  {mayManageStaff && !isMe && user.staff_role !== "owner" && grantable.length > 0 && (
+                    <>
+                      <label htmlFor="staff-role" className="sr-only">New role</label>
+                      <select
+                        id="staff-role"
+                        value={newRole}
+                        onChange={(e) => setNewRole(e.target.value)}
+                        className="h-8 px-2 rounded-md border border-input bg-background text-sm"
+                      >
+                        <option value="">Change to…</option>
+                        {grantable.filter((r) => r.id !== user.staff_role).map((r) => (
+                          <option key={r.id} value={r.id}>{r.name}</option>
+                        ))}
+                      </select>
+                      <Button size="sm" variant="outline" onClick={handleAssignRole} disabled={!newRole || assignRole.isPending}>
+                        {assignRole.isPending && <Loader2 className="w-4 h-4 animate-spin mr-2" />}Change role
+                      </Button>
+                    </>
+                  )}
+                </span>
+              </div>
+            )}
             <div className="flex items-center justify-between py-2 border-b">
               <span className="text-sm text-muted-foreground">Account</span>
               {suspended ? (
@@ -505,7 +580,7 @@ export default function UserDetailPage() {
               <span className="shrink-0 text-sm text-muted-foreground">Two-factor</span>
               <span className="flex items-center gap-3">
                 <StatusBadge status={user.two_factor_enabled ? "on" : "off"} />
-                {user.two_factor_enabled && !isMe && (
+                {user.two_factor_enabled && !isMe && mayRecoverThis && (
                   <Button variant="outline" size="sm" onClick={handleResetTwoFactor}>Turn off</Button>
                 )}
               </span>
@@ -516,7 +591,7 @@ export default function UserDetailPage() {
                 <span className="flex flex-wrap items-center justify-end gap-3">
                   <StatusBadge status="locked" />
                   <span className="text-xs text-muted-foreground" title="Too many failed sign-ins in a row">until {formatTime(user.locked_until!)}</span>
-                  {!isMe && (
+                  {!isMe && mayRecoverThis && (
                     <Button variant="outline" size="sm" onClick={handleUnlock} disabled={unlock.isPending}>
                       {unlock.isPending && <Loader2 className="w-4 h-4 animate-spin mr-2" />}Unlock
                     </Button>
@@ -583,7 +658,9 @@ export default function UserDetailPage() {
         </div>
       </div>
 
-
+      {(user.role !== "admin" || isMe || me?.staff_role === "owner") && (
+        <AccountSessions userId={userId} canRevoke={mayRecoverThis} />
+      )}
     </div>
   )
 }

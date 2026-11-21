@@ -155,7 +155,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Lint the scripts
-        run: shellcheck docker/panel-backup/panel-backup.sh scripts/panel-restore.sh scripts/test-panel-backup.sh
+        run: |
+          shellcheck docker/panel-backup/panel-backup.sh scripts/panel-restore.sh scripts/test-panel-backup.sh internal/panel/handler/install_agent.sh \
+            scripts/install-panel.sh scripts/upgrade-panel.sh scripts/test-upgrade-panel.sh scripts/release-notes.sh
+      - name: Upgrade script decisions (against a stand-in docker)
+        run: bash scripts/test-upgrade-panel.sh
       - name: Build the backup image
         run: docker build -t maburvm-panel-backup:ci docker/panel-backup
       - name: Back up and restore inside the image
@@ -173,6 +177,9 @@ jobs:
           touch deploy/secrets/postgres_password deploy/secrets/s3_restricted_password
           docker compose -f docker-compose.production.yml --env-file .env.production.example config -q
           docker compose -f docker-compose.production.yml -f docker-compose.rehearsal.yml --env-file .env.production.example config -q
+          # Published images by tag.
+          MABURVM_IMAGE_PREFIX=ghcr.io/example/maburvm MABURVM_VERSION=v0.0.0 \
+            docker compose -f docker-compose.production.yml --env-file .env.production.example config --images | grep -qx 'ghcr.io/example/maburvm-panel:v0.0.0'
 
   whmcs:
     name: WHMCS modules (PHP lint and unit tests)

@@ -518,8 +518,9 @@ func (s *Server) Address() string {
 
 // Run is the main entry point for the agent server
 func Run() error {
-	// Load configuration
-	cfg, err := config.Load()
+	// Not config.Load: that requires the panel's database and object storage
+	// settings, which an agent neither has nor uses.
+	cfg, err := config.LoadDefault()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}

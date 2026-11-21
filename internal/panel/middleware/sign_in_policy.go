@@ -21,12 +21,29 @@ type SignInPolicy struct {
 	RequireStaff2FA bool `json:"requireStaff2fa"`
 	// SessionHours is how long a sign-in lasts.
 	SessionHours int `json:"sessionHours"`
+	// CaptchaProvider ("turnstile" or "hcaptcha") with its keys puts a check
+	// on sign-in and password reset after CaptchaAfterFailures failed attempts
+	// from one address or for one email in CaptchaWindow (0 = always). The
+	// secret is sealed at rest. Off unless all three are set.
+	CaptchaProvider      string `json:"captchaProvider"`
+	CaptchaSiteKey       string `json:"captchaSiteKey"`
+	CaptchaSecret        string `json:"captchaSecret"`
+	CaptchaAfterFailures int    `json:"captchaAfterFailures"`
+}
+
+// CaptchaWindow is how far back failed attempts count towards the captcha.
+const CaptchaWindow = 15 * time.Minute
+
+// CaptchaOn reports whether the sign-in captcha is set up.
+func (p SignInPolicy) CaptchaOn() bool {
+	return (p.CaptchaProvider == "turnstile" || p.CaptchaProvider == "hcaptcha") &&
+		p.CaptchaSiteKey != "" && p.CaptchaSecret != ""
 }
 
 // DefaultSignInPolicy is what applies until an operator saves something else.
 // The web form's defaults must mirror it.
 func DefaultSignInPolicy() SignInPolicy {
-	return SignInPolicy{LockoutAttempts: 10, LockoutMinutes: 15, SessionHours: int(AccessTokenExpiry / time.Hour)}
+	return SignInPolicy{LockoutAttempts: 10, LockoutMinutes: 15, SessionHours: int(AccessTokenExpiry / time.Hour), CaptchaAfterFailures: 3}
 }
 
 // LoadSignInPolicy reads the operator's sign-in policy. A field never saved
@@ -48,6 +65,7 @@ func LoadSignInPolicy(db *gorm.DB) SignInPolicy {
 	}
 	p.LockoutMinutes = min(max(p.LockoutMinutes, 1), 24*60)
 	p.SessionHours = min(max(p.SessionHours, 1), 30*24)
+	p.CaptchaAfterFailures = min(max(p.CaptchaAfterFailures, 0), 100)
 	return p
 }
 

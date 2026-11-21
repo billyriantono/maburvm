@@ -244,7 +244,7 @@ func RegisterDashboardRoutes(e *echo.Echo, db *gorm.DB) {
 			"vms_backup_failed":  backupFailed,
 			"failed_jobs_24h":    failedJobs,
 		}})
-	}, auth, middleware.RequirePermission("admin:access"))
+	}, auth, middleware.RequirePermission(middleware.PermStaff))
 
 	// The staff VM list: searched, filtered, ordered and paged by the database,
 	// so a VM is found by name, owner, address or id wherever it sits.
@@ -306,7 +306,7 @@ func RegisterDashboardRoutes(e *echo.Echo, db *gorm.DB) {
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{
 			"vms": rows, "total": total, "page": page, "page_size": size, "all": all, "by_status": byState,
 		}})
-	}, auth, middleware.RequirePermission("admin:access"))
+	}, auth, middleware.RequirePermission(middleware.PermStaff), middleware.RequirePermission("vm:read"))
 
 	e.GET("/api/v1/dashboard/mine", func(c echo.Context) error {
 		user, ok := middleware.GetUserContext(c)

@@ -10,6 +10,7 @@ import { Meter } from "@/components/ui/meter"
 import { Sparkline } from "@/components/ui/sparkline"
 import { StatusBadge } from "@/components/status-badge"
 import { useConfirm } from "@/components/confirm-provider"
+import { useCan } from "@/lib/hooks/use-auth"
 import { useCopy } from "@/lib/use-feedback"
 import { useDashboardOverview, type DashboardNode } from "@/lib/hooks/use-dashboard"
 import { useDeleteNode, useNodeMetricsHistory } from "@/lib/hooks/use-nodes"
@@ -153,6 +154,7 @@ function NodeRow({ n, onRemove }: { n: DashboardNode; onRemove: () => void }) {
 
 export default function NodesListPage() {
   const confirm = useConfirm()
+  const allow = useCan()
   const { data: o, isLoading, error, refetch } = useDashboardOverview()
   const deleteNode = useDeleteNode()
   const [query, setQuery] = useState("")
@@ -200,9 +202,11 @@ export default function NodesListPage() {
               <Input id="node-filter" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter by name, address or region" className="w-64" />
             </>
           )}
-          <Button asChild variant={nodes.length === 0 && !isLoading && !error ? "default" : "outline"}>
-            <Link href="/nodes/new">Add a node</Link>
-          </Button>
+          {allow("node:create") && (
+            <Button asChild variant={nodes.length === 0 && !isLoading && !error ? "default" : "outline"}>
+              <Link href="/nodes/new">Add a node</Link>
+            </Button>
+          )}
         </div>
       </div>
 

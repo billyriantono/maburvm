@@ -933,6 +933,12 @@ func (h *VMHandler) UpdateVM(c echo.Context) error {
 	}
 	userCtx, hasUser := c.Get("user").(*middleware.UserContext)
 	isAdmin := hasUser && userCtx.Role == models.RoleAdmin
+	// A billing role reaches this route for the plan and billing reference only.
+	if !userCtx.Can("vm:update") && (req.Hostname != "" || req.Resources != nil || req.UserID != "") {
+		return c.JSON(http.StatusForbidden, map[string]interface{}{
+			"error": "Forbidden", "message": "Your role may change only a VM's plan and billing reference",
+		})
+	}
 
 	if req.Resources != nil {
 		// Resizing is admin-only. Ownership reassignment below was already
@@ -958,7 +964,7 @@ func (h *VMHandler) UpdateVM(c echo.Context) error {
 		updateReq.UserID = req.UserID
 	}
 	if req.PlanID != nil || req.BillingRef != nil {
-		if !isAdmin {
+		if !isAdmin || !userCtx.Can("billing:update") {
 			return c.JSON(http.StatusForbidden, map[string]interface{}{
 				"error": "Forbidden", "message": "Only administrators can change a VM's plan or billing reference",
 			})
@@ -2016,27 +2022,32 @@ func RegisterVMRoutes(e *echo.Echo, handler *VMHandler, db *gorm.DB) {
 	vms.POST("", handler.CreateVM, middleware.RequirePermission("vm:create"))
 
 	// Update VM - requires vm:update
-	vms.PUT("/:id", handler.UpdateVM, middleware.RequirePermission("vm:update"))
+	vms.PUT("/:id", handler.UpdateVM, middleware.RequireAnyPermission("vm:update", "billing:update"))
 
 	// Delete VM - requires vm:delete
 	vms.DELETE("/:id", handler.DeleteVM, middleware.RequirePermission("vm:delete"))
 
-	// VM Lifecycle operations - require vm:lifecycle
+	// Power and rescue have their own permissions, so a support role can do
+	// them without reinstalling or moving anything.
+	power := middleware.RequirePermission("vm:power")
+	vms.POST("/:id/start", handler.StartVM, power)
+	vms.POST("/:id/stop", handler.StopVM, power)
+	vms.POST("/:id/force-stop", handler.ForceStopVM, power)
+	vms.POST("/:id/restart", handler.RestartVM, power)
+	rescue := middleware.RequirePermission("vm:rescue")
+	vms.POST("/:id/rescue", handler.RescueVM, rescue)
+	vms.POST("/:id/unrescue", handler.UnrescueVM, rescue)
+
+	// The rest of the VM lifecycle - require vm:lifecycle
 	lifecycle := vms.Group("/:id")
 	lifecycle.Use(middleware.RequirePermission("vm:lifecycle"))
 	{
-		lifecycle.POST("/start", handler.StartVM)
-		lifecycle.POST("/stop", handler.StopVM)
-		lifecycle.POST("/force-stop", handler.ForceStopVM)
-		lifecycle.POST("/restart", handler.RestartVM)
 		lifecycle.POST("/rebuild", handler.RebuildVM)
 		lifecycle.POST("/suspend", handler.SuspendVM)
 		lifecycle.POST("/unsuspend", handler.UnsuspendVM)
 		lifecycle.POST("/reset-password", handler.ResetPasswordVM)
 		lifecycle.POST("/iso/attach", handler.AttachISOVM)
 		lifecycle.POST("/iso/detach", handler.DetachISOVM)
-		lifecycle.POST("/rescue", handler.RescueVM)
-		lifecycle.POST("/unrescue", handler.UnrescueVM)
 		lifecycle.POST("/migrate", handler.MigrateVM)
 		lifecycle.POST("/clone", handler.CloneVM)
 	}

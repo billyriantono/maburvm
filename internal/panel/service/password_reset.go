@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"log/slog"
-	"os"
 	"strings"
 	"time"
 
@@ -86,7 +85,7 @@ func (s *UserService) RequestPasswordReset(ctx context.Context, email, resetURLB
 var deliverResetLink = func(db *gorm.DB, to, name, resetURL string) {
 	if cfg, ok, err := LoadSMTPSettings(db); err == nil && ok {
 		_ = queueRendered(context.Background(), db, EmailPasswordReset, to, RenderEmail(cfg.Template(EmailPasswordReset), cfg.Brand,
-			EmailData{Name: name, Email: to, Link: resetURL, LogoURL: EmailLogoURL(cfg.Brand, os.Getenv("PANEL_PUBLIC_URL"))}), emailRefs{})
+			EmailData{Name: name, Email: to, Link: resetURL, LogoURL: EmailLogoURL(cfg.Brand, PublicURL())}), emailRefs{})
 	}
 }
 

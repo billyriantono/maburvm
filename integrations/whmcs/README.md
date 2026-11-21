@@ -83,8 +83,9 @@ more than 5 minutes off makes every action fail with a message that says so.
    - *Provisioning wait (seconds)*: how long Create waits for the VM to finish
      installing. See [What WHMCS learns about the VM](#what-whmcs-learns-about-the-vm).
 
-> The panel must be started with `BILLING_API_KEY` and `BILLING_WEBHOOK_SECRET`
-> set (the same values entered above), otherwise the webhook rejects requests.
+> The panel must have the same two values, otherwise the webhook rejects
+> requests: save them under System settings, Panel, Billing webhook (they apply
+> at once), or set `BILLING_API_KEY` and `BILLING_WEBHOOK_SECRET` in its environment.
 
 ### Letting the customer choose
 
@@ -130,7 +131,7 @@ customer account of the WHMCS client (`user.ensure`): the panel looks for the
 client's own reference (`whmcs-client-<client id>`), then for an account with
 the client's email, and otherwise creates one. A new account is emailed a link
 to choose its password (the "Welcome (billing order)" email, which needs SMTP
-and `PANEL_PUBLIC_URL` set on the panel; without it the customer uses "Forgot
+and the panel address under System settings, Panel, or `PANEL_PUBLIC_URL`; without it the customer uses "Forgot
 password" on the panel's sign-in page). The account's ID is kept on the service
 as `panel_user_id`.
 
@@ -242,11 +243,33 @@ switched under System settings, Quotas.
 ### Client area
 
 The service detail page (`templates/clientarea.tpl`) shows the VM's state,
-address and login user, read live from the panel, and deep-links customers to
-the MaburVM **client portal** (`/client/vms/<id>` and
-`/client/vms/<id>/console`) for day-to-day operation (start/stop/reboot/
-console). Real-time VM control lives in the portal rather than being
-duplicated in WHMCS.
+address and login user, read live from the panel. **Open control panel** signs
+the customer in to the MaburVM **client portal** with one click and opens the
+service's VM there, for day-to-day operation (start/stop/reboot/console).
+Real-time VM control lives in the portal rather than being duplicated in WHMCS.
+
+### Single sign-on
+
+`maburvm_ServiceSingleSignOn` is what WHMCS calls for that button (the link is
+`clientarea.php?action=productdetails&id=<service>&dosinglesignon=1`), and for
+the control-panel login button WHMCS shows staff on the service's page. It
+sends the signed `user.sso` event for the service's panel account and VM; the
+panel answers with a link that lasts 60 seconds and works once, and WHMCS
+sends the browser there. Opening it starts an ordinary panel session (an
+HttpOnly cookie) and lands on the VM, or on the dashboard when the service has
+no VM yet.
+
+- The panel still asks for its own two-factor code when the account has one.
+- Suspended, locked, expired and staff accounts are refused; WHMCS shows the
+  panel's reason. A link is never made for a VM that belongs to someone else.
+- No account is made here: a service needs a panel account first (Create, or
+  its Panel User ID). The link signs in whichever account the service names,
+  so the `Panel User ID` field must be *Admin Only* (see Override above).
+- Each sign-in is in the account's sign-in history and the audit log with the
+  method `billing_sso`. A staff member using the admin-area button signs in as
+  the customer, recorded the same way.
+- The link points at the panel's public address (System settings, Panel) when
+  it is set, else at the server's hostname.
 
 ## The events addon
 
@@ -322,8 +345,6 @@ are kept when it is deactivated.
 - The modules target WHMCS 7.7+ (`serviceProperties`, config option loaders).
   `logModuleCall`, `logActivity`, `localAPI`, `encrypt` and `Capsule` are WHMCS
   runtime globals; static PHP linters flag them as undefined, which is expected.
-- There is no single sign-on from WHMCS into the panel: the customer signs in
-  to the panel with the account described above.
 - Module settings are stored by position. New settings are only ever added
   after the existing ones, so a product saved by an earlier version keeps its
   values.
@@ -396,8 +417,12 @@ Lifecycle
       `Panel User ID` filled in) can still be suspended, unsuspended and
       terminated.
 - [ ] The daily cron fills bandwidth usage on the service.
-- [ ] The client area shows the VM's state and address, and its buttons open
-      the portal.
+- [ ] The client area shows the VM's state and address. Open control panel
+      lands on the VM in the portal without a password prompt (or with the
+      two-factor prompt, for an account that has it); opening the same link a
+      second time, or after a minute, goes to the sign-in page instead.
+- [ ] The control-panel login button on the service's page in the admin area
+      signs in as the customer.
 
 Events addon
 - [ ] After activation the addon's page shows the callback URL, and a `curl`

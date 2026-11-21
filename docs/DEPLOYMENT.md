@@ -19,6 +19,9 @@
 | `docker/minio-init.sh` | One-shot `mc` initializer: bucket + immutable versioned policy (`maburvm-bucket-rw-v1`) + restricted user (`maburvm-app-v1`) + access proof. |
 | `docker/panel-backup/` | Image and script behind the `panel-backup` service: nightly encrypted off-host backup of the panel (§9). |
 | `scripts/panel-restore.sh` | Rebuilds a panel from a backup on a fresh host, or as a rehearsal (§9). |
+| `scripts/install-panel.sh` | One-command install on a new host: checks it, writes `.env.production` and the secret files, starts the stack, prints the first-administrator link (§3). |
+| `scripts/upgrade-panel.sh` | Upgrade with a backup first and an automatic rollback (§16). |
+| `.github/workflows/release.yml` | On a version tag: publishes the panel and web images and the agent binaries, drafts the release (§16). |
 | `docker-compose.rehearsal.yml` | Overlay used only by a restore rehearsal: cuts the restored panel off from nodes and the internet. |
 | `docs/DEPLOYMENT.md` | This guide. |
 | `deploy/secrets/` | Host secret files (created by you, never committed). |
@@ -49,6 +52,37 @@ No `version:` key is used (the Compose Specification deprecated it; recent
 Docker Compose warns when it is present).
 
 ## 3. Environment setup
+
+### 3.0 One-command install
+
+On a new host with Docker and the compose plugin, as root, from the source
+archive of a release tag (or a checkout):
+
+```bash
+scripts/install-panel.sh --url https://panel.example.com \
+  --version v1.2.0 --image-prefix ghcr.io/OWNER/maburvm
+# or, to build the images on this host from the directory instead:
+scripts/install-panel.sh --url https://panel.example.com
+```
+
+It refuses to run where it should not: on a host that runs virtual machines
+(unless `--force`), with less than 2 GiB of memory or 10 GiB of free disk, with
+port 3000 or 8081 taken, or where an install already exists. It writes
+`.env.production` and the two secret files below with random values, starts the
+stack, checks the panel generated its key file (`secrets.json`, §9) and prints a
+link that creates the first administrator:
+
+```
+https://panel.example.com/first-run#token=<one-time token>
+```
+
+The token lives in `first-run-token` on the panel data volume only while the
+panel has no administrator; the link works once. Run the script again and it
+changes nothing (or finishes an install that stopped half way). It sets
+`MIGRATION_REQUIRE_BACKUP_WITHIN=6h` (§16). Then put your TLS proxy in front
+(§7) and configure the nightly backup (§9).
+
+### 3.1 By hand
 
 ```bash
 cp .env.production.example .env.production
@@ -232,12 +266,46 @@ secret mounting requires a separately designed topology, not this file.
   back by restoring the database dump taken just before the upgrade, not by
   starting the old image on the upgraded database.
 
+### Staff roles, sessions and the sign-in check
+
+- **Staff roles.** Every staff account has a role: Owner (always the founding
+  administrator), Administrator, Support, Billing, Read-only, or a custom role
+  made on the Staff roles page from the panel's permissions. Staff accounts
+  that existed before roles are Administrators, with the access they had. Only
+  the Owner, or staff whose role includes "Assign staff roles", changes a role,
+  and nobody hands out a permission they do not hold. Creating and deleting
+  staff accounts stays with the Owner. A staff API key does what its owner's
+  role allows at the time of each call; MCP calls go through the same checks.
+  Support access accounts get the Support role unless another is chosen.
+- **Viewing as a customer.** Staff with "View and act as a customer" open a
+  customer's client area for up to an hour from the customer's user page, and
+  can do there whatever the customer can. A staff password change or "sign
+  out everywhere" ends the staff member's open views too. A
+  banner says so; every action is recorded with both accounts; the customer's
+  password, email, two-factor, sessions, API keys and initial passwords stay
+  out of reach. Ending the view returns to the staff session.
+- **Sessions and sign-in history.** Each sign-in is a session that its owner
+  (Profile) and staff (the user page) can see and sign out; signing out ends
+  only that session. Every sign-in attempt and password reset request is kept
+  for 180 days. Sessions from before this release are not listed; they end
+  when they expire, or with "Sign out everywhere else".
+- **Sign-in check (captcha).** Off by default. Under Settings, System,
+  Security, choose Cloudflare Turnstile or hCaptcha and enter the provider's
+  site key and secret key (stored encrypted). After the set number of failed
+  attempts from one address or for one email within 15 minutes, the sign-in
+  and password reset pages ask for the check. The panel must reach the
+  provider's verification address over https; while it cannot, those attempts
+  are refused. The pages' Content-Security-Policy already allows both providers
+  on the sign-in and reset pages only.
+
 ### Optional: Sign in with SSO
 
 The login page can offer a "Sign in with SSO" button for any OpenID Connect
 provider. Register the panel there as a confidential web client with the
-redirect URI `<PANEL_PUBLIC_URL>/api/v1/auth/oidc/callback`, then set in
-`.env.production`:
+redirect URI `<panel address>/api/v1/auth/oidc/callback`, then enter the issuer,
+client ID and secret under Settings, System, Panel (the secret is stored
+encrypted; the page shows the redirect URI). They apply at once. Or set them in
+`.env.production`, where a value saved on the page takes over:
 
 | Variable | |
 |---|---|
@@ -254,17 +322,29 @@ and panel two-factor still apply to SSO sign-ins.
 ### Optional: billing system and transfer quotas
 
 A billing system drives the panel through the signed webhook
-`POST <PANEL_PUBLIC_URL>/webhooks/billing`. The compose file passes three
-values from `.env.production` to the panel:
+`POST <panel address>/webhooks/billing`. Its API key and signing secret are
+entered under Settings, System, Panel, Billing webhook (stored encrypted, applied
+at once), or passed from `.env.production`; a value saved on the page takes
+over from the variable:
 
 | Variable | |
 |---|---|
 | `BILLING_API_KEY`, `BILLING_WEBHOOK_SECRET` | the shared key and signing secret. The webhook is off (it answers 503) until both are set. Use `openssl rand -hex 32` for each and enter the same values in the billing system (for WHMCS: `integrations/whmcs/README.md`). |
 | `BANDWIDTH_ENFORCE` | the starting value of System settings, Quotas, "Restrict VMs that use up their quota". Once that is saved on the page, the page decides and this is ignored. `true` makes a plan's monthly transfer quota act: a VM that goes over is throttled or stopped, as its plan says. Any other value only measures. Default `false`. |
 
-After changing them, recreate the panel container
+After changing a variable, recreate the panel container
 (`docker compose ... up -d panel`); a restart alone keeps the old environment.
-The Security page reports whether the webhook is on.
+Values saved on the page need neither. The Security page reports whether the
+webhook is on.
+
+The same page holds the panel address (`PANEL_PUBLIC_URL`) and the metrics
+token (`METRICS_TOKEN`), and shows for each setting the value in force and
+whether it comes from the page, the environment or a default. What must exist
+before the database can be read stays in the environment: the database
+connection, `ALLOWED_ORIGINS`, `TRUSTED_PROXIES` and the keys in `secrets.json`.
+Staff who can read settings see the page; only the Owner, or staff whose role
+may assign staff roles, changes it, because the SSO issuer decides who can sign
+in as whom and the billing key acts on VMs.
 
 Every request must carry a `timestamp` in its signed body within 5 minutes of
 the panel's clock, and each signed request is accepted once, so keep the
@@ -297,6 +377,20 @@ with `BILLING_WEBHOOK_SECRET` when none is. Each event is stored, retried up to
 Nothing is sent or stored while no URL is saved. The WHMCS receiver is the
 events addon in `integrations/whmcs`. The "Welcome (billing order)" email to a
 new customer needs SMTP and `PANEL_PUBLIC_URL`.
+
+Single sign-on from the billing system (event `user.sso`, WHMCS's "Open control
+panel") hands out links that last 60 seconds and work once. They point at
+`PANEL_PUBLIC_URL` when it is set, else at the hostname the billing system
+uses to reach the panel, so set it when that hostname is not the one customers
+open. Customer accounts only; the panel's own two-factor step still applies.
+
+Plans carry a display price and per-VM allowances (snapshots, backups, extra
+IPv4, IPv6 added later). Existing plans read as "no price, no limit" after the
+upgrade, so nothing changes until you set them. Lowering the backup allowance
+removes the oldest completed scheduled backups above it at the next hourly
+pass; manual backups are never removed. Plans, a plan, Apply to VMs
+previews and applies an edited plan's size, limits, speed, quota and mail block
+to the VMs on it; running VMs keep their size until stopped.
 
 ## 6. Agent deployment (separate, privileged)
 
@@ -356,11 +450,25 @@ docker compose -f docker-compose.production.yml --env-file .env.production \
   cp ./agent-amd64.sig panel:/app/bin/linux/agent-amd64.sig
 ```
 
+A release can be signed by the release workflow instead (§16): with the
+repository secret `AGENT_SIGNING_KEY` set to the key file's contents, the
+published agents come with `.sig` files and the release's panel image already
+carries them beside the binaries. The key then lives in the repository's
+secrets rather than only on your signing machine; leave it unset to keep signing
+offline as above.
+
 The panel sends `agent-<arch>.sig` with the update when it is there. A rebuilt
 panel image has a new agent build, so sign again after every rebuild (the copied
 signature does not survive a container being recreated: bind-mount it, or
 repeat the `cp`). Nodes without `AGENT_UPDATE_PUBKEY` ignore the signature, and
 older panels keep working with them.
+
+**What an agent runs with.** A node's page lists its agent's settings, read
+from the node when the page opens: the variables above and the rest the agent
+reads (bind address, storage, VLAN bridges, bridge netfilter, and so on), with
+secrets shown only as set. Change them on the node (`systemctl edit
+maburvm-agent`, then restart the agent). An agent older than this panel reports
+none.
 
 **Updating an agent from the panel.** Settings, System lists each node's agent
 build beside the panel's and offers "Update to <commit>" for a node on another
@@ -522,14 +630,128 @@ VM has its console on loopback, the chain is empty.
 > exception that requires a dedicated minimization test before any change. Do not
 > attempt to remove `--privileged` without that test.
 
-> **Agent bootstrap is NOT a production solution here.** The `/install-agent.sh`
-> script and the bare `docker run` example above are documented only to convey the
-> separate/privileged nature of agents and that the panel initiates gRPC. The
-> automated installer / agent artifact path is intentionally **unavailable** and
-> the public bootstrap endpoints are **503-contained** until Phase 1's verified
-> agent deployment and trust contract. Do not represent `/install-agent.sh` or
-> this `docker run` as a production deployment method. Privilege minimization and
-> trusted deployment automation are owned by Phase 1.
+### 6.1 Adding a new node with the installer
+
+The installer is for **new machines only**: Debian 12 or 13, or Ubuntu 22.04 or
+24.04 (the RHEL 9 family is best effort), with no VMs on it. Never run it on a
+node that already carries customer VMs; update an existing node's agent from
+Settings, System (or `scripts/deploy-agent.sh`). The panel will not give out an
+install command for a node an agent has ever answered for, or that has VMs, and
+the installer refuses such a host by itself as well.
+
+1. **Nodes, Add node.** Give the name and the address the panel reaches the
+   node on (port 50051). The panel shows a single-use install command:
+
+   ```bash
+   curl -fsSL https://panel.example.com/install-agent.sh | sudo bash -s -- --token mbe_...
+   ```
+
+   The token works for one enrollment and for one hour, and is shown once. The
+   node's page can create a new command while no agent has answered for the
+   node; that stops the old one working. Only a SHA-256 of the token is stored.
+2. **On the new machine, as root,** run the command. Add `--dry-run` first to
+   print every step without changing anything (root is not needed for that). In
+   order, the installer:
+   - stops with exit code 3 if the host already has libvirt domains (running, or
+     defined under `/etc/libvirt/qemu`) or a MaburVM agent (unit, binary or
+     `/etc/maburvm-agent.env`). `--force` goes on anyway, but then leaves the
+     network and bridge netfilter as they are;
+   - asks the panel whether the token is good and the node still has no agent,
+     and checks the panel has an agent for this architecture, before
+     installing anything;
+   - installs QEMU/KVM, libvirt, `qemu-utils`, `iputils-arping`, `ebtables`,
+     `iptables`, `bridge-utils`, `libguestfs-tools`, `genisoimage`, `chrony` and
+     `dnsmasq-base`, and starts libvirt and chrony;
+   - creates the storage pool directory (`--pool-dir`, default
+     `/var/lib/libvirt/images`), warning when it is on the root filesystem;
+   - loads `br_netfilter` and writes `/etc/modules-load.d/maburvm.conf`,
+     `/etc/sysctl.d/99-maburvm-bridge.conf` and `/etc/sysctl.d/99-maburvm.conf`
+     (IP forwarding), the files the agent itself keeps;
+   - sets up a bridge, only with `--bridge` (below);
+   - downloads the agent bundled with the panel with the token, checks its
+     SHA-256 against the digest in the script (and, with `--update-pubkey`, its
+     signature, using `openssl`), and checks that it runs on the host;
+   - enrolls: the token is used up, and the panel hands out a new agent
+     credential, written with the other settings to `/etc/maburvm-agent.env`
+     (mode 0600; the agent keeps its TLS key and secrets in `/var/lib/maburvm`).
+     Only then is the agent put in place. The layout is the same as for nodes
+     set up by hand: binary `/usr/local/bin/maburvm-agent`, unit
+     `maburvm-agent`, so updates from the panel and `scripts/deploy-agent.sh`
+     work on it;
+   - starts the agent and prints the host checks (`maburvm-agent --preflight`).
+3. **In the panel,** add a storage pool for the pool directory and an IP pool
+   for the node (with the bridge), then look at the node's host checks.
+
+| Option | Meaning |
+|---|---|
+| `--dry-run` | Print every step, change nothing. |
+| `--pool-dir DIR` | Where VM disks go. Default `/var/lib/libvirt/images`. |
+| `--bridge NAME` | The bridge VMs attach to. An existing bridge is used as it is; otherwise it is created (below). |
+| `--bridge-iface IFACE` | The uplink to put in the new bridge. Default: the interface of the IPv4 default route. |
+| `--confirm-timeout SECS` | Time to confirm the new network, 30 to 3600. Default 120. |
+| `--allowed-panel-ips LIST` | Written as `AGENT_ALLOWED_PANEL_IPS`. |
+| `--update-pubkey KEY` | Written as `AGENT_UPDATE_PUBKEY`; the downloaded agent must carry a matching signature. |
+| `--bind ADDRESS` | `AGENT_BIND_ADDRESS`, default `0.0.0.0`. |
+| `--force` | Install on a host that already runs VMs or an agent. |
+| `--any-os` | Try on a system that is not supported. |
+
+**Creating a bridge.** With `--bridge br0` and no such bridge, the installer
+moves the uplink's addresses, routes and MAC address onto a new bridge. It does
+so only where the network is configured by netplan or ifupdown and that
+configuration names nothing but the uplink; with NetworkManager, another
+interface, a bond or VLAN, DHCP under ifupdown, routes on the uplink besides
+the default one, or anything it does not recognise, it stops and says so, and
+you create the bridge yourself and re-run with `--bridge` naming it. Before changing anything it copies the configuration
+to `/var/backups/maburvm-network-<time>/` with a `rollback.sh`, and arms a
+systemd timer (`maburvm-net-rollback-<time>`) that runs it after the
+confirmation time plus 30 seconds. The change itself runs as its own systemd
+unit, so a dropped SSH session cannot stop it halfway. If the panel is not
+reachable over the new network, the old one is put back at once. Otherwise the
+installer asks you to open a new SSH session and type `keep`; without that, or
+with no terminal, the old network comes back. It stops asking 15 seconds
+before the timer fires, so a late `keep` is never taken for one that worked.
+From another session, `systemctl stop maburvm-net-rollback-<time>.timer` keeps
+it too; if the first session was cut, run the install command again then (the
+token is still unused, and the new bridge is used as it is). A cloud-init
+host also gets `/etc/cloud/cloud.cfg.d/99-maburvm-disable-network-config.cfg`,
+so cloud-init does not rewrite the network at the next boot. Do not reboot
+during the confirmation window: the timer does not survive a reboot.
+
+**The endpoints.** `/install-agent.sh` and
+`/api/v1/nodes/agent-binary/checksum` are public and hold nothing secret. The
+agent binary (`/api/v1/nodes/agent-binary`) and the enrollment
+(`/api/v1/nodes/enroll`) need the token in an `Authorization: Bearer` header,
+never in a URL. All four are rate limited per address. Each enrollment is in the
+audit log (action `ENROLL`, the node), and a used, expired or wrong token is
+refused the same way. A token issued for a node is refused once an agent has
+answered for that node, so it cannot take over a node that is running.
+
+### 6.2 Host checks
+
+A node's page has **Host checks**: whether the node is set up the way VMs need.
+The agent checks hardware virtualization and `/dev/kvm`; that the libvirt daemon
+answers, and its and QEMU's version; `qemu-img` and qcow2 support; every bridge
+the node's IP pools name (exists, is a bridge, is up); every directory storage
+pool of the node (exists, writable, free space, and whether it is on the root
+filesystem), or the default image directory when the node has no pool; bridge
+netfilter; IP forwarding; `iptables`, an ISO tool, `arping`, `ebtables` and
+libguestfs; and whether the clock is synchronised. Each line is pass, warning
+or failed, with how to fix it. Check now asks the node again (it reads the host
+and changes nothing); the panel keeps the last answer and when it was given. A
+node whose agent is older says so: update its agent to see the checks. The
+same checks run on the node with `maburvm-agent --preflight [--pool DIR]
+[--bridge NAME] [--json]`, which exits 1 when one fails.
+
+**Disks are never put in the wrong place.** An agent of this version refuses to
+create a VM disk, or attach an extra disk, in a storage pool whose directory
+does not exist on the node, and says so. Older agents silently put the disk in
+`/var/lib/libvirt/images` on the root filesystem instead. Before updating a
+node's agent, check that the path of each of its pools on the Storage page
+exists on the node (`ls -ld <path>`); a missing one shows as failed in the host
+checks once the agent is updated.
+
+The agent no longer needs the panel's database or object storage settings
+(`DB_*`, `S3_*`) in its environment to start; nodes that have them keep working.
 
 ## 7. TLS & reverse proxy
 
@@ -589,6 +811,9 @@ agent built from the same commit; *Settings → System → Update* pushes it to 
 node (verified, test-run, auto-rollback). Nodes must already run an agent with
 the `UpdateAgent` RPC — the first upgrade goes through `deploy-agent.sh`.
 
+On the host, `scripts/upgrade-panel.sh --build` (§16) builds from the synced
+source with a dump first and a rollback if the new panel does not come up.
+
 Manual equivalent:
 
 ```bash
@@ -605,7 +830,8 @@ docker compose -f docker-compose.production.yml --env-file .env.production build
 docker compose -f docker-compose.production.yml --env-file .env.production up -d panel web
 ```
 
-`deploy-panel.sh` ships source only. `docker-compose.production.yml`,
+`deploy-panel.sh` ships source only (and `docker/agent-sigs/`, which
+`Dockerfile.panel` copies). `docker-compose.production.yml`,
 `docker-compose.rehearsal.yml`, `docker/` and `scripts/panel-restore.sh` change
 rarely and are copied by hand: compare the host's copy with the repo's first
 (`diff`), then copy each file to its own path. The `panel-backup` service (§9)
@@ -637,7 +863,9 @@ exact pinned version you intend:
 - `node:22.23.1-alpine3.24` (Dockerfile.web build/runtime)
 - `alpine:3.24` (Dockerfile.panel / Dockerfile.agent runtime)
 - `maburvm-panel:local` / `maburvm-web:local` (built from the local Dockerfiles;
-  `web` builds from the **repo-root** `Dockerfile.web`, not `./web`)
+  `web` builds from the **repo-root** `Dockerfile.web`, not `./web`), or
+  `${MABURVM_IMAGE_PREFIX}-panel:${MABURVM_VERSION}` and `-web:` when the install
+  runs published releases (§16)
 
 No `latest`, and **no invented digests** — only tags that exist upstream. Image
 tag review, SBOM, and CVE scanning — plus actual Docker image build/start and
@@ -1124,8 +1352,9 @@ panel's AES key and are never shown again.
 
 ### Prometheus
 
-With `METRICS_TOKEN` set, `/metrics` (bearer token) carries two signals made
-for alerting on a node, both taken from the panel's own checks:
+With a metrics token set (Settings, System, Panel, or `METRICS_TOKEN`),
+`/metrics` (bearer token) carries two signals made for alerting on a node, both
+taken from the panel's own checks:
 
 - `maburvm_node_up{node}` is 1 when the node's agent reported on the last
   check and 0 when that check got no report.
@@ -1243,3 +1472,128 @@ to delete them with it. Each VM given away is recorded in the audit log.
 **Detaching a data disk deletes it.** A detached disk is not kept anywhere it
 could be reattached from, so the panel asks for confirmation and deletes the
 disk with everything on it.
+
+## 16. Releases, upgrades and rollback
+
+### 16.1 Releases
+
+Pushing a tag such as `v1.2.0` runs `.github/workflows/release.yml`. It builds
+and pushes `ghcr.io/<owner>/maburvm-panel:<tag>` and `maburvm-web:<tag>` for
+linux/amd64 and linux/arm64 (and `:latest` for a tag without a `-` suffix),
+stamped with the tag and commit (Settings, System, Version shows them), builds
+the agent binaries (amd64 and arm64) with a `SHA256SUMS` file, and creates a
+**draft** GitHub release with notes drafted from the Conventional Commit
+subjects (`scripts/release-notes.sh`), the database migrations the release adds,
+and the install and upgrade commands. Review the draft, then publish it. New
+packages on the registry are private until you make them public.
+
+Agent signatures are optional (§6): set the repository secret
+`AGENT_SIGNING_KEY` to sign in the workflow, and the repository variable
+`AGENT_UPDATE_PUBKEY` to have the workflow verify its own signatures. The
+workflow checks that the image bundles exactly the released agent binaries.
+
+To run published images, set in `.env.production`:
+
+```bash
+MABURVM_IMAGE_PREFIX=ghcr.io/OWNER/maburvm
+MABURVM_VERSION=v1.2.0
+```
+
+Leave both unset to keep building on the host (`maburvm-panel:local`). Never
+`build` an install that runs published images: it would overwrite the tag.
+
+### 16.2 Upgrading the panel
+
+```bash
+scripts/upgrade-panel.sh --version v1.3.0   # published images
+scripts/upgrade-panel.sh --build            # built from this directory
+```
+
+In order, it:
+
+1. tags the running images `maburvm-panel:rollback` and `maburvm-web:rollback`
+   and copies `.env.production` to `backups/`;
+2. runs an off-host backup now (`panel-backup once`) when panel-backup is
+   configured (§9), and stops if that fails (`--skip-offsite-backup` to go on);
+3. pulls (or builds) the new images while the current panel keeps running;
+4. stops the panel (web stays up) and dumps the database through the postgres
+   container into `backups/pre-upgrade-<time>.dump` (mode 0600, the newest five
+   kept), checks the dump reads back, and records it in the database. If the
+   dump fails, the previous panel is started again and nothing else changes;
+5. starts the new panel alone, which applies pending migrations as it starts,
+   then web, and waits for both health checks (`--timeout`, default 30 minutes
+   for the panel).
+
+If the panel or web does not become healthy, it puts the previous images and
+`.env.production` back. If migrations ran, it asks whether to restore the dump
+(`--yes` restores without asking, `--no-restore` never does): the dump is
+restored into a new database which then replaces the current one, kept as
+`<db>_replaced_<time>` until you drop it. The panel was stopped for the dump, so
+a restore loses only what the new version wrote. Then it starts the previous
+images (by their `:rollback` tags, whatever `.env.production` names) and exits
+non-zero.
+
+A restore with `scripts/panel-restore.sh` (§9) records the restored archive the
+same way, so a newer panel image may migrate the restored database.
+
+**Migrations at boot.** Each migration runs in its own transaction with its own
+time limit, `MIGRATION_TIMEOUT` (default `30m`); one that runs out is rolled
+back and the panel stops with a message naming it. Raise it for an upgrade whose
+notes warn of a long migration. With `MIGRATION_REQUIRE_BACKUP_WITHIN` set (for
+example `6h`; the installer sets it), the panel refuses to apply pending
+migrations to a database that already has accounts in it unless the upgrade script
+recorded a dump within that time, so an upgrade started with a plain
+`docker compose up` cannot migrate without a way back. The panel's health check
+allows ten minutes before a slow start counts as unhealthy.
+
+```bash
+# What is applied and what is pending, and the newest recorded dump:
+docker compose -f docker-compose.production.yml --env-file .env.production \
+  run --rm --no-deps panel migrate status
+```
+
+### 16.3 Rolling back by hand
+
+Prefer restoring the dump taken before the upgrade: it returns the database to
+exactly what the previous version knew. Stop the panel and web, then:
+
+```bash
+DC="docker compose -f docker-compose.production.yml --env-file .env.production"
+$DC stop panel web
+$DC exec -T postgres createdb -U maburvm maburvm_restoring
+$DC exec -T postgres pg_restore -U maburvm -d maburvm_restoring --no-owner --no-acl \
+  --single-transaction --exit-on-error < backups/pre-upgrade-<time>.dump
+$DC exec -T postgres psql -U maburvm -d postgres \
+  -c 'ALTER DATABASE maburvm RENAME TO maburvm_replaced' \
+  -c 'ALTER DATABASE maburvm_restoring RENAME TO maburvm'
+# Put back the previous images: the old MABURVM_VERSION in .env.production, or
+docker tag maburvm-panel:rollback maburvm-panel:local
+docker tag maburvm-web:rollback maburvm-web:local
+$DC up -d --no-build --force-recreate panel web
+```
+
+Without a dump, the new version can undo its own migrations, newest first. It
+lists them and changes nothing until `--yes` is added; run it with the panel
+stopped and only after a backup:
+
+```bash
+$DC stop panel web
+$DC run --rm --no-deps panel migrate down 2
+$DC run --rm --no-deps panel migrate down 2 --yes
+```
+
+Some changes are not undone by going back:
+
+- **Credentials encrypted at first boot.** A panel from before encryption at
+  rest (§5) cannot read the agent tokens, VNC and mail passwords it finds
+  encrypted. Started on the upgraded database it sends nodes tokens they refuse,
+  and consoles and mail stop. Restore the pre-upgrade dump instead.
+- **Migration 065 down** removes the per-node column from port forwards but
+  does not put back the fleet-wide unique index: forwards made since may share
+  a port across nodes, and the index would not build.
+- **Data a newer version wrote** is dropped by a down migration that removes its
+  table or column. Restoring the dump loses everything written after it.
+- **Panel settings saved on the Settings, System, Panel page** are read only by
+  this version and later. Rolled back to an older panel, the environment
+  variables apply again; keep them in `.env.production` until you no longer
+  expect to go back.

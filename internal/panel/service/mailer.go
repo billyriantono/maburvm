@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/mail"
 	"net/smtp"
-	"os"
 	"strings"
 	"time"
 
@@ -116,7 +115,7 @@ func QueueWelcomeEmail(ctx context.Context, db *gorm.DB, cfg SMTPSettings, to, n
 // SendPasswordResetEmail sends a password-reset link.
 func SendPasswordResetEmail(cfg SMTPSettings, to, name, resetURL string) error {
 	return SendMail(cfg, to, RenderEmail(cfg.Template(EmailPasswordReset), cfg.Brand,
-		EmailData{Name: name, Email: to, Link: resetURL, LogoURL: EmailLogoURL(cfg.Brand, os.Getenv("PANEL_PUBLIC_URL"))}))
+		EmailData{Name: name, Email: to, Link: resetURL, LogoURL: EmailLogoURL(cfg.Brand, PublicURL())}))
 }
 
 // SendTestEmail sends a short message that proves the SMTP settings work.
@@ -291,7 +290,7 @@ func NotifyVMOwnerWith(ctx context.Context, db *gorm.DB, vmID, key string, extra
 	if until, err := InitialPasswordExpiry(ctx, db, vmID); err == nil && until != nil {
 		access = AccessPasswordOnPage
 	}
-	publicURL := strings.TrimRight(strings.TrimSpace(os.Getenv("PANEL_PUBLIC_URL")), "/")
+	publicURL := PublicURL()
 	link := ""
 	if publicURL != "" {
 		// Staff manage their own VMs in the admin area; everyone else in the customer area.

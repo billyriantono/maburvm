@@ -27,6 +27,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { useUsers, useDeleteUser } from "@/lib/hooks/use-users"
+import { useCan } from "@/lib/hooks/use-auth"
 import { useUserQuota, useSetUserQuota } from "@/lib/hooks/use-quota"
 import type { SetQuotaRequest } from "@/types/quota"
 import { isSignInLocked, type User } from "@/types"
@@ -124,6 +125,7 @@ function QuotaDialog({ user: openUser, onClose }: {
 
 export default function UsersPage() {
   const confirm = useConfirm()
+  const allow = useCan()
   const [searchQuery, setSearchQuery] = useState("")
   const [roleFilter, setRoleFilter] = useState<string>("")
   const [quotaUser, setQuotaUser] = useState<User | null>(null)
@@ -210,12 +212,14 @@ export default function UsersPage() {
             {total} {total === 1 ? "user" : "users"}
           </p>
         </div>
-        <Link href="/users/new">
-          <Button className="flex items-center gap-2">
-            <UserPlus className="w-4 h-4" />
-            Add User
-          </Button>
-        </Link>
+        {allow("user:create") && (
+          <Link href="/users/new">
+            <Button className="flex items-center gap-2">
+              <UserPlus className="w-4 h-4" />
+              Add User
+            </Button>
+          </Link>
+        )}
       </div>
 
       {/* Search and Filters */}
@@ -293,7 +297,7 @@ export default function UsersPage() {
               <div className="col-span-2">
                 <Badge variant={user.role === "admin" ? "default" : "secondary"} className="gap-1 font-medium">
                   <Shield className="w-3 h-3" />
-                  {user.role}
+                  {user.role === "admin" ? user.staff_role_name ?? "Staff" : "Customer"}
                 </Badge>
                 {user.suspended_at && <StatusBadge status="suspended" className="mt-1 flex" />}
               </div>
@@ -314,6 +318,7 @@ export default function UsersPage() {
                 <Link href={`/users/${user.id}`}>
                   <Button variant="outline" size="sm" className="h-8">Details</Button>
                 </Link>
+                {allow("user:update") && (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -323,6 +328,8 @@ export default function UsersPage() {
                 >
                   <Gauge className="w-4 h-4" />
                 </Button>
+                )}
+                {allow("user:delete") && (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -333,6 +340,7 @@ export default function UsersPage() {
                 >
                   <Trash2 className="w-4 h-4" />
                 </Button>
+                )}
               </div>
             </div>
           ))

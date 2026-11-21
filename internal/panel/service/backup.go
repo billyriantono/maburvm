@@ -155,6 +155,14 @@ func (s *BackupService) CreateBackup(ctx context.Context, req *CreateBackupReque
 	// ux_backups_active_per_vm partial unique index (see backupRepo.Create below),
 	// which covers both this path and the scheduled path with no TOCTOU window.
 
+	kept, err := keptBackups(ctx, s.db, vm.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count the VM's backups: %w", err)
+	}
+	if err := checkVMAllowance(ctx, s.db, vm, kept, planMaxBackups, "backup", "backups", "Delete one to make another."); err != nil {
+		return nil, err
+	}
+
 	// Determine compression
 	if !validCompression(req.Compression) {
 		return nil, ErrInvalidCompression
@@ -526,11 +534,17 @@ func (s *BackupService) ConfigureSchedule(ctx context.Context, req *ConfigureSch
 	}
 
 	// Validate VM exists
-	if _, err := s.vmRepo.GetByID(ctx, req.VMID); err != nil {
+	vm, err := s.vmRepo.GetByID(ctx, req.VMID)
+	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrVMNotFound
 		}
 		return nil, fmt.Errorf("failed to get VM: %w", err)
+	}
+	// A plan with no backups has nothing for a schedule to keep. With some,
+	// scheduled backups rotate within the allowance (see executeScheduledBackup).
+	if err := checkVMAllowance(ctx, s.db, vm, 0, planMaxBackups, "backup", "backups", ""); err != nil {
+		return nil, err
 	}
 
 	storageProvider := models.BackupStoreDestination
@@ -725,6 +739,10 @@ func (s *BackupService) executeScheduledBackup(ctx context.Context, schedule *mo
 		s.logger.Error("failed to get VM for scheduled backup", "schedule_id", schedule.ID, "vm_id", schedule.VMID, "error", err)
 		return
 	}
+	if ok, why, err := s.scheduledBackupAllowed(ctx, vm); !ok {
+		s.logger.Warn("skipping scheduled backup", "schedule_id", schedule.ID, "vm_id", vm.ID, "reason", why, "error", err)
+		return
+	}
 
 	storagePath := s.dest.Key(ctx, fmt.Sprintf("backups/%s/scheduled_%s.qcow2", vm.ID, now.UTC().Format("20060102_150405")))
 	backup := &models.Backup{
@@ -768,7 +786,7 @@ func (s *BackupService) executeScheduledBackup(ctx context.Context, schedule *mo
 // keeps. Manual backups are never touched.
 func (s *BackupService) applyRetentionPolicy(ctx context.Context, schedule *models.BackupSchedule, now time.Time) error {
 	if schedule.RetentionPolicy == (models.BackupRetentionPolicy{}) {
-		return nil
+		return s.pruneOverAllowance(ctx, schedule.VMID)
 	}
 	backups, err := s.backupRepo.ListByVMID(ctx, schedule.VMID, 0, 0)
 	if err != nil {
@@ -784,6 +802,77 @@ func (s *BackupService) applyRetentionPolicy(ctx context.Context, schedule *mode
 		if _, err := s.DeleteBackup(ctx, b.ID); err != nil {
 			s.logger.Error("failed to delete backup per retention policy", "backup_id", b.ID, "error", err)
 		}
+	}
+	return s.pruneOverAllowance(ctx, schedule.VMID)
+}
+
+func planMaxBackups(p *models.Plan) *int { return p.MaxBackups }
+
+// scheduledBackupAllowed reports whether a scheduled backup may start under
+// the VM's plan: below its allowance, or at it with a completed scheduled
+// backup for the new one to replace (pruneOverAllowance removes it once the
+// new one exists). Manual backups are never removed to make room.
+func (s *BackupService) scheduledBackupAllowed(ctx context.Context, vm *models.VM) (bool, string, error) {
+	vmID := vm.ID
+	plan, err := vmPlan(ctx, s.db, vm)
+	if err != nil || plan == nil || plan.MaxBackups == nil {
+		return err == nil, "", err
+	}
+	if *plan.MaxBackups == 0 {
+		return false, "the VM's plan includes no backups", nil
+	}
+	kept, err := keptBackups(ctx, s.db, vmID)
+	if err != nil || kept < int64(*plan.MaxBackups) {
+		return err == nil, "", err
+	}
+	var replaceable int64
+	if err := s.db.WithContext(ctx).Model(&models.Backup{}).
+		Where("vm_id = ? AND status = ? AND backup_type = ?", vmID, models.BackupStatusCompleted, models.BackupTypeSchedule).
+		Count(&replaceable).Error; err != nil {
+		return false, "", err
+	}
+	if replaceable == 0 {
+		return false, fmt.Sprintf("the VM's plan keeps %d backups and the VM holds that many manual ones", *plan.MaxBackups), nil
+	}
+	return true, "", nil
+}
+
+// pruneOverAllowance removes the oldest completed scheduled backups while the
+// VM holds more than its plan keeps. Manual backups and the newest scheduled
+// one stay, and a plan with no backups removes nothing: its schedules only
+// stop making new ones.
+func (s *BackupService) pruneOverAllowance(ctx context.Context, vmID string) error {
+	vm, err := s.vmRepo.GetByID(ctx, vmID)
+	if err != nil {
+		return nil // a VM gone has nothing to prune; its schedule goes with it
+	}
+	plan, err := vmPlan(ctx, s.db, vm)
+	if err != nil || plan == nil || plan.MaxBackups == nil || *plan.MaxBackups == 0 {
+		return err
+	}
+	// Completed only: a run still going may fail, and must not cost the
+	// backup it was meant to replace.
+	var kept int64
+	if err := s.db.WithContext(ctx).Model(&models.Backup{}).
+		Where("vm_id = ? AND status = ?", vmID, models.BackupStatusCompleted).Count(&kept).Error; err != nil {
+		return err
+	}
+	excess := kept - int64(*plan.MaxBackups)
+	if excess <= 0 {
+		return nil
+	}
+	var scheduled []models.Backup
+	if err := s.db.WithContext(ctx).
+		Where("vm_id = ? AND status = ? AND backup_type = ?", vmID, models.BackupStatusCompleted, models.BackupTypeSchedule).
+		Order("created_at ASC").Find(&scheduled).Error; err != nil {
+		return err
+	}
+	for i := 0; i < len(scheduled)-1 && excess > 0; i++ {
+		if _, err := s.DeleteBackup(ctx, scheduled[i].ID); err != nil {
+			s.logger.Error("failed to delete a backup over the plan's allowance", "backup_id", scheduled[i].ID, "error", err)
+			continue
+		}
+		excess--
 	}
 	return nil
 }

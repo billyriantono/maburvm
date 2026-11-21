@@ -21,6 +21,7 @@ import { useSelfService } from "@/lib/hooks/use-quota"
 import type { OSTemplate } from "@/types"
 import { templateOfferedOn } from "@/types/template"
 import type { Plan } from "@/types/plan"
+import { planAllowances, planPrice } from "@/lib/plans"
 
 // A client orders a VM by picking a plan (resource flavor) + an OS template and a
 // hostname. Ownership is forced server-side to the caller, and quota is enforced,
@@ -278,10 +279,12 @@ function OrderVMForm() {
                       <span className="mt-3 block text-xl font-semibold tracking-tight">
                         {p.cpu} vCPU <span className="text-muted-foreground">/</span> {formatRAM(p.ram)}
                       </span>
+                      {planPrice(p) && <span className="mt-1 block text-sm font-medium">{planPrice(p)}</span>}
                       <span className="mt-3 block space-y-1.5 border-t pt-3 text-xs text-muted-foreground">
                         <span className="flex items-center gap-2"><HardDrive className="h-3.5 w-3.5" aria-hidden="true" />{p.disk} GB disk</span>
                         <span className="flex items-center gap-2"><Gauge className="h-3.5 w-3.5" aria-hidden="true" />{formatSpeed(p.bandwidth_mbps)}</span>
                         <span className="flex items-center gap-2"><Database className="h-3.5 w-3.5" aria-hidden="true" />{formatTransfer(p.data_quota_gb)}</span>
+                        {planAllowances(p).length > 0 && <span className="block">{planAllowances(p).join(", ")}</span>}
                       </span>
                     </button>
                   )
@@ -437,6 +440,9 @@ function OrderVMForm() {
                 value={selectedPlan?.name}
                 detail={selectedPlan && `${selectedPlan.cpu} vCPU, ${formatRAM(selectedPlan.ram)}, ${selectedPlan.disk} GB disk`}
               />
+              {selectedPlan && planPrice(selectedPlan) && (
+                <SummaryRow label="Price" value={planPrice(selectedPlan)!} detail="Billed by your billing account" />
+              )}
               <SummaryRow
                 label={sourceImageId ? "Image" : "System"}
                 value={sourceImageId ? (sourceImage?.name ?? "Saved image") : selectedTemplate && templateLabel(selectedTemplate.name, selectedTemplate.version)}

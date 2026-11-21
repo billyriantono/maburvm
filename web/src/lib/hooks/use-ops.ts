@@ -24,19 +24,22 @@ export interface SupportGrant {
   note: string
   expires_at: string
   created_at: string
+  /** Its staff role; none for accounts opened before roles (Administrator). */
+  role?: string
 }
 
-export function useSupportGrants() {
+export function useSupportGrants(enabled = true) {
   return useQuery<SupportGrant[]>({
     queryKey: ['security', 'support'],
     queryFn: async () => (await api.get<SupportGrant[]>('/api/v1/security/support-access')).data.data,
     refetchInterval: 60_000,
+    enabled,
   })
 }
 
 export function useGrantSupport() {
   const queryClient = useQueryClient()
-  return useMutation<{ grant: SupportGrant; password: string }, Error, { hours: number; note: string }>({
+  return useMutation<{ grant: SupportGrant; password: string }, Error, { hours: number; note: string; role: string }>({
     mutationFn: async (body) =>
       (await api.post<{ grant: SupportGrant; password: string }>('/api/v1/security/support-access', body)).data.data,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['security'] }),

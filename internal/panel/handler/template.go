@@ -67,7 +67,7 @@ func (h *TemplateHandler) RegisterRoutes(e *echo.Echo, authMiddleware echo.Middl
 	// Reads are available to any authenticated user (clients need the catalog to
 	// order a VM). Mutations — creating, editing, deleting, triggering multi-GB
 	// image downloads onto nodes, or node syncs — are admin-only.
-	admin := middleware.RequirePermission("admin:access")
+	admin := middleware.RequirePermission("template:update")
 
 	api.GET("", h.ListTemplates)
 	api.GET("/:id", h.GetTemplate)

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/maburvm/panel/internal/panel/middleware"
@@ -186,8 +187,13 @@ type NodeDetailResponse struct {
 	Metrics        *NodeMetrics `json:"metrics,omitempty"`
 	// What the node has promised to VMs, against what it has.
 	Allocation *service.NodeAllocation `json:"allocation,omitempty"`
-	CreatedAt  string                  `json:"created_at"`
-	UpdatedAt  string                  `json:"updated_at"`
+	// LastReportAt is when its agent last reported; nil if it never has.
+	LastReportAt *time.Time `json:"last_report_at"`
+	// InstallerAllowed: no agent has ever answered for this node and no VM is
+	// on it, so the installer may be offered for it.
+	InstallerAllowed bool   `json:"installer_allowed"`
+	CreatedAt        string `json:"created_at"`
+	UpdatedAt        string `json:"updated_at"`
 }
 
 // NodeMetrics represents node performance metrics in the response
@@ -241,6 +247,8 @@ func (h *NodeHandler) GetNode(c echo.Context) error {
 	}
 
 	resp.Allocation, _ = h.service.Allocation(c.Request().Context(), node)
+	resp.LastReportAt = node.LastReportAt
+	resp.InstallerAllowed, _ = h.service.AcceptsInstaller(c.Request().Context(), node.ID)
 
 	if metrics != nil {
 		resp.Metrics = &NodeMetrics{

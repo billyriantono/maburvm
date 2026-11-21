@@ -35,42 +35,46 @@ import {
 import { cn } from "@/lib/utils"
 import { useNavDrawer } from "@/components/nav-drawer"
 import { BrandMark, useBranding } from "@/lib/branding/provider"
+import { can } from "@/lib/hooks/use-auth"
 import type { User } from "@/types"
 
-const navItems = [
+// perm is what the page needs to show anything; the role decides. Pages
+// without one read what every staff account may read.
+const navItems: { href: string; label: string; icon: typeof Monitor; perm?: string }[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/vms", label: "Virtual Machines", icon: Monitor },
+  { href: "/vms", label: "Virtual Machines", icon: Monitor, perm: "vm:read" },
   { href: "/plans", label: "Plans", icon: Boxes },
   { href: "/templates", label: "Templates", icon: Box },
-  { href: "/images", label: "Images", icon: Layers },
+  { href: "/images", label: "Images", icon: Layers, perm: "vm:read" },
   { href: "/regions", label: "Regions", icon: Globe },
-  { href: "/nodes", label: "Nodes", icon: HardDrive },
-  { href: "/storage", label: "Storage", icon: Database },
+  { href: "/nodes", label: "Nodes", icon: HardDrive, perm: "node:read" },
+  { href: "/storage", label: "Storage", icon: Database, perm: "node:read" },
   { href: "/isos", label: "ISOs", icon: Folder },
-  { href: "/networks", label: "Networks", icon: Zap },
-  { href: "/ip-pools", label: "IP Pools", icon: Network },
-  { href: "/floating-ips", label: "Floating IPs", icon: Waypoints },
-  { href: "/dns", label: "DNS", icon: Globe },
-  { href: "/users", label: "Users", icon: Users },
-  { href: "/monitoring", label: "Monitoring", icon: Activity },
-  { href: "/alerts", label: "Alerts", icon: BellRing },
-  { href: "/abuse", label: "Abuse", icon: ShieldAlert },
-  { href: "/ip-reputation", label: "IP Reputation", icon: ShieldX },
-  { href: "/security", label: "Security", icon: ShieldCheck },
+  { href: "/networks", label: "Networks", icon: Zap, perm: "network:read" },
+  { href: "/ip-pools", label: "IP Pools", icon: Network, perm: "network:read" },
+  { href: "/floating-ips", label: "Floating IPs", icon: Waypoints, perm: "floating_ip:read" },
+  { href: "/dns", label: "DNS", icon: Globe, perm: "network:read" },
+  { href: "/users", label: "Users", icon: Users, perm: "user:read" },
+  { href: "/staff-roles", label: "Staff roles", icon: KeySquare },
+  { href: "/monitoring", label: "Monitoring", icon: Activity, perm: "node:read" },
+  { href: "/alerts", label: "Alerts", icon: BellRing, perm: "ops:read" },
+  { href: "/abuse", label: "Abuse", icon: ShieldAlert, perm: "network:read" },
+  { href: "/ip-reputation", label: "IP Reputation", icon: ShieldX, perm: "network:read" },
+  { href: "/security", label: "Security", icon: ShieldCheck, perm: "settings:read" },
 ]
 
 // Settings navigation with sub-items
-const settingsNav = [
+const settingsNav: typeof navItems = [
   { href: "/settings/profile", label: "Profile", icon: UserIcon },
   { href: "/settings/api-keys", label: "API Keys", icon: KeyRound },
   { href: "/settings/ssh-keys", label: "SSH Keys", icon: KeySquare },
   { href: "/settings/recipes", label: "Recipes", icon: ScrollText },
-  { href: "/settings/branding", label: "Branding", icon: Palette },
-  { href: "/settings/emails", label: "Emails", icon: Mail },
-  { href: "/settings/queue", label: "Job queue", icon: ListChecks },
-  { href: "/settings/export", label: "Export data", icon: FileDown },
+  { href: "/settings/branding", label: "Branding", icon: Palette, perm: "settings:read" },
+  { href: "/settings/emails", label: "Emails", icon: Mail, perm: "settings:read" },
+  { href: "/settings/queue", label: "Job queue", icon: ListChecks, perm: "ops:read" },
+  { href: "/settings/export", label: "Export data", icon: FileDown, perm: "admin:access" },
   { href: "/setup", label: "Setup guide", icon: Rocket },
-  { href: "/settings/system", label: "System", icon: Shield },
+  { href: "/settings/system", label: "System", icon: Shield, perm: "settings:read" },
 ]
 
 interface SidebarProps {
@@ -78,12 +82,17 @@ interface SidebarProps {
 }
 
 // Every page reachable from this sidebar, for the header search and breadcrumb.
-export const adminPages: { href: string; label: string }[] = [
-  ...[...navItems, ...settingsNav].map(({ href, label }) => ({ href, label })),
-  { href: "/audit-logs", label: "Audit log" },
+export const adminPages: { href: string; label: string; perm?: string }[] = [
+  ...[...navItems, ...settingsNav].map(({ href, label, perm }) => ({ href, label, perm })),
+  { href: "/audit-logs", label: "Audit log", perm: "audit:read" },
 ]
 
-export function Sidebar({}: SidebarProps) {
+/** The pages this account's role can open. */
+export function visibleAdminPages(user: User) {
+  return adminPages.filter((p) => !p.perm || can(user, p.perm))
+}
+
+export function Sidebar({ user }: SidebarProps) {
   const pathname = usePathname()
   const { branding } = useBranding()
   const drawer = useNavDrawer()
@@ -111,7 +120,7 @@ export function Sidebar({}: SidebarProps) {
       {/* Navigation */}
       <nav className="flex flex-col h-[calc(100vh-4rem)] overflow-y-auto py-4">
         <div className="px-3 space-y-1">
-          {navItems.map((item) => {
+          {navItems.filter((item) => !item.perm || can(user, item.perm)).map((item) => {
             const isActive = pathname.startsWith(item.href)
             const Icon = item.icon
 
@@ -139,7 +148,7 @@ export function Sidebar({}: SidebarProps) {
                 Settings
               </span>
             </div>
-            {settingsNav.map((item) => {
+            {settingsNav.filter((item) => !item.perm || can(user, item.perm)).map((item) => {
               const isActive = pathname === item.href
               const Icon = item.icon
 

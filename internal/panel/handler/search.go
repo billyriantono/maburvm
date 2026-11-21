@@ -63,7 +63,8 @@ func searchHandler(db *gorm.DB) echo.HandlerFunc {
 		}
 		like := likePattern(q)
 		ctx := c.Request().Context()
-		admin := user.Role == models.RoleAdmin
+		// Staff search across accounts, each kind as far as their role reads it.
+		admin := user.Role == models.RoleAdmin && user.Can("vm:read")
 
 		// CAST works for both an inet column and plain text, so one query
 		// matches an address fragment like "203.0.113".
@@ -91,7 +92,7 @@ func searchHandler(db *gorm.DB) echo.HandlerFunc {
 			out["vms"] = vms
 		}
 
-		if admin {
+		if user.Role == models.RoleAdmin && user.Can("user:read") {
 			var users []SearchUser
 			if err := db.WithContext(ctx).Table("users").Select("id, email, name, role").
 				Where("deleted_at IS NULL").
@@ -99,6 +100,8 @@ func searchHandler(db *gorm.DB) echo.HandlerFunc {
 				Order("email").Limit(searchLimit).Scan(&users).Error; err == nil && users != nil {
 				out["users"] = users
 			}
+		}
+		if user.Role == models.RoleAdmin && user.Can("node:read") {
 			var nodes []SearchNode
 			if err := db.WithContext(ctx).Table("nodes").Select("id, name, CAST(ip_address AS TEXT) AS ip_address, status").
 				Where("deleted_at IS NULL").

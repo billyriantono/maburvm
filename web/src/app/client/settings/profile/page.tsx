@@ -6,6 +6,7 @@ import { useCurrentUser } from "@/lib/hooks/use-auth"
 import { useChangePassword } from "@/lib/hooks/use-settings"
 import { useMyQuota } from "@/lib/hooks/use-quota"
 import { TwoFactorSettings } from "@/components/two-factor-settings"
+import { AccountSessions } from "@/components/account-sessions"
 
 function quotaLabel(used: number, max: number, unit: string) {
   return `${used}${unit} / ${max === 0 ? "∞" : `${max}${unit}`}`
@@ -15,6 +16,8 @@ export default function ClientProfilePage() {
   const { data: user } = useCurrentUser()
   const { data: quota } = useMyQuota()
   const changePassword = useChangePassword()
+  // Staff viewing as this customer: their password, two-factor and sessions stay theirs.
+  const viewing = !!user?.impersonator
 
   const [current, setCurrent] = useState("")
   const [next, setNext] = useState("")
@@ -67,7 +70,14 @@ export default function ClientProfilePage() {
         </div>
       </section>
 
-      <TwoFactorSettings />
+      {viewing ? (
+        <p className="rounded-md border p-4 text-sm text-muted-foreground">
+          You are viewing this account as staff. Its password, two-factor authentication and sessions can only be
+          changed by the customer, or from their user page in the admin area.
+        </p>
+      ) : (
+        <TwoFactorSettings />
+      )}
 
       {/* Quota */}
       {quota && (
@@ -96,7 +106,10 @@ export default function ClientProfilePage() {
         </section>
       )}
 
+      <AccountSessions canRevoke={!viewing} />
+
       {/* Change password */}
+      {!viewing && (
       <section className="rounded-lg border bg-card text-card-foreground shadow-sm">
         <div className="px-5 py-4 border-b">
           <h2 className="text-lg font-semibold">Change Password</h2>
@@ -135,6 +148,7 @@ export default function ClientProfilePage() {
           </button>
         </div>
       </section>
+      )}
     </div>
   )
 }

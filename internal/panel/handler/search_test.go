@@ -37,11 +37,14 @@ func TestSearchScopesToTheCaller(t *testing.T) {
 		alice.String(), bob.String(), bob.String()).Error)
 	require.NoError(t, db.Exec(`INSERT INTO networks (id,vm_id,ip_address) VALUES ('a','v1','203.0.113.10'),('b','v2','203.0.113.20')`).Error)
 
-	search := func(q string, id uuid.UUID, role models.UserRole) map[string][]map[string]any {
+	search := func(q string, id uuid.UUID, role models.UserRole, perms ...string) map[string][]map[string]any {
 		e := echo.New()
 		rec := httptest.NewRecorder()
 		c := e.NewContext(httptest.NewRequest(http.MethodGet, "/?q="+url.QueryEscape(q), nil), rec)
-		c.Set(middleware.UserContextKey, &middleware.UserContext{ID: id, Role: role})
+		if perms == nil {
+			perms = middleware.GetPermissionsForRole(role)
+		}
+		c.Set(middleware.UserContextKey, &middleware.UserContext{ID: id, Role: role, Permissions: perms})
 		require.NoError(t, searchHandler(db)(c))
 		var body struct {
 			Data map[string][]map[string]any `json:"data"`
@@ -70,4 +73,10 @@ func TestSearchScopesToTheCaller(t *testing.T) {
 	require.Len(t, search("0%_", uuid.New(), models.RoleAdmin)["vms"], 1)
 	require.Len(t, search("__", uuid.New(), models.RoleAdmin)["vms"], 0)
 	require.Len(t, search("alice@", uuid.New(), models.RoleAdmin)["users"], 1)
+
+	// Staff search each kind only as far as their role reads it.
+	billing := search("web", uuid.New(), models.RoleAdmin, "staff", "vm:read", "user:read")
+	require.Len(t, billing["vms"], 2)
+	require.Empty(t, billing["nodes"])
+	require.Empty(t, search("web", uuid.New(), models.RoleAdmin, "staff", "node:read")["vms"])
 }

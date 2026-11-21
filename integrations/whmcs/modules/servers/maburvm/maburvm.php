@@ -710,6 +710,42 @@ function maburvm_TestConnection(array $params)
 }
 
 /**
+ * Single sign-on: WHMCS calls this when the customer (or staff, from the
+ * service page) opens the control panel. The panel returns a link for the
+ * service's panel account that lasts a minute and works once; it opens the
+ * service's VM, and still asks for the panel's own two-factor code when the
+ * account has one. No account is ever made here.
+ */
+function maburvm_ServiceSingleSignOn(array $params)
+{
+    try {
+        $userId = maburvm_panelUserId($params);
+        if ($userId === '') {
+            return ['success' => false, 'errorMsg' => 'MaburVM: this service has no panel account yet. Run Create first, or fill in its Panel User ID.'];
+        }
+        $data = ['user_id' => $userId, 'external_ref' => 'whmcs-' . $params['serviceid']];
+        $vmId = maburvm_vmId($params);
+        if ($vmId !== '') {
+            $data['vm_id'] = $vmId;
+        }
+        list($code, $resp) = maburvm_sendEvent($params, 'user.sso', $data, 'whmcs-sso-' . uniqid('', true), 10);
+        if ($code >= 200 && $code < 300 && !empty($resp['success']) && !empty($resp['metadata']['path'])) {
+            // The panel's own public address when it knows one, else the server's.
+            $url = !empty($resp['metadata']['url']) ? $resp['metadata']['url'] : maburvm_apiBaseUrl($params) . $resp['metadata']['path'];
+            return ['success' => true, 'redirectTo' => $url];
+        }
+        $message = isset($resp['message']) ? $resp['message'] : ('HTTP ' . $code);
+        if ($code == 400 && stripos($message, 'Invalid event type') !== false) {
+            $message = 'this panel does not offer single sign-on yet; update the panel';
+        }
+        return ['success' => false, 'errorMsg' => 'MaburVM: ' . $message];
+    } catch (\Throwable $e) {
+        logModuleCall('maburvm', 'ServiceSingleSignOn', $params['serviceid'] ?? '', $e->getMessage(), $e->getTraceAsString());
+        return ['success' => false, 'errorMsg' => $e->getMessage()];
+    }
+}
+
+/**
  * Client-area panel: the VM's state and address, read live from the panel,
  * and links into the MaburVM client portal for day-to-day operation
  * (start/stop/reboot/console), which is not duplicated here.
@@ -738,6 +774,7 @@ function maburvm_ClientArea(array $params)
         'templatefile' => 'clientarea',
         'vars' => [
             'panelUrl' => maburvm_apiBaseUrl($params),
+            'serviceId' => $params['serviceid'],
             'vmId' => $vmId,
             'vmState' => $status !== null ? $status['state'] : '',
             'vmStateLabel' => $status !== null && isset($states[$status['state']]) ? $states[$status['state']] : '',

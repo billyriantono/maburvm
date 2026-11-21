@@ -18,6 +18,7 @@ import {
 import { Checkbox } from "@/components/ui/checkbox"
 import { IPWhitelistEditor } from "@/components/ip-whitelist-editor"
 import { useCreateUser } from "@/lib/hooks/use-users"
+import { useStaffRoles } from "@/lib/hooks/use-staff"
 
 export default function NewUserPage() {
   const router = useRouter()
@@ -29,10 +30,12 @@ export default function NewUserPage() {
     password: "",
     confirmPassword: "",
     role: "client" as "admin" | "client",
+    staffRole: "administrator",
     ipWhitelist: [] as string[],
     sendWelcomeEmail: true,
   })
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const staffRoles = useStaffRoles(formData.role === "admin")
 
   const validateForm = () => {
     const newErrors: Record<string, string> = {}
@@ -70,6 +73,7 @@ export default function NewUserPage() {
         email: formData.email,
         password: formData.password,
         role: formData.role,
+        staff_role: formData.role === "admin" ? formData.staffRole : undefined,
         ip_whitelist: formData.ipWhitelist,
         send_welcome_email: formData.sendWelcomeEmail,
       })
@@ -214,15 +218,38 @@ export default function NewUserPage() {
                     <SelectItem value="admin">
                       <div className="flex items-center gap-2">
                         <Shield className="w-4 h-4" />
-                        Admin - Full access
+                        Staff - What the staff role allows
                       </div>
                     </SelectItem>
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  Admins can manage users, nodes, and all resources. Clients can only manage their own VMs.
+                  Staff work in the admin area, as far as their staff role allows. Customers manage only their own VMs.
+                  Only the Owner creates staff accounts.
                 </p>
               </div>
+
+              {formData.role === "admin" && (
+                <div className="space-y-2">
+                  <Label htmlFor="staff-role">Staff role</Label>
+                  <select
+                    id="staff-role"
+                    value={formData.staffRole}
+                    onChange={(e) => setFormData({ ...formData, staffRole: e.target.value })}
+                    className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm"
+                  >
+                    {(staffRoles.data?.roles ?? [{ id: "administrator", name: "Administrator", description: "" }])
+                      .filter((r) => r.id !== "owner")
+                      .map((r) => (
+                        <option key={r.id} value={r.id}>{r.name}</option>
+                      ))}
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    {staffRoles.data?.roles.find((r) => r.id === formData.staffRole)?.description ??
+                      "What each role may do is on the Staff roles page."}
+                  </p>
+                </div>
+              )}
             </CardContent>
           </Card>
 

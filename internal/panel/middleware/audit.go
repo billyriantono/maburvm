@@ -158,6 +158,9 @@ func (c *Client) EchoMiddleware() echo.MiddlewareFunc {
 				"http_status": status,
 				"failed":      status >= 400,
 			}
+			if signedIn && user.ImpersonatorID != "" {
+				job.Details["impersonator_id"], job.Details["impersonator_email"] = user.ImpersonatorID, user.ImpersonatorEmail
+			}
 			if rid := ctx.Response().Header().Get(echo.HeaderXRequestID); rid != "" {
 				job.Details["request_id"] = rid
 			}

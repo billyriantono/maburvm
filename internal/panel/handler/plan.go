@@ -13,6 +13,32 @@ import (
 // PlanHandler handles VPS plan endpoints.
 type PlanHandler struct {
 	service *service.PlanService
+	// vms and net apply a plan's changes to the VMs on it.
+	vms *service.VMService
+	net *service.NetworkService
+}
+
+// SetRollout wires what applying a plan to its existing VMs needs.
+func (h *PlanHandler) SetRollout(vms *service.VMService, net *service.NetworkService) {
+	h.vms, h.net = vms, net
+}
+
+// Rollout handles GET (preview) and POST (apply) /api/v1/plans/:id/apply:
+// the VMs on the plan and what bringing each to the plan's current settings
+// changes. POST applies it; a VM whose size changes and is not stopped keeps
+// its size and says so.
+func (h *PlanHandler) Rollout(c echo.Context) error {
+	if h.vms == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]interface{}{"error": "Applying a plan is not available"})
+	}
+	out, err := h.vms.RolloutPlan(c.Request().Context(), c.Param("id"), h.net, c.Request().Method == http.MethodPost)
+	if err != nil {
+		if errors.Is(err, service.ErrPlanNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Plan not found"})
+		}
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": out})
 }
 
 // NewPlanHandler creates a new PlanHandler.
@@ -89,10 +115,13 @@ func (h *PlanHandler) DeletePlan(c echo.Context) error {
 func RegisterPlanRoutes(e *echo.Echo, h *PlanHandler, db *gorm.DB) {
 	g := e.Group("/api/v1/plans")
 	g.Use(panelMiddleware.RequireAuth(db))
-	adminOnly := panelMiddleware.RequirePermission("admin:access")
+	adminOnly := panelMiddleware.RequirePermission("plan:update")
 	g.GET("", h.ListPlans)
 	g.GET("/:id", h.GetPlan)
 	g.POST("", h.CreatePlan, adminOnly)
 	g.PUT("/:id", h.UpdatePlan, adminOnly)
 	g.DELETE("/:id", h.DeletePlan, adminOnly)
+	// Changes customers' VMs, so it also takes the right to change VMs.
+	g.GET("/:id/apply", h.Rollout, adminOnly, panelMiddleware.RequirePermission("vm:read"))
+	g.POST("/:id/apply", h.Rollout, adminOnly, panelMiddleware.RequirePermission("vm:update"))
 }

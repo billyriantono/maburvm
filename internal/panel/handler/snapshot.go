@@ -101,7 +101,10 @@ func (h *SnapshotHandler) CreateSnapshot(c echo.Context) error {
 
 	resp, err := h.service.CreateSnapshot(c.Request().Context(), createReq)
 	if err != nil {
+		var allowance *service.AllowanceError
 		switch {
+		case errors.As(err, &allowance):
+			return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "Forbidden", "message": allowance.Message})
 		case errors.Is(err, service.ErrVMNotFound):
 			return c.JSON(http.StatusNotFound, map[string]interface{}{
 				"error":   "Not Found",

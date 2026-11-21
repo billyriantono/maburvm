@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -74,12 +73,12 @@ func securityChecks(ctx context.Context, db *gorm.DB) []SecurityCheck {
 		fmt.Sprintf("%s can sign in with a password alone. A stolen password is then full control of every VM.", plural(no2fa, "administrator", "administrators")),
 		"/settings/profile")
 
-	publicURL := strings.TrimSpace(os.Getenv("PANEL_PUBLIC_URL"))
+	publicURL := service.PublicURL()
 	switch {
 	case publicURL == "":
-		add("public_url", "Panel address", true, "warn", "", "The panel does not know its public address (PANEL_PUBLIC_URL is not set), so links in emails and logos in emails are left out.", "")
+		add("public_url", "Panel address", true, "warn", "", "The panel does not know its public address, so links in emails and logos in emails are left out. Set it under System settings, Panel.", "/settings/system")
 	case strings.HasPrefix(publicURL, "http://"):
-		add("public_url", "Panel address", true, "fail", "", "The panel's public address is plain http. Passwords and sessions travel unencrypted. Serve it over https and update PANEL_PUBLIC_URL.", "")
+		add("public_url", "Panel address", true, "fail", "", "The panel's public address is plain http. Passwords and sessions travel unencrypted. Serve it over https and update the address under System settings, Panel.", "/settings/system")
 	default:
 		add("public_url", "Panel address", false, "", "Served over https at "+publicURL+".", "", "")
 	}
@@ -143,7 +142,8 @@ func securityChecks(ctx context.Context, db *gorm.DB) []SecurityCheck {
 		"No temporary support account is open.",
 		fmt.Sprintf("%s open right now. End it as soon as the work is done.", plural(support, "temporary support account is", "temporary support accounts are")), "/security")
 
-	billingKey, billingSecret := os.Getenv("BILLING_API_KEY"), os.Getenv("BILLING_WEBHOOK_SECRET")
+	billingKey, _ := service.PanelValue("billingApiKey")
+	billingSecret, _ := service.PanelValue("billingWebhookSecret")
 	switch {
 	case billingKey == "" && billingSecret == "":
 		add("billing", "Billing webhook", false, "", "Off. No billing system can create or remove VMs.", "", "")
@@ -179,6 +179,8 @@ type SupportGrant struct {
 	Note      string    `json:"note"`
 	ExpiresAt time.Time `json:"expires_at"`
 	CreatedAt time.Time `json:"created_at"`
+	// Role is the staff role the account has (empty: Administrator).
+	Role *string `json:"role,omitempty"`
 }
 
 // SetupStep is one line of the first-run checklist.
@@ -273,7 +275,9 @@ func RegisterOpsRoutes(e *echo.Echo, db *gorm.DB, riverClient *river.Client[pgx.
 	if running == nil {
 		running = queue.DefaultConfig("")
 	}
-	g := e.Group("/api/v1", middleware.RequireAuth(db), middleware.RequirePermission("admin:access"))
+	// Staff only; each route names its permission. Support access and data
+	// export stay with the Administrator.
+	g := e.Group("/api/v1", middleware.RequireAuth(db), middleware.RequirePermission(middleware.PermStaff))
 	bad := func(c echo.Context, msg string) error {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": msg})
 	}
@@ -284,22 +288,22 @@ func RegisterOpsRoutes(e *echo.Echo, db *gorm.DB, riverClient *river.Client[pgx.
 	// --- Security centre ---
 	g.GET("/security/checks", func(c echo.Context) error {
 		return ok(c, securityChecks(c.Request().Context(), db))
-	})
+	}, middleware.RequirePermission("settings:read"))
 
 	// --- Temporary support access ---
 	g.GET("/security/support-access", func(c echo.Context) error {
 		grants := []SupportGrant{}
 		if err := db.WithContext(c.Request().Context()).
-			Raw("SELECT id, email, support_note AS note, expires_at, created_at FROM users WHERE expires_at > NOW() AND deleted_at IS NULL ORDER BY expires_at").
+			Raw("SELECT id, email, support_note AS note, expires_at, created_at, staff_role AS role FROM users WHERE expires_at > NOW() AND deleted_at IS NULL ORDER BY expires_at").
 			Scan(&grants).Error; err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Could not list support access"})
 		}
 		return ok(c, grants)
-	})
+	}, middleware.RequirePermission(middleware.PermAll))
 	g.POST("/security/support-access", func(c echo.Context) error {
-		// A support account is a full administrator, so opening one is creating
-		// an administrator: the founding administrator's call alone, and never
-		// through a narrowed API key or from another support account.
+		// Opening a support account is creating a staff account: the founding
+		// administrator's call alone, and never through a narrowed API key or
+		// from another support account. It gets the Support role unless another is chosen.
 		caller, authed := middleware.GetUserContext(c)
 		if !authed || caller.APIKeyRestricted || caller.ID != service.FoundingAdminID(c.Request().Context(), db) {
 			return c.JSON(http.StatusForbidden, map[string]interface{}{
@@ -311,9 +315,16 @@ func RegisterOpsRoutes(e *echo.Echo, db *gorm.DB, riverClient *river.Client[pgx.
 		var req struct {
 			Hours int    `json:"hours"`
 			Note  string `json:"note"`
+			Role  string `json:"role"`
 		}
 		if err := c.Bind(&req); err != nil {
 			return bad(c, "Invalid request body")
+		}
+		if req.Role == "" {
+			req.Role = middleware.StaffRoleSupport
+		}
+		if _, found := middleware.LookupStaffRole(c.Request().Context(), db, req.Role); !found || req.Role == middleware.StaffRoleOwner {
+			return bad(c, "Choose one of the roles on the Staff roles page")
 		}
 		req.Note = strings.TrimSpace(req.Note)
 		if req.Hours < 1 || req.Hours > 168 {
@@ -342,17 +353,18 @@ func RegisterOpsRoutes(e *echo.Echo, db *gorm.DB, riverClient *river.Client[pgx.
 			Note:      req.Note,
 			ExpiresAt: time.Now().Add(time.Duration(req.Hours) * time.Hour).UTC(),
 			CreatedAt: time.Now().UTC(),
+			Role:      &req.Role,
 		}
 		if err := db.WithContext(c.Request().Context()).Exec(
-			"INSERT INTO users (id, email, name, password_hash, role, expires_at, support_note) VALUES (?, ?, 'Support access', ?, 'admin', ?, ?)",
-			grant.ID, grant.Email, string(hash), grant.ExpiresAt, grant.Note).Error; err != nil {
+			"INSERT INTO users (id, email, name, password_hash, role, expires_at, support_note, staff_role) VALUES (?, ?, 'Support access', ?, 'admin', ?, ?, ?)",
+			grant.ID, grant.Email, string(hash), grant.ExpiresAt, grant.Note, req.Role).Error; err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Could not create the support account"})
 		}
 		service.AuditSupportAccess(c.Request().Context(), db, "support_access.create", caller.ID.String(), grant.ID, c.RealIP(), c.Request().UserAgent(),
-			map[string]any{"email": grant.Email, "note": grant.Note, "hours": req.Hours, "expires_at": grant.ExpiresAt})
+			map[string]any{"email": grant.Email, "note": grant.Note, "hours": req.Hours, "expires_at": grant.ExpiresAt, "role": req.Role})
 		// The password is returned once and never stored in a readable form.
 		return c.JSON(http.StatusCreated, map[string]interface{}{"success": true, "data": map[string]interface{}{"grant": grant, "password": password}})
-	})
+	}, middleware.RequirePermission(middleware.PermAll))
 	g.DELETE("/security/support-access/:id", func(c echo.Context) error {
 		caller, authed := middleware.GetUserContext(c)
 		if !authed || service.IsTemporaryAccount(c.Request().Context(), db, caller.ID) {
@@ -372,7 +384,7 @@ func RegisterOpsRoutes(e *echo.Echo, db *gorm.DB, riverClient *river.Client[pgx.
 		}
 		service.AuditSupportAccess(c.Request().Context(), db, "support_access.revoke", caller.ID.String(), c.Param("id"), c.RealIP(), c.Request().UserAgent(), nil)
 		return ok(c, nil)
-	})
+	}, middleware.RequirePermission(middleware.PermAll))
 
 	// --- Setup checklist ---
 	g.GET("/setup", func(c echo.Context) error {
@@ -395,7 +407,7 @@ func RegisterOpsRoutes(e *echo.Echo, db *gorm.DB, riverClient *river.Client[pgx.
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Could not save"})
 		}
 		return ok(c, nil)
-	})
+	}, middleware.RequirePermission("settings:update"))
 
 	// --- Data export ---
 	g.GET("/export/:kind", func(c echo.Context) error {
@@ -433,7 +445,7 @@ func RegisterOpsRoutes(e *echo.Echo, db *gorm.DB, riverClient *river.Client[pgx.
 		}
 		w.Flush()
 		return nil
-	})
+	}, middleware.RequirePermission(middleware.PermAll))
 
 	// --- Job queue ---
 	g.GET("/queue", func(c echo.Context) error {
@@ -472,7 +484,7 @@ func RegisterOpsRoutes(e *echo.Echo, db *gorm.DB, riverClient *river.Client[pgx.
 		return ok(c, map[string]interface{}{
 			"counts": counts, "jobs": jobs, "workers": workers, "saved_workers": queue.LoadWorkerOverrides(db.WithContext(ctx)),
 		})
-	})
+	}, middleware.RequirePermission("ops:read"))
 	g.PUT("/queue/workers", func(c echo.Context) error {
 		var req map[string]int
 		if err := c.Bind(&req); err != nil {
@@ -496,7 +508,7 @@ func RegisterOpsRoutes(e *echo.Echo, db *gorm.DB, riverClient *river.Client[pgx.
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Could not save"})
 		}
 		return ok(c, clean)
-	})
+	}, middleware.RequirePermission("settings:update"))
 	jobAction := func(act func(ctx context.Context, id int64) error) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			id, err := strconv.ParseInt(c.Param("id"), 10, 64)
@@ -515,9 +527,9 @@ func RegisterOpsRoutes(e *echo.Echo, db *gorm.DB, riverClient *river.Client[pgx.
 	g.POST("/queue/jobs/:id/retry", jobAction(func(ctx context.Context, id int64) error {
 		_, err := riverClient.JobRetry(ctx, id)
 		return err
-	}))
+	}), middleware.RequirePermission("ops:update"))
 	g.POST("/queue/jobs/:id/cancel", jobAction(func(ctx context.Context, id int64) error {
 		_, err := riverClient.JobCancel(ctx, id)
 		return err
-	}))
+	}), middleware.RequirePermission("ops:update"))
 }

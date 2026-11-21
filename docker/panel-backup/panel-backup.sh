@@ -236,6 +236,11 @@ restore() {
   fi
   tar -x -C "$PANEL_DATA_DIR" -f "$WORK/panel-data.tar"
   cmp -s "$WORK/data/secrets.json" "$PANEL_DATA_DIR/secrets.json" || die "secrets.json did not restore intact"
+  # The archive is a backup of exactly this database: a newer panel with
+  # MIGRATION_REQUIRE_BACKUP_WITHIN may migrate it.
+  psql -X -q -c "INSERT INTO system_settings (section, data, updated_at) VALUES ('pre_migration_backup',
+    jsonb_build_object('takenAt', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), 'file', 'restored from $(basename "$archive" | tr -cd 'A-Za-z0-9._-')'), NOW())
+    ON CONFLICT (section) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()" > /dev/null 2>&1 || true
 
   log "restore ok: database ${PGDATABASE} (last migration $(psql -X -Atc 'select max(version) from schema_migrations' 2>/dev/null || echo unknown), $(psql -X -Atc 'select count(*) from users' 2>/dev/null || echo '?') users, $(psql -X -Atc 'select count(*) from nodes' 2>/dev/null || echo '?') nodes, $(psql -X -Atc 'select count(*) from vms' 2>/dev/null || echo '?') VMs) and secrets.json"
 }

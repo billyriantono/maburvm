@@ -16,7 +16,7 @@ import (
 // RegisterBillingDeliveryRoutes serves the log of events sent to the billing
 // system's webhook. Staff only: the events name customers and their servers.
 func RegisterBillingDeliveryRoutes(e *echo.Echo, db *gorm.DB, rc *river.Client[pgx.Tx]) {
-	admin := []echo.MiddlewareFunc{middleware.RequireAuth(db), middleware.RequirePermission("admin:access")}
+	auth := middleware.RequireAuth(db)
 
 	e.GET("/api/v1/billing/deliveries", func(c echo.Context) error {
 		size := clampInt(c.QueryParam("page_size"), 25, 5, 100)
@@ -28,7 +28,7 @@ func RegisterBillingDeliveryRoutes(e *echo.Echo, db *gorm.DB, rc *river.Client[p
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{
 			"deliveries": rows, "total": total, "page": page, "page_size": size,
 		}})
-	}, admin...)
+	}, auth, middleware.RequirePermission("billing:read"))
 
 	e.POST("/api/v1/billing/deliveries/:id/retry", func(c echo.Context) error {
 		err := service.ErrDeliveryNotFound
@@ -42,5 +42,5 @@ func RegisterBillingDeliveryRoutes(e *echo.Echo, db *gorm.DB, rc *river.Client[p
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Internal Server Error", "message": err.Error()})
 		}
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{"queued": true}})
-	}, admin...)
+	}, auth, middleware.RequirePermission("billing:update"))
 }

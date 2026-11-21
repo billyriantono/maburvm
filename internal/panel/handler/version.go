@@ -67,7 +67,7 @@ func RegisterVersionRoutes(e *echo.Echo, h *VersionHandler, db *gorm.DB) {
 	g.Use(middleware.RequireAuth(db))
 	g.GET("/version", h.Version)
 	// Pushes code that runs as root on the node: admins only.
-	g.POST("/nodes/:id/update-agent", h.UpdateAgent, middleware.RequirePermission("admin:access"))
+	g.POST("/nodes/:id/update-agent", h.UpdateAgent, middleware.RequirePermission("node:update"))
 }
 
 // UpdateAgent pushes the agent binary bundled with this panel to one node.

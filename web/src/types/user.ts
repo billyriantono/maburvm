@@ -15,6 +15,13 @@ export interface User {
   suspended_at?: string;
   /** Sign-in refused until then, after too many failed attempts. May be in the past. */
   locked_until?: string;
+  /** A staff account's role id (owner, administrator, support, billing, readonly or a custom role's id). */
+  staff_role?: string;
+  staff_role_name?: string;
+  /** From /auth/me: what this account may do. The panel checks every request regardless. */
+  permissions?: string[];
+  /** From /auth/me: the staff member viewing the panel as this customer. */
+  impersonator?: { id: string; email: string };
   created_at: string;
   updated_at: string;
 }
@@ -41,6 +48,8 @@ export interface CreateUserRequest {
   role?: UserRole;
   ip_whitelist?: string[];
   send_welcome_email?: boolean;
+  /** A new staff account's role; Administrator when left out. */
+  staff_role?: string;
 }
 
 // UpdateUserRequest for updating users
@@ -55,4 +64,45 @@ export interface UpdateUserRequest {
 export interface Enable2FAResponse {
   secret: string;
   backup_codes: string[];
+}
+
+/** One signed-in session of an account. */
+export interface AccountSession {
+  id: string;
+  method: 'password' | 'sso' | 'impersonation' | string;
+  ip_address: string;
+  user_agent: string;
+  created_at: string;
+  last_seen_at: string;
+  expires_at: string;
+  current: boolean;
+  /** The staff member behind a view as this customer. */
+  impersonator_email?: string;
+}
+
+/** One sign-in attempt, or a password reset request. */
+export interface SignInEvent {
+  id: string;
+  email: string;
+  method: 'password' | 'sso' | 'impersonation' | 'password_reset' | string;
+  success: boolean;
+  /** Why it failed, or for a staff view, who opened it. */
+  note: string;
+  ip_address: string;
+  user_agent: string;
+  created_at: string;
+}
+
+export interface PermissionArea {
+  area: string;
+  permissions: { key: string; label: string }[];
+}
+
+export interface StaffRole {
+  id: string;
+  name: string;
+  description: string;
+  permissions: string[];
+  built_in: boolean;
+  members: number;
 }

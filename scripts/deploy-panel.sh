@@ -22,7 +22,7 @@ echo "Deploying ${APP_VERSION} (${GIT_COMMIT}) to ${HOST}: ${SERVICES}"
 
 # Each tree to its own destination. Never `rsync --delete` several dirs into the
 # repo root: it deletes docker-compose*.yml and .env.production (it has happened).
-for d in cmd internal api integrations web/src; do
+for d in cmd internal api integrations web/src docker/agent-sigs; do
   rsync -az --delete "$d/" "$HOST:$DEST/$d/"
 done
 rsync -az go.mod go.sum Dockerfile.panel "$HOST:$DEST/"

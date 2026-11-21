@@ -90,7 +90,7 @@ func (s *Server) setupUserAccountRoutes(users *echo.Group, userRepo *repository.
 		audit(c, "user.password_reset", caller, user, map[string]any{"method": "temporary"})
 		notifyAdminChange(c, s.db, user.ID.String(), service.EmailPasswordChanged)
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{"temporary_password": password}})
-	}, panelMiddleware.RequirePermission("user:update"))
+	}, panelMiddleware.RequirePermission("user:recover"))
 
 	// For someone who lost their authenticator and their backup codes.
 	users.POST("/:id/reset-2fa", func(c echo.Context) error {
@@ -108,7 +108,7 @@ func (s *Server) setupUserAccountRoutes(users *echo.Group, userRepo *repository.
 		audit(c, "user.two_factor_reset", caller, user, map[string]any{})
 		notifyAdminChange(c, s.db, user.ID.String(), service.EmailTwoFactorDisabled)
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{"two_factor_enabled": false}})
-	}, panelMiddleware.RequirePermission("user:update"))
+	}, panelMiddleware.RequirePermission("user:recover"))
 
 	// Lifts a sign-in lock before it runs out by itself. Never one's own: a
 	// held session could then guess at two-factor codes without limit.
@@ -122,7 +122,7 @@ func (s *Server) setupUserAccountRoutes(users *echo.Group, userRepo *repository.
 		}
 		audit(c, "user.unlock", caller, user, map[string]any{})
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{"locked": false}})
-	}, panelMiddleware.RequirePermission("user:update"))
+	}, panelMiddleware.RequirePermission("user:recover"))
 }
 
 // notifyAdminChange tells an account that an administrator changed how it is

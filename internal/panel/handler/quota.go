@@ -129,10 +129,9 @@ func (h *QuotaHandler) SetUserQuota(c echo.Context) error {
 }
 
 // RegisterQuotaRoutes registers quota routes. Self-quota is any authenticated
-// user; per-user quota management requires admin.
+// user; per-user quota management is staff with user permissions.
 func RegisterQuotaRoutes(e *echo.Echo, h *QuotaHandler, db *gorm.DB) {
 	auth := panelMiddleware.RequireAuth(db)
-	adminOnly := panelMiddleware.RequirePermission("admin:access")
 
 	e.GET("/api/v1/quota", h.GetMyQuota, auth)
 	// What customers may do on their own here, so a page can say so up front.
@@ -142,6 +141,6 @@ func RegisterQuotaRoutes(e *echo.Echo, h *QuotaHandler, db *gorm.DB) {
 
 	g := e.Group("/api/v1/users/:id/quota")
 	g.Use(auth)
-	g.GET("", h.GetUserQuota, adminOnly)
-	g.PUT("", h.SetUserQuota, adminOnly)
+	g.GET("", h.GetUserQuota, panelMiddleware.RequirePermission("user:read"))
+	g.PUT("", h.SetUserQuota, panelMiddleware.RequirePermission("user:update"))
 }

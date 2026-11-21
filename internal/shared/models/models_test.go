@@ -2,7 +2,6 @@ package models
 
 import (
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 )
@@ -328,45 +327,6 @@ func TestFirewallRuleValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			errs := tt.rule.Validate()
-			if tt.wantErr && len(errs) == 0 {
-				t.Errorf("expected validation errors, got none")
-			}
-			if !tt.wantErr && len(errs) > 0 {
-				t.Errorf("expected no validation errors, got %d: %v", len(errs), errs)
-			}
-		})
-	}
-}
-
-func TestSessionValidation(t *testing.T) {
-	tests := []struct {
-		name    string
-		session *Session
-		wantErr bool
-	}{
-		{
-			name: "valid session",
-			session: &Session{
-				UserID:    uuid.New().String(),
-				Token:     "token123",
-				ExpiresAt: time.Now().Add(time.Hour),
-			},
-			wantErr: false,
-		},
-		{
-			name: "expired session should still validate",
-			session: &Session{
-				UserID:    uuid.New().String(),
-				Token:     "token123",
-				ExpiresAt: time.Now().Add(-time.Hour),
-			},
-			wantErr: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			errs := tt.session.Validate()
 			if tt.wantErr && len(errs) == 0 {
 				t.Errorf("expected validation errors, got none")
 			}

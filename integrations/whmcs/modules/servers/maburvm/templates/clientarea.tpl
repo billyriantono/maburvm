@@ -1,8 +1,9 @@
 {*
   MaburVM client-area panel shown on the WHMCS service detail page: the VM's
   state and address, read live from the panel. Day-to-day operation
-  (start/stop/reboot/console) lives in the MaburVM client portal; this
-  deep-links the customer there.
+  (start/stop/reboot/console) lives in the MaburVM client portal. "Open
+  control panel" signs the customer in there with one click (the module's
+  ServiceSingleSignOn), so no second password is needed.
 *}
 <div class="row">
   <div class="col-sm-12">
@@ -25,16 +26,16 @@
           {elseif $vmState eq 'error'}
             <p>Something went wrong with this server. Please contact support.</p>
           {/if}
-          <a href="{$panelUrl}/client/vms/{$vmId|escape:'url'}" target="_blank" class="btn btn-primary">
-            Manage VM
+          <a href="clientarea.php?action=productdetails&amp;id={$serviceId|escape:'url'}&amp;dosinglesignon=1" target="_blank" class="btn btn-primary">
+            Open control panel
           </a>
           <a href="{$panelUrl}/client/vms/{$vmId|escape:'url'}/console" target="_blank" class="btn btn-default">
-            Open Console
+            Open console
           </a>
         {else}
           <p>Your virtual machine is being provisioned. Please check back shortly.</p>
-          <a href="{$panelUrl}/client/dashboard" target="_blank" class="btn btn-primary">
-            Open Client Portal
+          <a href="clientarea.php?action=productdetails&amp;id={$serviceId|escape:'url'}&amp;dosinglesignon=1" target="_blank" class="btn btn-primary">
+            Open control panel
           </a>
         {/if}
       </div>

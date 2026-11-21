@@ -93,3 +93,8 @@ deploy/secrets/
 
 # Local UI audit notes (planning, not published)
 anti-slop/
+
+# Agent signatures the release workflow writes before building the panel image.
+docker/agent-sigs/*.sig
+# Pre-upgrade database dumps (scripts/upgrade-panel.sh).
+/backups/

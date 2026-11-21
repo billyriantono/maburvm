@@ -12,7 +12,7 @@ import {
   User,
   Loader2
 } from "lucide-react"
-import { Sidebar, adminPages } from "@/components/sidebar"
+import { Sidebar, adminPages, visibleAdminPages } from "@/components/sidebar"
 import { GlobalSearch } from "@/components/global-search"
 import { Button } from "@/components/ui/button"
 import { ThemeToggle } from "@/components/theme-toggle"
@@ -24,7 +24,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { useAuth, useLogout } from "@/lib/hooks/use-auth"
+import { can, useAuth, useLogout } from "@/lib/hooks/use-auth"
 import { useDashboardStats } from "@/lib/hooks/use-dashboard"
 
 // Stable identity, so the search box does not rebuild its results every render.
@@ -105,7 +105,7 @@ export default function DashboardLayout({
 
   // Derive display name from email (use part before @)
   const displayName = user.email.split('@')[0]
-  const displayRole = user.role === 'admin' ? 'Administrator' : 'Client'
+  const displayRole = user.role === 'admin' ? user.staff_role_name ?? 'Administrator' : 'Client'
   // The section this page belongs to: the longest sidebar entry the path starts with.
   const section = adminPages
     .filter((p) => pathname === p.href || pathname.startsWith(p.href + "/"))
@@ -148,7 +148,7 @@ export default function DashboardLayout({
             <div className="flex items-center gap-3">
               {/* Search - Desktop */}
               <div className="hidden md:flex items-center">
-                <GlobalSearch pages={adminPages} vmHref={adminVmHref} admin />
+                <GlobalSearch pages={visibleAdminPages(user)} vmHref={adminVmHref} admin />
               </div>
 
               {/* Notifications */}
@@ -228,9 +228,11 @@ export default function DashboardLayout({
                   <DropdownMenuItem asChild className="font-medium cursor-pointer">
                     <Link href="/settings/profile"><User className="w-4 h-4 mr-2" />Profile</Link>
                   </DropdownMenuItem>
-                  <DropdownMenuItem asChild className="font-medium cursor-pointer">
-                    <Link href="/settings/system"><Settings className="w-4 h-4 mr-2" />System settings</Link>
-                  </DropdownMenuItem>
+                  {can(user, "settings:read") && (
+                    <DropdownMenuItem asChild className="font-medium cursor-pointer">
+                      <Link href="/settings/system"><Settings className="w-4 h-4 mr-2" />System settings</Link>
+                    </DropdownMenuItem>
+                  )}
                   <DropdownMenuSeparator />
                   <DropdownMenuItem 
                     className="font-medium text-destructive focus:text-destructive cursor-pointer"

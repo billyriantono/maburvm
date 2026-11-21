@@ -232,6 +232,8 @@ type LoginRequest struct {
 	Password string `json:"password" validate:"required"`
 	TOTPCode string `json:"totp_code,omitempty"` // Optional for first stage
 	ClientIP string `json:"-"`                   // Set by handler
+	// UserAgent goes into the session record.
+	UserAgent string `json:"-"`
 }
 
 // LoginResponse contains login result
@@ -302,7 +304,7 @@ func (s *UserService) Login(req *LoginRequest) (*LoginResponse, error) {
 	}
 
 	// Generate the session access token via the single shared minter.
-	token, err := s.mintSession(&user)
+	token, err := s.mintSession(&user, middleware.SessionMeta{Method: middleware.SignInPassword, IP: req.ClientIP, UserAgent: req.UserAgent})
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate token: %w", err)
 	}
@@ -590,11 +592,14 @@ func (s *UserService) acceptTOTP(user *models.User, secret, code string) bool {
 	return false
 }
 
-// mintSession issues the access token for a finished sign-in, valid for the
-// operator's session length.
-func (s *UserService) mintSession(user *models.User) (string, error) {
-	return middleware.GenerateAccessToken(user, s.SessionLifetime())
+// mintSession records a finished sign-in and issues its access token, valid
+// for the operator's session length.
+func (s *UserService) mintSession(user *models.User, meta middleware.SessionMeta) (string, error) {
+	return middleware.IssueSession(s.db, user, meta, s.SessionLifetime())
 }
+
+// DB is the service's database, for the sign-in handlers' history and captcha.
+func (s *UserService) DB() *gorm.DB { return s.db }
 
 // SessionLifetime is how long a sign-in lasts (Settings, System, Security).
 func (s *UserService) SessionLifetime() time.Duration {

@@ -6,6 +6,8 @@ import { Check, CircleAlert, Copy, Loader2, TriangleAlert } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { useStaffRoles } from "@/lib/hooks/use-staff"
+import { can, useCurrentUser } from "@/lib/hooks/use-auth"
 import { useConfirm } from "@/components/confirm-provider"
 import {
   type SecurityCheck, type SupportGrant,
@@ -38,12 +40,18 @@ function timeLeft(iso: string) {
 export default function SecurityPage() {
   const confirm = useConfirm()
   const checks = useSecurityChecks()
-  const grants = useSupportGrants()
+  // Support access is the Administrator's; other roles see only the checks.
+  const { data: me } = useCurrentUser()
+  const mayGrant = can(me, "admin:access")
+  const grants = useSupportGrants(mayGrant)
   const grant = useGrantSupport()
   const end = useEndSupport()
 
   const [note, setNote] = useState("")
   const [hours, setHours] = useState(4)
+  const [role, setRole] = useState("support")
+  const staffRoles = useStaffRoles(mayGrant)
+  const roleName = (id?: string) => staffRoles.data?.roles.find((r) => r.id === (id ?? "administrator"))?.name ?? id ?? "Administrator"
   const [issued, setIssued] = useState<{ grant: SupportGrant; password: string }>()
   const [formError, setFormError] = useState("")
 
@@ -56,7 +64,7 @@ export default function SecurityPage() {
     if (!note.trim()) { setFormError("Say who the access is for and why. It is kept with the account."); return }
     setFormError("")
     try {
-      setIssued(await grant.mutateAsync({ hours, note: note.trim() }))
+      setIssued(await grant.mutateAsync({ hours, note: note.trim(), role }))
       setNote("")
     } catch (err) {
       setFormError((err as Error).message)
@@ -117,13 +125,15 @@ export default function SecurityPage() {
         </div>
       </section>
 
+      {mayGrant && (
       <section aria-labelledby="support-heading" className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-start">
         <div>
           <h2 id="support-heading" className="text-lg font-semibold">Temporary support access</h2>
           <p className="text-sm text-muted-foreground mt-1 mb-4 max-w-prose">
-            Let someone outside your team in to investigate a problem, without sharing your own password. The account has full
-            administrator rights, stops working by itself when the time is up, and can be ended early. Only the founding
-            administrator can create one, it cannot be extended, and each sign-in with it is written to the audit log.
+            Let someone outside your team in to investigate a problem, without sharing your own password. The account has the
+            staff role you choose (Support unless you pick another), stops working by itself when the time is up, and can be
+            ended early. Only the founding administrator can create one, it cannot be extended, and each sign-in with it is
+            written to the audit log.
           </p>
 
           <form onSubmit={handleGrant} className="rounded-lg border bg-card p-5 shadow-sm space-y-4">
@@ -142,6 +152,14 @@ export default function SecurityPage() {
                 <option value={24}>1 day</option>
                 <option value={72}>3 days</option>
                 <option value={168}>7 days</option>
+              </select>
+            </div>
+            <div>
+              <label htmlFor="support-role" className="text-sm font-medium block mb-1.5">Staff role</label>
+              <select id="support-role" value={role} onChange={(e) => setRole(e.target.value)} className="h-10 rounded-md border border-input bg-background px-3 text-sm cursor-pointer">
+                {(staffRoles.data?.roles ?? [{ id: "support", name: "Support" }]).filter((r) => r.id !== "owner").map((r) => (
+                  <option key={r.id} value={r.id}>{r.name}</option>
+                ))}
               </select>
             </div>
             <Button type="submit" disabled={grant.isPending}>
@@ -184,6 +202,7 @@ export default function SecurityPage() {
                   <div className="min-w-0">
                     <p className="font-medium text-sm">{g.note}</p>
                     <p className="text-xs text-muted-foreground font-mono break-all mt-0.5">{g.email}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">{roleName(g.role)}</p>
                     <p className="text-xs text-muted-foreground mt-0.5">{timeLeft(g.expires_at)}, until {new Date(g.expires_at).toLocaleString()}</p>
                   </div>
                   <Button
@@ -205,6 +224,7 @@ export default function SecurityPage() {
           </div>
         </div>
       </section>
+      )}
     </div>
   )
 }

@@ -9,6 +9,7 @@ import { useRouter } from "next/navigation"
 import { useBranding } from "@/lib/branding/provider"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
+import { Captcha, captchaChallenge, type CaptchaChallenge } from "@/components/captcha"
 
 const loginSchema = z.object({
   email: z.string().email("Please enter a valid email address"),
@@ -24,13 +25,14 @@ const SSO_MESSAGES: Record<string, string> = {
   suspended: "This account is suspended. Contact support.",
   ip: "Your IP address is not whitelisted for this account.",
   expired: "The SSO sign-in expired or was opened in another browser. Please try again.",
+  billing: "That sign-in link has expired or was already used. Open the control panel again from your billing account, or sign in with your password.",
+  locked: "Too many failed sign-in attempts. Try again later, or reset your password.",
   error: "SSO sign-in failed. Please try again or sign in with your password.",
 }
 
 // afterSignIn is the page a dropped session came from (?next=), or the
 // dashboard. Only a path on this site: never another origin.
-function afterSignIn(): string {
-  const next = new URLSearchParams(window.location.search).get("next") || ""
+function afterSignIn(next = new URLSearchParams(window.location.search).get("next") || ""): string {
   // Judge the parsed URL: the parser drops tabs and turns "\" into "/", so a
   // string check alone lets "/\t/evil.example" through as "//evil.example".
   try {
@@ -63,6 +65,15 @@ export default function LoginPage() {
   // Sign-in waits for the page to be live: a submit before that would be the
   // browser's own, with nothing to stop it.
   const [hydrated, setHydrated] = useState(false)
+  // The sign-in check, once the panel asks for one after failed attempts. A
+  // token is good for one try, so each try gets a fresh check.
+  const [challenge, setChallenge] = useState<CaptchaChallenge | null>(null)
+  const [captchaToken, setCaptchaToken] = useState("")
+  const [captchaKey, setCaptchaKey] = useState(0)
+  const freshCheck = () => {
+    setCaptchaToken("")
+    setCaptchaKey((k) => k + 1)
+  }
 
   useEffect(() => {
     setHydrated(true)
@@ -100,8 +111,9 @@ export default function LoginPage() {
         setError({ message: result.error || "Invalid verification code" })
         return
       }
-      // The panel set the session as an HttpOnly cookie on this response.
-      router.push(afterSignIn())
+      // The panel set the session as an HttpOnly cookie on this response. A
+      // sign-in from the billing system names the page it opens.
+      router.push(afterSignIn(result.redirect || undefined))
     } catch {
       setError({ message: "An unexpected error occurred. Please try again." })
     } finally {
@@ -136,12 +148,19 @@ export default function LoginPage() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(data),
+        body: JSON.stringify({ ...data, captchaToken }),
       })
 
       const result = await response.json()
+      if (challenge) freshCheck()
 
       if (!response.ok) {
+        const asked = captchaChallenge(result)
+        if (asked) {
+          setChallenge(asked)
+          setError({ message: result.error })
+          return
+        }
         // A 403 is the IP allow-list, unless the account is suspended.
         if (response.status === 403 && result.code !== "account_suspended") {
           setIpWarning({ message: result.error || "Your IP address is not whitelisted" })
@@ -184,12 +203,16 @@ export default function LoginPage() {
           email: data.email,
           password: data.password,
           totpCode: data.totpCode,
+          captchaToken,
         }),
       })
 
       const result = await response.json()
+      if (challenge) freshCheck()
 
       if (!response.ok) {
+        const asked = captchaChallenge(result)
+        if (asked) setChallenge(asked)
         setError({ message: result.error || "Invalid verification code" })
         return
       }
@@ -256,7 +279,7 @@ export default function LoginPage() {
               autoFocus
             />
             <p className="mt-2 text-xs text-muted-foreground">
-              You signed in with SSO. Enter the 6-digit code from your authenticator app, or a backup code.
+              One more step for this account: enter the 6-digit code from your authenticator app, or a backup code.
             </p>
           </div>
           <Button type="submit" size="xl" className="w-full text-base font-medium" disabled={isLoading || !ssoCode}>
@@ -378,12 +401,14 @@ export default function LoginPage() {
           </div>
         )}
 
+        {challenge && <Captcha key={captchaKey} challenge={challenge} onToken={setCaptchaToken} />}
+
         {/* Submit Button */}
         <Button
           type="submit"
           size="xl"
           className="w-full text-base font-medium"
-          disabled={isLoading || !hydrated}
+          disabled={isLoading || !hydrated || (!!challenge && !captchaToken)}
         >
           {isLoading ? (
             <>

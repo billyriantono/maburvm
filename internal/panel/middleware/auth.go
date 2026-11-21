@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,6 +40,11 @@ type JWTClaims struct {
 	Role        string   `json:"role"`
 	Permissions []string `json:"permissions"`
 	TokenType   string   `json:"token_type"`
+	// SessionID names the user_sessions row; empty on tokens minted before
+	// sessions were recorded, which stay valid until they expire.
+	SessionID string `json:"sid,omitempty"`
+	// Impersonator is the staff account viewing the panel as this user.
+	Impersonator string `json:"imp,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -60,6 +66,11 @@ type UserContext struct {
 	// set on a session held to the setup pages until two-factor is on.
 	TwoFactorEnabled       bool
 	TwoFactorSetupRequired bool
+	// StaffRole is a staff account's resolved role (empty for customers).
+	StaffRole StaffRole
+	// ImpersonatorID/Email name the staff account viewing as this user.
+	ImpersonatorID    string
+	ImpersonatorEmail string
 }
 
 // GetJWTSecret returns the JWT signing key. It resolves via secret.JWTSecret:
@@ -100,7 +111,7 @@ func GetPermissionsForRole(role models.UserRole) []string {
 		// applies to the caller's own resources — never other tenants'.
 		return []string{
 			"vm:create", "vm:read", "vm:update", "vm:delete",
-			"vm:lifecycle", "vm:console",
+			"vm:lifecycle", "vm:console", "vm:power", "vm:rescue", "vm:credentials",
 			"backup:create", "backup:read", "backup:update", "backup:delete",
 			"snapshot:create", "snapshot:read", "snapshot:update", "snapshot:delete",
 			// Floating IPs get their own permissions rather than reusing network:*,
@@ -239,7 +250,7 @@ func authenticateAPIKey(db *gorm.DB, token string, clientIP string) (*UserContex
 	db.Model(&models.APIKey{}).Where("id = ?", key.ID).Update("last_used_at", time.Now())
 
 	role := key.EffectiveRole(user.Role)
-	return &UserContext{
+	u := &UserContext{
 		ID:               user.ID,
 		Email:            user.Email,
 		Role:             role,
@@ -247,7 +258,12 @@ func authenticateAPIKey(db *gorm.DB, token string, clientIP string) (*UserContex
 		APIKeyReadOnly:   key.ReadOnly,
 		APIKeyRestricted: key.ReadOnly || role != user.Role,
 		APIKeyID:         key.ID,
-	}, true
+	}
+	// A staff key does what its owner's staff role allows, as it is now.
+	if role == models.RoleAdmin {
+		u.StaffRole, u.Permissions = ResolveStaffRole(context.Background(), db, &user)
+	}
+	return u, true
 }
 
 // allowReadOnlyKeyCtx marks a route whose unsafe method is only a transport
@@ -424,8 +440,41 @@ func RequireAuth(db *gorm.DB) echo.MiddlewareFunc {
 					})
 				}
 
+				// A session the user or staff revoked ends here, whatever the token says.
+				var viewedBy *uuid.UUID
+				var viewSince time.Time
+				if claims.SessionID != "" {
+					sess, status, msg := checkSession(db, claims, user.ID)
+					if sess == nil {
+						return c.JSON(status, map[string]interface{}{"error": http.StatusText(status), "message": msg})
+					}
+					viewedBy, viewSince = sess.ImpersonatorID, sess.CreatedAt
+				}
+				if claims.Impersonator != "" && (viewedBy == nil || viewedBy.String() != claims.Impersonator) {
+					return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized", "message": "Session has been revoked"})
+				}
+
+				// Viewing as a customer: the staff account must still be allowed to,
+				// its own IP allow-list applies, and some things stay off limits.
+				allowList := user.IPWhitelist
+				var staff *models.User
+				if claims.Impersonator != "" {
+					staff = impersonatingStaff(c.Request().Context(), db, claims.Impersonator, viewSince)
+					if staff == nil {
+						return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized", "message": "This view of the customer's account has ended"})
+					}
+					if impersonationForbidden(c.Request().Method, c.Request().URL.Path) {
+						return c.JSON(http.StatusForbidden, map[string]interface{}{
+							"error":   "Forbidden",
+							"code":    "impersonation_forbidden",
+							"message": "Not while viewing as a customer: their password, email, two-factor, sessions, API keys and initial passwords stay theirs.",
+						})
+					}
+					allowList = staff.IPWhitelist
+				}
+
 				// Enforce per-user IP whitelist (opt-in: empty list allows any IP).
-				if len(user.IPWhitelist) > 0 && !isIPWhitelisted(c.RealIP(), user.IPWhitelist) {
+				if len(allowList) > 0 && !isIPWhitelisted(c.RealIP(), allowList) {
 					return c.JSON(http.StatusForbidden, map[string]interface{}{
 						"error":   "Forbidden",
 						"message": "Your IP address is not whitelisted for this account",
@@ -450,8 +499,17 @@ func RequireAuth(db *gorm.DB) echo.MiddlewareFunc {
 					Email:                  user.Email,
 					Role:                   user.Role,
 					Permissions:            GetPermissionsForRole(user.Role),
+					SessionID:              claims.SessionID,
 					TwoFactorEnabled:       user.TwoFactorEnabled,
 					TwoFactorSetupRequired: setupRequired,
+				}
+				if user.Role == models.RoleAdmin {
+					userCtx.StaffRole, userCtx.Permissions = ResolveStaffRole(c.Request().Context(), db, &user)
+				}
+				if staff != nil {
+					userCtx.ImpersonatorID, userCtx.ImpersonatorEmail = staff.ID.String(), staff.Email
+					c.SetRequest(c.Request().WithContext(models.WithImpersonator(c.Request().Context(),
+						models.Impersonator{ID: userCtx.ImpersonatorID, Email: staff.Email})))
 				}
 
 				c.Set(UserContextKey, userCtx)
@@ -618,16 +676,7 @@ func GetClaims(c echo.Context) (*JWTClaims, bool) {
 // HasPermission checks if the authenticated user has a specific permission
 func HasPermission(c echo.Context, permission string) bool {
 	user, ok := GetUserContext(c)
-	if !ok {
-		return false
-	}
-
-	for _, p := range user.Permissions {
-		if p == permission || p == "admin:access" {
-			return true
-		}
-	}
-	return false
+	return ok && user.Can(permission)
 }
 
 // RequirePermission creates middleware that requires a specific permission
@@ -652,21 +701,28 @@ func RequirePermission(permission string) echo.MiddlewareFunc {
 // validated by RequireAuth, IS the session. lifetime is the operator's session
 // length (SignInPolicy.SessionLifetime); without it the built-in one applies.
 func GenerateAccessToken(user *models.User, lifetime ...time.Duration) (string, error) {
-	secret, err := GetJWTSecret()
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve JWT secret: %w", err)
-	}
 	ttl := AccessTokenExpiry
 	if len(lifetime) > 0 && lifetime[0] > 0 {
 		ttl = lifetime[0]
 	}
+	return mintToken(user, "", "", ttl)
+}
+
+// mintToken signs an access token; sid and imp may be empty.
+func mintToken(user *models.User, sid, imp string, ttl time.Duration) (string, error) {
+	secret, err := GetJWTSecret()
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve JWT secret: %w", err)
+	}
 	now := time.Now()
 	claims := JWTClaims{
-		UserID:      user.ID.String(),
-		Email:       user.Email,
-		Role:        string(user.Role),
-		Permissions: GetPermissionsForRole(user.Role),
-		TokenType:   "access",
+		UserID:       user.ID.String(),
+		Email:        user.Email,
+		Role:         string(user.Role),
+		Permissions:  GetPermissionsForRole(user.Role),
+		TokenType:    "access",
+		SessionID:    sid,
+		Impersonator: imp,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 			IssuedAt:  jwt.NewNumericDate(now),
@@ -677,4 +733,20 @@ func GenerateAccessToken(user *models.User, lifetime ...time.Duration) (string, 
 		},
 	}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(secret)
+}
+
+// impersonatingStaff loads the staff account behind a view as a customer, or
+// nil when it may no longer do that. A staff password change or "sign out
+// everywhere" after the view opened ends the view too.
+func impersonatingStaff(ctx context.Context, db *gorm.DB, id string, since time.Time) *models.User {
+	var staff models.User
+	if db.WithContext(ctx).Where("id = ?", id).First(&staff).Error != nil ||
+		staff.Role != models.RoleAdmin || staff.Locked() ||
+		(staff.TokenRevokedAt != nil && since.Before(*staff.TokenRevokedAt)) {
+		return nil
+	}
+	if _, perms := ResolveStaffRole(ctx, db, &staff); !Can(perms, PermImpersonate) {
+		return nil
+	}
+	return &staff
 }

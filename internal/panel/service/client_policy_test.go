@@ -62,7 +62,7 @@ func TestCreateImageFromSuspendedVMRefused(t *testing.T) {
 
 func seedPlan(t *testing.T, db *gorm.DB, active bool) *models.Plan {
 	t.Helper()
-	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS plans (id TEXT PRIMARY KEY, name TEXT NOT NULL, cpu INTEGER, ram INTEGER, disk INTEGER, bandwidth_mbps INTEGER DEFAULT 0, data_quota_gb INTEGER DEFAULT 0, over_quota_policy TEXT DEFAULT 'throttle', throttle_speed_mbps INTEGER DEFAULT 0, smtp_policy TEXT NOT NULL DEFAULT 'allowed', limits TEXT NOT NULL DEFAULT '{}', description TEXT, is_active BOOLEAN, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS plans (id TEXT PRIMARY KEY, name TEXT NOT NULL, cpu INTEGER, ram INTEGER, disk INTEGER, bandwidth_mbps INTEGER DEFAULT 0, data_quota_gb INTEGER DEFAULT 0, over_quota_policy TEXT DEFAULT 'throttle', throttle_speed_mbps INTEGER DEFAULT 0, smtp_policy TEXT NOT NULL DEFAULT 'allowed', limits TEXT NOT NULL DEFAULT '{}', price_monthly REAL, price_hourly REAL, currency TEXT NOT NULL DEFAULT '', max_snapshots INTEGER, max_backups INTEGER, max_extra_ipv4 INTEGER, max_extra_ipv6 INTEGER, description TEXT, is_active BOOLEAN, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`).Error)
 	plan := &models.Plan{Name: "small-" + uuid.NewString(), CPU: 2, RAM: 2048, Disk: 40, BandwidthMbps: 100, DataQuotaGB: 500, OverQuotaPolicy: models.OverQuotaSuspend, ThrottleSpeedMbps: 5, IsActive: true}
 	require.NoError(t, db.Create(plan).Error)
 	if !active { // gorm writes the column default for a false bool
@@ -330,14 +330,14 @@ func TestSupportAccountSSOSignIn(t *testing.T) {
 	seedAccount(t, db, "founder@example.test", models.RoleAdmin, now, nil, "x")
 	svc := &UserService{db: db}
 
-	_, token, _, err := svc.SSOLogin("founder@example.test", "198.51.100.8")
+	_, token, _, err := svc.SSOLogin("founder@example.test", "198.51.100.8", "")
 	require.NoError(t, err)
 	require.NotEmpty(t, token)
 	var rows []models.AuditLog
 	require.NoError(t, db.Find(&rows).Error)
 	require.Empty(t, rows)
 
-	_, token, _, err = svc.SSOLogin("support-3@support.invalid", "198.51.100.8")
+	_, token, _, err = svc.SSOLogin("support-3@support.invalid", "198.51.100.8", "")
 	require.NoError(t, err)
 	require.NotEmpty(t, token)
 	require.NoError(t, db.Find(&rows).Error)
@@ -345,6 +345,6 @@ func TestSupportAccountSSOSignIn(t *testing.T) {
 	require.Equal(t, "support_access.sign_in", rows[0].Action)
 	require.Equal(t, support.String(), *rows[0].UserID)
 
-	_, _, _, err = svc.SSOLogin("support-gone@support.invalid", "198.51.100.8")
+	_, _, _, err = svc.SSOLogin("support-gone@support.invalid", "198.51.100.8", "")
 	require.ErrorIs(t, err, ErrNoSSOAccount)
 }

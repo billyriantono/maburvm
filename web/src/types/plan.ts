@@ -18,10 +18,41 @@ export interface Plan {
   smtp_policy: SMTPPolicy
   /** CPU and disk caps new VMs on the plan get. */
   limits?: VMLimits
+  /** Display price, shown to customers; null = not shown. */
+  price_monthly?: number | null
+  price_hourly?: number | null
+  /** ISO 4217 code, empty when no price is set. */
+  currency?: string
+  /** Per-VM allowances, read whenever one is used. null = no limit, 0 = none. */
+  max_snapshots?: number | null
+  max_backups?: number | null
+  max_extra_ipv4?: number | null
+  /** A VM holds one IPv6 at most, so 0 (none may be added) or 1. */
+  max_extra_ipv6?: number | null
   description?: string
   is_active: boolean
   created_at: string
   updated_at: string
+}
+
+/** What applying a plan's current settings does, or did, to one VM. */
+export interface PlanRolloutVM {
+  id: string
+  hostname: string
+  status: string
+  changes: string[]
+  /** The new size waits until the VM is stopped; it is never stopped for it. */
+  needs_stop: boolean
+  notes: string[]
+  outcome?: 'applied' | 'partial' | 'failed' | 'up_to_date' | 'skipped'
+  errors?: string[]
+}
+
+export interface PlanRollout {
+  plan_id: string
+  plan_name: string
+  applied: boolean
+  vms: PlanRolloutVM[]
 }
 
 export interface CreatePlanRequest {
@@ -35,6 +66,13 @@ export interface CreatePlanRequest {
   throttle_speed_mbps?: number
   smtp_policy?: SMTPPolicy
   limits?: VMLimits
+  price_monthly?: number | null
+  price_hourly?: number | null
+  currency?: string
+  max_snapshots?: number | null
+  max_backups?: number | null
+  max_extra_ipv4?: number | null
+  max_extra_ipv6?: number | null
   description?: string
   is_active?: boolean
 }

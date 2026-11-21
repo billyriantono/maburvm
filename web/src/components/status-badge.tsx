@@ -42,6 +42,15 @@ const STATUSES: Record<string, { tone: Tone; label: string; busy?: boolean }> = 
   on: { tone: "ok", label: "On" },
   off: { tone: "idle", label: "Off" },
   locked: { tone: "bad", label: "Locked" },
+  // Sign-in history
+  signed_in: { tone: "ok", label: "Signed in" },
+  refused: { tone: "bad", label: "Refused" },
+  reset_requested: { tone: "idle", label: "Reset requested" },
+  // Applying a plan to a VM
+  applied: { tone: "ok", label: "Applied" },
+  partial: { tone: "warn", label: "Partly applied" },
+  up_to_date: { tone: "idle", label: "Up to date" },
+  skipped: { tone: "idle", label: "Not changed" },
 }
 
 // vmStatus is the status to show for a VM. A VM on a node that is not

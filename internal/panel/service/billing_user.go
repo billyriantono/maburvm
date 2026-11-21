@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/mail"
-	"os"
 	"strings"
 	"time"
 
@@ -136,7 +135,7 @@ var deliverNewAccountLink = func(db *gorm.DB, to, name, link string) {
 	if err != nil || !ok || !cfg.Enabled(EmailWelcomeOrder) {
 		return
 	}
-	panelURL := os.Getenv("PANEL_PUBLIC_URL")
+	panelURL := PublicURL()
 	// Through the queue: a mail server that is slow to answer must not time out a paid order.
 	if err := queueRendered(context.Background(), db, EmailWelcomeOrder, to, RenderEmail(cfg.Template(EmailWelcomeOrder), cfg.Brand,
 		EmailData{Name: name, Email: to, Link: link, LogoURL: EmailLogoURL(cfg.Brand, panelURL)}), emailRefs{}); err != nil {
@@ -148,9 +147,9 @@ var deliverNewAccountLink = func(db *gorm.DB, to, name, link string) {
 // lets them choose its password. Best-effort: without it they use "Forgot
 // password" on the sign-in page.
 func sendNewBillingAccountEmail(ctx context.Context, db *gorm.DB, user *models.User) {
-	base := strings.TrimRight(strings.TrimSpace(os.Getenv("PANEL_PUBLIC_URL")), "/")
+	base := PublicURL()
 	if base == "" {
-		slog.Default().Warn("billing: PANEL_PUBLIC_URL is not set, so the new account's owner was not emailed a link to choose a password", "email", user.Email)
+		slog.Default().Warn("billing: the panel address is not set (System settings, Panel, or PANEL_PUBLIC_URL), so the new account's owner was not emailed a link to choose a password", "email", user.Email)
 		return
 	}
 	buf := make([]byte, 32)

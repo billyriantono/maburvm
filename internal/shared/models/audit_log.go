@@ -57,7 +57,27 @@ func (a *AuditLog) BeforeCreate(tx *gorm.DB) error {
 	if a.Details == nil {
 		a.Details = make(map[string]any)
 	}
+	if imp, ok := tx.Statement.Context.Value(impersonatorKey{}).(Impersonator); ok {
+		a.Details["impersonator_id"], a.Details["impersonator_email"] = imp.ID, imp.Email
+	}
 	return nil
+}
+
+type impersonatorKey struct{}
+
+// Impersonator is the staff account behind a request made while viewing the
+// panel as a customer. Every audit row written under it names both.
+type Impersonator struct{ ID, Email string }
+
+// WithImpersonator marks ctx as a request made by staff viewing as a customer.
+func WithImpersonator(ctx context.Context, imp Impersonator) context.Context {
+	return context.WithValue(ctx, impersonatorKey{}, imp)
+}
+
+// ImpersonatorFrom returns the staff account behind ctx, if any.
+func ImpersonatorFrom(ctx context.Context) (Impersonator, bool) {
+	imp, ok := ctx.Value(impersonatorKey{}).(Impersonator)
+	return imp, ok
 }
 
 // GetID returns the UUID representation of ID

@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"regexp"
+	"strings"
 
 	"github.com/maburvm/panel/internal/panel/repository"
 	"github.com/maburvm/panel/internal/shared/models"
@@ -42,9 +45,63 @@ type PlanRequest struct {
 	SMTPPolicy string `json:"smtp_policy"`
 	// Limits are the CPU and disk caps of new VMs on the plan; nil keeps the
 	// plan's current ones (none for a new plan).
-	Limits      *models.VMLimits `json:"limits"`
-	Description string           `json:"description"`
-	IsActive    *bool            `json:"is_active"`
+	Limits *models.VMLimits `json:"limits"`
+	// Display price and per-VM allowances, replaced as a whole like the other
+	// fields: nil clears a price or lifts a limit.
+	PriceMonthly *float64 `json:"price_monthly"`
+	PriceHourly  *float64 `json:"price_hourly"`
+	Currency     string   `json:"currency"`
+	MaxSnapshots *int     `json:"max_snapshots"`
+	MaxBackups   *int     `json:"max_backups"`
+	MaxExtraIPv4 *int     `json:"max_extra_ipv4"`
+	MaxExtraIPv6 *int     `json:"max_extra_ipv6"`
+	Description  string   `json:"description"`
+	IsActive     *bool    `json:"is_active"`
+}
+
+// maxPrice bounds a display price, well inside numeric(14,4).
+const maxPrice = 1e9
+
+var currencyCode = regexp.MustCompile(`^[A-Z]{3}$`)
+
+// validatePriceAndAllowances checks the display price and the per-VM
+// allowances, and puts the currency code in upper case.
+func (r *PlanRequest) validatePriceAndAllowances() error {
+	r.Currency = strings.ToUpper(strings.TrimSpace(r.Currency))
+	for _, p := range []*float64{r.PriceMonthly, r.PriceHourly} {
+		if p != nil && (math.IsNaN(*p) || *p < 0 || *p > maxPrice) {
+			return fmt.Errorf("a price must be between 0 and 1000000000")
+		}
+	}
+	if (r.PriceMonthly != nil || r.PriceHourly != nil) && r.Currency == "" {
+		return fmt.Errorf("a price needs a currency (a three-letter code such as USD or IDR)")
+	}
+	if r.Currency != "" && !currencyCode.MatchString(r.Currency) {
+		return fmt.Errorf("currency must be a three-letter code such as USD or IDR")
+	}
+	for _, a := range []struct {
+		v    *int
+		max  int
+		what string
+	}{
+		{r.MaxSnapshots, MaxSnapshotsPerVM, "max_snapshots"},
+		{r.MaxBackups, 1000, "max_backups"},
+		{r.MaxExtraIPv4, 256, "max_extra_ipv4"},
+		// A VM holds one IPv6 (a prefix or an address) at most.
+		{r.MaxExtraIPv6, 1, "max_extra_ipv6"},
+	} {
+		if a.v != nil && (*a.v < 0 || *a.v > a.max) {
+			return fmt.Errorf("%s must be between 0 and %d, or empty for no limit", a.what, a.max)
+		}
+	}
+	return nil
+}
+
+// applyPriceAndAllowances copies the display price and allowances onto plan.
+func (r *PlanRequest) applyPriceAndAllowances(plan *models.Plan) {
+	plan.PriceMonthly, plan.PriceHourly, plan.Currency = r.PriceMonthly, r.PriceHourly, r.Currency
+	plan.MaxSnapshots, plan.MaxBackups = r.MaxSnapshots, r.MaxBackups
+	plan.MaxExtraIPv4, plan.MaxExtraIPv6 = r.MaxExtraIPv4, r.MaxExtraIPv6
 }
 
 func (r *PlanRequest) validate() error {
@@ -84,7 +141,7 @@ func (r *PlanRequest) validate() error {
 			return err
 		}
 	}
-	return nil
+	return r.validatePriceAndAllowances()
 }
 
 // normalizedOverQuotaPolicy returns the request's policy, defaulting to throttle.
@@ -130,6 +187,7 @@ func (s *PlanService) CreatePlan(ctx context.Context, req *PlanRequest) (*models
 	if req.Limits != nil {
 		plan.Limits = *req.Limits
 	}
+	req.applyPriceAndAllowances(plan)
 	if err := s.repo.Create(ctx, plan); err != nil {
 		return nil, fmt.Errorf("failed to create plan: %w", err)
 	}
@@ -176,6 +234,7 @@ func (s *PlanService) UpdatePlan(ctx context.Context, id string, req *PlanReques
 	if req.Limits != nil {
 		plan.Limits = *req.Limits
 	}
+	req.applyPriceAndAllowances(plan)
 	plan.Description = req.Description
 	if req.IsActive != nil {
 		plan.IsActive = *req.IsActive

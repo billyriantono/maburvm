@@ -17,9 +17,9 @@ func TestBackupDisksMigration(t *testing.T) {
 	db, raw, dsn := pgMigratedDB(t)
 	require.NoError(t, runMigrations(dsn))
 	up, down := migrationSQL(t, "075_backup_disks.up.sql"), migrationSQL(t, "075_backup_disks.down.sql")
-	for name, stmt := range map[string]string{"075 again": up, "075 down": down, "075 up after down": up} {
-		_, err := raw.Exec(stmt)
-		require.NoError(t, err, name)
+	for _, step := range []struct{ name, stmt string }{{"075 again", up}, {"075 down", down}, {"075 up after down", up}} {
+		_, err := raw.Exec(step.stmt)
+		require.NoError(t, err, step.name)
 	}
 
 	for _, stmt := range []string{

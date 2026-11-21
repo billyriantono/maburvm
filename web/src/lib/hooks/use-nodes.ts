@@ -11,6 +11,8 @@ import type {
   NodeMetricSample,
   CreateNodeRequest,
   UpdateNodeRequest,
+  NodePreflight,
+  NodeInstallCommand,
 } from '@/types'
 
 export function useNodes(enabled = true) {
@@ -102,6 +104,41 @@ export function useDeleteNode() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['nodes', 'list'] })
+    },
+  })
+}
+
+export function useNodePreflight(id: string) {
+  return useQuery<NodePreflight>({
+    queryKey: ['nodes', 'preflight', id],
+    queryFn: async () => {
+      const response = await api.get<NodePreflight>(`/api/v1/nodes/${id}/preflight`)
+      return response.data.data
+    },
+    enabled: !!id,
+  })
+}
+
+// Asks the node to check its host now; the answer replaces the stored report.
+export function useRunNodePreflight(id: string) {
+  const queryClient = useQueryClient()
+  return useMutation<NodePreflight, Error>({
+    mutationFn: async () => {
+      const response = await api.post<NodePreflight>(`/api/v1/nodes/${id}/preflight`)
+      return response.data.data
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData(['nodes', 'preflight', id], data)
+    },
+  })
+}
+
+// Creates a node's single-use install command. Any earlier one stops working.
+export function useCreateInstallCommand() {
+  return useMutation<NodeInstallCommand, Error, string>({
+    mutationFn: async (nodeId) => {
+      const response = await api.post<NodeInstallCommand>(`/api/v1/nodes/${nodeId}/install-command`)
+      return response.data.data
     },
   })
 }

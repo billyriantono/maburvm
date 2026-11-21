@@ -24,6 +24,7 @@ import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { TwoFactorSettings } from "@/components/two-factor-settings"
+import { AccountSessions } from "@/components/account-sessions"
 import { useCurrentUser } from "@/lib/hooks/use-auth"
 import { useChangePassword } from "@/lib/hooks/use-settings"
 import { useMyQuota } from "@/lib/hooks/use-quota"
@@ -199,7 +200,7 @@ export default function ProfileSettingsPage() {
                 </label>
                 <Input
                   id="role"
-                  defaultValue={user.role === "admin" ? "Administrator" : "Client"}
+                  defaultValue={user.role === "admin" ? user.staff_role_name ?? "Administrator" : "Client"}
                   className="bg-muted"
                   disabled
                 />
@@ -382,6 +383,8 @@ export default function ProfileSettingsPage() {
             )}
           </CardContent>
         </Card>
+
+        <AccountSessions />
       </div>
     </div>
   )

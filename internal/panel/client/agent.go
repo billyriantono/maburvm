@@ -669,6 +669,9 @@ type NodeSystemInfo struct {
 	AgentCommit    string
 	AgentBuildTime string
 	AgentVersion   string
+	// AgentSettings is the agent's own environment, non-secret values only;
+	// empty from an agent older than the report.
+	AgentSettings map[string]string
 	// Live metrics
 	CpuPercent           float64
 	MemoryUsedBytes      int64
@@ -720,6 +723,7 @@ func (c *AgentClient) GetNodeInfo(ctx context.Context, nodeID string) (*NodeSyst
 			AgentCommit:          resp.GetAgentCommit(),
 			AgentBuildTime:       resp.GetAgentBuildTime(),
 			AgentVersion:         resp.GetAgentVersion(),
+			AgentSettings:        resp.GetAgentSettings(),
 			CpuPercent:           resp.GetCpuPercent(),
 			MemoryUsedBytes:      resp.GetMemoryUsedBytes(),
 			MemoryUsedPercent:    resp.GetMemoryUsedPercent(),

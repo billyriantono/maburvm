@@ -40,6 +40,9 @@ import { StatusBadge, useVMTransitions, vmStatus } from "@/components/status-bad
 import { useCopy } from "@/lib/use-feedback"
 import { NodeStoragePools } from "@/components/pool-allocation"
 import { NodeAllocationCard } from "@/components/node-allocation"
+import { NodeInstallCommand } from "@/components/node-install-command"
+import { NodePreflight } from "@/components/node-preflight"
+import { NodeAgentSettings } from "@/components/node-agent-settings"
 
 // Resource gauge component
 function ResourceGauge({ value, label, detail, icon: Icon, color }: { value: number; label: string; detail?: string; icon: React.ElementType; color: string }) {
@@ -503,6 +506,8 @@ export default function NodeDetailPage() {
               matters most when the node is not answering. */}
           <NodeAllocationCard node={node} />
           <NodeStoragePools nodeId={node.id} />
+          <NodePreflight nodeId={node.id} />
+          <NodeAgentSettings nodeId={node.id} online={node.status === "active" || node.status === "maintenance"} />
 
           {/* Node Details */}
           <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm mb-6">
@@ -603,28 +608,7 @@ export default function NodeDetailPage() {
             </div>
           </div>
 
-          {/* Agent installation */}
-          <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm mb-6">
-            <h2 className="text-lg font-semibold text-foreground mb-2 flex items-center gap-2">
-              <Terminal className="w-5 h-5" />Install / Re-install the Agent
-            </h2>
-            <div className="p-4 rounded-md bg-amber-50 border border-amber-200 dark:bg-amber-950 dark:border-amber-900">
-              <div className="flex items-start gap-3">
-                <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-                <div className="space-y-2">
-                  <p className="font-medium text-sm text-foreground">
-                    Automatic agent installation is temporarily unavailable while node deployment security is being completed.
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    Installing or re-installing the agent on a hypervisor host manually is an administrator-only operational procedure. See the deployment documentation (<code className="bg-muted px-1 rounded border">docs/DEPLOYMENT.md</code>, agent deployment) for details.
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    The agent token above is configured on the host when the agent is deployed or its token is rotated.
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
+          <NodeInstallCommand nodeId={node.id} installerAllowed={!!node.installer_allowed} />
 
           {/* Virtual Machines on this Node */}
           <div className="bg-card text-card-foreground border rounded-lg shadow-sm overflow-hidden">

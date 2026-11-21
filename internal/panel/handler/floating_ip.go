@@ -30,7 +30,7 @@ func RegisterFloatingIPRoutes(e *echo.Echo, h *FloatingIPHandler, db *gorm.DB) {
 	// stay admin-only; attach/detach is a tenant action on an address they own.
 	// Allocating on someone else's behalf (and choosing the pool) stays with an
 	// administrator; ordering one for yourself is self-service.
-	g.POST("", h.Allocate, middleware.RequirePermission("admin:access"))
+	g.POST("", h.Allocate, middleware.RequirePermission("network:update"))
 	g.POST("/order", h.Order, middleware.RequirePermission("floating_ip:create"))
 	// Releasing is how a customer stops being billed for an address, so it must
 	// be available to them — scoped to their own by the guard in the service.

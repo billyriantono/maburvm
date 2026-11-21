@@ -14,6 +14,17 @@ describe('contentSecurityPolicy', () => {
     expect(contentSecurityPolicy('localhost:3000', false)).toContain("'unsafe-eval'");
   });
 
+  it('lets the captcha providers in on the sign-in pages only', () => {
+    const plain = contentSecurityPolicy('panel.example.com', true);
+    expect(plain).not.toContain('challenges.cloudflare.com');
+    expect(plain).not.toContain('hcaptcha.com');
+    expect(plain).toContain("frame-src 'self';");
+    const signIn = contentSecurityPolicy('panel.example.com', true, true);
+    expect(signIn).toContain("script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com https://hcaptcha.com https://*.hcaptcha.com");
+    expect(signIn).toContain("frame-src 'self' https://challenges.cloudflare.com https://hcaptcha.com https://*.hcaptcha.com");
+    expect(signIn).toContain("frame-ancestors 'none'");
+  });
+
   it('never copies a strange Host header into the policy', () => {
     const csp = contentSecurityPolicy('evil.com; script-src *', true);
     expect(csp).toContain("connect-src 'self';");

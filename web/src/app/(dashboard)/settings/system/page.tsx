@@ -39,7 +39,9 @@ import { BackupPolicySettings } from "@/components/backup-policy-settings"
 import { TransferQuotaSettings } from "@/components/transfer-quota-settings"
 import { BillingDeliveries } from "@/components/billing-deliveries"
 import { RescueImageSettings } from "@/components/rescue-image-settings"
+import { PanelConfigSettings } from "@/components/panel-config-settings"
 import { EmailLog } from "@/components/email-log"
+import { StatusBadge } from "@/components/status-badge"
 
 // The password policy (LoadPasswordPolicy in internal/panel/service/user.go)
 // and the sign-in policy (LoadSignInPolicy in internal/panel/middleware/sign_in_policy.go).
@@ -57,6 +59,12 @@ const securitySchema = z.object({
   lockoutMinutes: z.number().int().min(1, "At least 1 minute").max(1440, "At most 1440 minutes (a day)"),
   requireStaff2fa: z.boolean(),
   sessionHours: z.number().int().min(1, "At least 1 hour").max(720, "At most 720 hours (30 days)"),
+  // The sign-in check (SignInPolicy.Captcha* in sign_in_policy.go). A blank
+  // secret keeps the saved one; the server never sends it back.
+  captchaProvider: z.enum(["", "turnstile", "hcaptcha"]),
+  captchaSiteKey: z.string().max(200),
+  captchaSecret: z.string().max(200),
+  captchaAfterFailures: z.number().int().min(0, "0 or more").max(100, "At most 100"),
 })
 
 // API settings schema
@@ -120,6 +128,10 @@ const defaultSecuritySettings = {
   lockoutMinutes: 15,
   requireStaff2fa: false,
   sessionHours: 24,
+  captchaProvider: "" as "" | "turnstile" | "hcaptcha",
+  captchaSiteKey: "",
+  captchaSecret: "",
+  captchaAfterFailures: 3,
 }
 
 const defaultApiSettings = {
@@ -400,6 +412,9 @@ export default function SystemSettingsPage() {
   }, [sysSettings])
 
   const saved = useFlash(1500)
+  // What sign-in actually does now, from the saved settings, not the form.
+  const savedSecurity = sysSettings?.security ?? {}
+  const captchaOn = !!savedSecurity.captchaProvider && !!savedSecurity.captchaSiteKey && !!savedSecurity.captchaSecretSet
 
   const saveSection = async (section: string, data: unknown, label: string, description: string) => {
     setIsSaving(section)
@@ -519,6 +534,10 @@ export default function SystemSettingsPage() {
             <Server className="w-4 h-4 mr-2" />
             Version
           </TabsTrigger>
+          <TabsTrigger value="panel" className="text-xs">
+            <Link className="w-4 h-4 mr-2" />
+            Panel
+          </TabsTrigger>
           <TabsTrigger value="security" className="text-xs">
             <Shield className="w-4 h-4 mr-2" />
             Security
@@ -563,6 +582,11 @@ export default function SystemSettingsPage() {
               <BuildPanel />
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* Address, billing webhook, SSO and metrics: env values made editable. */}
+        <TabsContent value="panel">
+          <PanelConfigSettings />
         </TabsContent>
 
         {/* Password policy and sign-in policy: one settings row, one form. */}
@@ -690,6 +714,63 @@ export default function SystemSettingsPage() {
                       )}
                     </span>
                   </label>
+                </div>
+
+                <div className="space-y-4 pt-6 border-t">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <h3 className="text-sm font-semibold">Sign-in check (captcha)</h3>
+                    <span className="flex items-center gap-2 text-xs">
+                      <StatusBadge status={captchaOn ? "on" : "off"} />
+                      <span className="text-muted-foreground">
+                        {captchaOn
+                          ? (Number(savedSecurity.captchaAfterFailures ?? 3)
+                              ? `Asked after ${Number(savedSecurity.captchaAfterFailures ?? 3)} failed attempts`
+                              : "Asked on every sign-in and reset")
+                          : "Needs a provider, its site key and its secret key"}
+                      </span>
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    After that many failed sign-ins or password reset requests from one address, or for one email, in 15
+                    minutes, the sign-in and reset pages ask for the provider&apos;s check before anything else. Keys come from
+                    the provider&apos;s dashboard. If the provider cannot be reached, those attempts wait until it can.
+                  </p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label htmlFor="captchaProvider" className="block text-sm font-medium text-muted-foreground mb-2">Provider</label>
+                      <select
+                        id="captchaProvider"
+                        {...securityForm.register("captchaProvider")}
+                        className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm"
+                      >
+                        <option value="">Off</option>
+                        <option value="turnstile">Cloudflare Turnstile</option>
+                        <option value="hcaptcha">hCaptcha</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label htmlFor="captchaAfterFailures" className="block text-sm font-medium text-muted-foreground mb-2">
+                        Ask after this many failed attempts
+                      </label>
+                      <Input id="captchaAfterFailures" type="number" min={0} max={100}
+                        {...securityForm.register("captchaAfterFailures", { valueAsNumber: true })} />
+                      <p className="text-xs text-muted-foreground mt-1.5">0 asks on every sign-in, so nobody can sign in with a password while the provider is down.</p>
+                      {securityForm.formState.errors.captchaAfterFailures && (
+                        <p className="text-destructive text-sm mt-1">{securityForm.formState.errors.captchaAfterFailures.message}</p>
+                      )}
+                    </div>
+                    <div>
+                      <label htmlFor="captchaSiteKey" className="block text-sm font-medium text-muted-foreground mb-2">Site key</label>
+                      <Input id="captchaSiteKey" autoComplete="off" {...securityForm.register("captchaSiteKey")} />
+                    </div>
+                    <div>
+                      <label htmlFor="captchaSecret" className="block text-sm font-medium text-muted-foreground mb-2">Secret key</label>
+                      <Input id="captchaSecret" type="password" autoComplete="new-password"
+                        placeholder={savedSecurity.captchaSecretSet ? "Saved. Leave blank to keep it." : ""}
+                        {...securityForm.register("captchaSecret")} />
+                      <p className="text-xs text-muted-foreground mt-1.5">Stored encrypted and never shown again.</p>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="flex items-center justify-between pt-4 border-t">

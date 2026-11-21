@@ -24,6 +24,12 @@ describe('middleware', () => {
     expect(res.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
   });
 
+  it('serves the first-run page without a session', () => {
+    const res = middleware(req('/first-run'));
+    expect(res.headers.get('location')).toBeNull();
+    expect(res.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
+  });
+
   it('lets a page with a session cookie through', () => {
     const res = middleware(req('/vms', 'GET', 'accessToken=t'));
     expect(res.headers.get('location')).toBeNull();

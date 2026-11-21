@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/google/uuid"
+	"github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/shared/models"
 	"gorm.io/gorm"
 )
@@ -14,14 +15,7 @@ import (
 // A temporary (support) account is never it, however the others come and go.
 // Returns uuid.Nil when there is none.
 func FoundingAdminID(ctx context.Context, db *gorm.DB) uuid.UUID {
-	var user models.User
-	if err := db.WithContext(ctx).
-		Where("role = ? AND deleted_at IS NULL AND expires_at IS NULL", models.RoleAdmin).
-		Order("created_at ASC, id ASC").
-		First(&user).Error; err != nil {
-		return uuid.Nil
-	}
-	return user.ID
+	return middleware.FoundingAdminID(ctx, db)
 }
 
 // IsTemporaryAccount reports whether the user is a support account. An

@@ -48,7 +48,7 @@ func metricsMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 // metricsHandler serves the Prometheus scrape endpoint behind a bearer token.
 // With no token configured the endpoint is off: the panel is internet-facing
 // and metrics leak route and runtime details.
-func metricsHandler(token string, db *gorm.DB) echo.HandlerFunc {
+func metricsHandler(token func() string, db *gorm.DB) echo.HandlerFunc {
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}), httpRequestDuration)
 	reg.MustRegister(queue.JobFailures)
@@ -57,11 +57,12 @@ func metricsHandler(token string, db *gorm.DB) echo.HandlerFunc {
 	}
 	h := echo.WrapHandler(promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 	return func(c echo.Context) error {
-		if token == "" {
+		want := token()
+		if want == "" {
 			return echo.ErrNotFound
 		}
 		got := c.Request().Header.Get("Authorization")
-		if subtle.ConstantTimeCompare([]byte(got), []byte("Bearer "+token)) != 1 {
+		if subtle.ConstantTimeCompare([]byte(got), []byte("Bearer "+want)) != 1 {
 			return c.NoContent(http.StatusUnauthorized)
 		}
 		return h(c)
