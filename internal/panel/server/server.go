@@ -23,6 +23,7 @@ import (
 	"github.com/riverqueue/river"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/maburvm/panel/internal/panel/apidoc"
 	"github.com/maburvm/panel/internal/panel/authz"
 	"github.com/maburvm/panel/internal/panel/client"
 	"github.com/maburvm/panel/internal/panel/handler"
@@ -248,6 +249,8 @@ func (s *Server) SetupRoutes() {
 		c.Response().Header().Set("Cache-Control", "public, max-age=60")
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": service.LoadBranding(s.db.WithContext(c.Request().Context())).Public()})
 	})
+	// The API reference: public, see apidoc.Handler.
+	v1.GET("/openapi.json", apidoc.Handler)
 
 	// Auth routes (no auth required)
 	s.setupAuthRoutes(v1)
@@ -948,6 +951,8 @@ func (s *Server) setupImportRoutes() {
 	}()
 	importHandler := handler.NewImportHandler(importService)
 	handler.RegisterImportRoutes(s.echo, importHandler, s.db)
+	// The whole-installation import: customers, plans, IP pools and VMs.
+	handler.RegisterVirtualizorImportRoutes(s.echo, handler.NewVirtualizorImportHandler(service.NewVirtualizorImportService(s.db, importService)), s.db)
 }
 
 // setupUserRoutes configures user management routes (CRUD beyond auth)
@@ -2722,20 +2727,7 @@ func Run() error {
 	queue.ObjectStoreHook = service.NewBackupDestinations(db, nil, cfg.JWT.AESKey, cfg.JWT.AESPreviousKeys...).ObjectStore
 	// Likewise a job that fails for good in the first seconds must be reported.
 	alerts := service.NewAlertService(db, slog.Default(), cfg.JWT.AESKey, cfg.JWT.AESPreviousKeys...)
-	queue.JobFailedHook = func(ctx context.Context, kind string, args []byte, reason string) {
-		alerts.JobFailed(ctx, kind, args, reason)
-		service.BillingJobFailed(ctx, db, queueClient.RiverClient(), kind, args, reason, false)
-		switch kind {
-		case (queue.BackupJob{}).Kind():
-			if err := service.NotifyBackupFailed(ctx, db, args); err != nil {
-				slog.Default().Warn("backup failed, but the VM's owner could not be told", "error", err)
-			}
-		case (queue.VMOperationJob{}).Kind():
-			if err := service.NotifyVMOperationFailed(ctx, db, args); err != nil {
-				slog.Default().Warn("VM job failed, but the VM's owner could not be told", "error", err)
-			}
-		}
-	}
+	queue.JobFailedHook = service.OnJobFailed(db, alerts, queueClient.RiverClient())
 	queue.JobRetryingHook = func(ctx context.Context, kind string, args []byte, reason string) {
 		service.BillingJobFailed(ctx, db, queueClient.RiverClient(), kind, args, reason, true)
 	}

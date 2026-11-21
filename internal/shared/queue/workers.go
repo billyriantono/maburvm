@@ -2905,8 +2905,23 @@ func NewSnapshotWorker(logger *slog.Logger) *SnapshotWorker {
 	return w
 }
 
-// Work implements the snapshot job handler
+// Work runs a snapshot operation. A snapshot whose taking failed for good is
+// marked failed: left pending, it would read as still being taken and refuse
+// every later snapshot of the VM.
 func (w *SnapshotWorker) Work(ctx context.Context, job *river.Job[SnapshotJob]) error {
+	err := w.run(ctx, job)
+	if job.Args.Operation == SnapshotOpCreate && job.Args.SnapshotID != "" && tryFailed(ctx.Err(), err) &&
+		(isJobCancel(err) || lastTry(job.JobRow)) && globalWorkerContext != nil && globalWorkerContext.DB != nil {
+		if uerr := globalWorkerContext.DB.WithContext(context.WithoutCancel(ctx)).Model(&models.Snapshot{}).
+			Where("id = ? AND status = ?", job.Args.SnapshotID, models.SnapshotStatusPending).
+			Update("status", models.SnapshotStatusFailed).Error; uerr != nil {
+			w.logger.ErrorContext(ctx, "could not mark the snapshot failed", "snapshot_id", job.Args.SnapshotID, "error", uerr)
+		}
+	}
+	return err
+}
+
+func (w *SnapshotWorker) run(ctx context.Context, job *river.Job[SnapshotJob]) error {
 	startTime := time.Now()
 	jobID := fmt.Sprintf("%d", job.ID)
 

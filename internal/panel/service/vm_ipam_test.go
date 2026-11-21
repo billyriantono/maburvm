@@ -91,6 +91,24 @@ func TestVMServiceCreateVMRejectsBridgelessPool(t *testing.T) {
 	require.Zero(t, count)
 }
 
+// Every pool full is out of capacity, which the billing webhook answers with
+// a 409; an unwrapped error there read as a panel fault (500).
+func TestVMServiceCreateVMAutoAssignAllPoolsFull(t *testing.T) {
+	db := setupVMIPAMTestDB(t)
+	user, node, tmpl := seedVMIPAMDependencies(t, db)
+	pool := &models.IPPool{Name: "full", NodeID: &node.ID, Family: models.IPFamilyIPv4, CIDR: "203.0.113.0/24", Bridge: "br0", Gateway: "203.0.113.1"}
+	require.NoError(t, db.Create(pool).Error)
+	require.NoError(t, db.Create(&models.IPAddress{PoolID: pool.ID, Address: "203.0.113.10", Family: models.IPFamilyIPv4, Status: models.IPAddressStatusReserved}).Error)
+
+	svc := NewVMService(db, repository.NewVMRepository(db), repository.NewNodeRepository(db), repository.NewTemplateRepository(db), nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	_, err := svc.CreateVM(context.Background(), &CreateVMRequest{
+		UserID: user.ID.String(), Hostname: "full.example.test", OSTemplateID: tmpl.ID,
+		Resources: models.Resources{CPU: 1, RAM: 512, Disk: 10}, NodeID: node.ID, AutoAssignIP: true,
+	})
+	require.ErrorIs(t, err, ErrNoAvailableIPAddress)
+}
+
 func TestVMServiceCreateVMEnforcesQuota(t *testing.T) {
 	db := setupVMIPAMTestDB(t)
 	ctx := context.Background()

@@ -6,6 +6,11 @@
 > reviewing every image tag, supplying real secrets, terminating TLS, backing up
 > data, and deploying the KVM agent on each hypervisor host.
 
+Other guides: [node setup](node-setup.md), [administrator guide](admin-guide.md),
+[user guide](user-guide.md), [upgrading](upgrading.md), [runbooks](runbooks.md)
+and the [API](api.md) (the full reference is served at `/docs/api` on every
+panel).
+
 ## 1. Scope & files
 
 | File | Purpose |
@@ -23,7 +28,7 @@
 | `scripts/upgrade-panel.sh` | Upgrade with a backup first and an automatic rollback (§16). |
 | `.github/workflows/release.yml` | On a version tag: publishes the panel and web images and the agent binaries, drafts the release (§16). |
 | `docker-compose.rehearsal.yml` | Overlay used only by a restore rehearsal: cuts the restored panel off from nodes and the internet. |
-| `docs/DEPLOYMENT.md` | This guide. |
+| `docs/DEPLOYMENT.md` | This guide. The other guides are listed in `docs/README.md`. |
 | `deploy/secrets/` | Host secret files (created by you, never committed). |
 
 This composition does **not**:
@@ -1484,7 +1489,7 @@ webhook. The JSON format posts this body to any receiver:
 
 `status` is `firing`, `resolved` or `event` (a failure that has no "resolved").
 `kind` is one of `node_offline`, `node_silent`, `storage_pool`, `firewall_off`,
-`backup_failed`, `job_failed`. `severity` is `critical` or `warning`. `key` is
+`backup_failed`, `job_failed`, `network_drift`. `severity` is `critical` or `warning`. `key` is
 the same for the firing and the resolved message of one alert. A test alert
 has `"test": true`. Fields may be added; none of these are renamed or removed.
 

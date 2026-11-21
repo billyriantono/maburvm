@@ -24,6 +24,7 @@ func secretsDB(t *testing.T) *gorm.DB {
 	for _, ddl := range []string{
 		`CREATE TABLE nodes (id TEXT PRIMARY KEY, token TEXT)`,
 		`CREATE TABLE vms (id TEXT PRIMARY KEY, vnc_password TEXT)`,
+		`CREATE TABLE import_sources (id TEXT PRIMARY KEY, api_key TEXT, api_pass TEXT)`,
 		`CREATE TABLE system_settings (section TEXT PRIMARY KEY, data TEXT)`,
 	} {
 		require.NoError(t, db.Exec(ddl).Error)

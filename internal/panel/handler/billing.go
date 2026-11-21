@@ -683,27 +683,13 @@ func (h *BillingHandler) HandleWebhook(c echo.Context) error {
 			"error", err,
 		)
 
-		statusCode := http.StatusInternalServerError
-		switch {
-		case errors.Is(err, service.ErrVMNotFound), errors.Is(err, service.ErrPlanNotFound), errors.Is(err, service.ErrUserNotFound),
-			errors.Is(err, service.ErrRegionNotFound), errors.Is(err, service.ErrTemplateNotFound):
-			statusCode = http.StatusNotFound
-		case errors.Is(err, service.ErrPlanInactive), errors.Is(err, service.ErrNotACustomerAccount),
-			errors.Is(err, service.ErrBillingUserInvalid), errors.Is(err, service.ErrTemplateNotOffered):
-			statusCode = http.StatusBadRequest
-		case errors.Is(err, service.ErrBillingStaffAccount), errors.Is(err, service.ErrRegionNoCapacity):
-			statusCode = http.StatusConflict
-		case errors.Is(err, errBillingSSORefused):
-			statusCode = http.StatusForbidden
-		}
-
 		response = WebhookResponse{
 			Success:   false,
 			Message:   err.Error(),
 			Timestamp: now,
 			RequestID: requestID,
 		}
-		return c.JSON(statusCode, response)
+		return c.JSON(webhookErrorStatus(err), response)
 	}
 
 	// Only create and destroy are cached, the two that must not run twice.
@@ -719,6 +705,27 @@ func (h *BillingHandler) HandleWebhook(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, response)
+}
+
+// webhookErrorStatus is the HTTP status a failed event is answered with. A 5xx
+// tells the billing system the panel is at fault; a refusal it can act on
+// (out of room, VM being moved, staff account) is a 4xx.
+func webhookErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, service.ErrVMNotFound), errors.Is(err, service.ErrPlanNotFound), errors.Is(err, service.ErrUserNotFound),
+		errors.Is(err, service.ErrRegionNotFound), errors.Is(err, service.ErrTemplateNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, service.ErrPlanInactive), errors.Is(err, service.ErrNotACustomerAccount),
+		errors.Is(err, service.ErrBillingUserInvalid), errors.Is(err, service.ErrTemplateNotOffered):
+		return http.StatusBadRequest
+	case errors.Is(err, service.ErrBillingStaffAccount), errors.Is(err, service.ErrRegionNoCapacity),
+		errors.Is(err, service.ErrNATPortsExhausted), errors.Is(err, service.ErrNoNATPool), errors.Is(err, service.ErrNoUsablePool),
+		errors.Is(err, service.ErrNoAvailableIPAddress), errors.Is(err, service.ErrVMMigrating):
+		return http.StatusConflict
+	case errors.Is(err, errBillingSSORefused):
+		return http.StatusForbidden
+	}
+	return http.StatusInternalServerError
 }
 
 // errBillingOwnerMismatch marks an event whose VM belongs to someone else.

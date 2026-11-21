@@ -168,6 +168,12 @@ func templateNotOffered(c echo.Context) error {
 	})
 }
 
+// vmMoving answers a change refused because the VM is being moved to another
+// node: a conflict that clears when the move ends, not a server fault.
+func vmMoving(c echo.Context, err error) error {
+	return c.JSON(http.StatusConflict, map[string]interface{}{"error": "Conflict", "code": "vm_migrating", "message": err.Error()})
+}
+
 // isClientRole reports whether the caller is an authenticated non-admin (client).
 // Unauthenticated callers return false so the dedicated 401 path elsewhere owns
 // that case.
@@ -485,7 +491,7 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 		case errors.Is(err, service.ErrNoAvailableIPAddress):
 			return c.JSON(http.StatusConflict, map[string]interface{}{
 				"error":   "Conflict",
-				"message": "The selected IP pool has no free addresses left.",
+				"message": "The IP pool has no free addresses left.",
 			})
 		case errors.Is(err, service.ErrNoUsablePool), errors.Is(err, service.ErrNoNATPool), errors.Is(err, service.ErrNATPortsExhausted):
 			return c.JSON(http.StatusConflict, map[string]interface{}{
@@ -1151,7 +1157,7 @@ func (h *VMHandler) DeleteVM(c echo.Context) error {
 				"message": "VM not found",
 			})
 		case errors.Is(err, service.ErrVMMigrating):
-			return c.JSON(http.StatusConflict, map[string]interface{}{"error": "Conflict", "message": err.Error()})
+			return vmMoving(c, err)
 		default:
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
 				"error":   "Internal Server Error",
@@ -1255,6 +1261,9 @@ func (h *VMHandler) handleLifecycleCommand(c echo.Context, command service.Lifec
 		if errors.Is(err, service.ErrVMNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
 		}
+		if errors.Is(err, service.ErrVMMigrating) {
+			return vmMoving(c, err)
+		}
 		if err != nil {
 			return c.JSON(http.StatusBadGateway, map[string]interface{}{"error": "Bad Gateway", "message": err.Error()})
 		}
@@ -1287,7 +1296,7 @@ func (h *VMHandler) handleLifecycleCommand(c echo.Context, command service.Lifec
 				"message": err.Error(),
 			})
 		case errors.Is(err, service.ErrVMMigrating):
-			return c.JSON(http.StatusConflict, map[string]interface{}{"error": "Conflict", "message": err.Error()})
+			return vmMoving(c, err)
 		default:
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
 				"error":   "Internal Server Error",
@@ -1408,6 +1417,8 @@ func (h *VMHandler) RebuildVM(c echo.Context) error {
 			})
 		case errors.Is(err, service.ErrTemplateNotOffered):
 			return templateNotOffered(c)
+		case errors.Is(err, service.ErrVMMigrating):
+			return vmMoving(c, err)
 		case errors.Is(err, service.ErrRebuildNotPossible):
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{
 				"error":   "Bad Request",
@@ -1476,6 +1487,8 @@ func (h *VMHandler) CloneVM(c echo.Context) error {
 			return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "Quota Exceeded", "message": err.Error()})
 		case errors.Is(err, service.ErrNodeCapacityExceeded):
 			return c.JSON(http.StatusServiceUnavailable, map[string]interface{}{"error": "Node Capacity Exceeded", "message": capacityMessage(c, err)})
+		case errors.Is(err, service.ErrVMMigrating):
+			return vmMoving(c, err)
 		default:
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
 		}
@@ -1539,6 +1552,9 @@ func (h *VMHandler) AttachVMDisk(c echo.Context) error {
 		if errors.Is(err, service.ErrDiskQuotaExceeded) || errors.Is(err, service.ErrQuotaExceeded) {
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Disk quota exceeded"})
 		}
+		if errors.Is(err, service.ErrVMMigrating) {
+			return vmMoving(c, err)
+		}
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
 	}
 	return c.JSON(http.StatusCreated, map[string]interface{}{"success": true, "data": disk})
@@ -1554,6 +1570,9 @@ func (h *VMHandler) DetachVMDisk(c echo.Context) error {
 	if err != nil {
 		if errors.Is(err, service.ErrVMNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
+		}
+		if errors.Is(err, service.ErrVMMigrating) {
+			return vmMoving(c, err)
 		}
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
 	}
@@ -1838,6 +1857,9 @@ func (h *VMHandler) ResetPasswordVM(c echo.Context) error {
 		if errors.Is(err, service.ErrVMNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
 		}
+		if errors.Is(err, service.ErrVMMigrating) {
+			return vmMoving(c, err)
+		}
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
 	}
 	return c.JSON(http.StatusOK, map[string]interface{}{"message": "Password reset enqueued", "data": resp})
@@ -1888,6 +1910,9 @@ func (h *VMHandler) AttachISOVM(c echo.Context) error {
 		if errors.Is(err, service.ErrVMNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
 		}
+		if errors.Is(err, service.ErrVMMigrating) {
+			return vmMoving(c, err)
+		}
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
 	}
 	return c.JSON(http.StatusOK, map[string]interface{}{"message": "ISO attach enqueued", "data": map[string]interface{}{"job_id": jobID, "status": "pending"}})
@@ -1903,6 +1928,9 @@ func (h *VMHandler) DetachISOVM(c echo.Context) error {
 	if err != nil {
 		if errors.Is(err, service.ErrVMNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
+		}
+		if errors.Is(err, service.ErrVMMigrating) {
+			return vmMoving(c, err)
 		}
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
 	}
@@ -1933,6 +1961,9 @@ func (h *VMHandler) RescueVM(c echo.Context) error {
 		if errors.Is(err, service.ErrVMNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
 		}
+		if errors.Is(err, service.ErrVMMigrating) {
+			return vmMoving(c, err)
+		}
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
 	}
 	return c.JSON(http.StatusOK, map[string]interface{}{
@@ -1951,6 +1982,9 @@ func (h *VMHandler) UnrescueVM(c echo.Context) error {
 	if err != nil {
 		if errors.Is(err, service.ErrVMNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
+		}
+		if errors.Is(err, service.ErrVMMigrating) {
+			return vmMoving(c, err)
 		}
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
 	}

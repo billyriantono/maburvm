@@ -55,6 +55,7 @@ var resourceTypes = []struct{ seg, rt string }{
 	{"/mcp", "MCP"},
 	{"/api-keys", "API_KEY"},
 	{"/support-access", "SUPPORT_ACCESS"},
+	{"/import/sources", "IMPORT"},
 	{"/firewall", "FIREWALL_RULE"},
 	{"/port-forwards", "PORT_FORWARD"},
 	{"/snapshots", "SNAPSHOT"},

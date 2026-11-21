@@ -83,6 +83,8 @@ const (
 	EmailPasswordChanged   = "password_changed"
 	EmailTwoFactorDisabled = "two_factor_disabled"
 	EmailAPIKeyCreated     = "api_key_created"
+	// EmailAccountImported invites an account an import from another panel made.
+	EmailAccountImported = "account_imported"
 )
 
 // serverSample fills the server placeholders in previews and test sends.
@@ -118,6 +120,20 @@ var emailTemplateDefs = []EmailTemplateDef{
 			Subject: "Your {{brand}} account",
 			Body: "{{greeting}},\n\nA {{brand}} account has been created for your order. It is where you manage your servers.\n\nUsername: {{email}}\n\n" +
 				"Choose a password with the button below. It works for 72 hours; after that, use \"Forgot password\" on the sign-in page.",
+			Button: "Choose a password",
+		},
+		Sample:      map[string]string{"name": "Dewi", "email": "dewi@example.com"},
+		SampleLink:  "https://panel.example.com/reset-password?token=example",
+		LinkMeaning: "The button opens the page where they choose their password.",
+	},
+	{
+		Key:      EmailAccountImported,
+		Name:     "Account moved here (import)",
+		SentWhen: "Sent when staff send the invitations after importing customers from another panel. Nothing is sent until they do.",
+		Default: EmailTemplate{
+			Subject: "Your servers are now managed in {{brand}}",
+			Body: "{{greeting}},\n\nYour account and servers are now managed in {{brand}}. Nothing on your servers has changed.\n\nUsername: {{email}}\n\n" +
+				"Choose a password for the panel with the button below. It works for 7 days; after that, use \"Forgot password\" on the sign-in page.",
 			Button: "Choose a password",
 		},
 		Sample:      map[string]string{"name": "Dewi", "email": "dewi@example.com"},

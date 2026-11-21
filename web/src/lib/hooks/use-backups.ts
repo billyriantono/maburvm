@@ -20,6 +20,10 @@ export function useBackups(vmId: string) {
       return response.data.data
     },
     enabled: !!vmId,
+    // A backup runs on its node after the request returns: poll while one is
+    // queued or running, or the row reads "In progress" until a reload.
+    refetchInterval: (query) =>
+      query.state.data?.some((b) => b.status === 'pending' || b.status === 'in_progress') ? 5000 : false,
   })
 }
 

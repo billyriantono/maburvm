@@ -73,7 +73,26 @@ cd web
 npx tsc --noEmit    # type check (must be clean)
 npm run build       # production build (must succeed)
 npm run lint
+npm test            # unit tests (vitest)
 ```
+
+Tests that run the migrations and SQL on a real PostgreSQL carry the `pg` build
+tag and skip without a server. Point them at one you can create throwaway
+databases on; `PGDATABASE` names a scratch database the tests wipe:
+
+```bash
+createdb -h 127.0.0.1 -U postgres maburvm_enroll_test
+MABURVM_TEST_PG_DSN='postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable' \
+PGHOST=127.0.0.1 PGUSER=postgres PGDATABASE=maburvm_enroll_test \
+go test -tags pg ./internal/panel/... ./internal/shared/...
+dropdb -h 127.0.0.1 -U postgres maburvm_enroll_test
+```
+
+Job-worker and provisioning tests use an in-memory node agent
+(`internal/shared/fakeagent`) instead of a hypervisor. The browser tests run the
+panel and web app against it (`cmd/fake-agent`); see
+[`web/e2e/README.md`](web/e2e/README.md). The fake agent is test tooling only:
+no release or image contains it.
 
 Please make sure the relevant builds and tests pass before opening a pull request.
 
@@ -85,8 +104,10 @@ which is where the agent and its tests are compiled and run:
 | Go | `go build`, `go vet` and `go test -tags pg` over the whole module with libvirt installed, against a real PostgreSQL |
 | Known vulnerabilities | `govulncheck ./...` and `npm audit` of the web app's shipped dependencies |
 | Web | `npm ci`, `tsc --noEmit`, `npm test`, `npm run build` |
+| Browser tests | Playwright against a production build of the web app, the panel, a throwaway database and the fake node agent |
 | Secret scan | `gitleaks` over every commit (placeholders that are not secrets are listed in `.gitleaks.toml`) |
 | Panel backup | builds the backup image and runs `scripts/test-panel-backup.sh` inside it; validates the compose files |
+| WHMCS modules | `php -l` and the PHPUnit suite in `integrations/whmcs/tests` (against stand-ins for WHMCS) |
 
 ## Project Layout
 

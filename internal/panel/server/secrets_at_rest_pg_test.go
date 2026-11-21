@@ -22,13 +22,18 @@ func TestSealSecretsAtRestOnPostgres(t *testing.T) {
 		`INSERT INTO nodes (token) VALUES ('0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef')`,
 		`INSERT INTO vms (vnc_password) VALUES ('Ab3dEf7h'), (NULL)`,
 		`INSERT INTO system_settings (section, data) VALUES ('email', '{"smtpPassword":"hunter2","smtpPort":587}')`,
+		`CREATE TABLE import_sources (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), api_key text NOT NULL DEFAULT '', api_pass text NOT NULL DEFAULT '')`,
+		`INSERT INTO import_sources (api_key, api_pass) VALUES ('source-key', 'source-pass')`,
 	} {
 		require.NoError(t, db.Exec(ddl).Error)
 	}
 	models.SetSecretKeys(keyOld)
 	n, err := sealSecretsAtRest(context.Background(), db)
 	require.NoError(t, err)
-	require.Equal(t, 3, n)
+	require.Equal(t, 5, n)
+	var apiPass string
+	require.NoError(t, db.Raw(`SELECT api_pass FROM import_sources`).Scan(&apiPass).Error)
+	require.True(t, models.IsSealed(apiPass), "an import source's credentials are sealed too")
 
 	var pass string
 	require.NoError(t, db.Raw(`SELECT data->>'smtpPassword' FROM system_settings WHERE section = 'email'`).Scan(&pass).Error)

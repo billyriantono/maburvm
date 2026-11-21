@@ -1,6 +1,13 @@
 package handler
 
-import "testing"
+import (
+	"errors"
+	"fmt"
+	"net/http"
+	"testing"
+
+	"github.com/maburvm/panel/internal/panel/service"
+)
 
 func TestBillingValidatePayload(t *testing.T) {
 	h := &BillingHandler{}
@@ -23,6 +30,32 @@ func TestBillingValidatePayload(t *testing.T) {
 		}
 		if err := h.validatePayload(&c.p); (err == nil) != c.ok {
 			t.Errorf("%s: err=%v, want ok=%v", c.name, err, c.ok)
+		}
+	}
+}
+
+// A refusal the billing system can act on must not read as a panel fault: a
+// 5xx makes it retry, or show the order as broken, for a node that is simply full.
+func TestWebhookErrorStatus(t *testing.T) {
+	wrap := func(err error) error { return fmt.Errorf("failed to create VM: %w", err) }
+	for _, c := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"NAT ports used up", wrap(fmt.Errorf("%w: it offers none until its NAT ports range is set on its page", service.ErrNATPortsExhausted)), http.StatusConflict},
+		{"no NAT pool", wrap(service.ErrNoNATPool), http.StatusConflict},
+		{"no usable pool", wrap(service.ErrNoUsablePool), http.StatusConflict},
+		{"pool full", wrap(service.ErrNoAvailableIPAddress), http.StatusConflict},
+		{"region full", wrap(service.ErrRegionNoCapacity), http.StatusConflict},
+		{"VM being moved", fmt.Errorf("failed to suspend VM: %w", service.ErrVMMigrating), http.StatusConflict},
+		{"unknown VM", service.ErrVMNotFound, http.StatusNotFound},
+		{"inactive plan", wrap(service.ErrPlanInactive), http.StatusBadRequest},
+		{"SSO refused", errBillingSSORefused, http.StatusForbidden},
+		{"database down", wrap(errors.New("connection refused")), http.StatusInternalServerError},
+	} {
+		if got := webhookErrorStatus(c.err); got != c.want {
+			t.Errorf("%s: status %d, want %d", c.name, got, c.want)
 		}
 	}
 }

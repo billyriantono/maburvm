@@ -11,6 +11,9 @@ regexTarget = "secret"
 regexes = [
   '''^(0123456789abcdef)+$''',
   '''^test-jwt-secret-key-for-oidc-tests-0123456789$''',
+  # Accounts and the node token of the browser tests' throwaway panel (web/e2e).
+  '''^E2e-(Admin|Client|Support)-Pass-1!?$''',
+  '''^e2e-node-token$''',
 ]
 
 [[allowlists]]

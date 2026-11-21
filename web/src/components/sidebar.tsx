@@ -33,6 +33,7 @@ import {
   BellRing,
   Archive,
   BrickWall,
+  ArrowDownToLine,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useNavDrawer } from "@/components/nav-drawer"
@@ -77,6 +78,7 @@ const settingsNav: typeof navItems = [
   { href: "/settings/emails", label: "Emails", icon: Mail, perm: "settings:read" },
   { href: "/settings/queue", label: "Job queue", icon: ListChecks, perm: "ops:read" },
   { href: "/settings/export", label: "Export data", icon: FileDown, perm: "admin:access" },
+  { href: "/settings/import", label: "Import", icon: ArrowDownToLine, perm: "import:manage" },
   { href: "/setup", label: "Setup guide", icon: Rocket },
   { href: "/settings/system", label: "System", icon: Shield, perm: "settings:read" },
 ]

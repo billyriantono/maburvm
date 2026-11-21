@@ -12,8 +12,8 @@ RUN go mod download
 
 # Targeted source copies required to build the panel and its dependencies.
 # Avoid a broad `COPY . .` so host artifacts/secrets never enter the build
-# context/layers (see .dockerignore). cmd/panel imports internal/ and the
-# generated gRPC code under api/proto.
+# context/layers (see .dockerignore). cmd/panel imports internal/, which holds
+# the generated gRPC code (internal/shared/grpc/pb).
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 COPY api/ ./api/

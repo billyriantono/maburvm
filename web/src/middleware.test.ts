@@ -30,6 +30,14 @@ describe('middleware', () => {
     expect(res.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
   });
 
+  it('serves the API reference with or without a session', () => {
+    for (const r of [req('/docs/api'), req('/docs/api', 'GET', 'accessToken=t')]) {
+      const res = middleware(r);
+      expect(res.headers.get('location')).toBeNull();
+      expect(res.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
+    }
+  });
+
   it('lets a page with a session cookie through', () => {
     const res = middleware(req('/vms', 'GET', 'accessToken=t'));
     expect(res.headers.get('location')).toBeNull();

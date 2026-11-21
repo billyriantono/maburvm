@@ -117,6 +117,7 @@ var PermissionCatalog = []PermissionArea{
 		{"audit:read", "Read the audit log"},
 		{"ops:read", "See alerts and the job queue"},
 		{"ops:update", "Close alerts, retry and cancel jobs"},
+		{"import:manage", "Import customers, plans, IP pools and VMs from another panel, and invite the imported customers"},
 	}},
 	{"Settings", []Permission{
 		{"settings:read", "See system settings"},

@@ -9,7 +9,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/riverqueue/river"
 	"gorm.io/gorm"
+
+	"github.com/maburvm/panel/internal/shared/queue"
 )
 
 // notificationRetention is how long an account's notifications are kept.
@@ -178,4 +182,24 @@ func NotifyBackupFailed(ctx context.Context, db *gorm.DB, args []byte) error {
 		which = "The scheduled backup"
 	}
 	return NotifyVMOwnerWith(ctx, db, p.VMID, EmailBackupFailed, map[string]string{"backup": which})
+}
+
+// OnJobFailed is what the panel does when a background job fails for good:
+// staff get an alert, the billing system its event, and the customer a notice
+// for the jobs they see the effect of.
+func OnJobFailed(db *gorm.DB, alerts *AlertService, rc *river.Client[pgx.Tx]) func(ctx context.Context, kind string, args []byte, reason string) {
+	return func(ctx context.Context, kind string, args []byte, reason string) {
+		alerts.JobFailed(ctx, kind, args, reason)
+		BillingJobFailed(ctx, db, rc, kind, args, reason, false)
+		switch kind {
+		case (queue.BackupJob{}).Kind():
+			if err := NotifyBackupFailed(ctx, db, args); err != nil {
+				slog.Default().Warn("backup failed, but the VM's owner could not be told", "error", err)
+			}
+		case (queue.VMOperationJob{}).Kind():
+			if err := NotifyVMOperationFailed(ctx, db, args); err != nil {
+				slog.Default().Warn("VM job failed, but the VM's owner could not be told", "error", err)
+			}
+		}
+	}
 }

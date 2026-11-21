@@ -147,6 +147,10 @@ export default function APIKeysSettingsPage() {
                 Authorization: Bearer mvk_…
               </code>
             </p>
+            <p className="text-muted-foreground mt-1">
+              Every endpoint, its fields and who may call it:{" "}
+              <a href="/docs/api" className="font-medium text-foreground underline underline-offset-4">API reference</a>
+            </p>
           </div>
         </CardContent>
       </Card>

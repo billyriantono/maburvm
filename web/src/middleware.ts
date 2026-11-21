@@ -4,6 +4,8 @@ import { contentSecurityPolicy } from './lib/security-headers'
 
 // Paths that don't require authentication
 const PUBLIC_PATHS = ['/login', '/forgot-password', '/reset-password', '/first-run']
+// Open to everyone, signed in or not: the API reference holds no data.
+const OPEN_PATHS = ['/docs']
 const CAPTCHA_PATHS = ['/login', '/forgot-password']
 
 export function middleware(request: NextRequest) {
@@ -27,7 +29,11 @@ function route(request: NextRequest): NextResponse {
   // for presence, the panel decides whether it is still good.
   const token = request.cookies.get('accessToken')
 
-  const isPublic = PUBLIC_PATHS.some(p => pathname === p || pathname.startsWith(p + '/'))
+  const under = (p: string) => pathname === p || pathname.startsWith(p + '/')
+  if (OPEN_PATHS.some(under)) {
+    return NextResponse.next()
+  }
+  const isPublic = PUBLIC_PATHS.some(under)
 
   // Root redirect
   if (pathname === '/') {

@@ -38,6 +38,7 @@ var (
 		"/api/v1/ssh-keys": true, "/api/v1/plans": true, "/api/v1/plans/:id": true, "/api/v1/regions": true,
 		"/api/v1/templates": true, "/api/v1/templates/:id": true,
 		"/api/v1/nodes/agent-binary": true, "/api/v1/nodes/agent-binary/checksum": true,
+		"/api/v1/openapi.json": true,
 	}
 )
 

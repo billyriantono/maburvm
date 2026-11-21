@@ -635,7 +635,7 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 			}
 			if allocated == nil {
 				if req.IPPoolID == "" {
-					return fmt.Errorf("no IP address available in any pool for the selected node")
+					return fmt.Errorf("no IP address available in any pool for the selected node: %w", ErrNoAvailableIPAddress)
 				}
 				return lastErr
 			}
