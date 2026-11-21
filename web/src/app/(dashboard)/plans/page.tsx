@@ -21,6 +21,8 @@ import type { AddonKey, CreatePlanRequest, Plan } from "@/types/plan"
 import { useConfirm } from "@/components/confirm-provider"
 import { useCan } from "@/lib/hooks/use-auth"
 import { LimitsFields, NO_LIMITS, limitsProblem, limitsSummary } from "@/components/vm-limits"
+import { HardwareFields } from "@/components/vm-hardware"
+import { hardwareProblem, hardwareSummary } from "@/lib/hardware"
 import { PlanRolloutDialog } from "@/components/plan-rollout"
 import { planAllowances, planPrice } from "@/lib/plans"
 import { useFirewallGroups } from "@/lib/hooks/use-firewall-groups"
@@ -40,6 +42,8 @@ const emptyForm: CreatePlanRequest = {
   data_quota_gb: 0,
   over_quota_policy: "throttle",
   throttle_speed_mbps: 0,
+  transfer_reset_day: 1,
+  transfer_counts: "both",
   smtp_policy: "allowed",
   limits: NO_LIMITS,
   price_monthly: null,
@@ -59,6 +63,7 @@ const emptyForm: CreatePlanRequest = {
   nat_hostnames: 0,
   node_group: "",
   storage_tier: "",
+  hardware: {},
   description: "",
   is_active: true,
 }
@@ -109,6 +114,8 @@ export default function PlansPage() {
       data_quota_gb: plan.data_quota_gb,
       over_quota_policy: plan.over_quota_policy,
       throttle_speed_mbps: plan.throttle_speed_mbps,
+      transfer_reset_day: plan.transfer_reset_day || 1,
+      transfer_counts: plan.transfer_counts || "both",
       smtp_policy: plan.smtp_policy ?? "allowed",
       limits: { ...NO_LIMITS, ...plan.limits },
       price_monthly: plan.price_monthly ?? null,
@@ -128,6 +135,7 @@ export default function PlansPage() {
       nat_hostnames: plan.nat_hostnames ?? 0,
       node_group: plan.node_group ?? "",
       storage_tier: plan.storage_tier ?? "",
+      hardware: { ...plan.hardware },
       description: plan.description ?? "",
       is_active: plan.is_active,
     })
@@ -166,7 +174,7 @@ export default function PlansPage() {
   }
 
   const saving = createPlan.isPending || updatePlan.isPending
-  const limitsError = limitsProblem(form.limits ?? NO_LIMITS)
+  const limitsError = limitsProblem(form.limits ?? NO_LIMITS) ?? hardwareProblem(form.hardware ?? {})
   const priced = form.price_monthly != null || form.price_hourly != null || Object.keys(form.addon_prices ?? {}).length > 0
   const priceError = priced && !/^[A-Z]{3}$/.test(form.currency ?? "") ? "A price needs a three-letter currency code." : null
 
@@ -218,7 +226,26 @@ export default function PlansPage() {
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">Data Quota (GB / month · 0 = unlimited)</label>
               <Input type="number" min={0} value={form.data_quota_gb ?? 0} onChange={(e) => setForm({ ...form, data_quota_gb: Number(e.target.value) })} />
-              <p className="text-[10px] text-muted-foreground mt-1">Monthly transfer allowance (e.g. 100 = 100 GB). Enforced per calendar month.</p>
+              <p className="text-[10px] text-muted-foreground mt-1">Monthly transfer allowance (e.g. 100 = 100 GB).</p>
+            </div>
+            <div>
+              <label htmlFor="plan-reset-day" className="block text-xs font-medium text-muted-foreground mb-1">Allowance starts again on day</label>
+              <Input id="plan-reset-day" type="number" min={1} max={28} value={form.transfer_reset_day ?? 1} onChange={(e) => setForm({ ...form, transfer_reset_day: Number(e.target.value) })} />
+              <p className="text-[10px] text-muted-foreground mt-1">Of each month, 1 to 28. An account can have its own day. A change starts a new period for VMs on the plan.</p>
+            </div>
+            <div>
+              <label htmlFor="plan-counts" className="block text-xs font-medium text-muted-foreground mb-1">Counts toward the allowance</label>
+              <select
+                id="plan-counts"
+                value={form.transfer_counts ?? "both"}
+                onChange={(e) => setForm({ ...form, transfer_counts: e.target.value as CreatePlanRequest["transfer_counts"] })}
+                className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              >
+                <option value="both">Traffic in and out</option>
+                <option value="out">Traffic out only (sent by the VM)</option>
+                <option value="in">Traffic in only (received by the VM)</option>
+              </select>
+              <p className="text-[10px] text-muted-foreground mt-1">Both directions are still shown to the owner; only this one uses up the allowance.</p>
             </div>
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">When Quota Exceeded</label>
@@ -434,6 +461,14 @@ export default function PlansPage() {
               What each VM on this plan may take from its node, so one busy VM cannot slow down the others. New VMs, and VMs moved to this plan, get these. Changing them leaves existing VMs as they are until you use Apply to VMs; an administrator can also change a VM&apos;s limits on its page.
             </p>
             <LimitsFields idPrefix="plan-limits" value={form.limits ?? NO_LIMITS} onChange={(limits) => setForm({ ...form, limits })} />
+          </div>
+          <div className="mt-5 border-t pt-4">
+            <h3 className="text-sm font-medium">Hardware</h3>
+            <p className="mb-3 text-xs text-muted-foreground">
+              What new VMs on this plan get beyond their size. Existing VMs keep theirs; an administrator changes a VM&apos;s hardware on its page.
+              A VM is placed only on a node that can give it all of this.
+            </p>
+            <HardwareFields idPrefix="plan-hw" value={form.hardware ?? {}} onChange={(hardware) => setForm({ ...form, hardware })} forPlan />
             {limitsError && <p role="alert" className="mt-3 text-sm text-destructive">{limitsError}</p>}
           </div>
           <label className="flex items-center gap-2 mt-4 cursor-pointer w-fit">
@@ -505,6 +540,7 @@ export default function PlansPage() {
                 {plan.node_group && <div className="text-[11px] text-muted-foreground">Nodes: {plan.node_group}</div>}
                 {plan.storage_tier && <div className="text-[11px] text-muted-foreground">Storage: {plan.storage_tier}</div>}
                 {limitsSummary(plan.limits).map((line) => <div key={line} className="text-[11px] text-muted-foreground">{line}</div>)}
+                {hardwareSummary(plan.hardware, plan.cpu).map((line) => <div key={line} className="text-[11px] text-muted-foreground">{line}</div>)}
                 {planAllowances(plan).map((line) => <div key={line} className="text-[11px] text-muted-foreground">{line}</div>)}
               </div>
               <div className="col-span-2 flex justify-end gap-2">

@@ -1,4 +1,4 @@
-import type { VMLimits } from './vm'
+import type { VMHardware, VMLimits } from './vm'
 
 // Plan is a VPS flavor: a named bundle of resources.
 export type OverQuotaPolicy = 'throttle' | 'overage' | 'suspend'
@@ -7,6 +7,8 @@ export type SMTPPolicy = 'allowed' | 'blocked'
 export type PlanNetworkType = 'public' | 'nat'
 /** The extras a plan shows a monthly price for. */
 export type AddonKey = 'snapshot' | 'backup' | 'image' | 'extra_disk_gb' | 'floating_ip' | 'extra_ipv4' | 'extra_ipv6'
+
+export type TransferCounts = 'both' | 'out' | 'in'
 
 export interface Plan {
   id: string
@@ -18,6 +20,10 @@ export interface Plan {
   data_quota_gb: number // monthly transfer, 0 = unlimited
   over_quota_policy: OverQuotaPolicy
   throttle_speed_mbps: number // speed after quota when policy = throttle
+  /** Day of the month (1-28) the allowance starts again. */
+  transfer_reset_day?: number
+  /** Which direction counts toward the allowance. */
+  transfer_counts?: TransferCounts
   smtp_policy: SMTPPolicy
   /** CPU and disk caps new VMs on the plan get. */
   limits?: VMLimits
@@ -49,6 +55,8 @@ export interface Plan {
   node_group?: string
   /** Storage tier new VMs' disks go in; "" for each node's primary pool. */
   storage_tier?: string
+  /** Virtual hardware new VMs on the plan get. */
+  hardware?: VMHardware
   description?: string
   is_active: boolean
   created_at: string
@@ -84,6 +92,8 @@ export interface CreatePlanRequest {
   data_quota_gb?: number
   over_quota_policy?: OverQuotaPolicy
   throttle_speed_mbps?: number
+  transfer_reset_day?: number
+  transfer_counts?: TransferCounts
   smtp_policy?: SMTPPolicy
   limits?: VMLimits
   price_monthly?: number | null
@@ -106,6 +116,8 @@ export interface CreatePlanRequest {
   node_group?: string
   /** "" uses each node's primary pool; left out keeps the plan's choice. */
   storage_tier?: string
+  /** Left out keeps the plan's hardware. */
+  hardware?: VMHardware
   description?: string
   is_active?: boolean
 }

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net"
 
 	"github.com/maburvm/panel/internal/shared/models"
 	"gorm.io/gorm"
@@ -56,6 +57,23 @@ func checkVMAllowance(ctx context.Context, db *gorm.DB, vm *models.VM, have int6
 		return err
 	}
 	return allowanceCheck(pick(plan), have, noun, nouns, remedy)
+}
+
+// vmIPv4Counts counts a VM's addresses, and those beyond its first that are
+// extra IPv4 addresses for its plan and its bill: the address of a card on a
+// private network (a VPC, a NAT pool) is not one.
+func vmIPv4Counts(ctx context.Context, db *gorm.DB, vmID string) (total, extra int64, err error) {
+	var addrs []string
+	if err := db.WithContext(ctx).Model(&models.Network{}).Where("vm_id = ?", vmID).
+		Order("created_at, id").Pluck("ip_address", &addrs).Error; err != nil {
+		return 0, 0, err
+	}
+	for i, a := range addrs {
+		if ip := net.ParseIP(hostOnlyIP(a)); i > 0 && (ip == nil || !ip.IsPrivate()) {
+			extra++
+		}
+	}
+	return int64(len(addrs)), extra, nil
 }
 
 // keptBackups counts the backups a VM holds against its allowance: all but

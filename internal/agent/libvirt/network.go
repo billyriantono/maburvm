@@ -12,11 +12,11 @@ import (
 	"libvirt.org/go/libvirtxml"
 )
 
-// GetVMInterfaceIPs returns the VM's current IPv4/IPv6 addresses, trying the
-// guest agent first, then DHCP leases, then the host ARP table — so it works
-// even for VMs without a responsive qemu-guest-agent (ARP sees any VM that has
-// sent traffic). Loopback addresses are excluded.
-func GetVMInterfaceIPs(uuidStr string) ([]string, error) {
+// HostSeenIPs returns the VM's addresses as the host sees them, from DHCP
+// leases, then the host ARP table (which sees any VM that has sent traffic),
+// without asking the guest. Loopback addresses are excluded. The guest
+// agent's own answer (GuestAgentIPs) is asked for separately, with a bound.
+func HostSeenIPs(uuidStr string) ([]string, error) {
 	var ips []string
 	err := WithConnection(func(conn *libvirt.Connect) error {
 		dom, err := conn.LookupDomainByUUIDString(uuidStr)
@@ -26,7 +26,6 @@ func GetVMInterfaceIPs(uuidStr string) ([]string, error) {
 		defer dom.Free()
 		seen := map[string]bool{}
 		for _, src := range []libvirt.DomainInterfaceAddressesSource{
-			libvirt.DOMAIN_INTERFACE_ADDRESSES_SRC_AGENT,
 			libvirt.DOMAIN_INTERFACE_ADDRESSES_SRC_LEASE,
 			libvirt.DOMAIN_INTERFACE_ADDRESSES_SRC_ARP,
 		} {

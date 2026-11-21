@@ -219,6 +219,19 @@ func TestVMPool(t *testing.T) {
 	assert.Nil(t, VMPool(ctx, db, "vm-c", "node-without-pools"))
 }
 
+// Two primaries on one node: the roomiest wins whatever order the rows come in.
+func TestPickPoolWithTwoPrimaries(t *testing.T) {
+	root := models.StoragePool{ID: "a-root", NodeID: "node-1", Path: DefaultNodeImageDir, IsPrimary: true, AvailableSpace: 60 * gib}
+	vm := models.StoragePool{ID: "b-vm", NodeID: "node-1", Path: "/vm", IsPrimary: true, AvailableSpace: 700 * gib}
+	other := models.StoragePool{ID: "c-data", NodeID: "node-1", Path: "/data", AvailableSpace: 900 * gib}
+	for _, pools := range [][]models.StoragePool{{root, vm, other}, {vm, root, other}, {other, root, vm}} {
+		assert.Equal(t, "b-vm", pickPool(pools).ID)
+	}
+	tie := vm
+	tie.ID, tie.AvailableSpace = "z-tie", root.AvailableSpace
+	assert.Equal(t, "a-root", pickPool([]models.StoragePool{tie, root}).ID, "ties go to the lower id")
+}
+
 // The reserve has to be big enough to act in: delete a volume, take a backup,
 // let a thin disk grow. Pin it so nobody quietly trims it to nothing.
 func TestHeadroomIsMeaningful(t *testing.T) {

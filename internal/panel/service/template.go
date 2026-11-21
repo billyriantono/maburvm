@@ -101,8 +101,11 @@ type CreateTemplateRequest struct {
 	SkipChecksum   bool   `json:"skip_checksum"`
 	AllowHTTP      bool   `json:"allow_http"`
 	AutoRefresh    bool   `json:"auto_refresh"`
-	// Firmware is bios (the default) or uefi.
-	Firmware string `json:"firmware"`
+	// Firmware is bios (the default) or uefi. SecureBoot (UEFI only) and TPM
+	// give VMs installed from the image Secure Boot and a virtual TPM.
+	Firmware   string `json:"firmware"`
+	SecureBoot bool   `json:"secure_boot"`
+	TPM        bool   `json:"tpm"`
 }
 
 // CreateTemplateResponse contains the created template data
@@ -128,6 +131,8 @@ type UpdateTemplateRequest struct {
 	AllowHTTP      *bool   `json:"allow_http,omitempty"`
 	AutoRefresh    *bool   `json:"auto_refresh,omitempty"`
 	Firmware       *string `json:"firmware,omitempty"`
+	SecureBoot     *bool   `json:"secure_boot,omitempty"`
+	TPM            *bool   `json:"tpm,omitempty"`
 }
 
 // SyncTemplateRequest contains data for syncing a template to nodes
@@ -297,9 +302,18 @@ func (s *TemplateService) CreateTemplate(ctx context.Context, req *CreateTemplat
 		now := time.Now()
 		template.ChecksumCheckedAt = &now
 	}
+	template.SecureBoot, template.TPM = req.SecureBoot, req.TPM
+	if err := checkBootExtras(template); err != nil {
+		return nil, err
+	}
 
 	if err := s.templateRepo.Create(ctx, template); err != nil {
 		return nil, fmt.Errorf("failed to create template: %w", err)
+	}
+	if template.SecureBoot || template.TPM {
+		if err := s.saveBootExtras(ctx, template); err != nil {
+			return nil, err
+		}
 	}
 
 	return &CreateTemplateResponse{
@@ -311,6 +325,24 @@ func (s *TemplateService) CreateTemplate(ctx context.Context, req *CreateTemplat
 // isRemoteImage reports an image the nodes download.
 func isRemoteImage(ref string) bool {
 	return strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://")
+}
+
+// checkBootExtras refuses Secure Boot on an image that does not boot UEFI. An
+// ISO may ask for both: a VM installed from it (Windows 11, say) gets them.
+func checkBootExtras(t *models.OSTemplate) error {
+	if t.SecureBoot && t.Firmware != models.FirmwareUEFI {
+		return fmt.Errorf("%w: Secure Boot needs a UEFI image", ErrInvalidTemplate)
+	}
+	return nil
+}
+
+// saveBootExtras writes Secure Boot and TPM, which are read-only on the model.
+func (s *TemplateService) saveBootExtras(ctx context.Context, t *models.OSTemplate) error {
+	if err := s.db.WithContext(ctx).Table("os_templates").Where("id = ?", t.ID).
+		Updates(map[string]any{"secure_boot": t.SecureBoot, "tpm": t.TPM}).Error; err != nil {
+		return fmt.Errorf("failed to save the template's boot settings: %w", err)
+	}
+	return nil
 }
 
 // normalizeFirmware checks a template's boot firmware; "" is BIOS.
@@ -479,6 +511,15 @@ func (s *TemplateService) UpdateTemplate(ctx context.Context, id string, req *Up
 		}
 		template.Firmware = f
 	}
+	if req.SecureBoot != nil {
+		template.SecureBoot = *req.SecureBoot
+	}
+	if req.TPM != nil {
+		template.TPM = *req.TPM
+	}
+	if err := checkBootExtras(template); err != nil {
+		return nil, err
+	}
 	if req.AllowHTTP != nil {
 		template.AllowHTTP = *req.AllowHTTP
 		if err := checkImageAddress(template.ImagePath, template.AllowHTTP); err != nil {
@@ -522,6 +563,11 @@ func (s *TemplateService) UpdateTemplate(ctx context.Context, id string, req *Up
 
 	if err := s.templateRepo.Update(ctx, template); err != nil {
 		return nil, fmt.Errorf("failed to update template: %w", err)
+	}
+	if req.SecureBoot != nil || req.TPM != nil {
+		if err := s.saveBootExtras(ctx, template); err != nil {
+			return nil, err
+		}
 	}
 
 	return template, nil

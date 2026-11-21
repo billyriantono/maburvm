@@ -92,7 +92,9 @@ func TestPDNSProviderSetPTR(t *testing.T) {
 	defer srv.Close()
 
 	p := &pdnsProvider{baseURL: srv.URL, apiKey: "secret", serverID: "localhost", http: srv.Client()}
-	require.NoError(t, p.SetPTR(context.Background(), "203.0.113.10", "vm1.example.com"))
+	rec, err := ptrLocation("203.0.113.10", "")
+	require.NoError(t, err)
+	require.NoError(t, p.SetPTR(context.Background(), rec, "vm1.example.com"))
 
 	require.True(t, created, "reverse zone is auto-created when missing")
 	require.Len(t, gotPatch.RRsets, 1)

@@ -36,6 +36,10 @@ func NewSnapshotHandler(service *service.SnapshotService, authorizer *authz.Auth
 // CreateSnapshotRequest represents a request to create a new snapshot
 type CreateSnapshotRequest struct {
 	Name string `json:"name" validate:"required,max=100"`
+	// DiskOnly takes a running VM's disks only: no memory saved, no pause.
+	// Quiesce freezes its filesystems for that through its guest agent.
+	DiskOnly bool `json:"disk_only"`
+	Quiesce  bool `json:"quiesce"`
 }
 
 // CreateSnapshotResponse represents the response after creating a snapshot
@@ -93,9 +97,11 @@ func (h *SnapshotHandler) CreateSnapshot(c echo.Context) error {
 
 	// Create snapshot
 	createReq := &service.CreateSnapshotRequest{
-		VMID:   vmID,
-		Name:   req.Name,
-		UserID: userID,
+		VMID:     vmID,
+		Name:     req.Name,
+		UserID:   userID,
+		DiskOnly: req.DiskOnly,
+		Quiesce:  req.Quiesce,
 	}
 
 	resp, err := h.service.CreateSnapshot(c.Request().Context(), createReq)
@@ -124,9 +130,10 @@ func (h *SnapshotHandler) CreateSnapshot(c echo.Context) error {
 				"error":   "Conflict",
 				"message": "A snapshot operation is already in progress for this VM",
 			})
-		case errors.Is(err, service.ErrSnapshotsNeedQcow2):
+		case errors.Is(err, service.ErrSnapshotsNeedQcow2), errors.Is(err, service.ErrSnapshotOptionsUnsupported),
+			errors.Is(err, service.ErrSnapshotInRescue):
 			return c.JSON(http.StatusUnprocessableEntity, map[string]interface{}{"error": "Unprocessable Entity", "message": err.Error()})
-		case errors.Is(err, service.ErrDiskMoveActive):
+		case errors.Is(err, service.ErrDiskMoveActive), vmBusy(err):
 			return vmMoving(c, err)
 		default:
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
@@ -163,6 +170,10 @@ type SnapshotListItem struct {
 	DiskPath  string `json:"disk_path,omitempty"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
+	// DiskOnly: taken without the VM's memory. Scheduled: taken by the VM's
+	// snapshot schedule, which also removes it in time.
+	DiskOnly  bool `json:"disk_only"`
+	Scheduled bool `json:"scheduled"`
 }
 
 // ListSnapshots handles GET /api/vms/:id/snapshots - List VM snapshots
@@ -235,6 +246,8 @@ func (h *SnapshotHandler) ListSnapshots(c echo.Context) error {
 			DiskPath:  snapshot.DiskPath,
 			CreatedAt: snapshot.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 			UpdatedAt: snapshot.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			DiskOnly:  snapshot.DiskOnly,
+			Scheduled: snapshot.ScheduleID != nil,
 		}
 	}
 
@@ -387,6 +400,10 @@ func (h *SnapshotHandler) RestoreSnapshot(c echo.Context) error {
 				"error":   "Not Found",
 				"message": "VM not found",
 			})
+		case vmBusy(err), errors.Is(err, service.ErrDiskMoveActive):
+			return vmMoving(c, err)
+		case errors.Is(err, service.ErrVMNotStopped), errors.Is(err, service.ErrSnapshotNotComplete):
+			return restoreConflict(c, err)
 		default:
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
 				"error":   "Internal Server Error",

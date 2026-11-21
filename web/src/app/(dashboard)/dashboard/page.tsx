@@ -12,6 +12,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Meter } from '@/components/ui/meter'
 import { StatusBadge } from '@/components/status-badge'
 import { BandwidthChart } from '@/components/ui/bandwidth-chart'
+import { bitRate } from '@/lib/utils'
 
 function formatTimeAgo(dateStr: string): string {
   const date = new Date(dateStr)
@@ -74,19 +75,6 @@ function describeActivity(a: {
   return { label: `${titleCase(verb)} ${resourceLabel}`, target }
 }
 
-// formatRate renders a bytes-per-second figure at a sensible magnitude.
-function formatRate(bytesPerSec: number): string {
-  if (!Number.isFinite(bytesPerSec) || bytesPerSec <= 0) return "0 B/s"
-  const units = ["B/s", "KB/s", "MB/s", "GB/s"]
-  let value = bytesPerSec
-  let unit = 0
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024
-    unit++
-  }
-  return `${value >= 10 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`
-}
-
 // NodeBandwidthCard is one node's inbound/outbound trend.
 function NodeBandwidthCard({ nodeId, name }: { nodeId: string; name: string }) {
   const { data: samples, isLoading } = useNodeMetricsHistory(nodeId, 60)
@@ -106,7 +94,7 @@ function NodeBandwidthCard({ nodeId, name }: { nodeId: string; name: string }) {
           Loading…
         </div>
       ) : (
-        <BandwidthChart data={points} format={formatRate} />
+        <BandwidthChart data={points} format={bitRate} />
       )}
     </div>
   )

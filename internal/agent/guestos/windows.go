@@ -25,6 +25,8 @@ type WindowsNetwork struct {
 	// Extra are further IPv4 addresses on the same card. They are never the
 	// source of the guest's own connections.
 	Extra []GuestAddr
+	// DNS are the resolvers; empty keeps models.DefaultIPv4DNS.
+	DNS []string
 }
 
 // WindowsNetworkScript is the PowerShell that re-addresses a running Windows
@@ -47,10 +49,12 @@ func WindowsNetworkScript(n WindowsNetwork) (string, error) {
 	if err := ValidateExtra(n.Extra); err != nil {
 		return "", err
 	}
+	if err := validateDNS(append(append([]string{}, n.DNS...), n.IPv6DNS...)); err != nil {
+		return "", err
+	}
 	// Every value below was parsed above and is written back from its parsed
 	// form, so nothing the caller sent reaches PowerShell as text.
 	mac := strings.ToUpper(strings.ReplaceAll(hw.String(), ":", "-"))
-	dns := []string{"1.1.1.1", "8.8.8.8"}
 	lines := []string{
 		"$ErrorActionPreference = 'Stop'",
 		"$a = Get-NetAdapter | Where-Object { $_.MacAddress -eq '" + mac + "' } | Select-Object -First 1",
@@ -78,11 +82,6 @@ func WindowsNetworkScript(n WindowsNetwork) (string, error) {
 		if gw == nil {
 			gw = net.ParseIP("fe80::1")
 		}
-		for _, d := range n.IPv6DNS {
-			if p := net.ParseIP(d); p != nil {
-				dns = append(dns, p.String())
-			}
-		}
 		lines = append(lines,
 			"Get-NetIPAddress -InterfaceIndex $i -AddressFamily IPv6 -PrefixOrigin Manual -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false",
 			"Get-NetRoute -InterfaceIndex $i -DestinationPrefix '::/0' -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false",
@@ -90,7 +89,11 @@ func WindowsNetworkScript(n WindowsNetwork) (string, error) {
 			fmt.Sprintf("New-NetRoute -InterfaceIndex $i -DestinationPrefix '::/0' -NextHop '%s' | Out-Null", gw),
 		)
 	}
-	lines = append(lines, "Set-DnsClientServerAddress -InterfaceIndex $i -ServerAddresses "+strings.Join(dns, ","))
+	v6dns := n.IPv6DNS
+	if n.IPv6Address == "" {
+		v6dns = nil
+	}
+	lines = append(lines, "Set-DnsClientServerAddress -InterfaceIndex $i -ServerAddresses "+strings.Join(resolvers(n.DNS, v6dns), ","))
 	return strings.Join(lines, "\n") + "\n", nil
 }
 

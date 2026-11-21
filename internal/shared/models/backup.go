@@ -68,7 +68,15 @@ type Backup struct {
 	Checkpoint string `json:"-" gorm:"type:varchar(100);not null;default:''"`
 	// ModeNote says why a backup is full when an incremental one was asked.
 	ModeNote string `json:"mode_note,omitempty" gorm:"type:text;not null;default:''"`
+	// EncryptionKeyID is the destination key the files were encrypted with
+	// before they left the node; empty for files stored in the clear.
+	EncryptionKeyID string `json:"encryption_key_id,omitempty" gorm:"column:encryption_key_id;type:varchar(36);not null;default:''"`
 }
+
+// FeatureBackupEncryption is the agent feature (reported in GetNodeInfo) of
+// encrypting backups with ObjectStore.encryption and reading them back with
+// ObjectStore.decryption_keys.
+const FeatureBackupEncryption = "backup_encryption"
 
 // Backup modes.
 const (

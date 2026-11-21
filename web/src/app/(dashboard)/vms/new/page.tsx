@@ -49,6 +49,7 @@ import { useCopy } from "@/lib/use-feedback"
 import { toast } from "sonner"
 import { api } from "@/lib/api-client"
 import { apiErrorMessage } from "@/lib/api-error"
+import { macProblem } from "@/lib/network-input"
 
 // Validation schemas for each step
 const step1Schema = z.object({
@@ -97,6 +98,7 @@ const step4Schema = z.object({
     { message: "VLAN ID must be a whole number from 1 to 4094" }
   ),
   managedNetworkId: z.string().optional(),
+  macAddress: z.string().optional().refine((v) => !v || !macProblem(v), { message: "Write a unicast MAC as six pairs of hex digits, for example 52:54:00:12:34:56" }),
 })
 
 const fullSchema = step1Schema.merge(step2Schema).merge(step3Schema).merge(step4Schema)
@@ -240,6 +242,7 @@ function NewVMForm() {
       ipAddress: "",
       bandwidthMbps: 100,
       vlanId: "",
+      macAddress: "",
     },
     mode: "onChange",
   })
@@ -295,7 +298,7 @@ function NewVMForm() {
         break
       case 4:
         if (poolsError) return // pool list failed to load: do not silently fall back to DHCP
-        fieldsToValidate = ["ipPoolId", "ipv6PoolId", "ipAddress", "bandwidthMbps", "vlanId", "managedNetworkId"]
+        fieldsToValidate = ["ipPoolId", "ipv6PoolId", "ipAddress", "bandwidthMbps", "vlanId", "managedNetworkId", "macAddress"]
         break
     }
 
@@ -369,6 +372,7 @@ function NewVMForm() {
         managed_network_id: data.managedNetworkId || undefined,
         bandwidth_mbps: data.bandwidthMbps,
         vlan_id: vlanId,
+        mac_address: data.macAddress?.trim() || undefined,
         cpu_model: data.cpuModel || undefined,
         // A router takes neither: both are delivered through Linux's cloud-init.
         user_data: notLinux ? undefined : data.userData || undefined,
@@ -1344,6 +1348,22 @@ function NewVMForm() {
                 )}
                 <p className="text-xs text-muted-foreground">
                   Enter a VLAN ID to assign this VM to a specific network segment
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <label htmlFor="macAddress" className="text-sm font-medium">
+                  MAC address <span className="text-muted-foreground">(optional)</span>
+                </label>
+                <Input id="macAddress" {...register("macAddress")} placeholder="Worked out from the VM" className={`h-12 font-mono ${errors.macAddress ? "border-danger ring-2 ring-danger/30" : ""}`} />
+                {errors.macAddress && (
+                  <p className="text-sm font-medium text-destructive flex items-center gap-1">
+                    <AlertCircle className="w-4 h-4" aria-hidden="true" />
+                    {errors.macAddress.message}
+                  </p>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  For a licence or an import tied to a MAC. Unicast and not used by another card; it stays through reinstalls and moves.
                 </p>
               </div>
 

@@ -49,6 +49,13 @@ type Plan struct {
 	DataQuotaGB       int64  `json:"data_quota_gb" gorm:"type:bigint;default:0" validate:"omitempty,min=0"`
 	OverQuotaPolicy   string `json:"over_quota_policy" gorm:"type:varchar(20);default:'throttle'" validate:"omitempty,oneof=throttle overage suspend"`
 	ThrottleSpeedMbps int    `json:"throttle_speed_mbps" gorm:"default:0" validate:"omitempty,min=0"` // speed after quota when policy=throttle
+	// TransferResetDay is the day of the month (1-28) the allowance starts
+	// again, and TransferCounts which direction counts toward it (TransferCount*).
+	// Read whenever traffic is counted, so a change reaches every VM on the
+	// plan at once; a new reset day starts a new period. Read-only here,
+	// written by table name.
+	TransferResetDay int    `json:"transfer_reset_day" gorm:"column:transfer_reset_day;->"`
+	TransferCounts   string `json:"transfer_counts" gorm:"column:transfer_counts;->"`
 	// SMTPPolicy decides whether new VMs on the plan may send mail out on
 	// port 25 (SMTPAllowed or SMTPBlocked). Changing it leaves existing VMs as
 	// they are.
@@ -90,7 +97,10 @@ type Plan struct {
 	NodeGroup string `json:"node_group" gorm:"column:node_group;->"`
 	// StorageTier puts new VMs' disks only in storage pools of that tier; ""
 	// uses each node's primary pool. Read-only here, like NodeGroup.
-	StorageTier string         `json:"storage_tier" gorm:"column:storage_tier;->"`
+	StorageTier string `json:"storage_tier" gorm:"column:storage_tier;->"`
+	// Hardware is the virtual hardware VMs ordered on the plan get. Changing
+	// it leaves existing VMs as they are. Read-only here, like NodeGroup.
+	Hardware    Hardware       `json:"hardware" gorm:"column:hardware;type:jsonb;serializer:json;->"`
 	Description string         `json:"description,omitempty" gorm:"type:text"`
 	IsActive    bool           `json:"is_active" gorm:"default:true"`
 	CreatedAt   time.Time      `json:"created_at" gorm:"not null;default:NOW()"`

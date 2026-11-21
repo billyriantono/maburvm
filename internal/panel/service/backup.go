@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"sort"
 	"strings"
@@ -156,6 +157,14 @@ func (s *BackupService) CreateBackup(ctx context.Context, req *CreateBackupReque
 			return nil, ErrVMNotFound
 		}
 		return nil, fmt.Errorf("failed to get VM: %w", err)
+	}
+
+	if vm.RescueMode && vm.RescueKind == models.RescueKindImage {
+		return nil, fmt.Errorf("the VM is in rescue mode; back it up once it is out of rescue mode")
+	}
+	// Its disks are being replaced.
+	if queue.RestoreActive(ctx, s.db, vm.ID) {
+		return nil, ErrVMRestoring
 	}
 
 	// Concurrent-backup guard is enforced atomically by the
@@ -549,20 +558,20 @@ func (s *BackupService) RestoreBackup(ctx context.Context, req *RestoreBackupReq
 		return nil, fmt.Errorf("backup is not completed (status: %s)", backup.Status)
 	}
 
-	// VM must be stopped for restore
-	if vm.Status == models.VMStatusRunning {
-		return nil, fmt.Errorf("VM must be stopped before restoring from backup")
+	if err := restoreRefusal(ctx, s.db, vm); err != nil {
+		return nil, err
 	}
 
 	if backup.Checksum == "" {
 		return nil, fmt.Errorf("backup has no recorded checksum; cannot safely restore")
 	}
-	_, layers, err := s.restoreChain(ctx, backup)
+	chain, layers, err := s.restoreChain(ctx, backup)
 	if err != nil {
 		return nil, err
 	}
 
 	job := queue.RestoreJob{
+		Encrypted:     anyEncrypted(chain),
 		VMID:          vm.ID,
 		NodeID:        vm.NodeID,
 		BackupID:      backup.ID,
@@ -590,6 +599,16 @@ func (s *BackupService) RestoreBackup(ctx context.Context, req *RestoreBackupReq
 		BackupID: backup.ID,
 		JobID:    result.Job.ID,
 	}, nil
+}
+
+// anyEncrypted reports a chain any of whose files was stored encrypted.
+func anyEncrypted(chain []models.Backup) bool {
+	for _, b := range chain {
+		if b.EncryptionKeyID != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // restoreChain is what restoring a backup needs: the backups it is built on,
@@ -1130,40 +1149,123 @@ func validRetention(p models.BackupRetentionPolicy) error {
 // Storage Operations
 // ============================================================================
 
-// GetBackupDownloadURL generates a presigned URL for downloading a backup
-func (s *BackupService) GetBackupDownloadURL(ctx context.Context, backupID string, expiration time.Duration) (string, error) {
+// ErrBackupNotDownloadable is a backup the panel cannot hand out; the error
+// says why.
+var ErrBackupNotDownloadable = errors.New("this backup cannot be downloaded")
+
+// BackupDownload is how a backup's disk image is handed out: a short-lived
+// link to the store itself, or a stream the panel reads (and decrypts) on the
+// way.
+type BackupDownload struct {
+	URL      string
+	Body     io.ReadCloser
+	Size     int64 // of Body; -1 when not known
+	Filename string
+}
+
+// backupDownloadLinkTTL is how long a direct link works.
+const backupDownloadLinkTTL = 15 * time.Minute
+
+// DownloadRefusal is why a backup cannot be downloaded, in words for its
+// owner; "" when it can. It reads no storage, so a list can ask it of each.
+func (s *BackupService) DownloadRefusal(ctx context.Context, backup *models.Backup) string {
+	switch {
+	case backup.Status != models.BackupStatusCompleted:
+		return "It can be downloaded once it is completed."
+	case backup.Mode == models.BackupModeIncremental:
+		return "It holds only what changed since the backup before it; download the full backup it is built on."
+	}
+	r, err := s.destinationOf(ctx, backup)
+	switch {
+	case err != nil:
+		return "Its backup destination cannot be read right now."
+	case r == nil || backup.StorageProvider == models.BackupStoreNode:
+		return "It is kept in its node's own storage, which the panel cannot reach; ask support for a copy."
+	case r.Kind == storage.KindPath:
+		return "It is kept on a disk mounted on the nodes, which the panel cannot reach; ask support for a copy."
+	}
+	return ""
+}
+
+// OpenBackupDownload hands out a disk image of a full backup: disk names one
+// of its disks by target (vda, vdb...), "" the first. A plain file in S3 gets
+// a direct link; an encrypted one, or one on an SFTP server, is streamed
+// through the panel and decrypted on the way. The caller closes Body.
+func (s *BackupService) OpenBackupDownload(ctx context.Context, backupID, disk string) (*BackupDownload, error) {
 	backup, err := s.backupRepo.GetByID(ctx, backupID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "", ErrBackupNotFound
+			return nil, ErrBackupNotFound
 		}
-		return "", fmt.Errorf("failed to get backup: %w", err)
+		return nil, fmt.Errorf("failed to get backup: %w", err)
 	}
-
-	if backup.Status != models.BackupStatusCompleted {
-		return "", fmt.Errorf("backup is not completed")
+	if why := s.DownloadRefusal(ctx, backup); why != "" {
+		return nil, fmt.Errorf("%w: %s", ErrBackupNotDownloadable, why)
 	}
-	if backup.Mode == models.BackupModeIncremental {
-		return "", errors.New("an incremental backup holds only changes; download its full backup instead")
+	key, target := backup.StoragePath, "vda"
+	if len(backup.Disks) > 0 {
+		target = backup.Disks[0].Target
+	}
+	if disk != "" && disk != target {
+		key = ""
+		for _, d := range backup.Disks {
+			if d.Target == disk {
+				key, target = d.Key, d.Target
+			}
+		}
+		if key == "" {
+			return nil, fmt.Errorf("%w: it has no disk %s", ErrBackupNotDownloadable, disk)
+		}
 	}
 	r, err := s.destinationOf(ctx, backup)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	if r == nil || r.Kind != storage.KindS3 {
-		return "", errors.New("download links are offered for backups in an S3 destination only")
+	name := fmt.Sprintf("%s-%s-%s.qcow2", backup.VMID, target, backup.CreatedAt.UTC().Format("20060102-150405"))
+	if r.Kind == storage.KindS3 && backup.EncryptionKeyID == "" {
+		client, err := r.Target.S3.Client()
+		if err != nil {
+			return nil, err
+		}
+		url, err := client.GeneratePresignedURL(ctx, key, backupDownloadLinkTTL)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate download URL: %w", err)
+		}
+		return &BackupDownload{URL: url, Filename: name}, nil
 	}
-	client, err := r.Target.S3.Client()
+	st, err := r.Open(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-
-	url, err := client.GeneratePresignedURL(ctx, backup.StoragePath, expiration)
+	body, err := st.Download(ctx, key)
 	if err != nil {
-		return "", fmt.Errorf("failed to generate download URL: %w", err)
+		st.Close()
+		return nil, fmt.Errorf("could not read the backup from its destination: %w", err)
 	}
+	size := int64(-1)
+	if backup.EncryptionKeyID == "" {
+		size = backup.Size
+		if len(backup.Disks) > 0 {
+			for _, d := range backup.Disks {
+				if d.Target == target {
+					size = d.Size
+				}
+			}
+		}
+	}
+	return &BackupDownload{Body: closeBoth{body, st}, Size: size, Filename: name}, nil
+}
 
-	return url, nil
+// closeBoth closes the download and then the store it came from.
+type closeBoth struct {
+	io.ReadCloser
+	store storage.Store
+}
+
+func (c closeBoth) Close() error {
+	err := c.ReadCloser.Close()
+	c.store.Close()
+	return err
 }
 
 // GetBackupStats returns statistics about backups for a VM

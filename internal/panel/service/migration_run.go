@@ -550,6 +550,7 @@ func (m *MigrationService) moveRecords(ctx context.Context, row *models.VMMigrat
 		newStatus = models.VMStatusSuspended // as the status sync reads a suspended VM that is off
 	}
 	note := row.Note
+	var nat *natMove
 	err = m.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		res := tx.Table("vms").Where("id = ? AND node_id = ?", vm.ID, src.ID).Updates(map[string]interface{}{
 			"node_id": dst.ID, "storage_pool_id": *row.DestPoolID, "vnc_port": nil, "status": newStatus, "updated_at": time.Now(),
@@ -568,6 +569,20 @@ func (m *MigrationService) moveRecords(ctx context.Context, row *models.VMMigrat
 		// any more (the VM runs there): drop that forward rather than fail every try.
 		if err := lockNodePorts(ctx, tx, dst.ID); err != nil {
 			return err
+		}
+		// A NAT VM's ports go into a free block there, its forwards with them.
+		// Should the destination have filled up since the check, the VM keeps
+		// running there without public ports rather than this failing for ever.
+		var err error
+		if nat, err = moveNATBlockTx(ctx, tx, vm.ID, dst.ID); err != nil {
+			if derr := tx.Where("vm_id = ?", vm.ID).Delete(&models.NATPortBlock{}).Error; derr != nil {
+				return derr
+			}
+			if derr := tx.Where("vm_id = ?", vm.ID).Delete(&models.PortForward{}).Error; derr != nil {
+				return derr
+			}
+			nat = nil
+			note = strings.TrimSpace(note + " " + fmt.Sprintf("The VM's public ports were not moved (%v); give it a NAT port block on node %s.", err, dst.Name))
 		}
 		clash, err := forwardsBlockedOn(ctx, tx, vm.ID, dst.ID)
 		if err != nil {
@@ -604,8 +619,25 @@ func (m *MigrationService) moveRecords(ctx context.Context, row *models.VMMigrat
 	})
 	if err == nil {
 		row.Note = note
+		if nat != nil {
+			m.tellNATMove(ctx, vm, dst, nat)
+		}
 	}
 	return err
+}
+
+// tellNATMove tells a NAT VM's owner where its public ports now answer.
+func (m *MigrationService) tellNATMove(ctx context.Context, vm *models.VM, dst *models.Node, nat *natMove) {
+	address := nat.Address
+	if address == "" {
+		address = "the address shown on the server's page"
+	}
+	ports := fmt.Sprintf("%d-%d", nat.Start, nat.End())
+	go func(ctx context.Context) {
+		if err := NotifyVMOwnerWith(ctx, m.db, vm.ID, EmailVMNATMoved, map[string]string{"address": address, "ports": ports}); err != nil {
+			m.logger.WarnContext(ctx, "could not tell the owner of a moved NAT VM", "vm_id", vm.ID, "error", err)
+		}
+	}(context.WithoutCancel(ctx))
 }
 
 // afterMove puts everything that lives on a node back for the VM on its new

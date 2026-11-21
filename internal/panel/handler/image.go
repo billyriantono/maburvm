@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/maburvm/panel/internal/panel/client"
 	"github.com/maburvm/panel/internal/panel/middleware"
@@ -22,6 +23,7 @@ type ImageHandler struct {
 	// nodes lets the list endpoint ask each node what it is exporting right now.
 	// Optional: without it the list still works, it just cannot show progress.
 	nodes *service.NodeService
+	db    *gorm.DB
 }
 
 // NewImageHandler creates a new ImageHandler.
@@ -71,13 +73,13 @@ func (h *ImageHandler) CreateImage(c echo.Context) error {
 	return c.JSON(http.StatusAccepted, map[string]interface{}{"data": img})
 }
 
-// ListImages returns the caller's images (all for admins).
+// ListImages returns the acting account's images (all for admins).
 func (h *ImageHandler) ListImages(c echo.Context) error {
-	userCtx, ok := middleware.GetUserContext(c)
+	account, staff, ok := h.imageAccount(c)
 	if !ok {
-		return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized"})
+		return nil
 	}
-	images, err := h.service.ListImages(c.Request().Context(), userCtx.ID, userCtx.Role == models.RoleAdmin)
+	images, err := h.service.ListImages(c.Request().Context(), account, staff)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Internal Server Error", "message": err.Error()})
 	}
@@ -149,13 +151,28 @@ func (h *ImageHandler) attachProgress(ctx context.Context, images []models.Image
 	}
 }
 
+// imageAccount is the account whose images a request is about (see
+// actingAccount).
+func (h *ImageHandler) imageAccount(c echo.Context) (uuid.UUID, bool, bool) {
+	_, account, staff, ok := actingAccount(c, h.db)
+	if !ok {
+		return uuid.Nil, false, false
+	}
+	id, err := uuid.Parse(account)
+	if err != nil {
+		_ = c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "account_id is not valid"})
+		return uuid.Nil, false, false
+	}
+	return id, staff, true
+}
+
 // RetryImage re-runs a capture that did not finish.
 func (h *ImageHandler) RetryImage(c echo.Context) error {
-	userCtx, ok := middleware.GetUserContext(c)
+	account, staff, ok := h.imageAccount(c)
 	if !ok {
-		return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized"})
+		return nil
 	}
-	img, err := h.service.RetryCapture(c.Request().Context(), c.Param("id"), userCtx.ID, userCtx.Role == models.RoleAdmin)
+	img, err := h.service.RetryCapture(c.Request().Context(), c.Param("id"), account, staff)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrImageNotFound):
@@ -175,12 +192,12 @@ func (h *ImageHandler) RetryImage(c echo.Context) error {
 
 // DeleteImage removes an image and its backing object-storage file.
 func (h *ImageHandler) DeleteImage(c echo.Context) error {
-	userCtx, ok := middleware.GetUserContext(c)
+	account, staff, ok := h.imageAccount(c)
 	if !ok {
-		return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized"})
+		return nil
 	}
 	id := c.Param("id")
-	if err := h.service.DeleteImage(c.Request().Context(), id, userCtx.ID, userCtx.Role == models.RoleAdmin); err != nil {
+	if err := h.service.DeleteImage(c.Request().Context(), id, account, staff); err != nil {
 		if errors.Is(err, service.ErrImageNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "Image not found"})
 		}
@@ -197,6 +214,7 @@ func (h *ImageHandler) DeleteImage(c echo.Context) error {
 // the request came back 403. Admins were unaffected because admin:access
 // bypasses the check, which is why it survived.
 func RegisterImageRoutes(e *echo.Echo, handler *ImageHandler, db *gorm.DB) {
+	handler.db = db
 	images := e.Group("/api/v1/images")
 	images.Use(middleware.RequireAuth(db))
 	images.GET("", handler.ListImages, middleware.RequirePermission("vm:read"))

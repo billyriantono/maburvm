@@ -243,6 +243,45 @@ func TestVMJobsLeaveTheVMAsTheNodeHasIt(t *testing.T) {
 		},
 		{name: "start", status: models.VMStatusStopped, onNode: stopped, op: VMOpStart, want: "done", wantVM: "running", commands: []string{"START"}},
 		{name: "stop", status: models.VMStatusRunning, onNode: running, op: VMOpStop, want: "done", wantVM: "stopped", commands: []string{"STOP"}},
+		// Queued with "force" by a force stop: the node is asked to cut the power.
+		{name: "force stop", status: models.VMStatusRunning, onNode: running, op: VMOpStop, params: `{"force":true}`, want: "done", wantVM: "stopped", commands: []string{"FORCE_STOP"}},
+		{
+			// The node answers once the guest is off, or says it is still on:
+			// the VM is then running, neither stopped nor broken.
+			name: "stop a guest that has not powered off", status: models.VMStatusRunning, onNode: running, op: VMOpStop,
+			setup: func(f *fixture) {
+				f.node.On("ExecuteVMCommand", func(req proto.Message) (proto.Message, error) {
+					r := req.(*pb.VMCommandRequest)
+					return &pb.VMCommandResponse{VmId: r.VmId, Command: r.Command, State: running,
+						Error: &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: "the guest was asked to shut down and is still on after 2m0s"}}, nil
+				})
+			},
+			want: "retry", wantVM: "running", commands: []string{"STOP"},
+		},
+		{
+			// An agent from before stops waited for the guest says STOPPED at
+			// once; its own status still has the VM on.
+			name: "stop answered before the guest is off", status: models.VMStatusRunning, onNode: running, op: VMOpStop,
+			setup: func(f *fixture) {
+				prev := shutOffWait
+				shutOffWait = 50 * time.Millisecond
+				f.t.Cleanup(func() { shutOffWait = prev })
+				f.node.On("ExecuteVMCommand", func(req proto.Message) (proto.Message, error) {
+					r := req.(*pb.VMCommandRequest)
+					return &pb.VMCommandResponse{Success: true, VmId: r.VmId, Command: r.Command, State: stopped}, nil
+				})
+			},
+			want: "retry", wantVM: "running", commands: []string{"STOP"},
+		},
+		{
+			// Queued before a restore began: it must not boot the VM under it.
+			name: "start while a restore holds the VM", status: models.VMStatusStopped, onNode: stopped, op: VMOpStart,
+			setup: func(f *fixture) {
+				f.exec(`CREATE TABLE IF NOT EXISTS river_job (id bigserial PRIMARY KEY, state text, kind text, args jsonb)`)
+				f.exec(`INSERT INTO river_job (state, kind, args) VALUES ('running', 'restore', jsonb_build_object('vm_id', ?::text))`, fxVM)
+			},
+			want: "snoozed", wantVM: "stopped",
+		},
 		{name: "restart", status: models.VMStatusRunning, onNode: running, op: VMOpRestart, want: "done", wantVM: "running", commands: []string{"RESTART"}},
 		{
 			name: "delete", status: models.VMStatusDeleting, onNode: running, op: VMOpDelete,
@@ -514,6 +553,23 @@ func TestSnapshotRestoreAndDelete(t *testing.T) {
 		}
 	})
 
+	// A revert leaves the VM as the snapshot was taken, and the panel records
+	// what the node says.
+	t.Run("restore of a snapshot taken running", func(t *testing.T) {
+		f := newFixture(t, models.VMStatusStopped, pb.VMState_VM_STATE_STOPPED)
+		vm, _ := f.node.VM(fxVM)
+		vm.Snapshots = []string{"live"}
+		vm.SnapshotStates = map[string]pb.VMState{"live": pb.VMState_VM_STATE_RUNNING}
+		f.node.PutVM(vm)
+		id := f.snapshot("live", "completed")
+		if err := NewSnapshotWorker(quiet()).Work(context.Background(), f.snapshotJob(SnapshotOpRestore, id, "live", 1)); err != nil {
+			t.Fatal(err)
+		}
+		if got := f.vmStatus(); got != "running" {
+			t.Errorf("VM status %s after reverting to a snapshot taken running", got)
+		}
+	})
+
 	// An older agent took the snapshots after the deleted one with it: their
 	// records go, the others stay.
 	t.Run("delete drops the records of what the node lost", func(t *testing.T) {
@@ -649,6 +705,42 @@ func TestRestoreJobs(t *testing.T) {
 		}
 		if f.scalar(`SELECT chain_reset_at::text FROM backup_schedules WHERE vm_id = ?`, fxVM) == "<null>" {
 			t.Error("the backup chain was not reset")
+		}
+		if got := f.scalar(`SELECT action || ' ' || (details->>'backup_id') FROM audit_logs WHERE resource_type = 'vm' AND resource_id = ?`, fxVM); got != "vm.restore_completed b-inc" {
+			t.Errorf("VM activity: %s", got)
+		}
+	})
+
+	// The panel said stopped, the guest was still shutting down: nothing is
+	// written over its disks, and the VM's activity says why, not a silent cancel.
+	t.Run("a VM still on is not restored over", func(t *testing.T) {
+		f := newFixture(t, models.VMStatusStopped, pb.VMState_VM_STATE_RUNNING)
+		prev := shutOffWait
+		shutOffWait = 50 * time.Millisecond
+		t.Cleanup(func() { shutOffWait = prev })
+		err := NewRestoreWorker(quiet()).Work(context.Background(), job(f, 1))
+		if outcome(err) != "cancelled" || len(f.node.Calls("RestoreDisk")) != 0 {
+			t.Fatalf("outcome %s (%v), %d restore calls", outcome(err), err, len(f.node.Calls("RestoreDisk")))
+		}
+		if got := f.scalar(`SELECT action || ': ' || (details->>'reason') FROM audit_logs WHERE resource_type = 'vm' AND resource_id = ?`, fxVM); got != "vm.restore_failed: "+errVMNotOff.Error() {
+			t.Errorf("VM activity: %s", got)
+		}
+	})
+
+	// The panel restarted mid-restore and the node is still at it: that is
+	// not a failed restore.
+	t.Run("an earlier try still running on the node is waited for", func(t *testing.T) {
+		f := newFixture(t, models.VMStatusStopped, pb.VMState_VM_STATE_STOPPED)
+		f.node.On("RestoreDisk", func(proto.Message) (proto.Message, error) {
+			return &pb.RestoreDiskResponse{Error: &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL,
+				Message: "a disk of this VM is being moved, copied or restored; try again when that has finished"}}, nil
+		})
+		err := NewRestoreWorker(quiet()).Work(context.Background(), job(f, 1))
+		if outcome(err) != "snoozed" {
+			t.Fatalf("outcome %s (%v)", outcome(err), err)
+		}
+		if n := f.scalar(`SELECT count(*)::text FROM audit_logs WHERE resource_type = 'vm' AND resource_id = ?`, fxVM); n != "0" {
+			t.Errorf("%s activity entries for a restore that has not ended", n)
 		}
 	})
 

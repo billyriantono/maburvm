@@ -212,3 +212,36 @@ func TestGatherPoolsAndBridgeNames(t *testing.T) {
 		t.Fatalf("no pools must check the default: %+v", def.Pools)
 	}
 }
+
+func TestOptionalHardwareSaysWhatIsMissing(t *testing.T) {
+	f := healthy()
+	if c := byID(t, Evaluate(f), "uefi_firmware"); c.Status != Pass || !strings.Contains(c.Detail, "ovmf") {
+		t.Fatalf("missing OVMF: %+v", c)
+	}
+	f.UEFI, f.SecureBoot, f.TPM, f.HugepagesMiB = true, true, true, 2048
+	checks := Evaluate(f)
+	for _, id := range []string{"uefi_firmware", "tpm_emulator", "hugepages"} {
+		if c := byID(t, checks, id); c.Status != Pass || strings.Contains(c.Detail, "Optional") {
+			t.Fatalf("%s: %+v", id, c)
+		}
+	}
+}
+
+func TestVLANBridgesAndDHCP(t *testing.T) {
+	f := healthy()
+	f.VLANBridges = []netrules.VLANBridgeState{{Bridge: "br1", Uplink: "bond0"}, {Bridge: "br2", Uplink: "eth3", Problem: "eth3 is not a port of br2"}}
+	f.DHCP = map[string]string{"br0": "", "br1": "dnsmasq is not installed on this node"}
+	checks := Evaluate(f)
+	if c := byID(t, checks, "vlan:br1"); c.Status != Pass {
+		t.Errorf("br1: %+v", c)
+	}
+	if c := byID(t, checks, "vlan:br2"); c.Status != Fail || c.Fix == "" || !strings.Contains(c.Detail, "eth3 is not a port of br2") {
+		t.Errorf("br2: %+v", c)
+	}
+	if c := byID(t, checks, "dhcp:br0"); c.Status != Pass {
+		t.Errorf("dhcp br0: %+v", c)
+	}
+	if c := byID(t, checks, "dhcp:br1"); c.Status != Warn || c.Fix == "" {
+		t.Errorf("dhcp br1: %+v", c)
+	}
+}

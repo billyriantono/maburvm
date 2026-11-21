@@ -290,7 +290,7 @@ func startVPCGuests(bridges map[string]bool) {
 		guests = append(guests, netrules.Guest{ID: vm.UUID, Autostart: true, Bridges: brs})
 	}
 	for _, id := range netrules.VPCGuestsToStart(guests, bridges) {
-		if err := libvirt.StartVM(id); err != nil {
+		if err := startVM(id); err != nil {
 			log.Printf("[NetworkRestore] WARNING: VM %s on a VPC did not start after the reboot: %v", id, err)
 			continue
 		}

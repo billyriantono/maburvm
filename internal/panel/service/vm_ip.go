@@ -52,12 +52,12 @@ func (s *NetworkService) AssignIPAddress(ctx context.Context, vmID, poolID, requ
 		return nil, fmt.Errorf("failed to get VM: %w", err)
 	}
 
-	var have int64
-	if err := s.db.WithContext(ctx).Model(&models.Network{}).Where("vm_id = ?", vm.ID).Count(&have).Error; err != nil {
+	have, extra, err := vmIPv4Counts(ctx, s.db, vm.ID)
+	if err != nil {
 		return nil, fmt.Errorf("failed to count the VM's addresses: %w", err)
 	}
 	if have > 0 { // the VM's first address is not an extra one
-		if err := checkVMAllowance(ctx, s.db, vm, have-1, func(p *models.Plan) *int { return p.MaxExtraIPv4 },
+		if err := checkVMAllowance(ctx, s.db, vm, extra, func(p *models.Plan) *int { return p.MaxExtraIPv4 },
 			"extra IPv4 address", "extra IPv4 addresses", "Move the VM to a plan with more, or raise the plan's allowance."); err != nil {
 			return nil, err
 		}

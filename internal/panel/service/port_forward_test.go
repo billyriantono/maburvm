@@ -193,7 +193,7 @@ func TestAddFirewallRuleIsCappedPerVM(t *testing.T) {
 func TestReleasingTheLastIPv4KeepsIPv6Routed(t *testing.T) {
 	svc, db := newPortForwardTestService(t)
 	ctx := context.Background()
-	require.NoError(t, db.Exec(`CREATE TABLE vm_ipv6_prefixes (id TEXT PRIMARY KEY, pool_id TEXT NOT NULL, vm_id TEXT NOT NULL, prefix TEXT NOT NULL, idx INTEGER NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE vm_ipv6_prefixes (id TEXT PRIMARY KEY, pool_id TEXT NOT NULL, vm_id TEXT NOT NULL, prefix TEXT NOT NULL, idx INTEGER NOT NULL, extra_addresses TEXT NOT NULL DEFAULT '', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`).Error)
 	require.NoError(t, db.Exec(`CREATE TABLE ip_pools (id TEXT PRIMARY KEY, cidr TEXT, gateway TEXT, delegated_prefix_len INTEGER, deleted_at DATETIME)`).Error)
 	require.NoError(t, db.Exec(`CREATE TABLE ip_addresses (id TEXT PRIMARY KEY, pool_id TEXT, address TEXT, family TEXT, vm_id TEXT, deleted_at DATETIME)`).Error)
 	require.NoError(t, db.Exec(`INSERT INTO networks (id, vm_id, ip_address) VALUES ('net-1','vm-1','203.0.113.5'), ('net-2','vm-1','203.0.113.6')`).Error)

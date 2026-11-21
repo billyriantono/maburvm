@@ -31,7 +31,7 @@ func newRestoreFixture(t *testing.T, targetAgent pb.NodeAgentServer) *restoreFix
 	t.Helper()
 	db := setupVMIPAMTestDB(t)
 	for _, stmt := range []string{
-		`CREATE TABLE backups (id TEXT PRIMARY KEY, vm_id TEXT, storage_provider TEXT, storage_path TEXT, backup_type TEXT, status TEXT, size INTEGER DEFAULT 0, compression TEXT, checksum TEXT, error_message TEXT, started_at DATETIME, completed_at DATETIME, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME, disks TEXT DEFAULT '[]', consistency TEXT DEFAULT '', destination_id TEXT, node_id TEXT, mode TEXT DEFAULT 'full', parent_id TEXT, chain_id TEXT, checkpoint TEXT DEFAULT '', mode_note TEXT DEFAULT '')`,
+		`CREATE TABLE backups (id TEXT PRIMARY KEY, vm_id TEXT, storage_provider TEXT, storage_path TEXT, backup_type TEXT, status TEXT, size INTEGER DEFAULT 0, compression TEXT, checksum TEXT, error_message TEXT, started_at DATETIME, completed_at DATETIME, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME, disks TEXT DEFAULT '[]', consistency TEXT DEFAULT '', destination_id TEXT, node_id TEXT, mode TEXT DEFAULT 'full', parent_id TEXT, chain_id TEXT, checkpoint TEXT DEFAULT '', mode_note TEXT DEFAULT '', encryption_key_id TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE firewall_rules (id TEXT PRIMARY KEY, vm_id TEXT, protocol TEXT, port_range TEXT, action TEXT, direction TEXT, source_ip TEXT, priority INTEGER, icmp_type TEXT NOT NULL DEFAULT '', log BOOLEAN NOT NULL DEFAULT 0, family TEXT NOT NULL DEFAULT '', created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE system_settings (section TEXT PRIMARY KEY, data TEXT, updated_at DATETIME)`,
 		backupDestinationsTable,
@@ -189,6 +189,15 @@ func TestRestoreAsNewVMRefusals(t *testing.T) {
 		require.Equal(t, before, f.vmCount(t))
 	})
 
+	t.Run("encrypted backup, target agent cannot decrypt", func(t *testing.T) {
+		f := newRestoreFixture(t, &storeAgent{features: []string{"backup_targets"}})
+		require.NoError(t, f.db.Model(f.backup).Update("encryption_key_id", "00000000-0000-4000-8000-0000000000aa").Error)
+		before := f.vmCount(t)
+		_, err := f.svc.RestoreAsNewVM(ctx, &RestoreAsNewRequest{BackupID: f.backup.ID, NodeID: f.target.ID})
+		require.ErrorContains(t, err, "encrypted")
+		require.Equal(t, before, f.vmCount(t))
+	})
+
 	t.Run("backup not finished", func(t *testing.T) {
 		f := newRestoreFixture(t, &storeAgent{})
 		require.NoError(t, f.db.Model(f.backup).Update("status", models.BackupStatusFailed).Error)
@@ -255,6 +264,40 @@ func TestRestoreAsNewVMRefusals(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, agent.asked, "the target node must prove it can read the destination")
 	})
+}
+
+// A full backup in S3 is handed out as a short-lived link at the store; one
+// the panel cannot hand out says why.
+func TestBackupDownload(t *testing.T) {
+	ctx := context.Background()
+	f := newRestoreFixture(t, &storeAgent{})
+	require.Empty(t, f.svc.DownloadRefusal(ctx, f.backup))
+	dl, err := f.svc.OpenBackupDownload(ctx, f.backup.ID, "")
+	require.NoError(t, err)
+	require.Nil(t, dl.Body)
+	require.Contains(t, dl.URL, "prod/backups/shop.qcow2")
+	require.Contains(t, dl.URL, "X-Amz-Signature")
+	require.Contains(t, dl.Filename, f.src.ID)
+
+	_, err = f.svc.OpenBackupDownload(ctx, f.backup.ID, "vdz")
+	require.ErrorIs(t, err, ErrBackupNotDownloadable)
+
+	for _, c := range []struct {
+		name, column string
+		value        any
+		want         string
+	}{
+		{"incremental", "mode", models.BackupModeIncremental, "only what changed"},
+		{"node's own storage", "storage_provider", models.BackupStoreNode, "node's own storage"},
+		{"not finished", "status", models.BackupStatusInProgress, "once it is completed"},
+	} {
+		require.NoError(t, f.db.Model(&models.Backup{}).Where("id = ?", f.backup.ID).Update(c.column, c.value).Error)
+		_, err := f.svc.OpenBackupDownload(ctx, f.backup.ID, "")
+		require.ErrorIs(t, err, ErrBackupNotDownloadable, c.name)
+		require.ErrorContains(t, err, c.want, c.name)
+		require.NoError(t, f.db.Model(&models.Backup{}).Where("id = ?", f.backup.ID).Updates(map[string]any{
+			"mode": models.BackupModeFull, "storage_provider": models.BackupStoreDestination, "status": models.BackupStatusCompleted}).Error)
+	}
 }
 
 func TestCopyFirewallRulesReplacesTheDefaults(t *testing.T) {

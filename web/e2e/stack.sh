@@ -10,6 +10,7 @@
 #
 #   E2E_WEB_MODE=start  serve a build made with API_BASE_URL=http://127.0.0.1:$E2E_PANEL_PORT (CI)
 #   E2E_WEB_MODE=dev    run the dev server (default)
+#   E2E_LOG_DIR=dir     copy the panel and fake agent logs there on exit
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -28,6 +29,11 @@ pids=()
 cleanup() {
   for pid in ${pids[@]+"${pids[@]}"}; do kill "$pid" 2>/dev/null || true; done
   wait 2>/dev/null || true
+  # E2E_LOG_DIR keeps the panel's and the fake agent's logs after the work
+  # directory goes (CI uploads them when a test fails).
+  if [ -n "${E2E_LOG_DIR:-}" ]; then
+    mkdir -p "$E2E_LOG_DIR" && cp "$work"/*.log "$E2E_LOG_DIR"/ 2>/dev/null || true
+  fi
   dropdb --if-exists --force "$db" 2>/dev/null || true
   rm -rf "$work"
 }
@@ -40,7 +46,7 @@ echo "e2e: building the panel and the fake agent"
 dropdb --if-exists "$db"
 createdb "$db"
 
-"$work/fake-agent" -listen 127.0.0.1:50051 -token "$node_token" -vms "$customer_vm=running" &
+"$work/fake-agent" -listen 127.0.0.1:50051 -token "$node_token" -vms "$customer_vm=running" >"$work/fake-agent.log" 2>&1 &
 pids+=($!)
 
 # Run from the work directory so no .env of the developer's is read, and with

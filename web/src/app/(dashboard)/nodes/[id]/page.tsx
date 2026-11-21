@@ -46,6 +46,9 @@ import { NodePreflight } from "@/components/node-preflight"
 import { NodeAgentSettings } from "@/components/node-agent-settings"
 import { NodeDrain } from "@/components/node-drain"
 import { NodeNATPorts } from "@/components/node-nat-ports"
+import { NodeVLANBridges } from "@/components/node-vlan-bridges"
+import { NodeCPUPool } from "@/components/node-cpu-pool"
+import { bitRate } from "@/lib/utils"
 
 // Resource gauge component
 function ResourceGauge({ value, label, detail, icon: Icon, color }: { value: number; label: string; detail?: string; icon: React.ElementType; color: string }) {
@@ -409,11 +412,11 @@ export default function NodeDetailPage() {
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   <div className="p-3 rounded-md border bg-muted/50">
                     <span className="text-xs font-medium text-muted-foreground block">Network RX</span>
-                    <span className="text-lg font-semibold text-emerald-600">{formatBytesPerSec(metrics.network_rx_bytes_per_sec)}</span>
+                    <span className="text-lg font-semibold text-emerald-600">{bitRate(metrics.network_rx_bytes_per_sec)}</span>
                   </div>
                   <div className="p-3 rounded-md border bg-muted/50">
                     <span className="text-xs font-medium text-muted-foreground block">Network TX</span>
-                    <span className="text-lg font-semibold text-blue-600">{formatBytesPerSec(metrics.network_tx_bytes_per_sec)}</span>
+                    <span className="text-lg font-semibold text-blue-600">{bitRate(metrics.network_tx_bytes_per_sec)}</span>
                   </div>
                   <div className="p-3 rounded-md border bg-muted/50">
                     <span className="text-xs font-medium text-muted-foreground block">Disk Read</span>
@@ -512,6 +515,8 @@ export default function NodeDetailPage() {
           <NodeStoragePools nodeId={node.id} />
           <NodePreflight nodeId={node.id} />
           <NodeNATPorts nodeId={node.id} />
+          <NodeVLANBridges nodeId={node.id} />
+          <NodeCPUPool nodeId={node.id} />
           <NodeAgentSettings nodeId={node.id} online={node.status === "active" || node.status === "maintenance"} />
           <NodeDrain nodeId={node.id} nodeName={node.name} />
 

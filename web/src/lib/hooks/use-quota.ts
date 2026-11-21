@@ -2,11 +2,13 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api-client'
 import type { QuotaStatus, SetQuotaRequest, UserQuota } from '@/types/quota'
 
-// useMyQuota returns the current user's limits and usage.
-export function useMyQuota() {
+// useMyQuota returns the current user's limits and usage, or with accountId
+// those of a team account whose usage their role covers.
+export function useMyQuota(accountId?: string, enabled = true) {
   return useQuery<QuotaStatus>({
-    queryKey: ['quota', 'me'],
-    queryFn: async () => (await api.get<QuotaStatus>('/api/v1/quota')).data.data,
+    queryKey: ['quota', accountId ?? 'me'],
+    queryFn: async () => (await api.get<QuotaStatus>('/api/v1/quota', accountId ? { params: { account_id: accountId } } : undefined)).data.data,
+    enabled,
   })
 }
 

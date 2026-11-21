@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"net"
 	"sort"
@@ -202,9 +203,29 @@ func vmIPv6Prefix(ctx context.Context, db *gorm.DB, vmID string) (*models.VMIPv6
 	return &p, nil
 }
 
-// ReleaseIPv6PrefixByVMInTx returns a VM's delegated prefix to its pool.
+// ReleaseIPv6PrefixByVMInTx returns a VM's delegated prefix to its pool, with
+// the reverse DNS names its owner set inside it.
 func (s *IPAMService) ReleaseIPv6PrefixByVMInTx(ctx context.Context, tx *gorm.DB, vmID string) error {
-	return s.repo.WithDB(tx).ReleaseIPv6PrefixesByVMID(ctx, vmID)
+	var poolID string
+	if p, err := vmIPv6Prefix(ctx, tx, vmID); err == nil && p != nil {
+		poolID = p.PoolID
+	}
+	ptrs := s.clearPrefixPTRs(ctx, tx, vmID)
+	if err := s.repo.WithDB(tx).ReleaseIPv6PrefixesByVMID(ctx, vmID); err != nil {
+		return err
+	}
+	if len(ptrs) > 0 && s.dnsProvider != nil {
+		zone := s.poolRDNSZone(ctx, poolID)
+		go func() {
+			bg := context.WithoutCancel(ctx)
+			for _, r := range ptrs {
+				if err := s.pushPTR(bg, strings.SplitN(r.Address, "/", 2)[0], zone, ""); err != nil {
+					slog.Warn("releasing prefix: clearing PTR failed", "vm_id", vmID, "address", r.Address, "error", err)
+				}
+			}
+		}()
+	}
+	return nil
 }
 
 // countDelegated fills DelegatedCount on a delegated pool.

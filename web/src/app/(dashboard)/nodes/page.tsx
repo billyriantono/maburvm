@@ -14,23 +14,13 @@ import { useCan } from "@/lib/hooks/use-auth"
 import { useCopy } from "@/lib/use-feedback"
 import { useDashboardOverview, type DashboardNode } from "@/lib/hooks/use-dashboard"
 import { useDeleteNode, useNodeMetricsHistory } from "@/lib/hooks/use-nodes"
+import { bitRate } from "@/lib/utils"
 
 // The nodes page answers what an operator opens it for: is each node up, how
 // loaded is it, and how much room is left on it. One row per node, built from
 // what the panel has recorded, so it loads at once even when a node is down.
 
 const GIB = 1024 ** 3
-
-function rate(bytesPerSec: number): string {
-  const units = ["B/s", "KB/s", "MB/s", "GB/s"]
-  let v = Math.max(bytesPerSec, 0)
-  let u = 0
-  while (v >= 1024 && u < units.length - 1) {
-    v /= 1024
-    u++
-  }
-  return `${v >= 10 || u === 0 ? Math.round(v) : v.toFixed(1)} ${units[u]}`
-}
 
 function since(iso: string): string {
   const min = Math.floor((Date.now() - new Date(iso).getTime()) / 60_000)
@@ -129,7 +119,7 @@ function NodeRow({ n, onRemove }: { n: DashboardNode; onRemove: () => void }) {
             </div>
             {n.net_rx_bytes_per_sec !== null && n.net_tx_bytes_per_sec !== null && (
               <p className="text-xs text-muted-foreground">
-                Traffic in {rate(n.net_rx_bytes_per_sec)}, out {rate(n.net_tx_bytes_per_sec)}
+                Traffic in {bitRate(n.net_rx_bytes_per_sec)}, out {bitRate(n.net_tx_bytes_per_sec)}
               </p>
             )}
           </>

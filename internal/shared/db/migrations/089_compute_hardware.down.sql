@@ -1,0 +1,6 @@
+DROP TABLE IF EXISTS snapshot_schedules;
+ALTER TABLE snapshots DROP COLUMN IF EXISTS schedule_id, DROP COLUMN IF EXISTS disk_only;
+ALTER TABLE nodes DROP COLUMN IF EXISTS dedicated_cpus;
+ALTER TABLE os_templates DROP COLUMN IF EXISTS tpm, DROP COLUMN IF EXISTS secure_boot;
+ALTER TABLE vms DROP COLUMN IF EXISTS rescue_kind, DROP COLUMN IF EXISTS hardware_note, DROP COLUMN IF EXISTS hardware;
+ALTER TABLE plans DROP COLUMN IF EXISTS hardware;

@@ -202,16 +202,21 @@ func (s *storageService) UpdatePool(id string, pool *models.StoragePool) error {
 	// provisioning target. Demotion is deliberately not offered: clearing the
 	// only primary would silently send every new VM back to the node's root
 	// filesystem, which is the fault this exists to prevent.
-	if pool.IsPrimary && !existing.IsPrimary {
-		// A primary that is not online is skipped at provisioning, which
-		// falls back to the root filesystem just the same.
-		if existing.Status != "online" {
+	//
+	// Promoting a pool that is already primary demotes the others too: that is
+	// how a node left with two primaries is put right.
+	if pool.IsPrimary {
+		switch {
+		case existing.Status == "online":
+			if err := s.repo.SetPrimaryPool(existing.NodeID, existing.ID); err != nil {
+				return err
+			}
+			existing.IsPrimary = true
+		case !existing.IsPrimary:
+			// A primary that is not online is skipped at provisioning, which
+			// falls back to the root filesystem just the same.
 			return fmt.Errorf("%w: %s is not online on its node, so it cannot take new VMs yet", ErrInvalidStoragePool, existing.Name)
 		}
-		if err := s.repo.SetPrimaryPool(existing.NodeID, existing.ID); err != nil {
-			return err
-		}
-		existing.IsPrimary = true
 	}
 
 	return s.repo.UpdatePool(existing)

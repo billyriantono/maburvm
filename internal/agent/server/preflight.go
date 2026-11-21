@@ -26,7 +26,21 @@ func (s *NodeAgentService) GetPreflight(ctx context.Context, req *pb.PreflightRe
 	if _, authenticated := GetNodeIDFromContext(ctx); !authenticated {
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
-	checks := Preflight(ctx, req.GetPoolPaths(), req.GetBridges())
+	o := preflight.Options{
+		Pools:       req.GetPoolPaths(),
+		DefaultPool: defaultImageDir,
+		Bridges:     req.GetBridges(),
+		LibvirtURI:  getEnvOrDefault("LIBVIRT_URI", "qemu:///system"),
+	}
+	if s.networkMgr != nil {
+		vlan, _ := s.networkMgr.VLANBridges()
+		o.VLANBridges = map[string]string{}
+		for _, b := range vlan {
+			o.VLANBridges[b.Bridge] = b.Uplink
+		}
+		o.DHCP = s.networkMgr.DHCPStatus()
+	}
+	checks := preflight.Run(ctx, o)
 	out := make([]*pb.PreflightCheck, len(checks))
 	for i, c := range checks {
 		out[i] = &pb.PreflightCheck{Id: c.ID, Name: c.Name, Status: c.Status, Detail: c.Detail, Fix: c.Fix}

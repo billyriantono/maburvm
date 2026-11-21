@@ -131,3 +131,18 @@ func TestRestoreRequestCarriesTheChain(t *testing.T) {
 		t.Fatalf("req = %+v", req)
 	}
 }
+
+// The key a node encrypted a backup with is recorded on it; a node that
+// stored it in the clear (or is too old to say) leaves it empty.
+func TestCompletedBackupRecordsTheKey(t *testing.T) {
+	enc := completedBackup(&pb.BackupDiskResponse{Disks: []*pb.BackupDiskFile{
+		{Target: "vda", Key: "a", SizeBytes: 3, EncryptionKeyId: "00000000-0000-4000-8000-000000000001"},
+		{Target: "vdb", Key: "b", SizeBytes: 4, EncryptionKeyId: "00000000-0000-4000-8000-000000000001"},
+	}})
+	if enc.EncryptionKeyID != "00000000-0000-4000-8000-000000000001" || enc.Size != 7 {
+		t.Fatalf("got key %q size %d", enc.EncryptionKeyID, enc.Size)
+	}
+	if plain := completedBackup(&pb.BackupDiskResponse{SizeBytes: 5, Checksum: "c"}); plain.EncryptionKeyID != "" {
+		t.Fatalf("an older agent's backup is recorded as encrypted: %q", plain.EncryptionKeyID)
+	}
+}

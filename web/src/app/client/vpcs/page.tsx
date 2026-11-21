@@ -1,5 +1,6 @@
 "use client"
 
+import { ActingAccountScope } from "@/lib/acting-account"
 import { useState } from "react"
 import { Loader2, Network, Plus, Trash2 } from "lucide-react"
 import { toast } from "sonner"
@@ -14,7 +15,7 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { useCreateVPC, useDeleteVPC, useVPCs } from "@/lib/hooks/use-vpcs"
+import { useCreateVPC, useDeleteVPC, useUpdateVPC, useVPCs } from "@/lib/hooks/use-vpcs"
 import { useRegions } from "@/lib/hooks/use-regions"
 import { CountryFlag } from "@/components/country-flag"
 import type { VPC } from "@/types"
@@ -24,17 +25,21 @@ import { useConfirm } from "@/components/confirm-provider"
 // range. Another customer may be using the very same range — each network gets
 // its own router on the node — so the only ranges that must not overlap are the
 // customer's own. That is what the error from the API says when it happens.
-export default function ClientVPCsPage() {
+function ClientVPCsPageBody() {
   const confirm = useConfirm()
   const { data: vpcs, isLoading } = useVPCs()
   const { data: regions } = useRegions()
   const createVPC = useCreateVPC()
   const deleteVPC = useDeleteVPC()
+  const updateVPC = useUpdateVPC()
 
   const [open, setOpen] = useState(false)
   const [name, setName] = useState("")
   const [subnet, setSubnet] = useState("10.0.0.0/24")
   const [region, setRegion] = useState("")
+  const [nameservers, setNameservers] = useState("")
+  const [editing, setEditing] = useState<VPC | null>(null)
+  const [editNS, setEditNS] = useState("")
 
   const handleCreate = async () => {
     try {
@@ -42,12 +47,14 @@ export default function ClientVPCsPage() {
         name: name.trim(),
         subnet: subnet.trim(),
         region,
+        nameservers: nameservers.trim() || undefined,
       })
       toast.success(`Private network "${vpc.name}" created on ${vpc.subnet}`)
       setOpen(false)
       setName("")
       setSubnet("10.0.0.0/24")
       setRegion("")
+      setNameservers("")
     } catch (err) {
       toast.error((err as Error).message)
     }
@@ -109,12 +116,18 @@ export default function ClientVPCsPage() {
           {vpcs.map((vpc) => (
             <div key={vpc.id} className="grid grid-cols-12 gap-3 items-center p-4 border-b last:border-0">
               <div className="col-span-4 font-medium truncate">{vpc.name}</div>
-              <div className="col-span-3 font-mono text-sm">{vpc.subnet}</div>
+              <div className="col-span-3 font-mono text-sm">
+                {vpc.subnet}
+                {vpc.nameservers && <span className="block text-xs text-muted-foreground">DNS {vpc.nameservers.split(",").join(", ")}</span>}
+              </div>
               <div className="col-span-3 text-sm text-muted-foreground flex items-center gap-2">
                 <CountryFlag country={vpc.region_country} />
                 {vpc.region_name ?? "—"}
               </div>
-              <div className="col-span-2 flex justify-end">
+              <div className="col-span-2 flex justify-end gap-1">
+                <Button type="button" variant="ghost" size="sm" onClick={() => { setEditing(vpc); setEditNS((vpc.nameservers ?? "").split(",").filter(Boolean).join(", ")) }}>
+                  Nameservers
+                </Button>
                 <Button
                   type="button"
                   variant="ghost"
@@ -192,6 +205,13 @@ export default function ClientVPCsPage() {
                 The first address becomes the gateway.
               </p>
             </div>
+            <div className="space-y-2">
+              <Label htmlFor="vpc-ns">Nameservers (optional)</Label>
+              <Input id="vpc-ns" placeholder="1.1.1.1, 8.8.8.8" value={nameservers} onChange={(e) => setNameservers(e.target.value)} className="font-mono" />
+              <p className="text-xs text-muted-foreground">
+                The resolvers VMs in this network are given, up to four. Blank uses public ones.
+              </p>
+            </div>
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setOpen(false)}>
@@ -207,6 +227,45 @@ export default function ClientVPCsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={!!editing} onOpenChange={(o) => !o && setEditing(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Nameservers of {editing?.name}</DialogTitle>
+            <DialogDescription>
+              VMs get these resolvers when they are created in the network, reinstalled or given a new address. Running VMs keep theirs until then.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="vpc-ns-edit">Nameservers</Label>
+            <Input id="vpc-ns-edit" className="font-mono" placeholder="Blank for public ones" value={editNS} onChange={(e) => setEditNS(e.target.value)} />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setEditing(null)}>Cancel</Button>
+            <Button type="button" disabled={updateVPC.isPending} onClick={async () => {
+              if (!editing) return
+              try {
+                await updateVPC.mutateAsync({ id: editing.id, nameservers: editNS.trim() })
+                toast.success("Nameservers saved")
+                setEditing(null)
+              } catch (err) {
+                toast.error((err as Error).message)
+              }
+            }}>
+              {updateVPC.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
+  )
+}
+
+// A team member picks which account's resources the page shows.
+export default function ClientVPCsPage() {
+  return (
+    <ActingAccountScope>
+      <ClientVPCsPageBody />
+    </ActingAccountScope>
   )
 }

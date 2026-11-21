@@ -22,6 +22,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/panel/service"
+	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 	"github.com/maburvm/panel/internal/shared/models"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -770,7 +771,7 @@ func webhookErrorStatus(err error) int {
 		return http.StatusBadRequest
 	case errors.Is(err, service.ErrBillingStaffAccount), errors.Is(err, service.ErrRegionNoCapacity),
 		errors.Is(err, service.ErrNATPortsExhausted), errors.Is(err, service.ErrNoNATPool), errors.Is(err, service.ErrNoUsablePool),
-		errors.Is(err, service.ErrNoAvailableIPAddress), errors.Is(err, service.ErrVMMigrating), errors.Is(err, service.ErrVMDeleteLocked),
+		errors.Is(err, service.ErrNoAvailableIPAddress), errors.Is(err, service.ErrVMMigrating), errors.Is(err, service.ErrVMRestoring), errors.Is(err, service.ErrVMDeleteLocked),
 		errors.Is(err, errBillingVMNotStopped):
 		return http.StatusConflict
 	case errors.Is(err, errBillingSSORefused):
@@ -1179,9 +1180,9 @@ func (h *BillingHandler) handleVMResize(ctx context.Context, data *WebhookData, 
 		// here and booted again by the resize job once the new size is applied.
 		wasRunning := current.VM.Status == models.VMStatusRunning
 		if wasRunning {
-			if _, err := h.vmService.ExecuteLifecycleCommand(ctx, &service.LifecycleRequest{
-				VMID: data.VMID, Command: service.LifecycleStop,
-			}); err != nil {
+			// A guest still shutting down is fine: the resize job waits for
+			// it, then cuts the power.
+			if err := h.requestStop(ctx, data.VMID); err != nil {
 				return WebhookResponse{}, fmt.Errorf("failed to stop VM for resize: %w", err)
 			}
 		}
@@ -1279,13 +1280,33 @@ func (h *BillingHandler) handleVMResetPassword(ctx context.Context, data *Webhoo
 // handleVMPower runs a staff start, stop or restart. A suspended VM refuses
 // start and restart, the same as it does for its owner.
 func (h *BillingHandler) handleVMPower(ctx context.Context, data *WebhookData, requestID string, cmd service.LifecycleCommand) (WebhookResponse, error) {
-	if _, err := h.vmService.ExecuteLifecycleCommand(ctx, &service.LifecycleRequest{VMID: data.VMID, Command: cmd}); err != nil {
+	var err error
+	if cmd == service.LifecycleStop {
+		err = h.requestStop(ctx, data.VMID)
+	} else {
+		_, err = h.vmService.ExecuteLifecycleCommand(ctx, &service.LifecycleRequest{VMID: data.VMID, Command: cmd})
+	}
+	if err != nil {
 		return WebhookResponse{}, err
 	}
 	return WebhookResponse{
 		Success: true, Message: "VM " + string(cmd) + " requested", VMID: data.VMID, ExternalRef: data.ExternalRef,
 		Timestamp: time.Now().UTC(), RequestID: requestID,
 	}, nil
+}
+
+// requestStop asks a VM to shut down within the billing system's 30s wait. A
+// stop answers once the guest is off; one the node took but whose guest is
+// still shutting down when the time is up (it answered, the VM not yet off)
+// is a stop requested, not a failure.
+func (h *BillingHandler) requestStop(ctx context.Context, vmID string) error {
+	stopCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	resp, err := h.vmService.ExecuteLifecycleCommand(stopCtx, &service.LifecycleRequest{VMID: vmID, Command: service.LifecycleStop})
+	if errors.Is(err, service.ErrVMLifecycleFailed) && resp != nil && resp.NewState == pb.VMState_VM_STATE_RUNNING.String() {
+		return nil
+	}
+	return err
 }
 
 // handleVMUsage reports what a VM uses, for the billing system's usage sync:

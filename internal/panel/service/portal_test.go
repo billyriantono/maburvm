@@ -70,7 +70,7 @@ func allowanceDB(t *testing.T) *gorm.DB {
 	for _, ddl := range []string{
 		`CREATE TABLE plans (id TEXT PRIMARY KEY, name TEXT, cpu INTEGER, ram INTEGER, disk INTEGER, max_extra_ipv4 INTEGER, max_extra_ipv6 INTEGER,
 			max_images INTEGER, max_floating_ips INTEGER, max_extra_disks INTEGER, addon_prices TEXT, deleted_at DATETIME)`,
-		`CREATE TABLE networks (id TEXT PRIMARY KEY, vm_id TEXT, deleted_at DATETIME)`,
+		`CREATE TABLE networks (id TEXT PRIMARY KEY, vm_id TEXT, ip_address TEXT NOT NULL DEFAULT '', created_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE ip_requests (id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, user_id TEXT NOT NULL, family TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL DEFAULT 'pending', address TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', decided_by TEXT, decided_at DATETIME,
 			created_at DATETIME, updated_at DATETIME)`,

@@ -19,6 +19,7 @@ and database queries with `$DC exec postgres psql -U maburvm -d maburvm`
 5. [Storage pool full](#5-storage-pool-full)
 6. [Abuse report about an address](#6-abuse-report-about-an-address)
 7. [Lost access to the Owner account](#7-lost-access-to-the-owner-account)
+8. [A VM that keeps crashing, or a guest agent that does not answer](#8-a-vm-that-keeps-crashing-or-a-guest-agent-that-does-not-answer)
 
 ## 1. Node down
 
@@ -267,17 +268,26 @@ Reputation, naming an address and usually a time.
    time from the report (your local time). The answer lists every VM that held
    it then with its owner, newest first, including floating IPs and IPv6
    prefixes. The same lookup is `GET /api/v1/ip-history?address=...&at=...`.
-2. **Is it still going on?** The Abuse page ranks guests by new outbound
-   connections; a scanning or spamming VM is near the top. IP Reputation shows
-   whether your addresses are listed.
+2. **Is it still going on?** The Abuse page ranks guests by new connections
+   and packets per second; a scanning or flooding VM is near the top, and its
+   episodes on the timeline carry the readings. IP Reputation shows whether
+   your addresses are listed.
 3. **Stop it:** **Quarantine** the guest (Abuse page) to cut its traffic while
    it keeps running, so the owner can still reach it on the console;
    or suspend the VM (VM page) or the whole account (user page). For spam, block
    outbound mail on the VM (Firewall tab).
 4. **Tell the owner** and keep the evidence: the history lookup, the report,
    and the audit log rows for the VM.
-5. When cleaned, lift the quarantine and ask the reporter or blocklist to
-   delist.
+5. When cleaned, lift the quarantine (**Restore**, or **Release** on its
+   timeline episode) and ask the reporter or blocklist to delist.
+
+**A guest is under attack** (packets in far above the others, other guests on
+the node slow): **Null-route** the attacked address from the Abuse page for a
+while; the node drops traffic to it and lifts the null-route by itself when the
+time is up. That protects the node, not the link into it: if the link is full,
+ask your upstream to blackhole the address. To have the panel do this on its
+own, set the inbound packets reading to Null-route in the Abuse policy. The
+null-routes in force on a node are listed in `/etc/maburvm/nullroutes`.
 
 **The address is a node's own address:** NAT VMs and port forwards share it.
 For inbound abuse, the reported port identifies the VM: on the panel host,
@@ -338,3 +348,33 @@ audit log for anything you did not do, and end sessions you do not recognise.
 If you suspect the account was taken over rather than forgotten, change the
 billing webhook key and secret, the metrics token and each node's agent token
 too.
+
+## 8. A VM that keeps crashing, or a guest agent that does not answer
+
+**How it shows.** The alert *A VM keeps crashing*: a VM set to restart on crash
+crashed twice within an hour (warning), or four times, after which its node
+left it off (critical). Separately, a VM whose guest agent stops answering shows
+its addresses from the node's DHCP leases and ARP table, and the agent's log
+says nothing alarming: its status calls give the guest agent two seconds and
+then leave it alone for one to fifteen minutes, so the panel's status, graphs
+and transfer counters keep coming.
+
+**Check.**
+
+1. The VM's console: a kernel panic, a boot loop, out of memory.
+2. On the node, `journalctl -u maburvm-agent | grep <vm id>` shows each
+   restart ("crashed and was started again") and when it gave up.
+3. `virsh domstate --reason <vm id>`: `shut off (crashed)` is a crash the
+   agent sees; `shut off (destroyed)` is a stop, which it never restarts.
+4. For a guest agent: `virsh qemu-agent-command <vm id> '{"execute":"guest-ping"}' --timeout 5`.
+
+**Fix.** Repair the guest (rescue mode if it does not boot), then start it from
+the panel: a VM the node gave up on stays off until someone starts it, and the
+alert closes an hour after its last crash. To stop the restarts while you work
+on it, clear **Restart on crash** under its Hardware (it takes effect at the
+next power off and on; the node forgets the crashes at once). A hung guest
+agent is the guest's: restart `qemu-guest-agent` inside it. A password reset
+while it does not answer works with the VM stopped: it is then written onto the
+disk.
+
+**Afterwards.** The VM page shows it running, and the alert resolves.

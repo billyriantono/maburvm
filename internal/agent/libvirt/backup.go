@@ -102,12 +102,10 @@ func HoldDisksForBackup(uuidStr, dir string) (*BackupHold, error) {
 		if err != nil {
 			log.Printf("[Backup] VM %s: the backup snapshot was taken, but libvirt reported: %v", uuidStr, err)
 		}
-		if consistency == ConsistencyFrozen {
-			// libvirt thaws on its own, and reports a failed thaw as a failed
-			// snapshot; a guest left frozen hangs on its next write.
-			if terr := dom.FSThaw(nil, 0); terr != nil && err != nil {
-				log.Printf("[Backup] WARNING: VM %s: its file systems may still be frozen: %v", uuidStr, terr)
-			}
+		if consistency == ConsistencyFrozen && err != nil {
+			// libvirt thaws on its own and reports a failed thaw as an error;
+			// a guest left frozen hangs on its next write.
+			thaw(dom, uuidStr)
 		}
 		hold = &BackupHold{uuid: uuidStr, Overlays: overlays, Consistency: consistency}
 		return nil

@@ -52,8 +52,10 @@ const (
 	NodeAgent_ConsoleStream_FullMethodName          = "/agent.NodeAgent/ConsoleStream"
 	NodeAgent_GetExportProgress_FullMethodName      = "/agent.NodeAgent/GetExportProgress"
 	NodeAgent_GetGuestConnections_FullMethodName    = "/agent.NodeAgent/GetGuestConnections"
+	NodeAgent_SetNullRoute_FullMethodName           = "/agent.NodeAgent/SetNullRoute"
 	NodeAgent_UpdateAgent_FullMethodName            = "/agent.NodeAgent/UpdateAgent"
 	NodeAgent_SetVMLimits_FullMethodName            = "/agent.NodeAgent/SetVMLimits"
+	NodeAgent_SetVMHardware_FullMethodName          = "/agent.NodeAgent/SetVMHardware"
 	NodeAgent_GetPreflight_FullMethodName           = "/agent.NodeAgent/GetPreflight"
 	NodeAgent_GetMigrationInfo_FullMethodName       = "/agent.NodeAgent/GetMigrationInfo"
 	NodeAgent_SetMigrationPeers_FullMethodName      = "/agent.NodeAgent/SetMigrationPeers"
@@ -68,6 +70,8 @@ const (
 	NodeAgent_ListOrphanDisks_FullMethodName        = "/agent.NodeAgent/ListOrphanDisks"
 	NodeAgent_DeleteOrphanDisk_FullMethodName       = "/agent.NodeAgent/DeleteOrphanDisk"
 	NodeAgent_PutImage_FullMethodName               = "/agent.NodeAgent/PutImage"
+	NodeAgent_ConfigureNIC_FullMethodName           = "/agent.NodeAgent/ConfigureNIC"
+	NodeAgent_SetVLANBridges_FullMethodName         = "/agent.NodeAgent/SetVLANBridges"
 )
 
 // NodeAgentClient is the client API for NodeAgent service.
@@ -213,6 +217,11 @@ type NodeAgentClient interface {
 	// stay flat while the node's conntrack table fills and every tenant on it
 	// loses connectivity.
 	GetGuestConnections(ctx context.Context, in *GetGuestConnectionsRequest, opts ...grpc.CallOption) (*GetGuestConnectionsResponse, error)
+	// SetNullRoute drops all traffic to one address for a set time, or lifts it
+	// early. The node keeps the list in a file and lifts each entry itself when
+	// its time is up, so a null-route never outlives its purpose because the
+	// panel was unreachable. An agent without it answers Unimplemented.
+	SetNullRoute(ctx context.Context, in *SetNullRouteRequest, opts ...grpc.CallOption) (*SetNullRouteResponse, error)
 	// UpdateAgent replaces this agent's binary with one streamed from the panel.
 	// The first chunk carries the metadata; the agent verifies the digest, makes
 	// sure the new binary runs, then hands the swap to a detached systemd job that
@@ -223,6 +232,12 @@ type NodeAgentClient interface {
 	// is running, to the running guest, so one busy VM cannot starve the others
 	// on the node. An agent without it answers Unimplemented.
 	SetVMLimits(ctx context.Context, in *SetVMLimitsRequest, opts ...grpc.CallOption) (*SetVMLimitsResponse, error)
+	// SetVMHardware changes the named parts of a VM's virtual hardware (CPU
+	// model and topology, dedicated cores, huge pages, watchdog, restart on
+	// crash) in its saved definition. A running VM takes them at its next power
+	// off and on; nothing is restarted. An agent without it answers
+	// Unimplemented.
+	SetVMHardware(ctx context.Context, in *SetVMHardwareRequest, opts ...grpc.CallOption) (*SetVMHardwareResponse, error)
 	// GetPreflight checks that the host is set up the way the agent expects
 	// (KVM, libvirt, qemu-img, bridges, storage pool directories, bridge
 	// netfilter, tools, clock), one check at a time. Read-only. An agent
@@ -270,6 +285,15 @@ type NodeAgentClient interface {
 	// PutImage stores a file uploaded to the panel (an ISO) in this node's image
 	// cache. The first chunk names it; the data is checked against its sha256.
 	PutImage(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[ImageChunk, PutImageResponse], error)
+	// ConfigureNIC lists, adds or removes a VM's network cards, or changes a
+	// card's MAC ("vm_nics" feature). Adding and removing happen live where the
+	// guest allows it and always in the VM's definition; a MAC changes in the
+	// definition only and takes effect when the VM is next started.
+	ConfigureNIC(ctx context.Context, in *ConfigureNICRequest, opts ...grpc.CallOption) (*ConfigureNICResponse, error)
+	// SetVLANBridges names the node's bridges that carry per-VM VLANs, each
+	// with its uplink ("vlan_bridges" feature). It replaces what the agent's
+	// environment says; use_environment goes back to it.
+	SetVLANBridges(ctx context.Context, in *SetVLANBridgesRequest, opts ...grpc.CallOption) (*SetVLANBridgesResponse, error)
 }
 
 type nodeAgentClient struct {
@@ -625,6 +649,16 @@ func (c *nodeAgentClient) GetGuestConnections(ctx context.Context, in *GetGuestC
 	return out, nil
 }
 
+func (c *nodeAgentClient) SetNullRoute(ctx context.Context, in *SetNullRouteRequest, opts ...grpc.CallOption) (*SetNullRouteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetNullRouteResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_SetNullRoute_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *nodeAgentClient) UpdateAgent(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[AgentUpdateChunk, AgentUpdateResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &NodeAgent_ServiceDesc.Streams[3], NodeAgent_UpdateAgent_FullMethodName, cOpts...)
@@ -642,6 +676,16 @@ func (c *nodeAgentClient) SetVMLimits(ctx context.Context, in *SetVMLimitsReques
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SetVMLimitsResponse)
 	err := c.cc.Invoke(ctx, NodeAgent_SetVMLimits_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeAgentClient) SetVMHardware(ctx context.Context, in *SetVMHardwareRequest, opts ...grpc.CallOption) (*SetVMHardwareResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetVMHardwareResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_SetVMHardware_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -791,6 +835,26 @@ func (c *nodeAgentClient) PutImage(ctx context.Context, opts ...grpc.CallOption)
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type NodeAgent_PutImageClient = grpc.ClientStreamingClient[ImageChunk, PutImageResponse]
 
+func (c *nodeAgentClient) ConfigureNIC(ctx context.Context, in *ConfigureNICRequest, opts ...grpc.CallOption) (*ConfigureNICResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ConfigureNICResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_ConfigureNIC_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeAgentClient) SetVLANBridges(ctx context.Context, in *SetVLANBridgesRequest, opts ...grpc.CallOption) (*SetVLANBridgesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetVLANBridgesResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_SetVLANBridges_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // NodeAgentServer is the server API for NodeAgent service.
 // All implementations must embed UnimplementedNodeAgentServer
 // for forward compatibility.
@@ -934,6 +998,11 @@ type NodeAgentServer interface {
 	// stay flat while the node's conntrack table fills and every tenant on it
 	// loses connectivity.
 	GetGuestConnections(context.Context, *GetGuestConnectionsRequest) (*GetGuestConnectionsResponse, error)
+	// SetNullRoute drops all traffic to one address for a set time, or lifts it
+	// early. The node keeps the list in a file and lifts each entry itself when
+	// its time is up, so a null-route never outlives its purpose because the
+	// panel was unreachable. An agent without it answers Unimplemented.
+	SetNullRoute(context.Context, *SetNullRouteRequest) (*SetNullRouteResponse, error)
 	// UpdateAgent replaces this agent's binary with one streamed from the panel.
 	// The first chunk carries the metadata; the agent verifies the digest, makes
 	// sure the new binary runs, then hands the swap to a detached systemd job that
@@ -944,6 +1013,12 @@ type NodeAgentServer interface {
 	// is running, to the running guest, so one busy VM cannot starve the others
 	// on the node. An agent without it answers Unimplemented.
 	SetVMLimits(context.Context, *SetVMLimitsRequest) (*SetVMLimitsResponse, error)
+	// SetVMHardware changes the named parts of a VM's virtual hardware (CPU
+	// model and topology, dedicated cores, huge pages, watchdog, restart on
+	// crash) in its saved definition. A running VM takes them at its next power
+	// off and on; nothing is restarted. An agent without it answers
+	// Unimplemented.
+	SetVMHardware(context.Context, *SetVMHardwareRequest) (*SetVMHardwareResponse, error)
 	// GetPreflight checks that the host is set up the way the agent expects
 	// (KVM, libvirt, qemu-img, bridges, storage pool directories, bridge
 	// netfilter, tools, clock), one check at a time. Read-only. An agent
@@ -991,6 +1066,15 @@ type NodeAgentServer interface {
 	// PutImage stores a file uploaded to the panel (an ISO) in this node's image
 	// cache. The first chunk names it; the data is checked against its sha256.
 	PutImage(grpc.ClientStreamingServer[ImageChunk, PutImageResponse]) error
+	// ConfigureNIC lists, adds or removes a VM's network cards, or changes a
+	// card's MAC ("vm_nics" feature). Adding and removing happen live where the
+	// guest allows it and always in the VM's definition; a MAC changes in the
+	// definition only and takes effect when the VM is next started.
+	ConfigureNIC(context.Context, *ConfigureNICRequest) (*ConfigureNICResponse, error)
+	// SetVLANBridges names the node's bridges that carry per-VM VLANs, each
+	// with its uplink ("vlan_bridges" feature). It replaces what the agent's
+	// environment says; use_environment goes back to it.
+	SetVLANBridges(context.Context, *SetVLANBridgesRequest) (*SetVLANBridgesResponse, error)
 	mustEmbedUnimplementedNodeAgentServer()
 }
 
@@ -1100,11 +1184,17 @@ func (UnimplementedNodeAgentServer) GetExportProgress(context.Context, *GetExpor
 func (UnimplementedNodeAgentServer) GetGuestConnections(context.Context, *GetGuestConnectionsRequest) (*GetGuestConnectionsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetGuestConnections not implemented")
 }
+func (UnimplementedNodeAgentServer) SetNullRoute(context.Context, *SetNullRouteRequest) (*SetNullRouteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetNullRoute not implemented")
+}
 func (UnimplementedNodeAgentServer) UpdateAgent(grpc.ClientStreamingServer[AgentUpdateChunk, AgentUpdateResponse]) error {
 	return status.Error(codes.Unimplemented, "method UpdateAgent not implemented")
 }
 func (UnimplementedNodeAgentServer) SetVMLimits(context.Context, *SetVMLimitsRequest) (*SetVMLimitsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetVMLimits not implemented")
+}
+func (UnimplementedNodeAgentServer) SetVMHardware(context.Context, *SetVMHardwareRequest) (*SetVMHardwareResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetVMHardware not implemented")
 }
 func (UnimplementedNodeAgentServer) GetPreflight(context.Context, *PreflightRequest) (*PreflightResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetPreflight not implemented")
@@ -1147,6 +1237,12 @@ func (UnimplementedNodeAgentServer) DeleteOrphanDisk(context.Context, *DeleteOrp
 }
 func (UnimplementedNodeAgentServer) PutImage(grpc.ClientStreamingServer[ImageChunk, PutImageResponse]) error {
 	return status.Error(codes.Unimplemented, "method PutImage not implemented")
+}
+func (UnimplementedNodeAgentServer) ConfigureNIC(context.Context, *ConfigureNICRequest) (*ConfigureNICResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ConfigureNIC not implemented")
+}
+func (UnimplementedNodeAgentServer) SetVLANBridges(context.Context, *SetVLANBridgesRequest) (*SetVLANBridgesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetVLANBridges not implemented")
 }
 func (UnimplementedNodeAgentServer) mustEmbedUnimplementedNodeAgentServer() {}
 func (UnimplementedNodeAgentServer) testEmbeddedByValue()                   {}
@@ -1734,6 +1830,24 @@ func _NodeAgent_GetGuestConnections_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NodeAgent_SetNullRoute_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetNullRouteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).SetNullRoute(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_SetNullRoute_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).SetNullRoute(ctx, req.(*SetNullRouteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _NodeAgent_UpdateAgent_Handler(srv interface{}, stream grpc.ServerStream) error {
 	return srv.(NodeAgentServer).UpdateAgent(&grpc.GenericServerStream[AgentUpdateChunk, AgentUpdateResponse]{ServerStream: stream})
 }
@@ -1755,6 +1869,24 @@ func _NodeAgent_SetVMLimits_Handler(srv interface{}, ctx context.Context, dec fu
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(NodeAgentServer).SetVMLimits(ctx, req.(*SetVMLimitsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeAgent_SetVMHardware_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetVMHardwareRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).SetVMHardware(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_SetVMHardware_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).SetVMHardware(ctx, req.(*SetVMHardwareRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2000,6 +2132,42 @@ func _NodeAgent_PutImage_Handler(srv interface{}, stream grpc.ServerStream) erro
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type NodeAgent_PutImageServer = grpc.ClientStreamingServer[ImageChunk, PutImageResponse]
 
+func _NodeAgent_ConfigureNIC_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ConfigureNICRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).ConfigureNIC(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_ConfigureNIC_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).ConfigureNIC(ctx, req.(*ConfigureNICRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeAgent_SetVLANBridges_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetVLANBridgesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).SetVLANBridges(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_SetVLANBridges_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).SetVLANBridges(ctx, req.(*SetVLANBridgesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // NodeAgent_ServiceDesc is the grpc.ServiceDesc for NodeAgent service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -2128,8 +2296,16 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _NodeAgent_GetGuestConnections_Handler,
 		},
 		{
+			MethodName: "SetNullRoute",
+			Handler:    _NodeAgent_SetNullRoute_Handler,
+		},
+		{
 			MethodName: "SetVMLimits",
 			Handler:    _NodeAgent_SetVMLimits_Handler,
+		},
+		{
+			MethodName: "SetVMHardware",
+			Handler:    _NodeAgent_SetVMHardware_Handler,
 		},
 		{
 			MethodName: "GetPreflight",
@@ -2182,6 +2358,14 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteOrphanDisk",
 			Handler:    _NodeAgent_DeleteOrphanDisk_Handler,
+		},
+		{
+			MethodName: "ConfigureNIC",
+			Handler:    _NodeAgent_ConfigureNIC_Handler,
+		},
+		{
+			MethodName: "SetVLANBridges",
+			Handler:    _NodeAgent_SetVLANBridges_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

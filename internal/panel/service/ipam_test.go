@@ -32,6 +32,9 @@ func setupIPAMServiceTestDB(t *testing.T) *gorm.DB {
 		delegated_prefix_len INTEGER,
 		link_prefix TEXT,
 		nat BOOLEAN NOT NULL DEFAULT 0,
+		rdns_zone TEXT NOT NULL DEFAULT '',
+		nameservers TEXT NOT NULL DEFAULT '',
+		dhcp BOOLEAN NOT NULL DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		deleted_at DATETIME
@@ -42,6 +45,7 @@ func setupIPAMServiceTestDB(t *testing.T) *gorm.DB {
 		vm_id TEXT NOT NULL UNIQUE,
 		prefix TEXT NOT NULL UNIQUE,
 		idx INTEGER NOT NULL,
+		extra_addresses TEXT NOT NULL DEFAULT '',
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		UNIQUE (pool_id, idx)
 	)`).Error)
@@ -61,6 +65,14 @@ func setupIPAMServiceTestDB(t *testing.T) *gorm.DB {
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		deleted_at DATETIME
+	)`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE vm_prefix_ptrs (
+		id TEXT PRIMARY KEY,
+		vm_id TEXT NOT NULL,
+		address TEXT NOT NULL UNIQUE,
+		rdns TEXT NOT NULL,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	)`).Error)
 	require.NoError(t, db.Exec(`CREATE TABLE ip_pool_nodes (
 		pool_id TEXT NOT NULL,

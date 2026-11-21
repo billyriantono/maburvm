@@ -85,6 +85,11 @@ func (a *backupAgent) ExecuteVMCommand(context.Context, *pb.VMCommandRequest) (*
 	return a.cmdResp, a.cmdErr
 }
 
+// GetVMStatus says the VM is off, as a restore waits for it to be.
+func (a *backupAgent) GetVMStatus(_ context.Context, req *pb.VMStatusRequest) (*pb.VMStatusResponse, error) {
+	return &pb.VMStatusResponse{VmId: req.VmId, State: pb.VMState_VM_STATE_STOPPED}, nil
+}
+
 func (a *backupAgent) BackupDisk(_ context.Context, req *pb.BackupDiskRequest) (*pb.BackupDiskResponse, error) {
 	a.asked = append(a.asked, req)
 	return a.resp, a.err
@@ -108,7 +113,7 @@ func backupWorkerFixture(t *testing.T, agent pb.NodeAgentServer, store *pb.Objec
 	for _, stmt := range []string{
 		`CREATE TABLE nodes (id TEXT PRIMARY KEY, name TEXT, ip_address TEXT, status TEXT, token TEXT, deleted_at DATETIME)`,
 		`CREATE TABLE vms (id TEXT PRIMARY KEY, user_id TEXT, node_id TEXT, hostname TEXT, os_template_id TEXT, resources TEXT, status TEXT, updated_at DATETIME, deleted_at DATETIME)`,
-		`CREATE TABLE backups (id TEXT PRIMARY KEY, vm_id TEXT, storage_provider TEXT, storage_path TEXT, backup_type TEXT, status TEXT, size INTEGER DEFAULT 0, compression TEXT, checksum TEXT, error_message TEXT, started_at DATETIME, completed_at DATETIME, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME, disks TEXT DEFAULT '[]', consistency TEXT DEFAULT '', destination_id TEXT, node_id TEXT, mode TEXT DEFAULT 'full', parent_id TEXT, chain_id TEXT, checkpoint TEXT DEFAULT '', mode_note TEXT DEFAULT '')`,
+		`CREATE TABLE backups (id TEXT PRIMARY KEY, vm_id TEXT, storage_provider TEXT, storage_path TEXT, backup_type TEXT, status TEXT, size INTEGER DEFAULT 0, compression TEXT, checksum TEXT, error_message TEXT, started_at DATETIME, completed_at DATETIME, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME, disks TEXT DEFAULT '[]', consistency TEXT DEFAULT '', destination_id TEXT, node_id TEXT, mode TEXT DEFAULT 'full', parent_id TEXT, chain_id TEXT, checkpoint TEXT DEFAULT '', mode_note TEXT DEFAULT '', encryption_key_id TEXT NOT NULL DEFAULT '')`,
 		`INSERT INTO nodes (id, name, ip_address, status, token) VALUES ('` + testNodeID + `', 'node-1', '192.0.2.10', 'active', 'tok')`,
 		`INSERT INTO vms (id, user_id, node_id, hostname, os_template_id, resources, status) VALUES ('` + testVMID + `', 'u', '` + testNodeID + `', 'h', 't', '{"cpu":1,"ram":512,"disk":10}', 'running')`,
 		`INSERT INTO backups (id, vm_id, storage_provider, storage_path, status) VALUES ('` + testBackupID + `', '` + testVMID + `', 's3', 'backups/x.qcow2', 'pending')`,

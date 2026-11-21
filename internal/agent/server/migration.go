@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/maburvm/panel/internal/agent/hwprofile"
 	"github.com/maburvm/panel/internal/agent/libvirt"
 	"github.com/maburvm/panel/internal/agent/migration"
 	"github.com/maburvm/panel/internal/agent/storage"
@@ -495,6 +496,9 @@ func (s *NodeAgentService) pullVM(ctx context.Context, req *pb.PullMigratedVMReq
 	migrations.Update(req.VmId, req.MigrationId, "Defining the VM", total, done)
 	domXML, err := migration.RewriteDisks(req.DomainXml, dests)
 	if err != nil {
+		return err
+	}
+	if domXML, err = hwprofile.LocalFirmware(domXML, hwprofile.Exists); err != nil {
 		return err
 	}
 	return libvirt.DefineMigrated(domXML)

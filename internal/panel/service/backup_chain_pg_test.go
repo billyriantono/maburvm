@@ -77,6 +77,17 @@ func TestMigrationCopiesTheSavedDestinationOnPostgres(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, p.ID, id)
 
+	// Encryption keys are kept in jsonb and changed under a row lock.
+	on, err := d.SetEncryption(ctx, p.ID, true)
+	require.NoError(t, err)
+	rotated, err := d.RotateKey(ctx, p.ID)
+	require.NoError(t, err)
+	require.NotEqual(t, on.EncryptionKeyID, rotated.EncryptionKeyID)
+	store, _, err = d.ObjectStore(ctx, p.ID)
+	require.NoError(t, err)
+	require.Equal(t, rotated.EncryptionKeyID, store.GetEncryption().GetId())
+	require.Len(t, store.GetDecryptionKeys(), 2)
+
 	// The fleet page reads the same rows.
 	require.NoError(t, db.Exec(`INSERT INTO backup_schedules (vm_id, schedule, storage_provider, full_every_days, next_run_at) VALUES ('55555555-5555-5555-5555-555555555555', '0 2 * * *', 's3', 7, NOW() + INTERVAL '1 day')`).Error)
 	o, err := FleetBackupOverview(ctx, db, BackupOverviewFilter{}, time.Now())

@@ -42,3 +42,29 @@ func preflightResponse(c echo.Context, rep any, err error) error {
 	}
 	return c.JSON(http.StatusOK, map[string]any{"success": true, "data": rep})
 }
+
+// GetVLANBridges handles GET /api/v1/nodes/:id/vlan-bridges: the bridges the
+// panel has enabled for per-VM VLANs on the node.
+func (h *NodeHandler) GetVLANBridges(c echo.Context) error {
+	rep, err := h.service.GetVLANBridges(c.Request().Context(), c.Param("id"))
+	return preflightResponse(c, rep, err)
+}
+
+// SetVLANBridges handles PUT /api/v1/nodes/:id/vlan-bridges
+// {use_environment, bridges: [{bridge, uplink}]}.
+func (h *NodeHandler) SetVLANBridges(c echo.Context) error {
+	var req service.NodeVLANBridges
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]any{"success": false, "error": "Bad Request", "message": "Invalid request body"})
+	}
+	ctx, cancel := context.WithTimeout(c.Request().Context(), 45*time.Second)
+	defer cancel()
+	rep, err := h.service.SetVLANBridges(ctx, c.Param("id"), &req)
+	switch {
+	case errors.Is(err, service.ErrInvalidPolicy):
+		return c.JSON(http.StatusBadRequest, map[string]any{"success": false, "error": "Bad Request", "message": err.Error()})
+	case errors.Is(err, service.ErrVLANBridgesUnsupported):
+		return c.JSON(http.StatusConflict, map[string]any{"success": false, "error": "Conflict", "message": err.Error()})
+	}
+	return preflightResponse(c, rep, err)
+}

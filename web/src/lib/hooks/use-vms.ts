@@ -13,6 +13,8 @@ import type {
   VMOperation,
   VMLimits,
   VMLimitsResult,
+  VMHardware,
+  VMHardwareResult,
   CreateVMRequest,
   UpdateVMRequest,
   PaginatedResponse,
@@ -176,6 +178,10 @@ export function useDeleteVM() {
   })
 }
 
+// A graceful stop answers once the guest has powered off, which can take up
+// to about two minutes; the default 30s would give up on a slow shutdown.
+const actionConfig = (action: string) => (action === 'stop' ? { timeout: 150_000 } : undefined)
+
 export function useVMAction(id: string) {
   const queryClient = useQueryClient()
 
@@ -183,7 +189,7 @@ export function useVMAction(id: string) {
     mutationFn: async (action) => {
       // Backend exposes per-action lifecycle endpoints (/start, /stop, /restart,
       // /force-stop), not a single /actions endpoint.
-      await api.post(`/api/v1/vms/${id}/${action}`)
+      await api.post(`/api/v1/vms/${id}/${action}`, undefined, actionConfig(action))
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['vms', 'detail', id] })
@@ -198,7 +204,7 @@ export function useVMActions() {
 
   return useMutation<void, Error, { vmId: string; action: string }>({
     mutationFn: async ({ vmId, action }) => {
-      await api.post(`/api/v1/vms/${vmId}/${action}`)
+      await api.post(`/api/v1/vms/${vmId}/${action}`, undefined, actionConfig(action))
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['vms', 'list'] })
@@ -235,13 +241,34 @@ export function useDetachISO(id: string) {
   })
 }
 
-// useRescueVM boots the VM from a rescue ISO. Optional isoUrl overrides the
-// operator's rescue image (System settings, Rescue).
+// RescueInput picks how a stopped VM is rescued: a customer's ISO, the
+// operator's rescue ISO (mode "iso"), or the built-in rescue system (mode
+// "image", or nothing when the server chooses it), with saved SSH keys for it.
+export interface RescueInput {
+  iso_url?: string
+  mode?: 'iso' | 'image'
+  ssh_key_ids?: string[]
+}
+
+// RescueResult says how to reach the built-in rescue system; root_password
+// is shown once.
+export interface RescueResult {
+  job_id: number
+  status: string
+  kind: 'iso' | 'image'
+  address?: string
+  user?: string
+  root_password?: string
+}
+
+// useRescueVM puts a stopped VM into rescue mode: the built-in rescue system
+// when the operator set one up and its node can run it, else the rescue ISO.
 export function useRescueVM(id: string) {
   const queryClient = useQueryClient()
-  return useMutation<void, Error, string | undefined>({
-    mutationFn: async (isoUrl) => {
-      await api.post(`/api/v1/vms/${id}/rescue`, isoUrl ? { iso_url: isoUrl } : {})
+  return useMutation<RescueResult, Error, RescueInput | undefined>({
+    mutationFn: async (input) => {
+      const response = await api.post(`/api/v1/vms/${id}/rescue`, input ?? {})
+      return response.data.data as RescueResult
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['vms', 'detail', id] })
@@ -305,15 +332,24 @@ export function useCloneVM(id: string) {
   })
 }
 
-// useResetPassword sets a new guest root password. Applied via the qemu guest
-// agent on the running VM (cloud images ship qemu-guest-agent), so the VM must
-// be running. Returns the enqueued job info.
+// ResetPasswordResult says how the password reaches the guest: its guest
+// agent (running), written onto its disk (stopped Linux) or at its next start
+// (stopped router).
+export interface ResetPasswordResult {
+  job_id: number
+  status: string
+  method?: 'guest_agent' | 'offline' | 'next_start'
+  message?: string
+}
+
+// useResetPassword sets a new guest root (or Administrator) password, on a
+// running VM through its guest agent, or on a stopped one by its node.
 export function useResetPassword(id: string) {
   const queryClient = useQueryClient()
-  return useMutation<{ job_id: number; status: string }, Error, string>({
+  return useMutation<ResetPasswordResult, Error, string>({
     mutationFn: async (password) => {
       const response = await api.post(`/api/v1/vms/${id}/reset-password`, { password })
-      return response.data.data as { job_id: number; status: string }
+      return response.data.data as ResetPasswordResult
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['vms', 'detail', id] })
@@ -389,6 +425,16 @@ export function useVMLimits(id: string) {
     onSuccess: done,
   })
   return { set, apply, throttle, unthrottle }
+}
+
+// useSetVMHardware changes a VM's hardware (operators only). Its node saves it
+// for the VM's next power off and on.
+export function useSetVMHardware(id: string) {
+  const queryClient = useQueryClient()
+  return useMutation<VMHardwareResult, Error, VMHardware>({
+    mutationFn: async (hardware) => (await api.put<VMHardwareResult>(`/api/v1/vms/${id}/hardware`, { hardware })).data.data,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['vms', 'detail', id] }),
+  })
 }
 
 // useVMMetricsHistory returns persisted samples for the trailing `minutes` window.

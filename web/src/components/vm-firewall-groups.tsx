@@ -16,7 +16,8 @@ import type { FirewallGroupPosition } from "@/types"
 export function VMFirewallGroups({ vmId, ownerId, isAdmin }: { vmId: string; ownerId: string; isAdmin: boolean }) {
   const confirm = useConfirm()
   const { data: attached, isLoading, error, refetch } = useVMFirewallGroups(vmId)
-  const { data: groups } = useFirewallGroups()
+  // A customer attaches the VM account's groups: their own, or the team's.
+  const { data: groups } = useFirewallGroups(undefined, true, isAdmin ? undefined : ownerId)
   const attach = useAttachFirewallGroup(vmId)
   const detach = useDetachFirewallGroup(vmId)
   const [groupId, setGroupId] = useState("")

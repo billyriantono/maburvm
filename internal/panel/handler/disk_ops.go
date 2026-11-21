@@ -34,7 +34,7 @@ func diskOpError(c echo.Context, err error) error {
 	switch {
 	case errors.Is(err, service.ErrVMNotFound):
 		return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
-	case errors.Is(err, service.ErrVMMigrating):
+	case vmBusy(err):
 		return vmMoving(c, err)
 	case errors.Is(err, service.ErrDiskMoveActive):
 		return c.JSON(http.StatusConflict, map[string]interface{}{"error": "Conflict", "message": err.Error()})

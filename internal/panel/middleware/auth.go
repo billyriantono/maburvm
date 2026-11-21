@@ -103,7 +103,7 @@ func GetPermissionsForRole(role models.UserRole) []string {
 			"backup:create", "backup:read", "backup:update", "backup:delete",
 			"network:create", "network:read", "network:update", "network:delete",
 			"floating_ip:read", "floating_ip:update", "floating_ip:create", "floating_ip:delete",
-			"vpc:read", "vpc:create", "vpc:delete",
+			"vpc:read", "vpc:create", "vpc:update", "vpc:delete",
 			"firewall:create", "firewall:read", "firewall:update", "firewall:delete",
 			"snapshot:create", "snapshot:read", "snapshot:update", "snapshot:delete",
 			"audit:read",
@@ -117,7 +117,7 @@ func GetPermissionsForRole(role models.UserRole) []string {
 		return []string{
 			"vm:create", "vm:read", "vm:update", "vm:delete",
 			"vm:lifecycle", "vm:console", "vm:power", "vm:rescue", "vm:credentials",
-			"backup:create", "backup:read", "backup:update", "backup:delete",
+			"backup:create", "backup:read", "backup:update", "backup:delete", "backup:download",
 			"snapshot:create", "snapshot:read", "snapshot:update", "snapshot:delete",
 			// Floating IPs get their own permissions rather than reusing network:*,
 			// precisely because network:read would expose global IPAM (see below).
@@ -135,7 +135,7 @@ func GetPermissionsForRole(role models.UserRole) []string {
 			// every handler scopes by owner, and two tenants may hold identical
 			// subnets without interfering, so nothing about another tenant's
 			// topology is exposed.
-			"vpc:read", "vpc:create", "vpc:delete",
+			"vpc:read", "vpc:create", "vpc:update", "vpc:delete",
 			// Firewall groups: the handlers show and change only the caller's own.
 			"firewall_group:read", "firewall_group:update",
 			// NOTE: no "network:read". That permission gates GLOBAL, un-tenant-filtered

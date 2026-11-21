@@ -37,6 +37,31 @@ and the panel reaches it through the agent.
 
 **Time.** A synchronised clock (the installer installs `chrony`).
 
+**Optional hardware for VMs.** None of these is installed by the installer;
+add them on the nodes that should offer them, and the node's host checks
+(preflight) show them:
+
+- UEFI images, Secure Boot and Windows 11: the `ovmf` package (`edk2-ovmf` on
+  the RHEL family). Secure Boot needs the full package, with
+  `OVMF_CODE*.secboot.fd` and the `OVMF_VARS*.ms.fd` key store.
+- A virtual TPM: `swtpm` and `swtpm-tools`.
+- Huge pages for plans that ask for them: reserve them with
+  `vm.nr_hugepages` in `/etc/sysctl.d/` (or `hugepages=` on the kernel command
+  line), sized for those VMs; a VM that needs more than are free is refused.
+- Dedicated cores: set the node's pool on its page. To keep other VMs and the
+  host off those cores, isolate them on the host (for example `isolcpus=` and
+  systemd's `CPUAffinity=`); the panel only hands them out.
+
+An offline password reset and the built-in rescue system use
+`libguestfs-tools` (`virt-customize`), which the installer already installs.
+
+**DHCP for IP pools.** A pool with DHCP turned on is served by `dnsmasq`
+(`dnsmasq-base` on Debian and Ubuntu, usually present with libvirt; `dnsmasq` on
+the RHEL family), version 2.81 or later. The agent runs one per bridge with
+static leases only. Nothing else may hold UDP port 67 on that bridge (a
+system-wide `dnsmasq` service bound to every interface does), and the node's own
+firewall must accept DHCP (UDP 67) from the guests on it.
+
 ## 2. Before you start
 
 In the panel, **Nodes, Add node**: give the node a name and the address the
@@ -154,15 +179,17 @@ Kept by the agent while it runs:
 | What | Where |
 |---|---|
 | Its TLS certificate and key (self-signed; the panel pins it on first contact) | `MABURVM_DATA_DIR` (`/var/lib/maburvm`): `agent-cert.pem`, `agent-key.pem` |
-| Its migration key, pinned host keys of the other nodes, operation records, VLAN assignments | `/var/lib/maburvm/migration/`, `/var/lib/maburvm/operations/`, `/var/lib/maburvm/vlan-assignments.json` |
+| Its migration key, pinned host keys of the other nodes, operation records, VLAN assignments and the VLAN bridges set from the panel | `/var/lib/maburvm/migration/`, `/var/lib/maburvm/operations/`, `/var/lib/maburvm/vlan-assignments.json`, `/var/lib/maburvm/vlan-bridges.json` |
+| DHCP leases of pools that ask for it, one dnsmasq per bridge (stopped with the agent, started again by it) | `/var/lib/maburvm/dhcp-hosts.json`, `dhcp-<bridge>.conf` and `.pid` there |
 | A managed block in root's `authorized_keys` accepting the other nodes' migration keys, each only from that node's address and only for the agent's migration shell | `/root/.ssh/authorized_keys` |
 | The SSH wrapper moves use, with strict host key checking | `/usr/bin/maburvm-migration-ssh` |
-| iptables and ip6tables chains | `MABURVM-FIREWALL` (VM firewalls), `MABURVM-NAT` (port forwards and NAT VPS), `MABURVM-FIP`, `MABURVM-FIP-FWD`, `MABURVM-FIP-POST` (floating IPs), `MABURVM-VPC-POST`, `MABURVM-ANTISPOOF`, `MABURVM-SCANGUARD`, `MABURVM-SCANCOUNT` (outbound connection limit), `MABURVM-CONSOLE` (closes console ports of VMs started before consoles moved to loopback) |
+| iptables and ip6tables chains | `MABURVM-FIREWALL` (VM firewalls), `MABURVM-NAT` (port forwards and NAT VPS), `MABURVM-FIP`, `MABURVM-FIP-FWD`, `MABURVM-FIP-POST` (floating IPs), `MABURVM-VPC-POST`, `MABURVM-ANTISPOOF`, `MABURVM-SCANGUARD`, `MABURVM-SCANCOUNT`, `MABURVM-SYNLIMIT` (per-guest connection counters, the outbound connection limit, quarantines and IPv4 null-routes), `MABURVM-NULLROUTE` (ip6tables: IPv6 null-routes, created only once one is set), `MABURVM-CONSOLE` (closes console ports of VMs started before consoles moved to loopback) |
 | libvirt network filters | `maburvm-clean-traffic*`, `maburvm-antispoof-*` |
 | A network namespace per private network (VPC) | `maburvm-vpc-*` |
 | Speed limits on VM interfaces | tc and libvirt interface bandwidth |
-| IPv6 routes and neighbour entries for routed prefixes, and NDP proxy entries | on the bridge |
+| IPv6 routes and neighbour entries for routed prefixes, and NDP proxy entries for each guest's `::1` and further addresses | on the bridge |
 | Quarantined guests | `/etc/maburvm/quarantine` |
+| Null-routed addresses | `/etc/maburvm/nullroutes` (address and expiry; the agent lifts each when it expires) |
 | Downloaded templates, clone copies, scratch space for disks on LVM, customer ISOs | `TEMPLATE_CACHE_DIR` (`/var/lib/libvirt/templates`), customer ISOs in its `customer-iso` directory |
 | Agent backups kept by updates from the panel (newest five) | `/root/maburvm-agent.bak-<time>` |
 | Transient units for an update | `maburvm-agent-update-<time>` |
@@ -214,7 +241,7 @@ node's page in the panel lists what the agent runs with.
 |---|---|---|
 | `MABURVM_NAT_ADDRESS` | the default route's source address | The IPv4 address port forwards and NAT VPS ports are published on. Must be an address the node holds and not a floating IP. |
 | `MABURVM_BRIDGE_NETFILTER` | unset | `enforce` turns bridge netfilter on at start ([section 5](#5-what-the-agent-changes-on-a-host)). |
-| `MABURVM_VLAN_BRIDGES` | none | Bridges that may carry per-VM VLANs, each with its uplink: `br1:bond0,br2:eth3`. A VLAN on any other bridge is refused. |
+| `MABURVM_VLAN_BRIDGES` | none | Bridges that may carry per-VM VLANs, each with its uplink: `br1:bond0,br2:eth3`. A VLAN on any other bridge is refused. Once bridges are set on the node's page in the panel (VLAN trunking), those win; "Use the agent's environment" there goes back to this. |
 
 **Disks, templates and ISOs**
 

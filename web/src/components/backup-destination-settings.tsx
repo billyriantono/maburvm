@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { useConfirm } from "@/components/confirm-provider"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 
 type Kind = "s3" | "sftp" | "path"
 
@@ -34,8 +35,20 @@ interface Destination {
   auth?: "password" | "key"
   path?: string
   has_secret: boolean
+  /** New backups are encrypted on the node before they are uploaded. */
+  encrypt: boolean
+  encryption_key_id?: string
+  /** Keys kept: older backups need the key they were made with. */
+  encryption_keys: number
   backups: number
   backup_bytes: number
+}
+
+interface ExportedKey {
+  id: string
+  key: string
+  created_at: string
+  current: boolean
 }
 
 interface TestResult {
@@ -171,9 +184,15 @@ export function BackupDestinationSettings() {
                       <p className="text-xs text-muted-foreground tabular-nums">
                         {d.backups} {d.backups === 1 ? "backup" : "backups"}, {formatBytes(d.backup_bytes)}
                       </p>
+                      <p className="text-xs text-muted-foreground">
+                        {d.encrypt
+                          ? `New backups encrypted${d.encryption_keys > 1 ? `; ${d.encryption_keys} keys kept for older ones` : ""}`
+                          : d.encryption_keys > 0 ? "New backups not encrypted; older keys kept" : "Backups stored as they are, not encrypted"}
+                      </p>
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <Button type="button" variant="outline" size="sm" onClick={() => setEditing(d)}>Edit</Button>
+                      <EncryptionControls d={d} onChange={refresh} />
                       {!d.is_default && (
                         <Button type="button" variant="outline" size="sm" disabled={makeDefault.isPending} onClick={() => makeDefault.mutate(d.id)}>
                           Make default
@@ -222,6 +241,77 @@ export function BackupDestinationSettings() {
         )}
       </CardContent>
     </Card>
+  )
+}
+
+// EncryptionControls turn encryption of new backups on and off, make a new key,
+// and show the keys for safekeeping outside the panel: a backup encrypted with
+// a key that is lost cannot be restored by anyone.
+function EncryptionControls({ d, onChange }: { d: Destination; onChange: () => void }) {
+  const confirm = useConfirm()
+  const [keys, setKeys] = useState<ExportedKey[] | null>(null)
+  const call = useMutation<void, Error, { path: string; body?: unknown; done: string }>({
+    mutationFn: async ({ path, body }) => { await api.post(`${ENDPOINT}/${d.id}/${path}`, body) },
+    onSuccess: (_, v) => { onChange(); toast.success(v.done) },
+    onError: (err) => toast.error(err.message),
+  })
+  const reveal = useMutation<ExportedKey[], Error, void>({
+    mutationFn: async () => (await api.post<ExportedKey[]>(`${ENDPOINT}/${d.id}/export-keys`)).data.data,
+    onSuccess: setKeys,
+    onError: (err) => toast.error(err.message),
+  })
+  return (
+    <>
+      <Button type="button" variant="outline" size="sm" disabled={call.isPending}
+        onClick={() => d.encrypt
+          ? confirm({
+              title: `Stop encrypting backups in ${d.name}?`,
+              description: "New backups are stored as they are. Encrypted ones keep their keys and still restore.",
+              confirmLabel: "Stop encrypting",
+              action: () => call.mutateAsync({ path: "encryption", body: { encrypt: false }, done: "New backups are no longer encrypted" }),
+            })
+          : confirm({
+              title: `Encrypt new backups in ${d.name}?`,
+              description: "Each node encrypts a backup before uploading it, with a key the panel keeps sealed. Export the keys and keep them away from the panel: without them, encrypted backups cannot be restored if the panel is lost. Nodes whose agent is older than the panel keep backing up unencrypted until updated.",
+              confirmLabel: "Encrypt new backups",
+              action: () => call.mutateAsync({ path: "encryption", body: { encrypt: true }, done: "New backups are encrypted" }),
+            })}>
+        {d.encrypt ? "Stop encrypting" : "Encrypt backups"}
+      </Button>
+      {d.encrypt && (
+        <Button type="button" variant="outline" size="sm" disabled={call.isPending}
+          onClick={() => confirm({
+            title: "Encrypt new backups with a new key?",
+            description: "Backups already made keep the key they were made with, which stays here. Export the keys again afterwards.",
+            confirmLabel: "Make a new key",
+            action: () => call.mutateAsync({ path: "rotate-key", done: "New backups use the new key" }),
+          })}>
+          New key
+        </Button>
+      )}
+      {d.encryption_keys > 0 && (
+        <Button type="button" variant="outline" size="sm" disabled={reveal.isPending} onClick={() => reveal.mutate()}>
+          Export keys
+        </Button>
+      )}
+      <Dialog open={keys !== null} onOpenChange={(open) => !open && setKeys(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Encryption keys of {d.name}</DialogTitle>
+            <DialogDescription>
+              Keep these somewhere the panel is not, such as a password manager. With them and the backup files,
+              cmd/backup-decrypt turns a backup back into its disk image without the panel.
+            </DialogDescription>
+          </DialogHeader>
+          <label htmlFor={`keys-${d.id}`} className="sr-only">Keys</label>
+          <textarea id={`keys-${d.id}`} readOnly rows={8} className="w-full rounded-md border bg-muted p-3 font-mono text-xs"
+            value={JSON.stringify(keys ?? [], null, 2)} onFocus={(e) => e.currentTarget.select()} />
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setKeys(null)}>Done</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 }
 

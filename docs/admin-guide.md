@@ -93,7 +93,11 @@ bridge the node's IP pools name, every directory storage pool (exists,
 writable, free space, root filesystem or not), bridge netfilter, IP
 forwarding, the tools the agent shells out to, and clock sync. Each line is
 pass, warning or failed with how to fix it. **Check now** asks again; it reads
-the host and changes nothing.
+the host and changes nothing. Three lines are optional hardware and always
+pass, saying what is missing: UEFI firmware (OVMF, with or without Secure Boot
+firmware and keys), the TPM emulator (swtpm) and reserved huge pages. A VM that
+needs one is placed only on a node that has it, and refused with that reason
+otherwise.
 
 ### 3.3 The node page
 
@@ -104,6 +108,11 @@ the host and changes nothing.
 - **vCPU ratio**: how many vCPUs the node may carry per CPU thread. Overrides
   the panel-wide ratio ([section 4.6](#46-what-a-node-and-pool-accept)).
 - **NAT ports**: the public port range for NAT VMs ([section 5.6](#56-port-forwards-and-nat-vps)).
+- **Dedicated cores**: the host cores (a CPU list such as `4-15`) that VMs
+  with dedicated CPUs take one each per vCPU ([section 7.1](#71-vm-hardware)).
+  Cores a VM holds must stay in the pool. The node's other VMs still run on
+  any core; isolate the pool on the host (the kernel's `isolcpus`) if
+  dedicated VMs must have their cores alone.
 - **Agent settings**: what the agent runs with, read from the node (secrets
   only as set or not set). Change them on the node; see
   [node-setup.md §6](node-setup.md#6-agent-settings-reference).
@@ -257,14 +266,85 @@ gateway, bridge, an optional range and the node or nodes it serves.
   live VMs already hold, so imported guests are not double-assigned. Nodes
   need `arping` (package `iputils-arping`) for this to see addresses outside
   the node's own subnets.
-- **Reverse DNS**: set per address, or by customers on their own addresses.
-  With a nameserver connected (Settings, System, API, DNS provider: the
-  nameserver's HTTP API address, server ID and key), records are pushed there; **Reverse zone** exports a zone
-  file for a pool, and **Import** reads existing records back.
+- **Reverse DNS**: set per address, or by customers on their own addresses
+  and on any address inside the IPv6 prefix routed to their VM (up to 64 names
+  per prefix; released with the prefix). With a nameserver connected
+  (Settings, System, DNS provider) records are pushed there: a **PowerDNS**
+  server (its HTTP API address, server ID and key) or **Cloudflare** (an API
+  token with Zone, DNS, Edit rights; every zone written to, reverse zones
+  included, must already be on the account, and the panel never creates or
+  deletes a Cloudflare zone). **Reverse zone** exports a zone file for a pool,
+  and **Import** reads existing records back.
+- **Reverse DNS zone** (pool edit): where the pool's PTRs go when it is not
+  the standard /24 (IPv4) or /64 (IPv6) zone. For a block smaller than a /24
+  delegated the RFC 2317 way, give the classless zone your upstream delegated
+  (`0-127.113.0.203.in-addr.arpa`, or `0/25...`); records are named after the
+  last octet inside it, and the pool's zone file lists the CNAMEs the holder
+  of the /24 publishes. A parent zone (a /16, the IPv6 /48 delegated to you)
+  works too. It applies to PTRs saved from then on.
+- **Nameservers**: the resolvers the pool's guests are given (up to four, IPv4
+  or IPv6); blank keeps 1.1.1.1 and 8.8.8.8 (and Cloudflare and Google over
+  IPv6). They reach a guest through cloud-init when it is created or
+  reinstalled, and with every address change; running guests keep theirs until
+  then. A routed IPv6 pool's nameservers are its guests' IPv6 resolvers.
+- **DHCP**: the node answers DHCP for the pool's assigned addresses, for guests
+  installed without cloud-init (from an ISO, an imported machine set to DHCP).
+  Each address is leased only to its own VM's card on the pool's bridge, for
+  good; a machine the panel did not assign gets no answer, and no address of
+  the range is ever handed out. IPv4 pools with a gateway only. It needs
+  `dnsmasq` on the node ([node-setup.md](node-setup.md#1-requirements)); the
+  node's host checks show each bridge served. Switching it reaches the nodes at
+  once and touches no guest. A guest that took its address by DHCP sees a
+  change of address at its next lease request, so reboot it after one.
 
 Changing a VM's address no longer needs a reinstall: the guest is reconfigured
 live through its guest agent where it can be, otherwise at its next start from
-the panel, and the VM's page says which.
+the panel, and the VM's page says which. A running Linux guest is changed
+through whatever configures its network: systemd-networkd (every VM the panel
+installed, and Ubuntu's netplan when it renders for networkd: the panel's
+unit outranks netplan's and netplan's files are left alone), ifupdown
+(`/etc/network/interfaces`, Debian, when ifupdown brought the card up), netplan rendering for NetworkManager,
+NetworkManager (the RHEL family, Fedora, desktops) or network-scripts (older
+RHEL without NetworkManager). In the netplan case, netplan files that
+configured the same card are renamed `*.maburvm-off` and cloud-init is told
+not to rewrite them; earlier `/etc/network/interfaces` stanzas for the card
+are commented out (`# maburvm:`); the guest's own network-scripts files for
+the card are renamed `*.maburvm.bak`, a name it skips at boot. A change that
+starts in the guest but does not finish is reported and not run again. A
+stopped Linux guest is changed on its disk
+only when it uses systemd-networkd; any other is changed when it next starts
+and its guest agent answers; if it then cannot take the change, it is not
+tried again until its next start from the panel. A guest with none of these
+keeps its addresses and the VM's page says to set them inside it. Nothing is
+ever restarted for an address change.
+
+### 5.1a Network cards and MAC addresses
+
+A VM's **Network cards** card lists each card with its MAC, network and
+addresses. A VM has one card from its creation; staff add another on a pool's
+bridge (a second public network, a private VLAN bridge), and customers add one
+on their own private network in the VM's location, up to four. Each added card
+takes one address from that network's pool and is pinned to it by the node's
+anti-spoofing; one card per network. It is added while the VM runs where its
+machine has a free slot (a q35 machine created before has none, and a router's
+machine has), otherwise when the VM is next started from the panel; the
+guest gets the card's address the way an address change does (Linux guests;
+on a router or Windows the page says which address to set on which card).
+Removing a card gives its addresses back. A private network's address does not
+count toward the plan's extra IPv4 addresses, nor as an extra IP in the
+billing usage sync. The VM's speed limit, an over-quota throttle and an abuse
+rate limit apply to its first card only; abuse readings and quarantines are
+per card (by MAC). Every card's traffic counts toward the VM's transfer,
+private-network traffic included.
+
+Each card's MAC is kept by the panel, so it stays the same through reinstalls
+and moves, and no MAC is given to two cards. A new VM's first card gets a MAC
+worked out from the VM's id, or the one staff typed when creating it. Staff
+change a card's MAC with the VM stopped (**Change MAC**): it must be unicast
+and unused; the guest's network settings are rewritten for it (on its disk
+for systemd-networkd, otherwise at its next start). A VM created before cards
+were recorded, or imported, has its cards read from its node the first time
+its page shows them.
 
 ### 5.2 IPv6
 
@@ -278,10 +358,29 @@ Two kinds of IPv6 pool:
   prefix of the pool is the router-to-node link unless a **link prefix** is
   set. The upstream router must route the pool to the node. Where it treats
   the whole pool as on-link instead, the agent adds an NDP proxy entry for each
-  guest's `::1`, which works only once you set
-  `net.ipv6.conf.<bridge>.proxy_ndp=1` on the node.
+  address the guest holds in its prefix, which works only once you set
+  `net.ipv6.conf.<bridge>.proxy_ndp=1` on the node. Prefix lengths other than
+  /64 (a /56, a /80) work the same way: the guest's address is still the
+  prefix's `::1` with that length, and its anti-spoofing filter lets it send
+  from exactly its prefix.
 
-Staff add or release a VM's IPv6 on its Network tab. A plan's
+Which mode a node needs:
+
+| The upstream router | Pool | Node |
+|---|---|---|
+| Routes the pool to the node's address | Routed prefix | Nothing more |
+| Treats the pool as on-link on the node's segment | Routed prefix | `proxy_ndp=1` on the bridge |
+| Gives each machine an address on a shared subnet | Per address | Nothing more |
+
+A guest holds more than its `::1`: staff and the VM's owner add up to 16 further
+addresses from its routed prefix on the Network tab (**More addresses in**).
+They are written into the guest like an address change and proxied for the
+node's neighbours where the node proxies. A per-address pool gives each VM
+one address.
+
+Staff add or release a VM's IPv6 on its Network tab. A customer turns IPv6 on
+through an address request (granted at once or by staff, see
+[section 8.1](#81-customer-accounts)) and off from the Network tab. A plan's
 `max_extra_ipv6` caps how many a VM may hold.
 
 ### 5.3 Address history
@@ -303,10 +402,28 @@ How many one account may hold: Settings, System, Quotas (default 5). The agent
 rebuilds VPCs after a node reboot and starts the guests on them that are set
 to autostart.
 
-**Networks** (`network:create`, `network:delete`) are staff-made networks,
-including per-VM VLANs. A VLAN works only on bridges named in the agent's
-`MABURVM_VLAN_BRIDGES` (`bridge:uplink` pairs); switching VLAN filtering on
-changes how the whole bridge forwards, so it is never done implicitly.
+A VPC's **Nameservers** (`vpc:update`) are the resolvers its VMs are given,
+kept on its address pool; they reach a VM like a pool's do. A VM joins a
+private network when it is ordered into it, or later as a second card
+([section 5.1a](#51a-network-cards-and-mac-addresses)).
+
+**Networks** (`network:create`, `network:delete`) are staff-made networks.
+
+**VLAN trunking** (node page, `node:update`) enables per-VM VLANs on some of a
+node's bridges, each with the uplink port that carries the VLANs tagged. It is
+opt-in: a VLAN set on a VM whose bridge is not listed is refused, and nothing
+on the node changes until a VM on a listed bridge gets a VLAN. Then the
+bridge's VLAN filtering is switched on, which changes how the whole bridge
+forwards: untagged traffic carries on, tagged frames that already pass the
+bridge need their VLAN added, and the switch port must carry the VLANs tagged.
+The list is saved once the node has it (the node keeps it across restarts), and
+each bridge comes back with what the node sees: a missing bridge, an uplink
+that is not its port. The host checks report each listed bridge. Until a list
+is saved here, the agent's `MABURVM_VLAN_BRIDGES` decides, and **Use the
+agent's environment** goes back to it. Removing a bridge from the list leaves
+its filtering as it is, and is refused while a VM there has a VLAN: take the
+VM's VLAN off first, or at its next start it would land on the untagged
+network.
 
 ### 5.5 Floating IPs
 
@@ -341,7 +458,8 @@ hostnames to it. To offer it on a node: give a bridge the gateway of a private
 range, create a NAT pool for it, set the node's **NAT ports** range, and create
 a plan with network type NAT, ports per VM and hostnames per VM. The steps and
 the hostname router are in [DEPLOYMENT.md §6.4](DEPLOYMENT.md#64-firewall-groups-and-nat-vps).
-NAT VMs cannot move to another node.
+A NAT VM moves to another node where its NAT pool is offered too; its ports
+and forwards go into a free block there ([section 10](#10-moving-vms-and-draining-nodes)).
 
 ### 5.7 Firewall
 
@@ -371,10 +489,35 @@ had when a plan changes.
 
 ### 5.9 Abuse, quarantine and reputation
 
-- **Abuse** ranks guests by their rate of new outbound connections, the
-  signature of a compromised VM. **Quarantine** cuts a guest's traffic while
-  leaving it running (`network:update`). The node also limits each guest's new
-  outbound connections per second.
+- **Abuse** shows every guest's new connections and packets per second, out
+  and in, read from the node once a minute, including guests the panel does not
+  manage. **Quarantine** cuts a guest's traffic while leaving it running;
+  **Null-route** drops all traffic to one address on its node for a set time
+  (at most a week), after which the node lifts it by itself (`network:update`).
+  It does not stop traffic that reaches a VM through a floating IP, which the
+  node lets through before the null-route sees it; detach the floating IP for
+  that.
+  The node also limits how fast each guest opens new outbound connections;
+  connections arriving for a guest, such as a busy site behind a CDN, are never
+  limited.
+- **Timeline**: each time a guest goes over a threshold is an episode, kept
+  with up to 30 readings, the peak, and what was done. Staff actions
+  (quarantine, null-route) are episodes too. **Release** lifts an episode's
+  quarantine, rate limit or null-route; the episode is then left alone until
+  the guest has been quiet.
+- **Policy** (Abuse page): a threshold per reading and what happens once a
+  guest stays over it for a number of readings in a row (2 by default). A guest
+  sending too much can be **rate limited** (its speed held down) or
+  **quarantined**; a guest receiving a flood can be **null-routed**, which
+  protects the node and its other guests but not the link into the node (ask
+  your upstream to blackhole the address for that). Every action is "alert
+  staff only" until you choose one. Staff are told under Alerts (kind "A guest
+  is attacking or under attack"); the owner is emailed when an action is taken
+  on their server and when it is lifted, unless switched off in the policy
+  (template: Network action on a server). Inbound readings and null-routes need
+  agents of this version; older agents report outbound connections only. New
+  inbound connections are counted only on nodes with bridge netfilter on (see
+  the firewall note above); elsewhere that reading stays at zero.
 - **IP Reputation** checks your address space against public blocklists. An
   AbuseIPDB key (Settings, System, API) adds a confidence score; optional.
 - Anti-spoofing (per interface, Network tab) stops a guest sending from an
@@ -388,6 +531,20 @@ are measured always and **enforced** only when Settings, System, Quotas,
 "Restrict VMs that use up their quota" is on (its starting value is
 `BANDWIDTH_ENFORCE`). Owners are emailed at the warning levels set on the same
 page. Before turning enforcement on, check the quotas your plans carry.
+
+- **Reset day**: a plan's allowance starts again on a day of the month (1 to
+  28, default 1); an account can have its own day (user page, Transfer), for
+  example its billing day. Changing it starts a new period for the VMs it
+  covers.
+- **What counts**: a plan counts traffic in and out (the default), out only
+  (what the VM sends, as clouds bill) or in only. Both directions are still
+  recorded and shown.
+- **Pooled transfer** (user page, Transfer): the account's VMs share the sum
+  of their allowances and go over together; owners get one warning for the
+  pool. VMs without an allowance stay outside it.
+- The last counters read from each VM are kept, so a panel restart loses no
+  traffic. A VM's counters restart with the VM; traffic between its last
+  reading and a stop is not counted.
 
 ## 6. Templates and ISOs
 
@@ -412,10 +569,16 @@ nodes** fetches it in any case. With **Refresh every day** the panel checks the
 list daily by itself. VMs built from the old image are copies of it and are
 not touched; a node removes its old copy once nothing uses it.
 
-**Boot firmware.** A template is BIOS or UEFI. A VM is created or reinstalled
-from a UEFI template only on a node whose agent boots UEFI guests; agents of
-this version boot BIOS guests only, so such orders are refused with that
-reason. `scripts/build-windows-template.sh --uefi` already builds UEFI images.
+**Boot firmware.** A template is BIOS or UEFI, and may ask for **Secure Boot**
+(UEFI only) and a **virtual TPM 2.0**, as Windows 11 needs. A VM from a UEFI
+template is created only on a node with UEFI firmware (the `ovmf` package),
+with Secure Boot only where the Secure Boot firmware and its keys are
+installed, and with a TPM only where `swtpm` is; the node's host checks show
+which. A VM keeps the firmware it was created with: it is reinstalled only from
+a template for the same firmware, and a reinstall onto the other is refused
+with that reason (the disk is installed for one or the other). A copy of a VM
+keeps its firmware. `scripts/build-windows-template.sh --uefi` builds UEFI
+Windows images.
 
 **ISOs** lists install media: added from an address (with a checksum, as
 templates) or uploaded from your computer (**Upload a file**, sent to the panel
@@ -442,9 +605,23 @@ node fetches only public addresses, bounded by the agent settings
 `CUSTOMER_ISO_MAX_GB`, `CUSTOMER_ISO_MIN_FREE_GB` and
 `CUSTOMER_ISO_RETENTION_DAYS`.
 
-**Rescue mode** boots a stopped VM from a rescue ISO, set under Settings,
-System, Rescue (or `RESCUE_ISO_URL` in the panel's environment until one is
-saved). With neither, customers are told rescue is not available.
+**Rescue mode** boots a stopped VM into a rescue system, set under Settings,
+System, Rescue:
+
+- The **built-in rescue system** is a small cloud disk image you choose once (a
+  qcow2 URL with its sha256, or a path on every node; a minimal Debian or Ubuntu
+  cloud image works, as long as no template is built from the same image). Each
+  rescue copies it for the VM, gives it the VM's own address, a one-time root
+  password (shown once to whoever turned rescue on, never emailed) and their
+  chosen saved SSH keys, and attaches it as the first boot disk with the VM's
+  own disks behind it for repair. Starting the VM boots it; SSH needs the VM's
+  firewall to let port 22 in. **Exit rescue** (VM stopped) removes the copy.
+  Backups, snapshots and reinstalls wait until the VM is out of rescue mode.
+- The **rescue ISO** (or `RESCUE_ISO_URL` in the panel's environment until one
+  is saved) is used where no built-in system is set or the VM's node needs an
+  agent update for it; the API's `mode: iso` asks for it explicitly.
+
+With neither, customers are told rescue is not available.
 
 ## 7. Plans and allowances
 
@@ -463,6 +640,7 @@ saved). With neither, customers are told rescue is not available.
 | Prices of extras (`addon_prices`) | Monthly display prices, in the plan's currency, for `snapshot`, `backup`, `image`, `extra_disk_gb`, `floating_ip`, `extra_ipv4` and `extra_ipv6`; shown on the order page. |
 | Network type (`network_type`), `nat_ports`, `nat_hostnames` | Public or NAT. |
 | Default firewall group | What new VMs get instead of the built-in rules. |
+| Hardware (`hardware`) | CPU model, sockets and threads, dedicated cores, NUMA placement, huge pages, Secure Boot and TPM (for images that boot UEFI), watchdog and restart on crash, for new VMs; see [section 7.1](#71-vm-hardware). Existing VMs keep theirs. |
 | Hypervisor group (`node_group`) | New VMs on the plan are placed only on nodes in this group (set on each node's page, such as `nvme`), inside the region the customer chose; with no such node that can take the VM, the order is refused rather than placed elsewhere. A drain moves such a VM only within the group. A node staff choose by hand is taken as given. |
 | Active | Inactive plans are not offered. |
 
@@ -479,6 +657,34 @@ disks, delete billed servers) is switched under Settings, System, Quotas.
 and on the order page (billing, service status; support is under Branding),
 and how many days of hourly graph averages are kept (default 90, see
 [section 11.5](#115-graph-history)).
+
+### 7.1 VM hardware
+
+A VM's hardware comes from its plan, from its image (UEFI, Secure Boot, TPM)
+and, for a VM staff create, from what they set on the create form. On the VM's
+page, **Hardware, Change** (`vm:update`, staff only) changes the CPU model,
+topology, dedicated cores, NUMA placement, huge pages, watchdog and restart on
+crash. The node saves the change in the VM's definition and the VM uses it from
+its next power off and on; nothing is restarted, and a restart from inside the
+guest is not enough. Firmware, Secure Boot and the TPM are fixed when a VM is
+created.
+
+| Option | What it does |
+|---|---|
+| CPU model | Empty is the node's own CPU (host-passthrough): fastest, and the VM moves live only to a node with the same CPU. `host-model`, or a named model all the nodes offer (such as `Haswell-noTSX`), lets VMs move live between different CPUs. |
+| Sockets, threads | How the vCPUs are laid out; the cores per socket follow from the vCPU count. A count that does not divide is laid out as one socket of single cores, so a resize never fails on it. |
+| Dedicated cores | Each vCPU gets a host core of its own from the node's pool (the node page), and the emulator runs on the same cores. A VM is placed only on a node with enough free cores; a resize takes or gives back cores; turning it off frees them. A VM with dedicated cores must have them turned off before it moves. |
+| NUMA placement | With dedicated cores: the memory is kept on the NUMA nodes of those cores (preferred, never strict, so a full node does not kill the guest). |
+| Huge pages | The memory is backed by the node's reserved huge pages (`vm.nr_hugepages`). The node refuses the VM, or the change, when too few are free, since the VM would not start. |
+| Watchdog | Resets a guest that stops answering once its system uses the watchdog. VMs on the q35 machine (Linux, Windows) have the chipset's watchdog anyway; RouterOS VMs get an i6300esb. |
+| Restart on crash | The node starts the VM again when it crashes (its QEMU process dies, or the guest kernel panics, which a panic device reports): at once the first time, then after a minute, then five. After a fourth crash within an hour it leaves the VM off and raises the *A VM keeps crashing* alert, until someone starts it. |
+| Secure Boot, TPM | Set at creation from the plan or the image; UEFI images only for Secure Boot. A TPM's state stays on its node, so such a VM does not move to another node yet. |
+
+Only the options changed are sent, so whatever else an imported VM's
+definition has is left alone. A change the node refuses is not kept: the VM
+keeps the hardware it had and its page says why. One that may not have reached
+the node (it was offline, say) is kept and marked as not in force; saving again
+sends the options the VM has set, never the ones left at their defaults.
 
 ## 8. Customers and staff
 
@@ -591,6 +797,65 @@ The same tab sets the **backup window** (scheduled backups due outside it wait,
 then run once; manual backups are never held) and how many backups run at once
 on one node (default 2).
 
+**Encryption.** **Encrypt backups** on a destination makes each node encrypt
+a backup before it uploads it (AES-256-GCM in 64 KiB chunks, a key derived per
+file from the destination's key), so the store and anyone holding its
+credential see only ciphertext. It applies to backups made from then on;
+existing ones stay as they are and still restore. The destination's key is
+kept in the panel database sealed with the panel's AES key and is sent to a
+node only with a backup or restore job. **New key** encrypts new backups with
+a fresh key and keeps the old ones, so every backup stays restorable; nothing
+is re-encrypted. **Stop encrypting** keeps every key for the same reason.
+
+- **Export keys** (Administrator role) shows the keys. Keep them away from the
+  panel, in a password manager or on paper: if the panel and its database are
+  lost, `go run ./cmd/backup-decrypt -keys keys.json -in backup.qcow2 -out
+  disk.qcow2` turns a backup file back into its disk image with them, and
+  without them nobody can. Export again after **New key**.
+- A node whose agent is older than the panel cannot encrypt: its backups are
+  still made, in the clear, and say so to staff on the VM's Backups tab. An
+  encrypted backup is restored only on a node whose agent can decrypt it; an
+  older one is refused before anything changes.
+- Retention and deleting a backup work as before: removing a file needs no key.
+- Encryption protects backups from whoever holds the destination's credential
+  or the store itself, not from a compromised node: a node running a backup or
+  restore job is sent every key of the destination.
+- The keys are sealed with the panel's AES key and are not re-sealed when it
+  changes: keep a retired panel key in `aes_key_previous` (`AES_KEY_PREVIOUS`)
+  while any backup made with these keys is kept, or export the keys first.
+- A backup is checked against its checksum after it is decrypted on restore,
+  so a damaged or truncated file is refused, never written to a disk.
+
+**Least-privilege credentials.** One credential per destination travels with
+every backup job to every node, so treat it as exposed to any node that is
+compromised. Encryption keeps the credential alone from reading backups; keep
+it from destroying them too:
+
+- **S3:** a bucket for backups only, with **versioning** and, where the
+  provider has it, **object lock** in governance mode. Give the credential
+  `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, `s3:ListBucket`,
+  `s3:AbortMultipartUpload` on that bucket and nothing else: no
+  `s3:DeleteObjectVersion`, `s3:PutBucket*`, `s3:PutLifecycleConfiguration` or
+  `s3:BypassGovernanceRetention`. The panel's retention then still deletes
+  (on a versioned bucket a delete leaves a delete marker), while earlier
+  versions stay recoverable by the bucket owner until a lifecycle rule you set
+  expires noncurrent versions, for example after 30 days. A credential that
+  cannot delete at all also works for writing and restoring, but then
+  retention cannot remove old backups and the bucket grows until a lifecycle
+  rule removes them.
+- **SFTP:** a user of its own, chrooted to the backup directory, on a server
+  that takes snapshots of it (ZFS, Btrfs) the user cannot remove.
+- **Directory on the nodes:** an export of its own, snapshotted on the storage
+  side; nodes need read and write, nothing else.
+
+**Downloads.** Whoever holds `backup:download` (customers do) downloads a full
+backup from the VM's Backups tab. A plain backup in S3 is a 15-minute link to
+the bucket itself, so customers must be able to reach the S3 endpoint, and the
+link shows its address and the bucket. An encrypted backup, or one on an SFTP
+server, is streamed through the panel and decrypted on the way, on the panel's
+bandwidth. Backups in a node's own storage or a directory on the nodes cannot
+be downloaded.
+
 ### 9.2 Schedules, incremental backups and retention
 
 Schedules are per VM (Backups tab): how often, and how many or how long to
@@ -629,7 +894,27 @@ place, restore as new on another node.
 
 **Snapshots** are kept by libvirt next to the VM's disk and revert it in
 place; they are not backups. VMs on LVM cannot take them, and a VM with
-snapshots cannot move. **Images** capture a VM's disk to object storage; an
+snapshots cannot move.
+
+- A snapshot of a running VM saves its memory too, and pauses it while the
+  memory is written (minutes for a large VM). **Disks only** saves no memory
+  and does not pause it: QEMU snapshots each qcow2 disk inside the image at
+  once. **Freeze the filesystems first** asks the guest agent to quiesce them
+  for that, and the snapshot fails when it cannot. A stopped VM's snapshot
+  holds its disks only either way. Disk-only snapshots need the current agent.
+- Reverting leaves the VM as it was when the snapshot was taken: running from
+  its saved memory, or shut off; a disk-only snapshot of a running VM boots the
+  VM from the snapshot's disks. The panel records the state the node reports.
+- A **snapshot schedule** (one per VM, on its Snapshots tab, for staff and
+  owners with `snapshot:create`) takes a snapshot every 6 hours to every week
+  and keeps the newest 1 to 10 it took, removing the oldest first. Snapshots
+  taken by hand are never removed by it, and count against the plan's
+  `max_snapshots`, which the schedule must fit in. A run that cannot take its
+  snapshot (no room, rescue mode, LVM disks, the VM being created or deleted)
+  removes none of the schedule's snapshots and is skipped with the reason on
+  the card; one while the VM moves or another snapshot is still being taken
+  waits. A failed scheduled snapshot is removed first to make room. Removing the
+  schedule keeps its snapshots. **Images** capture a VM's disk to object storage; an
 image outlives its VM and can seed a new one. Captured images use the object
 storage in each node's own environment (`STORAGE_*` or `S3_*`).
 
@@ -641,9 +926,24 @@ moves live (a pause of about a second at the end), a stopped one offline. The
 VM stays on its node until it runs on the new one; a failed or cancelled move
 leaves it where it was. **Check** shows before anything starts why a VM cannot
 move: floating IPs or a private network, snapshots, an ISO, rescue mode, a
-running backup, a pool or port the destination lacks, a NAT VM, no room, or a
-different CPU for a live move of a `host-passthrough` VM (move it offline
-instead).
+running backup, a pool or port the destination lacks, no room, dedicated cores
+or a virtual TPM (both belong to the node), huge pages or UEFI firmware the
+destination lacks, or a different CPU for a live move of a `host-passthrough`
+VM (move it offline instead). A UEFI VM's firmware settings start fresh on the
+new node, so it boots its disk's default boot loader. An offline move points
+the VM at the destination's own OVMF files when they live elsewhere there; a
+live move needs them at the same path on both nodes, and fails cleanly (the VM
+stays where it was) when they are not.
+
+A **NAT VM** moves when its NAT pool is offered on the destination too (the
+same private network there; otherwise the check names the pool) and the
+destination has a NAT port range. It keeps its public ports when they are free
+there, else takes the lowest free block of the same size, and its port
+forwards move into it. Its public address becomes the destination's, and its
+verified hostnames are routed there (the destination's agent must route
+hostnames, and its ports 80 and 443 must not be forwarded to a VM). The check
+says which ports it gets; once moved, its owner is emailed the new address and
+ports (template *NAT server moved*).
 
 Disks on logical volumes move too, and a VM can move onto an LVM pool: the
 destination makes the volumes first (named and tagged as its own), a live move
@@ -683,6 +983,7 @@ there, alerts are only listed.
 | Backup failed | a backup fails with no retry left |
 | Job failed | any other background job fails for good |
 | Node keeps losing VM network rules | the agent had to put VM firewall, anti-spoofing or NAT rules back three times within an hour |
+| A VM keeps crashing | a VM set to restart on crash crashed twice within an hour (warning), or four times, after which its node leaves it off (critical) |
 
 Delivery is by email (to the recipients listed, through the SMTP server) and by
 webhook in JSON, Slack or Discord format, optionally signed. An alert is sent
@@ -703,9 +1004,9 @@ email to a customer is queued, retried while the mail server refuses or is
 down, and listed for 90 days without its body; a failed one can be sent again.
 Settings, **Emails** rewords or switches off each template: welcome, welcome
 (billing order), password reset, server ready, reinstalled, rescue on and off,
-transfer warning, suspended, unsuspended, backup failed, password changed,
-two-factor turned off, API key created, and the invitation for imported
-accounts. Nothing is sent until a mail server is set up.
+transfer warning, suspended, unsuspended, backup failed, NAT server moved,
+password changed, two-factor turned off, API key created, and the invitation
+for imported accounts. Nothing is sent until a mail server is set up.
 
 ### 11.3 Notifications
 
@@ -729,7 +1030,10 @@ there too.
 **API requests** (`audit:read`: the last 10,000 requests to the API and the
 billing webhook with method, path, answer, time taken, account or API key and
 address; kept in memory, so a restart empties it, and query strings are never
-recorded), **Addresses** (`network:read`: every assignment and release of an
+recorded. It is the memory of the one panel process that answered: run more
+than one panel behind a load balancer and each lists only the requests it
+served, so use the load balancer's access log for the whole picture. Changes
+are recorded durably in the audit log either way), **Addresses** (`network:read`: every assignment and release of an
 address, from the address history) and **Emails** (`settings:read`: the email
 log, searchable by recipient or subject).
 
@@ -737,10 +1041,19 @@ log, searchable by recipient or subject).
 
 The metrics collector keeps each VM's raw readings for 7 days and, once an
 hour, averages each finished hour into `vm_metrics_hourly`, kept for the days
-set under Settings, Customer area (8 to 400, default 90). VM graphs offer 30
-and 90 days within that. The first run after an upgrade averages what the raw
-readings still hold, so the week before the upgrade is not lost. Node graphs
-stay at 7 days.
+set under Settings, Customer area (8 to 400, default 90). Once a day it
+averages each finished day of those into `vm_metrics_daily`, kept two years.
+VM graphs offer 30 and 90 days, 1 and 2 years. The first run after an upgrade
+averages what the raw readings and hourly averages still hold, so nothing
+recorded before the upgrade is lost. Node graphs stay at 7 days.
+
+The collector checks every node at once, each under its own deadline, on its
+own clock, so a node going offline is noticed on time however long the rest
+takes. The per-node work (status reconcile, storage, address checks) and the
+VM readings run up to eight nodes side by side, each node's VMs one after
+another. A node whose agent answers slowly holds up only its own VMs; when its
+VM pass runs past three minutes, the VMs left are read on the next tick, from
+a different starting point each time.
 
 ## 12. Billing integration
 
@@ -822,7 +1135,8 @@ Things to set before taking orders:
 
 The **Security** page (`settings:read`) checks the install against these and
 lists what is weak or off. Stored secrets (agent tokens, console passwords,
-mail and DNS credentials, billing secrets, captcha secret, 2FA secrets) are
+mail and DNS credentials, billing secrets, captcha secret, 2FA secrets, backup
+destination secrets and encryption keys) are
 encrypted with the AES key in the panel's `secrets.json`; keep that file with
 the database backups ([DEPLOYMENT.md §9](DEPLOYMENT.md#9-backups--restore)).
 

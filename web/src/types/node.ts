@@ -152,4 +152,62 @@ export interface GuestConnection {
   quarantine_reason: string;
   first_flagged_at: string | null;
   last_seen_at: string;
+  syn_in_rate: number;
+  pps_out: number;
+  pps_in: number;
+}
+
+export type AbuseKind = "outbound_syn" | "outbound_pps" | "inbound_syn" | "inbound_pps" | "manual";
+export type AbuseAction = "alert" | "rate_limit" | "quarantine" | "null_route";
+export type AbuseActionState = "none" | "active" | "released" | "expired" | "failed";
+
+export interface AbuseSample {
+  at: string;
+  syn_out: number;
+  syn_in: number;
+  pps_out: number;
+  pps_in: number;
+}
+
+/** One episode of a guest over a threshold, or a staff action. */
+export interface AbuseEvent {
+  id: string;
+  node_id: string;
+  node_name: string;
+  mac: string;
+  vm_id: string;
+  vm_hostname: string;
+  kind: AbuseKind;
+  metric: number;
+  peak: number;
+  threshold: number;
+  samples: number;
+  action: AbuseAction;
+  action_state: AbuseActionState;
+  targets: string;
+  detail: string;
+  evidence: AbuseSample[] | null;
+  started_at: string;
+  last_seen_at: string;
+  ended_at: string | null;
+  expires_at: string | null;
+  released_at: string | null;
+  released_by: string;
+}
+
+export interface AbuseRule {
+  enabled: boolean;
+  threshold: number;
+  action: AbuseAction;
+}
+
+export interface AbusePolicy {
+  outbound_syn: AbuseRule;
+  outbound_pps: AbuseRule;
+  inbound_syn: AbuseRule;
+  inbound_pps: AbuseRule;
+  sustain_samples: number;
+  null_route_minutes: number;
+  rate_limit_mbps: number;
+  notify_owner: boolean;
 }

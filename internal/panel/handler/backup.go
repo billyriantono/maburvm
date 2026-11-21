@@ -2,6 +2,7 @@ package handler
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -115,6 +116,8 @@ func (h *BackupHandler) CreateBackup(c echo.Context) error {
 				"error":   "Bad Request",
 				"message": err.Error(),
 			})
+		case vmBusy(err):
+			return vmMoving(c, err)
 		default:
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
 				"error":   "Internal Server Error",
@@ -144,18 +147,19 @@ func (h *BackupHandler) CreateBackup(c echo.Context) error {
 
 // BackupListItem represents a backup in the list response
 type BackupListItem struct {
-	ID              string    `json:"id"`
-	VMID            string    `json:"vm_id"`
-	StorageProvider string    `json:"storage_provider"`
-	StoragePath     string    `json:"storage_path"`
-	BackupType      string    `json:"backup_type"`
-	Status          string    `json:"status"`
-	Size            int64     `json:"size"`
-	Compression     string    `json:"compression"`
-	Checksum        string    `json:"checksum,omitempty"`
-	StartedAt       time.Time `json:"started_at,omitempty"`
-	CompletedAt     time.Time `json:"completed_at,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
+	ID              string `json:"id"`
+	VMID            string `json:"vm_id"`
+	StorageProvider string `json:"storage_provider"`
+	StoragePath     string `json:"storage_path"`
+	BackupType      string `json:"backup_type"`
+	Status          string `json:"status"`
+	Size            int64  `json:"size"`
+	Compression     string `json:"compression"`
+	Checksum        string `json:"checksum,omitempty"`
+	// Absent when not recorded (a backup from before they were).
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
 	// Why a failed backup failed. Staff only: the text can name storage
 	// endpoints and paths on the node.
 	ErrorMessage string              `json:"error_message,omitempty"`
@@ -167,6 +171,12 @@ type BackupListItem struct {
 	// ModeNote says why a backup is full when an incremental one was asked
 	// (staff only: it names the node's software).
 	ModeNote string `json:"mode_note,omitempty"`
+	// Encrypted: its files were encrypted before they left the node.
+	Encrypted bool `json:"encrypted"`
+	// Downloadable: its disk images can be downloaded; DownloadNote says why
+	// not when they cannot.
+	Downloadable bool   `json:"downloadable"`
+	DownloadNote string `json:"download_note,omitempty"`
 }
 
 // ListBackups handles GET /api/vms/:id/backups - List backups
@@ -206,39 +216,9 @@ func (h *BackupHandler) ListBackups(c echo.Context) error {
 		})
 	}
 
-	userCtx, _ := middleware.GetUserContext(c)
-	staff := userCtx != nil && userCtx.Role == models.RoleAdmin
-
-	// Map to response format
 	items := make([]BackupListItem, len(resp.Backups))
-	for i, backup := range resp.Backups {
-		items[i] = BackupListItem{
-			ID:              backup.ID,
-			VMID:            backup.VMID,
-			StorageProvider: backup.StorageProvider,
-			StoragePath:     backup.StoragePath,
-			BackupType:      string(backup.BackupType),
-			Status:          string(backup.Status),
-			Size:            backup.Size,
-			Compression:     backup.Compression,
-			Checksum:        backup.Checksum,
-			CreatedAt:       backup.CreatedAt,
-			Disks:           backup.Disks,
-			Consistency:     backup.Consistency,
-			Mode:            backup.Mode,
-		}
-		if backup.ParentID != nil {
-			items[i].ParentID = *backup.ParentID
-		}
-		if staff {
-			items[i].ErrorMessage, items[i].ModeNote = backup.ErrorMessage, backup.ModeNote
-		}
-		if backup.StartedAt != nil {
-			items[i].StartedAt = *backup.StartedAt
-		}
-		if backup.CompletedAt != nil {
-			items[i].CompletedAt = *backup.CompletedAt
-		}
+	for i := range resp.Backups {
+		items[i] = h.backupItem(c, &resp.Backups[i])
 	}
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
@@ -298,19 +278,95 @@ func (h *BackupHandler) GetBackup(c echo.Context) error {
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "Backup retrieved successfully",
-		"data": BackupListItem{
-			ID:              backup.ID,
-			VMID:            backup.VMID,
-			StorageProvider: backup.StorageProvider,
-			StoragePath:     backup.StoragePath,
-			BackupType:      string(backup.BackupType),
-			Status:          string(backup.Status),
-			Size:            backup.Size,
-			Compression:     backup.Compression,
-			Checksum:        backup.Checksum,
-			CreatedAt:       backup.CreatedAt,
-		},
+		"data":    h.backupItem(c, backup),
 	})
+}
+
+// backupItem is a backup as the list and the single read both answer it.
+func (h *BackupHandler) backupItem(c echo.Context, b *models.Backup) BackupListItem {
+	item := BackupListItem{
+		ID:              b.ID,
+		VMID:            b.VMID,
+		StorageProvider: b.StorageProvider,
+		StoragePath:     b.StoragePath,
+		BackupType:      string(b.BackupType),
+		Status:          string(b.Status),
+		Size:            b.Size,
+		Compression:     b.Compression,
+		Checksum:        b.Checksum,
+		StartedAt:       b.StartedAt,
+		CompletedAt:     b.CompletedAt,
+		CreatedAt:       b.CreatedAt,
+		Disks:           b.Disks,
+		Consistency:     b.Consistency,
+		Mode:            b.Mode,
+		Encrypted:       b.EncryptionKeyID != "",
+	}
+	item.DownloadNote = h.service.DownloadRefusal(c.Request().Context(), b)
+	item.Downloadable = item.DownloadNote == ""
+	if b.ParentID != nil {
+		item.ParentID = *b.ParentID
+	}
+	if u, _ := middleware.GetUserContext(c); u != nil && u.Role == models.RoleAdmin {
+		item.ErrorMessage, item.ModeNote = b.ErrorMessage, b.ModeNote
+	}
+	return item
+}
+
+// DownloadBackup handles GET /api/v1/vms/:id/backups/:backup_id/download
+// (?disk=vdb for another disk than the first): a redirect to a short-lived
+// link at the store, or the image streamed through the panel, decrypted on
+// the way when it was stored encrypted. A whole disk is handed over, so it
+// needs a role that operates the VM, as its console does.
+func (h *BackupHandler) DownloadBackup(c echo.Context) error {
+	vmID, backupID := c.Param("id"), c.Param("backup_id")
+	// A read-only or narrowed API key reads about backups, not their data.
+	if u, ok := middleware.GetUserContext(c); ok && (u.APIKeyReadOnly || u.APIKeyRestricted) {
+		return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "Forbidden", "message": "this API key cannot download backups"})
+	}
+	if !authorizeVMAccess(c, h.service, vmID, service.AccessOperate) {
+		return nil
+	}
+	ctx := c.Request().Context()
+	if b, err := h.service.GetBackup(ctx, backupID); err != nil || b.VMID != vmID {
+		return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "Backup not found"})
+	}
+	dl, err := h.service.OpenBackupDownload(ctx, backupID, c.QueryParam("disk"))
+	switch {
+	case errors.Is(err, service.ErrBackupNotFound):
+		return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "Backup not found"})
+	case errors.Is(err, service.ErrBackupNotDownloadable):
+		return c.JSON(http.StatusConflict, map[string]interface{}{"error": "Conflict", "code": "not_downloadable",
+			"message": strings.TrimPrefix(err.Error(), service.ErrBackupNotDownloadable.Error()+": ")})
+	case err != nil:
+		return c.JSON(http.StatusBadGateway, map[string]interface{}{"error": "Bad Gateway", "message": err.Error()})
+	}
+	if h.audit != nil {
+		u, _ := middleware.GetUserContext(c)
+		entry := &models.AuditLog{Action: "backup.download", ResourceType: "BACKUP", ResourceID: &backupID,
+			IPAddress: c.RealIP(), UserAgent: c.Request().UserAgent(), Details: map[string]any{"vm_id": vmID, "disk": c.QueryParam("disk")}}
+		if u != nil {
+			id := u.ID.String()
+			entry.UserID = &id
+			if u.ImpersonatorID != "" {
+				entry.Details["impersonator_id"], entry.Details["impersonator_email"] = u.ImpersonatorID, u.ImpersonatorEmail
+			}
+		}
+		_ = h.audit.Create(ctx, entry)
+	}
+	if dl.URL != "" {
+		return c.Redirect(http.StatusFound, dl.URL)
+	}
+	defer dl.Body.Close()
+	hdr := c.Response().Header()
+	hdr.Set(echo.HeaderContentType, "application/octet-stream")
+	hdr.Set(echo.HeaderContentDisposition, `attachment; filename="`+dl.Filename+`"`)
+	if dl.Size >= 0 {
+		hdr.Set(echo.HeaderContentLength, strconv.FormatInt(dl.Size, 10))
+	}
+	c.Response().WriteHeader(http.StatusOK)
+	_, err = io.Copy(c.Response(), dl.Body)
+	return err
 }
 
 // ============================================================================
@@ -470,6 +526,10 @@ func (h *BackupHandler) RestoreBackup(c echo.Context) error {
 				"error":   "Not Found",
 				"message": "Backup not found",
 			})
+		case vmBusy(err), errors.Is(err, service.ErrDiskMoveActive):
+			return vmMoving(c, err)
+		case errors.Is(err, service.ErrVMNotStopped):
+			return restoreConflict(c, err)
 		default:
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{
 				"error":   "Bad Request",
@@ -864,6 +924,7 @@ func RegisterBackupRoutes(e *echo.Echo, handler *BackupHandler, db *gorm.DB) {
 		backups.GET("/:backup_id", handler.GetBackup, middleware.RequirePermission("backup:read"))
 		backups.DELETE("/:backup_id", handler.DeleteBackup, middleware.RequirePermission("backup:delete"))
 		backups.POST("/:backup_id/restore", handler.RestoreBackup, middleware.RequirePermission("backup:update"))
+		backups.GET("/:backup_id/download", handler.DownloadBackup, middleware.RequirePermission("backup:download"))
 		// Choosing a node is an operator's decision, and the new VM is not
 		// checked against the owner's quota.
 		backups.POST("/:backup_id/restore-new", handler.RestoreAsNew, middleware.RequirePermission("admin:access"))

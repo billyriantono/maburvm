@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -173,7 +174,14 @@ func loadPendingGuests() map[string]guestNet {
 	return out
 }
 
+// refusedGuests are VMs whose pending change the guest ran and could not take
+// (or whose network set-up the panel does not know). Running it again every
+// tick would rewrite and bounce the guest's network each minute, so it is
+// tried once more only after the VM's next start or an agent restart.
+var refusedGuests sync.Map // vm id -> struct{}
+
 func updatePendingGuest(vmID string, n *guestNet) {
+	refusedGuests.Delete(vmID)
 	pendingGuestMu.Lock()
 	defer pendingGuestMu.Unlock()
 	all := loadPendingGuests()
@@ -220,9 +228,18 @@ func (s *NodeAgentService) retryPendingGuests(ctx context.Context) {
 		if err != nil || info.Status != libvirt.VMStatusRunning {
 			continue
 		}
-		if err := s.applyGuestNetwork(ctx, vmID, n, 0); err == nil {
+		if _, refused := refusedGuests.Load(vmID); refused {
+			continue
+		}
+		err = s.applyGuestNetwork(ctx, vmID, n, 0)
+		var na *guestNotApplied
+		switch {
+		case err == nil || (errors.As(err, &na) && na.applied):
 			clearPendingGuest(vmID)
 			log.Printf("[NetworkReconcile] VM %s took its pending address change", vmID)
+		case errors.As(err, &na) && !na.pending:
+			refusedGuests.Store(vmID, struct{}{})
+			log.Printf("[NetworkReconcile] VM %s did not take its pending address change (%s); tried again after its next start", vmID, na.msg)
 		}
 	}
 }
@@ -235,13 +252,18 @@ func (s *NodeAgentService) applyPendingGuestBeforeStart(ctx context.Context, vmI
 	pendingGuestMu.Lock()
 	n, ok := loadPendingGuests()[vmID]
 	pendingGuestMu.Unlock()
-	if !ok || libvirt.GuestOSType(vmID) == guestos.Windows {
+	if !ok {
+		return
+	}
+	refusedGuests.Delete(vmID) // a start is worth one more try once it runs
+	if libvirt.GuestOSType(vmID) == guestos.Windows {
 		return
 	}
 	if info, err := libvirt.GetVMInfo(vmID); err != nil || info.Status != libvirt.VMStatusStopped {
 		return
 	}
-	if err := s.applyGuestNetwork(ctx, vmID, n, 0); err != nil {
+	var na *guestNotApplied
+	if err := s.applyGuestNetwork(ctx, vmID, n, 0); err != nil && !(errors.As(err, &na) && na.applied) {
 		log.Printf("[NodeAgent] WARNING: VM %s: pending address change not applied before start: %v", vmID, err)
 		return
 	}

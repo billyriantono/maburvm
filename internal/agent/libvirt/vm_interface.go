@@ -67,7 +67,9 @@ func GetVMInterfaceName(uuidStr string) (string, error) {
 }
 
 // domainXML parses the live libvirt definition of a VM.
-func domainXML(uuidStr string) (*libvirtxml.Domain, error) {
+func domainXML(uuidStr string) (*libvirtxml.Domain, error) { return domainXMLFlags(uuidStr, 0) }
+
+func domainXMLFlags(uuidStr string, flags libvirt.DomainXMLFlags) (*libvirtxml.Domain, error) {
 	if _, err := uuid.Parse(uuidStr); err != nil {
 		return nil, fmt.Errorf("invalid UUID format: %w", err)
 	}
@@ -78,7 +80,7 @@ func domainXML(uuidStr string) (*libvirtxml.Domain, error) {
 			return fmt.Errorf("domain not found: %w", err)
 		}
 		defer dom.Free()
-		xmlDesc, err := dom.GetXMLDesc(0)
+		xmlDesc, err := dom.GetXMLDesc(flags)
 		if err != nil {
 			return fmt.Errorf("failed to get domain XML: %w", err)
 		}
@@ -90,10 +92,23 @@ func domainXML(uuidStr string) (*libvirtxml.Domain, error) {
 	return &domain, nil
 }
 
-// VMNIC is one of a domain's network interfaces; Tap is empty while it isn't running.
+// GetVMDefinedNICs is GetVMNICs from the persistent definition, which also
+// has a card added for the VM's next start that the running VM lacks.
+func GetVMDefinedNICs(uuidStr string) ([]VMNIC, error) {
+	domain, err := domainXMLFlags(uuidStr, libvirt.DOMAIN_XML_INACTIVE)
+	if err != nil {
+		return nil, err
+	}
+	return nicsOf(domain), nil
+}
+
+// VMNIC is one of a domain's network interfaces; Tap is empty while it isn't
+// running. Bridge and Model are what the definition says.
 type VMNIC struct {
-	MAC string
-	Tap string
+	MAC    string
+	Tap    string
+	Bridge string
+	Model  string
 }
 
 // GetVMNICs returns every network interface of the VM that has a MAC.
@@ -102,9 +117,13 @@ func GetVMNICs(uuidStr string) ([]VMNIC, error) {
 	if err != nil {
 		return nil, err
 	}
+	return nicsOf(domain), nil
+}
+
+func nicsOf(domain *libvirtxml.Domain) []VMNIC {
 	var nics []VMNIC
 	if domain.Devices == nil {
-		return nil, nil
+		return nil
 	}
 	for _, iface := range domain.Devices.Interfaces {
 		if iface.MAC == nil || iface.MAC.Address == "" {
@@ -114,9 +133,15 @@ func GetVMNICs(uuidStr string) ([]VMNIC, error) {
 		if iface.Target != nil {
 			n.Tap = iface.Target.Dev
 		}
+		if iface.Source != nil && iface.Source.Bridge != nil {
+			n.Bridge = iface.Source.Bridge.Bridge
+		}
+		if iface.Model != nil {
+			n.Model = iface.Model.Type
+		}
 		nics = append(nics, n)
 	}
-	return nics, nil
+	return nics
 }
 
 // GetVMInterfaceMAC returns the MAC of the VM's first network interface — the

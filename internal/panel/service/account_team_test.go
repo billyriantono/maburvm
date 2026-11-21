@@ -124,6 +124,37 @@ func TestCheckVMAccessThroughMembership(t *testing.T) {
 		}
 	}
 
+	// Billing sees usage and billing, not the servers.
+	biller := teamUser(t, db, "biller@example.com")
+	member(t, db, owner, biller, MemberRoleBilling, nil, nil)
+	require.ErrorIs(t, CheckVMAccess(ctx, db, vm, biller, false, AccessRead), ErrVMNotFound)
+	require.Empty(t, CustomerVMScope(ctx, db, biller).Grants)
+
+	// The account's own resources: a role that views reads them, one that
+	// operates changes them, and only over every VM of the account.
+	for _, c := range []struct {
+		name, user, what string
+		ok               bool
+	}{
+		{"owner changes resources", owner, AccountCanResources, true},
+		{"viewer reads resources", viewer, AccountCanView, true},
+		{"viewer does not change them", viewer, AccountCanResources, false},
+		{"technical changes them", tech, AccountCanResources, true},
+		{"scoped technical does not see them", scoped, AccountCanView, false},
+		{"project admin does not change them", byProject, AccountCanResources, false},
+		{"billing does not see them", biller, AccountCanView, false},
+		{"billing sees billing", biller, AccountCanBilling, true},
+		{"viewer does not see billing", viewer, AccountCanBilling, false},
+		{"stranger gets nothing", stranger, AccountCanView, false},
+	} {
+		_, err := RequireAccountRole(ctx, db, c.user, owner, c.what)
+		if c.ok {
+			require.NoError(t, err, c.name)
+		} else {
+			require.Error(t, err, c.name)
+		}
+	}
+
 	// A project member whose caller loaded only some columns still matches.
 	partial := &models.VM{ID: other.ID, UserID: owner, Status: models.VMStatusRunning}
 	require.NoError(t, CheckVMAccess(ctx, db, partial, byProject, false, AccessRead))
@@ -248,15 +279,19 @@ func TestInviteAcceptAndRevoke(t *testing.T) {
 	require.NoError(t, err)
 
 	// Someone already in the account does not join it twice, under an address
-	// they changed to.
+	// they changed to: they are not even emailed a second invitation, and one
+	// sent before the change is refused when accepted.
 	require.NoError(t, db.Exec(`UPDATE users SET email = 'renamed@example.com' WHERE id = ?`, existing).Error)
-	again, err := InviteMember(ctx, db, owner, owner, MemberInput{Email: "renamed@example.com", Role: MemberRoleReadOnly})
-	require.NoError(t, err)
+	_, err = InviteMember(ctx, db, owner, owner, MemberInput{Email: "renamed@example.com", Role: MemberRoleReadOnly})
+	require.ErrorIs(t, err, ErrMemberExists)
+	againID := uuid.NewString()
 	tokenAgain := strings.Repeat("e", 64)
-	require.NoError(t, db.Model(&AccountMember{}).Where("id = ?", again.ID).Update("invite_token_hash", hashInviteToken(tokenAgain)).Error)
+	hashAgain, later := hashInviteToken(tokenAgain), time.Now().Add(time.Hour)
+	require.NoError(t, db.Create(&AccountMember{ID: againID, AccountID: owner, Email: "renamed@example.com", Role: MemberRoleReadOnly,
+		VMIDs: []string{}, ProjectIDs: []string{}, InviteTokenHash: &hashAgain, InviteExpiresAt: &later, CreatedAt: time.Now(), UpdatedAt: time.Now()}).Error)
 	_, _, err = AcceptInvitation(ctx, db, AcceptInput{Token: tokenAgain})
 	require.ErrorIs(t, err, ErrMemberExists)
-	_, err = RemoveMember(ctx, db, owner, again.ID)
+	_, err = RemoveMember(ctx, db, owner, againID)
 	require.NoError(t, err)
 
 	// A staff account has no team to invite anyone into.

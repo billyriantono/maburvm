@@ -72,7 +72,42 @@ var (
 	// ErrUEFINotSupported refuses a template that boots with UEFI on a node
 	// whose agent does not boot UEFI guests (models.FeatureUEFI).
 	ErrUEFINotSupported = errors.New("this template boots with UEFI, which this node's agent cannot boot yet; use a BIOS template, or a node whose agent boots UEFI guests")
+	// ErrVMRestoring refuses a change while a restore replaces the VM's disks.
+	ErrVMRestoring = errors.New("a backup or snapshot is being restored to this VM; try again when the restore has finished")
+	// ErrVMNotStopped refuses a restore onto a VM that is not shut off.
+	ErrVMNotStopped = errors.New("stop the VM before restoring it: a restore replaces its disks")
 )
+
+// vmBusy refuses a change to a VM's power or disks while it is being moved to
+// another node or a restore is replacing its disks.
+func vmBusy(ctx context.Context, db *gorm.DB, vmID string) error {
+	if VMMigrating(ctx, db, vmID) {
+		return ErrVMMigrating
+	}
+	if queue.RestoreActive(ctx, db, vmID) {
+		return ErrVMRestoring
+	}
+	return nil
+}
+
+// restoreRefusal is why a backup or snapshot cannot be restored onto the VM
+// now, nil when it can. The VM must be off: a billing suspension powers it off
+// too, while "suspended" alone is a paused VM. One in error may well be off,
+// and its node checks.
+func restoreRefusal(ctx context.Context, db *gorm.DB, vm *models.VM) error {
+	if err := vmBusy(ctx, db, vm.ID); err != nil {
+		return err
+	}
+	if diskMoveActive(ctx, db, vm.ID) {
+		return ErrDiskMoveActive
+	}
+	switch {
+	case vm.Status == models.VMStatusStopped, vm.Status == models.VMStatusError,
+		vm.Status == models.VMStatusSuspended && vm.Suspended:
+		return nil
+	}
+	return fmt.Errorf("%w (it is %s)", ErrVMNotStopped, vm.Status)
+}
 
 // isInstallableImagePath reports whether a template image path can seed a new VM.
 // The "/imported" sentinel (and an empty path) mark templates that exist only to
@@ -106,10 +141,19 @@ type VMService struct {
 
 	// sendLimits stands in for the node in tests; nil sends to the node.
 	sendLimits func(ctx context.Context, nodeID string, req *pb.SetVMLimitsRequest) (*pb.SetVMLimitsResponse, error)
+	// sendHW and features stand in for the node's SetVMHardware and feature
+	// list in tests; nil asks the node.
+	sendHW   func(ctx context.Context, nodeID string, req *pb.SetVMHardwareRequest) (*pb.SetVMHardwareResponse, error)
+	features func(ctx context.Context, nodeID string) map[string]bool
 
 	// ensureLink sets up the migration link between nodes; a cross-node
 	// clone copies the disk over it. Nil refuses cross-node clones.
 	ensureLink func(ctx context.Context, nodeIDs ...string) error
+
+	// alerts, when set, is told about VMs their node keeps restarting after
+	// crashes; crashAlerted are the VMs with such an alert raised here.
+	alerts       *AlertService
+	crashAlerted sync.Map
 
 	// gRPC connections cache
 	grpcConns map[string]*grpc.ClientConn
@@ -219,6 +263,8 @@ type CreateVMRequest struct {
 	// ManagedNetworkID, when set, attaches the VM's NIC to that managed/private
 	// network's bridge (VPC) instead of the public pool bridge.
 	ManagedNetworkID string `json:"managed_network_id,omitempty" validate:"omitempty,uuid"`
+	// MACAddress is the first card's MAC; empty derives one from the VM id.
+	MACAddress string `json:"mac_address,omitempty"`
 	// CloneSourceRef, when set, is used as the disk source instead of the template
 	// image — a "vm://<id>" (same node) or "vm://<srcNodeIP>/<id>" (cross-node)
 	// reference the agent resolves by copying/pulling that VM's disk. Set by CloneVM.
@@ -255,6 +301,12 @@ type CreateVMRequest struct {
 	// DriversISO, for a VM installed from an ISO, also puts the drivers ISO
 	// staff chose (System settings) in the second CD drive.
 	DriversISO bool `json:"-"`
+	// Hardware is the VM's virtual hardware, set by staff; nil takes the
+	// plan's. Its image adds what it needs (UEFI, Secure Boot, a TPM).
+	Hardware *models.Hardware `json:"hardware,omitempty"`
+	// CloneFirmware is the firmware of the VM a copy is made from, which the
+	// copy's disk was installed for.
+	CloneFirmware string `json:"-"`
 }
 
 // ErrNoIPv6Here refuses an order for IPv6 where the location has none.
@@ -272,12 +324,19 @@ type CreateVMResponse struct {
 
 // CreateVM creates a new VM and enqueues a creation job
 func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*CreateVMResponse, error) {
+	// A chosen MAC is checked before anything is allocated for the VM.
+	if mac, err := CheckCreateMAC(ctx, s.db, req.MACAddress); err != nil {
+		return nil, err
+	} else {
+		req.MACAddress = mac
+	}
 	if req.PlanRequired {
 		if req.PlanID == "" {
 			return nil, ErrPlanRequired
 		}
 		req.BandwidthMbps, req.DataQuotaGB, req.OverQuotaPolicy, req.ThrottleSpeedMbps = 0, 0, "", 0
 		req.Limits = nil
+		req.Hardware, req.CPUModel = nil, ""
 	}
 	// The VM's CPU and disk caps: the request's own (staff), else the plan's,
 	// else the IOPS figure the API has always accepted with the resources.
@@ -292,6 +351,7 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 	// natSize > 0 makes this a NAT VM: a private address and that many public
 	// ports on its node. defaultGroup replaces the built-in default rules.
 	natSize, defaultGroup := 0, ""
+	var orderPlan *models.Plan
 	if req.PlanID != "" {
 		plan, err := s.planRepo.GetByID(ctx, req.PlanID)
 		if err != nil {
@@ -303,6 +363,7 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		if !plan.IsActive {
 			return nil, ErrPlanInactive
 		}
+		orderPlan = plan
 		req.Resources = models.Resources{CPU: plan.CPU, RAM: plan.RAM, Disk: plan.Disk}
 		if plan.BandwidthMbps > 0 && req.BandwidthMbps == 0 {
 			req.BandwidthMbps = plan.BandwidthMbps
@@ -398,6 +459,16 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 	if fromISO && (req.CloneSourceRef != "" || req.Restore != nil) {
 		return nil, fmt.Errorf("%w: an ISO cannot be the source of a copy", ErrTemplateNotInstallable)
 	}
+	// The firmware is the image's, or for a copy the source VM's.
+	uefi := (req.CloneSourceRef == "" && template.Firmware == models.FirmwareUEFI) || req.CloneFirmware == models.FirmwareUEFI
+	hw := newVMHardware(orderPlan, template, req.Hardware, uefi, req.CPUModel)
+	if err := hw.Validate(req.Resources.CPU); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidHardware, err)
+	}
+	dedicated := 0
+	if hw.DedicatedCPU {
+		dedicated = req.Resources.CPU
+	}
 
 	// The plan's storage tier, or the pool staff named, decides where the disk
 	// goes; a named pool also names the node.
@@ -460,20 +531,20 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		if orderRegion != nil {
 			regionID = orderRegion.ID
 		}
-		if req.NodeID, err = s.selectNATNode(ctx, regionID, group, storageTier, req.Resources); err != nil {
+		if req.NodeID, err = s.selectNATNode(ctx, regionID, group, storageTier, req.Resources, dedicated); err != nil {
 			return nil, err
 		}
 	}
 
 	nodeID := req.NodeID
 	if nodeID == "" && orderRegion != nil {
-		nodeID, err = s.selectNodeInRegion(ctx, orderRegion.ID, group, storageTier, req.Resources)
+		nodeID, err = s.selectNodeInRegion(ctx, orderRegion.ID, group, storageTier, req.Resources, dedicated)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if nodeID == "" {
-		nodeID, err = s.selectNode(ctx, group, storageTier, req.Resources)
+		nodeID, err = s.selectNode(ctx, group, storageTier, req.Resources, dedicated)
 		if err != nil {
 			return nil, err
 		}
@@ -495,9 +566,11 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 	}
 
 	// A UEFI image boots only on a node whose agent boots UEFI guests.
-	uefi := req.CloneSourceRef == "" && template.Firmware == models.FirmwareUEFI
 	if uefi && !s.nodeHasFeature(ctx, nodeID, models.FeatureUEFI) {
 		return nil, ErrUEFINotSupported
+	}
+	if err := s.checkNodeHardware(ctx, nodeID, hw); err != nil {
+		return nil, err
 	}
 
 	// Generate VNC credentials
@@ -682,6 +755,19 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 			}
 			vm.Limits = limits
 		}
+		if hw.DedicatedCPU {
+			cpus, err := allocateDedicatedTx(ctx, tx, nodeID, vm.ID, req.Resources.CPU)
+			if err != nil {
+				return err
+			}
+			hw.PinnedCPUs = cpus
+		}
+		if !hw.IsZero() {
+			if err := writeVMHardware(tx, vm.ID, hw); err != nil {
+				return err
+			}
+			vm.Hardware = hw
+		}
 		if req.RequestedIP != "" && req.IPPoolID == "" {
 			return fmt.Errorf("ip_pool_id is required when requested_ip is set")
 		}
@@ -821,8 +907,11 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		"vnc_password":     vncConfig.Password,
 		"bandwidth_mbps":   req.BandwidthMbps,
 		"vlan_id":          req.VLANID,
-		"cpu_model":        req.CPUModel,
+		"cpu_model":        hw.CPUModel,
 		"user_data":        req.UserData,
+	}
+	if !hw.IsZero() {
+		params["hardware"] = hw
 	}
 	if allocatedIP != nil {
 		params["ip_address"] = allocatedIP.Address
@@ -911,6 +1000,18 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 	}
 	if req.Restore != nil {
 		req.Restore.apply(params)
+	}
+
+	// The first card's MAC is kept, so it stays the same through reinstalls
+	// and moves and no other card is ever given it.
+	bridge, _ := params["bridge"].(string)
+	if mac, merr := RecordFirstNIC(ctx, s.db, vm.ID, bridge, req.MACAddress); merr != nil {
+		if delErr := s.cleanupVMAllocation(ctx, vm.ID, true); delErr != nil {
+			s.logger.ErrorContext(ctx, "failed to roll back VM creation after its MAC was refused", "vm_id", vm.ID, "error", delErr)
+		}
+		return nil, merr
+	} else if mac != "" {
+		params["mac_address"] = mac
 	}
 
 	sealJobSecrets(params)
@@ -1031,7 +1132,7 @@ func (s *VMService) attachDefaultGroup(ctx context.Context, vmID, groupID, osTyp
 
 // selectNATNode places a NAT VM on an active node (in the region, when given)
 // that offers NAT ports and has a NAT pool to take its address from.
-func (s *VMService) selectNATNode(ctx context.Context, regionID, group, tier string, res models.Resources) (string, error) {
+func (s *VMService) selectNATNode(ctx context.Context, regionID, group, tier string, res models.Resources, dedicated int) (string, error) {
 	q := s.db.WithContext(ctx).Where("status = ? AND nat_port_end > 0", models.NodeStatusActive)
 	if regionID != "" {
 		q = q.Where("region_id = ?", regionID)
@@ -1052,7 +1153,7 @@ func (s *VMService) selectNATNode(ctx context.Context, regionID, group, tier str
 	if err != nil {
 		return "", err
 	}
-	return s.placeVMTier(ctx, withPool, res, true, tier)
+	return s.placeVMTier(ctx, withPool, res, true, tier, dedicated)
 }
 
 // portInSpec reports whether a rule's port spec ("22", "20-30", "22,80")
@@ -1146,8 +1247,8 @@ func (s *VMService) CloneVM(ctx context.Context, req *CloneVMRequest) (*CreateVM
 	if src.Status == models.VMStatusRunning {
 		return nil, fmt.Errorf("source VM must be stopped before cloning")
 	}
-	if VMMigrating(ctx, s.db, src.ID) {
-		return nil, ErrVMMigrating
+	if err := vmBusy(ctx, s.db, src.ID); err != nil {
+		return nil, err
 	}
 
 	if req.ByCustomer {
@@ -1187,6 +1288,9 @@ func (s *VMService) CloneVM(ctx context.Context, req *CloneVMRequest) (*CreateVM
 		cloneRef = fmt.Sprintf("vm://%s/%s", hostOnlyIP(srcNode.IPAddress), src.ID)
 	}
 
+	// A copy has the source's hardware, but cores of its own.
+	hw := src.Hardware
+	hw.PinnedCPUs = ""
 	create := &CreateVMRequest{
 		UserID:         src.UserID,
 		Hostname:       hostname,
@@ -1194,6 +1298,8 @@ func (s *VMService) CloneVM(ctx context.Context, req *CloneVMRequest) (*CreateVM
 		Resources:      src.Resources,
 		NodeID:         destNodeID,
 		CloneSourceRef: cloneRef,
+		Hardware:       &hw,
+		CloneFirmware:  src.Hardware.Firmware,
 	}
 	s.inheritNetworkLimits(ctx, src.ID, create)
 	return s.CreateVM(ctx, create)
@@ -1265,7 +1371,7 @@ func (s *VMService) validateResources(resources *models.Resources) error {
 // selectNodeInRegion picks a node inside one region. A region with no node
 // that can take the VM fails loudly here rather than silently spilling the
 // order into a different city.
-func (s *VMService) selectNodeInRegion(ctx context.Context, regionID, group, tier string, res models.Resources) (string, error) {
+func (s *VMService) selectNodeInRegion(ctx context.Context, regionID, group, tier string, res models.Resources, dedicated int) (string, error) {
 	var nodes []models.Node
 	if err := s.db.WithContext(ctx).
 		Where("status = ? AND region_id = ?", models.NodeStatusActive, regionID).
@@ -1276,7 +1382,7 @@ func (s *VMService) selectNodeInRegion(ctx context.Context, regionID, group, tie
 	if err != nil {
 		return "", err
 	}
-	id, err := s.placeVMTier(ctx, nodes, res, true, tier)
+	id, err := s.placeVMTier(ctx, nodes, res, true, tier, dedicated)
 	if errors.Is(err, ErrNoAvailableNodes) {
 		return "", ErrRegionNoCapacity
 	}
@@ -1291,12 +1397,13 @@ func (s *VMService) selectNodeInRegion(ctx context.Context, regionID, group, tie
 // When no node fits, strict refuses; otherwise the best node is returned
 // anyway, so admission refuses with the reason, which says more than "no nodes".
 func (s *VMService) placeVM(ctx context.Context, nodes []models.Node, res models.Resources, strict bool) (string, error) {
-	return s.placeVMTier(ctx, nodes, res, strict, "")
+	return s.placeVMTier(ctx, nodes, res, strict, "", 0)
 }
 
 // placeVMTier is placeVM for a disk that must go in a pool of the storage
-// tier ("" for the node's primary pool): a node with no room there does not fit.
-func (s *VMService) placeVMTier(ctx context.Context, nodes []models.Node, res models.Resources, strict bool, tier string) (string, error) {
+// tier ("" for the node's primary pool): a node with no room there does not
+// fit, nor one with fewer than dedicated free dedicated cores.
+func (s *VMService) placeVMTier(ctx context.Context, nodes []models.Node, res models.Resources, strict bool, tier string, dedicated int) (string, error) {
 	nodes = nodesTakingVMs(nodes)
 	if len(nodes) == 0 {
 		return "", ErrNoAvailableNodes
@@ -1313,6 +1420,8 @@ func (s *VMService) placeVMTier(ctx context.Context, nodes []models.Node, res mo
 			reason = "RAM allocation would pass the overcommit ratio"
 		case !n.vcpuFits(res.CPU):
 			reason = "vCPU allocation would pass the overcommit ratio"
+		case dedicated > 0 && freeDedicatedCores(ctx, s.db, n.Node.ID) < dedicated:
+			reason = "not enough free dedicated CPU cores"
 		case res.Disk > 0 || tier != "":
 			pool, err := NodeDiskPool(ctx, s.db, n.Node.ID, tier)
 			if err == nil {
@@ -1374,7 +1483,7 @@ func nodesReporting(nodes []models.Node) []models.Node {
 }
 
 // selectNode picks a node among all active ones for an order with no region.
-func (s *VMService) selectNode(ctx context.Context, group, tier string, res models.Resources) (string, error) {
+func (s *VMService) selectNode(ctx context.Context, group, tier string, res models.Resources, dedicated int) (string, error) {
 	nodes, err := s.nodeRepo.ListActive(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to list active nodes: %w", err)
@@ -1382,7 +1491,7 @@ func (s *VMService) selectNode(ctx context.Context, group, tier string, res mode
 	if nodes, err = inNodeGroup(nodes, group); err != nil {
 		return "", err
 	}
-	return s.placeVMTier(ctx, nodes, res, false, tier)
+	return s.placeVMTier(ctx, nodes, res, false, tier, dedicated)
 }
 
 // generateVNCCredentials generates VNC port and password. Port 0 means
@@ -1446,6 +1555,9 @@ func (s *VMService) cleanupVMAllocation(ctx context.Context, vmID string, delete
 			return err
 		}
 		if err := s.networkRepo.WithDB(tx).DeleteByVMID(ctx, vmID); err != nil {
+			return err
+		}
+		if err := deleteVMNICs(tx, vmID); err != nil {
 			return err
 		}
 		// Release any pending disk-quota reservations for this VM so a removed/soft
@@ -1785,8 +1897,10 @@ func (s *VMService) GetVMTrafficCounters(ctx context.Context, nodeID, vmID strin
 	return 0, 0, nil
 }
 
-// StopVMForEnforcement force-stops a VM on its node (used by bandwidth-quota
-// enforcement) and reflects the stopped state in the DB.
+// StopVMForEnforcement stops a VM on its node (bandwidth-quota enforcement)
+// and records it stopped once the node says it is off. The guest gets a short
+// time to shut down, then the power is cut: this runs in the metrics
+// collector, and a VM over its quota must stop.
 func (s *VMService) StopVMForEnforcement(ctx context.Context, nodeID, vmID string) error {
 	client, err := s.getAgentClient(ctx, nodeID)
 	if err != nil {
@@ -1796,11 +1910,23 @@ func (s *VMService) StopVMForEnforcement(ctx context.Context, nodeID, vmID strin
 	if err != nil {
 		return err
 	}
-	if _, err := client.ExecuteVMCommand(authCtx, &pb.VMCommandRequest{
-		VmId:    vmID,
-		Command: pb.VMCommandType_VM_COMMAND_TYPE_STOP,
-		Async:   false,
-	}); err != nil {
+	command := func(cmd pb.VMCommandType, wait time.Duration) bool {
+		cmdCtx, cancel := context.WithTimeout(authCtx, wait)
+		defer cancel()
+		var resp *pb.VMCommandResponse
+		if resp, err = client.ExecuteVMCommand(cmdCtx, &pb.VMCommandRequest{VmId: vmID, Command: cmd}); err != nil {
+			return false
+		}
+		// Off in the node's answer and, for an agent from before stops waited
+		// for the guest, in its status.
+		if resp.GetState() != pb.VMState_VM_STATE_STOPPED || queue.WaitStopped(cmdCtx, client, vmID) != nil {
+			err = fmt.Errorf("the VM did not stop: %s", resp.GetMessage())
+			return false
+		}
+		return true
+	}
+	if !command(pb.VMCommandType_VM_COMMAND_TYPE_STOP, enforcementStopWait) &&
+		!command(pb.VMCommandType_VM_COMMAND_TYPE_FORCE_STOP, 30*time.Second) {
 		return err
 	}
 	if err := s.vmRepo.UpdateStatus(ctx, vmID, models.VMStatusStopped); err != nil {
@@ -1808,6 +1934,10 @@ func (s *VMService) StopVMForEnforcement(ctx context.Context, nodeID, vmID strin
 	}
 	return nil
 }
+
+// enforcementStopWait is how long an over-quota VM's guest gets to shut down
+// before its power is cut. A var for tests.
+var enforcementStopWait = 45 * time.Second
 
 // ============================================================================
 // Additional Disks
@@ -1836,8 +1966,8 @@ func (s *VMService) ListDisks(ctx context.Context, vmID string) ([]models.VMDisk
 // capacity is never leaked or bypassed. No TTL/automatic expiry exists; a pending
 // reservation intentionally overcounts until explicitly consumed or released.
 func (s *VMService) AttachDisk(ctx context.Context, vmID string, sizeGB int) (*models.VMDisk, error) {
-	if VMMigrating(ctx, s.db, vmID) {
-		return nil, ErrVMMigrating
+	if err := vmBusy(ctx, s.db, vmID); err != nil {
+		return nil, err
 	}
 	if sizeGB <= 0 {
 		return nil, fmt.Errorf("disk size must be a positive number of GB")
@@ -1942,8 +2072,8 @@ var ErrDetachKeepsNoVolume = errors.New("a detached disk is not kept: detaching 
 // untouched — clearing them here would race a concurrent AttachDisk's in-flight
 // reservation for the same VM.
 func (s *VMService) DetachDisk(ctx context.Context, vmID, device string, deleteVolume bool) error {
-	if VMMigrating(ctx, s.db, vmID) {
-		return ErrVMMigrating
+	if err := vmBusy(ctx, s.db, vmID); err != nil {
+		return err
 	}
 	if diskMoveActive(ctx, s.db, vmID) {
 		return ErrDiskMoveActive
@@ -2096,12 +2226,19 @@ func (s *VMService) UpdateVM(ctx context.Context, req *UpdateVMRequest) (*models
 		}
 		return nil, fmt.Errorf("failed to get VM: %w", err)
 	}
+	if req.Resources != nil {
+		if err := vmBusy(ctx, s.db, vm.ID); err != nil {
+			return nil, err
+		}
+	}
 
 	// VM must be stopped to modify resources, except to grow its disk, which
-	// a running VM takes at once. A caller that stopped the VM to have the
-	// resize job boot it again (StartAfter) keeps that path: a VM still
-	// shutting down would otherwise be grown live and left off.
-	if req.Resources != nil && vm.Status != models.VMStatusStopped {
+	// a running VM takes at once. A caller that asked the VM to shut down to
+	// have the resize job boot it again (StartAfter) goes to the job even while
+	// the guest is still shutting down: the job waits for it to power off.
+	// Grown live here, it would be left off.
+	shuttingDown := req.StartAfter && vm.Status == models.VMStatusRunning
+	if req.Resources != nil && vm.Status != models.VMStatusStopped && !shuttingDown {
 		if vm.Status != models.VMStatusRunning || req.StartAfter || !diskOnlyGrowth(vm.Resources, *req.Resources) {
 			return nil, ErrVMCannotBeModified
 		}
@@ -2176,6 +2313,17 @@ func (s *VMService) UpdateVM(ctx context.Context, req *UpdateVMRequest) (*models
 				return err
 			}
 			vm.Resources = *req.Resources
+			// A dedicated VM keeps one core of its own per vCPU.
+			if vm.Hardware.DedicatedCPU && req.Resources.CPU != oldRes.CPU {
+				cpus, err := resizeDedicatedTx(ctx, tx, vm.NodeID, vm.ID, vm.Hardware.PinnedCPUs, req.Resources.CPU)
+				if err != nil {
+					return err
+				}
+				vm.Hardware.PinnedCPUs = cpus
+				if err := writeVMHardware(tx, vm.ID, vm.Hardware); err != nil {
+					return err
+				}
+			}
 			if err := s.vmRepo.WithDB(tx).Update(ctx, vm); err != nil {
 				return err
 			}
@@ -2188,7 +2336,11 @@ func (s *VMService) UpdateVM(ctx context.Context, req *UpdateVMRequest) (*models
 		}
 
 		// Enqueue the resize job only after the new resources are committed.
-		paramsJSON, _ := json.Marshal(map[string]interface{}{"resources": *req.Resources, "start_after": req.StartAfter})
+		resizeParams := map[string]interface{}{"resources": *req.Resources, "start_after": req.StartAfter}
+		if vm.Hardware.PinnedCPUs != "" {
+			resizeParams["hardware"] = vm.Hardware
+		}
+		paramsJSON, _ := json.Marshal(resizeParams)
 		job := queue.VMOperationJob{VMID: vm.ID, Operation: queue.VMOpResize, NodeID: vm.NodeID, Params: paramsJSON}
 		if _, err := s.riverClient.Insert(ctx, job, nil); err != nil {
 			return nil, fmt.Errorf("failed to enqueue VM resize job: %w", err)
@@ -2225,8 +2377,8 @@ func (s *VMService) DeleteVM(ctx context.Context, vmID string) error {
 // live in a registered LVM pool; without it they are kept and listed under
 // their pool. Only an operator may ask for it.
 func (s *VMService) DeleteVMWithVolumes(ctx context.Context, vmID string, removeImported bool) error {
-	if VMMigrating(ctx, s.db, vmID) {
-		return ErrVMMigrating
+	if err := vmBusy(ctx, s.db, vmID); err != nil {
+		return err
 	}
 	if diskMoveActive(ctx, s.db, vmID) {
 		return ErrDiskMoveActive
@@ -2328,8 +2480,8 @@ type LifecycleResponse struct {
 
 // ExecuteLifecycleCommand executes a VM lifecycle command
 func (s *VMService) ExecuteLifecycleCommand(ctx context.Context, req *LifecycleRequest) (*LifecycleResponse, error) {
-	if VMMigrating(ctx, s.db, req.VMID) {
-		return nil, ErrVMMigrating
+	if err := vmBusy(ctx, s.db, req.VMID); err != nil {
+		return nil, err
 	}
 	// A disk copied while the VM is off is whole only while it stays off. (A
 	// live copy ends if the VM stops, and the disk stays where it was.)
@@ -2533,6 +2685,11 @@ func (s *VMService) executeSyncLifecycle(
 	if command == pb.VMCommandType_VM_COMMAND_TYPE_CREATE {
 		timeout = 5 * time.Minute // Rebuild may take longer
 	}
+	if command == pb.VMCommandType_VM_COMMAND_TYPE_STOP {
+		// The node answers once the guest has powered off, waiting up to two
+		// minutes for it (less when this deadline is nearer).
+		timeout = gracefulStopTimeout
+	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -2553,6 +2710,13 @@ func (s *VMService) executeSyncLifecycle(
 			Success: false,
 			Message: err.Error(),
 		}, ErrVMLifecycleFailed
+	}
+
+	// An agent from before stops waited for the guest answers STOPPED at once:
+	// the stop is done when the node's own status says the VM is off.
+	if command == pb.VMCommandType_VM_COMMAND_TYPE_STOP && resp.Success && queue.WaitStopped(ctx, client, vm.ID) != nil {
+		resp.Success, resp.State = false, pb.VMState_VM_STATE_RUNNING
+		resp.Message = "the guest was asked to shut down and is not off yet: it may still be shutting down, or it ignores the request (force stop powers it off)"
 	}
 
 	// Sync the DB status from the agent's reported State, which is authoritative
@@ -2592,6 +2756,10 @@ func (s *VMService) executeSyncLifecycle(
 		NewState: resp.State.String(),
 	}, nil
 }
+
+// gracefulStopTimeout is how long a caller waits for a graceful stop: the
+// node's own wait for the guest to power off, and time to answer.
+const gracefulStopTimeout = 2*time.Minute + 15*time.Second
 
 // stateSatisfiesCommand reports whether the domain is already in the state the
 // command was asking for, which makes a refusal harmless rather than a failure.
@@ -2721,15 +2889,26 @@ type VMResetPasswordResponse struct {
 	VMID   string `json:"vm_id"`
 	JobID  int64  `json:"job_id"`
 	Status string `json:"status"`
+	// Method is how the password reaches the guest: PasswordViaGuestAgent,
+	// PasswordOnDisk or PasswordAtStart. Message says it in words.
+	Method  string `json:"method"`
+	Message string `json:"message"`
 }
 
-// ResetPassword resets the guest root password. It is applied via the guest
-// agent on the running VM. The stock cloud images do NOT ship qemu-guest-agent,
-// so the agent's cloud-init installs it on first boot; VMs provisioned before
-// that was added have no agent and will not respond to this.
+// How a reset password reaches the guest.
+const (
+	PasswordViaGuestAgent = "guest_agent"
+	PasswordOnDisk        = "offline"
+	PasswordAtStart       = "next_start"
+)
+
+// ResetPassword resets the guest root (or Administrator) password. A running
+// VM takes it through its guest agent. A stopped Linux VM has it written onto
+// its disk by its node; a stopped router takes it when it next starts. Windows
+// takes one only while it runs.
 func (s *VMService) ResetPassword(ctx context.Context, req *VMResetPasswordRequest) (*VMResetPasswordResponse, error) {
-	if VMMigrating(ctx, s.db, req.VMID) {
-		return nil, ErrVMMigrating
+	if err := vmBusy(ctx, s.db, req.VMID); err != nil {
+		return nil, err
 	}
 	vm, err := s.vmRepo.GetByID(ctx, req.VMID)
 	if err != nil {
@@ -2738,8 +2917,28 @@ func (s *VMService) ResetPassword(ctx context.Context, req *VMResetPasswordReque
 		}
 		return nil, fmt.Errorf("failed to get VM: %w", err)
 	}
+	method, message := PasswordViaGuestAgent, "The new password is set through the guest agent; it works as soon as the job finishes."
 	if vm.Status != models.VMStatusRunning {
-		return nil, fmt.Errorf("the VM must be running to reset its password")
+		if vm.Status != models.VMStatusStopped || vm.Suspended {
+			return nil, fmt.Errorf("the VM is %s; a password can be reset while it runs, or while it is stopped", vm.Status)
+		}
+		kind := models.OSTypeLinux
+		if t, terr := s.templateRepo.GetByID(ctx, vm.OSTemplateID); terr == nil {
+			kind = osKind(t.OSType)
+		}
+		switch {
+		case kind == models.OSTypeWindows:
+			return nil, fmt.Errorf("Windows takes a new password only while it runs with its guest agent: start the VM, wait until it has finished starting, then reset the password")
+		case kind == models.OSTypeRouterOS:
+			method, message = PasswordAtStart, "The router takes the new password when it next starts."
+		case !s.nodeHasFeature(ctx, vm.NodeID, models.FeatureOfflinePassword):
+			return nil, fmt.Errorf("the VM must be running to reset its password: its node needs an agent update to set one while it is stopped")
+		default:
+			method, message = PasswordOnDisk, "The VM is stopped, so the new password is written onto its disk; it works from its next start. The VM stays stopped."
+		}
+		if vm.RescueMode && vm.RescueKind == models.RescueKindImage {
+			return nil, fmt.Errorf("the VM is in rescue mode: take it out of rescue mode first, or set the password from the rescue system")
+		}
 	}
 	if s.riverClient == nil {
 		return nil, fmt.Errorf("job queue unavailable")
@@ -2760,7 +2959,7 @@ func (s *VMService) ResetPassword(ctx context.Context, req *VMResetPasswordReque
 	if err := ForgetInitialPassword(ctx, s.db, vm.ID); err != nil {
 		s.logger.WarnContext(ctx, "could not erase the stored initial root password", "vm_id", vm.ID, "error", err)
 	}
-	return &VMResetPasswordResponse{VMID: vm.ID, JobID: result.Job.ID, Status: "pending"}, nil
+	return &VMResetPasswordResponse{VMID: vm.ID, JobID: result.Job.ID, Status: "pending", Method: method, Message: message}, nil
 }
 
 // AttachISO enqueues attaching a bootable install/rescue ISO (by image URL or
@@ -2917,7 +3116,82 @@ func (s *VMService) DetachISOSlot(ctx context.Context, vmID string, slot int) (i
 // RescueAvailable reports whether rescue mode has an image to boot.
 func (s *VMService) RescueAvailable(ctx context.Context) bool {
 	iso, _ := RescueISO(ctx, s.db)
-	return iso != ""
+	image, _ := RescueImage(ctx, s.db)
+	return iso != "" || image != ""
+}
+
+// RescueResult is a built-in rescue on its way: how to reach the rescue
+// system once the VM is started. The password is shown once.
+type RescueResult struct {
+	JobID        int64  `json:"job_id"`
+	Status       string `json:"status"`
+	Kind         string `json:"kind"`
+	Address      string `json:"address,omitempty"`
+	User         string `json:"user,omitempty"`
+	RootPassword string `json:"root_password,omitempty"`
+}
+
+// BuiltinRescueUsable reports whether a VM's rescue would use the built-in
+// rescue system: one is set, and the VM's node can run it.
+func (s *VMService) BuiltinRescueUsable(ctx context.Context, vmID string) bool {
+	image, _ := RescueImage(ctx, s.db)
+	if image == "" {
+		return false
+	}
+	vm, err := s.vmRepo.GetByID(ctx, vmID)
+	return err == nil && s.nodeHasFeature(ctx, vm.NodeID, models.FeatureBuiltinRescue)
+}
+
+// RescueVMBuiltin sets a stopped VM to boot the built-in rescue system, with
+// the VM's own address, a one-time root password and the given SSH keys, and
+// its own disks attached for repair. Starting it then boots the rescue system.
+func (s *VMService) RescueVMBuiltin(ctx context.Context, vmID string, sshKeys []string) (*RescueResult, error) {
+	if err := vmBusy(ctx, s.db, vmID); err != nil {
+		return nil, err
+	}
+	image, sum := RescueImage(ctx, s.db)
+	if image == "" {
+		return nil, ErrNoRescueImage
+	}
+	vm, err := s.vmRepo.GetByID(ctx, vmID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrVMNotFound
+		}
+		return nil, fmt.Errorf("failed to get VM: %w", err)
+	}
+	switch {
+	case vm.Status != models.VMStatusStopped:
+		return nil, fmt.Errorf("stop the VM before putting it into rescue mode")
+	case vm.RescueMode && vm.RescueKind != models.RescueKindImage:
+		return nil, fmt.Errorf("the VM is in rescue mode from an ISO; take it out first")
+	case vm.AttachedISO != nil && *vm.AttachedISO != "":
+		return nil, fmt.Errorf("an ISO is in the VM's drive; eject it first")
+	case !s.nodeHasFeature(ctx, vm.NodeID, models.FeatureBuiltinRescue):
+		return nil, fmt.Errorf("the VM's node needs an agent update for the built-in rescue system")
+	}
+	if s.riverClient == nil {
+		return nil, fmt.Errorf("job queue unavailable")
+	}
+	password := generateRootPassword()
+	ip, gateway, bridge, prefix, _ := s.primaryNetworkConfig(ctx, vm.ID)
+	params := map[string]interface{}{
+		"image_path":     models.GuestImageRef(models.OSTypeLinux, image),
+		"root_password":  password,
+		"ssh_public_key": strings.Join(sshKeys, "\n"),
+		"ip_address":     ip, "gateway": gateway, "netmask": prefix, "bridge": bridge,
+	}
+	if sum != "" {
+		params["metadata"] = map[string]string{models.ImageSHA256Key: sum}
+	}
+	sealJobSecrets(params)
+	paramsJSON, _ := json.Marshal(params)
+	res, err := s.riverClient.Insert(ctx, queue.VMOperationJob{VMID: vm.ID, Operation: queue.VMOpRescue, NodeID: vm.NodeID, Params: paramsJSON}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to enqueue the rescue: %w", err)
+	}
+	s.emailOwner(ctx, vmID, EmailVMRescueOn)
+	return &RescueResult{JobID: res.Job.ID, Status: "pending", Kind: models.RescueKindImage, Address: hostOnlyIP(ip), User: "root", RootPassword: password}, nil
 }
 
 // RescueVM attaches a rescue ISO (which boots first) and marks the VM as in
@@ -2925,8 +3199,8 @@ func (s *VMService) RescueAvailable(ctx context.Context) bool {
 // An empty isoURL means the operator's rescue image (System settings, else
 // RESCUE_ISO_URL), whoever asks for the rescue.
 func (s *VMService) RescueVM(ctx context.Context, vmID, isoURL string, operatorSupplied bool) (int64, error) {
-	if VMMigrating(ctx, s.db, vmID) {
-		return 0, ErrVMMigrating
+	if err := vmBusy(ctx, s.db, vmID); err != nil {
+		return 0, err
 	}
 	if isoURL == "" {
 		isoURL, _ = RescueISO(ctx, s.db)
@@ -2943,13 +3217,31 @@ func (s *VMService) RescueVM(ctx context.Context, vmID, isoURL string, operatorS
 	if err := s.db.WithContext(ctx).Model(&models.VM{}).Where("id = ?", vmID).Update("rescue_mode", true).Error; err != nil {
 		return 0, fmt.Errorf("failed to mark rescue mode: %w", err)
 	}
+	_ = s.db.WithContext(ctx).Table("vms").Where("id = ?", vmID).Update("rescue_kind", models.RescueKindISO).Error
 	s.emailOwner(ctx, vmID, EmailVMRescueOn)
 	return jobID, nil
 }
 
-// UnrescueVM detaches the rescue ISO and clears rescue mode. Start the VM to
-// boot from disk again.
+// UnrescueVM detaches the rescue ISO, or the built-in rescue system's disk,
+// and clears rescue mode. Start the VM to boot from disk again.
 func (s *VMService) UnrescueVM(ctx context.Context, vmID string) (int64, error) {
+	if vm, err := s.vmRepo.GetByID(ctx, vmID); err == nil && vm.RescueKind == models.RescueKindImage {
+		if err := vmBusy(ctx, s.db, vmID); err != nil {
+			return 0, err
+		}
+		if vm.Status != models.VMStatusStopped {
+			return 0, fmt.Errorf("stop the VM before taking it out of rescue mode")
+		}
+		if s.riverClient == nil {
+			return 0, fmt.Errorf("job queue unavailable")
+		}
+		res, err := s.riverClient.Insert(ctx, queue.VMOperationJob{VMID: vm.ID, Operation: queue.VMOpUnrescue, NodeID: vm.NodeID}, nil)
+		if err != nil {
+			return 0, fmt.Errorf("failed to enqueue leaving rescue mode: %w", err)
+		}
+		s.emailOwner(ctx, vmID, EmailVMRescueOff)
+		return res.Job.ID, nil
+	}
 	jobID, err := s.DetachISO(ctx, vmID)
 	if err != nil {
 		return 0, err
@@ -2957,6 +3249,7 @@ func (s *VMService) UnrescueVM(ctx context.Context, vmID string) (int64, error) 
 	if err := s.db.WithContext(ctx).Model(&models.VM{}).Where("id = ?", vmID).Update("rescue_mode", false).Error; err != nil {
 		return 0, fmt.Errorf("failed to clear rescue mode: %w", err)
 	}
+	_ = s.db.WithContext(ctx).Table("vms").Where("id = ?", vmID).Update("rescue_kind", "").Error
 	s.emailOwner(ctx, vmID, EmailVMRescueOff)
 	return jobID, nil
 }
@@ -2985,8 +3278,8 @@ type RebuildVMResponse struct {
 
 // RebuildVM rebuilds a VM by reinstalling the OS
 func (s *VMService) RebuildVM(ctx context.Context, req *RebuildVMRequest) (*RebuildVMResponse, error) {
-	if VMMigrating(ctx, s.db, req.VMID) {
-		return nil, ErrVMMigrating
+	if err := vmBusy(ctx, s.db, req.VMID); err != nil {
+		return nil, err
 	}
 	if diskMoveActive(ctx, s.db, req.VMID) {
 		return nil, ErrDiskMoveActive
@@ -3005,6 +3298,9 @@ func (s *VMService) RebuildVM(ctx context.Context, req *RebuildVMRequest) (*Rebu
 	// VM must be stopped for rebuild
 	if vm.Status == models.VMStatusRunning {
 		return nil, fmt.Errorf("VM must be stopped before rebuilding")
+	}
+	if vm.RescueMode && vm.RescueKind == models.RescueKindImage {
+		return nil, fmt.Errorf("%w: the VM is in rescue mode; take it out of rescue mode first", ErrRebuildNotPossible)
 	}
 
 	// Validate template if specified
@@ -3046,6 +3342,15 @@ func (s *VMService) RebuildVM(ctx context.Context, req *RebuildVMRequest) (*Rebu
 			kindChanged = osKind(template.OSType)
 		}
 		templateID = req.TemplateID
+	}
+
+	// The VM keeps the firmware it was created with, and an image boots on one
+	// firmware only. Checked before anything about the VM changes.
+	if t, terr := s.templateRepo.GetByID(ctx, templateID); terr == nil {
+		if vmUEFI, imgUEFI := vm.Hardware.Firmware == models.FirmwareUEFI, t.Firmware == models.FirmwareUEFI; vmUEFI != imgUEFI {
+			return nil, fmt.Errorf("%w: the VM boots with %s and %s is an image for %s; choose an image for %s, or create a new VM for this one",
+				ErrRebuildNotPossible, firmwareName(vmUEFI), t.Name, firmwareName(imgUEFI), firmwareName(vmUEFI))
+		}
 	}
 
 	if kindChanged != "" {
@@ -3166,6 +3471,13 @@ func (s *VMService) RebuildVM(ctx context.Context, req *RebuildVMRequest) (*Rebu
 		Message:      "VM rebuild initiated",
 		RootPassword: generatedPassword,
 	}, nil
+}
+
+func firmwareName(uefi bool) string {
+	if uefi {
+		return "UEFI"
+	}
+	return "BIOS"
 }
 
 // osKind is a template's kind with the unset value read as Linux.
@@ -3654,6 +3966,7 @@ func (s *VMService) ReconcileNodeVMStatuses(ctx context.Context, nodeID string) 
 			continue
 		}
 		s.syncVMStatus(ctx, &vms[i], resp.GetState())
+		s.noteCrashes(ctx, &vms[i], resp)
 		// Adopt out-of-band resizes (virsh setvcpus, qemu-img resize...) so the
 		// panel shows what the domain really has. A panel resize briefly reads
 		// back the old spec until its job applies, then converges.

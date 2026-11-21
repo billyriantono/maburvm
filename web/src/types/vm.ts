@@ -27,6 +27,39 @@ export interface VMLimits {
   write_mbps: number;
 }
 
+/** Virtual hardware beyond a VM's size (models.Hardware). On a plan it is
+ *  what new VMs get; firmware and pinned_cpus belong to a VM. */
+export interface VMHardware {
+  /** "" is the node's own CPU (host-passthrough), "host-model", or a model name. */
+  cpu_model?: string;
+  /** Sockets and threads per core; the cores follow from the vCPU count. */
+  sockets?: number;
+  threads?: number;
+  /** One host core of its own per vCPU, from the node's pool. */
+  dedicated_cpu?: boolean;
+  /** Memory on the NUMA nodes of the dedicated cores. */
+  numa?: boolean;
+  hugepages?: boolean;
+  /** UEFI Secure Boot and a virtual TPM: set when the VM is created. */
+  secure_boot?: boolean;
+  tpm?: boolean;
+  watchdog?: boolean;
+  restart_on_crash?: boolean;
+  /** VM only: "uefi", or absent for BIOS. */
+  firmware?: 'bios' | 'uefi' | '';
+  /** VM only, staff only: the host cores a dedicated VM holds. */
+  pinned_cpus?: string;
+}
+
+/** A VM's hardware after a change, and where its node is with it. */
+export interface VMHardwareResult {
+  hardware: VMHardware;
+  applied: boolean;
+  restart_required: boolean;
+  note: string | null;
+  warnings: string[];
+}
+
 /** A VM's limits after a change, and whether its node has them. */
 export interface VMLimitsResult {
   limits: VMLimits;
@@ -75,6 +108,8 @@ export interface VM {
   source_migration?: string;
   vnc_port?: number;
   rescue_mode?: boolean;
+  /** How a VM in rescue mode boots: a rescue ISO, or the built-in rescue system. */
+  rescue_kind?: '' | 'iso' | 'image';
   /** False while the operator has not chosen a rescue image. */
   rescue_available?: boolean;
   /** ISO in the VM's drive as last confirmed by the node: null/absent = not
@@ -119,6 +154,9 @@ export interface VM {
   limits?: VMLimits;
   throttle?: VMLimits | null;
   limits_note?: string | null;
+  /** Virtual hardware (detail response only); the note is for operators. */
+  hardware?: VMHardware;
+  hardware_note?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -162,6 +200,7 @@ export interface CreateVMRequest {
   requested_ip?: string;   // specific IP within the pool (optional)
   bandwidth_mbps?: number; // network rate cap
   vlan_id?: number;        // 802.1Q VLAN tag
+  mac_address?: string;    // first card's MAC (staff only); empty derives one
   cpu_model?: string;      // guest CPU model; empty → host-passthrough (moves live only between identical CPUs)
   user_data?: string;      // first-boot script/recipe (cloud-init), run once per instance
   managed_network_id?: string; // attach to a private VPC / managed network instead of a pool

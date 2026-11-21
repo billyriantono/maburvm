@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -423,16 +424,30 @@ func (s *VirtualizorImportService) startRead(id string, master bool) {
 	s.reads[id] = &importRead{running: true, startedAt: time.Now().UTC()}
 	s.readMu.Unlock()
 	go func() {
-		err := s.read(id, master)
-		s.readMu.Lock()
-		defer s.readMu.Unlock()
-		r := s.reads[id]
-		r.running, r.finishedAt = false, time.Now().UTC()
-		if err != nil {
-			r.err = err.Error()
-			s.logger.Warn("import: reading the source failed", "source_id", id, "error", err)
-		}
+		var err error
+		// A panic here would take the whole panel down and leave the wizard
+		// polling a read marked running forever.
+		defer func() {
+			if p := recover(); p != nil {
+				err = fmt.Errorf("reading the source stopped on an internal error: %v", p)
+				s.logger.Error("import: read panicked", "source_id", id, "panic", p, "stack", string(debug.Stack()))
+			}
+			s.finishRead(id, err)
+		}()
+		err = s.read(id, master)
 	}()
+}
+
+// finishRead records the end of a background read.
+func (s *VirtualizorImportService) finishRead(id string, err error) {
+	s.readMu.Lock()
+	defer s.readMu.Unlock()
+	r := s.reads[id]
+	r.running, r.finishedAt = false, time.Now().UTC()
+	if err != nil {
+		r.err = err.Error()
+		s.logger.Warn("import: reading the source failed", "source_id", id, "error", err)
+	}
 }
 
 // read fetches the master (when master is set or nothing was read yet) and
@@ -483,6 +498,11 @@ func (s *VirtualizorImportService) scanNodes(ctx context.Context, nodes map[stri
 		wg.Add(1)
 		go func(i int, id string) {
 			defer wg.Done()
+			defer func() {
+				if p := recover(); p != nil {
+					out[i] = NodeScan{NodeID: id, Error: fmt.Sprintf("reading this node stopped on an internal error: %v", p)}
+				}
+			}()
 			sctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 			defer cancel()
 			out[i] = NodeScan{NodeID: id}
@@ -1115,7 +1135,17 @@ func (s *VirtualizorImportService) SendInvites(ctx context.Context, id string, a
 	repo := repository.NewEnrollmentRepository(s.db)
 	tmpl := cfg.Template(EmailAccountImported)
 	logo := EmailLogoURL(cfg.Brand, base)
+	// Two master accounts the import folded into one panel account (the same
+	// address in another case) get one email, not one each.
+	emailed := map[string]bool{}
 	for _, row := range rows {
+		if emailed[row.UserID] {
+			if err := s.db.WithContext(ctx).Model(&importLink{}).Where("source_id = ? AND kind = ? AND source_key = ?", src.ID, importKindUser, row.SourceKey).
+				Update("invited_at", time.Now().UTC()).Error; err != nil {
+				return sent, err
+			}
+			continue
+		}
 		buf := make([]byte, 32)
 		if _, err := rand.Read(buf); err != nil {
 			return sent, err
@@ -1137,6 +1167,7 @@ func (s *VirtualizorImportService) SendInvites(ctx context.Context, id string, a
 			Update("invited_at", time.Now().UTC()).Error; err != nil {
 			return sent, err
 		}
+		emailed[row.UserID] = true
 		sent++
 	}
 	entry := &models.AuditLog{Action: "import.invites_sent", ResourceType: "IMPORT", ResourceID: &src.ID, IPAddress: actor.IP,

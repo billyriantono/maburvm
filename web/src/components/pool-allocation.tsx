@@ -83,7 +83,13 @@ export function NodeStoragePools({ nodeId }: { nodeId: string }) {
               <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 mb-1">
                 <p className="text-sm font-medium">
                   {pool.name} <span className="font-mono font-normal text-muted-foreground">{pool.path}</span>
-                  {pool.is_primary && <span className="ml-2 text-xs font-normal text-muted-foreground">New VMs go here</span>}
+                  {pool.is_primary && (mine.filter((p) => p.is_primary).length > 1 ? (
+                    <span className="ml-2 text-xs font-medium text-amber-600">Marked for new VMs, as is another pool: choose one on the Storage page</span>
+                  ) : pool.status === "online" ? (
+                    <span className="ml-2 text-xs font-normal text-muted-foreground">New VMs go here</span>
+                  ) : (
+                    <span className="ml-2 text-xs font-medium text-amber-600">Marked for new VMs, but not online: they go elsewhere</span>
+                  ))}
                 </p>
                 <p className="text-xs">
                   {pool.status === "online" ? (

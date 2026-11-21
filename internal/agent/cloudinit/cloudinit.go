@@ -8,10 +8,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
+
+	"github.com/maburvm/panel/internal/shared/models"
 )
 
 // Config describes the guest configuration to inject via cloud-init.
@@ -36,6 +40,30 @@ type Config struct {
 	// but understands a smaller vocabulary: the password is set for the
 	// Administrator account, and nothing Linux-only is written.
 	Windows bool
+}
+
+// resolvers is the guest's resolver list: the pool's (the defaults when it
+// names none), then the IPv6 ones when the guest has IPv6. Only parsed
+// addresses are kept, so nothing else reaches the YAML.
+func (c Config) resolvers() []string {
+	ns := c.Nameservers
+	if len(ns) == 0 {
+		ns = models.DefaultIPv4DNS
+	}
+	if c.IPv6Address != "" {
+		v6 := c.IPv6DNS
+		if len(v6) == 0 {
+			v6 = models.DefaultIPv6DNS
+		}
+		ns = append(append([]string{}, ns...), v6...)
+	}
+	var out []string
+	for _, n := range ns {
+		if ip := net.ParseIP(strings.TrimSpace(n)); ip != nil && !slices.Contains(out, ip.String()) {
+			out = append(out, ip.String())
+		}
+	}
+	return out
 }
 
 // authorizedKeys returns the de-duplicated set of public keys from both
@@ -152,14 +180,9 @@ func windowsNetworkConfig(cfg Config) string {
 	}
 	b.WriteString("    dhcp4: false\n    addresses:\n")
 	b.WriteString(fmt.Sprintf("      - %s/%d\n", cfg.IPAddress, cfg.Prefix))
-	ns := []string{"1.1.1.1", "8.8.8.8"}
+	ns := cfg.resolvers()
 	if cfg.IPv6Address != "" {
 		b.WriteString(fmt.Sprintf("      - %s\n", cfg.IPv6Address))
-		v6ns := cfg.IPv6DNS
-		if len(v6ns) == 0 {
-			v6ns = []string{"2606:4700:4700::1111", "2001:4860:4860::8888"}
-		}
-		ns = append(ns, v6ns...)
 	}
 	if cfg.Gateway != "" {
 		b.WriteString(fmt.Sprintf("    gateway4: %s\n", cfg.Gateway))
@@ -297,17 +320,7 @@ func networkConfig(cfg Config) string {
 			b.WriteString(fmt.Sprintf("        via: %s\n", gw))
 			b.WriteString("        on-link: true\n")
 		}
-		ns := cfg.Nameservers
-		if len(ns) == 0 {
-			ns = []string{"1.1.1.1", "8.8.8.8"}
-		}
-		if cfg.IPv6Address != "" {
-			v6ns := cfg.IPv6DNS
-			if len(v6ns) == 0 {
-				v6ns = []string{"2606:4700:4700::1111", "2001:4860:4860::8888"}
-			}
-			ns = append(append([]string{}, ns...), v6ns...)
-		}
+		ns := cfg.resolvers()
 		b.WriteString("    nameservers:\n")
 		b.WriteString(fmt.Sprintf("      addresses: [%s]\n", strings.Join(ns, ", ")))
 	} else {

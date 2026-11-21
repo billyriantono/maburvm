@@ -1011,19 +1011,41 @@ type GuestConnectionReport struct {
 	InterfaceName string
 	SYNPackets    int64
 	Quarantined   bool
+	// SYNInPackets, PacketsOut and PacketsIn are cumulative too; an agent
+	// older than them reports zeros.
+	SYNInPackets int64
+	PacketsOut   int64
+	PacketsIn    int64
+}
+
+// NullRoute is an address a node drops all traffic to until Until.
+type NullRoute struct {
+	IP     string
+	Until  time.Time
+	Reason string
+}
+
+func nullRoutesFromPB(in []*pb.NullRoute) []NullRoute {
+	out := make([]NullRoute, 0, len(in))
+	for _, r := range in {
+		out = append(out, NullRoute{IP: r.GetIp(), Until: time.Unix(r.GetUntilUnix(), 0), Reason: r.GetReason()})
+	}
+	return out
 }
 
 // GetGuestConnections asks a node how fast each of its guests is opening new
-// outbound connections. The node answers for every libvirt domain it has,
-// including guests the panel does not manage — which is the whole point, since
-// those are invisible to every other view in the panel.
-func (c *AgentClient) GetGuestConnections(ctx context.Context, nodeID string) ([]GuestConnectionReport, error) {
+// connections and moving packets, and which null-routes it has in force. The
+// node answers for every libvirt domain it has, including guests the panel does
+// not manage — which is the whole point, since those are invisible to every
+// other view in the panel.
+func (c *AgentClient) GetGuestConnections(ctx context.Context, nodeID string) ([]GuestConnectionReport, []NullRoute, error) {
 	node, err := c.getNodeInfo(nodeID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var out []GuestConnectionReport
+	var routes []NullRoute
 	err = c.executeWithRetry(ctx, node, func(ctx context.Context, client pb.NodeAgentClient) error {
 		resp, err := client.GetGuestConnections(ctx, &pb.GetGuestConnectionsRequest{})
 		if err != nil {
@@ -1040,14 +1062,44 @@ func (c *AgentClient) GetGuestConnections(ctx context.Context, nodeID string) ([
 				InterfaceName: g.GetInterfaceName(),
 				SYNPackets:    g.GetSynPackets(),
 				Quarantined:   g.GetQuarantined(),
+				SYNInPackets:  g.GetSynInPackets(),
+				PacketsOut:    g.GetPacketsOut(),
+				PacketsIn:     g.GetPacketsIn(),
 			})
 		}
+		routes = nullRoutesFromPB(resp.GetNullRoutes())
 		return nil
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return out, routes, nil
+}
+
+// SetNullRoute drops all traffic to ip on a node for the given minutes, or
+// lifts it. Not retried: an older agent answers Unimplemented, which is an
+// answer, and the caller tells the operator to update it.
+func (c *AgentClient) SetNullRoute(ctx context.Context, nodeID, ip string, minutes int, reason string, on bool) ([]NullRoute, error) {
+	node, err := c.getNodeInfo(nodeID)
+	if err != nil {
+		return nil, err
+	}
+	pc, err := c.getConnection(ctx, node)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	resp, err := pc.client.SetNullRoute(c.createAuthContext(ctx, pc.token), &pb.SetNullRouteRequest{
+		Ip: ip, Minutes: int32(minutes), On: on, Reason: reason,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	if !resp.GetSuccess() {
+		return nil, fmt.Errorf("the node refused the null-route: %s", resp.GetError().GetMessage())
+	}
+	return nullRoutesFromPB(resp.GetNullRoutes()), nil
 }
 
 // SetQuarantine cuts a guest off the network, or puts it back, without stopping

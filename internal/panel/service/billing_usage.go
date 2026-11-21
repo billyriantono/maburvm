@@ -68,11 +68,7 @@ func VMUsage(ctx context.Context, db *gorm.DB, vm *models.VM) VMUsageReport {
 		Select("COUNT(*) AS n, COALESCE(SUM(size), 0) AS size").Scan(&backups).Error
 	r.BackupCount, r.BackupSizeMB = backups.N, backups.Size/mb
 
-	var addresses int64
-	_ = q().Model(&models.Network{}).Where("vm_id = ?", vm.ID).Count(&addresses).Error
-	if addresses > 1 {
-		r.ExtraIPs = addresses - 1
-	}
+	_, r.ExtraIPs, _ = vmIPv4Counts(ctx, db, vm.ID)
 	_ = q().Model(&models.IPAddress{}).Where("vm_id = ? AND delivery_mode = ?", vm.ID, models.IPDeliveryFloating).Count(&r.FloatingIPs).Error
 
 	hour := "strftime('%Y-%m-%d %H', recorded_at)"

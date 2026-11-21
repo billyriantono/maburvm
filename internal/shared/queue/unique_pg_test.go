@@ -7,7 +7,6 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -35,7 +34,7 @@ func TestVMOperationUniquenessOnPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, strings.Replace(base, "/postgres?", "/"+name+"?", 1))
+	pool, err := pgxpool.New(ctx, dsnForDatabase(t, base, name))
 	if err != nil {
 		t.Fatal(err)
 	}

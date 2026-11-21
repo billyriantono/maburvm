@@ -67,12 +67,20 @@ catalog is `GET /api/v1/staff-roles` and is described in the
 [administrator guide](admin-guide.md#82-staff-roles).
 
 A customer's "own resources" include the VMs of accounts they are a team
-member of, as their member role allows: any role reads them, and only Admin
-and Technical change them, open their console or reveal their passwords (403
-`member_read_only` for the others). `GET /api/v1/vms` lists them beside the
+member of, as their member role allows: Admin, Technical and Read-only read
+them, and only Admin and Technical change them, open their console, download
+their backups or reveal their passwords (403 `member_read_only` for the
+others). The Billing role sees no VMs. `GET /api/v1/vms` lists them beside the
 caller's own; `account_id` narrows the list to one account, and `account_id`
 on `POST /api/v1/vms` orders into one. Teams, projects and invitations are
 under `/api/v1/account/` (group "Teams and customer area" in the reference).
+
+The account's own resources (images, floating IPs, VPCs, firewall groups, SSH
+keys, recipes) take `?account_id=` to act in a team account: reads need Admin,
+Technical or Read-only, changes Admin or Technical, and both a membership that
+covers every VM of the account. `GET /api/v1/quota?account_id=` and
+`GET /api/v1/floating-ips/billing?account_id=` need Admin or Billing. Without
+`account_id` they act on the caller's own account, as before.
 
 ## Answers and errors
 
@@ -197,8 +205,9 @@ staff lock (409, with the reason in `message`).
 uses for a usage sync: `bandwidth_used_mb` and `bandwidth_limit_mb` this
 transfer period, `disk_limit_mb` (its disk) and `disk_allocated_mb` (with its
 data disks; disks are thin, so what the guest wrote is not measured),
-`snapshot_count`, `backup_count`, `backup_size_mb`, `extra_ips` (addresses
-beyond the first), `floating_ips`, and `uptime_hours`: the clock hours since
+`snapshot_count`, `backup_count`, `backup_size_mb`, `extra_ips` (public
+addresses beyond the first; a card's private-network address is not one),
+`floating_ips`, and `uptime_hours`: the clock hours since
 `uptime_since` (the start of the period, at most seven days back) in which the
 VM was seen running. `vm.metrics` returns up to 48 averaged readings of the
 last `hours` (default 24) for graphs; `vm.rebuild` reinstalls a stopped VM

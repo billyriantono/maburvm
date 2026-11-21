@@ -24,7 +24,8 @@ import (
 const testAESKey = "0123456789abcdef0123456789abcdef"
 
 const backupDestinationsTable = `CREATE TABLE backup_destinations (id TEXT PRIMARY KEY, name TEXT, kind TEXT, config TEXT,
-	secret_enc TEXT DEFAULT '', is_default BOOLEAN DEFAULT 0, created_at DATETIME, updated_at DATETIME)`
+	secret_enc TEXT DEFAULT '', is_default BOOLEAN DEFAULT 0, created_at DATETIME, updated_at DATETIME,
+	encrypt BOOLEAN NOT NULL DEFAULT 0, encryption_keys TEXT NOT NULL DEFAULT '[]', encryption_key_id TEXT NOT NULL DEFAULT '')`
 
 func newDestinationTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
@@ -34,7 +35,7 @@ func newDestinationTestDB(t *testing.T) *gorm.DB {
 	for _, stmt := range []string{
 		`CREATE TABLE system_settings (section TEXT PRIMARY KEY, data TEXT, updated_at DATETIME)`,
 		backupDestinationsTable,
-		`CREATE TABLE IF NOT EXISTS backups (id TEXT PRIMARY KEY, vm_id TEXT, storage_provider TEXT, storage_path TEXT, backup_type TEXT, status TEXT, size INTEGER DEFAULT 0, compression TEXT, checksum TEXT, error_message TEXT, started_at DATETIME, completed_at DATETIME, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME, disks TEXT DEFAULT '[]', consistency TEXT DEFAULT '', destination_id TEXT, node_id TEXT, mode TEXT DEFAULT 'full', parent_id TEXT, chain_id TEXT, checkpoint TEXT DEFAULT '', mode_note TEXT DEFAULT '')`,
+		`CREATE TABLE IF NOT EXISTS backups (id TEXT PRIMARY KEY, vm_id TEXT, storage_provider TEXT, storage_path TEXT, backup_type TEXT, status TEXT, size INTEGER DEFAULT 0, compression TEXT, checksum TEXT, error_message TEXT, started_at DATETIME, completed_at DATETIME, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME, disks TEXT DEFAULT '[]', consistency TEXT DEFAULT '', destination_id TEXT, node_id TEXT, mode TEXT DEFAULT 'full', parent_id TEXT, chain_id TEXT, checkpoint TEXT DEFAULT '', mode_note TEXT DEFAULT '', encryption_key_id TEXT NOT NULL DEFAULT '')`,
 	} {
 		require.NoError(t, db.Exec(stmt).Error)
 	}

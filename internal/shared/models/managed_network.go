@@ -37,6 +37,9 @@ type ManagedNetwork struct {
 	RegionID      string `json:"region_id,omitempty" gorm:"-"`
 	RegionName    string `json:"region_name,omitempty" gorm:"-"`
 	RegionCountry string `json:"region_country,omitempty" gorm:"-"`
+	// Nameservers are a VPC's resolvers for its VMs, filled from its address
+	// pool for listings; empty is the built-in ones.
+	Nameservers string `json:"nameservers" gorm:"-"`
 }
 
 // TableName specifies the table name for ManagedNetwork.

@@ -378,6 +378,9 @@ func (m *MigrationService) sourceFacts(ctx context.Context, req MigrationRequest
 	if diskMoveActive(ctx, m.db, vm.ID) {
 		block("a disk of the VM is moving to another pool")
 	}
+	if queue.RestoreActive(ctx, m.db, vm.ID) {
+		block("a backup or snapshot is being restored to the VM")
+	}
 	if src.Status == models.NodeStatusOffline {
 		block("the VM's node %s is offline", src.Name)
 	}
@@ -385,11 +388,6 @@ func (m *MigrationService) sourceFacts(ctx context.Context, req MigrationRequest
 		return nil, fmt.Errorf("%w: mode must be live or offline", ErrMigrationBlocked)
 	}
 	m.recordBlockers(ctx, vm, block)
-	if b, err := natBlock(ctx, m.db, vm.ID); err != nil {
-		return nil, fmt.Errorf("failed to read the VM's NAT ports: %w", err)
-	} else if b != nil {
-		block("the VM is a NAT VM: its private address and public ports %d-%d belong to node %s", b.StartPort, b.EndPort(), src.Name)
-	}
 
 	var extra int
 	if err := m.db.WithContext(ctx).Model(&models.VMDisk{}).Where("vm_id = ?", vm.ID).
@@ -514,6 +512,13 @@ func (m *MigrationService) recordBlockers(ctx context.Context, vm *models.VM, bl
 	}
 	if vm.RescueMode {
 		block("the VM is in rescue mode; take it out first")
+	}
+	// What lives on the node beside the disks and is not carried over yet.
+	if vm.Hardware.DedicatedCPU {
+		block("the VM holds dedicated CPU cores on its node; turn its dedicated CPUs off to move it")
+	}
+	if vm.Hardware.TPM {
+		block("the VM has a virtual TPM, whose keys are kept on its node and are not moved yet")
 	}
 	if vm.AttachedISO != nil && *vm.AttachedISO != "" {
 		block("an ISO is mounted in the VM; unmount it first")
@@ -747,7 +752,24 @@ func (m *MigrationService) destinationChecks(ctx context.Context, f *srcFacts, d
 		}
 	}
 
-	if clash, err := forwardsBlockedOn(ctx, m.db, f.vm.ID, dst.ID); err != nil {
+	if f.vm.Hardware.Firmware == models.FirmwareUEFI {
+		if !m.nodeHasFeature(ctx, dst, models.FeatureUEFI) {
+			chk.block("the VM boots with UEFI and node %s has no UEFI firmware", dst.Name)
+		} else {
+			chk.warn("the VM boots with UEFI: its firmware settings start fresh on node %s, so it boots its disk's default boot loader", dst.Name)
+		}
+	}
+	if f.vm.Hardware.Hugepages && !m.nodeHasFeature(ctx, dst, models.FeatureHugepages) {
+		chk.block("the VM's memory is on huge pages and node %s has none reserved", dst.Name)
+	}
+	isNAT := false
+	if b, err := natBlock(ctx, m.db, f.vm.ID); err == nil && b != nil {
+		// Its ports move into a free block there, so they cannot clash.
+		isNAT = true
+		m.natMoveChecks(ctx, f.vm, dst, chk)
+	}
+	if clash, err := forwardsBlockedOn(ctx, m.db, f.vm.ID, dst.ID); isNAT {
+	} else if err != nil {
 		chk.block("port forwards could not be checked: %v", err)
 	} else if len(clash) > 0 {
 		chk.block("node %s already uses %d of the ports this VM forwards (%s): another VM's forward, a NAT VM's ports or its hostname router; remove those port forwards first",

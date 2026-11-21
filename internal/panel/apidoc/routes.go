@@ -105,24 +105,24 @@ func apiRoutes() []*apiRoute {
 					"or `billing` (billing deliveries, plans, customer accounts, usage reports and transfer; never staff accounts or roles). `allowed_ips` lists the addresses or CIDR ranges it may be used from "+
 					"(a request from anywhere else answers 403 `api_key_address`); `expires_at` must be in the future."),
 			del("/api/v1/api-keys/:id", "Revoke an API key").can("signed-in").out(okMsg),
-			get("/api/v1/ssh-keys", "Own SSH keys").can("signed-in").out(okList(models.SSHKey{})),
-			post("/api/v1/ssh-keys", "Add an SSH public key").can("signed-in").in(service.CreateSSHKeyRequest{}).code(http.StatusCreated).out(ok(models.SSHKey{})),
-			post("/api/v1/ssh-keys/generate", "Generate an SSH key pair").can("signed-in").in(service.GenerateSSHKeyRequest{}).code(http.StatusCreated).
+			get("/api/v1/ssh-keys", "Own SSH keys").can("signed-in").q("account_id").out(okList(models.SSHKey{})),
+			post("/api/v1/ssh-keys", "Add an SSH public key").can("signed-in").q("account_id").in(service.CreateSSHKeyRequest{}).code(http.StatusCreated).out(ok(models.SSHKey{})),
+			post("/api/v1/ssh-keys/generate", "Generate an SSH key pair").can("signed-in").q("account_id").in(service.GenerateSSHKeyRequest{}).code(http.StatusCreated).
 				out(ok(service.GeneratedSSHKey{})).note("The private key is returned once and not kept."),
-			del("/api/v1/ssh-keys/:id", "Delete an SSH key").can("signed-in").out(okMsg),
-			get("/api/v1/recipes", "Own first-boot scripts and the app catalog").can("signed-in").out(okList(models.Recipe{})).
+			del("/api/v1/ssh-keys/:id", "Delete an SSH key").can("signed-in").q("account_id").out(okMsg),
+			get("/api/v1/recipes", "Own first-boot scripts and the app catalog").can("signed-in").q("account_id").out(okList(models.Recipe{})).
 				note("The caller's own recipes and every published one (`is_public`). `inputs` are the values asked for when ordering; the script names each as `{{key}}`."),
-			post("/api/v1/recipes", "Save a first-boot script").can("signed-in").in(service.RecipeRequest{}).code(http.StatusCreated).out(ok(models.Recipe{})).
+			post("/api/v1/recipes", "Save a first-boot script").can("signed-in").q("account_id").in(service.RecipeRequest{}).code(http.StatusCreated).out(ok(models.Recipe{})).
 				note("`is_public` publishes it to every customer; only staff with `template:update` may, and it is ignored for anyone else."),
-			put("/api/v1/recipes/:id", "Change a first-boot script").can("signed-in").in(service.RecipeRequest{}).out(ok(models.Recipe{})).
+			put("/api/v1/recipes/:id", "Change a first-boot script").can("signed-in").q("account_id").in(service.RecipeRequest{}).out(ok(models.Recipe{})).
 				note("Own recipes; staff with `template:update` also change published ones."),
-			del("/api/v1/recipes/:id", "Delete a first-boot script").can("signed-in").out(okMsg),
+			del("/api/v1/recipes/:id", "Delete a first-boot script").can("signed-in").q("account_id").out(okMsg),
 			get("/api/v1/notifications", "Notifications").can("signed-in").q("limit", "offset").
 				out(obj("success", tTrue, "meta", pageMeta, "data", arr(service.UserNotification{}), "unread", tInt, "total", tInt)).
 				note("Customers get their notifications (30 newest unless `limit`, up to 100, and `offset` say otherwise), the unread count and the total. Staff with `audit:read` get the 20 newest audit log rows instead (`data` is then audit entries, with no `unread` or `meta`)."),
 			put("/api/v1/notifications/read-all", "Mark every notification read").can("signed-in").out(okOnly),
 			put("/api/v1/notifications/:id/read", "Mark a notification read").can("signed-in").out(okOnly),
-			get("/api/v1/quota", "Own resource limits and use").can("signed-in").out(ok(service.QuotaStatus{})),
+			get("/api/v1/quota", "Own resource limits and use").can("signed-in").q("account_id").out(ok(service.QuotaStatus{})),
 			get("/api/v1/self-service", "What customers may do without the billing system").can("signed-in").out(ok(tAny)),
 			get("/api/v1/search", "Search VMs, accounts and nodes").can("signed-in").q("q").
 				out(ok(obj("vms", arr(handler.SearchVM{}), "users", arr(handler.SearchUser{}), "nodes", arr(handler.SearchNode{})))).
@@ -149,7 +149,7 @@ func apiRoutes() []*apiRoute {
 			get("/api/v1/vms/:id/metrics", "Live usage").can("vm:read").cust().out(bare(vmMetric)).
 				note("When the node does not answer, the allocated memory with zero usage."),
 			get("/api/v1/vms/:id/metrics/history", "Recorded usage").can("vm:read").cust().q("minutes", "limit").out(okList(models.VMMetricSample{})).
-				note("`minutes` reaches back as far as the graph history kept (90 days unless changed under Customer area settings): the last 7 days from the raw samples, earlier ones as hourly averages."),
+				note("`minutes` reaches back two years: the last 7 days from the raw samples, then hourly averages for the graph history kept (90 days unless changed under Customer area settings), then daily averages."),
 			post("/api/v1/vms/:id/start", "Start").can("vm:read vm:power").cust().in(handler.LifecycleRequest{}).out(msgData(handler.LifecycleResponse{})),
 			post("/api/v1/vms/:id/stop", "Shut down").can("vm:read vm:power").cust().in(handler.LifecycleRequest{}).out(msgData(handler.LifecycleResponse{})),
 			post("/api/v1/vms/:id/force-stop", "Power off").can("vm:read vm:power").cust().in(handler.LifecycleRequest{}).out(msgData(handler.LifecycleResponse{})),
@@ -160,7 +160,8 @@ func apiRoutes() []*apiRoute {
 			post("/api/v1/vms/:id/rebuild", "Reinstall").can("vm:read vm:lifecycle").cust().in(handler.RebuildVMRequest{}).out(msgData(handler.RebuildVMResponse{})).
 				note("Erases the disk and installs the chosen template, of any kind (Linux, RouterOS, Windows)."),
 			post("/api/v1/vms/:id/reset-password", "Set the root or Administrator password").can("vm:read vm:lifecycle").cust().
-				in(obj("password", tStr)).out(msgData(tAny)),
+				in(obj("password", tStr)).out(msgData(service.VMResetPasswordResponse{})).
+				note("A running VM takes it through its guest agent. A stopped Linux VM has it written onto its disk (`method: offline`) and stays stopped; a stopped router takes it at its next start. Windows takes one only while it runs."),
 			post("/api/v1/vms/:id/iso/attach", "Attach an ISO").can("vm:read vm:lifecycle").cust().
 				in(obj("iso_id", tStr, "iso_url", tStr, "template_id", tStr, "drivers", tBool, "slot", tInt)).out(msgData(jobQueued)).
 				note("`iso_id` mounts one of the ISOs staff publish (`GET /api/v1/portal`); `template_id` one from the ISOs page (for a customer, one offered on the VM's plan); `drivers` the drivers ISO staff chose, in drive 2. A customer's own `iso_url` must be public, and is refused (403 `iso_url_not_allowed`) when the operator allows only the published ones. `slot` is the CD drive: 1, the install drive that boots first (the default), or 2. A running VM takes the disc at once when its node's agent can, in a drive it already has; otherwise stop it first."),
@@ -168,8 +169,9 @@ func apiRoutes() []*apiRoute {
 				note("Empties drive `slot` (1 by default); the drive stays, so a disc can go back in while the VM runs."),
 			post("/api/v1/vms/:id/clone", "Clone").can("vm:read vm:lifecycle").cust().in(obj("hostname", tStr, "node_id", tStr)).
 				code(http.StatusCreated).out(msgData(tAny)),
-			post("/api/v1/vms/:id/rescue", "Boot into rescue mode").can("vm:read vm:rescue").cust().in(obj("iso_url", tStr)).out(msgData(jobQueued)).
-				note("Without `iso_url`, the rescue ISO from System settings, Rescue."),
+			post("/api/v1/vms/:id/rescue", "Boot into rescue mode").can("vm:read vm:rescue").cust().
+				in(obj("iso_url", tStr, "mode", tStr, "ssh_key_ids", arr(tStr))).out(msgData(service.RescueResult{})).
+				note("The VM must be stopped. Without `iso_url` it boots the built-in rescue system when System settings, Rescue, names one and the VM's node can run it (`mode: iso` asks for the rescue ISO instead): a fresh rescue system on the VM's own address, its disks attached, with a one-time `root_password` (shown once) and the chosen saved SSH keys. Otherwise the rescue ISO from those settings."),
 			post("/api/v1/vms/:id/unrescue", "Leave rescue mode").can("vm:read vm:rescue").cust().out(msgData(jobQueued)),
 			get("/api/v1/vms/:id/disks", "Extra disks").can("vm:read vm:lifecycle").cust().out(okList(models.VMDisk{})),
 			post("/api/v1/vms/:id/disks", "Add a disk").can("vm:read vm:lifecycle").cust().in(obj("size_gb", tInt, "pool_id", tStr)).
@@ -206,6 +208,9 @@ func apiRoutes() []*apiRoute {
 			put("/api/v1/vms/:id/limits", "Set CPU and disk limits").can("vm:read vm:update").in(obj("limits", models.VMLimits{})).
 				out(ok(service.LimitsResult{})),
 			post("/api/v1/vms/:id/limits/apply", "Apply the stored limits again").can("vm:read vm:update").out(ok(service.LimitsResult{})),
+			put("/api/v1/vms/:id/hardware", "Change a VM's hardware").can("vm:read vm:update").in(obj("hardware", models.Hardware{})).
+				out(ok(service.HardwareResult{})).
+				note("CPU model, sockets and threads, dedicated cores (taken from the node's pool), NUMA placement, huge pages, watchdog and restart on crash. The node saves them in the VM's definition and the VM uses them from its next power off and on (`restart_required`); nothing is restarted. Firmware, Secure Boot and the TPM are set when a VM is created. `warnings` say what the hardware means for moving the VM."),
 			post("/api/v1/vms/:id/throttle", "Throttle a VM").can("vm:read vm:update").in(tAny).out(ok(service.LimitsResult{})),
 			del("/api/v1/vms/:id/throttle", "Lift a throttle").can("vm:read vm:update").out(ok(service.LimitsResult{})),
 			post("/api/v1/vms/:id/migrate", "Move the VM to another node").can("vm:migrate").in(service.MigrationRequest{}).
@@ -240,7 +245,21 @@ func apiRoutes() []*apiRoute {
 			del("/api/v1/vms/:id/ip-addresses/:network_id", "Release an address").can("vm:update").out(msg),
 			post("/api/v1/vms/:id/ipv6", "Give the VM an IPv6 prefix").can("vm:update").in(obj("pool_id", tStr)).
 				code(http.StatusCreated).out(msgData(tAny)),
-			del("/api/v1/vms/:id/ipv6", "Release the VM's IPv6").can("vm:update").out(msg),
+			del("/api/v1/vms/:id/ipv6", "Release the VM's IPv6").can("vm:update").cust().out(msg).
+				note("Customers may turn their own VM's IPv6 off; they get it back through an address request."),
+			get("/api/v1/vms/:id/ipv6/addresses", "Further IPv6 addresses in the VM's prefix").can("vm:read").cust().out(ok(service.VMIPv6Addresses{})),
+			put("/api/v1/vms/:id/ipv6/addresses", "Set the further IPv6 addresses in the VM's prefix").can("vm:update").cust().
+				in(handler.SetIPv6AddressesRequest{}).out(ok(service.VMIPv6Addresses{})).
+				note("Addresses inside the VM's routed prefix, besides its `::1`, up to 16. The guest is given them live where it can be, otherwise at its next start from the panel; the node answers neighbour discovery for each where its upstream treats the pool as on-link."),
+			get("/api/v1/vms/:id/nics", "Network cards").can("vm:read").cust().out(ok(arr(service.VMNICView{}))).
+				note("Read from the node and kept the first time for a VM created before cards were recorded."),
+			post("/api/v1/vms/:id/nics", "Add a network card").can("vm:update").cust().in(handler.AddNICRequest{}).
+				code(http.StatusCreated).out(obj("success", tTrue, "message", tStr, "data", service.VMNICView{})).
+				note("On another bridge than the VM's other cards, with one address from that pool. Staff give `pool_id` (and may choose `mac_address`); customers give `vpc_id`, one of their own private networks on the VM's node. Added live where the VM's machine allows, otherwise at its next start; `message` says which."),
+			del("/api/v1/vms/:id/nics/:nic_id", "Remove a network card").can("vm:update").cust().out(obj("success", tTrue, "message", tStr)).
+				note("Not the first card. Its addresses go back to their pool. Customers remove only cards on their own private networks."),
+			put("/api/v1/vms/:id/nics/:nic_id/mac", "Change a card's MAC address").can("vm:update").in(handler.SetNICMACRequest{}).out(ok(models.VMNIC{})).
+				note("Staff only, with the VM stopped. Unicast and unique; the guest's network settings are rewritten for it."),
 			put("/api/v1/vms/:id/networks/:network_id/bandwidth", "Set an interface's speed limit").can("vm:update").
 				in(handler.SetBandwidthRequest{}).out(msg),
 			put("/api/v1/vms/:id/networks/:network_id/vlan", "Set an interface's VLAN").can("vm:update").in(handler.SetVLANRequest{}).out(msg),
@@ -271,8 +290,12 @@ func apiRoutes() []*apiRoute {
 			post("/api/v1/vms/:id/firewall-groups", "Attach a firewall group").can("vm:update").cust().
 				in(obj("group_id", tStr, "position", tStr)).code(http.StatusCreated).out(okMsg),
 			del("/api/v1/vms/:id/firewall-groups/:group_id", "Detach a firewall group").can("vm:update").cust().out(okMsg),
+			get("/api/v1/vms/:id/rdns", "Reverse DNS names inside the VM's IPv6 prefix").can("vm:read").cust().
+				out(ok(obj("prefix", tStr, "prefix_ptrs", arr(models.VMPrefixPTR{})))).
+				note("The VM's own addresses carry their reverse DNS on its address list; this lists the names set for addresses inside the IPv6 prefix routed to it."),
 			put("/api/v1/vms/:id/rdns", "Set reverse DNS for one of the VM's addresses").can("vm:update").cust().
-				in(obj("ip_address", tStr, "rdns", tStr)).out(ok(obj("ip_address", tStr, "rdns", tStr))),
+				in(obj("ip_address", tStr, "rdns", tStr)).out(ok(obj("ip_address", tStr, "rdns", tStr))).
+				note("`ip_address` is an address the VM holds or any address inside the IPv6 prefix routed to it (at most 64 names per prefix). An empty `rdns` clears the name. For customers the hostname must already resolve to the address."),
 			get("/api/v1/vms/:id/nat", "NAT VM: public ports and hostnames").can("vm:read").cust().out(ok(service.VMNATInfo{})),
 			post("/api/v1/vms/:id/hostnames", "Route a website hostname to a NAT VM").can("vm:update").cust().
 				in(service.AddHostnameRequest{}).code(http.StatusCreated).out(ok(models.VMHostname{})),
@@ -280,7 +303,7 @@ func apiRoutes() []*apiRoute {
 				out(ok(models.VMHostname{})),
 			del("/api/v1/vms/:id/hostnames/:hostname_id", "Stop routing a hostname").can("vm:update").cust().out(okMsg),
 			get("/api/v1/vms/:id/bandwidth", "This month's transfer").can("vm:read").cust().q("node_id").out(handler.BandwidthUsageResponse{}).
-				note("Not wrapped in an envelope."),
+				note("Not wrapped in an envelope. The period starts on the plan's (or the account's) reset day; `total_bytes` holds only the direction the plan counts (`counts`: both, out or in). With pooled transfer, the allowance is measured against the account's pool (`pool_used_gb`, `pool_quota_gb`)."),
 			get("/api/v1/vms/:id/bandwidth/history", "Transfer by month").can("vm:read").cust().out(obj("vm_id", tStr, "history", tAny)),
 			put("/api/v1/vms/:id/bandwidth/quota", "Set the monthly transfer quota").can("vm:update").in(obj("quota_gb", tInt)).
 				out(msgData(obj("quota_gb", tInt))),
@@ -297,6 +320,8 @@ func apiRoutes() []*apiRoute {
 			post("/api/v1/vms/:id/backups/:backup_id/restore", "Restore a backup over the VM").can("backup:update").cust().
 				in(handler.RestoreBackupRequest{}).code(http.StatusAccepted).out(msgData(handler.RestoreBackupResponse{})).
 				note("The VM must be stopped. An incremental backup is restored with every backup it builds on."),
+			get("/api/v1/vms/:id/backups/:backup_id/download", "Download a backup's disk image").can("backup:download").cust().q("disk").raw("application/octet-stream").
+				note("302 to a short-lived link at the store for a plain backup in S3; otherwise the image streamed through the panel, decrypted when it was stored encrypted. 409 not_downloadable says why when it cannot be (an incremental backup, or one the panel cannot reach)."),
 			post("/api/v1/vms/:id/backups/:backup_id/restore-new", "Restore a backup as a new VM").can("admin:access").
 				in(handler.RestoreAsNewRequest{}).code(http.StatusAccepted).out(obj("success", tTrue, "message", tStr, "data", tAny)).
 				note("On any active node that passes the destination test; the original VM and the backup are unchanged."),
@@ -321,40 +346,49 @@ func apiRoutes() []*apiRoute {
 			post("/api/v1/vms/:id/snapshots/:snapshot_id/restore", "Revert to a snapshot").can("vm:read snapshot:update").cust().
 				out(msgData(handler.RestoreSnapshotResponse{})),
 			del("/api/v1/vms/:id/snapshots/:snapshot_id", "Delete a snapshot").can("vm:read snapshot:delete").cust().out(msg),
-			get("/api/v1/images", "List images").can("vm:read").cust().out(bare(arr(models.Image{}))).
+			get("/api/v1/vms/:id/snapshot-schedule", "The VM's snapshot schedule").can("vm:read").cust().out(ok(models.SnapshotSchedule{})).
+				note("`data` is null for a VM without one."),
+			put("/api/v1/vms/:id/snapshot-schedule", "Set the VM's snapshot schedule").can("vm:read snapshot:create").cust().
+				in(service.SnapshotScheduleRequest{}).out(ok(models.SnapshotSchedule{})).
+				note("A snapshot every `interval_hours` (1-720), keeping the newest `keep` (1-10) of those it took; the oldest go first. Snapshots taken by hand are never removed, and count against the plan's snapshot allowance, which `keep` must fit in."),
+			del("/api/v1/vms/:id/snapshot-schedule", "Remove the VM's snapshot schedule").can("vm:read snapshot:delete").cust().out(msg).
+				note("The snapshots it took are kept."),
+			get("/api/v1/images", "List images").can("vm:read").cust().q("account_id").out(bare(arr(models.Image{}))).
 				note("Disk captures that outlive their VM and can seed a new one."),
 			post("/api/v1/images", "Capture a VM's disk as an image").can("snapshot:create").cust().in(handler.CreateImageRequest{}).
 				code(http.StatusAccepted).out(bare(models.Image{})),
-			post("/api/v1/images/:id/retry", "Retry a failed capture").can("snapshot:create").cust().out(msgData(models.Image{})),
-			del("/api/v1/images/:id", "Delete an image").can("snapshot:delete").cust().out(msg),
+			post("/api/v1/images/:id/retry", "Retry a failed capture").can("snapshot:create").cust().q("account_id").out(msgData(models.Image{})),
+			del("/api/v1/images/:id", "Delete an image").can("snapshot:delete").cust().q("account_id").out(msg),
 		),
 		group("Networking",
-			get("/api/v1/floating-ips", "List floating IPs").can("floating_ip:read").cust().out(okList(models.IPAddress{})),
+			get("/api/v1/floating-ips", "List floating IPs").can("floating_ip:read").cust().q("account_id").out(okList(models.IPAddress{})),
 			post("/api/v1/floating-ips", "Allocate a floating IP for an account").can("network:update").
 				in(obj("pool_id", tStr, "user_id", tStr, "region", tStr)).code(http.StatusCreated).out(ok(models.IPAddress{})),
-			post("/api/v1/floating-ips/order", "Order a floating IP").can("floating_ip:create").cust().in(obj("region", tStr)).
+			post("/api/v1/floating-ips/order", "Order a floating IP").can("floating_ip:create").cust().q("account_id").in(obj("region", tStr)).
 				code(http.StatusCreated).out(ok(models.IPAddress{})).
 				note("`floating_ip:create` is not in the custom role catalog: staff need the Administrator role."),
-			post("/api/v1/floating-ips/:id/attach", "Point a floating IP at a VM").can("floating_ip:update").cust().in(obj("vm_id", tStr)).out(ok(models.IPAddress{})),
-			post("/api/v1/floating-ips/:id/detach", "Detach a floating IP").can("floating_ip:update").cust().out(ok(models.IPAddress{})),
-			del("/api/v1/floating-ips/:id", "Release a floating IP").can("floating_ip:delete").cust().code(http.StatusNoContent),
-			get("/api/v1/floating-ips/billing", "Floating IP counts for billing").can("floating_ip:read").cust().q("user_id").
+			post("/api/v1/floating-ips/:id/attach", "Point a floating IP at a VM").can("floating_ip:update").cust().q("account_id").in(obj("vm_id", tStr)).out(ok(models.IPAddress{})),
+			post("/api/v1/floating-ips/:id/detach", "Detach a floating IP").can("floating_ip:update").cust().q("account_id").out(ok(models.IPAddress{})),
+			del("/api/v1/floating-ips/:id", "Release a floating IP").can("floating_ip:delete").cust().q("account_id").code(http.StatusNoContent),
+			get("/api/v1/floating-ips/billing", "Floating IP counts for billing").can("floating_ip:read").cust().q("user_id", "account_id").
 				out(ok(obj("user_id", tStr, "total", tInt, "free", tInt, "billable", tInt))),
-			get("/api/v1/vpcs", "List VPCs").can("vpc:read").cust().out(okList(models.ManagedNetwork{})),
-			post("/api/v1/vpcs", "Create a VPC").can("vpc:create").cust().in(service.CreateVPCRequest{}).code(http.StatusCreated).out(ok(models.ManagedNetwork{})),
-			get("/api/v1/vpcs/:id", "Get a VPC").can("vpc:read").cust().out(ok(models.ManagedNetwork{})),
-			del("/api/v1/vpcs/:id", "Delete a VPC").can("vpc:delete").cust().code(http.StatusNoContent),
-			get("/api/v1/firewall-groups", "List firewall groups").can("firewall_group:read").cust().q("scope").out(okList(service.FirewallGroupSummary{})).
+			get("/api/v1/vpcs", "List VPCs").can("vpc:read").cust().q("account_id").out(okList(models.ManagedNetwork{})),
+			post("/api/v1/vpcs", "Create a VPC").can("vpc:create").cust().q("account_id").in(service.CreateVPCRequest{}).code(http.StatusCreated).out(ok(models.ManagedNetwork{})),
+			get("/api/v1/vpcs/:id", "Get a VPC").can("vpc:read").cust().q("account_id").out(ok(models.ManagedNetwork{})),
+			put("/api/v1/vpcs/:id", "Change a VPC's nameservers").can("vpc:update").cust().q("account_id").in(obj("nameservers", tStr)).out(ok(models.ManagedNetwork{})).
+				note("Comma separated, up to four; empty for the built-in ones. Given to VMs set up from now on (new, reinstalled, readdressed)."),
+			del("/api/v1/vpcs/:id", "Delete a VPC").can("vpc:delete").cust().q("account_id").code(http.StatusNoContent),
+			get("/api/v1/firewall-groups", "List firewall groups").can("firewall_group:read").cust().q("scope", "account_id").out(okList(service.FirewallGroupSummary{})).
 				note("Customers see their own groups and the groups staff made for everyone."),
-			post("/api/v1/firewall-groups", "Create a firewall group").can("firewall_group:update").cust().in(obj("name", tStr, "description", tStr, "position", tStr)).
+			post("/api/v1/firewall-groups", "Create a firewall group").can("firewall_group:update").cust().q("account_id").in(obj("name", tStr, "description", tStr, "position", tStr)).
 				code(http.StatusCreated).out(ok(models.FirewallGroup{})),
-			get("/api/v1/firewall-groups/:id", "Get a firewall group").can("firewall_group:read").cust().out(ok(service.FirewallGroupDetail{})),
-			put("/api/v1/firewall-groups/:id", "Change a firewall group").can("firewall_group:update").cust().in(obj("name", tStr, "description", tStr, "position", tStr)).
+			get("/api/v1/firewall-groups/:id", "Get a firewall group").can("firewall_group:read").cust().q("account_id").out(ok(service.FirewallGroupDetail{})),
+			put("/api/v1/firewall-groups/:id", "Change a firewall group").can("firewall_group:update").cust().q("account_id").in(obj("name", tStr, "description", tStr, "position", tStr)).
 				out(ok(models.FirewallGroup{})),
-			del("/api/v1/firewall-groups/:id", "Delete a firewall group").can("firewall_group:update").cust().out(okMsg),
-			post("/api/v1/firewall-groups/:id/rules", "Add a rule to a group").can("firewall_group:update").cust().in(handler.AddFirewallRuleRequest{}).
+			del("/api/v1/firewall-groups/:id", "Delete a firewall group").can("firewall_group:update").cust().q("account_id").out(okMsg),
+			post("/api/v1/firewall-groups/:id/rules", "Add a rule to a group").can("firewall_group:update").cust().q("account_id").in(handler.AddFirewallRuleRequest{}).
 				code(http.StatusCreated).out(ok(models.FirewallGroupRule{})),
-			del("/api/v1/firewall-groups/:id/rules/:rule_id", "Remove a rule from a group").can("firewall_group:update").cust().out(okMsg),
+			del("/api/v1/firewall-groups/:id/rules/:rule_id", "Remove a rule from a group").can("firewall_group:update").cust().q("account_id").out(okMsg),
 			get("/api/v1/regions", "List regions").can("signed-in").q("available").
 				out(okList(obj("id", tStr, "slug", tStr, "name", tStr, "country", tStr, "enabled", tBool, "node_count", tInt))),
 			post("/api/v1/regions", "Create a region").can("node:update").in(service.CreateRegionRequest{}).code(http.StatusCreated).out(ok(models.Region{})),
@@ -393,8 +427,18 @@ func apiRoutes() []*apiRoute {
 			post("/api/v1/dns/zones/:id/records", "Add a record").can("network:update").in(service.RecordRequest{}).code(http.StatusCreated).out(ok(models.DNSRecord{})),
 			put("/api/v1/dns/records/:recordId", "Change a record").can("network:update").in(service.RecordRequest{}).out(ok(models.DNSRecord{})),
 			del("/api/v1/dns/records/:recordId", "Delete a record").can("network:update").out(okMsg),
-			get("/api/v1/abuse/guests", "Guests by new outbound connection rate").can("network:read").q("all").
-				out(obj("success", tTrue, "data", arr(models.GuestConnection{}), "threshold", tInt)),
+			get("/api/v1/abuse/guests", "Guests by connection and packet rate").can("network:read").q("all").
+				out(obj("success", tTrue, "data", arr(models.GuestConnection{}), "threshold", tInt, "policy", service.AbusePolicy{})),
+			get("/api/v1/abuse/events", "Abuse timeline").can("network:read").q("open", "limit", "offset").out(okListMeta(models.AbuseEvent{})).
+				note("Episodes newest first: a guest over a threshold from the first reading over it to the first back under, with up to 30 readings as evidence and what was done. `open=true` keeps those still going on or with an action in force."),
+			post("/api/v1/abuse/events/:id/release", "Lift an episode's quarantine, rate limit or null-route").can("network:update").out(ok(models.AbuseEvent{})).
+				note("The episode is not acted on again; a new one starts once the guest has been quiet."),
+			post("/api/v1/abuse/null-routes", "Null-route an address for a while").can("network:update").in(service.NullRouteInput{}).
+				code(http.StatusCreated).out(ok(models.AbuseEvent{})).
+				note("Drops all traffic to the address on the node for `minutes` (at most a week); the node lifts it itself when the time is up. Answers 502 with the episode when the node refused, for example an agent too old to null-route."),
+			get("/api/v1/abuse/policy", "Abuse policy").can("network:read").out(ok(service.AbusePolicy{})),
+			put("/api/v1/abuse/policy", "Save the abuse policy").can("network:update").in(service.AbusePolicy{}).out(ok(service.AbusePolicy{})).
+				note("Thresholds are per second. Outbound readings may `alert`, `rate_limit` or `quarantine`; inbound ones `alert` or `null_route`. An action is taken once a guest has been over for `sustain_samples` readings in a row (one a minute). Every action is `alert` until changed."),
 			post("/api/v1/abuse/guests/quarantine", "Cut or restore a guest's traffic").can("network:update").
 				in(obj("node_id", tStr, "mac", tStr, "quarantined", tBool, "reason", tStr)).out(okOnly),
 			get("/api/v1/ip-reputation", "Blocklist status of the address space").can("network:read").q("all").out(okList(models.IPReputation{})),
@@ -416,10 +460,16 @@ func apiRoutes() []*apiRoute {
 			get("/api/v1/nodes/:id/metrics/history", "Recorded node usage").can("node:read").q("minutes", "limit").out(okList(models.NodeMetricSample{})),
 			get("/api/v1/nodes/:id/preflight", "Last host check report").can("node:read").out(ok(service.NodePreflight{})),
 			post("/api/v1/nodes/:id/preflight", "Run the host checks now").can("node:update").out(ok(service.NodePreflight{})),
+			get("/api/v1/nodes/:id/vlan-bridges", "Bridges that carry per-VM VLANs").can("node:read").out(ok(service.NodeVLANBridges{})),
+			put("/api/v1/nodes/:id/vlan-bridges", "Enable VLANs on a node's bridges").can("node:update").in(service.NodeVLANBridges{}).out(ok(service.NodeVLANBridges{})).
+				note("Each bridge with the uplink port that carries its VLANs tagged. `use_environment` goes back to the agent's MABURVM_VLAN_BRIDGES. Saved once the node has it; each bridge comes back with what the node sees there. Nothing changes on the node's network until a VM on the bridge is given a VLAN."),
 			get("/api/v1/nodes/:id/agent-settings", "The agent's environment settings").can("node:read").out(ok(service.NodeAgentSettings{})).
 				note("Secrets are reported only as set or not set."),
 			get("/api/v1/nodes/:id/nat", "NAT port range of a node").can("node:read").out(ok(service.NodeNATSettings{})),
 			put("/api/v1/nodes/:id/nat", "Set a node's NAT port range").can("node:update").in(obj("port_start", tInt, "port_end", tInt)).out(ok(service.NodeNATSettings{})),
+			get("/api/v1/nodes/:id/dedicated-cpus", "A node's pool of dedicated cores").can("node:read").out(ok(service.NodeCPUPool{})),
+			put("/api/v1/nodes/:id/dedicated-cpus", "Set a node's pool of dedicated cores").can("node:update").in(obj("pool", tStr)).out(ok(service.NodeCPUPool{})).
+				note("A host CPU list such as `4-15`. Dedicated-CPU VMs take one core each per vCPU from it. Cores a VM holds must stay in it."),
 			post("/api/v1/nodes/:id/install-command", "New installer command for a node").can("node:create").
 				out(ok(obj("token", tStr, "expires_at", tTime, "script_url", tStr, "command", tStr))).
 				note("Single use, one hour. Refused for a node an agent has answered for."),
@@ -526,6 +576,10 @@ func apiRoutes() []*apiRoute {
 			get("/api/v1/users/:id/quota", "An account's limits and use").can("user:read").out(ok(service.QuotaStatus{})),
 			put("/api/v1/users/:id/quota", "Set an account's limits").can("user:update").in(service.SetQuotaRequest{}).out(ok(models.UserQuota{})),
 			get("/api/v1/users/:id/notes", "Staff notes on an account").can("user:read").out(okList(service.StaffNote{})),
+			get("/api/v1/users/:id/transfer", "An account's transfer settings").can("user:read").out(ok(service.AccountTransfer{})),
+			put("/api/v1/users/:id/transfer", "Set an account's reset day and pooled transfer").can("user:update").in(service.AccountTransfer{}).
+				out(ok(service.AccountTransfer{})).
+				note("`reset_day` (1-28) overrides the plans' reset day for the account's VMs; null follows the plans. `pooled` makes the account's VMs share the sum of their allowances; VMs without one stay outside the pool."),
 			post("/api/v1/users/:id/notes", "Add a staff note to an account").can("user:read user:update").in(obj("body", tStr)).
 				code(http.StatusCreated).out(ok(service.StaffNote{})),
 			put("/api/v1/users/:id/notes/:note_id", "Change a staff note on an account").can("user:read user:update").in(obj("body", tStr)).out(ok(service.StaffNote{})),
@@ -657,7 +711,9 @@ func apiRoutes() []*apiRoute {
 			put("/api/v1/settings/system/branding", "Save branding").can("settings:update").in(service.Branding{}).out(ok(tAny)),
 			get("/api/v1/settings/system/bandwidth", "Transfer quota settings").can("settings:read").out(ok(tAny)),
 			put("/api/v1/settings/system/bandwidth", "Save transfer quota settings").can("settings:update").in(service.BandwidthSettings{}).out(ok(service.BandwidthSettings{})),
-			get("/api/v1/settings/system/rescue", "The rescue ISO in force").can("settings:read").out(ok(obj("iso_url", tStr, "source", tStr))),
+			get("/api/v1/settings/system/rescue", "The rescue images in force").can("settings:read").
+				out(ok(obj("iso_url", tStr, "source", tStr, "image_url", tStr, "image_sha256", tStr))).
+				note("`iso_url` is the rescue ISO (saved, or RESCUE_ISO_URL); `image_url` the built-in rescue system's disk image. Both are saved through `PUT /api/v1/settings/system` as section `rescue` (`isoUrl`, `imageUrl`, `imageSha256`)."),
 			get("/api/v1/settings/system/alerts", "Alert delivery settings").can("settings:read").out(ok(service.AlertSettingsStatus{})),
 			put("/api/v1/settings/system/alerts", "Save alert delivery settings").can("settings:update").in(service.AlertSettingsInput{}).out(ok(service.AlertSettingsStatus{})),
 			post("/api/v1/settings/system/alerts/test", "Send a test alert").can("settings:update").in(tAny).out(ok(obj("results", arr(service.AlertChannelResult{})))),
@@ -672,10 +728,11 @@ func apiRoutes() []*apiRoute {
 			post("/api/v1/settings/system/emails/:id/retry", "Send an email again").can("settings:update").out(ok(obj("queued", tBool))),
 			get("/api/v1/settings/system/dns-provider", "Nameserver connection").can("settings:read").out(ok(service.DNSProviderStatus{})),
 			put("/api/v1/settings/system/dns-provider", "Save the nameserver connection").can("settings:update").
-				in(obj("url", tStr, "server_id", tStr, "api_key", tStr)).out(ok(service.DNSProviderStatus{})),
+				in(obj("kind", tStr, "url", tStr, "server_id", tStr, "api_key", tStr)).out(ok(service.DNSProviderStatus{})).
+				note("`kind` is `powerdns` (the default; `url` and `server_id` name the server) or `cloudflare` (an API token with Zone DNS edit rights in `api_key`; zones must already be on the account)."),
 			del("/api/v1/settings/system/dns-provider", "Remove the nameserver connection").can("settings:update").out(ok(service.DNSProviderStatus{})),
 			post("/api/v1/settings/system/dns-provider/test", "Test a nameserver connection").can("settings:update").
-				in(obj("url", tStr, "server_id", tStr, "api_key", tStr)).out(okMsg),
+				in(obj("kind", tStr, "url", tStr, "server_id", tStr, "api_key", tStr)).out(okMsg),
 			get("/api/v1/settings/system/backup-destinations", "Backup destinations").can("settings:read").out(okList(service.BackupDestinationView{})),
 			post("/api/v1/settings/system/backup-destinations", "Add a backup destination").can("settings:update").in(service.BackupDestinationInput{}).
 				code(http.StatusCreated).out(ok(service.BackupDestinationView{})),
@@ -683,6 +740,13 @@ func apiRoutes() []*apiRoute {
 				in(service.BackupDestinationInput{}).out(ok(service.BackupDestinationView{})),
 			post("/api/v1/settings/system/backup-destinations/:id/default", "Send new backups to this destination").can("settings:update").out(okMsg),
 			del("/api/v1/settings/system/backup-destinations/:id", "Remove a backup destination").can("settings:update").out(okMsg),
+			post("/api/v1/settings/system/backup-destinations/:id/encryption", "Encrypt new backups, or stop").can("settings:update").
+				in(obj("encrypt", tBool)).out(ok(service.BackupDestinationView{})).
+				note("Backups are encrypted on the node before they are uploaded. Turning it off keeps every key, so encrypted backups still restore."),
+			post("/api/v1/settings/system/backup-destinations/:id/rotate-key", "Encrypt new backups with a new key").can("settings:update").
+				out(ok(service.BackupDestinationView{})).note("Older keys are kept for the backups made with them."),
+			post("/api/v1/settings/system/backup-destinations/:id/export-keys", "Reveal a destination's encryption keys").can("admin:access").
+				out(okList(service.BackupKeyExport{})).note("For safekeeping outside the panel: with them, cmd/backup-decrypt restores a backup file without the panel."),
 			post("/api/v1/settings/system/backup-destinations/test", "Test a destination from the panel and nodes").can("settings:update").
 				in(obj("id", tStr, "node_ids", arr(tStr))).out(ok(obj("results", arr(service.BackupDestinationTestResult{})))),
 			post("/api/v1/settings/system/backup-destinations/scan-host-key", "Read an SFTP server's host key").can("settings:update").

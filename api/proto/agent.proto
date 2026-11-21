@@ -181,6 +181,12 @@ service NodeAgent {
   // loses connectivity.
   rpc GetGuestConnections(GetGuestConnectionsRequest) returns (GetGuestConnectionsResponse);
 
+  // SetNullRoute drops all traffic to one address for a set time, or lifts it
+  // early. The node keeps the list in a file and lifts each entry itself when
+  // its time is up, so a null-route never outlives its purpose because the
+  // panel was unreachable. An agent without it answers Unimplemented.
+  rpc SetNullRoute(SetNullRouteRequest) returns (SetNullRouteResponse);
+
   // UpdateAgent replaces this agent's binary with one streamed from the panel.
   // The first chunk carries the metadata; the agent verifies the digest, makes
   // sure the new binary runs, then hands the swap to a detached systemd job that
@@ -192,6 +198,13 @@ service NodeAgent {
   // is running, to the running guest, so one busy VM cannot starve the others
   // on the node. An agent without it answers Unimplemented.
   rpc SetVMLimits(SetVMLimitsRequest) returns (SetVMLimitsResponse);
+
+  // SetVMHardware changes the named parts of a VM's virtual hardware (CPU
+  // model and topology, dedicated cores, huge pages, watchdog, restart on
+  // crash) in its saved definition. A running VM takes them at its next power
+  // off and on; nothing is restarted. An agent without it answers
+  // Unimplemented.
+  rpc SetVMHardware(SetVMHardwareRequest) returns (SetVMHardwareResponse);
 
   // GetPreflight checks that the host is set up the way the agent expects
   // (KVM, libvirt, qemu-img, bridges, storage pool directories, bridge
@@ -259,6 +272,17 @@ service NodeAgent {
   // PutImage stores a file uploaded to the panel (an ISO) in this node's image
   // cache. The first chunk names it; the data is checked against its sha256.
   rpc PutImage(stream ImageChunk) returns (PutImageResponse);
+
+  // ConfigureNIC lists, adds or removes a VM's network cards, or changes a
+  // card's MAC ("vm_nics" feature). Adding and removing happen live where the
+  // guest allows it and always in the VM's definition; a MAC changes in the
+  // definition only and takes effect when the VM is next started.
+  rpc ConfigureNIC(ConfigureNICRequest) returns (ConfigureNICResponse);
+
+  // SetVLANBridges names the node's bridges that carry per-VM VLANs, each
+  // with its uplink ("vlan_bridges" feature). It replaces what the agent's
+  // environment says; use_environment goes back to it.
+  rpc SetVLANBridges(SetVLANBridgesRequest) returns (SetVLANBridgesResponse);
 }
 
 // ============================================================================
@@ -355,6 +379,45 @@ message GuestConnectionReport {
 
   // quarantined reports whether this guest's traffic is currently being dropped.
   bool quarantined = 5;
+
+  // syn_in_packets is a CUMULATIVE count of new TCP connections arriving for
+  // the guest, from a counting rule on its tap; 0 when the tap is unknown.
+  int64 syn_in_packets = 6;
+
+  // packets_out and packets_in are CUMULATIVE packets the guest sent and
+  // received, read from its tap. They restart when the guest's tap does.
+  int64 packets_out = 7;
+  int64 packets_in = 8;
+}
+
+// NullRoute is one address a node drops all traffic to until until_unix.
+message NullRoute {
+  string ip = 1;
+  int64 until_unix = 2;
+  string reason = 3;
+}
+
+message SetNullRouteRequest {
+  // ip is a single IPv4 or IPv6 host address.
+  string ip = 1;
+
+  // minutes is how long the null-route lasts when on; at most a week.
+  int32 minutes = 2;
+
+  // on true adds (or extends) the null-route, false lifts it.
+  bool on = 3;
+
+  // reason is recorded in the node's file next to the address.
+  string reason = 4;
+}
+
+message SetNullRouteResponse {
+  bool success = 1;
+
+  // null_routes is every null-route in force after the change.
+  repeated NullRoute null_routes = 2;
+
+  ErrorResponse error = 3;
 }
 
 // VMBandwidthReport contains cumulative traffic counters for a single VM.
@@ -464,6 +527,51 @@ message SetVMLimitsRequest {
   VMLimits limits = 2;
 }
 
+// VMHardware is a VM's virtual hardware beyond its size. The zero value is a
+// plain VM, as every VM was before it existed.
+message VMHardware {
+  // cpu_model: "" is the host's own CPU, "host-model", or a named model. On a
+  // create the agent also reads VMConfig.metadata["cpu_model"].
+  string cpu_model = 1;
+  // sockets and threads (per core) shape the vCPUs; the cores follow from the
+  // vCPU count. A shape that does not divide is one socket of single cores.
+  int32 sockets = 2;
+  int32 threads = 3;
+  // pinned_cpus are host cores, one per vCPU in order ("4-7"); empty is none.
+  string pinned_cpus = 4;
+  // numa places the memory on the NUMA nodes of pinned_cpus.
+  bool numa = 5;
+  bool hugepages = 6;
+  // watchdog: a guest watchdog that resets a hung guest.
+  bool watchdog = 7;
+  // restart_on_crash: the agent starts the VM again when it crashes, backing
+  // off, and stops after repeated crashes.
+  bool restart_on_crash = 8;
+  // secure_boot and tpm are read on a create only (an installed system does
+  // not survive a change of firmware). secure_boot needs VMConfig.metadata
+  // ["firmware"] = "uefi".
+  bool secure_boot = 9;
+  bool tpm = 10;
+}
+
+message SetVMHardwareRequest {
+  string vm_id = 1;
+  VMHardware hardware = 2;
+  // fields names the parts to change: "cpu_model", "topology", "pinning"
+  // (pinned_cpus and numa), "hugepages", "watchdog", "restart_on_crash".
+  // Empty changes them all.
+  repeated string fields = 3;
+}
+
+message SetVMHardwareResponse {
+  bool success = 1;
+  // restart_required: the VM is running and takes the change at its next
+  // power off and on.
+  bool restart_required = 2;
+  string message = 3;
+  ErrorResponse error = 4;
+}
+
 message SetVMLimitsResponse {
   bool success = 1;
   // restart_required: the definition has the limits but the running guest
@@ -494,6 +602,12 @@ enum VMCommandType {
   VM_COMMAND_TYPE_ATTACH_ISO = 12; // Attach a bootable install/rescue ISO
   VM_COMMAND_TYPE_DETACH_ISO = 13; // Detach the install/rescue ISO
   VM_COMMAND_TYPE_REPAIR_CONSOLE = 14; // Inject a VNC <graphics> device into a domain that lacks one (restarts the VM)
+  // Boot a stopped VM into the built-in rescue system: config.image_id is the
+  // rescue image, config.root_password and config.ssh_public_key its one-time
+  // credentials, config.network_config its address. The VM's own disks are
+  // attached to it. Needs the agent feature "builtin_rescue".
+  VM_COMMAND_TYPE_RESCUE = 15;
+  VM_COMMAND_TYPE_UNRESCUE = 16; // Take the rescue system's disk out again (VM stopped)
 }
 
 // DiskStorageDisposition is the fail-closed, idempotent accountability verdict
@@ -674,6 +788,11 @@ message VMConfig {
   // restore_layers are the images under an incremental backup's primary disk,
   // the full backup first. Sent only to an agent with "incremental_backup".
   repeated BackupLayer restore_layers = 12;
+
+  // hardware is the VM's virtual hardware profile, for CREATE (and, for
+  // pinned_cpus and topology, RESIZE). Sent only to an agent with the
+  // "vm_hardware" feature; older agents ignore it.
+  VMHardware hardware = 13;
 }
 
 // ============================================================================
@@ -734,6 +853,16 @@ message VMStatusResponse {
   // configured_resources is the domain's real spec (vcpus, memory_mb, disk_gb)
   // so the panel can catch out-of-band resizes; zero fields are unknown.
   VMResources configured_resources = 10;
+
+  // crash_restarts is how often the VM crashed within the last hour, for a VM
+  // whose policy is to restart on crash; crash_restart_paused that the agent
+  // stopped restarting it until someone starts it.
+  int32 crash_restarts = 11;
+  bool crash_restart_paused = 12;
+
+  // guest_agent_silent: the VM's guest agent did not answer recently, so its
+  // addresses come from the host's DHCP leases and ARP table.
+  bool guest_agent_silent = 13;
 }
 
 // VMResourceUsage contains actual resource consumption metrics.
@@ -952,8 +1081,15 @@ message SnapshotRequest {
   // description provides additional context
   string description = 5;
 
-  // quiesce if true, attempts to quiesce filesystem before snapshot
+  // quiesce freezes the guest's filesystems through its guest agent for a
+  // disk-only snapshot; the snapshot fails when the guest agent cannot.
   bool quiesce = 6;
+
+  // disk_only takes the disks only of a running VM: no memory saved and no
+  // pause. A revert boots the VM from the snapshot's disks. A stopped VM's
+  // snapshot is disk-only anyway. Needs the agent feature "snapshot_options";
+  // an older agent ignores it and saves the memory.
+  bool disk_only = 7;
 }
 
 // SnapshotResponse reports the result of a snapshot operation.
@@ -1093,6 +1229,20 @@ message NetworkInterface {
   string ipv6_address = 12;
   string ipv6_gateway = 13;
   repeated string ipv6_dns = 14;
+
+  // dns are the resolvers the guest is given for this interface's addresses.
+  // Empty keeps the agent's built-in ones. Honoured by agents with the
+  // "guest_dns" feature.
+  repeated string dns = 15;
+
+  // dhcp_server asks the node to answer DHCP for ip_address, to the VM's card
+  // on bridge_name only ("dhcp_server" feature). It never hands out an
+  // address the panel did not send.
+  bool dhcp_server = 16;
+
+  // ipv6_extra are further addresses inside ipv6_prefix the guest holds,
+  // without a prefix length ("ipv6_extra" feature).
+  repeated string ipv6_extra = 17;
 }
 
 // NetworkInterfaceType enumerates network interface types.
@@ -1572,6 +1722,11 @@ message BackupDiskFile {
   // backup first; key is the top. Sent only to an agent with
   // "incremental_backup": an older one would restore the top alone.
   repeated BackupLayer layers = 7;
+
+  // encryption_key_id is the key the stored image was encrypted with; empty
+  // when it was stored in the clear. size_bytes and checksum are the plain
+  // image's, as before.
+  string encryption_key_id = 8;
 }
 
 // BackupLayer is one stored image of a chain of backups.
@@ -1674,6 +1829,23 @@ message ObjectStore {
   // path is, for kind "path", a directory on a file system mounted on the
   // node (NFS, CIFS or a local disk), never on its root file system.
   string path = 9;
+
+  // encryption is the key a backup written to this store is encrypted with
+  // before it leaves the node. Unset: written as it is. Used by an agent with
+  // "backup_encryption"; an older one ignores it and writes in the clear.
+  BackupKey encryption = 10;
+
+  // decryption_keys are the keys the store's backups may be encrypted with;
+  // each file names its own. A file stored in the clear reads as it is.
+  repeated BackupKey decryption_keys = 11;
+}
+
+// BackupKey is one of a backup destination's encryption keys.
+message BackupKey {
+  // id is the key's UUID, written into every file it encrypts.
+  string id = 1;
+  // key is 32 bytes of AES-256 key material.
+  bytes key = 2;
 }
 
 // SFTPStore is an SSH server backups are copied to.
@@ -2105,6 +2277,10 @@ message GetGuestConnectionsResponse {
   bool success = 1;
   repeated GuestConnectionReport guests = 2;
   ErrorResponse error = 3;
+
+  // null_routes is every null-route in force on the node, so the panel learns
+  // of ones that expired or were edited by hand.
+  repeated NullRoute null_routes = 4;
 }
 
 // ============================================================================
@@ -2703,4 +2879,80 @@ message PutImageResponse {
   ErrorResponse error = 2;
   // local_path is where the file is kept on this node.
   string local_path = 3;
+}
+
+// ============================================================================
+// Network cards and VLAN bridges
+// ============================================================================
+
+enum NICAction {
+  NIC_ACTION_UNSPECIFIED = 0;
+  // NIC_ACTION_LIST changes nothing and returns the cards.
+  NIC_ACTION_LIST = 1;
+  // NIC_ACTION_ATTACH adds a card with mac_address on bridge.
+  NIC_ACTION_ATTACH = 2;
+  // NIC_ACTION_DETACH removes the card with mac_address.
+  NIC_ACTION_DETACH = 3;
+  // NIC_ACTION_SET_MAC gives the card with mac_address the MAC new_mac_address.
+  NIC_ACTION_SET_MAC = 4;
+}
+
+message ConfigureNICRequest {
+  string vm_id = 1;
+  NICAction action = 2;
+  string mac_address = 3;
+  string bridge = 4;
+  string new_mac_address = 5;
+  // anti_spoofing gives an added card libvirt's anti-spoofing filter, pinned
+  // to ip_address (the one address the card is given).
+  bool anti_spoofing = 6;
+  string ip_address = 7;
+}
+
+// VMNIC is one of a VM's network cards as its definition has it.
+message VMNIC {
+  string mac_address = 1;
+  string bridge = 2;
+  string model = 3;
+  // tap is the host device while the VM runs; empty otherwise.
+  string tap = 4;
+}
+
+message ConfigureNICResponse {
+  bool success = 1;
+  ErrorResponse error = 2;
+  repeated VMNIC nics = 3;
+  // live says the change reached the running VM; false means it waits for
+  // the VM's next start (or the VM is off).
+  bool live = 4;
+  // note says, in words for the VM's page, what still has to happen.
+  string note = 5;
+}
+
+message VLANBridge {
+  string bridge = 1;
+  string uplink = 2;
+}
+
+message SetVLANBridgesRequest {
+  repeated VLANBridge bridges = 1;
+  // use_environment drops what the panel set and goes back to
+  // MABURVM_VLAN_BRIDGES in the agent's environment.
+  bool use_environment = 2;
+}
+
+message VLANBridgeStatus {
+  string bridge = 1;
+  string uplink = 2;
+  // problem says why VLANs cannot work on it now; empty when they can.
+  string problem = 3;
+  bool filtering = 4;
+}
+
+message SetVLANBridgesResponse {
+  bool success = 1;
+  ErrorResponse error = 2;
+  repeated VLANBridgeStatus bridges = 3;
+  // from_environment says the list in force came from the environment.
+  bool from_environment = 4;
 }

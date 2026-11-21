@@ -30,7 +30,7 @@ export interface AlertPage {
   page_size: number
 }
 
-export type AlertKind = 'node_offline' | 'storage_pool' | 'backup_failed' | 'job_failed' | 'firewall_off' | 'network_drift'
+export type AlertKind = 'node_offline' | 'storage_pool' | 'backup_failed' | 'job_failed' | 'firewall_off' | 'network_drift' | 'vm_crash' | 'abuse'
 export type AlertWebhookFormat = 'generic' | 'slack' | 'discord'
 
 // What the server says about the settings. The webhook address and signing

@@ -47,6 +47,8 @@ type Server struct {
 	queueConfig   *queue.Config
 	riverClient   *river.Client[pgx.Tx]
 	backupService *service.BackupService
+	// snapshotService runs the snapshot schedules once the server starts.
+	snapshotService *service.SnapshotService
 
 	// dnsProvider is the one nameserver connection shared by reverse DNS and
 	// forward zones; see dnsProviderInstance.
@@ -333,6 +335,7 @@ func (s *Server) SetupRoutes() {
 
 	// Customer teams: members, invitations and projects
 	handler.RegisterAccountTeamRoutes(s.echo, s.db)
+	handler.RegisterAccountTransferRoutes(s.echo, s.db)
 }
 
 // setupHealthRoutes registers liveness and readiness probes. Liveness is
@@ -578,6 +581,9 @@ func (s *Server) setupNodeRoutes(g *echo.Group) {
 	nodes.GET("/:id/preflight", nodeHandler.GetPreflight, panelMiddleware.RequirePermission("node:read"))
 	nodes.POST("/:id/preflight", nodeHandler.RunPreflight, panelMiddleware.RequirePermission("node:update"))
 	nodes.GET("/:id/agent-settings", nodeHandler.GetAgentSettings, panelMiddleware.RequirePermission("node:read"))
+	// Bridges that carry per-VM VLANs (opt-in, per node).
+	nodes.GET("/:id/vlan-bridges", nodeHandler.GetVLANBridges, panelMiddleware.RequirePermission("node:read"))
+	nodes.PUT("/:id/vlan-bridges", nodeHandler.SetVLANBridges, panelMiddleware.RequirePermission("node:update"))
 }
 
 // setupVMRoutes configures VM-related routes
@@ -684,7 +690,8 @@ func (s *Server) setupVMRoutes(g *echo.Group) {
 	// enough to threaten the node they sit on, including guests the panel does
 	// not manage. Shares the node service's agent connection pool.
 	abuseService := service.NewAbuseService(s.db, service.NewNodeService(repository.NewNodeRepository(s.db), s.db), nil)
-	handler.RegisterAbuseRoutes(s.echo, handler.NewAbuseHandler(abuseService, repository.NewAuditRepository(s.db)), s.db)
+	abuseService.SetNetworkService(vmNet)
+	handler.RegisterAbuseRoutes(s.echo, handler.NewAbuseHandler(abuseService, repository.NewAuditRepository(s.db), s.db), s.db)
 
 	// Tenant VPCs: customer-defined private networks. Two customers may choose the
 	// same subnet — a router namespace per VPC on the node keeps them apart.
@@ -753,12 +760,14 @@ func (s *Server) setupNetworkRoutes() {
 	// pool the same way VM creation does. Without it the only route to an IP was
 	// to create the machine with one.
 	networkService.SetIPAMService(service.NewIPAMService(s.db, repository.NewIPAMRepository(s.db)))
+	natVMs := service.NewVMService(s.db, vmRepo, nodeRepo, repository.NewTemplateRepository(s.db), s.riverClient, slog.Default())
+	// Network cards are added, removed and readdressed on the node itself.
+	networkService.SetAgentDialer(natVMs.AgentFor)
 	networkHandler := handler.NewNetworkHandler(networkService, authz.NewAuthorizer(s.db))
 	handler.RegisterNetworkRoutes(s.echo, networkHandler, s.db)
 	// Firewall groups, and NAT VMs' public ports and hostnames.
 	handler.RegisterFirewallGroupRoutes(s.echo,
 		handler.NewFirewallGroupHandler(service.NewFirewallGroupService(s.db, networkService), authz.NewAuthorizer(s.db)), s.db)
-	natVMs := service.NewVMService(s.db, vmRepo, nodeRepo, repository.NewTemplateRepository(s.db), s.riverClient, slog.Default())
 	handler.RegisterNATRoutes(s.echo, handler.NewNATHandler(service.NewNATService(s.db, networkService, natVMs), authz.NewAuthorizer(s.db)), s.db)
 	// The customer area's settings, and customers asking for more addresses.
 	handler.RegisterPortalRoutes(s.echo, s.db, networkService)
@@ -802,6 +811,10 @@ func (s *Server) setupIPAMRoutes() {
 	ipamService := service.NewIPAMService(s.db, ipamRepo)
 	// Live PTR push (PowerDNS) when configured — rDNS works without a forward zone.
 	ipamService.SetDNSProvider(s.dnsProviderInstance())
+	// Switching a pool's DHCP reaches the nodes of the VMs holding its addresses.
+	vmRepo, nodeRepo := repository.NewVMRepository(s.db), repository.NewNodeRepository(s.db)
+	ipamService.SetPoolGuestsChanged(service.NewNetworkService(s.db, repository.NewNetworkRepository(s.db),
+		repository.NewFirewallRepository(s.db), vmRepo, nodeRepo, s.riverClient).ResyncPool)
 	ipamHandler := handler.NewIPAMHandler(ipamService)
 	handler.RegisterIPAMRoutes(s.echo, ipamHandler, s.db)
 	handler.RegisterVMRDNSRoute(s.echo, ipamHandler, authz.NewAuthorizer(s.db), s.db)
@@ -912,8 +925,13 @@ func (s *Server) setupSnapshotRoutes() {
 	vmRepo := repository.NewVMRepository(s.db)
 	nodeRepo := repository.NewNodeRepository(s.db)
 	snapshotService := service.NewSnapshotService(s.db, snapshotRepo, vmRepo, nodeRepo, s.riverClient, logger)
+	vmService := service.NewVMService(s.db, vmRepo, nodeRepo, repository.NewTemplateRepository(s.db), s.riverClient, logger)
+	snapshotService.SetFeatureLookup(vmService.NodeFeatureSet)
+	s.snapshotService = snapshotService
 	snapshotHandler := handler.NewSnapshotHandler(snapshotService, authz.NewAuthorizer(s.db))
 	handler.RegisterSnapshotRoutes(s.echo, snapshotHandler, s.db)
+	// VM hardware, nodes' dedicated cores and snapshot schedules.
+	handler.RegisterComputeRoutes(s.echo, handler.NewComputeHandler(vmService, snapshotService, authz.NewAuthorizer(s.db), s.db), s.db)
 }
 
 // backupDestinationInstance returns where backups are kept, as set on the admin
@@ -2148,7 +2166,10 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 	// when RESCUE_ISO_URL is what customers get. Saved through PUT /system.
 	sys.GET("/rescue", func(c echo.Context) error {
 		iso, source := service.RescueISO(c.Request().Context(), s.db)
-		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{"iso_url": iso, "source": source}})
+		image, sum := service.RescueImage(c.Request().Context(), s.db)
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{
+			"iso_url": iso, "source": source, "image_url": image, "image_sha256": sum,
+		}})
 	})
 
 	// Panel-wide settings that used to be environment variables: each value in
@@ -2337,6 +2358,7 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 	// back out: responses say only whether one is stored.
 	dnsProv := s.dnsProviderInstance()
 	type dnsProviderRequest struct {
+		Kind     string `json:"kind"`
 		URL      string `json:"url"`
 		ServerID string `json:"server_id"`
 		APIKey   string `json:"api_key"`
@@ -2362,7 +2384,7 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		if err := c.Bind(&req); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request body"})
 		}
-		if err := dnsProv.Save(c.Request().Context(), req.URL, req.ServerID, req.APIKey); err != nil {
+		if err := dnsProv.Save(c.Request().Context(), req.Kind, req.URL, req.ServerID, req.APIKey); err != nil {
 			if errors.Is(err, service.ErrDNSAPIKeyRequired) || errors.Is(err, service.ErrDNSInvalidURL) {
 				return dnsProviderError(c, err)
 			}
@@ -2383,7 +2405,7 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		}
 		ctx, cancel := context.WithTimeout(c.Request().Context(), 15*time.Second)
 		defer cancel()
-		if err := dnsProv.Test(ctx, req.URL, req.ServerID, req.APIKey); err != nil {
+		if err := dnsProv.Test(ctx, req.Kind, req.URL, req.ServerID, req.APIKey); err != nil {
 			return dnsProviderError(c, err)
 		}
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "The nameserver answered"})
@@ -2447,6 +2469,35 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		}
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "Backup destination removed"})
 	})
+	// Encryption of new backups. The keys never come back out except through
+	// export-keys, which needs the Administrator role.
+	sys.POST("/backup-destinations/:id/encryption", func(c echo.Context) error {
+		var req struct {
+			Encrypt *bool `json:"encrypt"`
+		}
+		if err := c.Bind(&req); err != nil || req.Encrypt == nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "encrypt is required"})
+		}
+		v, err := backupDest.SetEncryption(c.Request().Context(), c.Param("id"), *req.Encrypt)
+		if err != nil {
+			return backupDestError(c, err)
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": v})
+	})
+	sys.POST("/backup-destinations/:id/rotate-key", func(c echo.Context) error {
+		v, err := backupDest.RotateKey(c.Request().Context(), c.Param("id"))
+		if err != nil {
+			return backupDestError(c, err)
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": v})
+	})
+	sys.POST("/backup-destinations/:id/export-keys", func(c echo.Context) error {
+		keys, err := backupDest.ExportKeys(c.Request().Context(), c.Param("id"))
+		if err != nil {
+			return backupDestError(c, err)
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": keys})
+	}, panelMiddleware.RequirePermission(panelMiddleware.PermAll))
 	// Test the form's current values, unsaved, from the panel and from each
 	// chosen node: they reach the store over different networks. id is the
 	// destination being edited, whose saved secret is used when none is typed.
@@ -2709,6 +2760,9 @@ func (s *Server) Start() error {
 	// Daily capacity rows for the reports, and the opt-in update notice.
 	go service.RunCapacityRecorder(collectorCtx, s.db)
 	go service.RunUpdateChecker(collectorCtx, s.db)
+	if s.snapshotService != nil && s.riverClient != nil {
+		go s.snapshotService.RunSnapshotSchedules(collectorCtx)
+	}
 
 	// Start the backup scheduler: starts the cron and (re)loads active schedules
 	// from the DB so they survive restarts. Without this, scheduled backups never run.

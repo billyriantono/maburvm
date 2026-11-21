@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maburvm/panel/internal/agent/dhcp"
 	"github.com/maburvm/panel/internal/agent/libvirt"
 	"github.com/maburvm/panel/internal/agent/netrules"
 	"github.com/maburvm/panel/internal/shared/models"
@@ -29,6 +30,8 @@ type Manager struct {
 	// ipv6StatePath: an agent restart or node reboot restores the routes, and a
 	// released or moved prefix is torn down even across restarts.
 	ipv6 map[string]IPv6Delegation
+	// dhcp answers DHCP for the VMs' addresses on pools that ask for it.
+	dhcp *dhcp.Manager
 }
 
 // VMNetworkState holds the network configuration state for a VM
@@ -100,15 +103,26 @@ func NewManager() (*Manager, error) {
 		antiSpoof:  asManager,
 		vmNetworks: make(map[string]*VMNetworkState),
 		ipv6:       loadIPv6Delegations(ipv6StatePath()),
+		dhcp:       dhcp.NewManager(filepath.Dir(ipv6StatePath())),
 	}
 	asManager.AdoptExisting(runningVMIDs(), vmNICs)
 	// VLANs on record are put back at start (agent restart, node reboot) and
 	// kept in place: a VM that restarts gets a fresh tap in the native VLAN.
 	m.vlan.Reconcile()
+	// The outbound rate limit hangs off the per-guest counting rules, so they
+	// are put in place now rather than at the panel's first poll.
+	m.syncGuestCountersFromLibvirt()
+	if fwManager.ipt6 != nil {
+		if err := applyNullRoutes6(fwManager.ipt6, readNullRoutes()); err != nil {
+			log.Printf("[NetworkManager] WARNING: IPv6 null-routes not restored: %v", err)
+		}
+	}
 	go func() {
 		for range time.Tick(30 * time.Second) {
 			asManager.RebindInterfaces(vmNICs)
 			m.vlan.Reconcile()
+			m.syncGuestCountersFromLibvirt()
+			m.ExpireNullRoutes()
 		}
 	}()
 	for vmID, d := range m.ipv6 { // node reboot: routes and neighbour entries are gone
@@ -137,6 +151,8 @@ type VMDesired struct {
 	PortForwards []PortForwardSpec
 	// AntiSpoof pins the VM's NICs to these addresses; empty turns it off.
 	AntiSpoof []SpoofAddr
+	// DHCP are the static leases the node serves for the VM's cards.
+	DHCP []dhcp.Host
 }
 
 // firewall is the firewall part of d.
@@ -206,8 +222,10 @@ func (m *Manager) ApplyVM(d VMDesired) (warnings []string, err error) {
 
 	// 5. The delegated IPv6 prefix. A prefix the VM no longer has (released, or
 	//    moved to another MAC/bridge) is removed; an unchanged one is left up.
-	if prev, ok := m.ipv6[d.VMID]; ok && (d.IPv6 == nil || prev != *d.IPv6) {
-		if err := removeIPv6Route(prev); err != nil {
+	if prev, ok := m.ipv6[d.VMID]; ok && (d.IPv6 == nil || !prev.Same(*d.IPv6)) {
+		if d.IPv6 != nil && prev.sameRoute(*d.IPv6) {
+			removeStaleProxies(prev, *d.IPv6) // the route stays up
+		} else if err := removeIPv6Route(prev); err != nil {
 			log.Printf("[NetworkManager] WARNING: removing old IPv6 %s for VM %s: %v", prev.Prefix, d.VMID, err)
 		}
 		delete(m.ipv6, d.VMID)
@@ -249,8 +267,29 @@ func (m *Manager) ApplyVM(d VMDesired) (warnings []string, err error) {
 		warnings = append(warnings, "anti-spoofing: "+err.Error())
 	}
 
+	// 8. DHCP: the VM's static leases, served on their bridges.
+	m.dhcp.Set(d.VMID, d.DHCP)
+
 	m.vmNetworks[d.VMID] = state
 	return warnings, nil
+}
+
+// DHCPStatus says, per bridge the node answers DHCP on, why it is not
+// serving ("" when it is).
+func (m *Manager) DHCPStatus() map[string]string { return m.dhcp.Status() }
+
+// VLANBridges reports the bridges that carry per-VM VLANs and how each looks
+// now, and whether the list came from the agent's environment.
+func (m *Manager) VLANBridges() ([]netrules.VLANBridgeState, bool) { return m.vlan.Bridges() }
+
+// SetVLANBridges replaces the VLAN bridges (see VLANManager.SetBridges) and
+// puts the VMs' VLANs on any newly enabled bridge at once.
+func (m *Manager) SetVLANBridges(bridges map[string]string, useEnv bool) ([]netrules.VLANBridgeState, bool, error) {
+	st, fromEnv, err := m.vlan.SetBridges(bridges, useEnv)
+	if err == nil {
+		go m.vlan.Reconcile()
+	}
+	return st, fromEnv, err
 }
 
 // EnsureChains repairs the agent's own chains and jumps if something outside
@@ -363,7 +402,10 @@ func (m *Manager) CleanupVMNetwork(vmID string) error {
 	// Whatever is tagged for the VM goes, whichever address it was written for.
 	m.nat.PruneAddrs(vmID, "")
 
-	// 6. Remove the IPv6 route + neighbour (persisted, so this works after a restart).
+	// 6. Stop serving the VM's DHCP leases.
+	m.dhcp.Set(vmID, nil)
+
+	// 7. Remove the IPv6 route + neighbour (persisted, so this works after a restart).
 	if d, ok := m.ipv6[vmID]; ok {
 		if err := removeIPv6Route(d); err != nil {
 			errs = append(errs, fmt.Errorf("IPv6 route cleanup: %w", err))
@@ -648,6 +690,22 @@ func vmNICs(vmID string) ([]NIC, error) {
 		}
 	}
 	return nics, nil
+}
+
+// syncGuestCountersFromLibvirt brings the per-guest counting rules in line
+// with every running domain. A failed listing leaves the rules as they are
+// rather than removing every guest's.
+func (m *Manager) syncGuestCountersFromLibvirt() {
+	ifaces, err := libvirt.ListGuestInterfaces()
+	if err != nil {
+		log.Printf("[NetworkManager] WARNING: listing guest interfaces: %v", err)
+		return
+	}
+	nics := make([]GuestNIC, 0, len(ifaces))
+	for _, gi := range ifaces {
+		nics = append(nics, GuestNIC{MAC: gi.MAC, Tap: gi.Target})
+	}
+	m.SyncGuestCounters(nics)
 }
 
 // runningVMIDs lists the VMs that have taps, for anti-spoof adoption.

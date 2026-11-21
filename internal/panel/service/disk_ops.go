@@ -73,8 +73,8 @@ func diskMoveActive(ctx context.Context, db *gorm.DB, vmID string) bool {
 // "vda" is its system disk (its size in the plan sense), any other device one
 // of its extra disks. Disks only grow.
 func (s *VMService) ResizeDisk(ctx context.Context, vmID, device string, sizeGB int, billed bool) (*DiskResizeResult, error) {
-	if VMMigrating(ctx, s.db, vmID) {
-		return nil, ErrVMMigrating
+	if err := vmBusy(ctx, s.db, vmID); err != nil {
+		return nil, err
 	}
 	if diskMoveActive(ctx, s.db, vmID) {
 		return nil, ErrDiskMoveActive
@@ -263,8 +263,8 @@ func (VMDiskMove) TableName() string { return "vm_disk_moves" }
 // copied while the VM is off, or block-copied while it runs, then the old
 // disk is removed. The destination pool is admitted as a new disk would be.
 func (s *VMService) StartDiskMove(ctx context.Context, vmID, device, destPoolID, userID string) (*VMDiskMove, error) {
-	if VMMigrating(ctx, s.db, vmID) {
-		return nil, ErrVMMigrating
+	if err := vmBusy(ctx, s.db, vmID); err != nil {
+		return nil, err
 	}
 	vm, err := s.vmRepo.GetByID(ctx, vmID)
 	if err != nil {

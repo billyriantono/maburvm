@@ -23,8 +23,11 @@
 #
 # --uefi installs Windows for UEFI boot (a GPT disk with an EFI system
 # partition) under OVMF, which must be installed (the ovmf package). Mark the
-# template's firmware UEFI in the panel; VMs boot from it once the node agents
-# boot UEFI guests. Without it the image boots with BIOS, which every agent does.
+# template's firmware UEFI in the panel, and tick Secure Boot and TPM there if
+# its VMs should have them; nodes need the ovmf package (and swtpm for a TPM),
+# which their preflight shows. A VM keeps the firmware it was created with, so
+# it is reinstalled only from images for the same firmware. Without --uefi the
+# image boots with BIOS, which every node does.
 set -euo pipefail
 
 VERSION="" OUT="" ISO="" EDITION=standard CORE=0 UEFI=0 WORK="" KEEP=0
@@ -38,7 +41,7 @@ while [ $# -gt 0 ]; do
     --uefi) UEFI=1; shift ;;
     --work) WORK="$2"; shift 2 ;;
     --keep) KEEP=1; shift ;;
-    -h|--help) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -336,7 +339,8 @@ qemu-img convert -c -O qcow2 "$DISK" "$OUT.part"
 mv "$OUT.part" "$OUT"
 echo "Done: $OUT ($(du -h "$OUT" | cut -f1))"
 if [ "$UEFI" = 1 ]; then
-  echo "This image boots with UEFI: set the template's boot firmware to UEFI in the panel."
+  echo "This image boots with UEFI: set the template's boot firmware to UEFI in the panel"
+  echo "(and Secure Boot and TPM if its VMs should have them)."
 fi
 echo "Add it in the panel under Templates, Add from URL: system type Windows, and this path"
 echo "(the file must be at the same path on every node, or served from a URL the nodes can reach)."

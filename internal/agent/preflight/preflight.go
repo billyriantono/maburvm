@@ -6,6 +6,7 @@ package preflight
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/maburvm/panel/internal/agent/netrules"
@@ -44,12 +45,21 @@ type Facts struct {
 
 	Bridges []BridgeFacts
 	Pools   []PoolFacts
+	// VLANBridges are the bridges named for per-VM VLANs; DHCP is, per bridge
+	// served, why it is not ("" when it is).
+	VLANBridges []netrules.VLANBridgeState
+	DHCP        map[string]string
 
 	BridgeNF  string // netrules.FirewallEnforced or netrules.FirewallOff
 	IPForward bool
 	Tools     map[string]bool // keyed by binary name
 	// TimeSynced is "yes", "no", or "" when it could not be told.
 	TimeSynced string
+
+	// Optional hardware for VMs: UEFI firmware, Secure Boot firmware, the
+	// TPM emulator, and the reserved huge page pool in MiB.
+	UEFI, SecureBoot, TPM bool
+	HugepagesMiB          int64
 }
 
 // BridgeFacts is one bridge the panel attaches VMs to.
@@ -147,6 +157,19 @@ func Evaluate(f Facts) []Check {
 	for _, p := range f.Pools {
 		add(evalPool(p))
 	}
+	for _, v := range f.VLANBridges {
+		add(evalVLANBridge(v))
+	}
+	for _, b := range sortedKeys(f.DHCP) {
+		c := Check{ID: "dhcp:" + b, Name: "DHCP on " + b}
+		if problem := f.DHCP[b]; problem != "" {
+			c.Status, c.Detail = Warn, "Guests on "+b+" that take their address by DHCP get none: "+problem+"."
+			c.Fix = "Install dnsmasq (dnsmasq-base on Debian and Ubuntu) and make sure no other DHCP server holds port 67 on " + b + "; the agent starts it again within a minute."
+		} else {
+			c.Status, c.Detail = Pass, "Static leases for the addresses assigned on "+b+" are served."
+		}
+		add(c)
+	}
 
 	if f.BridgeNF == netrules.FirewallEnforced {
 		add(pass("bridge_netfilter", "Bridge netfilter", "Bridged VM traffic passes through the host firewall, so VM firewall rules apply."))
@@ -165,6 +188,7 @@ func Evaluate(f Facts) []Check {
 	}
 
 	out = append(out, evalTools(f.Tools)...)
+	out = append(out, evalOptionalHardware(f)...)
 
 	switch f.TimeSynced {
 	case "yes":
@@ -181,6 +205,27 @@ func Evaluate(f Facts) []Check {
 	return out
 }
 
+// evalOptionalHardware reports what VMs on the node can be given beyond the
+// basics. Each is optional, so a missing one passes and says what it rules out.
+func evalOptionalHardware(f Facts) []Check {
+	fw := pass("uefi_firmware", "UEFI firmware", "OVMF is installed: UEFI images boot here, with Secure Boot.")
+	switch {
+	case !f.UEFI:
+		fw.Detail = "Optional, not installed: UEFI images (and so Windows 11 and Secure Boot) cannot be installed on this node. Install the ovmf package (edk2-ovmf on the RHEL family) to offer them."
+	case !f.SecureBoot:
+		fw.Detail = "OVMF is installed without Secure Boot firmware and keys (OVMF_CODE*.secboot.fd, OVMF_VARS*.ms.fd): UEFI images boot here, Secure Boot does not."
+	}
+	tpm := pass("tpm_emulator", "TPM emulator", "swtpm is installed: VMs can have a virtual TPM 2.0.")
+	if !f.TPM {
+		tpm.Detail = "Optional, not installed: VMs here cannot have a virtual TPM (Windows 11 needs one). Install swtpm and swtpm-tools to offer it."
+	}
+	huge := pass("hugepages", "Huge pages", fmt.Sprintf("%d MiB of huge pages are reserved for VMs that ask for them.", f.HugepagesMiB))
+	if f.HugepagesMiB == 0 {
+		huge.Detail = "Optional, none reserved: VMs with huge pages cannot run on this node. Reserve them with vm.nr_hugepages in /etc/sysctl.d, sized for those VMs."
+	}
+	return []Check{fw, tpm, huge}
+}
+
 func evalBridge(b BridgeFacts) Check {
 	c := Check{ID: "bridge:" + b.Name, Name: "Bridge " + b.Name}
 	switch {
@@ -195,6 +240,20 @@ func evalBridge(b BridgeFacts) Check {
 		c.Fix = "Add the uplink to the bridge and bring it up: ip link set " + b.Name + " up."
 	default:
 		c.Status, c.Detail = Pass, fmt.Sprintf("%s is up with %d ports.", b.Name, b.Ports)
+	}
+	return c
+}
+
+func evalVLANBridge(v netrules.VLANBridgeState) Check {
+	c := Check{ID: "vlan:" + v.Bridge, Name: "VLAN bridge " + v.Bridge}
+	switch {
+	case v.Problem != "":
+		c.Status, c.Detail = Fail, "VLANs are enabled on "+v.Bridge+" with uplink "+v.Uplink+", but "+v.Problem+". A VM given a VLAN there is not put in it."
+		c.Fix = "Correct the bridge and uplink on the node's page (VLAN trunking), or make " + v.Uplink + " a port of " + v.Bridge + "."
+	case v.Filtering:
+		c.Status, c.Detail = Pass, fmt.Sprintf("%s carries VLANs over %s; VLAN filtering is on.", v.Bridge, v.Uplink)
+	default:
+		c.Status, c.Detail = Pass, fmt.Sprintf("%s can carry VLANs over %s. VLAN filtering is switched on when the first VM there gets a VLAN; tagged frames that pass the bridge today then need their VLAN added. The switch port of %s must carry the VLANs tagged.", v.Bridge, v.Uplink, v.Uplink)
 	}
 	return c
 }
@@ -257,6 +316,8 @@ var toolChecks = []struct {
 		"ebtables is missing: anti-spoofing relies on libvirt's filters alone.", "Install ebtables."},
 	{"tool_libguestfs", "libguestfs", []string{"guestfish"}, Warn,
 		"libguestfs tools are missing: RouterOS templates and disk image changes fail.", "Install libguestfs-tools."},
+	{"tool_dnsmasq", "dnsmasq", []string{"dnsmasq"}, Pass,
+		"Optional, not installed: IP pools with DHCP turned on cannot be served on this node.", "Install dnsmasq-base (dnsmasq on the RHEL family)."},
 }
 
 // ToolNames is every binary the tool checks look for.
@@ -303,6 +364,15 @@ func Worst(checks []Check) string {
 
 func pass(id, name, detail string) Check {
 	return Check{ID: id, Name: name, Status: Pass, Detail: detail}
+}
+
+func sortedKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func contains(list []string, s string) bool {

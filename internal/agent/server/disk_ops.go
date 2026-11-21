@@ -33,6 +33,7 @@ func (s *NodeAgentService) ResizeVMDisk(ctx context.Context, req *pb.ResizeVMDis
 	if !migration.ValidUUID(req.VmId) || !migration.ValidTarget(req.Target) || req.SizeGb <= 0 || req.SizeGb > 1<<20 {
 		return &pb.ResizeVMDiskResponse{Error: diskOpErr(pb.ErrorCode_ERROR_CODE_INVALID_ARGUMENT, errors.New("a VM id, a disk target and a size in GB are required"))}, nil
 	}
+	s.crashes.Hold(req.VmId)
 	live, size, err := libvirt.ResizeDiskTarget(req.VmId, req.Target, int(req.SizeGb), growLV(ctx, lvmPoolsOf(req.GetLvmPools())))
 	if err != nil {
 		return &pb.ResizeVMDiskResponse{Error: diskOpErr(pb.ErrorCode_ERROR_CODE_INTERNAL, err)}, nil

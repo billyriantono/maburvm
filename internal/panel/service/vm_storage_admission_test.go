@@ -76,10 +76,12 @@ func TestVMServiceAdmitsStorageOnCreateAndGrow(t *testing.T) {
 	require.Equal(t, 10, stored.Resources.Disk, "a refused grow changes nothing")
 
 	// A running VM grows its disk live, but only its disk, and not for a
-	// caller that stopped it to have the resize job boot it again (billing).
+	// caller that asked it to shut down to have the resize job boot it again
+	// (billing): the guest may still be shutting down, and that resize is
+	// admitted and queued as a stopped VM's is.
 	require.NoError(t, db.Model(&models.VM{}).Where("id = ?", resp.VM.ID).Update("status", models.VMStatusRunning).Error)
 	_, err = svc.UpdateVM(ctx, &UpdateVMRequest{VMID: resp.VM.ID, Resources: &models.Resources{CPU: 2, RAM: 512, Disk: 20}})
 	require.ErrorIs(t, err, ErrVMCannotBeModified)
 	_, err = svc.UpdateVM(ctx, &UpdateVMRequest{VMID: resp.VM.ID, Resources: &models.Resources{CPU: 1, RAM: 512, Disk: 20}, StartAfter: true})
-	require.ErrorIs(t, err, ErrVMCannotBeModified)
+	require.ErrorIs(t, err, ErrNodeCapacityExceeded, "admitted like a stopped VM's resize, not refused as running")
 }

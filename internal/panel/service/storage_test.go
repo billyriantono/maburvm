@@ -231,6 +231,39 @@ func TestPoolMeasurementAndEditsDoNotOverwriteEachOther(t *testing.T) {
 	assert.Equal(t, "online", stored.Status)
 }
 
+// A node left with two primaries (written by an older panel) is put right by
+// promoting one of them, and creating a pool as primary demotes the rest.
+func TestOnlyOnePrimaryPoolPerNode(t *testing.T) {
+	db := setupStorageTestDB(t)
+	repo := repository.NewStorageRepository(db)
+	svc := NewStorageService(repo)
+	const node = "node-1"
+	primaries := func() (ids []string) {
+		require.NoError(t, db.Model(&models.StoragePool{}).Where("node_id = ? AND is_primary", node).Order("id").Pluck("id", &ids).Error)
+		return ids
+	}
+
+	require.NoError(t, db.Create(&models.StoragePool{ID: "p-root", Name: "local", NodeID: node, Path: DefaultNodeImageDir, Type: "dir", Status: "online", IsPrimary: true}).Error)
+	require.NoError(t, db.Create(&models.StoragePool{ID: "p-vm", Name: "vm", NodeID: node, Path: "/vm", Type: "dir", Status: "online", IsPrimary: true}).Error)
+	require.NoError(t, db.Create(&models.StoragePool{ID: "p-far", Name: "far", NodeID: "node-2", Path: "/vm", Type: "dir", Status: "online", IsPrimary: true}).Error)
+
+	require.NoError(t, svc.UpdatePool("p-vm", &models.StoragePool{IsPrimary: true}))
+	assert.Equal(t, []string{"p-vm"}, primaries(), "re-promoting an already-primary pool must demote the other")
+
+	require.NoError(t, repo.CreatePool(&models.StoragePool{ID: "p-new", Name: "new", NodeID: node, Path: "/new", Type: "dir", IsPrimary: true}))
+	assert.Equal(t, []string{"p-new"}, primaries(), "a pool created primary must demote the rest")
+
+	// Promoting a pool that is gone, or on another node, demotes nothing.
+	require.NoError(t, repo.DeletePool("p-root"))
+	assert.ErrorIs(t, repo.SetPrimaryPool(node, "p-root"), repository.ErrStoragePoolNotOnNode)
+	assert.ErrorIs(t, repo.SetPrimaryPool(node, "p-far"), repository.ErrStoragePoolNotOnNode)
+	assert.Equal(t, []string{"p-new"}, primaries(), "a failed promotion must leave the node its primary")
+
+	var far models.StoragePool
+	require.NoError(t, db.First(&far, "id = ?", "p-far").Error)
+	assert.True(t, far.IsPrimary, "another node's primary is untouched")
+}
+
 func TestCreateLVMPoolAsksTheNode(t *testing.T) {
 	db := setupStorageTestDB(t)
 	seed := seedStoragePool(t, db)

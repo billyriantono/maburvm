@@ -48,6 +48,13 @@ const (
 	VMOpConfigureNetwork VMOperationType = "configure_network"
 )
 
+// VMOpRescue boots a stopped VM into the built-in rescue system; VMOpUnrescue
+// takes it out again.
+const (
+	VMOpRescue   VMOperationType = "rescue"
+	VMOpUnrescue VMOperationType = "unrescue"
+)
+
 // ISOSourceOperator is the "iso_source" param of an attach-ISO job whose image
 // the operator chose. A job without it carries a URL a customer typed.
 const ISOSourceOperator = "operator"
@@ -218,6 +225,9 @@ type RestoreJob struct {
 	// Layers are, for an incremental backup, the images under each disk (by
 	// target), the full backup's first.
 	Layers map[string][]models.BackupDisk `json:"layers,omitempty"`
+	// Encrypted: the backup, or one it is built on, was encrypted, so only an
+	// agent that can decrypt may be sent it.
+	Encrypted bool `json:"encrypted,omitempty"`
 }
 
 func (j RestoreJob) Kind() string { return "restore" }
@@ -279,6 +289,9 @@ type SnapshotJob struct {
 	Name       string            `json:"name,omitempty"`
 	DiskPath   string            `json:"disk_path,omitempty"`
 	Params     json.RawMessage   `json:"params,omitempty"`
+	// DiskOnly and Quiesce shape a snapshot being taken (SnapshotRequest).
+	DiskOnly bool `json:"disk_only,omitempty"`
+	Quiesce  bool `json:"quiesce,omitempty"`
 }
 
 // Kind returns the job kind for snapshot operations
@@ -310,7 +323,7 @@ func ValidateVMOperation(op VMOperationType) error {
 	switch op {
 	case VMOpCreate, VMOpStart, VMOpStop, VMOpRestart, VMOpDelete,
 		VMOpRebuild, VMOpSuspend, VMOpUnsuspend, VMOpMigrate, VMOpResize, VMOpResetPassword,
-		VMOpAttachISO, VMOpDetachISO,
+		VMOpAttachISO, VMOpDetachISO, VMOpRescue, VMOpUnrescue,
 		VMOpConfigureNetwork:
 		return nil
 	default:

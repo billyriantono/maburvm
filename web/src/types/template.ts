@@ -30,6 +30,9 @@ export interface OSTemplate {
   // Checked against checksum_url daily, and fetched again when it changed.
   auto_refresh?: boolean;
   firmware?: Firmware;
+  // VMs installed from the image get Secure Boot (UEFI only) and a virtual TPM.
+  secure_boot?: boolean;
+  tpm?: boolean;
   // Per node, with include_nodes: whether the image is there, and its checksum.
   nodes?: TemplateNodeStatus[];
   created_at: string;
@@ -80,6 +83,8 @@ export interface CreateTemplateRequest {
   allow_http?: boolean;
   auto_refresh?: boolean;
   firmware?: Firmware;
+  secure_boot?: boolean;
+  tpm?: boolean;
 }
 
 // UpdateTemplateRequest for updating OS templates
@@ -96,4 +101,6 @@ export interface UpdateTemplateRequest {
   allow_http?: boolean;
   auto_refresh?: boolean;
   firmware?: Firmware;
+  secure_boot?: boolean;
+  tpm?: boolean;
 }

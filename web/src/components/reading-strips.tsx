@@ -22,6 +22,8 @@ export const LONG_RANGES = [
   ...RANGES,
   { id: "30d", label: "30 days", minutes: 43200 },
   { id: "90d", label: "90 days", minutes: 129600 },
+  { id: "1y", label: "1 year", minutes: 525600 },
+  { id: "2y", label: "2 years", minutes: 1051200 },
 ] as const
 export type RangeId = (typeof LONG_RANGES)[number]["id"]
 type Range = (typeof LONG_RANGES)[number]
@@ -51,26 +53,7 @@ export interface ReadingStrip {
 export const CHART_1 = "var(--chart-1)"
 export const CHART_2 = "var(--chart-2)"
 
-const RATE_UNITS = ["B/s", "KB/s", "MB/s", "GB/s"]
-const NICE = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]
-
-/** Picks one unit for a pair of byte rates and a round top for the axis. */
-export function rateScale(values: number[][], live: (number | undefined)[] = []) {
-  const peak = Math.max(1, ...values.flat(), ...live.map((v) => v ?? 0))
-  let unit = 0
-  let scaled = peak
-  while (scaled >= 1024 && unit < RATE_UNITS.length - 1) {
-    scaled /= 1024
-    unit++
-  }
-  const div = 1024 ** unit
-  const top = NICE.find((n) => n >= scaled) ?? Math.ceil(scaled)
-  const fmt = (v: number) => {
-    const x = v / div
-    return `${x >= 100 ? x.toFixed(0) : x.toFixed(1)} ${RATE_UNITS[unit]}`
-  }
-  return { top: top * div, axis: `${top} ${RATE_UNITS[unit]}`, fmt }
-}
+export { rateScale } from "@/lib/utils"
 
 // Plot box in SVG units. The height matches the CSS height, so y maps 1:1.
 const W = 600
@@ -174,9 +157,11 @@ export function ReadingStrips({
   const clock = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" })
   const day = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" })
   const stamp = (t: number) => (range === "1h" ? clock.format(t) : `${day.format(t)}, ${clock.format(t)}`)
+  const rangeMinutes = LONG_RANGES.find((r) => r.id === range)!.minutes
+  const month = new Intl.DateTimeFormat(undefined, { month: "short", year: "numeric" })
   const ticks = [0, 0.25, 0.5, 0.75].map((f) => {
     const t = start + f * (end - start)
-    return range === "7d" ? day.format(t) : clock.format(t)
+    return rangeMinutes >= 525600 ? month.format(t) : rangeMinutes >= 10080 ? day.format(t) : clock.format(t)
   })
 
   const readout = (s: StripSeries) => {

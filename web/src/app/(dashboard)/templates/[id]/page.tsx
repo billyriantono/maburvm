@@ -112,6 +112,8 @@ export default function TemplateDetailPage() {
         allow_http: editIntegrity.allowHttp,
         auto_refresh: editIntegrity.autoRefresh,
         firmware: editIntegrity.firmware,
+        secure_boot: editIntegrity.firmware === "uefi" && !!editIntegrity.secureBoot,
+        tpm: !!editIntegrity.tpm,
       })
       toast.success("Template updated")
       setEditOpen(false)
@@ -176,7 +178,8 @@ export default function TemplateDetailPage() {
               setEditName(template.name); setEditVersion(template.version); setEditDescription(template.description || "")
               setEditLicensed(!!template.licensed); setEditPlanIds(template.plan_ids ?? [])
               setEditIntegrity({ checksumSha256: template.checksum_sha256 ?? "", checksumUrl: template.checksum_url ?? "", skipChecksum: false,
-                allowHttp: !!template.allow_http, autoRefresh: !!template.auto_refresh, firmware: template.firmware ?? "bios" })
+                allowHttp: !!template.allow_http, autoRefresh: !!template.auto_refresh, firmware: template.firmware ?? "bios",
+                secureBoot: !!template.secure_boot, tpm: !!template.tpm })
             }
           }}>
             <DialogTrigger asChild>
@@ -310,7 +313,10 @@ export default function TemplateDetailPage() {
             )}
             <div className="flex items-center justify-between py-2 border-b">
               <span className="text-sm text-muted-foreground">Kind and boot</span>
-              <span className="font-medium text-sm">{template.kind === "iso" ? "ISO" : "Disk image"}, {template.firmware === "uefi" ? "UEFI" : "BIOS"}</span>
+              <span className="font-medium text-sm">
+                {template.kind === "iso" ? "ISO" : "Disk image"}, {template.firmware === "uefi" ? (template.secure_boot ? "UEFI with Secure Boot" : "UEFI") : "BIOS"}
+                {template.tpm ? ", virtual TPM" : ""}
+              </span>
             </div>
             <div className="flex items-center justify-between py-2 border-b">
               <span className="text-sm text-muted-foreground">Created</span>

@@ -574,7 +574,11 @@ hold a limited number of forwards (Settings, System, Quotas; 20 by default).
 **VM firewalls need bridge netfilter.** Traffic between ports of one bridge
 reaches iptables only while the `br_netfilter` module is loaded and
 `net.bridge.bridge-nf-call-iptables` and `-ip6tables` are 1. Without that, VM
-firewall rules and the outbound scan guard are installed and filter nothing. The
+firewall rules, the outbound scan guard and null-routes of bridged guests are
+installed and filter nothing. The Abuse page's inbound connection counts are
+not kept at all: their iptables match would load `br_netfilter` by itself, so
+the agent adds them only once it is on (packet rates still read, from the
+guests' taps). The
 installer turns it on for a new node. The agent reports the state to the panel,
 which warns on the node page, on each VM's firewall tab and in the security
 centre while a node is not enforcing, or has not said. Where it is on, the agent
@@ -776,14 +780,16 @@ a private network attached (they live on one node), snapshots, an ISO in the
 drive, rescue mode, a backup copying the disks, an address pool not available
 on the destination, a port forward whose port the destination already uses
 (another VM's forward, a NAT VM's ports, or 80/443 when it routes hostnames), a
-NAT VM, a disk on LVM or another block device, storage that is not a directory
-pool, no room under the destination's limits, and, for a live move of a VM with
-the host's own CPU (the default `host-passthrough`), a destination with a
-different CPU; move such a VM offline instead. Without a chosen pool a VM lands
-in the destination's best directory pool, even when its primary pool is LVM. A
-port the destination takes while the VM is copying is dropped from the VM's
-forwards at the switch-over and named in the move's note. A moved VM's next
-scheduled backup is a full one.
+NAT VM whose NAT pool or port range the destination lacks, dedicated cores or a
+virtual TPM, huge pages or UEFI firmware the destination lacks, a disk on LVM
+or another block device, storage that is not a directory pool, no room under
+the destination's limits, and, for a live move of a VM with the host's own CPU
+(the default `host-passthrough`), a destination with a different CPU; move such
+a VM offline instead. Without a chosen pool a VM lands in the destination's
+best directory pool, even when its primary pool is LVM. A port the destination
+takes while the VM is copying is dropped from the VM's forwards at the
+switch-over and named in the move's note. A moved VM's next scheduled backup is
+a full one.
 
 **The migration link.** The panel sets this up the first time a VM moves to or
 from a node; nothing is configured by hand. Each agent generates its own key
@@ -856,7 +862,11 @@ passed through by its SNI, so certificates stay on the VMs. A customer proves a
 hostname with a TXT record `_maburvm-verify.<hostname>` or by pointing it at the
 publish address; one hostname is routed to one VM. This needs the agent of this
 version: on an older one the panel refuses hostnames with "needs agent update".
-NAT VMs cannot move to another node (their address and ports belong to theirs).
+A NAT VM moves to another node only where its NAT pool is offered too (the
+same private range on a bridge there, with the pool assigned to that node) and
+the node has a NAT port range: it keeps its public ports when they are free
+there, else gets a free block of the same size with its forwards shifted into
+it, and its owner is emailed the new address and ports.
 
 ## 7. TLS & reverse proxy
 
@@ -1399,9 +1409,10 @@ offer it, or be served from a URL the nodes can reach.
   `RealTimeIsUniversal` set, or its clock will be off by its time-zone offset.
 - `--uefi` builds an image that boots with UEFI (a GPT disk with an EFI system
   partition) under OVMF, which the build host needs (the `ovmf` package). Add
-  it with the template's boot firmware set to UEFI. The node agents boot BIOS
-  guests only for now, so the panel refuses VMs from a UEFI template until
-  they boot UEFI too; BIOS images (the default) work everywhere.
+  it with the template's boot firmware set to UEFI, and tick Secure Boot and
+  TPM if its VMs should have them. VMs are created from it only on nodes with
+  OVMF (and swtpm for a TPM); BIOS images (the default) work everywhere. A VM
+  is reinstalled only from an image for the firmware it was created with.
 - To install Windows by hand instead, add the installer as an ISO, mark the
   virtio drivers ISO (`virtio-win.iso`) as the drivers disc on the ISOs page,
   and create a VM with the Windows ISO as its system: it gets an empty disk,
@@ -1618,12 +1629,18 @@ sent until a mail server is set up.
 area, with a read state kept per account. The administrator's bell is
 unchanged.
 
-**Rescue mode.** Enter rescue boots a stopped server from a rescue ISO so its
-owner can repair it from the console. Choose the ISO under Settings, System,
-Rescue: an http(s) URL each node downloads, or the path of an ISO on every
-node. Until one is saved there, `RESCUE_ISO_URL` in the panel's environment is
-used; with neither, the button is disabled for customers and says rescue mode is
-not available.
+**Rescue mode.** Enter rescue boots a stopped server into a rescue system so
+its owner can repair it. Under Settings, System, Rescue choose the **built-in
+rescue system**, a small qcow2 cloud image (an http(s) URL with its sha256, or a
+path on every node; one no template is built from): each rescue copies it beside
+the server's disk, sets it up with libguestfs with the server's own address, a
+one-time root password shown once in the panel and the owner's chosen SSH keys,
+and boots it first with the server's disks attached. And/or a **rescue ISO**
+(an http(s) URL each node downloads, or the path of an ISO on every node), used
+where no built-in system is set or the node's agent is older. Until an ISO is
+saved there, `RESCUE_ISO_URL` in the panel's environment is used; with nothing
+at all, the button is disabled for customers and says rescue mode is not
+available.
 
 **Deleting an account that owns VMs** is refused until you choose, on the
 account's page, to give its VMs (and their floating IPs) to another account or

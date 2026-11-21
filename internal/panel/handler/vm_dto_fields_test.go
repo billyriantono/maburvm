@@ -34,6 +34,8 @@ func TestVMDTOsExposeModelFields(t *testing.T) {
 		"guest_network_note":    true,
 		"guest_network_pending": true,
 		"limits":                true,
+		"hardware":              true,
+		"rescue_kind":           true,
 	}
 
 	modelKeys := jsonFieldNames(models.VM{})

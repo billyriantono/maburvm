@@ -49,7 +49,10 @@ type VM struct {
 	Config    *pb.VMConfig
 	ISO       string
 	Snapshots []string
-	Disks     []string // data disk targets, vdb onwards
+	// SnapshotStates is the state each snapshot was taken in, which a revert
+	// returns the VM to; one not listed reverts to stopped.
+	SnapshotStates map[string]pb.VMState
+	Disks          []string // data disk targets, vdb onwards
 }
 
 // Agent is one fake node.
@@ -350,6 +353,10 @@ func (a *Agent) CreateSnapshot(ctx context.Context, req *pb.SnapshotRequest) (*p
 				name = fmt.Sprintf("snap-%d", len(vm.Snapshots)+1)
 			}
 			vm.Snapshots = append(vm.Snapshots, name)
+			if vm.SnapshotStates == nil {
+				vm.SnapshotStates = map[string]pb.VMState{}
+			}
+			vm.SnapshotStates[name] = vm.State
 			resp.Snapshot = &pb.SnapshotInfo{SnapshotId: name, Name: name, CreatedAt: timestamppb.Now(), VmState: vm.State}
 		case pb.SnapshotOperationType_SNAPSHOT_OPERATION_TYPE_RESTORE:
 			if find(req.SnapshotId) < 0 {
@@ -357,6 +364,10 @@ func (a *Agent) CreateSnapshot(ctx context.Context, req *pb.SnapshotRequest) (*p
 				return resp, nil
 			}
 			vm.State = pb.VMState_VM_STATE_STOPPED
+			if st, ok := vm.SnapshotStates[req.SnapshotId]; ok {
+				vm.State = st
+			}
+			resp.Snapshot = &pb.SnapshotInfo{SnapshotId: req.SnapshotId, VmState: vm.State}
 		case pb.SnapshotOperationType_SNAPSHOT_OPERATION_TYPE_DELETE:
 			i := find(req.SnapshotId)
 			if i < 0 {
@@ -408,6 +419,11 @@ func (a *Agent) RestoreDisk(ctx context.Context, req *pb.RestoreDiskRequest) (*p
 		vm := a.vms[req.VmId]
 		if vm == nil {
 			return &pb.RestoreDiskResponse{Error: notFound("domain not found")}, nil
+		}
+		// As a real node: never under a running disk.
+		if vm.State != pb.VMState_VM_STATE_STOPPED {
+			return &pb.RestoreDiskResponse{Error: &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL,
+				Message: "VM must be stopped to restore (state: " + vm.State.String() + ")"}}, nil
 		}
 		vm.Snapshots = nil
 		return &pb.RestoreDiskResponse{Success: true, BytesRestored: 1 << 20}, nil

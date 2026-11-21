@@ -43,6 +43,11 @@ type PlanRequest struct {
 	DataQuotaGB       int64  `json:"data_quota_gb"`
 	OverQuotaPolicy   string `json:"over_quota_policy"`
 	ThrottleSpeedMbps int    `json:"throttle_speed_mbps"`
+	// TransferResetDay (1-28) and TransferCounts (models.TransferCount*) set
+	// when the allowance starts again and what counts toward it; leaving one
+	// out keeps the plan's (the 1st, both directions for a new plan).
+	TransferResetDay *int    `json:"transfer_reset_day"`
+	TransferCounts   *string `json:"transfer_counts"`
 	// SMTPPolicy is models.SMTPAllowed or SMTPBlocked; empty keeps the plan's
 	// current policy (allowed for a new plan).
 	SMTPPolicy string `json:"smtp_policy"`
@@ -80,8 +85,11 @@ type PlanRequest struct {
 	// StorageTier puts new VMs' disks only in pools of that tier; "" uses
 	// each node's primary pool, and leaving it out keeps the plan's choice.
 	StorageTier *string `json:"storage_tier"`
-	Description string  `json:"description"`
-	IsActive    *bool   `json:"is_active"`
+	// Hardware is the virtual hardware of new VMs on the plan; leaving it out
+	// keeps the plan's. Firmware and pinned cores belong to VMs, not plans.
+	Hardware    *models.Hardware `json:"hardware"`
+	Description string           `json:"description"`
+	IsActive    *bool            `json:"is_active"`
 }
 
 // maxPrice bounds a display price, well inside numeric(14,4).
@@ -188,6 +196,12 @@ func (r *PlanRequest) validate() error {
 	default:
 		return fmt.Errorf("smtp_policy must be allowed or blocked")
 	}
+	if d := r.TransferResetDay; d != nil && (*d < 1 || *d > models.MaxTransferResetDay) {
+		return fmt.Errorf("transfer_reset_day must be between 1 and %d", models.MaxTransferResetDay)
+	}
+	if c := r.TransferCounts; c != nil && !models.ValidTransferCount(*c) {
+		return fmt.Errorf("transfer_counts must be both, out or in")
+	}
 	if r.Limits != nil {
 		if err := r.Limits.Validate(); err != nil {
 			return err
@@ -220,6 +234,14 @@ func (r *PlanRequest) validate() error {
 			return err
 		}
 		r.StorageTier = &t
+	}
+	if r.Hardware != nil {
+		if r.Hardware.Firmware != "" || r.Hardware.PinnedCPUs != "" {
+			return fmt.Errorf("hardware: firmware comes from the image and dedicated cores are picked per VM, so a plan sets neither")
+		}
+		if err := r.Hardware.Validate(0); err != nil {
+			return fmt.Errorf("hardware: %w", err)
+		}
 	}
 	return r.validatePriceAndAllowances()
 }
@@ -296,7 +318,13 @@ func (s *PlanService) CreatePlan(ctx context.Context, req *PlanRequest) (*models
 	if err := s.saveStorageTier(ctx, plan, req.StorageTier); err != nil {
 		return nil, err
 	}
+	if err := s.saveHardware(ctx, plan, req.Hardware); err != nil {
+		return nil, err
+	}
 	if err := s.saveExtras(ctx, plan, req); err != nil {
+		return nil, err
+	}
+	if err := s.saveTransferTerms(ctx, plan, req); err != nil {
 		return nil, err
 	}
 	return plan, nil
@@ -359,10 +387,32 @@ func (s *PlanService) UpdatePlan(ctx context.Context, id string, req *PlanReques
 	if err := s.saveStorageTier(ctx, plan, req.StorageTier); err != nil {
 		return nil, err
 	}
+	if err := s.saveHardware(ctx, plan, req.Hardware); err != nil {
+		return nil, err
+	}
 	if err := s.saveExtras(ctx, plan, req); err != nil {
 		return nil, err
 	}
+	if err := s.saveTransferTerms(ctx, plan, req); err != nil {
+		return nil, err
+	}
 	return plan, nil
+}
+
+// saveHardware writes a changed hardware profile.
+func (s *PlanService) saveHardware(ctx context.Context, plan *models.Plan, hw *models.Hardware) error {
+	if hw == nil || *hw == plan.Hardware {
+		return nil
+	}
+	raw, err := json.Marshal(hw)
+	if err != nil {
+		return err
+	}
+	if err := s.repo.SetColumns(ctx, plan.ID, map[string]any{"hardware": string(raw)}); err != nil {
+		return fmt.Errorf("failed to save the plan's hardware: %w", err)
+	}
+	plan.Hardware = *hw
+	return nil
 }
 
 // saveNodeGroup writes a changed hypervisor group; an unchanged or omitted one
@@ -417,6 +467,30 @@ func (s *PlanService) saveExtras(ctx context.Context, plan *models.Plan, req *Pl
 		return fmt.Errorf("failed to save the plan's allowances: %w", err)
 	}
 	plan.MaxExtraDisks, plan.MaxImages, plan.MaxFloatingIPs, plan.AddonPrices = req.MaxExtraDisks, req.MaxImages, req.MaxFloatingIPs, prices
+	return nil
+}
+
+// saveTransferTerms writes a changed reset day or counted direction.
+func (s *PlanService) saveTransferTerms(ctx context.Context, plan *models.Plan, req *PlanRequest) error {
+	cols := map[string]any{}
+	if req.TransferResetDay != nil && *req.TransferResetDay != plan.TransferResetDay {
+		cols["transfer_reset_day"] = *req.TransferResetDay
+	}
+	if req.TransferCounts != nil && *req.TransferCounts != plan.TransferCounts {
+		cols["transfer_counts"] = *req.TransferCounts
+	}
+	if len(cols) == 0 {
+		return nil
+	}
+	if err := s.repo.SetColumns(ctx, plan.ID, cols); err != nil {
+		return fmt.Errorf("failed to save the plan's transfer terms: %w", err)
+	}
+	if req.TransferResetDay != nil {
+		plan.TransferResetDay = *req.TransferResetDay
+	}
+	if req.TransferCounts != nil {
+		plan.TransferCounts = *req.TransferCounts
+	}
 	return nil
 }
 

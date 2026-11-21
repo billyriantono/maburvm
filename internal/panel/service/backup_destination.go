@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 	"github.com/maburvm/panel/internal/shared/models"
@@ -56,6 +59,25 @@ type backupDestinationRow struct {
 	IsDefault bool
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	// Encrypt: new backups are encrypted with EncryptionKeyID, one of the
+	// keys in EncryptionKeys (a JSON list of destKey).
+	Encrypt         bool
+	EncryptionKeys  string `gorm:"type:jsonb"`
+	EncryptionKeyID string
+}
+
+// destKey is one of a destination's encryption keys, as stored: the key is
+// sealed with the panel's AES key like the destination's secret.
+type destKey struct {
+	ID        string    `json:"id"`
+	KeyEnc    string    `json:"key_enc"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (r backupDestinationRow) keys() []destKey {
+	var out []destKey
+	_ = json.Unmarshal([]byte(r.EncryptionKeys), &out)
+	return out
 }
 
 func (backupDestinationRow) TableName() string { return "backup_destinations" }
@@ -127,6 +149,12 @@ type BackupDestinationView struct {
 	Auth               string `json:"auth,omitempty"`
 	Path               string `json:"path,omitempty"`
 	HasSecret          bool   `json:"has_secret"`
+	// Encrypt: new backups are encrypted before they leave the node, with the
+	// key EncryptionKeyID; EncryptionKeys counts the keys kept (older backups
+	// need the older ones).
+	Encrypt         bool   `json:"encrypt"`
+	EncryptionKeyID string `json:"encryption_key_id,omitempty"`
+	EncryptionKeys  int    `json:"encryption_keys"`
 	// What is kept there now.
 	Backups     int64     `json:"backups"`
 	BackupBytes int64     `json:"backup_bytes"`
@@ -165,6 +193,10 @@ type ResolvedDestination struct {
 	Target storage.Target
 	prefix string
 	err    error
+	// Keys are every encryption key of the destination; Sealing is the one new
+	// backups are encrypted with, nil when they are not.
+	Keys    []storage.BackupKey
+	Sealing *storage.BackupKey
 }
 
 // NewBackupDestinations builds the store. previousAESKeys are retired keys
@@ -238,6 +270,24 @@ func (d *BackupDestinations) resolveRow(r backupDestinationRow) *ResolvedDestina
 		out.err = ErrBackupDestinationUnreadable
 	}
 	out.Target = targetOf(out.Kind, c, secret)
+	// A key that cannot be read is an error on the destination too: new
+	// backups would go out in the clear, and backups made with it would not
+	// restore.
+	for _, k := range r.keys() {
+		hexKey, err := d.decrypt(k.KeyEnc)
+		raw, herr := hex.DecodeString(hexKey)
+		if err != nil || herr != nil || len(raw) != 32 {
+			out.err = fmt.Errorf("%w: its encryption key %s cannot be decrypted with the panel's key", ErrBackupDestinationUnreadable, k.ID)
+			continue
+		}
+		out.Keys = append(out.Keys, storage.BackupKey{ID: k.ID, Key: raw})
+		if r.Encrypt && k.ID == r.EncryptionKeyID {
+			out.Sealing = &out.Keys[len(out.Keys)-1]
+		}
+	}
+	if r.Encrypt && out.Sealing == nil && out.err == nil {
+		out.err = fmt.Errorf("%w: it is set to encrypt backups but has no key; turn encryption off and on again", ErrBackupDestinationUnreadable)
+	}
 	return out
 }
 
@@ -329,22 +379,36 @@ func (r *ResolvedDestination) NeedsFeature() string {
 }
 
 // Open connects the panel to the destination. A directory on the nodes is
-// not reachable from here (ErrDestinationOnNodes).
+// not reachable from here (ErrDestinationOnNodes). Files it downloads are
+// decrypted when they were stored encrypted.
 func (r *ResolvedDestination) Open(ctx context.Context) (storage.Store, error) {
 	if r.Kind == storage.KindPath {
 		return nil, ErrDestinationOnNodes
 	}
-	return r.Target.Open(ctx)
+	s, err := r.Target.Open(ctx)
+	if err != nil || len(r.Keys) == 0 {
+		return s, err
+	}
+	return &storage.SealedStore{Store: s, Keys: r.Keys}, nil
 }
 
 // ObjectStore returns a destination (by ID, or the default for "") in the form
-// a node is sent and its ID, or nil when none is saved. It is the queue's hook.
+// a node is sent for a backup or a restore, with the key new backups are
+// encrypted with and every key older ones may need, and its ID; nil when none
+// is saved. It is the queue's hook.
 func (d *BackupDestinations) ObjectStore(ctx context.Context, id string) (*pb.ObjectStore, string, error) {
 	r, err := d.Resolve(ctx, id)
 	if err != nil || r == nil {
 		return nil, "", err
 	}
-	return r.Proto(), r.ID, nil
+	p := r.Proto()
+	for _, k := range r.Keys {
+		p.DecryptionKeys = append(p.DecryptionKeys, &pb.BackupKey{Id: k.ID, Key: k.Key})
+	}
+	if r.Sealing != nil {
+		p.Encryption = &pb.BackupKey{Id: r.Sealing.ID, Key: r.Sealing.Key}
+	}
+	return p, r.ID, nil
 }
 
 // List returns every destination, the default first, with what each holds.
@@ -381,7 +445,10 @@ func (d *BackupDestinations) List(ctx context.Context) ([]BackupDestinationView,
 func viewOf(r backupDestinationRow) BackupDestinationView {
 	c := r.config()
 	v := BackupDestinationView{ID: r.ID, Name: r.Name, Kind: kindOf(r.Kind), IsDefault: r.IsDefault, HasSecret: r.SecretEnc != "",
-		CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt}
+		CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, Encrypt: r.Encrypt, EncryptionKeys: len(r.keys())}
+	if r.Encrypt {
+		v.EncryptionKeyID = r.EncryptionKeyID
+	}
 	switch v.Kind {
 	case storage.KindSFTP:
 		v.Host, v.Port, v.User, v.HostKey, v.Auth, v.Path = c.Host, c.Port, c.User, c.HostKey, c.Auth, c.Path
@@ -542,7 +609,7 @@ func (d *BackupDestinations) Create(ctx context.Context, in BackupDestinationInp
 	if err != nil {
 		return nil, err
 	}
-	row := backupDestinationRow{ID: uuid.NewString(), Kind: kind}
+	row := backupDestinationRow{ID: uuid.NewString(), Kind: kind, EncryptionKeys: "[]"}
 	if row.Name, err = destName(in, kind, c); err != nil {
 		return nil, err
 	}
@@ -671,6 +738,109 @@ func (d *BackupDestinations) Delete(ctx context.Context, id string) error {
 	err = d.db.WithContext(ctx).Where("id = ?", id).Delete(&backupDestinationRow{}).Error
 	d.invalidate()
 	return err
+}
+
+// SetEncryption turns encrypting new backups on or off. The first time on
+// makes the destination's key. Off keeps every key: the backups made with
+// them still need them to restore.
+func (d *BackupDestinations) SetEncryption(ctx context.Context, id string, on bool) (*BackupDestinationView, error) {
+	return d.changeKeys(ctx, id, func(row *backupDestinationRow) error {
+		row.Encrypt = on
+		if on && row.EncryptionKeyID == "" {
+			return d.addKey(row)
+		}
+		return nil
+	})
+}
+
+// RotateKey makes a new key the one new backups are encrypted with. The older
+// keys stay for the backups made with them. It turns encryption on.
+func (d *BackupDestinations) RotateKey(ctx context.Context, id string) (*BackupDestinationView, error) {
+	return d.changeKeys(ctx, id, func(row *backupDestinationRow) error {
+		row.Encrypt = true
+		return d.addKey(row)
+	})
+}
+
+// maxDestinationKeys bounds rotation; each backup needs only the key it names.
+const maxDestinationKeys = 100
+
+func (d *BackupDestinations) addKey(row *backupDestinationRow) error {
+	keys := row.keys()
+	if len(keys) >= maxDestinationKeys {
+		return invalidDestination("this destination already has %d keys", len(keys))
+	}
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return err
+	}
+	enc, err := encryptWithKey(d.key, hex.EncodeToString(raw))
+	if err != nil {
+		return fmt.Errorf("could not seal the new key: %w", err)
+	}
+	k := destKey{ID: uuid.NewString(), KeyEnc: enc, CreatedAt: time.Now().UTC()}
+	b, _ := json.Marshal(append(keys, k))
+	row.EncryptionKeys, row.EncryptionKeyID = string(b), k.ID
+	return nil
+}
+
+// changeKeys applies change to a destination's encryption settings and saves
+// them, one change at a time so two rotations cannot drop a key.
+func (d *BackupDestinations) changeKeys(ctx context.Context, id string, change func(*backupDestinationRow) error) (*BackupDestinationView, error) {
+	var out backupDestinationRow
+	err := d.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var rows []backupDestinationRow
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).Limit(1).Find(&rows).Error; err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return ErrBackupDestinationNotFound
+		}
+		out = rows[0]
+		if err := change(&out); err != nil {
+			return err
+		}
+		out.UpdatedAt = time.Now()
+		return tx.Model(&backupDestinationRow{}).Where("id = ?", id).Updates(map[string]interface{}{
+			"encrypt": out.Encrypt, "encryption_keys": out.EncryptionKeys, "encryption_key_id": out.EncryptionKeyID, "updated_at": out.UpdatedAt,
+		}).Error
+	})
+	d.invalidate()
+	if err != nil {
+		return nil, err
+	}
+	v := viewOf(out)
+	return &v, nil
+}
+
+// BackupKeyExport is one key as an operator keeps it outside the panel, to
+// restore backups without it (cmd/backup-decrypt reads a list of them).
+type BackupKeyExport struct {
+	ID        string    `json:"id"`
+	Key       string    `json:"key"` // 64 hex digits
+	CreatedAt time.Time `json:"created_at"`
+	Current   bool      `json:"current"`
+}
+
+// ExportKeys reveals a destination's keys. Kept anywhere but the panel, they
+// let backups be restored when the panel itself is lost.
+func (d *BackupDestinations) ExportKeys(ctx context.Context, id string) ([]BackupKeyExport, error) {
+	row, ok, err := d.row(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, ErrBackupDestinationNotFound
+	}
+	out := []BackupKeyExport{}
+	for _, k := range row.keys() {
+		hexKey, err := d.decrypt(k.KeyEnc)
+		if err != nil {
+			return nil, fmt.Errorf("%w: its encryption key %s cannot be decrypted with the panel's key", ErrBackupDestinationUnreadable, k.ID)
+		}
+		out = append(out, BackupKeyExport{ID: k.ID, Key: hexKey, CreatedAt: k.CreatedAt, Current: row.Encrypt && k.ID == row.EncryptionKeyID})
+	}
+	return out, nil
 }
 
 // held counts the backups kept, or being made, in a destination.
@@ -861,6 +1031,28 @@ func (d *BackupDestinations) CheckNode(ctx context.Context, node *models.Node, d
 	res := d.testFromNode(ctx, node, r, key, keys)
 	if res.Status != DestinationTestOK {
 		return fmt.Errorf("node %s cannot %s: %s", node.Name, what, res.Message)
+	}
+	return nil
+}
+
+// NodeHasFeature asks a node's agent for a feature a restore needs; refusal
+// (with %s for the node's name) is the error when it does not have it.
+func (d *BackupDestinations) NodeHasFeature(ctx context.Context, node *models.Node, feature, refusal string) error {
+	if d.agent == nil {
+		return errors.New("the panel has no connection to the nodes")
+	}
+	ctx, cancel := context.WithTimeout(ctx, destinationTestTimeout)
+	defer cancel()
+	client, authCtx, err := d.agent(ctx, node.ID)
+	if err != nil {
+		return err
+	}
+	features, err := nodeFeatures(authCtx, client)
+	if err != nil {
+		return err
+	}
+	if !hasFeature(features, feature) {
+		return fmt.Errorf(refusal, node.Name)
 	}
 	return nil
 }

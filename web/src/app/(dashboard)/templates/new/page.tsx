@@ -68,6 +68,8 @@ export default function NewTemplatePage() {
         allow_http: integrity.allowHttp,
         auto_refresh: integrity.autoRefresh,
         firmware: integrity.firmware,
+        secure_boot: integrity.firmware === "uefi" && !!integrity.secureBoot,
+        tpm: !!integrity.tpm,
       })
       toast.success(`Template "${name}" added`)
       setTimeout(() => router.push("/templates"), 1200)

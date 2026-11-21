@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
@@ -19,6 +20,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,14 +29,17 @@ import (
 
 	"github.com/maburvm/panel/internal/agent/agentenv"
 	"github.com/maburvm/panel/internal/agent/cloudinit"
+	"github.com/maburvm/panel/internal/agent/dhcp"
 	"github.com/maburvm/panel/internal/agent/domtune"
 	"github.com/maburvm/panel/internal/agent/guestos"
 	"github.com/maburvm/panel/internal/agent/health"
 	"github.com/maburvm/panel/internal/agent/hostproxy"
 	"github.com/maburvm/panel/internal/agent/libvirt"
 	"github.com/maburvm/panel/internal/agent/migration"
+	"github.com/maburvm/panel/internal/agent/netrules"
 	"github.com/maburvm/panel/internal/agent/network"
 	"github.com/maburvm/panel/internal/agent/storage"
+	"github.com/maburvm/panel/internal/agent/vmhealth"
 	"github.com/maburvm/panel/internal/agent/vncproxy"
 	"github.com/maburvm/panel/internal/shared/buildinfo"
 	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
@@ -87,6 +92,10 @@ type NodeAgentService struct {
 	metricsCache    *VMMetricsCache
 	// hostProxy routes NAT VMs' hostnames on the node's publish address.
 	hostProxy *hostproxy.Proxy
+	// guestAgents bounds guest agent calls; crashes is the restart-on-crash
+	// policy's memory.
+	guestAgents *vmhealth.GuestAgents
+	crashes     *vmhealth.Crashes
 }
 
 // NewNodeAgentService creates a new NodeAgentService with all dependencies
@@ -108,6 +117,8 @@ func NewNodeAgentService(libvirtMgr *libvirt.VMManager, networkMgr *network.Mana
 		vncProxy:        vncProxy,
 		metricsCache:    NewVMMetricsCache(),
 		hostProxy:       hostproxy.New(publish),
+		guestAgents:     vmhealth.NewGuestAgents(),
+		crashes:         vmhealth.NewCrashes(),
 	}
 }
 
@@ -234,6 +245,9 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 	}
 
 	log.Printf("[NodeAgent] Executing command %v on VM %s from node %s", req.Command, req.VmId, nodeID)
+	if req.Command != pb.VMCommandType_VM_COMMAND_TYPE_START && req.Command != pb.VMCommandType_VM_COMMAND_TYPE_RESTART {
+		s.crashes.Hold(req.VmId)
+	}
 
 	var err error
 	var state pb.VMState
@@ -268,22 +282,32 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 			}
 		}
 		if err == nil && migrations.Busy(req.VmId) {
-			// A disk being copied while the VM is off is whole only while it
-			// stays off.
-			err = fmt.Errorf("a disk of this VM is being moved or copied; start it when that has finished")
+			// A disk being copied or restored while the VM is off is whole only
+			// while it stays off.
+			err = errDisksBusy
 		}
 		if err == nil {
 			s.applyPendingGuestBeforeStart(ctx, req.VmId)
-			err = libvirt.StartVM(req.VmId)
+			err = startVM(req.VmId)
 		}
 	case pb.VMCommandType_VM_COMMAND_TYPE_STOP:
 		err = libvirt.StopVM(req.VmId, false)
 		state = pb.VMState_VM_STATE_STOPPED
+		// StopVM only presses the power button. The VM is stopped when libvirt
+		// says it is shut off, not before.
+		if err == nil {
+			err = waitShutOff(ctx, req.VmId, libvirt.GetVMStatus)
+		}
 	case pb.VMCommandType_VM_COMMAND_TYPE_FORCE_STOP:
 		err = libvirt.StopVM(req.VmId, true)
 		state = pb.VMState_VM_STATE_STOPPED
 	case pb.VMCommandType_VM_COMMAND_TYPE_RESTART:
-		err = libvirt.RestartVM(req.VmId)
+		// A restart boots a stopped VM, which must wait for work on its disks.
+		if st, _ := libvirt.GetVMStatus(req.VmId); st != libvirt.VMStatusRunning && migrations.Busy(req.VmId) {
+			err = errDisksBusy
+		} else {
+			err = libvirt.RestartVM(req.VmId)
+		}
 		state = pb.VMState_VM_STATE_RUNNING
 	case pb.VMCommandType_VM_COMMAND_TYPE_DESTROY:
 		// Block devices outlive DeleteVM, which removes only files: each is
@@ -324,11 +348,19 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 		err = libvirt.ResumeVM(req.VmId)
 		state = pb.VMState_VM_STATE_RUNNING
 	case pb.VMCommandType_VM_COMMAND_TYPE_REBUILD:
-		err = s.rebuildVM(req)
+		// A reinstall replaces the disk a restore or move is working on.
+		if migrations.Busy(req.VmId) {
+			err = errDisksBusy
+		} else {
+			err = s.rebuildVM(req)
+		}
 		state = pb.VMState_VM_STATE_STOPPED
 	case pb.VMCommandType_VM_COMMAND_TYPE_RESIZE:
 		if req.Config != nil && req.Config.Resources != nil {
-			err = libvirt.ResizeVM(req.VmId, int(req.Config.Resources.Vcpus), int(req.Config.Resources.MemoryMb))
+			var cpus []int
+			if cpus, err = hostCPUs(req.Config.GetHardware().GetPinnedCpus(), int(req.Config.Resources.Vcpus)); err == nil {
+				err = libvirt.ResizeVM(req.VmId, int(req.Config.Resources.Vcpus), int(req.Config.Resources.MemoryMb), cpus)
+			}
 			// Grow the primary disk too (no-op when unchanged; grow-only).
 			if err == nil && req.Config.Resources.DiskGb > 0 {
 				err = libvirt.ResizeDisk(req.VmId, int(req.Config.Resources.DiskGb), growLV(ctx, lvmPoolsOf(req.GetLvmPools())))
@@ -341,14 +373,19 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 		if req.Config != nil && req.Config.RootPassword != "" && libvirt.GuestOSType(req.VmId) == guestos.RouterOS {
 			err = s.runRouterOSScript(ctx, req.VmId, guestos.RouterOSPasswordScript(req.Config.RootPassword), true)
 		} else if req.Config != nil && req.Config.RootPassword != "" {
-			// root, or Administrator on Windows: its guest agent sets it the same way.
-			err = libvirt.SetVMPassword(req.VmId, models.OSLoginUser(libvirt.GuestOSType(req.VmId)), req.Config.RootPassword)
+			user := models.OSLoginUser(libvirt.GuestOSType(req.VmId))
+			if st, serr := libvirt.GetVMStatus(req.VmId); serr == nil && st == libvirt.VMStatusStopped {
+				err = resetPasswordOffline(req.VmId, user, req.Config.RootPassword)
+			} else {
+				// root, or Administrator on Windows: its guest agent sets it the same way.
+				err = libvirt.SetVMPassword(req.VmId, user, req.Config.RootPassword)
+			}
 		} else {
 			err = fmt.Errorf("root_password required for RESET_PASSWORD")
 		}
 		state = pb.VMState_VM_STATE_RUNNING
 		// A stopped router takes its new password at its next start and stays
-		// stopped, so say where it really is.
+		// stopped, as does a stopped Linux VM, so say where it really is.
 		if st, serr := libvirt.GetVMStatus(req.VmId); err == nil && serr == nil {
 			state = mapVMStatusToPBState(st)
 		}
@@ -382,6 +419,12 @@ func (s *NodeAgentService) ExecuteVMCommand(ctx context.Context, req *pb.VMComma
 				state = mapVMStatusToPBState(st)
 			}
 		}
+	case pb.VMCommandType_VM_COMMAND_TYPE_RESCUE:
+		err = s.enterRescue(req)
+		state = pb.VMState_VM_STATE_STOPPED
+	case pb.VMCommandType_VM_COMMAND_TYPE_UNRESCUE:
+		err = leaveRescue(req.VmId)
+		state = pb.VMState_VM_STATE_STOPPED
 	default:
 		return nil, status.Errorf(codes.InvalidArgument, "unknown command: %v", req.Command)
 	}
@@ -566,10 +609,7 @@ func evictTemplateCacheForever() {
 // generateMAC derives a stable, locally-administered MAC address (using the
 // QEMU OUI 52:54:00) from the VM ID, so the NIC in the domain XML and the
 // cloud-init network-config refer to the same interface.
-func generateMAC(vmID string) string {
-	sum := sha256.Sum256([]byte(vmID))
-	return fmt.Sprintf("52:54:00:%02x:%02x:%02x", sum[0], sum[1], sum[2])
-}
+func generateMAC(vmID string) string { return models.DerivedMAC(vmID, 0) }
 
 // injectGuestConfig writes the guest's network + hostname (and optional root
 // password / SSH key) directly into its disk image using libguestfs
@@ -593,6 +633,8 @@ type guestIPv6 struct {
 	Address string
 	Gateway string
 	DNS     []string
+	// Extra are further addresses in the same prefix, without a length.
+	Extra []string `json:",omitempty"`
 }
 
 // onLinkIPv6Prefix returns the interface's IPv6 address as a /128 when it sits
@@ -629,18 +671,23 @@ type guestNet struct {
 	Gateway string              `json:"gateway,omitempty"`
 	Extra   []guestos.GuestAddr `json:"extra,omitempty"`
 	V6      guestIPv6           `json:"v6"`
+	// DNS are the resolvers; empty keeps the built-in ones.
+	DNS []string `json:"dns,omitempty"`
+	// NICs are the guest's further cards with the addresses on each.
+	NICs []guestos.GuestNIC `json:"nics,omitempty"`
 }
 
 func linuxNetwork(mac string, n guestNet) guestos.LinuxNetwork {
 	return guestos.LinuxNetwork{
 		MAC: mac, Address: n.IP, Prefix: n.Prefix, Gateway: n.Gateway, Extra: n.Extra,
-		IPv6Address: n.V6.Address, IPv6Gateway: n.V6.Gateway, IPv6DNS: n.V6.DNS,
+		IPv6Address: n.V6.Address, IPv6Gateway: n.V6.Gateway, IPv6DNS: n.V6.DNS, IPv6Extra: n.V6.Extra,
+		DNS: n.DNS, NICs: n.NICs,
 	}
 }
 
 // guestNetworkFile is the systemd-networkd unit giving a guest one address.
-func guestNetworkFile(mac, ip string, prefix int, gateway string, v6 guestIPv6) string {
-	return guestos.NetworkdUnit(linuxNetwork(mac, guestNet{IP: ip, Prefix: prefix, Gateway: gateway, V6: v6}))
+func guestNetworkFile(mac, ip string, prefix int, gateway string, v6 guestIPv6, dns []string) string {
+	return guestos.NetworkdUnit(linuxNetwork(mac, guestNet{IP: ip, Prefix: prefix, Gateway: gateway, V6: v6, DNS: dns}))
 }
 
 // guestAnnounceUnit makes the guest announce its address after boot.
@@ -652,6 +699,9 @@ func guestAnnounceUnit(gateway string) string { return guestos.AnnounceUnit(gate
 type guestNotApplied struct {
 	msg     string
 	pending bool
+	// applied: the change was made as far as it can be from outside; msg
+	// says what the owner sets by hand.
+	applied bool
 }
 
 func (e *guestNotApplied) Error() string { return e.msg }
@@ -663,9 +713,11 @@ func (e *guestNotApplied) Error() string { return e.msg }
 // answer. A running guest that does not answer is never restarted for this:
 // the change is left pending (guestNotApplied) and applied when the guest
 // agent answers or the VM is next started. A stopped Linux guest has the
-// config written onto its disk; a stopped router gets it as a start-up script.
-// ponytail: only systemd-networkd guests (everything this agent provisions);
-// imports on netplan/NetworkManager keep their address until edited by hand.
+// config written onto its disk when it uses systemd-networkd (everything this
+// agent provisions), and is otherwise changed live at its next start; a
+// stopped router gets it as a start-up script. A running Linux guest is
+// changed through whichever network configuration it uses (see
+// guestos.LinuxNetworkScript).
 //
 // Calls for the same VM are serialized, and nothing is done once ctx is done.
 func (s *NodeAgentService) applyGuestNetwork(ctx context.Context, vmID string, n guestNet, wait time.Duration) error {
@@ -682,9 +734,15 @@ func (s *NodeAgentService) applyGuestNetwork(ctx context.Context, vmID string, n
 		if err != nil {
 			return err
 		}
-		return s.runRouterOSScript(ctx, vmID, script, false)
+		if err := s.runRouterOSScript(ctx, vmID, script, false); err != nil {
+			return err
+		}
+		return cardsLeftToOwner(n)
 	case guestos.Windows:
-		return applyWindowsNetwork(ctx, vmID, n, wait)
+		if err := applyWindowsNetwork(ctx, vmID, n, wait); err != nil {
+			return err
+		}
+		return cardsLeftToOwner(n)
 	}
 
 	mac, err := libvirt.GetVMInterfaceMAC(vmID)
@@ -695,39 +753,39 @@ func (s *NodeAgentService) applyGuestNetwork(ctx context.Context, vmID string, n
 	if err != nil {
 		return err
 	}
-	netFile := guestos.NetworkdUnit(linuxNetwork(mac, n))
-	unit := guestos.AnnounceUnit(n.Gateway)
+	ln := linuxNetwork(mac, n)
 
 	if info.Status == libvirt.VMStatusRunning {
-		// Only guests that run systemd-networkd are managed. Restarting networkd on
-		// an ifupdown/NetworkManager guest would start a second network manager on
-		// the same interface, so such guests are left to the operator.
-		script := "systemctl is-active -q systemd-networkd || { echo 'guest does not use systemd-networkd' >&2; exit " + strconv.Itoa(guestNotNetworkdExit) + "; }\n" +
-			"set -e\n" +
-			"mkdir -p /etc/systemd/network\n" +
-			"cat > " + guestNetworkFilePath + " <<'MABURVM_EOF'\n" + netFile + "MABURVM_EOF\n" +
-			"chmod 0644 " + guestNetworkFilePath + "\n" +
-			"cat > " + guestAnnounceUnitPath + " <<'MABURVM_EOF'\n" + unit + "MABURVM_EOF\n" +
-			"systemctl daemon-reload\n" +
-			"systemctl enable maburvm-announce.service >/dev/null 2>&1 || true\n" +
-			"systemctl restart systemd-networkd\n" +
-			"systemctl restart --no-block maburvm-announce.service >/dev/null 2>&1 || true\n"
+		script, err := guestos.LinuxNetworkScript(ln)
+		if err != nil {
+			return err
+		}
 		// A guest that booted moments ago has no guest agent answering yet.
-		err := guestExec(info.Name, script, 30*time.Second)
-		for deadline := time.Now().Add(wait); err != nil && !errors.Is(err, errGuestNotNetworkd) && time.Now().Before(deadline); {
+		out, err := guestExec(info.Name, script, 90*time.Second)
+		var exited *guestScriptError
+		for deadline := time.Now().Add(wait); err != nil && !errors.As(err, &exited) && time.Now().Before(deadline); {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
 			case <-time.After(5 * time.Second):
 			}
-			err = guestExec(info.Name, script, 30*time.Second)
+			out, err = guestExec(info.Name, script, 90*time.Second)
 		}
 		switch {
 		case err == nil:
-			log.Printf("[NodeAgent] guest %s reconfigured live to %s/%d (+%d) via guest agent", vmID, n.IP, n.Prefix, len(n.Extra))
+			log.Printf("[NodeAgent] guest %s reconfigured live to %s/%d (+%d, %d more cards) via guest agent (%s)", vmID, n.IP, n.Prefix, len(n.Extra), len(n.NICs), firstLine(out))
 			return nil
-		case errors.Is(err, errGuestNotNetworkd):
-			return &guestNotApplied{msg: "The guest does not use systemd-networkd, so its addresses were not changed. Set them inside the guest."}
+		case errors.As(err, &exited) && exited.code == guestos.ExitUnknownStack:
+			return &guestNotApplied{msg: "The guest's network is set up by something the panel does not change (it knows systemd-networkd, netplan, ifupdown, NetworkManager and network-scripts), so its addresses were not changed. Set them inside the guest."}
+		case errors.As(err, &exited) && exited.code == guestos.ExitNotApplied:
+			log.Printf("[NodeAgent] guest %s (%s) did not take its new addresses: %s", vmID, firstLine(exited.stdout), exited.stderr)
+			return &guestNotApplied{msg: "The guest did not take its new network settings (" + exited.stderr + "). " +
+				"Restart the guest's networking or reboot it from inside; nothing was restarted."}
+		case errors.As(err, &exited):
+			// It ran: running it again could bounce the guest's network each time.
+			log.Printf("[NodeAgent] guest %s network script ended without finishing (%d): %s", vmID, exited.code, exited.stderr)
+			return &guestNotApplied{msg: "The guest's network change did not finish (" + exited.stderr + "). " +
+				"Check the guest's network settings from its console; nothing was restarted."}
 		case ctx.Err() != nil:
 			return ctx.Err()
 		}
@@ -743,18 +801,58 @@ func (s *NodeAgentService) applyGuestNetwork(ctx context.Context, vmID string, n
 	if _, err := exec.LookPath("virt-customize"); err != nil {
 		return fmt.Errorf("virt-customize not found (install libguestfs-tools): %w", err)
 	}
+	// Written on the disk only for a guest that uses systemd-networkd. Any
+	// other is changed through its own configuration once it runs: written
+	// here, networkd would start beside that one on the same card.
+	if networkd, perr := guestos.DiskUsesNetworkd(diskPath); perr != nil {
+		return perr
+	} else if !networkd {
+		return &guestNotApplied{pending: true, msg: "The VM is off and its guest does not use systemd-networkd, so its new addresses are set when it is next started from the panel and its guest agent answers."}
+	}
+	if err := ln.Validate(); err != nil {
+		return err
+	}
 	args := append(guestos.DiskArgs(diskPath), "--no-network",
 		"--mkdir", "/etc/systemd/network",
-		"--write", guestNetworkFilePath+":"+netFile,
+		"--run-command", "rm -f /etc/systemd/network/11-maburvm-*.network",
+		"--write", guestNetworkFilePath+":"+guestos.NetworkdUnit(ln),
 		"--chmod", "0644:"+guestNetworkFilePath,
-		"--write", guestAnnounceUnitPath+":"+unit,
-		"--run-command", "systemctl enable systemd-networkd maburvm-announce.service >/dev/null 2>&1 || true",
+		"--write", guestAnnounceUnitPath+":"+guestos.AnnounceUnit(n.Gateway),
 	)
+	for i, c := range ln.NICs {
+		f := fmt.Sprintf("/etc/systemd/network/11-maburvm-%d.network", i+1)
+		args = append(args, "--write", f+":"+guestos.NetworkdNICUnit(c), "--chmod", "0644:"+f)
+	}
+	args = append(args, "--run-command", "systemctl enable systemd-networkd maburvm-announce.service >/dev/null 2>&1 || true")
 	if out, err := exec.Command("virt-customize", args...).CombinedOutput(); err != nil {
 		return fmt.Errorf("virt-customize: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	log.Printf("[NodeAgent] guest %s reconfigured on disk to %s/%d (+%d)", vmID, n.IP, n.Prefix, len(n.Extra))
+	log.Printf("[NodeAgent] guest %s reconfigured on disk to %s/%d (+%d, %d more cards)", vmID, n.IP, n.Prefix, len(n.Extra), len(n.NICs))
 	return nil
+}
+
+// cardsLeftToOwner says which addresses a router or Windows guest must be
+// given by hand: only its first card is set up from outside, and without the
+// further IPv6 addresses of its prefix.
+func cardsLeftToOwner(n guestNet) error {
+	var parts []string
+	for _, c := range n.NICs {
+		for _, a := range c.Addresses {
+			parts = append(parts, fmt.Sprintf("%s/%d on the card with MAC %s", a.Address, a.Prefix, c.MAC))
+		}
+	}
+	for _, a := range n.V6.Extra {
+		parts = append(parts, a+" on the first card")
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	return &guestNotApplied{applied: true, msg: "The first card was set up. Set " + strings.Join(parts, ", ") + " inside the guest."}
+}
+
+func firstLine(s string) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
+	return line
 }
 
 // applyWindowsNetwork re-addresses a running Windows guest through its guest
@@ -771,7 +869,7 @@ func applyWindowsNetwork(ctx context.Context, vmID string, n guestNet, wait time
 	}
 	script, err := guestos.WindowsNetworkScript(guestos.WindowsNetwork{
 		MAC: mac, Address: n.IP, Prefix: n.Prefix, Gateway: n.Gateway, Extra: n.Extra,
-		IPv6Address: n.V6.Address, IPv6Gateway: n.V6.Gateway, IPv6DNS: n.V6.DNS,
+		IPv6Address: n.V6.Address, IPv6Gateway: n.V6.Gateway, IPv6DNS: n.V6.DNS, DNS: n.DNS,
 	})
 	if err != nil {
 		return err
@@ -796,7 +894,7 @@ func applyWindowsNetwork(ctx context.Context, vmID string, n guestNet, wait time
 // routerOSNetworkFor carries a guest's addressing into the router script form.
 func routerOSNetworkFor(n guestNet) guestos.RouterOSNetwork {
 	r := routerOSNetwork(n.IP, n.Prefix, n.Gateway, n.V6)
-	r.Extra = n.Extra
+	r.Extra, r.DNS = n.Extra, n.DNS
 	return r
 }
 
@@ -845,7 +943,7 @@ func (s *NodeAgentService) runRouterOSScript(ctx context.Context, vmID, script s
 		}
 		// From here the VM is going down, so it must come back up whatever happens.
 		defer func() {
-			if err := libvirt.StartVM(vmID); err != nil {
+			if err := startVM(vmID); err != nil {
 				log.Printf("[NodeAgent] WARNING: failed to start router %s after reconfigure: %v", vmID, err)
 			}
 		}()
@@ -874,6 +972,49 @@ var guestNetworkLocks sync.Map
 // before an address change is left pending.
 const guestAgentWait = 60 * time.Second
 
+// errDisksBusy refuses to boot a VM, or to start other work on its disks,
+// while a disk move, copy or restore holds them (the migrations registry).
+var errDisksBusy = errors.New("a disk of this VM is being moved, copied or restored; try again when that has finished")
+
+// startVM boots a VM unless work on its disks holds it. Every start of an
+// existing VM goes through it.
+func startVM(vmID string) error {
+	if migrations.Busy(vmID) {
+		return errDisksBusy
+	}
+	return libvirt.StartVM(vmID)
+}
+
+// gracefulStopWait is the longest a graceful stop waits for the guest to power off.
+const gracefulStopWait = 2 * time.Minute
+
+// stopWait is how long a graceful stop may wait: gracefulStopWait, cut short
+// so the answer still reaches a caller with an earlier deadline.
+func stopWait(ctx context.Context) time.Duration {
+	wait := gracefulStopWait
+	if dl, ok := ctx.Deadline(); ok {
+		wait = min(wait, time.Until(dl)-3*time.Second)
+	}
+	return max(wait, 0)
+}
+
+// waitShutOff waits for a VM asked to shut down to be shut off, for at most
+// stopWait. A guest that has not powered off by then is an error, and the
+// caller reports where the VM really is.
+func waitShutOff(ctx context.Context, vmID string, state func(string) (libvirt.VMStatus, error)) error {
+	wait := stopWait(ctx)
+	deadline := time.Now().Add(wait)
+	for {
+		if st, err := state(vmID); err == nil && st == libvirt.VMStatusStopped {
+			return nil
+		}
+		if ctx.Err() != nil || !time.Now().Before(deadline) {
+			return fmt.Errorf("the guest was asked to shut down and is still on after %s: it may still be shutting down, or it ignores the request (force stop powers it off)", wait.Round(time.Second))
+		}
+		time.Sleep(time.Second)
+	}
+}
+
 // waitVMStatus polls until the VM reports want or timeout elapses.
 func waitVMStatus(vmID string, want libvirt.VMStatus, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
@@ -886,16 +1027,21 @@ func waitVMStatus(vmID string, want libvirt.VMStatus, timeout time.Duration) boo
 	return false
 }
 
-// guestExec runs script with /bin/sh inside the guest through qemu-guest-agent
-// and waits for it to exit. Any failure — no agent, agent not connected, a
-// non-zero exit — is an error so callers can fall back.
-// guestNotNetworkdExit is the exit code of the live reconfigure script when the
-// guest does not run systemd-networkd (errGuestNotNetworkd).
-const guestNotNetworkdExit = 42
+// guestScriptError is a script that ran in the guest and exited non-zero.
+type guestScriptError struct {
+	code           int
+	stdout, stderr string
+}
 
-var errGuestNotNetworkd = errors.New("guest does not use systemd-networkd")
+func (e *guestScriptError) Error() string {
+	return fmt.Sprintf("guest script exited %d: %s", e.code, e.stderr)
+}
 
-func guestExec(domainName, script string, timeout time.Duration) error {
+// guestExec runs script with /bin/sh inside the guest through qemu-guest-agent,
+// waits for it to exit and returns what it printed. A script that ran and
+// failed is a *guestScriptError; any other failure (no agent, agent not
+// connected, no answer in time) is a plain error, worth retrying.
+func guestExec(domainName, script string, timeout time.Duration) (string, error) {
 	req, _ := json.Marshal(map[string]interface{}{
 		"execute": "guest-exec",
 		"arguments": map[string]interface{}{
@@ -904,7 +1050,7 @@ func guestExec(domainName, script string, timeout time.Duration) error {
 	})
 	out, err := exec.Command("virsh", "qemu-agent-command", domainName, string(req)).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("guest-exec: %w: %s", err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("guest-exec: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	var started struct {
 		Return struct {
@@ -912,7 +1058,7 @@ func guestExec(domainName, script string, timeout time.Duration) error {
 		} `json:"return"`
 	}
 	if err := json.Unmarshal(out, &started); err != nil || started.Return.PID == 0 {
-		return fmt.Errorf("guest-exec: unexpected reply %s", strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("guest-exec: unexpected reply %s", strings.TrimSpace(string(out)))
 	}
 	statusReq, _ := json.Marshal(map[string]interface{}{
 		"execute": "guest-exec-status", "arguments": map[string]int{"pid": started.Return.PID},
@@ -922,29 +1068,30 @@ func guestExec(domainName, script string, timeout time.Duration) error {
 		time.Sleep(time.Second)
 		out, err := exec.Command("virsh", "qemu-agent-command", domainName, string(statusReq)).CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("guest-exec-status: %w: %s", err, strings.TrimSpace(string(out)))
+			return "", fmt.Errorf("guest-exec-status: %w: %s", err, strings.TrimSpace(string(out)))
 		}
 		var st struct {
 			Return struct {
 				Exited   bool   `json:"exited"`
 				ExitCode int    `json:"exitcode"`
+				OutData  string `json:"out-data"`
 				ErrData  string `json:"err-data"`
 			} `json:"return"`
 		}
 		if err := json.Unmarshal(out, &st); err != nil {
-			return fmt.Errorf("guest-exec-status: unexpected reply %s", strings.TrimSpace(string(out)))
+			return "", fmt.Errorf("guest-exec-status: unexpected reply %s", strings.TrimSpace(string(out)))
 		}
 		if st.Return.Exited {
-			if st.Return.ExitCode == guestNotNetworkdExit {
-				return errGuestNotNetworkd
-			}
+			printed, _ := base64.StdEncoding.DecodeString(st.Return.OutData)
+			failed, _ := base64.StdEncoding.DecodeString(st.Return.ErrData)
 			if st.Return.ExitCode != 0 {
-				return fmt.Errorf("guest script exited %d: %s", st.Return.ExitCode, st.Return.ErrData)
+				return string(printed), &guestScriptError{code: st.Return.ExitCode, stdout: string(printed), stderr: strings.TrimSpace(string(failed))}
 			}
-			return nil
+			return string(printed), nil
 		}
 	}
-	return fmt.Errorf("guest script did not finish within %s", timeout)
+	// The script started, so this is not a guest agent that did not answer.
+	return "", &guestScriptError{code: -1, stderr: fmt.Sprintf("it was still running after %s", timeout)}
 }
 
 func injectGuestConfig(diskPath, hostname string, vmCfg libvirt.VMConfig, rootPassword, sshKey, userData string) error {
@@ -1007,7 +1154,7 @@ func injectGuestConfig(diskPath, hostname string, vmCfg libvirt.VMConfig, rootPa
 		}
 		tmpNet = f.Name()
 		if _, err := f.WriteString(guestNetworkFile(vmCfg.MACAddress, vmCfg.IPAddress, vmCfg.Netmask, vmCfg.Gateway,
-			guestIPv6From(vmCfg.IPv6Address, vmCfg.IPv6Gateway, vmCfg.IPv6DNS))); err != nil {
+			guestIPv6From(vmCfg.IPv6Address, vmCfg.IPv6Gateway, vmCfg.IPv6DNS), vmCfg.DNS)); err != nil {
 			f.Close()
 			os.Remove(tmpNet)
 			return fmt.Errorf("failed to write staged network config: %w", err)
@@ -1409,6 +1556,11 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 			return err
 		}
 	}
+	// What the host cannot give is refused before any disk is made.
+	hw, pinned, firmware, err := newVMHardware(cfg, osType)
+	if err != nil {
+		return err
+	}
 	diskGB := int(cfg.Resources.DiskGb)
 	lvPool, onLVM, err := requestLVMPool(req.GetPoolType(), req.GetPoolPath())
 	if err != nil {
@@ -1548,7 +1700,11 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 			vmCfg.CPUModel = v
 		}
 	}
+	if m := cfg.GetHardware().GetCpuModel(); m != "" {
+		vmCfg.CPUModel = m
+	}
 	vmCfg.OSType = osType
+	vmCfg.Hardware, vmCfg.PinnedCPUs, vmCfg.Firmware = hw, pinned, firmware
 	if blank {
 		vmCfg.ISODrives, vmCfg.InstallISO, vmCfg.DriversISO = true, installISO, driversISO
 	}
@@ -1567,6 +1723,7 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 			vmCfg.IPv6Address = iface.Ipv6Address
 			vmCfg.IPv6Gateway = iface.Ipv6Gateway
 			vmCfg.IPv6DNS = iface.Ipv6Dns
+			vmCfg.DNS = iface.Dns
 		}
 		if cfg.NetworkConfig.BandwidthLimits != nil {
 			vmCfg.BandwidthMbps = int(cfg.NetworkConfig.BandwidthLimits.EgressRateMbps)
@@ -1601,8 +1758,9 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 		// best-effort. A router that boots without it has an empty admin
 		// password and no address, which is not a VM worth handing over.
 		seedPath = ""
-		script, err := guestos.RouterOSSetupScript(hostname, cfg.RootPassword, routerOSNetwork(vmCfg.IPAddress, vmCfg.Netmask, vmCfg.Gateway,
-			guestIPv6From(vmCfg.IPv6Address, vmCfg.IPv6Gateway, vmCfg.IPv6DNS)))
+		rn := routerOSNetwork(vmCfg.IPAddress, vmCfg.Netmask, vmCfg.Gateway, guestIPv6From(vmCfg.IPv6Address, vmCfg.IPv6Gateway, vmCfg.IPv6DNS))
+		rn.DNS = vmCfg.DNS
+		script, err := guestos.RouterOSSetupScript(hostname, cfg.RootPassword, rn)
 		if err == nil {
 			err = guestos.WriteRouterOSAutorun(diskPath, script)
 		}
@@ -1618,6 +1776,7 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 		IPAddress:    vmCfg.IPAddress,
 		Prefix:       vmCfg.Netmask,
 		Gateway:      vmCfg.Gateway,
+		Nameservers:  vmCfg.DNS,
 		IPv6Address:  vmCfg.IPv6Address,
 		IPv6Gateway:  vmCfg.IPv6Gateway,
 		IPv6DNS:      vmCfg.IPv6DNS,
@@ -1730,7 +1889,7 @@ func (s *NodeAgentService) provisionVM(req *pb.VMCommandRequest, restored *[]*pb
 				}
 			}
 			time.Sleep(2 * time.Second)
-			if serr := libvirt.StartVM(vmID); serr != nil {
+			if serr := startVM(vmID); serr != nil {
 				log.Printf("[NodeAgent] post-provision reboot: start %s failed: %v", vmID, serr)
 				return
 			}
@@ -1941,6 +2100,19 @@ func (s *NodeAgentService) rebuildVM(req *pb.VMCommandRequest) error {
 	if !guestos.Known(osType) {
 		return fmt.Errorf("this node's agent cannot install %q systems; update the agent", osType)
 	}
+	// The firmware stays what the VM was created with: a UEFI image does not
+	// boot on BIOS, nor a BIOS image on UEFI.
+	uefi, rescue, err := libvirt.BootSetup(req.VmId)
+	if err != nil {
+		return err
+	}
+	if rescue {
+		return fmt.Errorf("the VM is in rescue mode; take it out of rescue mode first")
+	}
+	if wantUEFI := req.Config.GetMetadata()[models.FirmwareKey] == models.FirmwareUEFI; wantUEFI != uefi {
+		return fmt.Errorf("%w: the VM boots with %s and the image needs %s; reinstall it with an image for %s",
+			errFirmwareMismatch, firmwareName(uefi), firmwareName(wantUEFI), firmwareName(uefi))
+	}
 	templatePath, err := resolveTemplateImage(imageRef, req.GetObjectStore(), req.Config.GetMetadata()[models.ImageSHA256Key])
 	if err != nil {
 		return err
@@ -1951,6 +2123,7 @@ func (s *NodeAgentService) rebuildVM(req *pb.VMCommandRequest) error {
 	mac, ip, gateway := "", "", ""
 	prefix := 0
 	var v6 guestIPv6
+	var dns []string
 	if cfg.Metadata != nil {
 		if h := cfg.Metadata["hostname"]; h != "" {
 			hostname = h
@@ -1963,6 +2136,7 @@ func (s *NodeAgentService) rebuildVM(req *pb.VMCommandRequest) error {
 		prefix = int(iface.Netmask)
 		gateway = iface.Gateway
 		v6 = guestIPv6From(iface.Ipv6Address, iface.Ipv6Gateway, iface.Ipv6Dns)
+		dns = iface.Dns
 	}
 	// The setup disc matches the network card by its MAC, so use the one the
 	// domain really has (an imported VM's is not derived from its ID).
@@ -2007,7 +2181,9 @@ func (s *NodeAgentService) rebuildVM(req *pb.VMCommandRequest) error {
 	}
 
 	if osType == guestos.RouterOS {
-		script, err := guestos.RouterOSSetupScript(hostname, cfg.RootPassword, routerOSNetwork(ip, prefix, gateway, v6))
+		rn := routerOSNetwork(ip, prefix, gateway, v6)
+		rn.DNS = dns
+		script, err := guestos.RouterOSSetupScript(hostname, cfg.RootPassword, rn)
 		if err != nil {
 			return err
 		}
@@ -2032,6 +2208,7 @@ func (s *NodeAgentService) rebuildVM(req *pb.VMCommandRequest) error {
 		IPAddress:    ip,
 		Prefix:       prefix,
 		Gateway:      gateway,
+		Nameservers:  dns,
 		IPv6Address:  v6.Address,
 		IPv6Gateway:  v6.Gateway,
 		IPv6DNS:      v6.DNS,
@@ -2057,7 +2234,7 @@ func (s *NodeAgentService) rebuildVM(req *pb.VMCommandRequest) error {
 	if osType == guestos.Linux {
 		prepare = func(diskPath string) error {
 			vmCfg := libvirt.VMConfig{MACAddress: mac, IPAddress: ip, Netmask: prefix, Gateway: gateway,
-				IPv6Address: v6.Address, IPv6Gateway: v6.Gateway, IPv6DNS: v6.DNS}
+				IPv6Address: v6.Address, IPv6Gateway: v6.Gateway, IPv6DNS: v6.DNS, DNS: dns}
 			if ierr := injectGuestConfig(diskPath, hostname, vmCfg, cfg.RootPassword, cfg.SshPublicKey, cfg.UserData); ierr != nil {
 				log.Printf("[NodeAgent] guest config injection failed for reinstalled VM %s (guest may lack static networking): %v", req.VmId, ierr)
 			}
@@ -2067,6 +2244,12 @@ func (s *NodeAgentService) rebuildVM(req *pb.VMCommandRequest) error {
 	if err := libvirt.RebuildVM(req.VmId, templatePath, prepare); err != nil {
 		undo()
 		return err
+	}
+	// The old system's boot entries point at partitions that are gone.
+	if uefi {
+		if err := libvirt.ResetNVRAM(req.VmId); err != nil {
+			log.Printf("[NodeAgent] VM %s: UEFI settings not reset after reinstall (it boots its default loader): %v", req.VmId, err)
+		}
 	}
 	return nil
 }
@@ -2083,6 +2266,7 @@ func (s *NodeAgentService) BackupDisk(ctx context.Context, req *pb.BackupDiskReq
 	if _, authenticated := GetNodeIDFromContext(ctx); !authenticated {
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
+	s.crashes.Hold(req.VmId)
 
 	for _, n := range []string{req.GetCheckpoint(), req.GetIncrementalFrom()} {
 		if n != "" && !storage.ValidCheckpointName(n) {
@@ -2443,6 +2627,7 @@ func uploadExport(ctx context.Context, client sharedstorage.Store, q *storage.QC
 	if err := client.Upload(ctx, key, f, size, "application/octet-stream"); err != nil {
 		return nil, storeFailure("upload failed", err)
 	}
+	file.EncryptionKeyId = storage.SealingKeyID(client)
 	return file, nil
 }
 
@@ -2496,8 +2681,22 @@ func backupDiskErr(code pb.ErrorCode, msg string) *pb.BackupDiskResponse {
 // "iso_slots": a second CD drive (ISOSlotKey), and discs changed while a VM
 // runs. "lvm_migration": VMs whose disks are logical volumes move between
 // nodes, and onto LVM pools.
+//
+// "vm_hardware": VMConfig.hardware, SetVMHardware and restart on crash.
+// "snapshot_options": disk-only and quiesced snapshots, and reverts that keep
+// the snapshot's power state. "offline_password": RESET_PASSWORD of a stopped
+// Linux VM. "builtin_rescue": the RESCUE and UNRESCUE commands. What depends on
+// the host ("uefi", "secure_boot", "tpm", "hugepages") is added by hostFeatures.
+//
+// models.FeatureGuestDNS, FeatureDHCPServer, FeatureVMNICs, FeatureVLANBridges
+// and FeatureIPv6Extra: the network card, resolver, DHCP, VLAN bridge and
+// extra IPv6 address fields and calls (see the proto). FeatureBackupEncryption:
+// ObjectStore.encryption and decryption_keys.
 var agentFeatures = []string{"restore_disks", "lvm_disks", "backup_targets", "incremental_backup", "hostname_proxy",
-	"template_checksum", "blank_install", "iso_slots", "lvm_migration"}
+	"template_checksum", "blank_install", "iso_slots", "lvm_migration",
+	models.FeatureVMHardware, models.FeatureSnapshotOptions, models.FeatureOfflinePassword, models.FeatureBuiltinRescue,
+	models.FeatureGuestDNS, models.FeatureDHCPServer, models.FeatureVMNICs, models.FeatureVLANBridges, models.FeatureIPv6Extra,
+	models.FeatureBackupEncryption}
 
 // volumeReserveBytes is the room an export or a restore must leave free on the
 // volume it writes to. qemu pauses a VM the moment a write fails, so filling a
@@ -2524,7 +2723,9 @@ func objectStoreClient(store *pb.ObjectStore) (client *sharedstorage.Client, fro
 }
 
 // backupStore opens the destination a request names: an S3 store (the one
-// sent, or this node's own), an SFTP server, or a mounted directory.
+// sent, or this node's own), an SFTP server, or a mounted directory. With the
+// keys the request sent, what it uploads is encrypted and what it downloads
+// decrypted.
 func backupStore(ctx context.Context, store *pb.ObjectStore) (sharedstorage.Store, bool, error) {
 	switch store.GetKind() {
 	case "", sharedstorage.KindS3:
@@ -2532,7 +2733,7 @@ func backupStore(ctx context.Context, store *pb.ObjectStore) (sharedstorage.Stor
 		if err != nil {
 			return nil, fromRequest, &sharedstorage.RefusedError{Err: err}
 		}
-		return c, fromRequest, nil
+		return storage.SealFor(c, store), fromRequest, nil
 	}
 	sftp := store.GetSftp()
 	s, err := sharedstorage.Target{
@@ -2544,7 +2745,7 @@ func backupStore(ctx context.Context, store *pb.ObjectStore) (sharedstorage.Stor
 	if err != nil {
 		return nil, true, err
 	}
-	return s, true, nil
+	return storage.SealFor(s, store), true, nil
 }
 
 // storeFailure reports a failed object-storage call. A store that answered and
@@ -2830,12 +3031,15 @@ func (s *NodeAgentService) RestoreDisk(ctx context.Context, req *pb.RestoreDiskR
 	}
 
 	// The VM must be shut off: overwriting a disk under a running qemu corrupts it.
-	vmStatus, err := libvirt.GetVMStatus(req.VmId)
-	if err != nil {
-		return restoreDiskErr(fmt.Sprintf("failed to read VM state: %v", err)), nil
+	s.crashes.Hold(req.VmId)
+	// Held in the registry of work on the VM's disks until done, so a start
+	// (or the crash watcher) does not boot it meanwhile.
+	if !migrations.Start(req.VmId, restoreRun, "Restoring a backup", nil) {
+		return restoreDiskErr(errDisksBusy.Error()), nil
 	}
-	if vmStatus != libvirt.VMStatusStopped {
-		return restoreDiskErr(fmt.Sprintf("VM must be stopped to restore (state: %s)", vmStatus)), nil
+	defer migrations.Finish(req.VmId, restoreRun, nil)
+	if why := notShutOff(req.VmId); why != "" {
+		return restoreDiskErr(why), nil
 	}
 
 	have, err := libvirt.BackupDisks(req.VmId)
@@ -2906,6 +3110,12 @@ func (s *NodeAgentService) RestoreDisk(ctx context.Context, req *pb.RestoreDiskR
 	// Files first: they can be put back if a later disk fails. A device is
 	// written in place and cannot.
 	sort.SliceStable(ready, func(i, j int) bool { return !ready[i].disk.Block && ready[j].disk.Block })
+
+	// Again now, right before the swap: the downloads took a while.
+	if why := notShutOff(req.VmId); why != "" {
+		discard()
+		return restoreDiskErr(why), nil
+	}
 
 	// The snapshots live in the disks being replaced.
 	if err := libvirt.DropSnapshots(req.VmId); err != nil {
@@ -2997,6 +3207,21 @@ func fitsDevice(image, device string) error {
 		return fmt.Errorf("the backup is %d bytes and %s holds only %d", img.VirtualSize, device, have)
 	}
 	return nil
+}
+
+// restoreRun names a restore in the migrations registry (one per VM at a time).
+const restoreRun = "restore"
+
+// notShutOff says why a VM's disks cannot be replaced now, "" when it is shut off.
+func notShutOff(vmID string) string {
+	st, err := libvirt.GetVMStatus(vmID)
+	if err != nil {
+		return fmt.Sprintf("failed to read VM state: %v", err)
+	}
+	if st != libvirt.VMStatusStopped {
+		return fmt.Sprintf("VM must be stopped to restore (state: %s)", st)
+	}
+	return ""
 }
 
 func restoreDiskErr(msg string) *pb.RestoreDiskResponse {
@@ -3442,16 +3667,18 @@ func (s *NodeAgentService) GetVMStatus(ctx context.Context, req *pb.VMStatusRequ
 		},
 	}
 
-	// Resolve IP addresses if VM is running. Prefer libvirt's interface-address
-	// query (guest agent → DHCP lease → ARP) so VMs without a responsive
-	// qemu-guest-agent still report IPs; fall back to the direct guest-agent
-	// query for hostname-derived addresses.
+	n, paused := s.crashes.Status(req.VmId)
+	resp.CrashRestarts, resp.CrashRestartPaused = int32(n), paused
+
+	// Addresses of a running VM: its guest agent's answer, bounded so a guest
+	// agent that never answers costs this call seconds, not its deadline, then
+	// the host's DHCP leases and ARP table.
 	if vmStatus == "running" {
-		if ips, ierr := libvirt.GetVMInterfaceIPs(req.VmId); ierr == nil && len(ips) > 0 {
+		ips, silent := s.statusIPs(req.VmId)
+		if len(ips) > 0 {
 			resp.IpAddresses = ips
-		} else if _, gaIPs := queryGuestAgentInfo(vmInfo.Name); len(gaIPs) > 0 {
-			resp.IpAddresses = gaIPs
 		}
+		resp.GuestAgentSilent = silent
 
 		// Cumulative traffic counters: the panel's monthly bandwidth accounting
 		// reads these and nothing else. They restart from zero when the VM
@@ -3663,6 +3890,7 @@ func (s *NodeAgentService) CreateSnapshot(ctx context.Context, req *pb.SnapshotR
 	}
 
 	log.Printf("[NodeAgent] Snapshot operation %v on VM %s from node %s", req.Operation, req.VmId, nodeID)
+	s.crashes.Hold(req.VmId)
 
 	switch req.Operation {
 	case pb.SnapshotOperationType_SNAPSHOT_OPERATION_TYPE_CREATE:
@@ -3671,7 +3899,8 @@ func (s *NodeAgentService) CreateSnapshot(ctx context.Context, req *pb.SnapshotR
 				return nil, status.Error(codes.FailedPrecondition, why)
 			}
 		}
-		snap, err := libvirt.CreateSnapshot(req.VmId, req.Name, req.Description)
+		snap, err := libvirt.CreateSnapshot(req.VmId, req.Name, req.Description,
+			libvirt.SnapshotOptions{DiskOnly: req.GetDiskOnly(), Quiesce: req.GetQuiesce()})
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to create snapshot: %v", err)
 		}
@@ -3714,14 +3943,21 @@ func (s *NodeAgentService) CreateSnapshot(ctx context.Context, req *pb.SnapshotR
 		if req.SnapshotId == "" {
 			return nil, status.Errorf(codes.InvalidArgument, "snapshot_id is required for restore")
 		}
-		if err := libvirt.RestoreSnapshot(req.VmId, req.SnapshotId); err != nil {
+		// A revert can boot the VM, and replaces its disks' contents.
+		if migrations.Busy(req.VmId) {
+			return nil, status.Error(codes.FailedPrecondition, errDisksBusy.Error())
+		}
+		after, err := libvirt.RestoreSnapshot(req.VmId, req.SnapshotId)
+		if err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to restore snapshot: %v", err)
 		}
 		// The VM may now be running on the console socket of an older definition.
 		secureConsoles(false)
+		// Where the revert left the VM, so the panel records it as it is.
 		return &pb.SnapshotResponse{
 			Success:   true,
 			Operation: req.Operation,
+			Snapshot:  &pb.SnapshotInfo{SnapshotId: req.SnapshotId, VmState: mapVMStatusToPBState(after)},
 		}, nil
 
 	case pb.SnapshotOperationType_SNAPSHOT_OPERATION_TYPE_DELETE:
@@ -3851,24 +4087,77 @@ func desiredFromRequest(req *pb.NetworkConfigRequest) (network.VMDesired, *pb.Ne
 		if berr != nil {
 			bridge = primary.BridgeName
 		}
-		d.IPv6 = &network.IPv6Delegation{Prefix: primary.Ipv6Prefix, MAC: mac, Bridge: bridge}
+		d.IPv6 = &network.IPv6Delegation{Prefix: primary.Ipv6Prefix, MAC: mac, Bridge: bridge, Extra: primary.Ipv6Extra}
 	} else if onLink := onLinkIPv6Prefix(primary); onLink != "" {
 		// An address on a shared subnet, with no routed prefix behind it.
 		d.IPv6 = &network.IPv6Delegation{Prefix: onLink, OnLink: true}
 	}
+	d.DHCP = dhcpHosts(req.VmId, cfg.Interfaces, primary)
 	return d, primary
+}
+
+// dhcpHosts are the static leases a VM's addresses ask for: each goes to the
+// VM's card on the address's bridge, read from the domain (an imported VM's
+// MACs are its own). Only an address with its prefix can be served, and the
+// first one per card wins, since DHCP gives a card one address.
+func dhcpHosts(vmID string, ifaces []*pb.NetworkInterface, primary *pb.NetworkInterface) []dhcp.Host {
+	var want []*pb.NetworkInterface
+	for _, iface := range ifaces {
+		if iface.GetDhcpServer() && iface.Netmask > 0 && !strings.Contains(iface.IpAddress, ":") {
+			want = append(want, iface)
+		}
+	}
+	if len(want) == 0 {
+		return nil
+	}
+	nics, err := libvirt.GetVMNICs(vmID)
+	if err != nil || len(nics) == 0 {
+		log.Printf("[NodeAgent] VM %s: DHCP not served, its cards could not be read: %v", vmID, err)
+		return nil
+	}
+	var out []dhcp.Host
+	for _, iface := range want {
+		nic := nics[0]
+		if iface != primary || iface.BridgeName != "" {
+			found := false
+			for _, n := range nics {
+				if iface.BridgeName != "" && n.Bridge == iface.BridgeName {
+					nic, found = n, true
+					break
+				}
+			}
+			if !found && iface != primary {
+				continue
+			}
+		}
+		if nic.Bridge == "" || slices.ContainsFunc(out, func(h dhcp.Host) bool { return strings.EqualFold(h.MAC, nic.MAC) }) {
+			continue
+		}
+		out = append(out, dhcp.Host{Bridge: nic.Bridge, MAC: strings.ToLower(nic.MAC), IP: iface.IpAddress, Prefix: int(iface.Netmask),
+			Gateway: iface.Gateway, DNS: iface.Dns})
+	}
+	return out
 }
 
 // guestNetFromRequest is the addressing configure_guest writes into the guest:
 // the primary with its gateway, every further address the panel sent a prefix
 // for, and the IPv6. ok is false when the primary has no prefix.
-func guestNetFromRequest(req *pb.NetworkConfigRequest, primary *pb.NetworkInterface) (guestNet, bool) {
+//
+// An address whose bridge is another card's (a VPC, a second network) goes on
+// that card; nics are the running VM's cards, the first being the primary.
+// An address of a card only the definition has (added for the next start) is
+// left out: on the first card it would put a private network on the public one.
+func guestNetFromRequest(req *pb.NetworkConfigRequest, primary *pb.NetworkInterface, nics, defined []libvirt.VMNIC) (guestNet, bool) {
 	if primary == nil || primary.Netmask <= 0 {
 		return guestNet{}, false
 	}
 	n := guestNet{
 		IP: primary.IpAddress, Prefix: int(primary.Netmask), Gateway: primary.Gateway,
-		V6: guestIPv6From(primary.Ipv6Address, primary.Ipv6Gateway, primary.Ipv6Dns),
+		V6:  guestIPv6From(primary.Ipv6Address, primary.Ipv6Gateway, primary.Ipv6Dns),
+		DNS: primary.Dns,
+	}
+	if n.V6.Address != "" {
+		n.V6.Extra = primary.Ipv6Extra
 	}
 	seen := map[string]bool{primary.IpAddress: true}
 	for _, iface := range req.Config.Interfaces {
@@ -3880,9 +4169,42 @@ func guestNetFromRequest(req *pb.NetworkConfigRequest, primary *pb.NetworkInterf
 			log.Printf("[NodeAgent] WARNING: VM %s: %s has no prefix, left out of the guest's config", req.VmId, iface.IpAddress)
 			continue
 		}
-		n.Extra = append(n.Extra, guestos.GuestAddr{Address: iface.IpAddress, Prefix: int(iface.Netmask)})
+		addr := guestos.GuestAddr{Address: iface.IpAddress, Prefix: int(iface.Netmask)}
+		if card := cardOnBridge(nics, iface.BridgeName); card != "" {
+			n.NICs = addToCard(n.NICs, card, addr)
+			continue
+		}
+		if card := cardOnBridge(defined, iface.BridgeName); card != "" {
+			log.Printf("[NodeAgent] VM %s: %s is for card %s, which the running VM gets at its next start; left out of the guest's config", req.VmId, iface.IpAddress, card)
+			continue
+		}
+		n.Extra = append(n.Extra, addr)
 	}
 	return n, true
+}
+
+// cardOnBridge is the MAC of the VM's card on bridge when that is not its
+// first card; "" otherwise (the address then goes on the first).
+func cardOnBridge(nics []libvirt.VMNIC, bridge string) string {
+	if bridge == "" || len(nics) < 2 || nics[0].Bridge == bridge {
+		return ""
+	}
+	for _, c := range nics[1:] {
+		if c.Bridge == bridge {
+			return strings.ToLower(c.MAC)
+		}
+	}
+	return ""
+}
+
+func addToCard(cards []guestos.GuestNIC, mac string, a guestos.GuestAddr) []guestos.GuestNIC {
+	for i := range cards {
+		if cards[i].MAC == mac {
+			cards[i].Addresses = append(cards[i].Addresses, a)
+			return cards
+		}
+	}
+	return append(cards, guestos.GuestNIC{MAC: mac, Addresses: []guestos.GuestAddr{a}})
 }
 
 func (s *NodeAgentService) applyNetworkConfigLocked(ctx context.Context, req *pb.NetworkConfigRequest) (*pb.NetworkConfigResponse, error) {
@@ -3945,7 +4267,9 @@ func (s *NodeAgentService) applyNetworkConfigLocked(ctx context.Context, req *pb
 	// The addresses changed: the guest must adopt them too. It gets every
 	// address it holds, so adding one never takes the others away.
 	if req.ConfigureGuest {
-		if n, ok := guestNetFromRequest(req, primary); !ok {
+		nics, _ := libvirt.GetVMNICs(req.VmId)
+		defined, _ := libvirt.GetVMDefinedNICs(req.VmId)
+		if n, ok := guestNetFromRequest(req, primary, nics, defined); !ok {
 			log.Printf("[NodeAgent] WARNING: guest reconfigure for VM %s skipped: no prefix for %s", req.VmId, d.IP)
 		} else if err := s.applyGuestNetwork(ctx, req.VmId, n, guestAgentWait); err != nil {
 			var na *guestNotApplied
@@ -4218,7 +4542,7 @@ func (s *NodeAgentService) GetNodeInfo(ctx context.Context, req *pb.GetNodeInfoR
 		AgentCommit:          agentBuild.Commit,
 		AgentBuildTime:       agentBuild.BuildTime,
 		AgentVersion:         agentBuild.Version,
-		Features:             agentFeatures,
+		Features:             append(append([]string{}, agentFeatures...), hostFeatures()...),
 		AgentSettings:        agentenv.Report(os.Getenv),
 		CpuPercent:           cpuPercent,
 		MemoryUsedBytes:      memUsedBytes,
@@ -4422,14 +4746,14 @@ func (s *NodeAgentService) GetGuestConnections(ctx context.Context, req *pb.GetG
 		}, nil
 	}
 
-	macs := make([]string, 0, len(ifaces))
+	nics := make([]network.GuestNIC, 0, len(ifaces))
 	byMAC := make(map[string]libvirt.GuestInterface, len(ifaces))
 	for _, iface := range ifaces {
-		macs = append(macs, iface.MAC)
+		nics = append(nics, network.GuestNIC{MAC: iface.MAC, Tap: iface.Target})
 		byMAC[iface.MAC] = iface
 	}
 
-	counters, err := s.networkMgr.GuestConnectionCounters(macs)
+	counters, err := s.networkMgr.GuestConnectionCounters(nics)
 	if err != nil {
 		return &pb.GetGuestConnectionsResponse{
 			Success: false,
@@ -4446,9 +4770,41 @@ func (s *NodeAgentService) GetGuestConnections(ctx context.Context, req *pb.GetG
 			InterfaceName: iface.Target,
 			SynPackets:    c.SYNPackets,
 			Quarantined:   c.Quarantined,
+			SynInPackets:  c.SYNInPackets,
+			PacketsOut:    c.PacketsOut,
+			PacketsIn:     c.PacketsIn,
 		})
 	}
-	return &pb.GetGuestConnectionsResponse{Success: true, Guests: guests}, nil
+	return &pb.GetGuestConnectionsResponse{Success: true, Guests: guests, NullRoutes: nullRoutesPB(s.networkMgr.NullRoutes())}, nil
+}
+
+func nullRoutesPB(routes []netrules.NullRoute) []*pb.NullRoute {
+	out := make([]*pb.NullRoute, 0, len(routes))
+	for _, r := range routes {
+		out = append(out, &pb.NullRoute{Ip: r.IP, UntilUnix: r.Until.Unix(), Reason: r.Reason})
+	}
+	return out
+}
+
+// SetNullRoute drops all traffic to one address for a while, or lifts it. The
+// node lifts it by itself when the time is up.
+func (s *NodeAgentService) SetNullRoute(ctx context.Context, req *pb.SetNullRouteRequest) (*pb.SetNullRouteResponse, error) {
+	if _, authenticated := GetNodeIDFromContext(ctx); !authenticated {
+		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
+	}
+	if s.networkMgr == nil {
+		return &pb.SetNullRouteResponse{
+			Error: &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: "network manager not initialized"},
+		}, nil
+	}
+	routes, err := s.networkMgr.SetNullRoute(req.GetIp(), time.Duration(req.GetMinutes())*time.Minute, req.GetReason(), req.GetOn())
+	if err != nil {
+		return &pb.SetNullRouteResponse{
+			Error: &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INVALID_ARGUMENT, Message: err.Error()},
+		}, nil
+	}
+	log.Printf("[NodeAgent] null-route %v for %s, %d min (%s)", req.GetOn(), req.GetIp(), req.GetMinutes(), req.GetReason())
+	return &pb.SetNullRouteResponse{Success: true, NullRoutes: nullRoutesPB(routes)}, nil
 }
 
 // SetQuarantine cuts a guest off the network, or puts it back, without stopping
@@ -4511,7 +4867,10 @@ func (s *NodeAgentService) ScanVMs(ctx context.Context, req *pb.ScanVMsRequest) 
 
 		// Query guest-agent for real hostname and IP (overrides XML metadata)
 		if vm.Status == "running" {
-			gaHostname, gaIPs := queryGuestAgentInfo(vm.Name)
+			gaHostname, gaIPs := s.guestAgentHostname(vm.UUID), []string(nil)
+			if ips, silent := s.statusIPs(vm.UUID); !silent {
+				gaIPs = ipv4Only(ips)
+			}
 			if gaHostname != "" {
 				scanned.Hostname = gaHostname
 			}
@@ -4694,37 +5053,15 @@ func extractHostnameFromMetadata(rawXML string) string {
 	return ""
 }
 
-// queryGuestAgentInfo queries the qemu-guest-agent for hostname and IP addresses
-// Returns hostname and list of non-loopback IPv4 addresses
-func queryGuestAgentInfo(domainName string) (hostname string, ipAddresses []string) {
-	// Query hostname via guest-agent
-	hostOut, err := exec.Command("virsh", "qemu-agent-command", domainName,
-		`{"execute":"guest-get-host-name"}`).Output()
-	if err == nil {
-		// Parse: {"return":{"host-name":"example.com"}}
-		re := regexp.MustCompile(`"host-name"\s*:\s*"([^"]+)"`)
-		if matches := re.FindSubmatch(hostOut); len(matches) > 1 {
-			hostname = string(matches[1])
+// ipv4Only keeps the IPv4 addresses of a list.
+func ipv4Only(ips []string) []string {
+	var out []string
+	for _, ip := range ips {
+		if p := net.ParseIP(ip); p != nil && p.To4() != nil {
+			out = append(out, ip)
 		}
 	}
-
-	// Query IP addresses via domifaddr (uses guest-agent source)
-	ifOut, err := exec.Command("virsh", "domifaddr", domainName, "--source", "agent").Output()
-	if err == nil {
-		// Parse lines like: eth0  00:16:3e:54:e4:64  ipv4  192.0.2.81/24
-		lines := strings.Split(string(ifOut), "\n")
-		for _, line := range lines {
-			fields := strings.Fields(line)
-			if len(fields) >= 4 && fields[2] == "ipv4" {
-				ip := strings.Split(fields[3], "/")[0]
-				if ip != "127.0.0.1" {
-					ipAddresses = append(ipAddresses, ip)
-				}
-			}
-		}
-	}
-
-	return hostname, ipAddresses
+	return out
 }
 
 // ProbeIPs ARP-probes each requested IP on the given bridge and returns those

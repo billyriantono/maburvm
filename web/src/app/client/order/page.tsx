@@ -52,12 +52,12 @@ function OrderVMForm() {
   const { data: templates, isLoading: templatesLoading } = useTemplates()
   const { data: images } = useImages()
   const sourceImage = sourceImageId ? images?.find((img) => img.id === sourceImageId) : undefined
-  const { data: sshKeys } = useSSHKeys()
+  const { data: ownKeys } = useSSHKeys()
   const { data: selfService } = useSelfService()
   const createVM = useCreateVM()
   const { data: portal } = usePortal()
   const { data: teams } = useMemberships()
-  const { data: recipes } = useRecipes()
+  const { data: ownRecipes } = useRecipes()
   // Team accounts the customer may order into: a role that operates, and not
   // limited to chosen servers (a new one would be out of their reach).
   const orderable = (teams?.memberships ?? []).filter((m) => m.can.includes("operate") && !m.vm_ids.length)
@@ -65,6 +65,12 @@ function OrderVMForm() {
   const [accountChoice, setAccountChoice] = useState<string | null>(null)
   const accountId = accountChoice ?? (ownBlocked && orderable.length ? orderable[0].account_id : "")
   const team = orderable.find((m) => m.account_id === accountId)
+  // Ordering into a team account offers its SSH keys and recipes beside your own.
+  const teamShares = !!team?.can.includes("view")
+  const { data: teamKeys } = useSSHKeys(teamShares ? accountId : undefined, teamShares)
+  const { data: teamRecipes } = useRecipes(teamShares ? accountId : undefined, teamShares)
+  const sshKeys = mergeByID(ownKeys, teamShares ? teamKeys : undefined)
+  const recipes = mergeByID(ownRecipes, teamShares ? teamRecipes : undefined)
   const { data: allProjects } = useProjects(accountId || undefined)
   // A member limited to projects orders into one of theirs.
   const projects = (allProjects ?? []).filter((p) => !team?.project_ids.length || team.project_ids.includes(p.id))
@@ -784,4 +790,12 @@ export default function OrderVMPage() {
       <OrderVMForm />
     </Suspense>
   )
+}
+
+// mergeByID joins two lists, each item once.
+function mergeByID<T extends { id: string }>(a?: T[], b?: T[]): T[] | undefined {
+  if (!a && !b) return undefined
+  const out = [...(a ?? [])]
+  for (const x of b ?? []) if (!out.some((y) => y.id === x.id)) out.push(x)
+  return out
 }

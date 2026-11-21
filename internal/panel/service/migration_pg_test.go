@@ -718,3 +718,47 @@ func TestDrainMovesWhatItCanAndReportsTheRest(t *testing.T) {
 	_, err = f.svc.AbortDrain(ctx, f.srcID)
 	assert.ErrorIs(t, err, ErrNoActiveDrain)
 }
+
+// A NAT VM moves: its ports go into a free block on the destination with its
+// forwards, and what lives only on its node (dedicated cores, a TPM) stops a move.
+func TestNATVMMovesWithItsPorts(t *testing.T) {
+	f := newMigrationFixture(t)
+	ctx := context.Background()
+	const vm = "77777777-7777-7777-7777-777777777777"
+	const other = "88888888-8888-8888-8888-888888888888"
+	f.addVM(t, vm, "web", "running", "198.51.100.5")
+	exec := func(q string, args ...interface{}) { require.NoError(t, f.db.Exec(q, args...).Error, q) }
+	exec(`UPDATE nodes SET nat_port_start = 30000, nat_port_end = 30199, nat_address = '203.0.113.20' WHERE id = ?`, f.dstID)
+	exec(`UPDATE port_forwards SET external_port = 30005 WHERE vm_id = ?`, vm)
+	exec(`INSERT INTO nat_port_blocks (vm_id, node_id, start_port, port_count) VALUES (?, ?, 30000, 20), (?, ?, 30000, 20)`, vm, f.srcID, other, f.dstID)
+
+	exec(`UPDATE vms SET hardware = '{"tpm":true,"dedicated_cpu":true,"pinned_cpus":"4-5"}' WHERE id = ?`, vm)
+	chk, err := f.svc.Check(ctx, MigrationRequest{VMID: vm, DestNodeID: f.dstID})
+	require.NoError(t, err)
+	assert.False(t, chk.CanMove)
+	text := strings.Join(chk.Blockers, "\n")
+	assert.Contains(t, text, "virtual TPM")
+	assert.Contains(t, text, "dedicated CPU cores")
+	exec(`UPDATE vms SET hardware = '{}' WHERE id = ?`, vm)
+
+	chk, err = f.svc.Check(ctx, MigrationRequest{VMID: vm, DestNodeID: f.dstID})
+	require.NoError(t, err)
+	require.True(t, chk.CanMove, "%v", chk.Blockers)
+	assert.Contains(t, strings.Join(chk.Warnings, "\n"), "change from 30000-30019 to 30020-30039")
+
+	row := f.queueMove(t, vm)
+	require.NoError(t, f.svc.RunMigrationJob(ctx, row.ID))
+	got := f.migration(t, row.ID)
+	assert.Equal(t, models.MigrationCompleted, got.Status, got.Error)
+	var b models.NATPortBlock
+	require.NoError(t, f.db.Where("vm_id = ?", vm).First(&b).Error)
+	assert.Equal(t, f.dstID, b.NodeID)
+	assert.Equal(t, 30020, b.StartPort)
+	var fwd struct {
+		NodeID       string
+		ExternalPort int
+	}
+	require.NoError(t, f.db.Raw(`SELECT node_id, external_port FROM port_forwards WHERE vm_id = ?`, vm).Scan(&fwd).Error)
+	assert.Equal(t, f.dstID, fwd.NodeID)
+	assert.Equal(t, 30025, fwd.ExternalPort, "the forward moved with its block")
+}

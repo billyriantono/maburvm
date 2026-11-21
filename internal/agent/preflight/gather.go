@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maburvm/panel/internal/agent/hwprofile"
 	"github.com/maburvm/panel/internal/agent/netrules"
 	"github.com/maburvm/panel/internal/agent/storage"
 )
@@ -22,6 +23,11 @@ type Options struct {
 	DefaultPool string
 	Bridges     []string
 	LibvirtURI  string
+	// VLANBridges are the bridges named for per-VM VLANs, with their uplinks.
+	VLANBridges map[string]string
+	// DHCP is, per bridge the node answers DHCP on, why it is not serving
+	// ("" when it is).
+	DHCP map[string]string
 }
 
 // Run gathers and evaluates in one go.
@@ -76,6 +82,10 @@ func Gather(ctx context.Context, o Options) Facts {
 	for _, name := range o.Bridges {
 		f.Bridges = append(f.Bridges, bridgeFacts(name))
 	}
+	for _, b := range sortedKeys(o.VLANBridges) {
+		f.VLANBridges = append(f.VLANBridges, netrules.CheckVLANBridge("/sys/class/net", b, o.VLANBridges[b]))
+	}
+	f.DHCP = o.DHCP
 
 	pools, def := o.Pools, false
 	if len(pools) == 0 && o.DefaultPool != "" {
@@ -97,6 +107,13 @@ func Gather(ctx context.Context, o Options) Facts {
 		_, err := exec.LookPath(name)
 		f.Tools[name] = err == nil
 	}
+
+	plain, secure := hwprofile.FindFirmware(hwprofile.Exists)
+	f.UEFI, f.SecureBoot = plain != nil, secure != nil
+	_, e1 := exec.LookPath("swtpm")
+	_, e2 := exec.LookPath("swtpm_setup")
+	f.TPM = e1 == nil && e2 == nil
+	f.HugepagesMiB, _ = hwprofile.HostHugepagesMiB()
 
 	if out, err := run(ctx, "timedatectl", "show", "-p", "NTPSynchronized", "--value"); err == nil {
 		if v := strings.TrimSpace(out); v == "yes" || v == "no" {

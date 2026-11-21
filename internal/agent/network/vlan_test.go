@@ -109,3 +109,46 @@ func TestStoppedVMKeepsItsVLANOnRecord(t *testing.T) {
 		t.Fatalf("cleanup ran %v", *ran)
 	}
 }
+
+// Bridges the panel sets are kept and win over the environment after a
+// restart; going back to the environment forgets them.
+func TestSetBridgesFromThePanel(t *testing.T) {
+	t.Setenv(VLANBridgesEnv, "br9:eth9")
+	state := filepath.Join(t.TempDir(), "vlan.json")
+	m := NewVLANManagerAt(state)
+	if _, fromEnv, err := m.SetBridges(map[string]string{"br1": "bond0"}, false); err != nil || fromEnv {
+		t.Fatalf("set: fromEnv=%v err=%v", fromEnv, err)
+	}
+	again := NewVLANManagerAt(state)
+	if !reflect.DeepEqual(again.bridges, map[string]string{"br1": "bond0"}) || !again.fromPanel {
+		t.Fatalf("after restart: %v fromPanel=%v", again.bridges, again.fromPanel)
+	}
+	if _, fromEnv, err := again.SetBridges(nil, true); err != nil || !fromEnv {
+		t.Fatalf("back to env: fromEnv=%v err=%v", fromEnv, err)
+	}
+	if third := NewVLANManagerAt(state); !reflect.DeepEqual(third.bridges, map[string]string{"br9": "eth9"}) {
+		t.Fatalf("env not used again: %v", third.bridges)
+	}
+	if _, _, err := m.SetBridges(map[string]string{"br1 x": "bond0"}, false); err == nil {
+		t.Fatal("invalid name accepted")
+	}
+}
+
+// A bridge cannot leave the list while a VM on it has a VLAN: at its next
+// start the VM's tap would join the native VLAN instead.
+func TestSetBridgesKeepsABridgeInUse(t *testing.T) {
+	m, _ := newTestVLAN(t, "br1:bond0", true)
+	m.bridgesPath = filepath.Join(t.TempDir(), "vlan-bridges.json")
+	m.assignments["vm-1"] = 42
+	if _, _, err := m.SetBridges(map[string]string{"br2": "eth3"}, false); err == nil || !strings.Contains(err.Error(), "VLAN 42") {
+		t.Fatalf("br1 dropped while vm-1 uses it: %v", err)
+	}
+	m.nics = func(string) ([]NIC, error) { return nil, errors.New("domain is not running") }
+	m.defined = func(string) ([]string, error) { return []string{"br1"}, nil }
+	if _, _, err := m.SetBridges(nil, false); err == nil {
+		t.Fatal("br1 dropped while a stopped vm-1 has a VLAN on it")
+	}
+	if _, _, err := m.SetBridges(map[string]string{"br1": "bond0", "br2": "eth3"}, false); err != nil {
+		t.Fatalf("adding a bridge refused: %v", err)
+	}
+}

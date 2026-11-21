@@ -50,6 +50,11 @@ export interface Backup {
   parent_id?: string;
   // Staff only: why a backup is full when an incremental one was asked.
   mode_note?: string;
+  // Its files were encrypted on the node before they were uploaded.
+  encrypted?: boolean;
+  // Its disk images can be downloaded; download_note says why not otherwise.
+  downloadable?: boolean;
+  download_note?: string;
   started_at?: string;
   completed_at?: string;
   created_at: string;

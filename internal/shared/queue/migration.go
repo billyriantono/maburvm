@@ -91,6 +91,22 @@ func MigrationActive(ctx context.Context, vmID string) bool {
 	return err == nil && n > 0
 }
 
+// RestoreActive reports a restore onto the VM, from a backup or a snapshot,
+// whose job is queued or running. Read from the queue, it ends with the job
+// however that ends: done, failed, cancelled, or rescued after a panel restart.
+// A database without the queue's tables has none.
+func RestoreActive(ctx context.Context, db *gorm.DB, vmID string) bool {
+	if db == nil {
+		return false
+	}
+	var n int64
+	err := db.WithContext(ctx).Session(&gorm.Session{Logger: gormlogger.Discard}).Raw(`SELECT count(*) FROM river_job
+		WHERE state IN ('available', 'pending', 'running', 'retryable', 'scheduled') AND args->>'vm_id' = ?
+		  AND (kind = ? OR (kind = ? AND args->>'operation' = ?))`,
+		vmID, RestoreJob{}.Kind(), SnapshotJob{}.Kind(), string(SnapshotOpRestore)).Scan(&n).Error
+	return err == nil && n > 0
+}
+
 // currentNode is the node a VM is on now; a job queued before the VM moved
 // names the node it left.
 func currentNode(vm *models.VM, queuedFor string) string {

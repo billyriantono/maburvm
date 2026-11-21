@@ -48,7 +48,7 @@ func slotTestDB(t *testing.T) *gorm.DB {
 		_, _ = a.Exec(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '` + name + `'`)
 		_, _ = a.Exec(`DROP DATABASE IF EXISTS "` + name + `"`)
 	})
-	dsn := strings.Replace(base, "/postgres?", "/"+name+"?", 1)
+	dsn := dsnForDatabase(t, base, name)
 	raw, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatal(err)

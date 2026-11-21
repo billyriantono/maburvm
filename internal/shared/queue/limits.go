@@ -43,3 +43,15 @@ func LimitsNote(nodeName string, resp *pb.SetVMLimitsResponse, err error) *strin
 	}
 	return &s
 }
+
+// HardwareProto is a VM's hardware profile for its node; nil for a plain VM.
+func HardwareProto(h *models.Hardware) *pb.VMHardware {
+	if h == nil || h.IsZero() {
+		return nil
+	}
+	return &pb.VMHardware{
+		CpuModel: h.CPUModel, Sockets: int32(h.Sockets), Threads: int32(h.Threads), PinnedCpus: h.PinnedCPUs,
+		Numa: h.NUMA, Hugepages: h.Hugepages, Watchdog: h.Watchdog, RestartOnCrash: h.RestartOnCrash,
+		SecureBoot: h.SecureBoot, Tpm: h.TPM,
+	}
+}

@@ -4,7 +4,7 @@ import {
   useQueryClient,
 } from '@tanstack/react-query'
 import { api } from '@/lib/api-client'
-import type { Snapshot, CreateSnapshotRequest } from '@/types'
+import type { Snapshot, CreateSnapshotRequest, SnapshotSchedule, SnapshotScheduleRequest } from '@/types'
 
 export function useSnapshots(vmId: string) {
   return useQuery<Snapshot[]>({
@@ -60,6 +60,44 @@ export function useDeleteSnapshot(vmId: string) {
       queryClient.invalidateQueries({
         queryKey: ['snapshots', 'list', vmId],
       })
+    },
+  })
+}
+
+const scheduleKey = (vmId: string) => ['snapshots', 'schedule', vmId]
+
+/** The VM's snapshot schedule; null when it has none. */
+export function useSnapshotSchedule(vmId: string) {
+  return useQuery<SnapshotSchedule | null>({
+    queryKey: scheduleKey(vmId),
+    queryFn: async () => {
+      const response = await api.get<SnapshotSchedule | null>(`/api/v1/vms/${vmId}/snapshot-schedule`)
+      return response.data.data ?? null
+    },
+    enabled: !!vmId,
+  })
+}
+
+export function useSetSnapshotSchedule(vmId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<SnapshotSchedule, Error, SnapshotScheduleRequest>({
+    mutationFn: async (body) => {
+      const response = await api.put<SnapshotSchedule>(`/api/v1/vms/${vmId}/snapshot-schedule`, body)
+      return response.data.data
+    },
+    onSuccess: (data) => queryClient.setQueryData(scheduleKey(vmId), data),
+  })
+}
+
+export function useDeleteSnapshotSchedule(vmId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<void, Error, void>({
+    mutationFn: async () => {
+      await api.delete(`/api/v1/vms/${vmId}/snapshot-schedule`)
+    },
+    onSuccess: () => {
+      queryClient.setQueryData(scheduleKey(vmId), null)
+      queryClient.invalidateQueries({ queryKey: ['snapshots', 'list', vmId] })
     },
   })
 }

@@ -156,9 +156,12 @@ server may well be running; your provider has been alerted.
 - **Initial password**: while it is still kept, Overview can reveal the login
   password the server was created with. **Forget** removes it from the panel
   for good.
-- **Reset password** sets a new `root` or `Administrator` password. It needs
-  the server running with its guest agent. On RouterOS 7 the router restarts
-  to apply it.
+- **Reset password** sets a new `root` or `Administrator` password. A running
+  server takes it through its guest agent. A stopped Linux server has it
+  written onto its disk and stays stopped; it works from the next start, so
+  this is the way in when the guest agent does not answer. A stopped router
+  takes it when it next starts; on RouterOS 7 a running router restarts to
+  apply it. Windows takes one only while it runs.
 
 ## 6. Reinstall, rescue and ISOs
 
@@ -166,9 +169,14 @@ server may well be running; your provider has been alerted.
   of any kind; addresses and the console password stay. A new login password
   is shown once. Windows needs at least 2 GB of memory and a 32 GB disk.
 - **Rescue mode** boots a stopped server from a rescue system so you can repair
-  its disk from the console. **Leave rescue** boots it normally again. Your
-  provider chooses the rescue system; if the button is disabled, rescue is not
-  offered.
+  its disk. Where your provider set up the built-in rescue system, you are shown
+  a one-time `root` password (once: copy it), and starting the server boots a
+  small Linux system on the server's own address, reachable over SSH (if your
+  firewall lets port 22 in) or the console, with your server's disks attached
+  for repair (`lsblk` lists them). Otherwise it boots a rescue ISO, used from
+  the console. **Leave rescue** (server stopped) boots it normally again.
+  Backups, snapshots and reinstalls wait until it is out of rescue mode. If the
+  button is disabled, rescue is not offered.
 - **Attach ISO**: pick one of the installers your provider lists, or (if they
   allow it) give the address of your own. Your own address must be public;
   very large files and private addresses are refused. Detach it when done. A
@@ -193,10 +201,23 @@ request while it waits.
   If your provider adds or changes one, the server takes it at once when its
   guest agent can apply it, otherwise at its next start from the panel; a note
   on the page says which.
-- **Reverse DNS**: set the name each of your addresses answers to.
+- **Reverse DNS**: set the name each of your addresses answers to. With an
+  IPv6 prefix, name any address inside it (up to 64), for example the one your
+  mail server sends from. The name must already point to the address.
+- **IPv6.** With an IPv6 prefix, **More addresses in** gives the server up to
+  16 further addresses from it besides its `::1`; the server takes them like
+  any address change. **Turn off** takes IPv6 away from the server; ask for it
+  again with **Request address**.
 - **Private networks** (Private Networks): your own subnets, for servers to
   talk privately. Each lives in one location; servers join one there. You may
-  use any private range, even one other customers use.
+  use any private range, even one other customers use. **Nameservers** sets
+  the resolvers servers in it are given when they are created there,
+  reinstalled or readdressed.
+- **Network cards.** A server ordered with a public address can join one of
+  your private networks in its location as well: **Add card** on the Network
+  tab adds a second card with an address from that network. It appears at
+  once where the server's machine allows, otherwise at its next start from the
+  panel; the server is not restarted for it. Remove the card the same way.
 - **Floating IPs** (Floating IPs): public addresses you order, attach to a
   server in the same location, and move to another server without touching
   either system. They stay yours when a server is deleted, until you release
@@ -228,22 +249,44 @@ applies inside it.
 
 - **Backups** copy the whole server off its host. Take one now, or add a
   **schedule** (how often, and how many or how long to keep). Your plan may cap
-  how many you keep. **Restore** writes a backup over the server's disks; stop the
-  server first. If a backup fails after its last try, you
+  how many you keep (the Backups tab says how many, and the price per backup
+  when your provider shows one). **Restore** writes a backup over the server's
+  disks; stop the server first. If a backup fails after its last try, you
   are emailed.
-- **Snapshots** freeze the disk as it is, on the same host, so you can revert
+- **Download** saves a full backup's disk image (qcow2), one link per disk. A
+  backup marked encrypted is decrypted as it downloads. An incremental backup
+  holds only changes, so download the full one it builds on; a backup the panel
+  cannot reach says so and why. A read-only team member cannot download.
+- **Snapshots** freeze the server as it is, on the same host, so you can revert
   quickly, for example before an upgrade. They are not backups: they go with
-  the server. Servers on some storage cannot take them. Reverting makes the next
-  backup a full one.
+  the server. Servers on some storage cannot take them. A snapshot of a running
+  server also saves its memory, which pauses it while that is written; tick
+  **Disks only** to save the disks alone without a pause (and **Freeze the
+  filesystems first** to have the guest agent make them consistent). Reverting
+  puts the server back as it was: running where it left off, or stopped; after
+  a disks-only snapshot it boots from the snapshot's disks. Reverting makes the
+  next backup a full one.
+- **Snapshot schedule** (Snapshots tab): a snapshot every 6 hours to every week,
+  keeping the newest few it took; the oldest goes when a new one is taken.
+  Snapshots you take yourself are never removed by it, and count against your
+  plan's snapshot allowance, which the schedule has to fit in.
 - **Images** (Images) capture a server's disk to keep. An image outlives the
   server and can seed a new one at order time.
 
 ## 10. Transfer and speed
 
 Your plan may have a monthly transfer allowance; the Network tab shows this
-month's use and past months. You are emailed as you near it. Past it, the
-server may be slowed down, stopped until the month resets, or billed for the
-extra, as your provider's plan says.
+period's use and past ones. The period starts on the day your provider set,
+and the plan may count only traffic your server sends, or only what it
+receives; the Network tab says which. Your provider may also pool the
+allowances of your servers, so they share one total. You are emailed as you
+near it. Past it, the server may be slowed down, stopped until the allowance
+starts again, or billed for the extra, as your provider's plan says.
+
+If your server is attacked, or sends traffic that looks like an attack (often
+a sign it was broken into), your provider may drop traffic to it for a while,
+slow it down or cut it off from the network. The server keeps running and its
+console still works; you are emailed what was done and when it is lifted.
 
 ## 11. API keys and automation
 
@@ -287,9 +330,9 @@ and billing stay your account's.
   | Role | May |
   |---|---|
   | Admin | Everything you do, including the team and projects. |
-  | Technical | Run the servers: power, console, reinstall, backups, networking, ordering. |
-  | Billing | See usage and billing; sees the servers, changes nothing. |
-  | Read-only | See the servers; change nothing. |
+  | Technical | Run the servers: power, console, reinstall, backups, networking, ordering; manage the account's images, floating IPs, VPCs, firewall groups, SSH keys and recipes. |
+  | Billing | See the account's usage and billing only; not the servers or their resources. |
+  | Read-only | See the servers and the account's resources; change nothing. |
 
   and the servers they reach: every server, chosen servers, or chosen
   projects. The email link works for 7 days. Someone without an account
@@ -305,7 +348,16 @@ If you work in someone else's account, its servers are in **My VMs** next to
 your own (filter by **Account**), and **Team** lists the accounts you work in,
 where you can **Leave** one. What a server's page lets you do follows your
 role there: a read-only member sees the readings and settings but no power
-buttons, console or passwords.
+buttons, console or passwords. A billing member sees the account's usage
+against its limits on **Team** instead.
+
+The account's own **Images**, **Floating IPs**, **VPCs**, **Firewall groups**,
+**SSH keys** and **Recipes** pages show an **Account** picker when you work in
+a team: choose the team's account to see its resources, and, with the Admin or
+Technical role, to add or remove them. A member limited to chosen servers or
+projects works on those servers only and does not see these pages for the
+team's account. When ordering into a team's account you can pick its SSH keys
+and recipes or your own.
 
 ## 14. Recipes and the app catalog
 

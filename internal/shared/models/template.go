@@ -39,10 +39,15 @@ type OSTemplate struct {
 	// image onto the nodes.
 	AutoRefresh bool `json:"auto_refresh" gorm:"column:auto_refresh;not null;default:false"`
 	// Firmware is FirmwareBIOS or FirmwareUEFI: how the image boots.
-	Firmware  string         `json:"firmware" gorm:"column:firmware;type:varchar(8);not null;default:bios"`
-	CreatedAt time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
-	UpdatedAt time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
-	DeletedAt gorm.DeletedAt `json:"-" gorm:"index"`
+	Firmware string `json:"firmware" gorm:"column:firmware;type:varchar(8);not null;default:bios"`
+	// SecureBoot and TPM: VMs installed from the image get Secure Boot (UEFI
+	// only) and a virtual TPM, as Windows 11 needs. Read-only here, written by
+	// table name.
+	SecureBoot bool           `json:"secure_boot" gorm:"column:secure_boot;->"`
+	TPM        bool           `json:"tpm" gorm:"column:tpm;->"`
+	CreatedAt  time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
+	UpdatedAt  time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
+	DeletedAt  gorm.DeletedAt `json:"-" gorm:"index"`
 }
 
 // Template kinds and boot firmware.

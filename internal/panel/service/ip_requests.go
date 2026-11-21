@@ -83,14 +83,14 @@ func (s *IPRequestService) checkAllowance(ctx context.Context, vm *models.VM, fa
 		}
 		return checkVMAllowance(ctx, s.db, vm, 0, func(p *models.Plan) *int { return p.MaxExtraIPv6 }, "IPv6", "IPv6", "")
 	}
-	var have int64
-	if err := s.db.WithContext(ctx).Model(&models.Network{}).Where("vm_id = ?", vm.ID).Count(&have).Error; err != nil {
+	have, extra, err := vmIPv4Counts(ctx, s.db, vm.ID)
+	if err != nil {
 		return err
 	}
 	if have == 0 {
 		return nil
 	}
-	return checkVMAllowance(ctx, s.db, vm, have-1, func(p *models.Plan) *int { return p.MaxExtraIPv4 },
+	return checkVMAllowance(ctx, s.db, vm, extra, func(p *models.Plan) *int { return p.MaxExtraIPv4 },
 		"extra IPv4 address", "extra IPv4 addresses", "Release one, or ask support about a plan with more.")
 }
 

@@ -41,6 +41,8 @@ type CreateTemplateRequest struct {
 	AllowHTTP      bool   `json:"allow_http"`
 	AutoRefresh    bool   `json:"auto_refresh"`
 	Firmware       string `json:"firmware"`
+	SecureBoot     bool   `json:"secure_boot"`
+	TPM            bool   `json:"tpm"`
 }
 
 // UpdateTemplateRequest represents the request body for updating a template
@@ -59,6 +61,8 @@ type UpdateTemplateRequest struct {
 	AllowHTTP      *bool   `json:"allow_http,omitempty"`
 	AutoRefresh    *bool   `json:"auto_refresh,omitempty"`
 	Firmware       *string `json:"firmware,omitempty"`
+	SecureBoot     *bool   `json:"secure_boot,omitempty"`
+	TPM            *bool   `json:"tpm,omitempty"`
 }
 
 // SyncTemplateRequest represents the request body for syncing a template
@@ -151,6 +155,8 @@ func (h *TemplateHandler) CreateTemplate(c echo.Context) error {
 		AllowHTTP:      req.AllowHTTP,
 		AutoRefresh:    req.AutoRefresh,
 		Firmware:       req.Firmware,
+		SecureBoot:     req.SecureBoot,
+		TPM:            req.TPM,
 	}
 
 	resp, err := h.templateService.CreateTemplate(c.Request().Context(), &svcReq)
@@ -282,6 +288,8 @@ func (h *TemplateHandler) UpdateTemplate(c echo.Context) error {
 		AllowHTTP:      req.AllowHTTP,
 		AutoRefresh:    req.AutoRefresh,
 		Firmware:       req.Firmware,
+		SecureBoot:     req.SecureBoot,
+		TPM:            req.TPM,
 	}
 
 	template, err := h.templateService.UpdateTemplate(c.Request().Context(), id, &svcReq)

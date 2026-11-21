@@ -143,7 +143,7 @@ func RunBackup(ctx context.Context, uuidStr string, all []storage.DomainDisk, ou
 			_ = dom.AbortJob()
 			waitJobGone(dom, time.Minute)
 		}
-		if ferr := dom.FSFreeze(nil, 0); ferr != nil {
+		if ferr := fsFreeze(dom); ferr != nil {
 			log.Printf("[Backup] VM %s: guest file systems not frozen (%v); backing up without", uuidStr, ferr)
 			consistency = ConsistencyCrash
 		}
@@ -164,11 +164,29 @@ func RunBackup(ctx context.Context, uuidStr string, all []storage.DomainDisk, ou
 	return consistency, err
 }
 
+// fsFreeze and fsThaw act on every guest file system through the guest agent.
+// The binding's FSFreeze/FSThaw cannot: they take &mounts[0] and panic on an
+// empty list, and libvirt refuses a thaw that names mount points.
+func fsFreeze(dom *libvirt.Domain) error {
+	_, err := dom.QemuAgentCommand(`{"execute":"guest-fsfreeze-freeze"}`, libvirt.DomainQemuAgentCommandTimeout(60), 0)
+	if err != nil {
+		// A freeze that timed out may still finish in the guest; thawing one
+		// that is not frozen does nothing.
+		_ = fsThaw(dom)
+	}
+	return err
+}
+
+func fsThaw(dom *libvirt.Domain) error {
+	_, err := dom.QemuAgentCommand(`{"execute":"guest-fsfreeze-thaw"}`, libvirt.DomainQemuAgentCommandTimeout(10), 0)
+	return err
+}
+
 // thaw unfreezes the guest; one left frozen hangs on its next write.
 func thaw(dom *libvirt.Domain, uuidStr string) {
 	var err error
 	for i := 0; i < 5; i++ {
-		if err = dom.FSThaw(nil, 0); err == nil {
+		if err = fsThaw(dom); err == nil {
 			return
 		}
 		time.Sleep(time.Second)

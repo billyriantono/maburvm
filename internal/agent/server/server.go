@@ -433,6 +433,7 @@ func (s *Server) Start() error {
 	pb.RegisterNodeAgentServer(s.grpcServer, nodeAgentSvc)
 	go pruneCustomerISOsForever()
 	go evictTemplateCacheForever()
+	go nodeAgentSvc.watchCrashes(context.Background())
 	go recoverBackupOverlays()
 
 	s.started = true

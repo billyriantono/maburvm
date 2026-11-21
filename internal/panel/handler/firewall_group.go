@@ -18,21 +18,40 @@ import (
 type FirewallGroupHandler struct {
 	groups *service.FirewallGroupService
 	authz  *authz.Authorizer
+	db     *gorm.DB
 }
 
 func NewFirewallGroupHandler(groups *service.FirewallGroupService, a *authz.Authorizer) *FirewallGroupHandler {
 	return &FirewallGroupHandler{groups: groups, authz: a}
 }
 
-// viewer is who is asking, as the service needs it.
-func groupViewer(c echo.Context) (service.GroupViewer, bool) {
+// groupViewer is who is asking, as the service needs it: a customer as the
+// account they act in (their own, or a team account with ?account_id=).
+func (h *FirewallGroupHandler) groupViewer(c echo.Context) (service.GroupViewer, bool) {
+	u, account, staff, ok := actingAccount(c, h.db)
+	if !ok {
+		return service.GroupViewer{}, false
+	}
+	return service.GroupViewer{UserID: account, Staff: staff, Manage: staff && u.Can("firewall_group:update")}, true
+}
+
+// vmGroupViewer is the viewer for a change to a VM's groups, made once the VM
+// is authorized: a customer acts as the VM's account, whose groups go on it.
+func (h *FirewallGroupHandler) vmGroupViewer(c echo.Context, vmID string) (service.GroupViewer, bool) {
 	u, ok := middleware.GetUserContext(c)
 	if !ok {
 		_ = c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized"})
 		return service.GroupViewer{}, false
 	}
-	staff := u.Role == models.RoleAdmin
-	return service.GroupViewer{UserID: u.ID.String(), Staff: staff, Manage: staff && u.Can("firewall_group:update")}, true
+	if u.Role == models.RoleAdmin {
+		return service.GroupViewer{UserID: u.ID.String(), Staff: true, Manage: u.Can("firewall_group:update")}, true
+	}
+	var owner struct{ UserID string }
+	if err := h.db.WithContext(c.Request().Context()).Table("vms").Select("user_id").Where("id = ?", vmID).Scan(&owner).Error; err != nil || owner.UserID == "" {
+		_ = c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "VM not found"})
+		return service.GroupViewer{}, false
+	}
+	return service.GroupViewer{UserID: owner.UserID}, true
 }
 
 // groupError answers a service error in words.
@@ -56,7 +75,7 @@ func groupError(c echo.Context, err error) error {
 // List handles GET /api/v1/firewall-groups (?scope=global: only the groups
 // staff manage for everyone).
 func (h *FirewallGroupHandler) List(c echo.Context) error {
-	v, ok := groupViewer(c)
+	v, ok := h.groupViewer(c)
 	if !ok {
 		return nil
 	}
@@ -72,7 +91,7 @@ func (h *FirewallGroupHandler) List(c echo.Context) error {
 
 // Get handles GET /api/v1/firewall-groups/:id.
 func (h *FirewallGroupHandler) Get(c echo.Context) error {
-	v, ok := groupViewer(c)
+	v, ok := h.groupViewer(c)
 	if !ok {
 		return nil
 	}
@@ -90,7 +109,7 @@ type groupRequest struct {
 
 // Create handles POST /api/v1/firewall-groups.
 func (h *FirewallGroupHandler) Create(c echo.Context) error {
-	v, ok := groupViewer(c)
+	v, ok := h.groupViewer(c)
 	if !ok {
 		return nil
 	}
@@ -107,7 +126,7 @@ func (h *FirewallGroupHandler) Create(c echo.Context) error {
 
 // Update handles PUT /api/v1/firewall-groups/:id.
 func (h *FirewallGroupHandler) Update(c echo.Context) error {
-	v, ok := groupViewer(c)
+	v, ok := h.groupViewer(c)
 	if !ok {
 		return nil
 	}
@@ -124,7 +143,7 @@ func (h *FirewallGroupHandler) Update(c echo.Context) error {
 
 // Delete handles DELETE /api/v1/firewall-groups/:id.
 func (h *FirewallGroupHandler) Delete(c echo.Context) error {
-	v, ok := groupViewer(c)
+	v, ok := h.groupViewer(c)
 	if !ok {
 		return nil
 	}
@@ -136,7 +155,7 @@ func (h *FirewallGroupHandler) Delete(c echo.Context) error {
 
 // AddRule handles POST /api/v1/firewall-groups/:id/rules.
 func (h *FirewallGroupHandler) AddRule(c echo.Context) error {
-	v, ok := groupViewer(c)
+	v, ok := h.groupViewer(c)
 	if !ok {
 		return nil
 	}
@@ -158,7 +177,7 @@ func (h *FirewallGroupHandler) AddRule(c echo.Context) error {
 
 // RemoveRule handles DELETE /api/v1/firewall-groups/:id/rules/:rule_id.
 func (h *FirewallGroupHandler) RemoveRule(c echo.Context) error {
-	v, ok := groupViewer(c)
+	v, ok := h.groupViewer(c)
 	if !ok {
 		return nil
 	}
@@ -188,7 +207,7 @@ func (h *FirewallGroupHandler) Attach(c echo.Context) error {
 	if !h.authz.AuthorizeVM(c, vmID) {
 		return nil
 	}
-	v, ok := groupViewer(c)
+	v, ok := h.vmGroupViewer(c, vmID)
 	if !ok {
 		return nil
 	}
@@ -211,7 +230,7 @@ func (h *FirewallGroupHandler) Detach(c echo.Context) error {
 	if !h.authz.AuthorizeVM(c, vmID) {
 		return nil
 	}
-	v, ok := groupViewer(c)
+	v, ok := h.vmGroupViewer(c, vmID)
 	if !ok {
 		return nil
 	}
@@ -224,6 +243,7 @@ func (h *FirewallGroupHandler) Detach(c echo.Context) error {
 // RegisterFirewallGroupRoutes registers the group routes. Customers hold both
 // group permissions and see only their own groups (the service filters).
 func RegisterFirewallGroupRoutes(e *echo.Echo, h *FirewallGroupHandler, db *gorm.DB) {
+	h.db = db
 	g := e.Group("/api/v1/firewall-groups")
 	g.Use(middleware.RequireAuth(db))
 	g.GET("", h.List, middleware.RequirePermission("firewall_group:read"))

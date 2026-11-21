@@ -2,10 +2,13 @@ package service
 
 import (
 	"encoding/json"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -407,4 +410,14 @@ func TestImportUnits(t *testing.T) {
 	for _, tc := range []struct{ in, out string }{{" 1234 ", "whmcs-1234"}, {"whmcs-77", "whmcs-77"}, {"INV-9", "INV-9"}, {"", ""}} {
 		assert.Equal(t, tc.out, NormalizeBillingRef(tc.in), tc.in)
 	}
+}
+
+// A read that panics ends as a failed read the wizard shows, not a panel crash
+// or a read left running forever.
+func TestImportReadPanicBecomesError(t *testing.T) {
+	s := &VirtualizorImportService{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), reads: map[string]*importRead{}}
+	id := "00000000-0000-4000-8000-000000000001"
+	s.startRead(id, true) // no database: getSource dereferences nil
+	require.Eventually(t, func() bool { return !s.readState(id).running }, 5*time.Second, 10*time.Millisecond)
+	assert.Contains(t, s.readState(id).err, "internal error")
 }

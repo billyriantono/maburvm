@@ -38,6 +38,12 @@ E2E_WEB_MODE=start npm run test:e2e
 | `E2E_WEB_MODE` | `dev` | `start` serves a build made with `API_BASE_URL` pointing at the test panel |
 | `E2E_PANEL_PORT`, `E2E_WEB_PORT` | `18480`, `3480` | |
 | `E2E_BROWSER_CHANNEL` | | `chrome` to use an installed Chrome |
+| `E2E_LOG_DIR` | | a directory the panel and fake agent logs are copied to when the stack stops |
+
+A failed test leaves a Playwright trace under `test-results/` (open it with
+`npx playwright show-trace`). In CI a failed run uploads `test-results/`, with
+the panel and fake agent logs in `test-results/stack-logs/`, as the
+`e2e-failure-*` artifact.
 
 The accounts and the customer VM the tests use are in `seed.sql` and
 `fixtures.ts`. Tests share one panel and run one at a time; each leaves the

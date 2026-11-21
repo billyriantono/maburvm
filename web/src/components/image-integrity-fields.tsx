@@ -10,6 +10,9 @@ export interface ImageIntegrity {
   allowHttp: boolean
   autoRefresh: boolean
   firmware: Firmware
+  // VMs installed from the image get Secure Boot (UEFI only) and a TPM.
+  secureBoot?: boolean
+  tpm?: boolean
 }
 
 export const emptyIntegrity: ImageIntegrity = {
@@ -90,9 +93,25 @@ export function ImageIntegrityFields({ value, onChange, idPrefix, showFirmware =
           </select>
           {value.firmware === "uefi" && (
             <p className="text-xs text-muted-foreground mt-2">
-              The node agents cannot boot UEFI guests yet, so VMs cannot be created from this template until they can.
+              VMs are created from it only on nodes with UEFI firmware (the ovmf package; the node&apos;s preflight shows it).
+              A VM keeps the firmware it was created with, so it is reinstalled only from images for the same firmware.
             </p>
           )}
+          <div className="mt-3 space-y-2">
+            <label htmlFor={`${idPrefix}-secure-boot`} className="flex items-start gap-2 text-sm">
+              <input id={`${idPrefix}-secure-boot`} type="checkbox" className="mt-0.5 h-4 w-4 rounded border-input"
+                checked={!!value.secureBoot && value.firmware === "uefi"} disabled={value.firmware !== "uefi"}
+                onChange={(e) => set({ secureBoot: e.target.checked })} />
+              <span><span className="font-medium">Secure Boot</span>
+                <span className="block text-xs text-muted-foreground">UEFI images only. Nodes need the Secure Boot firmware and its keys.</span></span>
+            </label>
+            <label htmlFor={`${idPrefix}-tpm`} className="flex items-start gap-2 text-sm">
+              <input id={`${idPrefix}-tpm`} type="checkbox" className="mt-0.5 h-4 w-4 rounded border-input"
+                checked={!!value.tpm} onChange={(e) => set({ tpm: e.target.checked })} />
+              <span><span className="font-medium">Virtual TPM 2.0</span>
+                <span className="block text-xs text-muted-foreground">Each VM gets an emulated TPM, as Windows 11 needs. Nodes need swtpm.</span></span>
+            </label>
+          </div>
         </div>
       )}
     </div>

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"path"
 	"sort"
@@ -46,18 +47,40 @@ func PrimaryPool(ctx context.Context, db *gorm.DB, nodeID string) *models.Storag
 }
 
 // pickPool applies PrimaryPool's order of preference to a node's pools.
+//
+// Two primaries should not exist, but rows written by older panels can hold
+// them. Then the roomiest primary wins (the headroom is flat, so that is also
+// the most room after headroom), not whichever row the database returned first.
 func pickPool(pools []models.StoragePool) *models.StoragePool {
 	if len(pools) == 0 {
 		return nil
 	}
-	var fallback *models.StoragePool
+	// Ties go to the lower id, so the choice does not follow row order.
+	roomier := func(a, b *models.StoragePool) bool {
+		if a.AvailableSpace != b.AvailableSpace {
+			return a.AvailableSpace > b.AvailableSpace
+		}
+		return a.ID < b.ID
+	}
+	var primary, fallback *models.StoragePool
+	primaries := 0
 	for i := range pools {
 		if pools[i].IsPrimary {
-			return &pools[i]
+			primaries++
+			if primary == nil || roomier(&pools[i], primary) {
+				primary = &pools[i]
+			}
 		}
 		if pools[i].Path == DefaultNodeImageDir {
 			fallback = &pools[i]
 		}
+	}
+	if primaries > 1 {
+		slog.Warn("storage: node has more than one primary pool; using the one with the most free space. Choose one with \"Use for new VMs\" on the Storage page",
+			"node_id", primary.NodeID, "pool", primary.Name, "path", primary.Path, "primaries", primaries)
+	}
+	if primary != nil {
+		return primary
 	}
 	if fallback != nil {
 		return fallback
@@ -65,7 +88,7 @@ func pickPool(pools []models.StoragePool) *models.StoragePool {
 
 	roomiest := &pools[0]
 	for i := range pools {
-		if pools[i].AvailableSpace > roomiest.AvailableSpace {
+		if roomier(&pools[i], roomiest) {
 			roomiest = &pools[i]
 		}
 	}
@@ -169,6 +192,9 @@ func PoolAllocations(ctx context.Context, db *gorm.DB, nodeID string) (map[strin
 
 	vmPool := make(map[string]string, len(vms))
 	vmNode := make(map[string]string, len(vms))
+	// One pick per node: pickPool warns on two primaries, and this runs on every
+	// metrics scrape.
+	picked := map[string]*models.StoragePool{}
 	for _, vm := range vms {
 		poolID := ""
 		if vm.StoragePoolID != nil {
@@ -179,7 +205,12 @@ func PoolAllocations(ctx context.Context, db *gorm.DB, nodeID string) (map[strin
 			}
 		}
 		if poolID == "" {
-			if p := pickPool(byNode[vm.NodeID]); p != nil {
+			p, ok := picked[vm.NodeID]
+			if !ok {
+				p = pickPool(byNode[vm.NodeID])
+				picked[vm.NodeID] = p
+			}
+			if p != nil {
 				poolID = p.ID
 			}
 		}

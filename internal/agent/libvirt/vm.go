@@ -19,7 +19,9 @@ import (
 	"github.com/maburvm/panel/internal/agent/console"
 	"github.com/maburvm/panel/internal/agent/domtune"
 	"github.com/maburvm/panel/internal/agent/guestos"
+	"github.com/maburvm/panel/internal/agent/hwprofile"
 	"github.com/maburvm/panel/internal/agent/storage"
+	"github.com/maburvm/panel/internal/shared/models"
 	"libvirt.org/go/libvirt"
 	"libvirt.org/go/libvirtxml"
 )
@@ -62,6 +64,8 @@ type VMConfig struct {
 	IPv6Address string
 	IPv6Gateway string
 	IPv6DNS     []string
+	// DNS are the guest's resolvers; empty keeps the built-in ones.
+	DNS []string
 
 	// CloudInitISOPath, when set, is attached as a read-only "cidata" cdrom so
 	// cloud-init configures the guest (static IP, hostname, SSH key) on boot.
@@ -81,6 +85,14 @@ type VMConfig struct {
 	ISODrives  bool
 	InstallISO string
 	DriversISO string
+
+	// Hardware is the VM's profile beyond its size (topology, huge pages,
+	// watchdog, restart on crash, TPM); its CPU model is CPUModel above.
+	// PinnedCPUs are the host cores of a dedicated VM, one per vCPU.
+	// Firmware, when set, boots the VM with UEFI.
+	Hardware   models.Hardware
+	PinnedCPUs []int
+	Firmware   *hwprofile.Firmware
 }
 
 // ExtraDisk is a data disk of a new VM.
@@ -133,27 +145,7 @@ func NewVMManager() *VMManager {
 // buildDomainCPU returns the <cpu> element for a guest. An empty model is
 // host-passthrough (see below); "host-model" and "host-passthrough" are passed
 // as modes; any other value is treated as a named custom model.
-func buildDomainCPU(model string) *libvirtxml.DomainCPU {
-	switch model {
-	case "host-model":
-		return &libvirtxml.DomainCPU{Mode: "host-model"}
-	case "host-passthrough":
-		return &libvirtxml.DomainCPU{Mode: "host-passthrough"}
-	}
-	if model == "" {
-		// Default to host-passthrough, not an ancient baseline model: kvm64/qemu64
-		// lack x86-64-v2 (SSE4.2/AVX...), and modern software SIGILLs on them —
-		// MongoDB 7 core-dumps, mysql:9 aborts with "CPU does not support
-		// x86-64-v2". The cost: such a VM moves live only to a node with the same
-		// CPU; offline it moves anywhere.
-		return &libvirtxml.DomainCPU{Mode: "host-passthrough"}
-	}
-	return &libvirtxml.DomainCPU{
-		Mode:  "custom",
-		Match: "exact",
-		Model: &libvirtxml.DomainCPUModel{Fallback: "allow", Value: model},
-	}
-}
+func buildDomainCPU(model string) *libvirtxml.DomainCPU { return hwprofile.CPU(model) }
 
 func generateDomainXML(config VMConfig) (string, error) {
 	// Validate UUID
@@ -330,6 +322,9 @@ func generateDomainXML(config VMConfig) (string, error) {
 	tuneForKind(domain, config.OSType)
 	domtune.Discard(domain.Devices.Disks[0].Driver)
 	domtune.Apply(domain, config.Limits, domtune.CgroupV2())
+	if err := applyNewHardware(domain, config); err != nil {
+		return "", err
+	}
 
 	// Cloud-init NoCloud reliability: advertise "ds=nocloud" via the SMBIOS system
 	// serial in addition to attaching the cidata seed. On Debian/Ubuntu cloud
@@ -691,9 +686,13 @@ func StopVM(uuidStr string, force bool) error {
 			return fmt.Errorf("failed to get domain state: %w", err)
 		}
 
-		// Check if domain is already stopped
-		if state == libvirt.DOMAIN_SHUTOFF || state == libvirt.DOMAIN_SHUTDOWN {
+		if state == libvirt.DOMAIN_SHUTOFF {
 			return fmt.Errorf("domain is already stopped")
+		}
+		// Already shutting down is not off: there is nothing more to ask of the
+		// guest, and a force stop still cuts the power.
+		if state == libvirt.DOMAIN_SHUTDOWN && !force {
+			return nil
 		}
 
 		// If force is true, use Destroy (immediate shutdown)
@@ -779,7 +778,7 @@ func nextFreeVirtioTarget(domain *libvirtxml.Domain) string {
 			}
 		}
 	}
-	for c := byte('b'); c <= 'z'; c++ {
+	for c := byte('b'); c < storage.RescueTarget[2]; c++ { // vdz is the rescue system's
 		dev := "vd" + string(c)
 		if !used[dev] {
 			return dev
@@ -948,8 +947,9 @@ func ResumeVM(uuidStr string) error {
 }
 
 // ResizeVM updates a (stopped) VM's vCPU and memory allocation in its
-// persistent config. Takes effect on next boot.
-func ResizeVM(uuidStr string, vcpus int, memoryMB int) error {
+// persistent config. Takes effect on next boot. cpus, for a dedicated VM, are
+// the host cores it holds at its new size.
+func ResizeVM(uuidStr string, vcpus int, memoryMB int, cpus []int) error {
 	if _, err := uuid.Parse(uuidStr); err != nil {
 		return fmt.Errorf("invalid UUID format: %w", err)
 	}
@@ -973,6 +973,28 @@ func ResizeVM(uuidStr string, vcpus int, memoryMB int) error {
 			}
 		}
 		if vcpus > 0 {
+			// A topology or pinning must change with the count, which the
+			// vCPU call refuses to do, so such a definition is rewritten whole.
+			inactive, err := dom.GetXMLDesc(libvirt.DOMAIN_XML_INACTIVE | libvirt.DOMAIN_XML_SECURE)
+			if err != nil {
+				return fmt.Errorf("failed to read the domain: %w", err)
+			}
+			var def libvirtxml.Domain
+			if err := xml.Unmarshal([]byte(inactive), &def); err != nil {
+				return fmt.Errorf("failed to parse the domain: %w", err)
+			}
+			if fitVCPUs(&def, vcpus, cpus) {
+				out, err := xml.Marshal(&def)
+				if err != nil {
+					return fmt.Errorf("failed to write the domain: %w", err)
+				}
+				saved, err := redefineDomain(conn, string(out))
+				if err != nil {
+					return fmt.Errorf("failed to set vcpus: %w", err)
+				}
+				saved.Free()
+				return nil
+			}
 			if err := dom.SetVcpusFlags(uint(vcpus), libvirt.DOMAIN_VCPU_CONFIG|libvirt.DOMAIN_VCPU_MAXIMUM); err != nil {
 				return fmt.Errorf("failed to set max vcpus: %w", err)
 			}
@@ -1819,8 +1841,16 @@ type VMSnapshot struct {
 	Size        int64
 }
 
+// SnapshotOptions shape a snapshot of a running VM: DiskOnly saves no memory
+// and does not pause it; Quiesce freezes its filesystems for that through the
+// guest agent. A stopped VM's snapshot holds its disks only either way.
+type SnapshotOptions struct {
+	DiskOnly bool
+	Quiesce  bool
+}
+
 // CreateSnapshot creates a new snapshot for a VM
-func CreateSnapshot(uuidStr, name, description string) (*VMSnapshot, error) {
+func CreateSnapshot(uuidStr, name, description string, opts SnapshotOptions) (*VMSnapshot, error) {
 	if _, err := uuid.Parse(uuidStr); err != nil {
 		return nil, fmt.Errorf("invalid UUID format: %w", err)
 	}
@@ -1850,26 +1880,32 @@ func CreateSnapshot(uuidStr, name, description string) (*VMSnapshot, error) {
 			log.Printf("[Snapshot] VM %s: backup checkpoints not removed: %v", uuidStr, err)
 		}
 
+		created := time.Now()
+		snapshot = VMSnapshot{
+			UUID:        name,
+			Name:        name,
+			Description: description,
+			CreatedAt:   created,
+			State:       mapDomainStateToVMStatus(libvirt.DomainState(state)),
+		}
+		if opts.DiskOnly && libvirt.DomainState(state) == libvirt.DOMAIN_RUNNING {
+			return takeDiskOnlySnapshot(dom, name, created.Unix(), opts.Quiesce)
+		}
+
 		snapshotXML := fmt.Sprintf(`
 <domainsnapshot>
 	<name>%s</name>
 	<description>%s</description>
 	<creationTime>%d</creationTime>
-</domainsnapshot>`, xmlText(name), xmlText(description), time.Now().Unix())
+</domainsnapshot>`, xmlText(name), xmlText(description), created.Unix())
 
 		snap, err := dom.CreateSnapshotXML(snapshotXML, libvirt.DOMAIN_SNAPSHOT_CREATE_ATOMIC)
 		if err != nil {
 			return fmt.Errorf("failed to create snapshot: %w", err)
 		}
 		defer snap.Free()
-
-		snapName, _ := snap.GetName()
-		snapshot = VMSnapshot{
-			UUID:        snapName,
-			Name:        snapName,
-			Description: description,
-			CreatedAt:   time.Now(),
-			State:       mapDomainStateToVMStatus(libvirt.DomainState(state)),
+		if snapName, _ := snap.GetName(); snapName != "" {
+			snapshot.UUID, snapshot.Name = snapName, snapName
 		}
 		return nil
 	})
@@ -1945,16 +1981,20 @@ func ListSnapshots(uuidStr string) ([]VMSnapshot, error) {
 	return snapshots, nil
 }
 
-// RestoreSnapshot restores a VM to a snapshot
-func RestoreSnapshot(uuidStr, snapshotName string) error {
+// RestoreSnapshot reverts a VM to a snapshot and leaves it as it was when the
+// snapshot was taken: running from its saved memory, paused, or shut off. A
+// disk-only snapshot of a running VM has no memory to come back to, so the VM
+// boots from the snapshot's disks. It returns the state the VM is in after.
+func RestoreSnapshot(uuidStr, snapshotName string) (VMStatus, error) {
 	if _, err := uuid.Parse(uuidStr); err != nil {
-		return fmt.Errorf("invalid UUID format: %w", err)
+		return VMStatusUnknown, fmt.Errorf("invalid UUID format: %w", err)
 	}
 	if snapshotName == "" {
-		return fmt.Errorf("snapshot name is required")
+		return VMStatusUnknown, fmt.Errorf("snapshot name is required")
 	}
 
-	return WithConnection(func(conn *libvirt.Connect) error {
+	after := VMStatusUnknown
+	err := WithConnection(func(conn *libvirt.Connect) error {
 		dom, err := conn.LookupDomainByUUIDString(uuidStr)
 		if err != nil {
 			return fmt.Errorf("domain not found: %w", err)
@@ -1972,7 +2012,11 @@ func RestoreSnapshot(uuidStr, snapshotName string) error {
 		if err := dropCheckpoints(dom); err != nil {
 			log.Printf("[Snapshot] VM %s: backup checkpoints not removed: %v", uuidStr, err)
 		}
-		if err := snap.RevertToSnapshot(libvirt.DOMAIN_SNAPSHOT_REVERT_RUNNING); err != nil {
+		var flags libvirt.DomainSnapshotRevertFlags
+		if snapshotIsDiskOnly(snap) {
+			flags = libvirt.DOMAIN_SNAPSHOT_REVERT_RUNNING
+		}
+		if err := snap.RevertToSnapshot(flags); err != nil {
 			return fmt.Errorf("failed to revert to snapshot: %w", err)
 		}
 		// Reverting also puts back the definition the VM had when the snapshot
@@ -1980,8 +2024,12 @@ func RestoreSnapshot(uuidStr, snapshotName string) error {
 		// password. The stored definition is corrected here; the VM now running
 		// holds the old socket until it is powered off and on.
 		freeConsolePort(conn, dom)
+		if state, _, err := dom.GetState(); err == nil {
+			after = mapDomainStateToVMStatus(state)
+		}
 		return nil
 	})
+	return after, err
 }
 
 // DeleteSnapshot deletes a snapshot

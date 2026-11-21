@@ -67,6 +67,8 @@ var EmailPlaceholders = []struct {
 	{"{{key}}", "The name of the new API key (API key emails only)"},
 	{"{{account}}", "The account someone was invited to (invitation emails only)"},
 	{"{{role}}", "What the invited person may do there (invitation emails only)"},
+	{"{{ports}}", "The public ports of a NAT server, e.g. 20000-20019 (NAT moves only)"},
+	{"{{abuse}}", "What was measured and what was done about it, or that it was lifted (network action emails only)"},
 }
 
 const (
@@ -81,6 +83,10 @@ const (
 	EmailVMSuspended   = "vm_suspended"
 	EmailVMUnsuspended = "vm_unsuspended"
 	EmailBackupFailed  = "backup_failed"
+	EmailVMNATMoved    = "vm_nat_moved"
+	// EmailAbuseAction tells an owner their server was cut off, slowed or
+	// null-routed because of abuse, or that it was lifted.
+	EmailAbuseAction = "abuse_action"
 	// Account emails: a change to how the account is signed in to.
 	EmailPasswordChanged   = "password_changed"
 	EmailTwoFactorDisabled = "two_factor_disabled"
@@ -265,6 +271,35 @@ var emailTemplateDefs = []EmailTemplateDef{
 			Button: "Open your server",
 		},
 		Sample:     map[string]string{"name": "Dewi", "email": "dewi@example.com", "server": "web-01", "backup": "The scheduled backup"},
+		SampleLink: "https://panel.example.com/client/vms/example", LinkMeaning: serverLinkMeaning,
+	},
+	{
+		Key:      EmailVMNATMoved,
+		Name:     "NAT server moved",
+		SentWhen: "Sent to the owner of a NAT server (one sharing its node's address) when staff move it to another node, which changes its public address and maybe its ports.",
+		Optional: true,
+		Default: EmailTemplate{
+			Subject: "Your server {{server}} has a new public address",
+			Body: "{{greeting}},\n\nYour server {{server}} was moved to other hardware. It shares that machine's public address, so it is now reached at:\n\n" +
+				"Address: {{address}}\nPorts: {{ports}}\n\nThe first port leads to its remote access, as before. " +
+				"Update anything that connects to the old address, and the DNS of hostnames routed to it. Nothing on the server itself has changed.",
+			Button: "Open your server",
+		},
+		Sample:     map[string]string{"name": "Dewi", "email": "dewi@example.com", "server": "web-01", "address": "203.0.113.24", "ports": "20000-20019"},
+		SampleLink: "https://panel.example.com/client/vms/example", LinkMeaning: serverLinkMeaning,
+	},
+	{
+		Key:      EmailAbuseAction,
+		Name:     "Network action on a server",
+		SentWhen: "Sent to a server's owner when its network is cut off, slowed or null-routed because of abuse or an attack on it, by staff or the abuse policy, and again when that is lifted. Switched off under Abuse, Policy, too.",
+		Optional: true,
+		Default: EmailTemplate{
+			Subject: "Network action on your server {{server}}",
+			Body:    "{{greeting}},\n\n{{abuse}}\n\nIf you have questions, contact support.",
+			Button:  "Open your server",
+		},
+		Sample: map[string]string{"name": "Dewi", "email": "dewi@example.com", "server": "web-01",
+			"abuse": "Your server was the target of a flood of traffic. We measured 412000 packets/s. To protect the network, all traffic to 203.0.113.24 is being dropped until 21 November 14:30 UTC. The server itself keeps running; it cannot be reached from the internet until then."},
 		SampleLink: "https://panel.example.com/client/vms/example", LinkMeaning: serverLinkMeaning,
 	},
 	{

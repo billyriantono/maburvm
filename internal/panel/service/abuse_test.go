@@ -32,6 +32,12 @@ func TestConnectionRate(t *testing.T) {
 			whyItMattersIfNot: "dividing by zero would produce +Inf and flag every guest",
 		},
 		{
+			name: "a zero previous reading is no baseline",
+			prev: 0, current: 4_000_000_000, elapsed: 60,
+			want:              0,
+			whyItMattersIfNot: "an upgraded agent's first packet count is the guest's whole history and would flag every guest",
+		},
+		{
 			name: "an idle guest rates zero, not unknown",
 			prev: 500, current: 500, elapsed: 30,
 			want: 0,

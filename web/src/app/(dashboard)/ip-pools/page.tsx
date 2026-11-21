@@ -199,7 +199,25 @@ export default function IPPoolsPage() {
             <Input placeholder="Range start" value={poolForm.range_start ?? ""} onChange={(e) => setPoolForm({ ...poolForm, range_start: e.target.value })} />
             <Input placeholder="Range end" value={poolForm.range_end ?? ""} onChange={(e) => setPoolForm({ ...poolForm, range_end: e.target.value })} />
             <Input placeholder="Description" value={poolForm.description ?? ""} onChange={(e) => setPoolForm({ ...poolForm, description: e.target.value })} />
+            <Input
+              placeholder="Nameservers (blank = 1.1.1.1, 8.8.8.8)"
+              aria-label="Nameservers"
+              title="Resolvers this pool's guests are given, separated by commas or spaces, up to four. They reach a guest when it is created, reinstalled or readdressed."
+              value={poolForm.nameservers ?? ""}
+              onChange={(e) => setPoolForm({ ...poolForm, nameservers: e.target.value || undefined })}
+            />
           </div>
+          {poolForm.family === "ipv4" && !poolForm.delegated_prefix_len && (
+            <label className="mt-4 flex items-start gap-2 cursor-pointer w-fit max-w-3xl">
+              <input type="checkbox" checked={!!poolForm.dhcp} onChange={(e) => setPoolForm({ ...poolForm, dhcp: e.target.checked || undefined })} className="w-4 h-4 mt-0.5" />
+              <span className="text-sm">
+                <span className="font-medium">Answer DHCP for this pool&apos;s addresses</span>
+                <span className="block text-xs text-muted-foreground">
+                  For guests installed without cloud-init, from an ISO for example. The node gives each assigned address to its own VM&apos;s card only, never an address from the range, and keeps the lease for good. Needs a gateway and dnsmasq on the node.
+                </span>
+              </span>
+            </label>
+          )}
           {poolForm.family === "ipv4" && (
             <label className="mt-4 flex items-start gap-2 cursor-pointer w-fit max-w-3xl">
               <input type="checkbox" checked={!!poolForm.nat} onChange={(e) => setPoolForm({ ...poolForm, nat: e.target.checked || undefined })} className="w-4 h-4 mt-0.5" />
@@ -263,6 +281,7 @@ export default function IPPoolsPage() {
                     </Badge>
                   )}
                   {pool.nat && <Badge variant="secondary" title="Private addresses for VMs on NAT plans">NAT</Badge>}
+                  {pool.dhcp && <Badge variant="secondary" title="The node answers DHCP for this pool's assigned addresses">DHCP</Badge>}
                 </div>
                 <div className="col-span-2 text-xs text-muted-foreground truncate flex items-center gap-1" title={nodeLabel}>
                   <Server className="w-3 h-3 shrink-0" />

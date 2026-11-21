@@ -31,8 +31,8 @@ import (
 const (
 	MemberRoleAdmin     = "admin"     // everything the owner does, members and projects included
 	MemberRoleTechnical = "technical" // runs the VMs; no members, projects or billing
-	MemberRoleBilling   = "billing"   // usage and billing; sees the VMs, changes nothing
-	MemberRoleReadOnly  = "readonly"  // sees the VMs, changes nothing
+	MemberRoleBilling   = "billing"   // usage and billing only; no VMs, no resources
+	MemberRoleReadOnly  = "readonly"  // sees the VMs and resources, changes nothing
 )
 
 // MemberRoles are the roles in the order the team page offers them.
@@ -41,7 +41,7 @@ var MemberRoles = []string{MemberRoleAdmin, MemberRoleTechnical, MemberRoleBilli
 var memberRoleWords = map[string]string{
 	MemberRoleAdmin:     "Admin: everything the owner does, including the team",
 	MemberRoleTechnical: "Technical: runs the servers",
-	MemberRoleBilling:   "Billing: usage and billing, servers view-only",
+	MemberRoleBilling:   "Billing: usage and billing only, not the servers",
 	MemberRoleReadOnly:  "Read-only: sees the servers, changes nothing",
 }
 
@@ -50,11 +50,24 @@ const (
 	AccountCanOperate = "operate" // change VMs and order new ones
 	AccountCanManage  = "manage"  // members and projects
 	AccountCanBilling = "billing" // usage and billing links
+	// AccountCanView sees the account's own resources: images, floating IPs,
+	// VPCs, firewall groups, SSH keys, recipes.
+	AccountCanView = "view"
+	// AccountCanResources changes those.
+	AccountCanResources = "resources"
 )
+
+// accountWide are the AccountCan* that need a membership over every VM: they
+// reach past the VMs a limited member was given.
+func accountWide(what string) bool {
+	return what == AccountCanManage || what == AccountCanView || what == AccountCanResources
+}
 
 func roleAllows(role, what string) bool {
 	switch what {
-	case AccountCanOperate:
+	case AccountCanView:
+		return role == MemberRoleAdmin || role == MemberRoleTechnical || role == MemberRoleReadOnly
+	case AccountCanOperate, AccountCanResources:
 		return role == MemberRoleAdmin || role == MemberRoleTechnical
 	case AccountCanManage:
 		return role == MemberRoleAdmin
@@ -176,6 +189,9 @@ func memberGrant(ctx context.Context, db *gorm.DB, vm *models.VM, userID string)
 		return nil
 	}
 	m := &rows[0]
+	if m.Role == MemberRoleBilling {
+		return nil // usage and billing, not the servers
+	}
 	if m.allVMs() || slices.Contains(m.VMIDs, vm.ID) {
 		return m
 	}
@@ -212,6 +228,9 @@ func acceptedMemberships(ctx context.Context, db *gorm.DB, userID string) []Acco
 func CustomerVMScope(ctx context.Context, db *gorm.DB, userID string) repository.VMAccessScope {
 	scope := repository.VMAccessScope{UserID: userID}
 	for _, m := range acceptedMemberships(ctx, db, userID) {
+		if m.Role == MemberRoleBilling {
+			continue
+		}
 		scope.Grants = append(scope.Grants, repository.VMGrant{AccountID: m.AccountID, VMIDs: m.VMIDs, ProjectIDs: m.ProjectIDs})
 	}
 	return scope
@@ -241,12 +260,17 @@ func RequireAccountRole(ctx context.Context, db *gorm.DB, userID, accountID, wha
 		return nil, ErrMemberNotFound
 	case role == "owner":
 		return m, nil
-	case roleAllows(role, what) && (what != AccountCanManage || m.allVMs()):
+	case roleAllows(role, what) && (!accountWide(what) || m.allVMs()):
 		// An admin limited to some VMs or projects runs those, not the team:
-		// managing it would let them widen their own reach.
+		// managing it would let them widen their own reach. The account's
+		// shared resources reach every VM the same way.
 		return m, nil
 	case what == AccountCanManage:
 		return nil, ErrNotAccountManager
+	case accountWide(what) && roleAllows(role, what):
+		return nil, fmt.Errorf("%w: you work on chosen servers only, and this belongs to the whole account", ErrMemberReadOnly)
+	case role == MemberRoleBilling:
+		return nil, fmt.Errorf("%w: your role in this account covers usage and billing only", ErrMemberReadOnly)
 	default:
 		return nil, ErrMemberReadOnly
 	}
@@ -395,6 +419,16 @@ func InviteMember(ctx context.Context, db *gorm.DB, accountID, invitedBy string,
 	if n > 0 {
 		return nil, ErrMemberExists
 	}
+	// The person may already be in under the address they had when they
+	// joined: a second invitation would only email them for nothing, since
+	// accepting it is refused.
+	if err := db.WithContext(ctx).Raw(`SELECT COUNT(*) FROM account_members m JOIN users u ON CAST(u.id AS TEXT) = CAST(m.user_id AS TEXT)
+		WHERE CAST(m.account_id AS TEXT) = ? AND lower(u.email) = ?`, accountID, email).Scan(&n).Error; err != nil {
+		return nil, err
+	}
+	if n > 0 {
+		return nil, ErrMemberExists
+	}
 	token, err := newInviteToken()
 	if err != nil {
 		return nil, err
@@ -404,6 +438,12 @@ func InviteMember(ctx context.Context, db *gorm.DB, accountID, invitedBy string,
 		VMIDs: in.VMIDs, ProjectIDs: in.ProjectIDs, InviteTokenHash: &hash, InviteExpiresAt: &expires,
 		InvitedBy: &invitedBy, CreatedAt: now, UpdatedAt: now}
 	if err := db.WithContext(ctx).Create(m).Error; err != nil {
+		// Two invitations sent at once: the unique index lets one through, and
+		// only that one is emailed.
+		var again int64
+		if db.WithContext(ctx).Model(&AccountMember{}).Where("account_id = ? AND lower(email) = ?", accountID, email).Count(&again).Error == nil && again > 0 {
+			return nil, ErrMemberExists
+		}
 		return nil, err
 	}
 	accountLabel := owner.Email
@@ -519,8 +559,8 @@ func ListMemberships(ctx context.Context, db *gorm.DB, userID string) []Membersh
 		var owner struct{ Email, Name string }
 		_ = db.WithContext(ctx).Table("users").Select("email, name").Where("id = ?", m.AccountID).Scan(&owner).Error
 		can := []string{}
-		for _, w := range []string{AccountCanOperate, AccountCanManage, AccountCanBilling} {
-			if roleAllows(m.Role, w) && (w != AccountCanManage || m.allVMs()) {
+		for _, w := range []string{AccountCanOperate, AccountCanManage, AccountCanBilling, AccountCanView, AccountCanResources} {
+			if roleAllows(m.Role, w) && (!accountWide(w) || m.allVMs()) {
 				can = append(can, w)
 			}
 		}

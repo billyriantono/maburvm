@@ -40,15 +40,29 @@ type storageRepository struct {
 // the node's root filesystem.
 func (r *storageRepository) SetPrimaryPool(nodeID, poolID string) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&models.StoragePool{}).
-			Where("node_id = ? AND id <> ?", nodeID, poolID).
-			Update("is_primary", false).Error; err != nil {
+		if err := demoteOtherPools(tx, nodeID, poolID); err != nil {
 			return err
 		}
-		return tx.Model(&models.StoragePool{}).
-			Where("id = ?", poolID).
-			Update("is_primary", true).Error
+		res := tx.Model(&models.StoragePool{}).
+			Where("id = ? AND node_id = ?", poolID, nodeID).
+			Update("is_primary", true)
+		if res.Error == nil && res.RowsAffected == 0 {
+			// Deleted meanwhile, or not on this node: keep the old primary.
+			return ErrStoragePoolNotOnNode
+		}
+		return res.Error
 	})
+}
+
+// ErrStoragePoolNotOnNode is SetPrimaryPool finding no such pool on the node.
+var ErrStoragePoolNotOnNode = errors.New("storage pool not found on its node")
+
+// demoteOtherPools clears is_primary on every pool of the node but poolID.
+// Every write that sets is_primary goes with it, in the same transaction.
+func demoteOtherPools(tx *gorm.DB, nodeID, poolID string) error {
+	return tx.Model(&models.StoragePool{}).
+		Where("node_id = ? AND id <> ?", nodeID, poolID).
+		Update("is_primary", false).Error
 }
 
 // NewStorageRepository creates a new storage repository
@@ -86,9 +100,18 @@ func (r *storageRepository) GetPoolsByNodeID(nodeID string) ([]models.StoragePoo
 	return pools, nil
 }
 
-// CreatePool creates a new storage pool
+// CreatePool creates a new storage pool. A pool created primary demotes the
+// node's other pools in the same transaction.
 func (r *storageRepository) CreatePool(pool *models.StoragePool) error {
-	return r.db.Create(pool).Error
+	if !pool.IsPrimary {
+		return r.db.Create(pool).Error
+	}
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(pool).Error; err != nil {
+			return err
+		}
+		return demoteOtherPools(tx, pool.NodeID, pool.ID)
+	})
 }
 
 // UpdatePool updates the fields an operator sets. Capacity and status are

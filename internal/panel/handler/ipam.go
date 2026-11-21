@@ -47,7 +47,7 @@ func (h *IPAMHandler) ImportRDNS(c echo.Context) error {
 	n, err := h.service.ImportRDNS(c.Request().Context(), c.Param("id"))
 	if err != nil {
 		if errors.Is(err, service.ErrDNSProviderNotConfigured) {
-			return badRequest(c, "No live DNS provider configured. Set PDNS_API_URL and PDNS_API_KEY to import existing PTRs.")
+			return badRequest(c, "No live DNS provider configured. Connect one under Settings, System, DNS to import existing PTRs.")
 		}
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 	}
@@ -76,6 +76,29 @@ func (h *IPAMHandler) SetRDNS(c echo.Context) error {
 // under /vms/:id rather than /ip-pools so it needs no IPAM permission: the VM's
 // owner may set the PTR of an address their VM holds and sees nothing else.
 func RegisterVMRDNSRoute(e *echo.Echo, h *IPAMHandler, authorizer *authz.Authorizer, db *gorm.DB) {
+	// The names set inside the VM's routed IPv6 prefix; the VM's own addresses
+	// carry theirs on the address list.
+	e.GET("/api/v1/vms/:id/rdns", func(c echo.Context) error {
+		vmID := c.Param("id")
+		if !authorizer.AuthorizeVM(c, vmID) {
+			return nil
+		}
+		ctx := c.Request().Context()
+		prefix, err := h.service.GetVMIPv6Prefix(ctx, vmID)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+		}
+		ptrs, err := h.service.ListVMPrefixPTRs(ctx, vmID)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+		}
+		out := map[string]interface{}{"prefix": "", "prefix_ptrs": ptrs}
+		if prefix != nil {
+			out["prefix"] = prefix.Prefix
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": out})
+	}, panelMiddleware.RequireAuth(db), panelMiddleware.RequirePermission("vm:read"))
+
 	e.PUT("/api/v1/vms/:id/rdns", func(c echo.Context) error {
 		vmID := c.Param("id")
 		if !authorizer.AuthorizeVM(c, vmID) {

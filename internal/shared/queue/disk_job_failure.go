@@ -31,6 +31,7 @@ func panelObjectStore(ctx context.Context, destinationID string) (*pb.ObjectStor
 const (
 	featureBackupTargets     = "backup_targets"
 	featureIncrementalBackup = "incremental_backup"
+	featureBackupEncryption  = models.FeatureBackupEncryption
 )
 
 // needsFeature is the agent feature a node must have to be sent store; "" when
@@ -165,6 +166,12 @@ const diskTransferTimeout = 8 * time.Hour
 // same VM has not finished. The node keeps working after the panel's call ends.
 func createStillRunning(detail string) bool {
 	return strings.Contains(detail, "is already running on this node")
+}
+
+// disksBusyOnNode recognises a node's answer that other work holds the VM's
+// disks, as an earlier try of the same restore does.
+func disksBusyOnNode(detail string) bool {
+	return strings.Contains(detail, "being moved, copied or restored")
 }
 
 // agentFailureMessage is the reason an agent gave for failing, or fallback.

@@ -13,6 +13,8 @@ import type {
   CreatePortForwardRequest,
   CreateFirewallRuleRequest,
   FirewallEnforcement,
+  VMNIC,
+  VMIPv6Addresses,
 } from '@/types'
 
 // useNetworks lists administrator-defined managed networks (bridge/NAT/isolated).
@@ -78,7 +80,28 @@ export function useSetVMRDNS(vmId: string) {
         throw new Error(message || (err as Error).message)
       }
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['networks', 'vm', vmId] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['networks', 'vm', vmId] })
+      queryClient.invalidateQueries({ queryKey: ['rdns', 'vm', vmId] })
+    },
+  })
+}
+
+export interface VMPrefixPTR {
+  id: string
+  address: string
+  rdns: string
+}
+
+/** Reverse DNS names set inside the VM's routed IPv6 prefix. */
+export function useVMPrefixPTRs(vmId: string, enabled: boolean) {
+  return useQuery<VMPrefixPTR[]>({
+    queryKey: ['rdns', 'vm', vmId],
+    queryFn: async () => {
+      const response = await api.get<{ prefix: string; prefix_ptrs: VMPrefixPTR[] }>(`/api/v1/vms/${vmId}/rdns`)
+      return response.data.data?.prefix_ptrs ?? []
+    },
+    enabled,
   })
 }
 
@@ -272,5 +295,78 @@ export function useIPHistory(address: string, at: string) {
     },
     enabled: !!address,
     retry: false,
+  })
+}
+
+// A VM's network cards: the one it was created with and any added on a
+// private network or a second network.
+const nicsKey = (vmId: string) => ['networks', 'nics', vmId]
+
+export function useVMNICs(vmId: string) {
+  return useQuery<VMNIC[]>({
+    queryKey: nicsKey(vmId),
+    queryFn: async () => (await api.get<VMNIC[]>(`/api/v1/vms/${vmId}/nics`)).data.data ?? [],
+    enabled: !!vmId,
+  })
+}
+
+/** Staff give pool_id (and may give mac_address); customers give vpc_id. */
+export function useAddVMNIC(vmId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<{ nic: VMNIC; note: string }, Error, { pool_id?: string; vpc_id?: string; mac_address?: string }>({
+    mutationFn: async (body) => {
+      const response = await api.post<VMNIC>(`/api/v1/vms/${vmId}/nics`, body)
+      const raw = response.data as unknown as { data: VMNIC; message?: string }
+      return { nic: raw.data, note: raw.message ?? '' }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: nicsKey(vmId) })
+      queryClient.invalidateQueries({ queryKey: ['networks', 'vm', vmId] })
+      queryClient.invalidateQueries({ queryKey: ['vms', 'detail', vmId] })
+    },
+  })
+}
+
+export function useRemoveVMNIC(vmId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<string, Error, string>({
+    mutationFn: async (nicId) => {
+      const response = await api.delete(`/api/v1/vms/${vmId}/nics/${nicId}`)
+      return (response.data as unknown as { message?: string }).message ?? ''
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: nicsKey(vmId) })
+      queryClient.invalidateQueries({ queryKey: ['networks', 'vm', vmId] })
+      queryClient.invalidateQueries({ queryKey: ['vms', 'detail', vmId] })
+    },
+  })
+}
+
+export function useSetVMNICMAC(vmId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<VMNIC, Error, { nicId: string; mac: string }>({
+    mutationFn: async ({ nicId, mac }) =>
+      (await api.put<VMNIC>(`/api/v1/vms/${vmId}/nics/${nicId}/mac`, { mac_address: mac })).data.data,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: nicsKey(vmId) }),
+  })
+}
+
+// Further addresses the guest holds inside its routed IPv6 prefix.
+const ipv6AddrKey = (vmId: string) => ['networks', 'ipv6-addresses', vmId]
+
+export function useVMIPv6Addresses(vmId: string, enabled: boolean) {
+  return useQuery<VMIPv6Addresses>({
+    queryKey: ipv6AddrKey(vmId),
+    queryFn: async () => (await api.get<VMIPv6Addresses>(`/api/v1/vms/${vmId}/ipv6/addresses`)).data.data,
+    enabled: !!vmId && enabled,
+  })
+}
+
+export function useSetVMIPv6Addresses(vmId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<VMIPv6Addresses, Error, string[]>({
+    mutationFn: async (addresses) =>
+      (await api.put<VMIPv6Addresses>(`/api/v1/vms/${vmId}/ipv6/addresses`, { addresses })).data.data,
+    onSuccess: (data) => queryClient.setQueryData(ipv6AddrKey(vmId), data),
   })
 }

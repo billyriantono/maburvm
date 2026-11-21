@@ -7,8 +7,8 @@ export type MemberRole = 'admin' | 'technical' | 'billing' | 'readonly'
 export const memberRoles: { value: MemberRole; label: string; detail: string }[] = [
   { value: 'admin', label: 'Admin', detail: 'Everything the owner does, including the team and projects.' },
   { value: 'technical', label: 'Technical', detail: 'Runs the servers: power, console, reinstall, backups, networking, ordering.' },
-  { value: 'billing', label: 'Billing', detail: 'Usage and billing. Sees the servers, changes nothing.' },
-  { value: 'readonly', label: 'Read-only', detail: 'Sees the servers, changes nothing.' },
+  { value: 'billing', label: 'Billing', detail: 'Usage and billing only. Does not see the servers.' },
+  { value: 'readonly', label: 'Read-only', detail: 'Sees the servers and the account\'s resources, changes nothing.' },
 ]
 
 export interface AccountMember {
@@ -44,7 +44,8 @@ export interface Membership {
   role: MemberRole
   vm_ids: string[]
   project_ids: string[]
-  can: ('operate' | 'manage' | 'billing')[]
+  /** view and resources: the account's own images, floating IPs, VPCs, firewall groups, SSH keys and recipes. */
+  can: ('operate' | 'manage' | 'billing' | 'view' | 'resources')[]
 }
 
 export interface Memberships {
@@ -87,6 +88,8 @@ export interface CustomerPortal {
   iso_url_allowed: boolean
   ip_requests: IPRequestMode
   graph_days: number
+  /** How far back graphs go at all, in daily averages. */
+  history_days?: number
 }
 
 /** The saved "portal" section of the system settings, as staff edit it. */

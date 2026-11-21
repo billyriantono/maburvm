@@ -64,3 +64,49 @@ func (b *BandwidthUsage) UsagePercent() float64 {
 	}
 	return (float64(b.TotalBytes) / float64(b.QuotaBytes)) * 100
 }
+
+// Which direction of a VM's traffic counts toward its transfer allowance.
+// "out" is what the VM sends, which is what clouds bill.
+const (
+	TransferCountBoth = "both"
+	TransferCountOut  = "out"
+	TransferCountIn   = "in"
+)
+
+// ValidTransferCount reports whether s is one of the TransferCount values.
+func ValidTransferCount(s string) bool {
+	return s == TransferCountBoth || s == TransferCountOut || s == TransferCountIn
+}
+
+// CountedBytes is the part of a VM's traffic that counts toward its allowance.
+// rx is what the VM received and tx what it sent: libvirt reports interface
+// counters from the guest's side.
+func CountedBytes(counts string, rx, tx int64) int64 {
+	switch counts {
+	case TransferCountOut:
+		return tx
+	case TransferCountIn:
+		return rx
+	default:
+		return rx + tx
+	}
+}
+
+// MaxTransferResetDay is the last day an allowance may restart on, so every
+// month has it.
+const MaxTransferResetDay = 28
+
+// TransferPeriod is the allowance period containing now for an allowance that
+// restarts on resetDay (1-28; anything else means the 1st), in UTC: start is
+// the most recent reset at midnight, end the last second before the next.
+func TransferPeriod(now time.Time, resetDay int) (start, end time.Time) {
+	if resetDay < 1 || resetDay > MaxTransferResetDay {
+		resetDay = 1
+	}
+	now = now.UTC()
+	start = time.Date(now.Year(), now.Month(), resetDay, 0, 0, 0, 0, time.UTC)
+	if start.After(now) {
+		start = start.AddDate(0, -1, 0)
+	}
+	return start, start.AddDate(0, 1, 0).Add(-time.Second)
+}

@@ -1,14 +1,16 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api-client'
+import { accountParams, useActingAccount } from '@/lib/acting-account'
 import type { Image, CreateImageRequest } from '@/types'
 
 export type { Image, CreateImageRequest }
 
 export function useImages() {
+  const account = useActingAccount()
   return useQuery<Image[]>({
-    queryKey: ['images', 'list'],
+    queryKey: ['images', 'list', account ?? 'own'],
     queryFn: async () => {
-      const response = await api.get<Image[]>('/api/v1/images')
+      const response = await api.get<Image[]>('/api/v1/images', accountParams(account))
       return response.data.data
     },
     // Image capture is async (starts "pending"). Poll while any capture is still
@@ -34,10 +36,11 @@ export function useCreateImage() {
 }
 
 export function useDeleteImage() {
+  const account = useActingAccount()
   const queryClient = useQueryClient()
   return useMutation<void, Error, string>({
     mutationFn: async (id) => {
-      await api.delete(`/api/v1/images/${id}`)
+      await api.delete(`/api/v1/images/${id}`, accountParams(account))
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['images', 'list'] })
@@ -48,10 +51,11 @@ export function useDeleteImage() {
 // Retrying reuses the same image row, so the name and object key stay stable and
 // a retry does not multiply rows in the list.
 export function useRetryImage() {
+  const account = useActingAccount()
   const queryClient = useQueryClient()
   return useMutation<void, Error, string>({
     mutationFn: async (id) => {
-      await api.post(`/api/v1/images/${id}/retry`, {})
+      await api.post(`/api/v1/images/${id}/retry`, {}, accountParams(account))
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['images', 'list'] }),
   })

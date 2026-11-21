@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -106,11 +107,16 @@ func downsampleNode(rows []models.NodeMetricSample, since time.Time, window time
 
 // VMHistory returns a VM's samples within the trailing window, oldest first,
 // averaged down to at most limit points so a week reads as fast as an hour.
-// Beyond the week of raw samples it reads the hourly averages.
+// Beyond the week of raw samples it reads the hourly averages, and beyond the
+// hourly history (90 days unless changed) the daily ones.
 func (s *MetricsService) VMHistory(ctx context.Context, vmID string, window time.Duration, limit int) ([]models.VMMetricSample, error) {
 	since := time.Now().Add(-window)
 	if window > RawMetricsWindow {
-		rows, err := s.repo.ListVMHours(ctx, vmID, since)
+		list := s.repo.ListVMHours
+		if window > time.Duration(LoadPortalSettings(ctx, s.db).GraphDays())*24*time.Hour {
+			list = s.repo.ListVMDays
+		}
+		rows, err := list(ctx, vmID, since)
 		if err != nil {
 			return nil, err
 		}
@@ -199,6 +205,7 @@ type MetricsCollector struct {
 	logger         *slog.Logger
 	tick           int       // collectOnce counter, for slower-cadence work (IP reconcile)
 	rolledHour     time.Time // the last hour averaged into vm_metrics_hourly
+	rolledDay      time.Time // the last day averaged into vm_metrics_daily
 	alerts         *AlertService
 
 	onlineMu sync.Mutex
@@ -230,7 +237,15 @@ const (
 // SetAlerts gives the collector the service that tells operators about a node
 // going offline, a pool filling up or a node that stopped filtering traffic.
 // Without one the collector still marks nodes offline; nobody is told.
-func (c *MetricsCollector) SetAlerts(a *AlertService) { c.alerts = a }
+func (c *MetricsCollector) SetAlerts(a *AlertService) {
+	c.alerts = a
+	if c.vmService != nil {
+		c.vmService.SetAlerts(a)
+	}
+	if c.abuse != nil {
+		c.abuse.SetAlerts(a)
+	}
+}
 
 // NewMetricsCollector wires a collector. interval is the sampling period;
 // retention is how long samples are kept.
@@ -243,7 +258,7 @@ func NewMetricsCollector(db *gorm.DB, riverClient *river.Client[pgx.Tx], interva
 	networkRepo := repository.NewNetworkRepository(db)
 	firewallRepo := repository.NewFirewallRepository(db)
 	nodeService := NewNodeService(nodeRepo, db)
-	return &MetricsCollector{
+	c := &MetricsCollector{
 		nodeRepo:    nodeRepo,
 		vmRepo:      vmRepo,
 		networkRepo: networkRepo,
@@ -271,6 +286,8 @@ func NewMetricsCollector(db *gorm.DB, riverClient *river.Client[pgx.Tx], interva
 		repairs:        map[string]*repairTrack{},
 		pendingAbsent:  map[string]bool{},
 	}
+	c.abuse.SetNetworkService(c.networkService)
+	return c
 }
 
 // Run samples immediately, then on each tick until ctx is cancelled.
@@ -614,11 +631,20 @@ func (c *MetricsCollector) collectOnce(ctx context.Context) {
 	}
 	c.onlineMu.Unlock()
 
+	// Each node's work runs beside the others', so a node that answers slowly
+	// holds up only itself. Within a node it stays in order: VPCs before the
+	// floating IPs that live in them.
+	c.tick++
+	ipTick := c.tick%5 == 1
+	byID := make(map[string]*models.Node, len(nodes))
+	var onlineIDs []string
 	for i := range nodes {
-		nodeID := nodes[i].ID
-		if !online[nodeID] {
-			continue
+		if online[nodes[i].ID] {
+			byID[nodes[i].ID] = &nodes[i]
+			onlineIDs = append(onlineIDs, nodes[i].ID)
 		}
+	}
+	c.eachNode(ctx, onlineIDs, func(ctx context.Context, nodeID string) {
 		// Guest connection rates: the only view that catches a compromised
 		// guest, and the only one that sees guests the panel does not manage.
 		actx, acancel := context.WithTimeout(ctx, 20*time.Second)
@@ -628,43 +654,40 @@ func (c *MetricsCollector) collectOnce(ctx context.Context) {
 		acancel()
 		// Keep each node's default storage pool present and its capacity
 		// live from the node's real disk, so /storage reflects the node.
-		c.syncStoragePools(ctx, &nodes[i])
-	}
-	var poolIDs []string
-	if err := c.db.WithContext(ctx).Model(&models.StoragePool{}).Pluck("id", &poolIDs).Error; err == nil {
-		c.alerts.DropGone(ctx, "storage_pool", poolIDs, "Closed: the pool was removed")
-	}
+		c.syncStoragePools(ctx, byID[nodeID])
 
-	// Reconcile DB VM status against reality on every online node, so a VM
-	// started/stopped/crashed out-of-band is reflected in the panel (otherwise
-	// status only changes on an explicit lifecycle command and drifts stale).
-	for nodeID := range online {
+		// Reconcile DB VM status against reality, so a VM started, stopped or
+		// crashed out of band is reflected in the panel (otherwise status only
+		// changes on an explicit lifecycle command and drifts stale).
 		rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		c.vmService.ReconcileNodeVMStatuses(rctx, nodeID)
 		c.vmService.ReapStuckVMs(rctx, nodeID)
 		cancel()
-	}
 
-	// Less frequently (every ~5 ticks), ARP-reconcile each node's pool IPs so
-	// addresses used by VMs the panel doesn't manage (pre-existing imported
-	// guests) show as reserved and are never allocated. It's heavier (one ARP per
-	// candidate IP) so it doesn't need to run every tick.
-	c.tick++
-	if c.tick%5 == 1 {
-		for nodeID := range online {
-			rctx, cancel := context.WithTimeout(ctx, 90*time.Second)
-			c.vmService.ReconcileNodePoolIPs(rctx, nodeID)
-			// VPCs before floating IPs: a floating IP in a VPC lives in its
-			// router namespace, which a reboot removes.
-			if err := c.managedNets.ReconcileNodeVPCs(rctx, nodeID); err != nil {
-				c.logger.Warn("metrics collector: VPC reconcile failed", "node_id", nodeID, "error", err)
-			}
-			// Floating IPs are pure iptables/host-address state, so a node reboot
-			// silently drops them. Re-applying the desired set (attach is
-			// idempotent) is what makes them survive one.
-			c.vmService.ReconcileFloatingIPs(rctx, nodeID)
-			cancel()
+		// Less often (every ~5 ticks), ARP-reconcile the node's pool IPs so
+		// addresses used by VMs the panel doesn't manage (pre-existing imported
+		// guests) show as reserved and are never allocated. It's heavier (one
+		// ARP per candidate IP) so it doesn't need to run every tick.
+		if !ipTick {
+			return
 		}
+		rctx, cancel = context.WithTimeout(ctx, 90*time.Second)
+		defer cancel()
+		c.vmService.ReconcileNodePoolIPs(rctx, nodeID)
+		// VPCs before floating IPs: a floating IP in a VPC lives in its
+		// router namespace, which a reboot removes.
+		if err := c.managedNets.ReconcileNodeVPCs(rctx, nodeID); err != nil {
+			c.logger.Warn("metrics collector: VPC reconcile failed", "node_id", nodeID, "error", err)
+		}
+		// Floating IPs are pure iptables/host-address state, so a node reboot
+		// silently drops them. Re-applying the desired set (attach is
+		// idempotent) is what makes them survive one.
+		c.vmService.ReconcileFloatingIPs(rctx, nodeID)
+	})
+	// After every node's pools are synced: one made this tick is not "gone".
+	var poolIDs []string
+	if err := c.db.WithContext(ctx).Model(&models.StoragePool{}).Pluck("id", &poolIDs).Error; err == nil {
+		c.alerts.DropGone(ctx, "storage_pool", poolIDs, "Closed: the pool was removed")
 	}
 
 	c.collectVMs(ctx, online)
@@ -703,43 +726,114 @@ func (c *MetricsCollector) collectOnce(ctx context.Context) {
 	}
 }
 
-// collectVMs samples each running VM that lives on an online node. Sampling a VM
-// on an offline node is skipped to avoid wasting the tick on calls that will time out.
+// collectorNodeParallelism is how many nodes the collector works on at once.
+// ponytail: fixed; make it a setting if a fleet outgrows it (the per-node
+// passes then queue, they are never skipped).
+const collectorNodeParallelism = 8
+
+// vmPassBudget is the longest one node's VM sampling may take in a tick. A
+// node whose agent answers each VM slowly would otherwise stretch the tick by
+// 30 seconds a VM; what is left is sampled on a later tick.
+const vmPassBudget = 3 * time.Minute
+
+// eachNode runs fn for every node, up to collectorNodeParallelism at once,
+// and returns when all are done. A panic in one node's work is logged and
+// costs only that node's pass.
+func (c *MetricsCollector) eachNode(ctx context.Context, nodeIDs []string, fn func(ctx context.Context, nodeID string)) {
+	sem := make(chan struct{}, collectorNodeParallelism)
+	var wg sync.WaitGroup
+	for _, id := range nodeIDs {
+		if ctx.Err() != nil {
+			break
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(id string) {
+			defer func() {
+				if p := recover(); p != nil {
+					c.logger.Error("metrics collector: a node's pass panicked", "node_id", id, "panic", p)
+				}
+				<-sem
+				wg.Done()
+			}()
+			fn(ctx, id)
+		}(id)
+	}
+	wg.Wait()
+}
+
+// vmsByNode groups the VMs on online nodes, each node's list starting at a
+// different place every tick, so a pass cut short by vmPassBudget does not
+// always leave out the same VMs.
+func vmsByNode(vms []models.VM, online map[string]bool, tick int) (order []string, byNode map[string][]models.VM) {
+	byNode = map[string][]models.VM{}
+	for _, vm := range vms {
+		if !online[vm.NodeID] {
+			continue
+		}
+		if _, seen := byNode[vm.NodeID]; !seen {
+			order = append(order, vm.NodeID)
+		}
+		byNode[vm.NodeID] = append(byNode[vm.NodeID], vm)
+	}
+	for id, list := range byNode {
+		k := tick % len(list)
+		byNode[id] = slices.Concat(list[k:], list[:k])
+	}
+	return order, byNode
+}
+
+// collectVMs samples each running VM that lives on an online node: the nodes
+// side by side, each node's VMs one after another. Sampling a VM on an
+// offline node is skipped to avoid wasting the tick on calls that will time out.
 func (c *MetricsCollector) collectVMs(ctx context.Context, online map[string]bool) {
 	vms, err := c.vmRepo.ListByStatus(ctx, models.VMStatusRunning, 0, 0)
 	if err != nil {
 		c.logger.Error("metrics collector: list running vms failed", "error", err)
 		return
 	}
-	for i := range vms {
-		vm := vms[i]
-		if !online[vm.NodeID] {
-			continue
+	order, byNode := vmsByNode(vms, online, c.tick)
+	c.eachNode(ctx, order, func(ctx context.Context, nodeID string) {
+		pass, cancel := context.WithTimeout(ctx, vmPassBudget)
+		defer cancel()
+		list := byNode[nodeID]
+		for i, vm := range list {
+			if pass.Err() != nil {
+				if ctx.Err() == nil {
+					c.logger.Warn("metrics collector: node too slow, VMs left for the next tick", "node_id", nodeID, "skipped", len(list)-i)
+				}
+				return
+			}
+			c.sampleVM(pass, vm)
 		}
-		mctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		m, err := c.vmService.GetVMMetrics(mctx, vm.NodeID, vm.ID)
-		cancel()
-		if err != nil {
-			c.logger.Warn("metrics collector: get vm metrics failed", "vm_id", vm.ID, "error", err)
-			continue
-		}
-		sample := &models.VMMetricSample{
-			VMID:                 vm.ID,
-			CPUUsage:             m.CpuPercent,
-			MemoryUsage:          m.MemoryUsedPercent,
-			MemoryUsedBytes:      m.MemoryUsed,
-			DiskReadBytesPerSec:  m.DiskReadBytesPerSec,
-			DiskWriteBytesPerSec: m.DiskWriteBytesPerSec,
-			NetworkRxBytesPerSec: m.NetworkRxBytesPerSec,
-			NetworkTxBytesPerSec: m.NetworkTxBytesPerSec,
-			RecordedAt:           time.Now(),
-		}
-		if err := c.repo.InsertVMSample(ctx, sample); err != nil {
-			c.logger.Error("metrics collector: insert vm sample failed", "vm_id", vm.ID, "error", err)
-		}
+	})
+}
 
-		c.accountBandwidth(ctx, vm.ID, vm.NodeID)
+// sampleVM stores one VM's reading and counts its traffic.
+func (c *MetricsCollector) sampleVM(ctx context.Context, vm models.VM) {
+	mctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	m, err := c.vmService.GetVMMetrics(mctx, vm.NodeID, vm.ID)
+	cancel()
+	if err != nil {
+		c.logger.Warn("metrics collector: get vm metrics failed", "vm_id", vm.ID, "error", err)
+		return
 	}
+	sample := &models.VMMetricSample{
+		VMID:                 vm.ID,
+		CPUUsage:             m.CpuPercent,
+		MemoryUsage:          m.MemoryUsedPercent,
+		MemoryUsedBytes:      m.MemoryUsed,
+		DiskReadBytesPerSec:  m.DiskReadBytesPerSec,
+		DiskWriteBytesPerSec: m.DiskWriteBytesPerSec,
+		NetworkRxBytesPerSec: m.NetworkRxBytesPerSec,
+		NetworkTxBytesPerSec: m.NetworkTxBytesPerSec,
+		RecordedAt:           time.Now(),
+	}
+	if err := c.repo.InsertVMSample(ctx, sample); err != nil {
+		c.logger.Error("metrics collector: insert vm sample failed", "vm_id", vm.ID, "error", err)
+	}
+
+	c.accountBandwidth(ctx, vm.ID, vm.NodeID)
 }
 
 // accountBandwidth pulls the VM's cumulative traffic counters and accumulates
@@ -764,7 +858,14 @@ func (c *MetricsCollector) accountBandwidth(ctx context.Context, vmID, nodeID st
 	}
 
 	for _, exVM := range exceeded {
-		c.enforceOverQuota(ctx, nodeID, exVM)
+		// A pool goes over together, and its VMs may live on other nodes.
+		node := nodeID
+		if exVM != vmID {
+			if vm, err := c.vmRepo.GetByID(ctx, exVM); err == nil {
+				node = vm.NodeID
+			}
+		}
+		c.enforceOverQuota(ctx, node, exVM)
 	}
 	c.warnUsage(ctx, vmID, nodeID)
 }
@@ -869,40 +970,57 @@ func (c *MetricsCollector) warnUsage(ctx context.Context, vmID, nodeID string) {
 		return
 	}
 	usage, err := c.bwService.GetVMUsage(ctx, vmID, nodeID)
-	if err != nil || usage == nil || usage.QuotaBytes <= 0 {
+	if err != nil || usage == nil {
 		return
 	}
-	level := UsageWarningLevel(usage.TotalBytes, usage.QuotaBytes, usage.WarnedPercent, levels)
+	used, quota, pooled := c.bwService.EffectiveUsage(ctx, usage)
+	if quota <= 0 {
+		return
+	}
+	level := UsageWarningLevel(used, quota, usage.WarnedPercent, levels)
 	if level == 0 {
 		return
 	}
-	res := c.db.WithContext(ctx).Table("bandwidth_usages").Where("id = ? AND warned_percent < ?", usage.ID, level).Update("warned_percent", level)
+	// A pool is warned once, not once per VM in it: every row is marked
+	// together and only the update that marked them sends.
+	ids := []string{usage.ID}
+	if pooled {
+		ids = c.bwService.Pool(ctx, vmID).UsageIDs
+	}
+	res := c.db.WithContext(ctx).Table("bandwidth_usages").Where("id IN ? AND warned_percent < ?", ids, level).Update("warned_percent", level)
 	if res.Error != nil || res.RowsAffected == 0 {
 		return
 	}
-	extra := c.transferWarningFields(ctx, vmID, usage)
+	extra := c.transferWarningFields(ctx, vmID, usage, used, quota, pooled)
 	go func() {
 		if err := NotifyVMOwnerWith(context.WithoutCancel(ctx), c.db, vmID, EmailTransferWarn, extra); err != nil {
 			c.logger.Warn("transfer warning email failed", "vm_id", vmID, "level", level, "error", err)
 		}
 	}()
-	c.logger.Info("transfer warning due", "vm_id", vmID, "level", level, "used_gb", usage.UsedGB(), "quota_gb", usage.QuotaGB())
+	c.logger.Info("transfer warning due", "vm_id", vmID, "level", level, "used_bytes", used, "quota_bytes", quota, "pooled", pooled)
 }
 
-// transferWarningFields fills the transfer placeholders of a warning email.
-func (c *MetricsCollector) transferWarningFields(ctx context.Context, vmID string, u *models.BandwidthUsage) map[string]string {
-	pct := u.UsagePercent()
+// transferWarningFields fills the transfer placeholders of a warning email
+// from what the allowance is measured against: the VM's own, or its pool's.
+func (c *MetricsCollector) transferWarningFields(ctx context.Context, vmID string, u *models.BandwidthUsage, used, quota int64, pooled bool) map[string]string {
+	const gb = 1024 * 1024 * 1024
+	pct := float64(used) * 100 / float64(quota)
 	after := "Nothing changes once it is used up."
 	if net, err := c.networkRepo.GetByVMID(ctx, vmID); err == nil {
 		enforced, _ := BandwidthEnforcement(ctx, c.db)
 		after = OverQuotaOutcome(net.OverQuotaPolicy, net.ThrottleSpeedMbps, enforced, pct >= 100)
 	}
+	quotaText := fmt.Sprintf("%.0f GB", float64(quota)/gb)
+	if pooled {
+		quotaText += " (shared by your account's servers)"
+	}
 	return map[string]string{
-		"used":    fmt.Sprintf("%.1f GB", u.UsedGB()),
-		"quota":   fmt.Sprintf("%.0f GB", u.QuotaGB()),
+		"used":    fmt.Sprintf("%.1f GB", float64(used)/gb),
+		"quota":   quotaText,
 		"percent": fmt.Sprintf("%.0f%%", pct),
-		"resets":  u.PeriodEnd.Format("2 January"),
-		"after":   after,
+		// The first day of the next period, not the last of this one.
+		"resets": u.PeriodStart.AddDate(0, 1, 0).Format("2 January"),
+		"after":  after,
 	}
 }
 
@@ -1212,8 +1330,12 @@ func (c *MetricsCollector) restoreResetThrottles(ctx context.Context) {
 		if err != nil {
 			continue
 		}
-		// Still over quota this period → keep throttled.
-		if usage != nil && usage.QuotaBytes > 0 && usage.TotalBytes >= usage.QuotaBytes {
+		// Still over quota this period (or its pool is) → keep throttled.
+		if used, quota, _ := c.bwService.EffectiveUsage(ctx, usage); quota > 0 && used >= quota {
+			continue
+		}
+		// An abuse rate limit holds the speed down for its own reason.
+		if c.abuse.RateLimited(ctx, net.VMID) {
 			continue
 		}
 		if err := c.networkService.ApplyLiveBandwidth(ctx, net.VMID, net.BandwidthLimit); err != nil {

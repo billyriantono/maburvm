@@ -61,3 +61,14 @@ export function addonPrices(p: Pick<Plan, "addon_prices" | "currency">): { key: 
     .filter((a) => p.addon_prices?.[a.key] != null)
     .map((a) => ({ ...a, price: `${money(p.addon_prices![a.key]!, p.currency!)} a month` }))
 }
+
+/** What a plan says about backups, in one sentence; null when it says nothing. */
+export function backupTerms(p: Pick<Plan, "max_backups" | "addon_prices" | "currency">): string | null {
+  const price = p.currency && p.addon_prices?.backup != null ? money(p.addon_prices.backup, p.currency) : null
+  if (p.max_backups === 0) return "This server's plan includes no backups."
+  const kept = p.max_backups != null ? `This server's plan keeps up to ${p.max_backups} ${p.max_backups === 1 ? "backup" : "backups"}` : null
+  if (kept && price) return `${kept}, at ${price} a month each.`
+  if (kept) return `${kept}.`
+  if (price) return `Each backup costs ${price} a month.`
+  return null
+}

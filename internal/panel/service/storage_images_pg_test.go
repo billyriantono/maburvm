@@ -100,3 +100,29 @@ func TestStorageTiersImagesAndMovesPG(t *testing.T) {
 	require.Len(t, moves, 1)
 	require.Equal(t, diskMoveCompleted, moves[0].Status)
 }
+
+// Two primaries on one node, as older panels left them: promoting one, or
+// creating a pool as primary, leaves exactly one.
+func TestOnePrimaryPoolPG(t *testing.T) {
+	db := migrationDB(t)
+	node := uuid.New().String()
+	require.NoError(t, db.Exec(`INSERT INTO nodes (id, name, ip_address, token, status) VALUES (?, 'n1', '192.0.2.10', 'tok', 'active')`, node).Error)
+	root, vm := uuid.New().String(), uuid.New().String()
+	require.NoError(t, db.Exec(`INSERT INTO storage_pools (id, name, type, status, path, node_id, is_primary) VALUES
+		(?, 'local', 'dir', 'online', '/var/lib/libvirt/images', ?, true), (?, 'vm', 'dir', 'online', '/vm', ?, true)`, root, node, vm, node).Error)
+	primaries := func() (ids []string) {
+		require.NoError(t, db.Raw(`SELECT id::text FROM storage_pools WHERE node_id::text = ? AND is_primary`, node).Scan(&ids).Error)
+		return ids
+	}
+
+	repo := repository.NewStorageRepository(db)
+	require.NoError(t, NewStorageService(repo).UpdatePool(vm, &models.StoragePool{IsPrimary: true}))
+	require.Equal(t, []string{vm}, primaries())
+
+	fresh := &models.StoragePool{Name: "data", Type: "dir", Status: "online", Path: "/data", FileFormat: "qcow2", NodeID: node, IsPrimary: true}
+	require.NoError(t, repo.CreatePool(fresh))
+	require.Equal(t, []string{fresh.ID}, primaries())
+
+	require.ErrorIs(t, repo.SetPrimaryPool(node, uuid.New().String()), repository.ErrStoragePoolNotOnNode)
+	require.Equal(t, []string{fresh.ID}, primaries(), "a failed promotion is rolled back")
+}

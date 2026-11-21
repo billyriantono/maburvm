@@ -15,6 +15,9 @@ interface RescueStatus {
   iso_url: string
   /** settings: saved here; environment: RESCUE_ISO_URL on the panel host. */
   source: "settings" | "environment" | ""
+  /** The built-in rescue system's disk image and its checksum; empty when none. */
+  image_url?: string
+  image_sha256?: string
 }
 
 const QUERY_KEY = ["settings", "rescue"]
@@ -28,14 +31,20 @@ export function RescueImageSettings() {
     queryFn: async () => (await api.get<RescueStatus>("/api/v1/settings/system/rescue")).data.data,
   })
   const [iso, setIso] = useState("")
+  const [image, setImage] = useState("")
+  const [imageSum, setImageSum] = useState("")
 
   useEffect(() => {
-    if (data) setIso(data.source === "settings" ? data.iso_url : "")
+    if (data) {
+      setIso(data.source === "settings" ? data.iso_url : "")
+      setImage(data.image_url ?? "")
+      setImageSum(data.image_sha256 ?? "")
+    }
   }, [data])
 
   const save = useMutation({
     mutationFn: async () => {
-      await api.put("/api/v1/settings/system", { rescue: { isoUrl: iso.trim() } })
+      await api.put("/api/v1/settings/system", { rescue: { isoUrl: iso.trim(), imageUrl: image.trim(), imageSha256: imageSum.trim() } })
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: QUERY_KEY })
@@ -53,8 +62,10 @@ export function RescueImageSettings() {
           Rescue image
         </CardTitle>
         <CardDescription>
-          The ISO a server starts from in rescue mode, so its owner can repair it from the console. Without one,
-          the Enter rescue button tells customers rescue mode is not available.
+          What a server starts in rescue mode. The built-in rescue system boots a fresh copy of a small Linux image on the
+          server&apos;s own address, with its disks attached and a one-time root password shown to whoever turned rescue on.
+          The rescue ISO is used where the built-in system is not set or its node cannot run it yet. Without either, the
+          Enter rescue button tells customers rescue mode is not available.
         </CardDescription>
       </CardHeader>
       <CardContent className="pt-6">
@@ -74,7 +85,20 @@ export function RescueImageSettings() {
             }}
           >
             <div className="space-y-2">
-              <label htmlFor="rescueIso" className="block text-sm font-medium text-muted-foreground">ISO address or path</label>
+              <label htmlFor="rescueImage" className="block text-sm font-medium text-muted-foreground">Built-in rescue system: disk image address or path</label>
+              <Input id="rescueImage" value={image} onChange={(e) => setImage(e.target.value)}
+                placeholder="https://example.com/rescue.qcow2" className="font-mono" />
+              <label htmlFor="rescueImageSum" className="block text-sm font-medium text-muted-foreground">Its sha256</label>
+              <Input id="rescueImageSum" value={imageSum} onChange={(e) => setImageSum(e.target.value)} className="font-mono" />
+              <p className="text-xs text-muted-foreground">
+                A qcow2 cloud image that uses systemd-networkd or cloud-init (a minimal Debian or Ubuntu cloud image works),
+                which no template here is built from, so its disk is never mistaken for the server&apos;s own. A URL needs its
+                sha256; a path must be the same on every node.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <label htmlFor="rescueIso" className="block text-sm font-medium text-muted-foreground">Rescue ISO address or path</label>
               <Input
                 id="rescueIso"
                 value={iso}
@@ -88,8 +112,10 @@ export function RescueImageSettings() {
             </div>
 
             <p className="flex items-center gap-2 text-sm">
-              <span className={`h-2 w-2 rounded-full ${data?.iso_url ? "bg-success" : "bg-warning"}`} aria-hidden="true" />
-              {data?.source === "settings"
+              <span className={`h-2 w-2 rounded-full ${data?.iso_url || data?.image_url ? "bg-success" : "bg-warning"}`} aria-hidden="true" />
+              {data?.image_url
+                ? "Rescue mode is available, with the built-in rescue system."
+                : data?.source === "settings"
                 ? "Rescue mode is available."
                 : data?.source === "environment"
                   ? <span>Rescue mode uses <span className="font-mono break-all">{data.iso_url}</span> from RESCUE_ISO_URL on the panel host until an image is saved here.</span>

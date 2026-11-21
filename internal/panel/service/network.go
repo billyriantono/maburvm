@@ -51,6 +51,8 @@ type NetworkService struct {
 	// ipamService is optional: without it the service still manages interfaces
 	// that already exist, it just cannot allocate new addresses.
 	ipamService *IPAMService
+	// agent reaches node agents, for changing a VM's network cards.
+	agent AgentDialer
 }
 
 // NewNetworkService creates a new NetworkService instance
@@ -856,6 +858,22 @@ func (s *NetworkService) ResyncNodeVMs(ctx context.Context, nodeID string) int {
 	return n
 }
 
+// PoolVMs are the VMs holding an address of a pool.
+func (s *NetworkService) PoolVMs(ctx context.Context, poolID string) []string {
+	var ids []string
+	_ = s.db.WithContext(ctx).Model(&models.IPAddress{}).Distinct("vm_id").
+		Where("pool_id = ? AND vm_id IS NOT NULL", poolID).Pluck("vm_id", &ids).Error
+	return ids
+}
+
+// ResyncPool sends the node config of every VM holding an address of a pool
+// again, as a pool's DHCP switch needs. Errors are logged: the switch is saved.
+func (s *NetworkService) ResyncPool(ctx context.Context, poolID string) {
+	if _, err := s.ResyncVMs(ctx, s.PoolVMs(ctx, poolID)); err != nil {
+		slog.WarnContext(ctx, "pool change not sent to every node yet", "pool_id", poolID, "error", err)
+	}
+}
+
 // resyncBatch is how many network-config jobs go to the queue in one insert.
 const resyncBatch = 200
 
@@ -1050,6 +1068,22 @@ func (s *NetworkService) networkConfigParams(ctx context.Context, vm *models.VM,
 		FirewallRules:  rules,
 	}
 	params.FirewallDefault, params.BlockSMTP = s.vmNetworkPolicy(ctx, vm.ID)
+	// An abuse rate limit in force holds the speed down in every job, so an
+	// unrelated change (a firewall rule, a resync) cannot lift it.
+	if limit := abuseSpeedCap(ctx, s.db, vm.ID); limit > 0 && (params.BandwidthLimit == 0 || params.BandwidthLimit > limit) {
+		params.BandwidthLimit = limit
+	}
+	// So does an over-quota throttle until its period resets: the collector
+	// applies it once, when the VM crosses its quota.
+	if network.Throttled {
+		limit := int64(network.ThrottleSpeedMbps)
+		if limit <= 0 {
+			limit = defaultThrottleMbps
+		}
+		if params.BandwidthLimit == 0 || params.BandwidthLimit > limit {
+			params.BandwidthLimit = limit
+		}
+	}
 	params.IPPrefixes = s.vmIPPrefixes(ctx, vm.ID)
 	if pool != nil {
 		params.Gateway = pool.Gateway

@@ -283,6 +283,14 @@ export default function StorageListPage() {
       nodeNames.get(pool.node_id)?.toLowerCase().includes(searchQuery.toLowerCase())
   ) ?? []
 
+  // Nodes with more than one pool marked for new VMs (left by older panels).
+  // Placement then uses the roomiest online one, so neither badge alone is the truth.
+  const primaryConflict = useMemo(() => {
+    const count = new Map<string, number>()
+    for (const p of pools ?? []) if (p.is_primary) count.set(p.node_id, (count.get(p.node_id) ?? 0) + 1)
+    return new Set([...count].filter(([, n]) => n > 1).map(([node]) => node))
+  }, [pools])
+
   const hasFilters = !!searchQuery
 
   const clearFilters = () => setSearchQuery("")
@@ -501,9 +509,17 @@ export default function StorageListPage() {
                         rather than in a settings screen: a node with the wrong
                         one provisions onto its OS volume, and nothing else in
                         the UI would reveal that. */}
-                    {pool.is_primary && (
+                    {pool.is_primary && !primaryConflict.has(pool.node_id) && (
                       <span className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300">
                         NEW VMs
+                      </span>
+                    )}
+                    {pool.is_primary && primaryConflict.has(pool.node_id) && (
+                      <span
+                        title="Another pool on this node is also marked for new VMs. Choose one with Use for new VMs."
+                        className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                      >
+                        NEW VMs: CONFLICT
                       </span>
                     )}
                     <StatusBadge status={pool.status === 'online' ? 'online' : pool.status === 'offline' ? ((pool.total_space ?? 0) === 0 ? 'pending' : 'offline') : 'degraded'} />
@@ -579,7 +595,7 @@ export default function StorageListPage() {
                     Tier
                   </Button>
 
-                  {!pool.is_primary && pool.status === "online" && (
+                  {(!pool.is_primary || primaryConflict.has(pool.node_id)) && pool.status === "online" && (
                     <Button
                       variant="outline"
                       size="sm"

@@ -989,6 +989,15 @@ func RegisterNetworkRoutes(e *echo.Echo, handler *NetworkHandler, db *gorm.DB) {
 	// Routed IPv6: delegate / release the VM's /64.
 	vms.POST("/:id/ipv6", handler.AssignIPv6Prefix, middleware.RequirePermission("vm:update"))
 	vms.DELETE("/:id/ipv6", handler.ReleaseIPv6Prefix, middleware.RequirePermission("vm:update"))
+	// Further addresses the guest holds inside its routed prefix.
+	vms.GET("/:id/ipv6/addresses", handler.GetIPv6Addresses, middleware.RequirePermission("vm:read"))
+	vms.PUT("/:id/ipv6/addresses", handler.SetIPv6Addresses, middleware.RequirePermission("vm:update"))
+
+	// Network cards: a second card on a VPC or another network, and MACs.
+	vms.GET("/:id/nics", handler.ListNICs, middleware.RequirePermission("vm:read"))
+	vms.POST("/:id/nics", handler.AddNIC, middleware.RequirePermission("vm:update"))
+	vms.DELETE("/:id/nics/:nic_id", handler.RemoveNIC, middleware.RequirePermission("vm:update"))
+	vms.PUT("/:id/nics/:nic_id/mac", handler.SetNICMAC, middleware.RequirePermission("vm:update"))
 
 	// Bandwidth routes
 	vms.PUT("/:id/networks/:network_id/bandwidth", handler.SetBandwidthLimit, middleware.RequirePermission("vm:update"))
@@ -1223,14 +1232,12 @@ func (h *NetworkHandler) AssignIPv6Prefix(c echo.Context) error {
 	})
 }
 
-// ReleaseIPv6Prefix handles DELETE /api/v1/vms/:id/ipv6.
+// ReleaseIPv6Prefix handles DELETE /api/v1/vms/:id/ipv6. A customer may turn
+// their own VM's IPv6 off; getting it back goes through an address request.
 func (h *NetworkHandler) ReleaseIPv6Prefix(c echo.Context) error {
 	vmID := c.Param("id")
 	if !h.authz.AuthorizeVM(c, vmID) {
 		return nil
-	}
-	if isClientRole(c) {
-		return clientNetworkSelectionDenied(c)
 	}
 	if err := h.service.ReleaseIPv6Prefix(c.Request().Context(), vmID); err != nil {
 		if err.Error() == "VM not found" {

@@ -13,6 +13,7 @@ import type {
   UpdateNodeRequest,
   NodePreflight,
   NodeInstallCommand,
+  NodeVLANBridges,
 } from '@/types'
 
 export function useNodes(enabled = true) {
@@ -209,5 +210,51 @@ export function useImportVMs(nodeId: string) {
       const response = await api.post<{ message: string; success_count: number; skipped_count: number; error_count: number }>(`/api/v1/nodes/${nodeId}/import/virtualizor`, data)
       return response.data.data
     },
+  })
+}
+
+/** A node's pool of host cores for dedicated-CPU VMs, and who holds them. */
+export interface NodeCPUPool {
+  pool: string
+  size: number
+  used: number
+  vms: { id: string; hostname: string; cpus: string }[]
+}
+
+const cpuPoolKey = (nodeId: string) => ['nodes', 'dedicated-cpus', nodeId]
+
+export function useNodeCPUPool(nodeId: string) {
+  return useQuery<NodeCPUPool>({
+    queryKey: cpuPoolKey(nodeId),
+    queryFn: async () => (await api.get<NodeCPUPool>(`/api/v1/nodes/${nodeId}/dedicated-cpus`)).data.data,
+    enabled: !!nodeId,
+  })
+}
+
+export function useSetNodeCPUPool(nodeId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<NodeCPUPool, Error, string>({
+    mutationFn: async (pool) => (await api.put<NodeCPUPool>(`/api/v1/nodes/${nodeId}/dedicated-cpus`, { pool })).data.data,
+    onSuccess: (data) => queryClient.setQueryData(cpuPoolKey(nodeId), data),
+  })
+}
+
+// Bridges of a node that carry per-VM VLANs, set here or left to the agent's
+// environment.
+const vlanKey = (nodeId: string) => ['nodes', 'vlan-bridges', nodeId]
+
+export function useNodeVLANBridges(nodeId: string) {
+  return useQuery<NodeVLANBridges>({
+    queryKey: vlanKey(nodeId),
+    queryFn: async () => (await api.get<NodeVLANBridges>(`/api/v1/nodes/${nodeId}/vlan-bridges`)).data.data,
+    enabled: !!nodeId,
+  })
+}
+
+export function useSetNodeVLANBridges(nodeId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<NodeVLANBridges, Error, NodeVLANBridges>({
+    mutationFn: async (body) => (await api.put<NodeVLANBridges>(`/api/v1/nodes/${nodeId}/vlan-bridges`, body)).data.data,
+    onSuccess: (data) => queryClient.setQueryData(vlanKey(nodeId), data),
   })
 }

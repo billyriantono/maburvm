@@ -84,11 +84,18 @@ type VM struct {
 	// DeleteLock is VMDeleteLock*: who locked the VM against deletion and
 	// reinstall. Tags are the owner's labels. Both read-only here; written by
 	// table name (VMService.SetDeleteLock, SetTags).
-	DeleteLock string         `json:"delete_lock" gorm:"column:delete_lock;->"`
-	Tags       []string       `json:"tags" gorm:"column:tags;type:jsonb;serializer:json;->"`
-	CreatedAt  time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
-	UpdatedAt  time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
-	DeletedAt  gorm.DeletedAt `json:"-" gorm:"index"`
+	DeleteLock string `json:"delete_lock" gorm:"column:delete_lock;->"`
+	// Hardware is the VM's virtual hardware beyond its size; HardwareNote says
+	// why its node does not have the latest change yet. RescueKind is how a VM
+	// in rescue mode got there (RescueKind*). Read-only here, written by table
+	// name.
+	Hardware     Hardware       `json:"hardware" gorm:"column:hardware;type:jsonb;serializer:json;->"`
+	HardwareNote *string        `json:"-" gorm:"column:hardware_note;->"`
+	RescueKind   string         `json:"rescue_kind" gorm:"column:rescue_kind;->"`
+	Tags         []string       `json:"tags" gorm:"column:tags;type:jsonb;serializer:json;->"`
+	CreatedAt    time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
+	UpdatedAt    time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
+	DeletedAt    gorm.DeletedAt `json:"-" gorm:"index"`
 
 	// Region is where this VM physically runs, filled for responses from its
 	// node. Customers reason in regions, not nodes — node placement is
@@ -98,6 +105,13 @@ type VM struct {
 	RegionName    string `json:"region_name,omitempty" gorm:"-"`
 	RegionCountry string `json:"region_country,omitempty" gorm:"-"`
 }
+
+// How a VM in rescue mode boots: a rescue ISO in its drive, or the built-in
+// rescue system's disk.
+const (
+	RescueKindISO   = "iso"
+	RescueKindImage = "image"
+)
 
 // Delete locks. A staff lock stops every removal, the billing system's
 // included; an owner lock stops everyone but the billing system, so a

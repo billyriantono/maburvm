@@ -1,5 +1,6 @@
 "use client"
 
+import { useMyQuota } from "@/lib/hooks/use-quota"
 import { useMemo, useState } from "react"
 import { Loader2 } from "lucide-react"
 import { toast } from "sonner"
@@ -202,6 +203,21 @@ function ProjectsPanel({ accountId, projects, canManage }: { accountId?: string;
   )
 }
 
+// AccountUsage is what a team account holds against its limits, for members
+// whose role covers its usage and billing.
+function AccountUsage({ accountId }: { accountId: string }) {
+  const { data, error } = useMyQuota(accountId)
+  if (error) return <span className="text-sm text-muted-foreground">Usage could not be loaded</span>
+  if (!data) return null
+  const of = (used: number, max: number, unit = "") => `${used}${unit}${max ? ` of ${max}${unit}` : ""}`
+  return (
+    <span className="text-sm text-muted-foreground">
+      {of(data.usage.vms, data.quota.max_vms)} servers, {of(data.usage.vcpu, data.quota.max_vcpu)} vCPU,{" "}
+      {of(Math.round(data.usage.ram_mb / 1024), Math.round(data.quota.max_ram_mb / 1024), " GB")} RAM, {of(data.usage.disk_gb, data.quota.max_disk_gb, " GB")} disk
+    </span>
+  )
+}
+
 export default function ClientTeamPage() {
   const confirm = useConfirm()
   const { data: user } = useCurrentUser()
@@ -347,7 +363,8 @@ export default function ClientTeamPage() {
                   {m.account_name && <p className="truncate text-sm text-muted-foreground">{m.account_email}</p>}
                 </div>
                 <span className="text-sm">{roleLabel(m.role)}</span>
-                <span className="text-sm text-muted-foreground">{reachLabel(m, [])}</span>
+                <span className="text-sm text-muted-foreground">{m.role === "billing" ? "Usage and billing" : reachLabel(m, [])}</span>
+                {m.can.includes("billing") && <AccountUsage accountId={m.account_id} />}
                 <Button size="sm" variant="outline" className="ml-auto" onClick={() => confirm({
                   title: `Leave ${m.account_name || m.account_email}?`,
                   description: "You lose access to its servers. Someone there has to invite you again to come back.",

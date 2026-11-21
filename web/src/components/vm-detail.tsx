@@ -27,10 +27,11 @@ import { useNodes } from "@/lib/hooks/use-nodes"
 import { useSnapshots, useCreateSnapshot, useRestoreSnapshot, useDeleteSnapshot } from "@/lib/hooks/use-snapshots"
 import { useCreateImage } from "@/lib/hooks/use-images"
 import { BACKUP_PAGE, useBackupPage, useCreateBackup, useDeleteBackup, useRestoreBackup, useRestoreBackupAsNew, useBackupSchedules, useCreateBackupSchedule, useDeleteBackupSchedule } from "@/lib/hooks/use-backups"
-import { useFirewallRules, useDeleteFirewallRule, useCreateFirewallRule, useVMNetworks, useSetVMBandwidth, useSetVMRDNS, usePortForwards, useCreatePortForward, useDeletePortForward, useSetAntiSpoofing, useFirewallStatus, useSetFirewallDefault, useSetSMTPBlocked, useDismissGuestNetworkNote } from "@/lib/hooks/use-networks"
+import { useFirewallRules, useDeleteFirewallRule, useCreateFirewallRule, useVMNetworks, useSetVMBandwidth, useSetVMRDNS, useVMPrefixPTRs, usePortForwards, useCreatePortForward, useDeletePortForward, useSetAntiSpoofing, useFirewallStatus, useSetFirewallDefault, useSetSMTPBlocked, useDismissGuestNetworkNote } from "@/lib/hooks/use-networks"
 import type { Network as NetworkIface, VM } from "@/types"
 import { templateOfferedOn } from "@/types/template"
 import { usePlans } from "@/lib/hooks/use-plans"
+import { backupTerms } from "@/lib/plans"
 import { useTemplates } from "@/lib/hooks/use-templates"
 import { usePortal } from "@/lib/hooks/use-portal"
 import { AddressRequestsCard, VMProjectCard } from "@/components/vm-customer-extras"
@@ -44,11 +45,14 @@ import { VMTelemetry } from "@/components/vm-telemetry"
 import { OSLogoTile } from "@/components/os-icon"
 import type { Snapshot, Backup, BackupRetentionPolicy, FirewallRule, FirewallAction, FirewallFamily } from "@/types"
 import { useConfirm } from "@/components/confirm-provider"
+import { IPv6Addresses, VMNICsCard } from "@/components/vm-nics"
 import { StatusBadge, useVMTransitions, vmStatus } from "@/components/status-badge"
 import { OperationProgress, vmProvisionSteps } from "@/components/operation-progress"
 import { useCopy, useFlash } from "@/lib/use-feedback"
 import { CountryFlag } from "@/components/country-flag"
 import { VMLimitsSection } from "@/components/vm-limits"
+import { VMHardwareSection } from "@/components/vm-hardware"
+import { SnapshotScheduleCard } from "@/components/snapshot-schedule"
 import { VMNodeRow } from "@/components/vm-migrate"
 import { VMFirewallGroups } from "@/components/vm-firewall-groups"
 import { VMNATCard } from "@/components/vm-nat"
@@ -312,6 +316,70 @@ function RDNSCell({ vmId, ipAddress, rdns, verified }: { vmId: string; ipAddress
         {error || (verified ? `Must already resolve to ${ipAddress}. Leave empty to remove.` : "Leave empty to remove.")}
       </p>
     </form>
+  )
+}
+
+// Reverse DNS inside the VM's routed IPv6 prefix: any address in it may be
+// named, so the list is the names set, plus a form to name another address.
+function PrefixPTRs({ vmId, prefix, verified, canEdit }: { vmId: string; prefix: string; verified: boolean; canEdit: boolean }) {
+  const { data: ptrs } = useVMPrefixPTRs(vmId, true)
+  const setRDNS = useSetVMRDNS(vmId)
+  const [address, setAddress] = useState("")
+  const [host, setHost] = useState("")
+  const [error, setError] = useState<string | null>(null)
+
+  return (
+    <div className="mt-4">
+      <h3 className="text-sm font-medium">Reverse DNS inside the prefix</h3>
+      {ptrs?.length ? (
+        <table className="mt-2 w-full text-sm">
+          <tbody className="divide-y">
+            {ptrs.map((p) => (
+              <tr key={p.id}>
+                <td className="py-2 pr-4 font-mono text-xs break-all">{p.address}</td>
+                <td className="py-2">
+                  {canEdit ? <RDNSCell vmId={vmId} ipAddress={p.address} rdns={p.rdns} verified={verified} /> : <span className="font-mono text-xs">{p.rdns}</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <p className="mt-1 text-xs text-muted-foreground">No names set. Any address in {prefix} can have one, up to 64.</p>
+      )}
+      {canEdit && (
+        <form
+          className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-start"
+          onSubmit={(e) => {
+            e.preventDefault()
+            setError(null)
+            setRDNS.mutate(
+              { ipAddress: address.trim(), rdns: host.trim() },
+              {
+                onSuccess: () => {
+                  setAddress("")
+                  setHost("")
+                  toast.success("Reverse DNS saved")
+                },
+                onError: (err) => setError(err.message),
+              },
+            )
+          }}
+        >
+          <label className="sr-only" htmlFor={`ptr-addr-${vmId}`}>Address inside the prefix</label>
+          <Input id={`ptr-addr-${vmId}`} className="font-mono sm:w-72" placeholder={prefix.replace(/::\/\d+$/, "::25")} value={address} onChange={(e) => setAddress(e.target.value)} />
+          <label className="sr-only" htmlFor={`ptr-host-${vmId}`}>Hostname</label>
+          <Input id={`ptr-host-${vmId}`} className="font-mono sm:w-64" placeholder="mail.example.com" value={host} onChange={(e) => setHost(e.target.value)} />
+          <Button type="submit" size="sm" variant="outline" disabled={!address.trim() || !host.trim() || setRDNS.isPending}>
+            {setRDNS.isPending ? <Loader2 className="w-4 h-4 animate-spin" aria-label="Saving" /> : "Add name"}
+          </Button>
+        </form>
+      )}
+      {error && <p role="alert" className="mt-1 text-xs text-destructive">{error}</p>}
+      {canEdit && verified && !error && (
+        <p className="mt-1 text-xs text-muted-foreground">The hostname must already resolve to the address.</p>
+      )}
+    </div>
   )
 }
 
@@ -640,6 +708,12 @@ function describeRetention(p?: BackupRetentionPolicy): string {
   return text.charAt(0).toUpperCase() + text.slice(1)
 }
 
+// backupDiskTargets are the disks of a backup that can be downloaded one by
+// one, the first first; one for a backup of the primary disk only.
+function backupDiskTargets(b: Backup): string[] {
+  return b.disks?.length ? b.disks.map((d) => d.target) : ["vda"]
+}
+
 function BackupScheduleCard({ vmId, isAdmin }: { vmId: string; isAdmin: boolean }) {
   const confirm = useConfirm()
   const { data: schedules, isLoading, error, refetch } = useBackupSchedules(vmId)
@@ -889,7 +963,7 @@ function BandwidthUsageCard({ vmId, canEditQuota }: { vmId: string; canEditQuota
           <span className="text-sm font-mono font-medium">{formatBytes(bandwidth.tx_bytes)}</span>
         </div>
         <div className="p-4 border rounded-md">
-          <span className="text-xs font-medium text-muted-foreground block">Total Used</span>
+          <span className="text-xs font-medium text-muted-foreground block">{bandwidth.counts && bandwidth.counts !== "both" ? "Counted" : "Total used"}</span>
           <span className="text-sm font-mono font-medium">{bandwidth.used_gb.toFixed(2)} GB</span>
         </div>
         <div className="p-4 border rounded-md">
@@ -898,11 +972,20 @@ function BandwidthUsageCard({ vmId, canEditQuota }: { vmId: string; canEditQuota
         </div>
       </div>
 
+      {(bandwidth.counts && bandwidth.counts !== "both") || bandwidth.pooled ? (
+        <p className="text-xs text-muted-foreground mb-4">
+          {bandwidth.counts === "out" && "Only traffic sent by this server counts toward the allowance. "}
+          {bandwidth.counts === "in" && "Only traffic received by this server counts toward the allowance. "}
+          {bandwidth.pooled &&
+            `The allowance is shared by the account's servers: ${(bandwidth.pool_used_gb ?? 0).toFixed(2)} of ${Math.round(bandwidth.pool_quota_gb ?? 0)} GB used together.`}
+        </p>
+      ) : null}
+
       {bandwidth.quota_gb > 0 && (
         <div>
           <div className="flex justify-between items-center mb-1">
             <span className="text-xs font-medium text-muted-foreground">Usage</span>
-            <span className="text-xs font-semibold">{bandwidth.used_gb.toFixed(2)} / {bandwidth.quota_gb} GB ({bandwidth.usage_percent.toFixed(1)}%)</span>
+            <span className="text-xs font-semibold tabular-nums">{bandwidth.used_gb.toFixed(2)} / {bandwidth.quota_gb} GB ({bandwidth.usage_percent.toFixed(1)}%)</span>
           </div>
           <div className="h-2 rounded-full bg-muted overflow-hidden relative">
             <div
@@ -1155,6 +1238,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const allow = useCan()
   const { data: me } = useCurrentUser()
   const { data: teams } = useMemberships()
+  const { data: planList } = usePlans()
   const basePath = isAdmin ? "/vms" : "/client/vms"
   const backLabel = isAdmin ? "Back to VMs" : "Back to my VMs"
   const rebuildWord = isAdmin ? "Rebuild" : "Reinstall"
@@ -1188,6 +1272,10 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   }, [])
   const [snapshotName, setSnapshotName] = useState("")
   const [createSnapshotOpen, setCreateSnapshotOpen] = useState(false)
+  // A running VM's snapshot without its memory (no pause), optionally with
+  // its filesystems frozen through the guest agent.
+  const [snapshotDiskOnly, setSnapshotDiskOnly] = useState(false)
+  const [snapshotQuiesce, setSnapshotQuiesce] = useState(false)
   const [imageName, setImageName] = useState("")
   const [createImageOpen, setCreateImageOpen] = useState(false)
   const [isoDialogOpen, setIsoDialogOpen] = useState(false)
@@ -1390,8 +1478,13 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
 
   const handleRescue = useCallback(async () => {
     try {
-      await rescueVM.mutateAsync(undefined)
-      toast.success("Rescue ISO attached. Start the VM to boot into rescue")
+      const res = await rescueVM.mutateAsync(undefined)
+      if (res?.kind === "image" && res.root_password) {
+        toast.success("The rescue system is being prepared. Start the VM once it is ready, then sign in over SSH or the console")
+        setSecret({ title: `Rescue system password for ${res.user ?? "root"}${res.address ? `@${res.address}` : ""}`, value: res.root_password })
+      } else {
+        toast.success("Rescue ISO attached. Start the VM to boot into rescue")
+      }
     } catch (err) {
       toast.error(`Failed to enter rescue mode: ${(err as Error).message}`)
     }
@@ -1400,7 +1493,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const handleUnrescue = useCallback(async () => {
     try {
       await unrescueVM.mutateAsync()
-      toast.success("Rescue ISO detached. Start the VM to boot from disk")
+      toast.success("Leaving rescue mode. Start the VM to boot from its own disk")
     } catch (err) {
       toast.error(`Failed to exit rescue mode: ${(err as Error).message}`)
     }
@@ -1465,7 +1558,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const handleCreateSnapshot = useCallback(async () => {
     if (!snapshotName.trim()) return
     try {
-      await createSnapshot.mutateAsync({ vm_id: vmId, name: snapshotName })
+      await createSnapshot.mutateAsync({ vm_id: vmId, name: snapshotName, disk_only: snapshotDiskOnly, quiesce: snapshotDiskOnly && snapshotQuiesce })
       toast.success("Snapshot created")
       setSnapshotName("")
       setCreateSnapshotOpen(false)
@@ -1473,7 +1566,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
     } catch (err) {
       toast.error(`Failed to create snapshot: ${(err as Error).message}`)
     }
-  }, [createSnapshot, vmId, snapshotName, refetchSnapshots])
+  }, [createSnapshot, vmId, snapshotName, snapshotDiskOnly, snapshotQuiesce, refetchSnapshots])
 
   const createImage = useCreateImage()
   const handleCreateImage = useCallback(async () => {
@@ -1593,10 +1686,10 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   const handleResetPassword = async () => {
     if (!resetPwValue.trim()) return
     try {
-      await resetPassword.mutateAsync(resetPwValue)
+      const res = await resetPassword.mutateAsync(resetPwValue)
       setResetPwOpen(false)
       setResetPwValue("")
-      toast.success(isRouter ? "Password reset requested. The router restarts if it has to." : "Password reset requested")
+      toast.success(res?.message ?? (isRouter ? "Password reset requested. The router restarts if it has to." : "Password reset requested"))
     } catch (err) {
       toast.error(`Failed to reset password: ${(err as Error).message}`)
     }
@@ -1662,6 +1755,8 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   // A team member whose role only views sees everything and changes nothing.
   const teamRole = !isAdmin && me && vm.user_id !== me.id ? teams?.memberships.find((m) => m.account_id === vm.user_id) : undefined
   const viewOnly = !!teamRole && !teamRole.can.includes("operate")
+  const backupPlan = vm.plan_id ? planList?.find((p) => p.id === vm.plan_id) : undefined
+  const backupPlanTerms = backupPlan ? backupTerms(backupPlan) : null
   const locked = !isAdmin && (suspended || viewOnly)
   // The node is offline: power actions would only fail, and the state is a guess.
   const stateUnknown = !!vm.state_unknown
@@ -2210,19 +2305,23 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                   <DialogTitle className="text-lg font-semibold">Reset the password for {loginUser}</DialogTitle>
                   <DialogDescription className="text-sm text-muted-foreground">
                     {isRouter
-                      ? "Sets a new password for the admin user. RouterOS 7 only accepts this at start-up, so the router is restarted to apply it; expect it to be unreachable for under a minute."
+                      ? vm.status === "running"
+                        ? "Sets a new password for the admin user. RouterOS 7 only accepts this at start-up, so the router is restarted to apply it; expect it to be unreachable for under a minute."
+                        : "Sets a new password for the admin user. The router is stopped, so it takes the password when it next starts."
                       : isWindows
                         ? "Sets a new password for the Administrator account through the guest agent inside Windows. The VM must be running. Windows refuses a password that does not meet its complexity rules."
-                      : isAdmin
-                        ? "Sets a new root password on the running guest via the QEMU guest agent. The VM must be running and have qemu-guest-agent installed."
-                        : "Sets a new root password inside the VM. The VM must be running."}
+                      : vm.status === "running"
+                        ? isAdmin
+                          ? "Sets a new root password on the running guest via the QEMU guest agent, which must be installed. If it does not answer, stop the VM and reset the password again: it is then written onto the disk."
+                          : "Sets a new root password inside the running VM through its guest agent. If that does not work, stop the VM and reset it again: it is then written onto the disk."
+                        : "The VM is stopped, so the new root password is written onto its disk. It stays stopped and the password works from its next start."}
                   </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-3 py-2">
                   <label htmlFor="reset-pw" className="text-xs font-medium text-muted-foreground block">New Password</label>
                   <Input id="reset-pw" type="text" value={resetPwValue} onChange={(e) => setResetPwValue(e.target.value)} placeholder="New password" className="border font-mono" />
-                  {vm.status !== "running" && (
-                    <p className="text-xs text-destructive font-medium">VM is not running. Start it first.</p>
+                  {vm.status !== "running" && (isWindows || vm.status !== "stopped") && (
+                    <p className="text-xs text-destructive font-medium">{isWindows ? "Windows is not running. Start it first." : "The VM must be running or stopped."}</p>
                   )}
                 </div>
                 <DialogFooter>
@@ -2377,6 +2476,8 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
               </section>
 
               <VMLimitsSection vm={vm} isAdmin={isAdmin} />
+
+              <VMHardwareSection vm={vm} isAdmin={isAdmin} />
 
               <TransferSummary vmId={vmId} onOpen={() => setTab("network")} />
 
@@ -2568,7 +2669,9 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
             <ActionRow
               title="Rescue mode"
               description={vm.rescue_mode
-                ? "Rescue ISO attached. Start the VM to boot into it, or exit to boot from disk again."
+                ? vm.rescue_kind === "image"
+                  ? "The rescue system is attached, on the VM's own address, with the VM's disks attached for repair. Start the VM to boot it and sign in as root with the password you were shown. Exit to boot from disk again."
+                  : "Rescue ISO attached. Start the VM to boot into it, or exit to boot from disk again."
                 : vm.rescue_available === false
                   ? isAdmin
                     ? "Rescue mode is not available yet: no rescue image is set. Choose one under System settings, Rescue."
@@ -2693,7 +2796,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                 <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
                   IPv6
                 </h2>
-                {isAdmin && (vm.ipv6_address ? (
+                {vm.ipv6_address && (isAdmin || (!locked && allow("vm:update"))) ? (
                   <Button
                     type="button"
                     size="sm"
@@ -2702,24 +2805,25 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                     disabled={releaseIPv6.isPending}
                     onClick={async () => {
                       const ok = await confirm({
-                        title: `Release ${vm.ipv6_prefix || vm.ipv6_address}?`,
+                        title: isAdmin ? `Release ${vm.ipv6_prefix || vm.ipv6_address}?` : "Turn IPv6 off?",
                         description:
-                          "It returns to its pool and the node stops carrying it. The guest's IPv6 address is removed from its network configuration; a guest without a responsive guest agent is rebooted to apply that.",
-                        confirmLabel: "Release IPv6",
+                          (isAdmin ? "It returns to its pool and the node stops carrying it. " : "The server stops being reachable over IPv6 and the address may go to someone else. You can ask for IPv6 again later. ") +
+                          "The guest's IPv6 is removed from its network settings live where it can be, otherwise at its next start from the panel; nothing is restarted.",
+                        confirmLabel: isAdmin ? "Release IPv6" : "Turn IPv6 off",
                         destructive: true,
                         action: () => releaseIPv6.mutateAsync(),
                       })
                       if (!ok) return
-                      toast.success("IPv6 released")
+                      toast.success(isAdmin ? "IPv6 released" : "IPv6 turned off")
                     }}
                   >
-                    <Trash2 className="w-4 h-4 mr-1" />Release
+                    <Trash2 className="w-4 h-4 mr-1" />{isAdmin ? "Release" : "Turn off"}
                   </Button>
-                ) : (
+                ) : isAdmin && !vm.ipv6_address && (
                   <Button type="button" size="sm" variant="outline" onClick={() => setAssignIPv6Open(true)}>
                     <Plus className="w-4 h-4 mr-1" />Assign IPv6
                   </Button>
-                ))}
+                )}
               </div>
               {vm.ipv6_address ? (
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -2741,8 +2845,17 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                   No IPv6 assigned
                 </div>
               )}
+              {vm.ipv6_prefix && (
+                <PrefixPTRs vmId={vmId} prefix={vm.ipv6_prefix} verified={!isAdmin} canEdit={!locked && allow("vm:update")} />
+              )}
+              {vm.ipv6_prefix && (
+                <IPv6Addresses vmId={vmId} prefix={vm.ipv6_prefix} canEdit={!locked && allow("vm:update")} />
+              )}
             </div>
             )}
+
+            <VMNICsCard vmId={vmId} nodeId={vm.node_id} isAdmin={isAdmin} stopped={vm.status === "stopped"}
+              canEdit={!locked && allow("vm:update") && !!vmNetworks?.length} />
 
             {!isAdmin && <AddressRequestsCard vmId={vmId} hasIPv6={!!vm.ipv6_address} disabled={locked || !allow("vm:update")} />}
 
@@ -2760,6 +2873,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
 
         {/* Snapshots Tab */}
         <TabsContent value="snapshots">
+          <SnapshotScheduleCard vmId={vmId} readOnly={!allow("snapshot:create")} />
           <div className="bg-card text-card-foreground border rounded-lg p-6">
             <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
               <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
@@ -2807,6 +2921,22 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                   <div className="space-y-3 py-2">
                     <label htmlFor="snapshot-name" className="text-xs font-medium text-muted-foreground block">Snapshot Name</label>
                     <Input id="snapshot-name" value={snapshotName} onChange={(e) => setSnapshotName(e.target.value)} placeholder="e.g., before-update" className="border" />
+                    {vm.status === "running" && (
+                      <>
+                        <label htmlFor="snapshot-disk-only" className="flex items-start gap-2 text-sm">
+                          <input id="snapshot-disk-only" type="checkbox" className="mt-0.5 h-4 w-4 rounded border-input" checked={snapshotDiskOnly}
+                            onChange={(e) => setSnapshotDiskOnly(e.target.checked)} />
+                          <span><span className="font-medium">Disks only</span>
+                            <span className="block text-xs text-muted-foreground">No memory saved and no pause. Reverting boots the VM from the snapshot&apos;s disks instead of resuming where it was.</span></span>
+                        </label>
+                        <label htmlFor="snapshot-quiesce" className="flex items-start gap-2 text-sm">
+                          <input id="snapshot-quiesce" type="checkbox" className="mt-0.5 h-4 w-4 rounded border-input" checked={snapshotQuiesce} disabled={!snapshotDiskOnly}
+                            onChange={(e) => setSnapshotQuiesce(e.target.checked)} />
+                          <span><span className="font-medium">Freeze the filesystems first</span>
+                            <span className="block text-xs text-muted-foreground">Through the guest agent, so databases and files are consistent on disk.</span></span>
+                        </label>
+                      </>
+                    )}
                   </div>
                   <DialogFooter>
                     <Button variant="ghost" onClick={() => setCreateSnapshotOpen(false)}>Cancel</Button>
@@ -2834,6 +2964,8 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                       <div>
                         <span className="font-semibold">{snap.name}</span>
                         <span className="text-xs text-muted-foreground ml-2">{formatDate(snap.created_at)}</span>
+                        {snap.disk_only && <span className="text-xs text-muted-foreground ml-2">Disks only</span>}
+                        {snap.scheduled && <span className="text-xs text-muted-foreground ml-2">Scheduled</span>}
                       </div>
                     </div>
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -2859,9 +2991,12 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
           <BackupScheduleCard vmId={vmId} isAdmin={isAdmin} />
           <div className="bg-card text-card-foreground border rounded-lg p-6">
             <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
-              <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
-                Backups
-              </h2>
+              <div>
+                <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
+                  Backups
+                </h2>
+                {backupPlanTerms && <p className="mt-1 text-sm text-muted-foreground">{backupPlanTerms}</p>}
+              </div>
               <Button variant="outline" size="sm" onClick={handleCreateBackup} disabled={createBackup.isPending}>
                 {createBackup.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Plus className="w-4 h-4 mr-2" />}
                 Create Backup
@@ -2900,6 +3035,12 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                       {isAdmin && backup.status === "completed" && backup.storage_provider === "node" && (
                         <p className="mt-0.5 text-xs text-muted-foreground">Kept in the node&apos;s own storage, not the backup destination.</p>
                       )}
+                      {backup.status === "completed" && backup.encrypted && (
+                        <p className="mt-0.5 text-xs text-muted-foreground">Encrypted before it left the node.</p>
+                      )}
+                      {backup.status === "completed" && backup.mode !== "incremental" && !backup.downloadable && backup.download_note && (
+                        <p className="mt-0.5 text-xs text-muted-foreground">Not downloadable: {backup.download_note}</p>
+                      )}
                       {backup.status !== "completed" && backup.error_message && (
                         <p className={`mt-0.5 text-xs break-words ${backup.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}>{backup.error_message}</p>
                       )}
@@ -2926,6 +3067,14 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                           Restore
                         </Button>
                       )}
+                      {backup.downloadable && !viewOnly && backupDiskTargets(backup).map((target, i) => (
+                        <Button key={target} variant="outline" size="sm" asChild>
+                          <a href={`/api/v1/vms/${vmId}/backups/${backup.id}/download${i === 0 ? "" : `?disk=${target}`}`} download
+                            aria-label={`Download disk ${target} of the backup from ${formatDate(backup.created_at)}`}>
+                            {i === 0 ? ((backup.disks?.length ?? 0) > 1 ? `Download ${target}` : "Download") : target}
+                          </a>
+                        </Button>
+                      ))}
                       {isAdmin && backup.status === "completed" && (
                         <Button variant="outline" size="sm" onClick={() => setRestoreNewBackup(backup)}>
                           Restore as a new VM

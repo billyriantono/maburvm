@@ -37,6 +37,7 @@ import { useAssignStaffRole, useImpersonate, useStaffRoles } from "@/lib/hooks/u
 import { AccountSessions } from "@/components/account-sessions"
 import { StaffNotes } from "@/components/vm-protection"
 import { UserTeamCard } from "@/components/user-team-card"
+import { AccountTransferCard } from "@/components/account-transfer-card"
 import { useVMs } from "@/lib/hooks/use-vms"
 import { useCopy } from "@/lib/use-feedback"
 import { isSignInLocked, type VM } from "@/types"
@@ -667,6 +668,12 @@ export default function UserDetailPage() {
       {user.role === "client" && (
         <div className="mt-6">
           <UserTeamCard userId={userId} canUpdate={can(me, "user:update")} />
+        </div>
+      )}
+
+      {user.role === "client" && (
+        <div className="mt-6">
+          <AccountTransferCard userId={userId} canUpdate={can(me, "user:update")} />
         </div>
       )}
 

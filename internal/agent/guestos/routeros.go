@@ -33,6 +33,8 @@ type RouterOSNetwork struct {
 	IPv6DNS     []string
 	// Extra are further IPv4 addresses on the same interface.
 	Extra []GuestAddr
+	// DNS are the resolvers; empty keeps models.DefaultIPv4DNS.
+	DNS []string
 }
 
 // rosPanelComment marks the address and route this panel added, so a later
@@ -61,6 +63,9 @@ func rosQuote(s string) string {
 
 func (n RouterOSNetwork) validate() error {
 	if err := ValidateExtra(n.Extra); err != nil {
+		return err
+	}
+	if err := validateDNS(n.DNS); err != nil {
 		return err
 	}
 	if n.Address != "" {
@@ -115,8 +120,7 @@ func (n RouterOSNetwork) ipv4Lines() []string {
 	if n.Gateway != "" {
 		lines = append(lines, fmt.Sprintf("/ip route add gateway=%s comment=%s", n.Gateway, c))
 	}
-	dns := append([]string{"1.1.1.1", "8.8.8.8"}, n.IPv6DNS...)
-	return append(lines, "/ip dns set servers="+strings.Join(dns, ","))
+	return append(lines, "/ip dns set servers="+strings.Join(resolvers(n.DNS, n.IPv6DNS), ","))
 }
 
 // ipv6Block replaces the panel's IPv6 address and default route.

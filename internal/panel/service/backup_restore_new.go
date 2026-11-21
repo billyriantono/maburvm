@@ -188,6 +188,11 @@ func (s *BackupService) RestoreAsNewVM(ctx context.Context, req *RestoreAsNewReq
 			return nil, err
 		}
 	}
+	if anyEncrypted(chain) {
+		if err := s.dest.NodeHasFeature(ctx, node, models.FeatureBackupEncryption, "this backup is encrypted, and the agent on node %s is too old to decrypt it; update it under Nodes"); err != nil {
+			return nil, err
+		}
+	}
 
 	create := restoreCreateRequest(backup, src, req, inDestination)
 	create.Restore.DestinationID, create.Restore.Layers = destinationID, layers
@@ -215,7 +220,12 @@ func restoreCreateRequest(backup *models.Backup, src *models.VM, req *RestoreAsN
 	if hostname == "" {
 		hostname = "restored-" + src.Hostname
 	}
+	// The disk was installed for its VM's firmware; dedicated cores are its own.
+	hw := src.Hardware
+	hw.PinnedCPUs = ""
 	return &CreateVMRequest{
+		Hardware:       &hw,
+		CloneFirmware:  src.Hardware.Firmware,
 		UserID:         src.UserID,
 		Hostname:       hostname,
 		OSTemplateID:   src.OSTemplateID,

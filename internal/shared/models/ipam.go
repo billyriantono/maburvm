@@ -3,6 +3,7 @@ package models
 import (
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -59,7 +60,18 @@ type IPPool struct {
 	LinkPrefix *string `json:"link_prefix,omitempty" gorm:"type:cidr"`
 	// NAT marks a pool of private addresses masqueraded behind the node, for
 	// VMs on NAT plans. Never handed to a VM that should get a public address.
-	NAT       bool           `json:"nat" gorm:"column:nat;not null;default:false"`
+	NAT bool `json:"nat" gorm:"column:nat;not null;default:false"`
+	// RDNSZone is the zone the pool's PTR records are written to when it is
+	// not the standard one: an RFC 2317 classless zone for a block smaller
+	// than a /24, or a parent zone delegated to the panel's nameserver. Empty
+	// keeps the standard zone. Read-only here, written by table name.
+	RDNSZone string `json:"rdns_zone" gorm:"column:rdns_zone;->"`
+	// Nameservers are the resolvers the pool's guests are given, comma
+	// separated (see ParseNameservers); empty keeps DefaultIPv4DNS/DefaultIPv6DNS.
+	Nameservers string `json:"nameservers" gorm:"type:text;not null;default:''"`
+	// DHCP makes the node answer DHCP for the pool's assigned addresses, each
+	// to its own VM's card only, for guests set up without cloud-init.
+	DHCP      bool           `json:"dhcp" gorm:"column:dhcp;not null;default:false"`
 	CreatedAt time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
 	UpdatedAt time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
 	DeletedAt gorm.DeletedAt `json:"-" gorm:"index"`
@@ -88,12 +100,67 @@ var DefaultIPv6DNS = []string{"2606:4700:4700::1111", "2001:4860:4860::8888"}
 // Prefix is the network in CIDR form ("2001:db8:20:5::/64"); Idx is its
 // position inside the pool (prefix = pool + idx << (128 - len)), unique per pool.
 type VMIPv6Prefix struct {
-	ID        string    `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	PoolID    string    `json:"pool_id" gorm:"type:uuid;not null"`
-	VMID      string    `json:"vm_id" gorm:"type:uuid;not null;uniqueIndex"`
-	Prefix    string    `json:"prefix" gorm:"type:cidr;not null"`
-	Idx       int       `json:"idx" gorm:"not null"`
-	CreatedAt time.Time `json:"created_at" gorm:"not null;default:NOW()"`
+	ID     string `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	PoolID string `json:"pool_id" gorm:"type:uuid;not null"`
+	VMID   string `json:"vm_id" gorm:"type:uuid;not null;uniqueIndex"`
+	Prefix string `json:"prefix" gorm:"type:cidr;not null"`
+	Idx    int    `json:"idx" gorm:"not null"`
+	// ExtraAddresses are further addresses inside Prefix the guest holds,
+	// comma separated, without a prefix length.
+	ExtraAddresses string    `json:"extra_addresses" gorm:"column:extra_addresses;type:text;not null;default:''"`
+	CreatedAt      time.Time `json:"created_at" gorm:"not null;default:NOW()"`
+}
+
+// MaxIPv6ExtraAddresses caps the further addresses a VM holds in its prefix.
+const MaxIPv6ExtraAddresses = 16
+
+// ParseIPv6Extra checks further addresses for a VM's routed prefix: IPv6,
+// inside the prefix, never its network address (the subnet-router anycast) or
+// ::1 (the guest's own), no duplicates. Returns them in canonical form.
+func ParseIPv6Extra(prefix string, addrs []string) ([]string, error) {
+	_, n, err := net.ParseCIDR(prefix)
+	if err != nil || n.IP.To4() != nil {
+		return nil, fmt.Errorf("the VM has no routed IPv6 prefix")
+	}
+	if len(addrs) > MaxIPv6ExtraAddresses {
+		return nil, fmt.Errorf("at most %d further IPv6 addresses", MaxIPv6ExtraAddresses)
+	}
+	own := net.ParseIP(strings.SplitN(IPv6PrefixAddress(prefix), "/", 2)[0])
+	seen := map[string]bool{}
+	out := []string{}
+	for _, a := range addrs {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
+		}
+		ip := net.ParseIP(a)
+		switch {
+		case ip == nil || ip.To4() != nil:
+			return nil, fmt.Errorf("%q is not an IPv6 address", a)
+		case !n.Contains(ip):
+			return nil, fmt.Errorf("%s is not inside %s", ip, prefix)
+		case ip.Equal(n.IP):
+			return nil, fmt.Errorf("%s is the prefix's own network address", ip)
+		case ip.Equal(own):
+			return nil, fmt.Errorf("%s is already the VM's main IPv6 address", ip)
+		}
+		if s := ip.String(); !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+// SplitList reads a comma separated column back into its items.
+func SplitList(s string) []string {
+	var out []string
+	for _, f := range strings.Split(s, ",") {
+		if f = strings.TrimSpace(f); f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 func (VMIPv6Prefix) TableName() string { return "vm_ipv6_prefixes" }
@@ -206,3 +273,17 @@ type IPAssignment struct {
 }
 
 func (IPAssignment) TableName() string { return "ip_assignment_history" }
+
+// VMPrefixPTR is a PTR record set for an address inside the IPv6 prefix routed
+// to a VM. Those addresses are not rows of ip_addresses: the whole prefix is
+// the VM's, and its owner names whichever addresses they use.
+type VMPrefixPTR struct {
+	ID        string    `json:"id" gorm:"column:id;primaryKey"`
+	VMID      string    `json:"vm_id" gorm:"column:vm_id"`
+	Address   string    `json:"address" gorm:"column:address"`
+	RDNS      string    `json:"rdns" gorm:"column:rdns"`
+	CreatedAt time.Time `json:"created_at" gorm:"column:created_at"`
+	UpdatedAt time.Time `json:"updated_at" gorm:"column:updated_at"`
+}
+
+func (VMPrefixPTR) TableName() string { return "vm_prefix_ptrs" }

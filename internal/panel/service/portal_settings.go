@@ -185,6 +185,8 @@ type CustomerPortal struct {
 	ISOURLAllowed bool          `json:"iso_url_allowed"`
 	IPRequests    string        `json:"ip_requests"`
 	GraphDays     int           `json:"graph_days"`
+	// HistoryDays is how far back graphs go at all, in daily averages.
+	HistoryDays int `json:"history_days"`
 }
 
 // CustomerISO is a published ISO as customers see it.
@@ -199,7 +201,7 @@ func LoadCustomerPortal(ctx context.Context, db *gorm.DB) CustomerPortal {
 	p := LoadPortalSettings(ctx, db)
 	b := LoadBranding(db.WithContext(ctx))
 	out := CustomerPortal{SupportURL: b.SupportURL, SupportEmail: b.SupportEmail, BillingURL: p.BillingURL, StatusURL: p.StatusURL,
-		ISOs: []CustomerISO{}, ISOURLAllowed: p.ISOURLsAllowed(), IPRequests: p.IPRequestMode(), GraphDays: p.GraphDays()}
+		ISOs: []CustomerISO{}, ISOURLAllowed: p.ISOURLsAllowed(), IPRequests: p.IPRequestMode(), GraphDays: p.GraphDays(), HistoryDays: DailyMetricsDays}
 	for _, iso := range p.ISOs {
 		out.ISOs = append(out.ISOs, CustomerISO{ID: iso.ID, Name: iso.Name, Description: iso.Description})
 	}

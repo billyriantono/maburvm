@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 
+	"github.com/maburvm/panel/internal/shared/models"
 	"gorm.io/gorm"
 )
 
@@ -120,4 +121,42 @@ func UsageWarningLevel(used, quota int64, warned int, levels []int) int {
 		}
 	}
 	return level
+}
+
+// AccountTransfer is how an account's transfer is counted: ResetDay (1-28)
+// overrides its plans' reset day, nil keeping theirs; Pooled makes its VMs
+// share the sum of their allowances.
+type AccountTransfer struct {
+	ResetDay *int `json:"reset_day"`
+	Pooled   bool `json:"pooled"`
+}
+
+// LoadAccountTransfer reads an account's transfer settings.
+func LoadAccountTransfer(ctx context.Context, db *gorm.DB, userID string) (AccountTransfer, error) {
+	var rows []AccountTransfer
+	if err := db.WithContext(ctx).Raw(`SELECT transfer_reset_day AS reset_day, transfer_pooled AS pooled FROM users
+		WHERE CAST(id AS TEXT) = ? AND deleted_at IS NULL`, userID).Scan(&rows).Error; err != nil {
+		return AccountTransfer{}, err
+	}
+	if len(rows) == 0 {
+		return AccountTransfer{}, ErrUserNotFound
+	}
+	return rows[0], nil
+}
+
+// SaveAccountTransfer stores an account's transfer settings. A changed reset
+// day starts a new period for its VMs at their next sample.
+func SaveAccountTransfer(ctx context.Context, db *gorm.DB, userID string, in AccountTransfer) error {
+	if d := in.ResetDay; d != nil && (*d < 1 || *d > models.MaxTransferResetDay) {
+		return fmt.Errorf("reset_day must be between 1 and %d, or empty to follow the plans", models.MaxTransferResetDay)
+	}
+	res := db.WithContext(ctx).Table("users").Where("CAST(id AS TEXT) = ? AND deleted_at IS NULL", userID).
+		Updates(map[string]any{"transfer_reset_day": in.ResetDay, "transfer_pooled": in.Pooled})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrUserNotFound
+	}
+	return nil
 }
