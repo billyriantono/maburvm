@@ -44,7 +44,9 @@ func (r *NetworkRepository) GetByIDWithVM(ctx context.Context, id string) (*mode
 // GetByVMID retrieves the network configuration for a specific VM
 func (r *NetworkRepository) GetByVMID(ctx context.Context, vmID string) (*models.Network, error) {
 	var network models.Network
-	if err := r.db.WithContext(ctx).Where("vm_id = ?", vmID).First(&network).Error; err != nil {
+	// The oldest interface is the primary: the address the VM was created with,
+	// and so the one its guest uses first. By id alone it was a random pick.
+	if err := r.db.WithContext(ctx).Where("vm_id = ?", vmID).Order("created_at").First(&network).Error; err != nil {
 		return nil, err
 	}
 	return &network, nil
@@ -83,7 +85,7 @@ func (r *NetworkRepository) ListWithVM(ctx context.Context, limit, offset int) (
 // ListByVMID retrieves all network configurations for a specific VM
 func (r *NetworkRepository) ListByVMID(ctx context.Context, vmID string) ([]models.Network, error) {
 	var networks []models.Network
-	if err := r.db.WithContext(ctx).Where("vm_id = ?", vmID).Find(&networks).Error; err != nil {
+	if err := r.db.WithContext(ctx).Where("vm_id = ?", vmID).Order("created_at, id").Find(&networks).Error; err != nil {
 		return nil, err
 	}
 	return networks, nil

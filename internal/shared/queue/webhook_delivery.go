@@ -19,8 +19,8 @@ type WebhookDeliveryJob struct {
 
 func (WebhookDeliveryJob) Kind() string { return "webhook_delivery" }
 
-func (WebhookDeliveryJob) InsertOpts() *river.InsertOpts {
-	return &river.InsertOpts{Queue: QueueDefault, Priority: PriorityNormal, MaxAttempts: WebhookDeliveryMaxAttempts}
+func (WebhookDeliveryJob) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{Queue: QueueDefault, Priority: PriorityNormal, MaxAttempts: WebhookDeliveryMaxAttempts}
 }
 
 // WebhookDeliverHook makes one delivery attempt. final says no try is left

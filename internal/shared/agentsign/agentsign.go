@@ -34,6 +34,25 @@ func ParsePublicKey(s string) (ed25519.PublicKey, error) {
 	return ed25519.PublicKey(b), nil
 }
 
+// CheckUpdate says why a node must refuse an update, or "" to go on. pubKey is
+// the node's AGENT_UPDATE_PUBKEY; without one every update is accepted.
+func CheckUpdate(pubKey, sha256hex string, sig []byte, arch string) string {
+	if strings.TrimSpace(pubKey) == "" {
+		return ""
+	}
+	pub, err := ParsePublicKey(pubKey)
+	if err != nil {
+		return "AGENT_UPDATE_PUBKEY on this node is not valid (" + err.Error() + "); fix it before updating"
+	}
+	if len(sig) == 0 {
+		return "this node installs only signed agent builds (AGENT_UPDATE_PUBKEY is set) and the panel sent no signature: put agent-" + arch + ".sig beside the panel's bundled agent"
+	}
+	if !Verify(pub, sha256hex, sig) {
+		return "the agent build's signature does not match this node's AGENT_UPDATE_PUBKEY"
+	}
+	return ""
+}
+
 // DecodeSignature reads a signature file: base64, surrounding whitespace allowed.
 func DecodeSignature(s string) ([]byte, error) {
 	b, err := base64.StdEncoding.DecodeString(strings.TrimSpace(s))

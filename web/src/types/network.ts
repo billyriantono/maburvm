@@ -65,13 +65,23 @@ export interface FirewallRule {
   vm_id: string;
   protocol: 'tcp' | 'udp' | 'icmp' | 'all';
   port_range?: string;
-  action: 'allow' | 'deny';
+  /** deny drops silently; reject answers the sender so it gives up at once. */
+  action: FirewallAction;
   direction: 'inbound' | 'outbound';
   source_ip: string;
   priority: number;
+  /** One ICMP type ("echo-request", or a number with a family); empty = all. */
+  icmp_type?: string;
+  /** Matches are written to the node's kernel log. */
+  log?: boolean;
+  /** Empty applies the rule to IPv4 and IPv6. */
+  family?: FirewallFamily;
   created_at: string;
   updated_at: string;
 }
+
+export type FirewallAction = 'allow' | 'deny' | 'reject';
+export type FirewallFamily = '' | 'v4' | 'v6';
 
 // CreateNetworkRequest for creating networks
 export interface CreateNetworkRequest {
@@ -96,8 +106,11 @@ export interface CreateFirewallRuleRequest {
   vm_id: string;
   protocol: 'tcp' | 'udp' | 'icmp' | 'all';
   port_range?: string;
-  action: 'allow' | 'deny';
+  action: FirewallAction;
   direction: 'inbound' | 'outbound';
   source_ip?: string;
   priority?: number;
+  icmp_type?: string;
+  log?: boolean;
+  family?: FirewallFamily;
 }

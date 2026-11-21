@@ -182,6 +182,11 @@ service NodeAgent {
   // restarts the service and rolls back if it does not come up. The response is
   // sent before the restart, so success means "scheduled", not "running".
   rpc UpdateAgent(stream AgentUpdateChunk) returns (AgentUpdateResponse);
+
+  // SetVMLimits applies a VM's CPU and disk caps to its definition and, when it
+  // is running, to the running guest, so one busy VM cannot starve the others
+  // on the node. An agent without it answers Unimplemented.
+  rpc SetVMLimits(SetVMLimitsRequest) returns (SetVMLimitsResponse);
 }
 
 // ============================================================================
@@ -356,8 +361,44 @@ message VMResources {
   // network_bandwidth_mbps is the network bandwidth limit in Mbps
   int32 network_bandwidth_mbps = 5;
 
-  // iops_limit is the disk IOPS limit (0 = unlimited)
+  // iops_limit is not read by the agent; limits carries the disk caps.
   int32 iops_limit = 6;
+
+  // limits are the VM's CPU and disk caps, put in the domain when it is
+  // created. Unset = no limits.
+  VMLimits limits = 7;
+}
+
+// VMLimits caps what a VM may take from its node. Zero in a field is no limit.
+message VMLimits {
+  // cpu_weight is the VM's CPU priority against the others on the node: 100 is
+  // normal. 0 leaves the node's default. The agent converts it to the host's
+  // shares scale.
+  int32 cpu_weight = 1;
+  // cpu_cap_percent caps each vCPU at this share of one host core (1-100).
+  int32 cpu_cap_percent = 2;
+  // Disk caps, per disk: a total, or separate read and write limits.
+  int64 total_iops_sec = 3;
+  int64 read_iops_sec = 4;
+  int64 write_iops_sec = 5;
+  int64 total_bytes_sec = 6;
+  int64 read_bytes_sec = 7;
+  int64 write_bytes_sec = 8;
+}
+
+message SetVMLimitsRequest {
+  string vm_id = 1;
+  // Unset clears every limit.
+  VMLimits limits = 2;
+}
+
+message SetVMLimitsResponse {
+  bool success = 1;
+  // restart_required: the definition has the limits but the running guest
+  // could not take them; they apply from its next boot. message says why.
+  bool restart_required = 2;
+  string message = 3;
+  ErrorResponse error = 4;
 }
 
 // ============================================================================
@@ -480,6 +521,10 @@ message VMCommandResponse {
   // storage_disposition reports the fail-closed disk/storage verdict for
   // destructive commands (esp. DESTROY). UNSPECIFIED for non-disk commands.
   DiskStorageDisposition storage_disposition = 8;
+
+  // restored_disks are the data disks a CREATE made from restore_disks, with
+  // where each is on the node.
+  repeated BackupDiskFile restored_disks = 9;
 }
 
 // VMConfig defines the configuration for creating a new VM.
@@ -514,6 +559,11 @@ message VMConfig {
   // root_password, when set (RESET_PASSWORD command), is the new guest root
   // password to apply via the guest agent.
   string root_password = 10;
+
+  // restore_disks are the data disks of a backup restored as a new VM (CREATE
+  // with an "s3://" image). Each is downloaded and attached with its target
+  // before the first boot.
+  repeated BackupDiskFile restore_disks = 11;
 }
 
 // ============================================================================
@@ -855,6 +905,13 @@ message VMNetworkConfig {
 
   // port_forwards (DNAT) to apply
   repeated PortForward port_forwards = 4;
+
+  // firewall_default is what happens to inbound traffic no rule matched once
+  // the VM has rules: "accept", or "drop" (also when empty).
+  string firewall_default = 5;
+
+  // block_smtp rejects new outbound connections to port 25 from the VM.
+  bool block_smtp = 6;
 }
 
 // PortForward defines a DNAT port-forwarding rule.
@@ -944,6 +1001,20 @@ message FirewallRule {
 
   // description of the rule
   string description = 7;
+
+  // reject answers the sender (TCP reset / ICMP unreachable) instead of
+  // dropping silently. Sent with action DENY, so an agent that predates it
+  // still drops.
+  bool reject = 8;
+
+  // icmp_type narrows an icmp rule to one type ("echo-request", "8", "8/0").
+  string icmp_type = 9;
+
+  // log writes matching packets to the node's kernel log, rate-limited.
+  bool log = 10;
+
+  // family limits the rule to "v4" or "v6"; empty applies it to both.
+  string family = 11;
 }
 
 // FirewallDirection enumerates traffic directions.
@@ -1000,6 +1071,17 @@ message NetworkConfigResponse {
 
   // error details if failed
   ErrorResponse error = 3;
+
+  // guest_pending is set when configure_guest could not reach the running
+  // guest: the host side is applied, the guest keeps its old addresses until
+  // it is stopped and started (or its guest agent answers), and nothing was
+  // restarted.
+  string guest_pending = 4;
+
+  // guest_retry says the agent applies the change itself later (when the
+  // guest agent answers or the VM is started); false means it is left to the
+  // owner, e.g. a guest that does not use systemd-networkd.
+  bool guest_retry = 5;
 }
 
 // ============================================================================
@@ -1167,6 +1249,11 @@ message GetNodeInfoResponse {
   string agent_build_time = 25;
   string agent_version = 26;
 
+  // features names what this agent can do that an older one cannot, so the
+  // panel can refuse instead of having a request silently half-done.
+  // "restore_disks": creates a VM with every disk of a backup.
+  repeated string features = 27;
+
   // error details if failed
   ErrorResponse error = 7;
 
@@ -1308,6 +1395,35 @@ message BackupDiskRequest {
   // object_store is where to upload. Unset means the store in the node's own
   // environment file, which is all an older panel could use.
   ObjectStore object_store = 4;
+
+  // compression is "gzip" (zlib), "zstd" or "none". Empty means zlib, which is
+  // what an older agent always uses.
+  string compression = 5;
+
+  // all_disks backs up every disk of the VM, not only the primary one. Each
+  // disk after the first is stored beside destination_key.
+  bool all_disks = 6;
+}
+
+// BackupDiskFile is one disk of a backup.
+message BackupDiskFile {
+  // target is the disk's device in the VM: vda, vdb...
+  string target = 1;
+
+  // key is the object storage key of the disk's exported image.
+  string key = 2;
+
+  // size_bytes is the size of the exported image.
+  int64 size_bytes = 3;
+
+  // checksum is the SHA256 (hex) of the exported image.
+  string checksum = 4;
+
+  // virtual_size_bytes is the disk's size as the guest sees it.
+  int64 virtual_size_bytes = 5;
+
+  // path is where the disk is on the node (set on a VM restored as a new one).
+  string path = 6;
 }
 
 // BackupDiskResponse reports the result of a disk backup.
@@ -1331,6 +1447,19 @@ message BackupDiskResponse {
   // object_store. False from an agent that predates the field: it used its own
   // environment file, and the panel must not assume where the object is.
   bool used_request_store = 6;
+
+  // disks lists every disk exported, primary first. Empty from an agent that
+  // backs up the primary disk only.
+  repeated BackupDiskFile disks = 7;
+
+  // compression is what the export used. Empty from an older agent (zlib).
+  string compression = 8;
+
+  // consistency says how the copy was taken: "stopped" (VM off), "frozen"
+  // (guest file systems frozen during a disk snapshot), "crash" (disk snapshot
+  // without a freeze) or "live" (read while the VM wrote to it). Empty from an
+  // older agent, which always read live.
+  string consistency = 9;
 }
 
 // RestoreDiskRequest requests restoring a VM's primary disk from a backup object.
@@ -1348,6 +1477,11 @@ message RestoreDiskRequest {
   // object_store is where to download from. Unset means the store in the
   // node's own environment file.
   ObjectStore object_store = 4;
+
+  // disks restores every disk of a backup of several, each onto the VM's disk
+  // with the same target. When set, source_key is left empty, so an agent too
+  // old to restore several refuses instead of restoring only the first.
+  repeated BackupDiskFile disks = 5;
 }
 
 // ObjectStore is an S3-compatible store and the credentials to use it. The
@@ -1696,6 +1830,16 @@ message GetLiveMetricsResponse {
   // nat_address is the one node address port forwards are published on. Empty
   // from an agent that does not scope port forwards to an address.
   string nat_address = 24;
+
+  // guest_network_pending lists VMs whose guest still waits for an address
+  // change (see NetworkConfigResponse.guest_pending).
+  repeated string guest_network_pending = 25;
+
+  // network_repairs counts, since the agent started, the VMs whose host rules
+  // were found changed or missing and re-applied; network_repair_last says
+  // which and what.
+  int64 network_repairs = 26;
+  string network_repair_last = 27;
 
   // error details if failed
   ErrorResponse error = 20;

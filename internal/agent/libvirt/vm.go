@@ -3,6 +3,7 @@ package libvirt
 import (
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/maburvm/panel/internal/agent/console"
+	"github.com/maburvm/panel/internal/agent/domtune"
 	"github.com/maburvm/panel/internal/agent/guestos"
 	"github.com/maburvm/panel/internal/agent/storage"
 	"libvirt.org/go/libvirt"
@@ -63,6 +65,19 @@ type VMConfig struct {
 	// CloudInitISOPath, when set, is attached as a read-only "cidata" cdrom so
 	// cloud-init configures the guest (static IP, hostname, SSH key) on boot.
 	CloudInitISOPath string
+
+	// Limits are the VM's CPU and disk caps; zero is none.
+	Limits domtune.Limits
+
+	// ExtraDisks are qcow2 data disks attached at their targets (vdb, vdc...)
+	// from the first boot: those of a backup restored as a new VM.
+	ExtraDisks []ExtraDisk
+}
+
+// ExtraDisk is a data disk of a new VM.
+type ExtraDisk struct {
+	Target string
+	Path   string
 }
 
 // VMInfo holds information about a VM
@@ -190,6 +205,16 @@ func generateDomainXML(config VMConfig) (string, error) {
 			Target: &libvirtxml.DomainDiskTarget{Dev: "vda", Bus: "virtio"},
 		},
 	}
+	for _, d := range config.ExtraDisks {
+		disk := libvirtxml.DomainDisk{
+			Device: "disk",
+			Driver: &libvirtxml.DomainDiskDriver{Name: "qemu", Type: "qcow2"},
+			Source: &libvirtxml.DomainDiskSource{File: &libvirtxml.DomainDiskSourceFile{File: d.Path}},
+			Target: &libvirtxml.DomainDiskTarget{Dev: d.Target, Bus: "virtio"},
+		}
+		domtune.Discard(disk.Driver)
+		disks = append(disks, disk)
+	}
 	// Attach the cloud-init NoCloud seed as a read-only cdrom when present so the
 	// guest configures its static IP / hostname / SSH key on first boot.
 	if config.CloudInitISOPath != "" {
@@ -305,6 +330,8 @@ func generateDomainXML(config VMConfig) (string, error) {
 	}
 
 	tuneForKind(domain, config.OSType)
+	domtune.Discard(domain.Devices.Disks[0].Driver)
+	domtune.Apply(domain, config.Limits, domtune.CgroupV2())
 
 	// Cloud-init NoCloud reliability: advertise "ds=nocloud" via the SMBIOS system
 	// serial in addition to attaching the cidata seed. On Debian/Ubuntu cloud
@@ -491,10 +518,91 @@ func clampCPUShares(domXML string) string {
 // redefineDomain persists an edited definition of an existing domain. Every
 // definition saved here leaves with its console on loopback and a password,
 // whatever the caller read or wrote: several callers read the definition
-// without its secrets, which would otherwise save it back with none.
+// without its secrets, which would otherwise save it back with none. Its thin
+// disks also take discard from here, effective from the VM's next boot.
 func redefineDomain(conn *libvirt.Connect, domXML string) (*libvirt.Domain, error) {
 	secured, _ := console.SecureXML(domXML, console.NewPassword())
-	return conn.DomainDefineXML(clampCPUShares(secured))
+	return conn.DomainDefineXML(domtune.DiscardXML(clampCPUShares(secured)))
+}
+
+// SetLimits applies a VM's caps to its definition and, when it is running, to
+// the running guest, through libvirt's tuning calls so nothing else in the
+// definition is rewritten. restartRequired reports a running guest that could
+// not take them live (liveErr says why); the definition has them all the same.
+func SetLimits(uuidStr string, l domtune.Limits) (restartRequired bool, liveErr error, err error) {
+	if _, err := uuid.Parse(uuidStr); err != nil {
+		return false, nil, fmt.Errorf("invalid UUID format: %w", err)
+	}
+	v2 := domtune.CgroupV2()
+	err = WithConnection(func(conn *libvirt.Connect) error {
+		dom, err := conn.LookupDomainByUUIDString(uuidStr)
+		if err != nil {
+			return fmt.Errorf("domain not found: %w", err)
+		}
+		defer dom.Free()
+		if err := tuneDomain(dom, l, v2, libvirt.DOMAIN_AFFECT_CONFIG); err != nil {
+			return fmt.Errorf("failed to save the limits in the domain definition: %w", err)
+		}
+		if active, _ := dom.IsActive(); active {
+			liveErr = tuneDomain(dom, l, v2, libvirt.DOMAIN_AFFECT_LIVE)
+			restartRequired = liveErr != nil
+		}
+		return nil
+	})
+	return restartRequired, liveErr, err
+}
+
+// tuneDomain sets every cap on the definition or on the running guest, so a
+// cap removed from the VM is lifted too. No quota is 0 in a definition and -1
+// on a running guest; no weight is the host's default shares.
+func tuneDomain(dom *libvirt.Domain, l domtune.Limits, v2 bool, impact libvirt.DomainModificationImpact) error {
+	noQuota, xmlFlags := int64(-1), libvirt.DomainXMLFlags(0)
+	if impact == libvirt.DOMAIN_AFFECT_CONFIG {
+		noQuota, xmlFlags = 0, libvirt.DOMAIN_XML_INACTIVE
+	}
+	sched := &libvirt.DomainSchedulerParameters{CpuSharesSet: true, CpuShares: domtune.Shares(l.CPUWeight, v2), VcpuQuotaSet: true, VcpuQuota: noQuota}
+	if sched.CpuShares == 0 {
+		sched.CpuShares = domtune.DefaultShares(v2)
+	}
+	if q := domtune.Quota(l.CPUCapPercent); q > 0 {
+		sched.VcpuPeriodSet, sched.VcpuPeriod, sched.VcpuQuota = true, domtune.Period, q
+	}
+	var errs []error
+	if err := dom.SetSchedulerParametersFlags(sched, impact); err != nil {
+		errs = append(errs, fmt.Errorf("CPU limits: %w", err))
+	}
+
+	desc, err := dom.GetXMLDesc(xmlFlags)
+	if err != nil {
+		return errors.Join(append(errs, fmt.Errorf("failed to read the domain: %w", err))...)
+	}
+	var def libvirtxml.Domain
+	if err := xml.Unmarshal([]byte(desc), &def); err != nil {
+		return errors.Join(append(errs, fmt.Errorf("failed to parse the domain: %w", err))...)
+	}
+	t := l.IOTune()
+	if t == nil {
+		t = &libvirtxml.DomainDiskIOTune{}
+	}
+	params := &libvirt.DomainBlockIoTuneParameters{
+		TotalBytesSecSet: true, TotalBytesSec: t.TotalBytesSec,
+		ReadBytesSecSet: true, ReadBytesSec: t.ReadBytesSec,
+		WriteBytesSecSet: true, WriteBytesSec: t.WriteBytesSec,
+		TotalIopsSecSet: true, TotalIopsSec: t.TotalIopsSec,
+		ReadIopsSecSet: true, ReadIopsSec: t.ReadIopsSec,
+		WriteIopsSecSet: true, WriteIopsSec: t.WriteIopsSec,
+	}
+	if def.Devices != nil {
+		for _, d := range def.Devices.Disks {
+			if !domtune.IsDisk(d) || d.Target == nil || d.Target.Dev == "" {
+				continue
+			}
+			if err := dom.SetBlockIoTune(d.Target.Dev, params, impact); err != nil {
+				errs = append(errs, fmt.Errorf("disk limits on %s: %w", d.Target.Dev, err))
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // SyncInterfaceBridge rewrites the host bridge of the VM's primary (first)
@@ -877,7 +985,31 @@ func AttachDisk(uuidStr, diskPath string) (string, error) {
 			return fmt.Errorf("no free virtio disk slot available")
 		}
 
-		diskXML := fmt.Sprintf(`<disk type='file' device='disk'><driver name='qemu' type='qcow2'/><source file='%s'/><target dev='%s' bus='virtio'/></disk>`, diskPath, device)
+		disk := libvirtxml.DomainDisk{
+			Device: "disk",
+			Driver: &libvirtxml.DomainDiskDriver{Name: "qemu", Type: "qcow2"},
+			Source: &libvirtxml.DomainDiskSource{File: &libvirtxml.DomainDiskSourceFile{File: diskPath}},
+			Target: &libvirtxml.DomainDiskTarget{Dev: device, Bus: "virtio"},
+		}
+		domtune.Discard(disk.Driver)
+		// The VM's disk caps go on the new disk too, or it would be a way round them.
+		var existing []libvirtxml.DomainDisk
+		if domain.Devices != nil {
+			existing = domain.Devices.Disks
+		}
+		for _, d := range existing {
+			if domtune.IsDisk(d) && d.IOTune != nil {
+				disk.IOTune = domtune.Limits{
+					TotalIOPS: d.IOTune.TotalIopsSec, ReadIOPS: d.IOTune.ReadIopsSec, WriteIOPS: d.IOTune.WriteIopsSec,
+					TotalBytes: d.IOTune.TotalBytesSec, ReadBytes: d.IOTune.ReadBytesSec, WriteBytes: d.IOTune.WriteBytesSec,
+				}.IOTune()
+				break
+			}
+		}
+		diskXML, err := disk.Marshal()
+		if err != nil {
+			return fmt.Errorf("failed to describe the disk: %w", err)
+		}
 		flags := libvirt.DOMAIN_DEVICE_MODIFY_CONFIG
 		if state, _, _ := dom.GetState(); state == libvirt.DOMAIN_RUNNING {
 			flags |= libvirt.DOMAIN_DEVICE_MODIFY_LIVE
@@ -905,6 +1037,10 @@ func DetachDisk(uuidStr, device, diskPath string) error {
 			return fmt.Errorf("domain not found: %w", err)
 		}
 		defer dom.Free()
+		// The disk's latest writes are on the overlay, which goes with it.
+		if err := refuseDuringBackup(dom); err != nil {
+			return err
+		}
 		diskXML := fmt.Sprintf(`<disk type='file' device='disk'><driver name='qemu' type='qcow2'/><source file='%s'/><target dev='%s' bus='virtio'/></disk>`, diskPath, device)
 		flags := libvirt.DOMAIN_DEVICE_MODIFY_CONFIG
 		if state, _, _ := dom.GetState(); state == libvirt.DOMAIN_RUNNING {
@@ -1080,7 +1216,7 @@ func DeleteVM(uuidStr string) error {
 		}
 
 		// Parse XML to find the files this VM owns
-		diskPaths := ownedDiskPaths(xmlDesc)
+		diskPaths := append(ownedDiskPaths(xmlDesc), backupBases(xmlDesc)...)
 
 		// Undefine the domain, taking everything attached to it with it.
 		//
@@ -1721,6 +1857,11 @@ func RebuildVM(uuidStr string, templatePath string, prepare func(diskPath string
 
 		wasRunning := state == libvirt.DOMAIN_RUNNING
 
+		// Before the stop: a disk on a backup overlay would be replaced on it.
+		if err := refuseDuringBackup(dom); err != nil {
+			return err
+		}
+
 		// Stop the VM if running
 		if wasRunning {
 			if err := dom.Destroy(); err != nil {
@@ -1744,6 +1885,12 @@ func RebuildVM(uuidStr string, templatePath string, prepare func(diskPath string
 		}
 		if diskPath == "" {
 			return fmt.Errorf("no disk found for domain")
+		}
+
+		// The snapshots live in the disk being replaced. The panel told the
+		// owner they go with the reinstall.
+		if err := dropSnapshots(dom); err != nil {
+			log.Printf("[Rebuild] VM %s: some snapshots could not be removed: %v", uuidStr, err)
 		}
 
 		// The template is only as large as its image; the VM keeps the size it
@@ -1835,6 +1982,10 @@ func CreateSnapshot(uuidStr, name, description string) (*VMSnapshot, error) {
 		state, _, err := dom.GetState()
 		if err != nil {
 			return fmt.Errorf("failed to get domain state: %w", err)
+		}
+		// It would be stored in the overlay, which is committed and removed.
+		if err := refuseDuringBackup(dom); err != nil {
+			return err
 		}
 
 		snapshotXML := fmt.Sprintf(`

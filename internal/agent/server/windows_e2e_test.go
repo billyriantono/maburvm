@@ -59,7 +59,7 @@ func TestWindowsLifecycle(t *testing.T) {
 			},
 		}
 	}
-	if err := s.createVM(request(firstPassword)); err != nil {
+	if _, err := s.createVM(request(firstPassword)); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	if got := libvirt.GuestOSType(id); got != guestos.Windows {
@@ -114,7 +114,7 @@ func TestWindowsLifecycle(t *testing.T) {
 		t.Logf("clock: within %s of the host's", off.Round(time.Second).Abs())
 	}
 
-	if err := s.applyGuestNetwork(context.Background(), id, "198.51.100.7", 24, "198.51.100.1", guestIPv6{}); err != nil {
+	if err := s.applyGuestNetwork(context.Background(), id, guestNet{IP: "198.51.100.7", Prefix: 24, Gateway: "198.51.100.1"}, guestAgentWait); err != nil {
 		t.Fatalf("address change: %v", err)
 	}
 	eventually("address after change", time.Minute, "(Get-NetIPAddress -AddressFamily IPv4 -PrefixOrigin Manual).IPAddress", "198.51.100.7")

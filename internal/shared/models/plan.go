@@ -15,6 +15,12 @@ const (
 	OverQuotaSuspend  = "suspend"  // stop the VM until the quota resets
 )
 
+// Outbound mail policies of a plan.
+const (
+	SMTPAllowed = "allowed"
+	SMTPBlocked = "blocked"
+)
+
 // Plan is a VPS flavor: a named bundle of resources users pick when creating a
 // VM ("Plans").
 type Plan struct {
@@ -25,14 +31,21 @@ type Plan struct {
 	Disk          int    `json:"disk" gorm:"not null" validate:"required,min=1,max=1048576"`  // GB
 	BandwidthMbps int    `json:"bandwidth_mbps" gorm:"default:0" validate:"omitempty,min=0"`  // 0 = unlimited
 	// Monthly DATA quota (GB, 0 = unlimited) and what happens once it is used up.
-	DataQuotaGB       int64          `json:"data_quota_gb" gorm:"type:bigint;default:0" validate:"omitempty,min=0"`
-	OverQuotaPolicy   string         `json:"over_quota_policy" gorm:"type:varchar(20);default:'throttle'" validate:"omitempty,oneof=throttle overage suspend"`
-	ThrottleSpeedMbps int            `json:"throttle_speed_mbps" gorm:"default:0" validate:"omitempty,min=0"` // speed after quota when policy=throttle
-	Description       string         `json:"description,omitempty" gorm:"type:text"`
-	IsActive          bool           `json:"is_active" gorm:"default:true"`
-	CreatedAt         time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
-	UpdatedAt         time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
-	DeletedAt         gorm.DeletedAt `json:"-" gorm:"index"`
+	DataQuotaGB       int64  `json:"data_quota_gb" gorm:"type:bigint;default:0" validate:"omitempty,min=0"`
+	OverQuotaPolicy   string `json:"over_quota_policy" gorm:"type:varchar(20);default:'throttle'" validate:"omitempty,oneof=throttle overage suspend"`
+	ThrottleSpeedMbps int    `json:"throttle_speed_mbps" gorm:"default:0" validate:"omitempty,min=0"` // speed after quota when policy=throttle
+	// SMTPPolicy decides whether new VMs on the plan may send mail out on
+	// port 25 (SMTPAllowed or SMTPBlocked). Changing it leaves existing VMs as
+	// they are.
+	SMTPPolicy string `json:"smtp_policy" gorm:"column:smtp_policy;type:varchar(16);not null;default:'allowed'" validate:"omitempty,oneof=allowed blocked"`
+	// Limits are the CPU and disk caps a VM gets when it is ordered on, or
+	// moved to, the plan. Changing them leaves existing VMs as they are.
+	Limits      VMLimits       `json:"limits" gorm:"column:limits;type:jsonb;serializer:json;not null;default:'{}'"`
+	Description string         `json:"description,omitempty" gorm:"type:text"`
+	IsActive    bool           `json:"is_active" gorm:"default:true"`
+	CreatedAt   time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
+	UpdatedAt   time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
+	DeletedAt   gorm.DeletedAt `json:"-" gorm:"index"`
 }
 
 // TableName specifies the table name for Plan.

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -176,11 +175,11 @@ type MetricsCollector struct {
 	vmService      *VMService
 	bwService      *BandwidthService
 	networkService *NetworkService
+	managedNets    *ManagedNetworkService
 	repo           *repository.MetricsRepository
 	db             *gorm.DB
 	interval       time.Duration
 	retention      time.Duration
-	enforce        bool                  // apply restrictive over-quota actions (throttle/suspend)
 	riverClient    *river.Client[pgx.Tx] // queues outbound billing events
 	abuse          *AbuseService
 	reputation     *ReputationService
@@ -190,7 +189,29 @@ type MetricsCollector struct {
 
 	onlineMu sync.Mutex
 	online   map[string]bool // nodes whose agent port answered the last check
+
+	trackMu sync.Mutex
+	// repairs follows each node's count of host-rule repairs, to tell
+	// operators when a node keeps losing VM rules.
+	repairs map[string]*repairTrack
+	// pendingAbsent holds VMs marked as waiting for an address change that
+	// their node did not list in the last check; a second miss clears them.
+	pendingAbsent map[string]bool
 }
+
+// repairTrack is what the collector remembers of one node's repair count.
+type repairTrack struct {
+	last  int64
+	times []time.Time
+}
+
+// repairAlertCount repairs within repairAlertWindow make an alert: once is a
+// reboot or a hand edit, again and again is something on the node rewriting
+// the rules.
+const (
+	repairAlertCount  = 3
+	repairAlertWindow = time.Hour
+)
 
 // SetAlerts gives the collector the service that tells operators about a node
 // going offline, a pool filling up or a node that stopped filtering traffic.
@@ -226,16 +247,15 @@ func NewMetricsCollector(db *gorm.DB, riverClient *river.Client[pgx.Tx], interva
 		vmService:      NewVMService(db, vmRepo, nodeRepo, repository.NewTemplateRepository(db), riverClient, logger),
 		bwService:      NewBandwidthService(repository.NewBandwidthUsageRepository(db), logger),
 		networkService: NewNetworkService(db, networkRepo, firewallRepo, vmRepo, nodeRepo, riverClient),
+		managedNets:    NewManagedNetworkService(db),
 		repo:           repository.NewMetricsRepository(db),
 		db:             db,
 		interval:       interval,
 		retention:      retention,
-		// Restrictive over-quota actions (throttle/suspend) are opt-in: customers'
-		// VMs shouldn't be limited unless the operator enables it. Accounting, the
-		// `exceeded` flag, and overage billing work regardless.
-		enforce:     os.Getenv("BANDWIDTH_ENFORCE") == "true",
-		riverClient: riverClient,
-		logger:      logger,
+		riverClient:    riverClient,
+		logger:         logger,
+		repairs:        map[string]*repairTrack{},
+		pendingAbsent:  map[string]bool{},
 	}
 }
 
@@ -404,6 +424,14 @@ func (c *MetricsCollector) recordPoll(ctx context.Context, node *models.Node, m 
 				c.logger.Warn("metrics collector: persist node memory total failed", "node_id", nodeID, "error", err)
 			}
 		}
+		// Logical CPUs, for the vCPU ratio, kept the same way. By table name:
+		// the model field is read-only.
+		if m.AvailableCPUs > 0 && m.AvailableCPUs != node.CPUCount {
+			if err := c.db.WithContext(ctx).Table("nodes").Where("id = ?", nodeID).
+				Update("cpu_count", m.AvailableCPUs).Error; err != nil {
+				c.logger.Warn("metrics collector: persist node CPU count failed", "node_id", nodeID, "error", err)
+			}
+		}
 		// Persist what the node says about its firewall, so the security centre
 		// and the VM firewall page can read it without calling the agent. Only
 		// from a live answer: a node that did not answer keeps its last state.
@@ -416,6 +444,8 @@ func (c *MetricsCollector) recordPoll(ctx context.Context, node *models.Node, m 
 			Update("firewall_enforcement", stored).Error; err != nil {
 			c.logger.Warn("metrics collector: persist node firewall state failed", "node_id", nodeID, "error", err)
 		}
+		c.syncGuestPending(ctx, nodeID, m.GuestNetworkPending)
+		c.noteRepairs(ctx, node, m)
 	}
 	// By table name: the model fields are read-only (see models.Node).
 	seen := map[string]interface{}{"failed_polls": health.Failed}
@@ -441,7 +471,13 @@ func (c *MetricsCollector) recordPoll(ctx context.Context, node *models.Node, m 
 		if err := c.moveNodeStatus(ctx, nodeID, models.NodeStatusOffline, models.NodeStatusActive); err != nil {
 			c.logger.Warn("metrics collector: mark node active failed", "node_id", nodeID, "error", err)
 		} else {
-			c.logger.Info("metrics collector: node back online, marked active", "node_id", nodeID)
+			// Changes made while it was away never reached it: their jobs gave
+			// up on a dead node. Send every VM's full network config again.
+			n := 0
+			if c.networkService != nil {
+				n = c.networkService.ResyncNodeVMs(ctx, nodeID)
+			}
+			c.logger.Info("metrics collector: node back online, marked active", "node_id", nodeID, "network_resyncs", n)
 		}
 	}
 
@@ -516,14 +552,29 @@ func (c *MetricsCollector) alertPool(ctx context.Context, node *models.Node, p *
 		c.alerts.Clear(ctx, key)
 		return
 	}
-	const gb = 1 << 30
+	title, detail := poolAlertText(p, node.Name, severity)
 	c.alerts.Raise(ctx, AlertInput{
-		Key: key, Kind: models.AlertKindStoragePool, Severity: severity,
-		Title: fmt.Sprintf("Storage pool %s on %s is %d%% full", p.Name, node.Name, p.UsedSpace*100/p.TotalSpace),
-		Detail: fmt.Sprintf("%.1f GB free of %.1f GB. A pool that fills up pauses every VM on it.",
-			float64(p.AvailableSpace)/gb, float64(p.TotalSpace)/gb),
+		Key: key, Kind: models.AlertKindStoragePool, Severity: severity, Title: title, Detail: detail,
 		ResourceType: "storage_pool", ResourceID: p.ID, ResourceName: p.Name,
 	})
+}
+
+// poolAlertText words a pool's fill-level alert: nearly full at the warning
+// level, full at the critical one, with what stops working and when.
+func poolAlertText(p *models.StoragePool, nodeName, severity string) (string, string) {
+	const gb = 1 << 30
+	word := "nearly full"
+	if severity == models.AlertSeverityCritical {
+		word = "full"
+	}
+	title := fmt.Sprintf("Storage pool %s on %s is %s (%d%% used)", p.Name, nodeName, word, p.UsedSpace*100/p.TotalSpace)
+	stop := fmt.Sprintf("New VMs and disks are refused on it once one would leave less than %d GB free.", diskHeadroomBytes/gb)
+	if p.AvailableSpace < diskHeadroomBytes {
+		stop = fmt.Sprintf("It has less than %d GB free, so new VMs and disks are already refused on it.", diskHeadroomBytes/gb)
+	}
+	detail := fmt.Sprintf("%.1f GB free of %.1f GB. %s Thin disks keep growing as guests write: when the pool runs out, every VM writing to it is paused until space is freed. Free space or move VMs off it now.",
+		float64(p.AvailableSpace)/gb, float64(p.TotalSpace)/gb, stop)
+	return title, detail
 }
 
 // collectOnce does the per-node and per-VM work on every node that answered
@@ -582,6 +633,11 @@ func (c *MetricsCollector) collectOnce(ctx context.Context) {
 		for nodeID := range online {
 			rctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 			c.vmService.ReconcileNodePoolIPs(rctx, nodeID)
+			// VPCs before floating IPs: a floating IP in a VPC lives in its
+			// router namespace, which a reboot removes.
+			if err := c.managedNets.ReconcileNodeVPCs(rctx, nodeID); err != nil {
+				c.logger.Warn("metrics collector: VPC reconcile failed", "node_id", nodeID, "error", err)
+			}
 			// Floating IPs are pure iptables/host-address state, so a node reboot
 			// silently drops them. Re-applying the desired set (attach is
 			// idempotent) is what makes them survive one.
@@ -664,8 +720,9 @@ func (c *MetricsCollector) collectVMs(ctx context.Context, online map[string]boo
 }
 
 // accountBandwidth pulls the VM's cumulative traffic counters and accumulates
-// the delta into the current billing period, enforcing the monthly quota when
-// enabled (BANDWIDTH_ENFORCE=true → stop the VM on overage).
+// the delta into the current billing period, enforces the monthly quota when
+// enforcement is on (System settings, or BANDWIDTH_ENFORCE before that), and
+// warns the owner as usage passes each warning level.
 func (c *MetricsCollector) accountBandwidth(ctx context.Context, vmID, nodeID string) {
 	bctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	rx, tx, err := c.vmService.GetVMTrafficCounters(bctx, nodeID, vmID)
@@ -686,6 +743,169 @@ func (c *MetricsCollector) accountBandwidth(ctx context.Context, vmID, nodeID st
 	for _, exVM := range exceeded {
 		c.enforceOverQuota(ctx, nodeID, exVM)
 	}
+	c.warnUsage(ctx, vmID, nodeID)
+}
+
+// syncGuestPending clears the "waiting for an address change" mark of VMs on
+// a node that its agent no longer lists: the guest took the change. A VM must
+// be missing from two checks in a row, so a mark written between a check and
+// its processing is not cleared by that check.
+func (c *MetricsCollector) syncGuestPending(ctx context.Context, nodeID string, pending []string) {
+	var marked []string
+	if err := c.db.WithContext(ctx).Table("vms").Where("node_id = ? AND guest_network_pending = ?", nodeID, true).
+		Pluck("id", &marked).Error; err != nil || len(marked) == 0 {
+		return
+	}
+	listed := make(map[string]bool, len(pending))
+	for _, id := range pending {
+		listed[id] = true
+	}
+	var clear []string
+	c.trackMu.Lock()
+	if c.pendingAbsent == nil {
+		c.pendingAbsent = map[string]bool{}
+	}
+	for _, id := range marked {
+		switch {
+		case listed[id]:
+			delete(c.pendingAbsent, id)
+		case c.pendingAbsent[id]:
+			delete(c.pendingAbsent, id)
+			clear = append(clear, id)
+		default:
+			c.pendingAbsent[id] = true
+		}
+	}
+	c.trackMu.Unlock()
+	if len(clear) == 0 {
+		return
+	}
+	if err := c.db.WithContext(ctx).Table("vms").Where("id IN ? AND guest_network_pending = ?", clear, true).
+		Updates(map[string]interface{}{"guest_network_note": nil, "guest_network_pending": false}).Error; err != nil {
+		c.logger.Warn("metrics collector: clearing taken address changes failed", "node_id", nodeID, "error", err)
+		return
+	}
+	c.logger.Info("metrics collector: guests took their pending address change", "node_id", nodeID, "vms", clear)
+}
+
+// noteRepairs logs host-rule repairs a node reports and raises an alert when
+// they keep happening.
+func (c *MetricsCollector) noteRepairs(ctx context.Context, node *models.Node, m *NodeMetrics) {
+	c.trackMu.Lock()
+	if c.repairs == nil {
+		c.repairs = map[string]*repairTrack{}
+	}
+	t, seen := c.repairs[node.ID]
+	if !seen {
+		// The first answer after a panel restart is the starting point.
+		c.repairs[node.ID] = &repairTrack{last: m.NetworkRepairs}
+		c.trackMu.Unlock()
+		return
+	}
+	// A count lower than before is an agent restart, not a repair.
+	added := m.NetworkRepairs - t.last
+	t.last = m.NetworkRepairs
+	if added <= 0 {
+		c.trackMu.Unlock()
+		return
+	}
+	now := time.Now()
+	for i := int64(0); i < added && i < repairAlertCount; i++ {
+		t.times = append(t.times, now)
+	}
+	kept := t.times[:0]
+	for _, at := range t.times {
+		if now.Sub(at) <= repairAlertWindow {
+			kept = append(kept, at)
+		}
+	}
+	t.times = kept
+	recent := len(kept)
+	c.trackMu.Unlock()
+
+	c.logger.Warn("node re-applied VM host rules that were changed or missing", "node_id", node.ID, "node", node.Name,
+		"repairs", added, "last", m.NetworkRepairLast)
+	if recent < repairAlertCount {
+		return
+	}
+	c.alerts.Event(ctx, AlertInput{
+		Key: "network_drift:" + node.ID, Kind: models.AlertKindNetworkDrift, Severity: models.AlertSeverityWarning,
+		Title: "Node " + node.Name + " keeps losing VM network rules",
+		Detail: fmt.Sprintf("Its agent found VM firewall, anti-spoofing or NAT rules changed or missing and put them back %d times in the last hour, so something on the node is rewriting them. Until that stops, a VM can be unprotected for up to five minutes at a time. Last: %s",
+			recent, m.NetworkRepairLast),
+		ResourceType: "node", ResourceID: node.ID, ResourceName: node.Name,
+	})
+}
+
+// warnUsage emails a VM's owner the first time each month its transfer reaches
+// a warning level. The level is recorded before sending, so a failed send is
+// not retried into a burst of mail.
+func (c *MetricsCollector) warnUsage(ctx context.Context, vmID, nodeID string) {
+	levels := UsageWarnPercents(ctx, c.db)
+	if len(levels) == 0 {
+		return
+	}
+	usage, err := c.bwService.GetVMUsage(ctx, vmID, nodeID)
+	if err != nil || usage == nil || usage.QuotaBytes <= 0 {
+		return
+	}
+	level := UsageWarningLevel(usage.TotalBytes, usage.QuotaBytes, usage.WarnedPercent, levels)
+	if level == 0 {
+		return
+	}
+	res := c.db.WithContext(ctx).Table("bandwidth_usages").Where("id = ? AND warned_percent < ?", usage.ID, level).Update("warned_percent", level)
+	if res.Error != nil || res.RowsAffected == 0 {
+		return
+	}
+	extra := c.transferWarningFields(ctx, vmID, usage)
+	go func() {
+		if err := NotifyVMOwnerWith(context.WithoutCancel(ctx), c.db, vmID, EmailTransferWarn, extra); err != nil {
+			c.logger.Warn("transfer warning email failed", "vm_id", vmID, "level", level, "error", err)
+		}
+	}()
+	c.logger.Info("transfer warning due", "vm_id", vmID, "level", level, "used_gb", usage.UsedGB(), "quota_gb", usage.QuotaGB())
+}
+
+// transferWarningFields fills the transfer placeholders of a warning email.
+func (c *MetricsCollector) transferWarningFields(ctx context.Context, vmID string, u *models.BandwidthUsage) map[string]string {
+	pct := u.UsagePercent()
+	after := "Nothing changes once it is used up."
+	if net, err := c.networkRepo.GetByVMID(ctx, vmID); err == nil {
+		enforced, _ := BandwidthEnforcement(ctx, c.db)
+		after = OverQuotaOutcome(net.OverQuotaPolicy, net.ThrottleSpeedMbps, enforced, pct >= 100)
+	}
+	return map[string]string{
+		"used":    fmt.Sprintf("%.1f GB", u.UsedGB()),
+		"quota":   fmt.Sprintf("%.0f GB", u.QuotaGB()),
+		"percent": fmt.Sprintf("%.0f%%", pct),
+		"resets":  u.PeriodEnd.Format("2 January"),
+		"after":   after,
+	}
+}
+
+// OverQuotaOutcome says in one sentence what happens to a VM over its transfer
+// quota as it is set up: its policy, and whether restrictions are enforced.
+func OverQuotaOutcome(policy string, throttleMbps int, enforced, reached bool) string {
+	when := "Once it is used up, "
+	if reached {
+		when = "It is used up, so "
+	}
+	switch policy {
+	case models.OverQuotaOverage:
+		return when + "further transfer is billed as extra usage."
+	case models.OverQuotaSuspend:
+		if enforced {
+			return when + "the server is stopped until the allowance starts again."
+		}
+	default:
+		if enforced {
+			if throttleMbps <= 0 {
+				throttleMbps = defaultThrottleMbps
+			}
+			return fmt.Sprintf("%sthe server's speed is lowered to %d Mbps until the allowance starts again.", when, throttleMbps)
+		}
+	}
+	return when + "the server keeps running at its usual speed."
 }
 
 // defaultPoolPath mirrors the agent's defaultImageDir: where VM disks and
@@ -814,10 +1034,10 @@ func (c *MetricsCollector) warnUnregisteredStorage(node *models.Node, pools []mo
 
 // enforceOverQuota acts on a VM that just crossed its monthly data quota,
 // following the over-quota policy snapshotted on its network interface:
-//   - overage: emit a billing webhook (VM keeps full speed). Fires regardless of
-//     BANDWIDTH_ENFORCE — it bills, it doesn't restrict.
-//   - throttle: drop the live speed to ThrottleSpeedMbps (opt-in via enforce).
-//   - suspend: stop the VM (opt-in via enforce).
+//   - overage: emit a billing webhook (VM keeps full speed). Fires whether or
+//     not enforcement is on — it bills, it doesn't restrict.
+//   - throttle: drop the live speed to ThrottleSpeedMbps (when enforced).
+//   - suspend: stop the VM (when enforced).
 func (c *MetricsCollector) enforceOverQuota(ctx context.Context, nodeID, vmID string) {
 	net, err := c.networkRepo.GetByVMID(ctx, vmID)
 	if err != nil {
@@ -834,8 +1054,8 @@ func (c *MetricsCollector) enforceOverQuota(ctx context.Context, nodeID, vmID st
 		c.sendOverageWebhook(ctx, nodeID, vmID)
 
 	case models.OverQuotaSuspend:
-		if !c.enforce {
-			c.logger.Warn("over-quota suspend skipped (BANDWIDTH_ENFORCE off)", "vm_id", vmID)
+		if on, _ := BandwidthEnforcement(ctx, c.db); !on {
+			c.logger.Warn("over-quota suspend skipped (enforcement is off)", "vm_id", vmID)
 			return
 		}
 		if err := c.vmService.StopVMForEnforcement(ctx, nodeID, vmID); err != nil {
@@ -845,8 +1065,8 @@ func (c *MetricsCollector) enforceOverQuota(ctx context.Context, nodeID, vmID st
 		}
 
 	default: // throttle
-		if !c.enforce {
-			c.logger.Warn("over-quota throttle skipped (BANDWIDTH_ENFORCE off)", "vm_id", vmID)
+		if on, _ := BandwidthEnforcement(ctx, c.db); !on {
+			c.logger.Warn("over-quota throttle skipped (enforcement is off)", "vm_id", vmID)
 			return
 		}
 		speed := int64(net.ThrottleSpeedMbps)

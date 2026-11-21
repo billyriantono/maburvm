@@ -43,11 +43,54 @@ type Backup struct {
 	CreatedAt       time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
 	UpdatedAt       time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
 	DeletedAt       gorm.DeletedAt `json:"-" gorm:"index"`
+
+	// Disks are every disk the backup holds, primary first. Empty for a backup
+	// of the primary disk only (StoragePath), as all older ones are.
+	Disks []BackupDisk `json:"disks" gorm:"type:jsonb;serializer:json"`
+	// Consistency is how the copy was taken (BackupConsistency*); empty for a
+	// backup made before it was recorded, which was read while the VM ran.
+	Consistency string `json:"consistency" gorm:"type:varchar(20)"`
 }
 
 // TableName specifies the table name for Backup
 func (Backup) TableName() string {
 	return "backups"
+}
+
+// BackupDisk is one disk of a backup.
+type BackupDisk struct {
+	Target      string `json:"target"` // vda, vdb...
+	Key         string `json:"key"`    // where its image is in storage
+	Size        int64  `json:"size"`
+	Checksum    string `json:"checksum"`
+	VirtualSize int64  `json:"virtual_size,omitempty"` // as the guest sees it
+}
+
+// How a backup's copy was taken.
+const (
+	BackupConsistencyStopped = "stopped" // the VM was off
+	BackupConsistencyFrozen  = "frozen"  // snapshot with the guest's file systems frozen
+	BackupConsistencyCrash   = "crash"   // snapshot without a freeze, like a power cut
+	BackupConsistencyLive    = "live"    // read while the VM wrote to it; may not be usable
+)
+
+// StorageKeys lists every object the backup is stored as.
+func (b *Backup) StorageKeys() []string {
+	keys := []string{b.StoragePath}
+	for _, d := range b.Disks {
+		if d.Key != "" && d.Key != b.StoragePath {
+			keys = append(keys, d.Key)
+		}
+	}
+	return keys
+}
+
+// DataDisks are the backup's disks after the primary one.
+func (b *Backup) DataDisks() []BackupDisk {
+	if len(b.Disks) < 2 {
+		return nil
+	}
+	return b.Disks[1:]
 }
 
 // BeforeCreate hook for Backup
@@ -99,6 +142,8 @@ type BackupRetentionPolicy struct {
 	KeepDaily   int `json:"keep_daily" validate:"omitempty,min=0,max=90"`   // Keep daily backups for N days
 	KeepWeekly  int `json:"keep_weekly" validate:"omitempty,min=0,max=52"`  // Keep weekly backups for N weeks
 	KeepMonthly int `json:"keep_monthly" validate:"omitempty,min=0,max=36"` // Keep monthly backups for N months
+	// MaxAgeDays deletes backups older than this many days; 0 = no age limit.
+	MaxAgeDays int `json:"max_age_days" validate:"omitempty,min=0,max=3650"`
 }
 
 // BackupSchedule represents a scheduled backup configuration for a VM

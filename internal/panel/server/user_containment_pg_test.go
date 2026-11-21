@@ -93,6 +93,8 @@ quota_mode TEXT NOT NULL DEFAULT 'legacy',
 		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		token_revoked_at TIMESTAMPTZ, deleted_at TIMESTAMPTZ, expires_at TIMESTAMPTZ, suspended_at TIMESTAMPTZ
 	)`).Error)
+	// Deleting an account looks for the VMs it owns.
+	require.NoError(t, gdb.Exec(`CREATE TABLE vms (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), user_id UUID, hostname TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'stopped', deleted_at TIMESTAMPTZ)`).Error)
 	require.NoError(t, gdb.Exec(`CREATE TABLE user_quotas (user_id UUID PRIMARY KEY, max_vms INTEGER NOT NULL DEFAULT 0, max_vcpu INTEGER NOT NULL DEFAULT 0, max_ram_mb INTEGER NOT NULL DEFAULT 0, max_disk_gb INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), quota_mode TEXT NOT NULL DEFAULT 'legacy', policy_id UUID, policy_version INTEGER, policy_name VARCHAR(100), policy_assigned_at TIMESTAMPTZ, policy_assigned_by UUID, cap_revision_id UUID)`).Error)
 
 	return gdb

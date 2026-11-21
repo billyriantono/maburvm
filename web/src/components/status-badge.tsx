@@ -33,6 +33,7 @@ const STATUSES: Record<string, { tone: Tone; label: string; busy?: boolean }> = 
   // Firewall rules
   allow: { tone: "ok", label: "Allow" },
   deny: { tone: "bad", label: "Deny" },
+  reject: { tone: "bad", label: "Reject" },
   // Node
   active: { tone: "ok", label: "Active" },
   maintenance: { tone: "warn", label: "Maintenance" },

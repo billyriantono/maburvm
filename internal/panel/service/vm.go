@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"math/big"
 	"net"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -78,16 +77,6 @@ func isInstallableImagePath(path string) bool {
 	return p != "" && p != "/imported"
 }
 
-// NodeSelectionStrategy determines how nodes are selected for VM placement
-type NodeSelectionStrategy string
-
-const (
-	// NodeSelectionRoundRobin assigns VMs to nodes in round-robin fashion
-	NodeSelectionRoundRobin NodeSelectionStrategy = "round_robin"
-	// NodeSelectionResourceBased assigns VMs to nodes with most available resources
-	NodeSelectionResourceBased NodeSelectionStrategy = "resource_based"
-)
-
 // VNCConfig holds VNC connection details
 type VNCConfig struct {
 	Port     int    `json:"port"`
@@ -107,13 +96,11 @@ type VMService struct {
 	riverClient  *river.Client[pgx.Tx]
 	logger       *slog.Logger
 
-	// Node selection state
-	nodeSelectionStrategy NodeSelectionStrategy
-	lastNodeIndex         int
-	nodeMutex             sync.Mutex
-
 	vpcService    *VPCService
 	regionService *RegionService
+
+	// sendLimits stands in for the node in tests; nil sends to the node.
+	sendLimits func(ctx context.Context, nodeID string, req *pb.SetVMLimitsRequest) (*pb.SetVMLimitsResponse, error)
 
 	// gRPC connections cache
 	grpcConns map[string]*grpc.ClientConn
@@ -130,27 +117,18 @@ func NewVMService(
 	logger *slog.Logger,
 ) *VMService {
 	return &VMService{
-		db:                    db,
-		vmRepo:                vmRepo,
-		nodeRepo:              nodeRepo,
-		templateRepo:          templateRepo,
-		networkRepo:           repository.NewNetworkRepository(db),
-		planRepo:              repository.NewPlanRepository(db),
-		ipamService:           NewIPAMService(db, repository.NewIPAMRepository(db)),
-		quotaService:          NewQuotaService(db, vmRepo),
-		riverClient:           riverClient,
-		logger:                logger,
-		nodeSelectionStrategy: NodeSelectionRoundRobin,
-		lastNodeIndex:         -1,
-		grpcConns:             make(map[string]*grpc.ClientConn),
+		db:           db,
+		vmRepo:       vmRepo,
+		nodeRepo:     nodeRepo,
+		templateRepo: templateRepo,
+		networkRepo:  repository.NewNetworkRepository(db),
+		planRepo:     repository.NewPlanRepository(db),
+		ipamService:  NewIPAMService(db, repository.NewIPAMRepository(db)),
+		quotaService: NewQuotaService(db, vmRepo),
+		riverClient:  riverClient,
+		logger:       logger,
+		grpcConns:    make(map[string]*grpc.ClientConn),
 	}
-}
-
-// SetNodeSelectionStrategy sets the node selection strategy
-func (s *VMService) SetNodeSelectionStrategy(strategy NodeSelectionStrategy) {
-	s.nodeMutex.Lock()
-	defer s.nodeMutex.Unlock()
-	s.nodeSelectionStrategy = strategy
 }
 
 // NodeSummary contains node fields needed to annotate VM list responses.
@@ -239,6 +217,11 @@ type CreateVMRequest struct {
 	// Restore, when set, says CloneSourceRef is a backup in object storage:
 	// the node uses it once, as the new disk, and checks it first.
 	Restore *RestoreSource `json:"-"`
+	// BlockSMTP blocks outbound mail whatever the plan says: a copy of a VM
+	// whose mail was blocked stays blocked.
+	BlockSMTP bool `json:"-"`
+	// Limits are the VM's CPU and disk caps, set by staff. Nil takes the plan's.
+	Limits *models.VMLimits `json:"-"`
 	// AutoAssignIP, when true and IPPoolID is empty, makes the service pick the
 	// first node-eligible pool with a free address and allocate a public IP from
 	// it. Set for self-service (client) orders so they never get an unusable
@@ -272,8 +255,18 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 			return nil, ErrPlanRequired
 		}
 		req.BandwidthMbps, req.DataQuotaGB, req.OverQuotaPolicy, req.ThrottleSpeedMbps = 0, 0, "", 0
+		req.Limits = nil
+	}
+	// The VM's CPU and disk caps: the request's own (staff), else the plan's,
+	// else the IOPS figure the API has always accepted with the resources.
+	var limits models.VMLimits
+	if req.Limits != nil {
+		limits = *req.Limits
+	} else if req.Resources.IOPS != nil {
+		limits.IOPS = *req.Resources.IOPS
 	}
 	// If a plan (flavor) is selected, derive resources + bandwidth from it.
+	blockSMTP := req.BlockSMTP
 	if req.PlanID != "" {
 		plan, err := s.planRepo.GetByID(ctx, req.PlanID)
 		if err != nil {
@@ -300,6 +293,10 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		if req.ThrottleSpeedMbps == 0 {
 			req.ThrottleSpeedMbps = plan.ThrottleSpeedMbps
 		}
+		blockSMTP = blockSMTP || plan.SMTPPolicy == models.SMTPBlocked
+		if req.Limits == nil {
+			limits = plan.Limits
+		}
 	}
 	if req.OverQuotaPolicy == "" {
 		req.OverQuotaPolicy = models.OverQuotaThrottle
@@ -308,6 +305,9 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 	// Validate resources
 	if err := s.validateResources(&req.Resources); err != nil {
 		return nil, err
+	}
+	if err := limits.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidResources, err)
 	}
 
 	// Quota admission is enforced inside the create transaction below (Lane D:
@@ -399,13 +399,13 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 
 	nodeID := req.NodeID
 	if nodeID == "" && orderRegion != nil {
-		nodeID, err = s.selectNodeInRegion(ctx, orderRegion.ID, req.Resources.Disk)
+		nodeID, err = s.selectNodeInRegion(ctx, orderRegion.ID, req.Resources)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if nodeID == "" {
-		nodeID, err = s.selectNode(ctx, req.Resources.Disk)
+		nodeID, err = s.selectNode(ctx, req.Resources)
 		if err != nil {
 			return nil, err
 		}
@@ -528,8 +528,11 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 		if err := s.quotaService.AdmitVMCreateTx(ctx, tx, req.UserID, req.Resources); err != nil && !billedOverQuota(req.Billed, err) {
 			return err
 		}
-		// Node RAM overcommit, checked in the same transaction for the same
-		// reason.
+		// Node vCPU and RAM overcommit, checked in the same transaction for the
+		// same reason.
+		if err := AdmitNodeVCPU(ctx, tx, vm.NodeID, req.Resources.CPU); err != nil {
+			return err
+		}
 		if err := s.quotaService.AdmitNodeRAMTx(ctx, tx, vm.NodeID, req.Resources.RAM); err != nil {
 			return err
 		}
@@ -551,6 +554,18 @@ func (s *VMService) CreateVM(ctx context.Context, req *CreateVMRequest) (*Create
 			if err := writeBillingLink(tx, vm, strPtrOrNil(req.PlanID), strPtrOrNil(req.BillingRef)); err != nil {
 				return err
 			}
+		}
+		if blockSMTP {
+			if err := tx.Exec("UPDATE vms SET smtp_blocked = TRUE WHERE id = ?", vm.ID).Error; err != nil {
+				return fmt.Errorf("failed to record the plan's mail block: %w", err)
+			}
+			vm.SMTPBlocked = true
+		}
+		if !limits.IsZero() {
+			if err := writeVMLimits(tx, vm.ID, limits); err != nil {
+				return err
+			}
+			vm.Limits = limits
 		}
 		if req.RequestedIP != "" && req.IPPoolID == "" {
 			return fmt.Errorf("ip_pool_id is required when requested_ip is set")
@@ -942,9 +957,18 @@ func (s *VMService) CloneVM(ctx context.Context, req *CloneVMRequest) (*CreateVM
 	return s.CreateVM(ctx, create)
 }
 
-// inheritNetworkLimits gives a copy the speed cap and transfer quota its
-// source was sold with.
+// inheritNetworkLimits gives a copy the speed cap, transfer quota and mail
+// block its source has, and its CPU and disk limits with any throttle folded
+// in: copying a VM must not be a way around either.
 func (s *VMService) inheritNetworkLimits(ctx context.Context, srcVMID string, req *CreateVMRequest) {
+	var blocked []bool
+	if err := s.db.WithContext(ctx).Table("vms").Where("id = ?", srcVMID).Pluck("smtp_blocked", &blocked).Error; err == nil && len(blocked) == 1 {
+		req.BlockSMTP = blocked[0]
+	}
+	if src, err := s.vmRepo.GetByID(ctx, srcVMID); err == nil {
+		limits := src.Limits.WithThrottle(src.Throttle)
+		req.Limits = &limits
+	}
 	n, err := s.networkRepo.GetByVMID(ctx, srcVMID)
 	if err != nil || n == nil {
 		return
@@ -996,54 +1020,65 @@ func (s *VMService) validateResources(resources *models.Resources) error {
 	return nil
 }
 
-// selectNodeInRegion picks an active node inside one region. A region with no
-// active node fails loudly here rather than silently spilling the order into a
-// different city.
-func (s *VMService) selectNodeInRegion(ctx context.Context, regionID string, diskGB int) (string, error) {
+// selectNodeInRegion picks a node inside one region. A region with no node
+// that can take the VM fails loudly here rather than silently spilling the
+// order into a different city.
+func (s *VMService) selectNodeInRegion(ctx context.Context, regionID string, res models.Resources) (string, error) {
 	var nodes []models.Node
 	if err := s.db.WithContext(ctx).
 		Where("status = ? AND region_id = ?", models.NodeStatusActive, regionID).
 		Find(&nodes).Error; err != nil {
 		return "", err
 	}
-	nodes = nodesTakingVMs(nodes)
-	if len(nodes) == 0 {
+	id, err := s.placeVM(ctx, nodes, res, true)
+	if errors.Is(err, ErrNoAvailableNodes) {
 		return "", ErrRegionNoCapacity
 	}
-	nodes = nodesReporting(nodes)
-	nodes = s.nodesWithRoom(ctx, nodes, diskGB)
-	if len(nodes) == 0 {
-		return "", ErrRegionNoCapacity
-	}
-	s.nodeMutex.Lock()
-	defer s.nodeMutex.Unlock()
-	return s.selectNodeRoundRobin(nodes), nil
+	return id, err
 }
 
-// nodesWithRoom drops nodes whose provisioning pool cannot hold the disk.
+// placeVM picks the node for a new VM: only nodes taking VMs, preferring the
+// ones that answered their last check, then only those where the VM fits (RAM
+// and vCPUs under their ratios, the disk in the provisioning pool, the same
+// checks admission makes), then the best of those by rankNodes.
 //
-// Placement previously ignored storage entirely — round-robin would happily put
-// a VM on a node with nothing left, and the failure surfaced as a provisioning
-// error after the customer had already been charged. Nodes whose storage the
-// panel has not measured are kept: absence of a reading is not evidence of a
-// full disk, and excluding them would stop orders on a healthy node.
-func (s *VMService) nodesWithRoom(ctx context.Context, nodes []models.Node, diskGB int) []models.Node {
-	if diskGB <= 0 {
-		return nodes
+// When no node fits, strict refuses; otherwise the best node is returned
+// anyway, so admission refuses with the reason, which says more than "no nodes".
+func (s *VMService) placeVM(ctx context.Context, nodes []models.Node, res models.Resources, strict bool) (string, error) {
+	nodes = nodesTakingVMs(nodes)
+	if len(nodes) == 0 {
+		return "", ErrNoAvailableNodes
 	}
-	// The same check the create transaction makes, so placement never picks a
-	// node that admission will then refuse while another node had room.
-	out := make([]models.Node, 0, len(nodes))
-	for i := range nodes {
-		pool := PrimaryPool(ctx, s.db, nodes[i].ID)
-		if err := AdmitPoolDisk(ctx, s.db, pool, diskGB); err != nil {
-			s.logger.WarnContext(ctx, "node skipped: provisioning pool has no room",
-				"node_id", nodes[i].ID, "requested_gb", diskGB, "reason", err.Error())
+	loads, err := loadNodes(ctx, s.db, nodesReporting(nodes))
+	if err != nil {
+		return "", err
+	}
+	fit := make([]nodeLoad, 0, len(loads))
+	for _, n := range loads {
+		reason := ""
+		switch {
+		case !n.ramFits(res.RAM):
+			reason = "RAM allocation would pass the overcommit ratio"
+		case !n.vcpuFits(res.CPU):
+			reason = "vCPU allocation would pass the overcommit ratio"
+		case res.Disk > 0:
+			if err := AdmitPoolDisk(ctx, s.db, PrimaryPool(ctx, s.db, n.Node.ID), res.Disk); err != nil {
+				reason = err.Error()
+			}
+		}
+		if reason != "" {
+			s.logger.WarnContext(ctx, "node skipped for a new VM", "node_id", n.Node.ID, "reason", reason)
 			continue
 		}
-		out = append(out, nodes[i])
+		fit = append(fit, n)
 	}
-	return out
+	if len(fit) == 0 {
+		if strict {
+			return "", ErrNoAvailableNodes
+		}
+		fit = loads
+	}
+	return rankNodes(fit, res.RAM)[0].Node.ID, nil
 }
 
 // SetRegionService wires region resolution for order placement.
@@ -1077,41 +1112,13 @@ func nodesReporting(nodes []models.Node) []models.Node {
 	return out
 }
 
-// selectNode selects an available node for VM placement
-func (s *VMService) selectNode(ctx context.Context, diskGB int) (string, error) {
+// selectNode picks a node among all active ones for an order with no region.
+func (s *VMService) selectNode(ctx context.Context, res models.Resources) (string, error) {
 	nodes, err := s.nodeRepo.ListActive(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to list active nodes: %w", err)
 	}
-	nodes = nodesTakingVMs(nodes)
-	if len(nodes) == 0 {
-		return "", ErrNoAvailableNodes
-	}
-	nodes = nodesReporting(nodes)
-	// Skip nodes without room when another has it. When none has, keep them
-	// all: admission then refuses with the reason, which says more than
-	// "no nodes".
-	if roomy := s.nodesWithRoom(ctx, nodes, diskGB); len(roomy) > 0 {
-		nodes = roomy
-	}
-
-	s.nodeMutex.Lock()
-	defer s.nodeMutex.Unlock()
-
-	switch s.nodeSelectionStrategy {
-	case NodeSelectionResourceBased:
-		// For resource-based selection, we'd need node metrics
-		// For now, fall back to round-robin
-		return s.selectNodeRoundRobin(nodes), nil
-	default:
-		return s.selectNodeRoundRobin(nodes), nil
-	}
-}
-
-// selectNodeRoundRobin selects a node using round-robin
-func (s *VMService) selectNodeRoundRobin(nodes []models.Node) string {
-	s.lastNodeIndex = (s.lastNodeIndex + 1) % len(nodes)
-	return nodes[s.lastNodeIndex].ID
+	return s.placeVM(ctx, nodes, res, false)
 }
 
 // generateVNCCredentials generates VNC port and password. Port 0 means
@@ -1361,10 +1368,14 @@ func (s *VMService) SuspendVM(ctx context.Context, vmID string) error {
 		}
 		return fmt.Errorf("failed to get VM: %w", err)
 	}
+	was := vm.Suspended
 	if err := s.setSuspended(ctx, vm, true); err != nil {
 		return err
 	}
 	s.emitVMEvent(ctx, BillingEventVMSuspended, vmID)
+	if !was {
+		s.emailOwner(ctx, vmID, EmailVMSuspended)
+	}
 	if vm.Status == models.VMStatusRunning || vm.Status == models.VMStatusSuspended {
 		if _, err := s.ExecuteLifecycleCommand(ctx, &LifecycleRequest{VMID: vmID, Command: LifecycleForceStop}); err != nil {
 			return fmt.Errorf("VM flagged suspended but could not be powered off: %w", err)
@@ -1384,8 +1395,12 @@ func (s *VMService) UnsuspendVM(ctx context.Context, vmID string) error {
 		}
 		return fmt.Errorf("failed to get VM: %w", err)
 	}
+	was := vm.Suspended
 	if err := s.setSuspended(ctx, vm, false); err != nil {
 		return err
+	}
+	if was {
+		s.emailOwner(ctx, vmID, EmailVMUnsuspended)
 	}
 	if vm.Status == models.VMStatusSuspended {
 		if err := s.vmRepo.UpdateStatus(ctx, vmID, models.VMStatusStopped); err != nil {
@@ -1617,8 +1632,14 @@ func (s *VMService) AttachDisk(ctx context.Context, vmID string, sizeGB int) (*m
 	return disk, nil
 }
 
+// ErrDetachKeepsNoVolume refuses a detach that would leave the disk's file on
+// the node with nothing in the panel pointing at it.
+var ErrDetachKeepsNoVolume = errors.New("a detached disk is not kept: detaching deletes the disk and everything on it. Confirm with delete_volume=true")
+
 // DetachDisk detaches a data disk (by virtio device, e.g. "vdb") from the VM and
-// optionally deletes its backing volume.
+// deletes its backing volume. deleteVolume is the caller's confirmation of
+// that; without it nothing is done, because a volume left on the node would
+// be a file no one can reattach, delete or bill.
 //
 // Gate-1 accounting: the disk's usage is released ONLY after the agent confirms
 // the detach. If the agent call fails, the vm_disks row is left intact so the
@@ -1628,6 +1649,9 @@ func (s *VMService) AttachDisk(ctx context.Context, vmID string, sizeGB int) (*m
 // untouched — clearing them here would race a concurrent AttachDisk's in-flight
 // reservation for the same VM.
 func (s *VMService) DetachDisk(ctx context.Context, vmID, device string, deleteVolume bool) error {
+	if !deleteVolume {
+		return ErrDetachKeepsNoVolume
+	}
 	vm, err := s.vmRepo.GetByID(ctx, vmID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -1650,7 +1674,7 @@ func (s *VMService) DetachDisk(ctx context.Context, vmID, device string, deleteV
 	if err != nil {
 		return err
 	}
-	resp, err := client.DetachDisk(authCtx, &pb.DetachDiskRequest{VmId: vmID, Device: device, Path: disk.Path, DeleteVolume: deleteVolume})
+	resp, err := client.DetachDisk(authCtx, &pb.DetachDiskRequest{VmId: vmID, Device: device, Path: disk.Path, DeleteVolume: true})
 	if err != nil {
 		return fmt.Errorf("agent detach disk failed: %w", err)
 	}
@@ -1798,6 +1822,9 @@ func (s *VMService) UpdateVM(ctx context.Context, req *UpdateVMRequest) (*models
 			}
 			// Node capacity is checked in the same transaction as the user's
 			// quota, so the headroom two concurrent resizes see is serialized.
+			if err := AdmitNodeVCPU(ctx, tx, vm.NodeID, req.Resources.CPU-oldRes.CPU); err != nil {
+				return err
+			}
 			if err := s.quotaService.AdmitNodeRAMTx(ctx, tx, vm.NodeID, req.Resources.RAM-oldRes.RAM); err != nil {
 				return err
 			}
@@ -2405,20 +2432,23 @@ func (s *VMService) DetachISO(ctx context.Context, vmID string) (int64, error) {
 	return res.Job.ID, nil
 }
 
-// rescueISOEnv is the env var holding a fallback rescue ISO URL.
-const rescueISOEnv = "RESCUE_ISO_URL"
+// RescueAvailable reports whether rescue mode has an image to boot.
+func (s *VMService) RescueAvailable(ctx context.Context) bool {
+	iso, _ := RescueISO(ctx, s.db)
+	return iso != ""
+}
 
 // RescueVM attaches a rescue ISO (which boots first) and marks the VM as in
 // rescue mode. The VM must be stopped; starting it afterward boots into rescue.
-// isoURL falls back to the RESCUE_ISO_URL env var when empty; that one is the
-// operator's whoever asks for the rescue.
+// An empty isoURL means the operator's rescue image (System settings, else
+// RESCUE_ISO_URL), whoever asks for the rescue.
 func (s *VMService) RescueVM(ctx context.Context, vmID, isoURL string, operatorSupplied bool) (int64, error) {
 	if isoURL == "" {
-		isoURL = os.Getenv(rescueISOEnv)
+		isoURL, _ = RescueISO(ctx, s.db)
 		operatorSupplied = true
 	}
 	if isoURL == "" {
-		return 0, fmt.Errorf("no rescue ISO configured: provide iso_url or set %s", rescueISOEnv)
+		return 0, ErrNoRescueImage
 	}
 	// AttachISO validates the VM exists, is stopped, and enqueues the boot-first ISO.
 	jobID, err := s.AttachISO(ctx, vmID, isoURL, operatorSupplied)
@@ -2446,8 +2476,9 @@ func (s *VMService) UnrescueVM(ctx context.Context, vmID string) (int64, error) 
 	return jobID, nil
 }
 
-// emailOwner sends one of the server emails in the background. The action it
-// reports has already happened, so a mail failure is logged and nothing more.
+// emailOwner tells a server's owner, in the panel and by email, in the
+// background. The action it reports has already happened, so a failure is
+// logged and nothing more.
 func (s *VMService) emailOwner(ctx context.Context, vmID, key string) {
 	go func(ctx context.Context) {
 		if err := NotifyVMOwner(ctx, s.db, vmID, key); err != nil {

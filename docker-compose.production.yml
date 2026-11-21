@@ -222,6 +222,8 @@ services:
       # "true" makes a plan's monthly transfer quota act: a VM that goes over is
       # throttled or stopped, as its plan says. Anything else only measures.
       BANDWIDTH_ENFORCE: ${BANDWIDTH_ENFORCE:-false}
+      # Rescue ISO used until one is saved under System settings, Rescue.
+      RESCUE_ISO_URL: ${RESCUE_ISO_URL:-}
     # Panel needs: `data` (postgres/minio/minio-init), `webpanel` (web), and a
     # NON-internal `agent-egress` to initiate outbound gRPC to agents. It does
     # NOT join `edge`. A Docker network is NOT a full host/firewall policy.

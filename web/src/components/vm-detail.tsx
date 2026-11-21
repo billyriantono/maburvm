@@ -26,7 +26,7 @@ import { useNodes } from "@/lib/hooks/use-nodes"
 import { useSnapshots, useCreateSnapshot, useRestoreSnapshot, useDeleteSnapshot } from "@/lib/hooks/use-snapshots"
 import { useCreateImage } from "@/lib/hooks/use-images"
 import { useBackups, useCreateBackup, useDeleteBackup, useRestoreBackup, useRestoreBackupAsNew, useBackupSchedules, useCreateBackupSchedule, useDeleteBackupSchedule } from "@/lib/hooks/use-backups"
-import { useFirewallRules, useDeleteFirewallRule, useCreateFirewallRule, useVMNetworks, useSetVMBandwidth, useSetVMRDNS, usePortForwards, useCreatePortForward, useDeletePortForward, useSetAntiSpoofing, useFirewallStatus } from "@/lib/hooks/use-networks"
+import { useFirewallRules, useDeleteFirewallRule, useCreateFirewallRule, useVMNetworks, useSetVMBandwidth, useSetVMRDNS, usePortForwards, useCreatePortForward, useDeletePortForward, useSetAntiSpoofing, useFirewallStatus, useSetFirewallDefault, useSetSMTPBlocked, useDismissGuestNetworkNote } from "@/lib/hooks/use-networks"
 import type { Network as NetworkIface, VM } from "@/types"
 import { templateOfferedOn } from "@/types/template"
 import { usePlans } from "@/lib/hooks/use-plans"
@@ -37,12 +37,13 @@ import { useVMActivity } from "@/lib/hooks/use-audit-logs"
 import { VNCConsole } from "@/components/vnc-console"
 import { VMTelemetry } from "@/components/vm-telemetry"
 import { OSLogoTile } from "@/components/os-icon"
-import type { Snapshot, Backup, FirewallRule } from "@/types"
+import type { Snapshot, Backup, BackupRetentionPolicy, FirewallRule, FirewallAction, FirewallFamily } from "@/types"
 import { useConfirm } from "@/components/confirm-provider"
 import { StatusBadge, useVMTransitions, vmStatus } from "@/components/status-badge"
 import { OperationProgress, vmProvisionSteps } from "@/components/operation-progress"
 import { useCopy, useFlash } from "@/lib/use-feedback"
 import { CountryFlag } from "@/components/country-flag"
+import { VMLimitsSection } from "@/components/vm-limits"
 import { toast } from "sonner"
 
 // --- Utility Components ---
@@ -391,6 +392,13 @@ function isoLabel(iso: string) {
   return name || iso
 }
 
+const EMPTY_FW_FORM = { protocol: "tcp", port_range: "", action: "allow" as FirewallAction, direction: "inbound", source_ip: "", priority: 100, icmp_type: "", log: false, family: "" as FirewallFamily }
+
+// ICMP type names both iptables and ip6tables know, for the rule form.
+const ICMP_TYPE_NAMES = ["echo-request", "echo-reply", "destination-unreachable", "time-exceeded", "parameter-problem", "redirect",
+  "router-advertisement", "router-solicitation", "source-quench", "timestamp-request", "timestamp-reply",
+  "packet-too-big", "neighbour-solicitation", "neighbour-advertisement"]
+
 const VM_TABS = ["overview", "console", "network", "snapshots", "backups", "firewall", "logs", "settings"]
 
 // Port forwards: a port on the node's public address sent on to this VM.
@@ -598,6 +606,30 @@ function RestoreAsNewDialog({ vmId, hostname, nodeId, backup, nodes, onClose }: 
   )
 }
 
+const COMPRESSION_LABELS: Record<string, string> = {
+  gzip: "Compressed (zlib)",
+  zstd: "Compressed (zstd, faster)",
+  none: "Not compressed",
+}
+
+// The warning that a disk's snapshots go with it.
+function snapshotsGoneText(n: number): string {
+  return n === 1 ? "Its snapshot is deleted too: it lives in the disk being replaced." : `Its ${n} snapshots are deleted too: they live in the disk being replaced.`
+}
+
+// What a retention policy keeps, in words.
+function describeRetention(p?: BackupRetentionPolicy): string {
+  if (!p) return "All backups"
+  const parts: string[] = []
+  if (p.keep_last) parts.push(`last ${p.keep_last}`)
+  if (p.keep_daily) parts.push(`one a day for ${p.keep_daily} days`)
+  if (p.keep_weekly) parts.push(`one a week for ${p.keep_weekly} weeks`)
+  if (p.keep_monthly) parts.push(`one a month for ${p.keep_monthly} months`)
+  const kept = parts.length ? parts.join(", ") : "all backups"
+  const text = p.max_age_days ? `${kept}, none older than ${p.max_age_days} days` : kept
+  return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
 function BackupScheduleCard({ vmId }: { vmId: string }) {
   const confirm = useConfirm()
   const { data: schedules, isLoading, error, refetch } = useBackupSchedules(vmId)
@@ -610,27 +642,57 @@ function BackupScheduleCard({ vmId }: { vmId: string }) {
   const [every, setEvery] = useState<"daily" | "weekly" | "monthly">("daily")
   const [hour, setHour] = useState(2)
   const [keep, setKeep] = useState("7")
+  const [daily, setDaily] = useState("0")
+  const [weekly, setWeekly] = useState("0")
+  const [maxAge, setMaxAge] = useState("0")
+  const [compression, setCompression] = useState<"gzip" | "zstd" | "none">("gzip")
   const [err, setErr] = useState("")
 
   const startEdit = () => {
     if (parsed) { setEvery(parsed.every); setHour(parsed.hour) }
-    if (current?.retention_policy?.keep_last) setKeep(String(current.retention_policy.keep_last))
+    const p = current?.retention_policy
+    if (current) {
+      setKeep(String(p?.keep_last ?? 0))
+      setDaily(String(p?.keep_daily ?? 0))
+      setWeekly(String(p?.keep_weekly ?? 0))
+      setMaxAge(String(p?.max_age_days ?? 0))
+      setCompression(current.compression || "gzip")
+    }
     setErr("")
     setEditing(true)
   }
 
   const handleSave = async () => {
-    const keepLast = Number(keep)
-    if (!Number.isInteger(keepLast) || keepLast < 1 || keepLast > 365) { setErr("Keep between 1 and 365 backups."); return }
+    const fields: [string, string, number][] = [
+      ["Backups to keep", keep, 365], ["Days to keep one a day", daily, 365],
+      ["Weeks to keep one a week", weekly, 104], ["Days before a backup is deleted", maxAge, 3650],
+    ]
+    for (const [name, value, max] of fields) {
+      const n = Number(value)
+      if (!Number.isInteger(n) || n < 0 || n > max) { setErr(`${name}: a whole number from 0 to ${max}.`); return }
+    }
+    // keep_monthly has no field here; one set through the API is kept.
+    const policy: BackupRetentionPolicy = { keep_last: Number(keep), keep_daily: Number(daily), keep_weekly: Number(weekly), keep_monthly: current?.retention_policy?.keep_monthly ?? 0, max_age_days: Number(maxAge) }
+    if (!policy.keep_last && !policy.keep_daily && !policy.keep_weekly && !policy.keep_monthly && !policy.max_age_days) {
+      setErr("Set at least one limit, or backups pile up until storage is full.")
+      return
+    }
     const cron = every === "monthly" ? `0 ${hour} 1 * *` : every === "weekly" ? `0 ${hour} * * 0` : `0 ${hour} * * *`
     try {
-      await save.mutateAsync({ schedule: cron, retention_policy: { keep_last: keepLast } })
+      await save.mutateAsync({ schedule: cron, compression, retention_policy: policy })
       toast.success("Backup schedule saved")
       setEditing(false)
     } catch (e) {
       setErr((e as Error).message)
     }
   }
+
+  const numberField = (id: string, label: string, value: string, set: (v: string) => void) => (
+    <div>
+      <label htmlFor={id} className="text-xs font-medium text-muted-foreground block mb-1">{label}</label>
+      <Input id={id} inputMode="numeric" value={value} onChange={(e) => set(e.target.value)} className="border w-24 font-mono" />
+    </div>
+  )
 
   return (
     <div className="bg-card text-card-foreground border rounded-lg p-6 mb-6">
@@ -662,7 +724,7 @@ function BackupScheduleCard({ vmId }: { vmId: string }) {
       ) : error ? (
         <SectionError message={(error as Error).message} onRetry={() => refetch()} />
       ) : editing ? (
-        <div className="space-y-3">
+        <div className="space-y-4">
           <div className="flex flex-wrap items-end gap-3">
             <div>
               <label htmlFor="bs-every" className="text-xs font-medium text-muted-foreground block mb-1">How often</label>
@@ -679,21 +741,35 @@ function BackupScheduleCard({ vmId }: { vmId: string }) {
               </select>
             </div>
             <div>
-              <label htmlFor="bs-keep" className="text-xs font-medium text-muted-foreground block mb-1">Backups to keep</label>
-              <Input id="bs-keep" inputMode="numeric" value={keep} onChange={(e) => setKeep(e.target.value)} className="border w-24 font-mono" />
+              <label htmlFor="bs-compression" className="text-xs font-medium text-muted-foreground block mb-1">Compression</label>
+              <select id="bs-compression" value={compression} onChange={(e) => setCompression(e.target.value as typeof compression)} className="h-9 border rounded-md bg-background px-2 text-sm cursor-pointer">
+                {Object.entries(COMPRESSION_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
             </div>
+          </div>
+          <div className="flex flex-wrap items-end gap-3">
+            {numberField("bs-keep", "Backups to keep", keep, setKeep)}
+            {numberField("bs-daily", "One a day for (days)", daily, setDaily)}
+            {numberField("bs-weekly", "One a week for (weeks)", weekly, setWeekly)}
+            {numberField("bs-maxage", "Delete after (days)", maxAge, setMaxAge)}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            A backup is kept while any of the first three keeps it, and deleted once it is older than the last. 0 means no such limit.
+            The newest backup is always kept. A backup can start later than its time when the server is busy or outside the backup window.
+          </p>
+          {err && <p role="alert" className="text-xs text-destructive font-medium">{err}</p>}
+          <div className="flex items-center gap-2">
             <Button size="sm" onClick={handleSave} disabled={save.isPending}>
               {save.isPending && <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />}Save
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>Cancel</Button>
           </div>
-          <p className="text-xs text-muted-foreground">Older backups are deleted once there are more than this number.</p>
-          {err && <p role="alert" className="text-xs text-destructive font-medium">{err}</p>}
         </div>
       ) : current ? (
-        <dl className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
+        <dl className="grid grid-cols-1 sm:grid-cols-4 gap-4 text-sm">
           <div><dt className="text-xs text-muted-foreground">Runs</dt><dd className="font-medium">{parsed ? parsed.text : <span className="font-mono">{current.schedule}</span>}</dd></div>
-          <div><dt className="text-xs text-muted-foreground">Keeps</dt><dd className="font-medium">{current.retention_policy?.keep_last ? `Last ${current.retention_policy.keep_last} backups` : "All backups"}</dd></div>
+          <div><dt className="text-xs text-muted-foreground">Keeps</dt><dd className="font-medium">{describeRetention(current.retention_policy)}</dd></div>
+          <div><dt className="text-xs text-muted-foreground">Compression</dt><dd className="font-medium">{COMPRESSION_LABELS[current.compression] ?? current.compression}</dd></div>
           <div><dt className="text-xs text-muted-foreground">Next run</dt><dd className="font-medium">{current.next_run_at && !current.next_run_at.startsWith("0001") ? formatDate(current.next_run_at) : "Not scheduled yet"}</dd></div>
         </dl>
       ) : (
@@ -759,20 +835,17 @@ function DisksCard({ vmId }: { vmId: string }) {
     }
   }
 
-  // Genuinely three-way, which is why window.confirm could not express it: the
-  // old dialog put "keep the volume" on the Cancel button, so backing out of the
-  // decision detached the disk anyway. Cancel now means cancel.
+  // A detached disk is not kept anywhere it could be reattached from, so
+  // detaching is deleting, and the dialog says so.
   const handleDetach = async (device: string) => {
-    const answer = await confirm.choose({
-      title: `Detach ${device}?`,
+    await confirm({
+      title: `Detach and delete ${device}?`,
       description:
-        "Detaching removes the disk from this VM. You can either keep the volume on the node to reattach later, or delete its data for good.",
-      confirmLabel: "Detach and delete data",
-      alternateLabel: "Detach, keep volume",
+        "The disk is removed from this VM and deleted, with everything on it. This cannot be undone. Copy anything you need off it first.",
+      confirmLabel: "Detach and delete",
       destructive: true,
-      action: (choice) => detach.mutateAsync({ device, deleteVolume: choice === "confirm" }),
+      action: () => detach.mutateAsync({ device, deleteVolume: true }),
     })
-    if (answer === "cancel") return
   }
 
   return (
@@ -1052,6 +1125,98 @@ function TransferSummary({ vmId, onOpen }: { vmId: string; onOpen: () => void })
 }
 
 // --- Main Component ---
+
+// FirewallPolicy shows, and lets people change, what the firewall does with
+// traffic no rule matches and whether the VM may send mail on port 25.
+function FirewallPolicy({ vm, isAdmin, ruleCount, onDefault, onSMTP }: {
+  vm: VM
+  isAdmin: boolean
+  ruleCount: number
+  onDefault: (value: "drop" | "accept") => Promise<void>
+  onSMTP: (blocked: boolean) => Promise<void>
+}) {
+  const confirm = useConfirm()
+  const current = vm.firewall_default ?? "drop"
+  const blocked = !!vm.smtp_blocked
+
+  let state: string
+  let explain: string
+  if (ruleCount === 0) {
+    state = "Not filtered"
+    explain = current === "drop"
+      ? "No rules yet, so all traffic passes. Once a rule is added, inbound traffic that no rule allows is dropped."
+      : "No rules yet, so all traffic passes. Inbound traffic no rule matches stays accepted when rules are added, so rules only block what they deny or reject."
+  } else if (current === "drop") {
+    state = "Dropped"
+    explain = "Inbound traffic that no rule allows is dropped."
+  } else {
+    state = "Accepted"
+    explain = "Inbound traffic no rule matches is accepted, so only deny and reject rules have an effect. Imported and older VMs start this way so they keep working."
+  }
+
+  const changeDefault = async () => {
+    const next = current === "drop" ? "accept" : "drop"
+    const ok = await confirm(next === "drop" ? {
+      title: "Drop inbound traffic no rule allows?",
+      description: "As soon as the node applies it, inbound traffic to this VM that no rule allows is dropped. Check first that the rules allow everything the VM serves, such as SSH and the web, or it stops answering." +
+        (ruleCount === 0 ? " It takes effect once the VM has a rule." : ""),
+      confirmLabel: "Drop unmatched traffic",
+      destructive: true,
+      action: () => onDefault(next),
+    } : {
+      title: "Accept inbound traffic no rule matches?",
+      description: "Inbound traffic that no rule denies or rejects reaches the VM. Allow rules then change nothing.",
+      confirmLabel: "Accept unmatched traffic",
+      action: () => onDefault(next),
+    })
+    if (ok) toast.success(next === "drop" ? "Unmatched inbound traffic is now dropped" : "Unmatched inbound traffic is now accepted")
+  }
+
+  const changeSMTP = async () => {
+    const ok = await confirm(blocked ? {
+      title: "Allow outbound mail from this VM?",
+      description: "The VM can connect to mail servers on port 25 again. Its owner is not told.",
+      confirmLabel: "Allow outbound mail",
+      action: () => onSMTP(false),
+    } : {
+      title: "Block outbound mail from this VM?",
+      description: "New connections from the VM to port 25 are refused as soon as the node applies it, and open ones are cut. Submission ports 465 and 587 stay open.",
+      confirmLabel: "Block outbound mail",
+      destructive: true,
+      action: () => onSMTP(true),
+    })
+    if (ok) toast.success(blocked ? "Outbound mail allowed" : "Outbound mail blocked")
+  }
+
+  return (
+    <div className="mb-6 grid gap-3 sm:grid-cols-2">
+      <div className="rounded-md border p-4">
+        <span className="text-xs font-medium text-muted-foreground block">Inbound traffic no rule matches</span>
+        <span className="text-sm font-semibold block mt-1">{state}</span>
+        <p className="text-xs text-muted-foreground mt-1">{explain}</p>
+        <Button size="sm" variant="outline" className="mt-3" onClick={changeDefault}>
+          {current === "drop" ? "Accept unmatched traffic" : "Drop unmatched traffic"}
+        </Button>
+      </div>
+      <div className="rounded-md border p-4">
+        <span className="text-xs font-medium text-muted-foreground block">Outbound mail (port 25)</span>
+        <span className="text-sm font-semibold block mt-1">{blocked ? "Blocked" : "Allowed"}</span>
+        <p className="text-xs text-muted-foreground mt-1">
+          {blocked
+            ? isAdmin
+              ? "Connections from this VM to mail servers on port 25 are refused. Submission ports 465 and 587 stay open."
+              : "Sending mail straight to other mail servers is blocked for this server. Send through your mail provider on port 587 or 465, or contact support to have it unblocked."
+            : "This VM may connect to mail servers on port 25."}
+        </p>
+        {isAdmin && (
+          <Button size="sm" variant="outline" className="mt-3" onClick={changeSMTP}>
+            {blocked ? "Allow outbound mail" : "Block outbound mail"}
+          </Button>
+        )}
+      </div>
+    </div>
+  )
+}
 
 // VMDetail is the VM page for both audiences. Admin mode is the operator view.
 // Client mode is a customer's own VM: it leaves out everything the API refuses
@@ -1410,21 +1575,28 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
   }, [deleteBackupMutation, refetchBackups])
 
   const createFirewallRule = useCreateFirewallRule(vmId)
+  const setFirewallDefault = useSetFirewallDefault(vmId)
+  const setSMTPBlocked = useSetSMTPBlocked(vmId)
+  const dismissGuestNote = useDismissGuestNetworkNote(vmId)
   const [fwOpen, setFwOpen] = useState(false)
-  const [fwForm, setFwForm] = useState({ protocol: "tcp", port_range: "", action: "allow", direction: "inbound", source_ip: "", priority: 100 })
+  const [fwForm, setFwForm] = useState(EMPTY_FW_FORM)
   const handleAddFirewallRule = useCallback(async () => {
+    const ports = fwForm.protocol === "tcp" || fwForm.protocol === "udp"
     try {
       await createFirewallRule.mutateAsync({
         vm_id: vmId,
         protocol: fwForm.protocol as "tcp" | "udp" | "icmp" | "all",
-        port_range: fwForm.port_range.trim() || undefined,
-        action: fwForm.action as "allow" | "deny",
+        port_range: ports ? fwForm.port_range.trim() || undefined : undefined,
+        action: fwForm.action,
         direction: fwForm.direction as "inbound" | "outbound",
         source_ip: fwForm.source_ip.trim() || undefined,
         priority: fwForm.priority,
+        icmp_type: fwForm.protocol === "icmp" ? fwForm.icmp_type.trim() || undefined : undefined,
+        log: fwForm.log || undefined,
+        family: fwForm.family || undefined,
       })
       setFwOpen(false)
-      setFwForm({ protocol: "tcp", port_range: "", action: "allow", direction: "inbound", source_ip: "", priority: 100 })
+      setFwForm(EMPTY_FW_FORM)
       toast.success("Firewall rule added")
       refetchFirewall()
     } catch (err) {
@@ -1758,6 +1930,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                     {isAdmin
                       ? "This will destroy the current VM and create a new one from a template. All data will be lost."
                       : "Erases this VM and installs a fresh operating system. All data on it will be lost. The VM keeps its IP address and is started when the install is done."}
+                    {snapshots?.length ? ` ${snapshotsGoneText(snapshots.length)}` : ""}
                   </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-4 py-4 max-h-[60vh] overflow-y-auto">
@@ -2084,6 +2257,21 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
         />
       )}
 
+      {vm.guest_network_note && (
+        <div role="status" className="mb-6 flex items-start gap-3 rounded-md border border-warning/50 bg-warning/10 p-3 text-sm text-foreground">
+          <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" aria-hidden="true" />
+          <div className="flex-1">
+            <p><span className="font-semibold">Address change not in the guest yet.</span> {vm.guest_network_note}</p>
+            {vm.guest_network_pending && (
+              <p className="text-muted-foreground mt-1">This note goes away by itself once the guest has taken the change. Dismissing it does not cancel the change.</p>
+            )}
+          </div>
+          <Button size="sm" variant="ghost" disabled={dismissGuestNote.isPending} onClick={() => dismissGuestNote.mutate(undefined, { onError: (e) => toast.error(`Could not dismiss: ${e.message}`) })}>
+            Dismiss
+          </Button>
+        </div>
+      )}
+
       {/* Tabs */}
       <Tabs value={tab} onValueChange={setTab} className="space-y-6">
         <TabsList className="mb-2">
@@ -2168,6 +2356,8 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                   <div className="flex justify-between gap-3"><dt>Disk</dt><dd className="font-semibold">{vm.resources.disk} GB</dd></div>
                 </dl>
               </section>
+
+              <VMLimitsSection vm={vm} isAdmin={isAdmin} />
 
               <TransferSummary vmId={vmId} onOpen={() => setTab("network")} />
 
@@ -2357,9 +2547,13 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
               title="Rescue mode"
               description={vm.rescue_mode
                 ? "Rescue ISO attached. Start the VM to boot into it, or exit to boot from disk again."
-                : vm.status === "running"
-                  ? "Boot a rescue system to repair a VM that will not start. Stop the VM to enable this."
-                  : "Boot a rescue system to repair a VM that will not start."}
+                : vm.rescue_available === false
+                  ? isAdmin
+                    ? "Rescue mode is not available yet: no rescue image is set. Choose one under System settings, Rescue."
+                    : "Rescue mode is not available yet: no rescue image has been set up. Contact support, or mount a rescue ISO of your own above."
+                  : vm.status === "running"
+                    ? "Boot a rescue system to repair a VM that will not start. Stop the VM to enable this."
+                    : "Boot a rescue system to repair a VM that will not start."}
             >
               {vm.rescue_mode ? (
                 <Button variant="outline" size="sm" onClick={handleUnrescue} disabled={locked || unrescueVM.isPending}>
@@ -2367,7 +2561,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                   Exit rescue
                 </Button>
               ) : (
-                <Button variant="outline" size="sm" onClick={handleRescue} disabled={locked || rescueVM.isPending || vm.status === "running"}>
+                <Button variant="outline" size="sm" onClick={handleRescue} disabled={locked || rescueVM.isPending || vm.status === "running" || vm.rescue_available === false}>
                   {rescueVM.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <LifeBuoy className="w-4 h-4" />}
                   Enter rescue
                 </Button>
@@ -2662,7 +2856,14 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                       <div>
                         <span className="font-semibold">{backup.backup_type === "scheduled" ? "Scheduled backup" : "Manual backup"}</span>
                         <span className="text-xs text-muted-foreground ml-2">{formatDate(backup.created_at)}</span>
+                        {(backup.disks?.length ?? 0) > 1 && <span className="text-xs text-muted-foreground ml-2">{backup.disks!.length} disks</span>}
                       </div>
+                      {backup.status === "completed" && backup.consistency === "live" && (
+                        <p className="mt-0.5 text-xs text-muted-foreground">Copied while the VM was writing to its disk, without a snapshot. It may not restore cleanly.</p>
+                      )}
+                      {backup.status === "completed" && backup.error_message && (
+                        <p className="mt-0.5 text-xs text-muted-foreground break-words">{backup.error_message}</p>
+                      )}
                       {isAdmin && backup.status === "completed" && backup.storage_provider === "node" && (
                         <p className="mt-0.5 text-xs text-muted-foreground">Kept in the node&apos;s own storage, not the backup destination.</p>
                       )}
@@ -2680,7 +2881,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                           disabled={locked}
                           onClick={() => confirm({
                             title: "Restore this backup?",
-                            description: `The VM's disk is replaced with the backup from ${formatDate(backup.created_at)}. Everything written since then is lost. The VM must be stopped first.`,
+                            description: `${(backup.disks?.length ?? 0) > 1 ? `All ${backup.disks!.length} of the VM's disks are` : "The VM's disk is"} replaced with the backup from ${formatDate(backup.created_at)}. Everything written since then is lost.${snapshots?.length ? ` ${snapshotsGoneText(snapshots.length)}` : ""} The VM must be stopped first.`,
                             confirmLabel: "Restore backup",
                             destructive: true,
                             action: async () => {
@@ -2734,7 +2935,7 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                 <DialogContent className="max-w-md">
                   <DialogHeader>
                     <DialogTitle>Add Firewall Rule</DialogTitle>
-                    <DialogDescription>Allow or deny traffic to this VM.</DialogDescription>
+                    <DialogDescription>Allow, drop or refuse traffic to and from this VM.</DialogDescription>
                   </DialogHeader>
                   <div className="grid grid-cols-2 gap-3 py-2">
                     <div>
@@ -2746,9 +2947,10 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                     </div>
                     <div>
                       <span className="text-xs font-medium text-muted-foreground mb-1 block">Action</span>
-                      <select value={fwForm.action} onChange={(e) => setFwForm({ ...fwForm, action: e.target.value })} className="w-full h-10 px-3 border rounded-md bg-background text-sm">
+                      <select value={fwForm.action} onChange={(e) => setFwForm({ ...fwForm, action: e.target.value as FirewallAction })} className="w-full h-10 px-3 border rounded-md bg-background text-sm">
                         <option value="allow">Allow</option>
-                        <option value="deny">Deny</option>
+                        <option value="deny">Deny (drop silently)</option>
+                        <option value="reject">Reject (refuse at once)</option>
                       </select>
                     </div>
                     <div>
@@ -2760,10 +2962,20 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                         <option value="all">All</option>
                       </select>
                     </div>
-                    <div>
-                      <span className="text-xs font-medium text-muted-foreground mb-1 block">Port / Range</span>
-                      <Input value={fwForm.port_range} onChange={(e) => setFwForm({ ...fwForm, port_range: e.target.value })} placeholder="80 or 8000-8100" />
-                    </div>
+                    {fwForm.protocol === "icmp" ? (
+                      <div>
+                        <label htmlFor="fw-icmp-type" className="text-xs font-medium text-muted-foreground mb-1 block">ICMP type</label>
+                        <Input id="fw-icmp-type" list="fw-icmp-types" value={fwForm.icmp_type} onChange={(e) => setFwForm({ ...fwForm, icmp_type: e.target.value })} placeholder="All types" />
+                        <datalist id="fw-icmp-types">
+                          {ICMP_TYPE_NAMES.map((n) => <option key={n} value={n} />)}
+                        </datalist>
+                      </div>
+                    ) : (
+                      <div>
+                        <span className="text-xs font-medium text-muted-foreground mb-1 block">Port / Range</span>
+                        <Input value={fwForm.port_range} disabled={fwForm.protocol === "all"} onChange={(e) => setFwForm({ ...fwForm, port_range: e.target.value })} placeholder={fwForm.protocol === "all" ? "Every port" : "80 or 8000-8100"} />
+                      </div>
+                    )}
                     <div>
                       <span className="text-xs font-medium text-muted-foreground mb-1 block">Source IP/CIDR</span>
                       <Input value={fwForm.source_ip} onChange={(e) => setFwForm({ ...fwForm, source_ip: e.target.value })} placeholder="Any (0.0.0.0/0)" />
@@ -2772,7 +2984,29 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                       <span className="text-xs font-medium text-muted-foreground mb-1 block">Priority</span>
                       <Input type="number" value={fwForm.priority} onChange={(e) => setFwForm({ ...fwForm, priority: parseInt(e.target.value) || 100 })} />
                     </div>
+                    <div>
+                      <label htmlFor="fw-family" className="text-xs font-medium text-muted-foreground mb-1 block">Addresses</label>
+                      <select id="fw-family" value={fwForm.family} onChange={(e) => setFwForm({ ...fwForm, family: e.target.value as FirewallFamily })} className="w-full h-10 px-3 border rounded-md bg-background text-sm">
+                        <option value="">IPv4 and IPv6</option>
+                        <option value="v4">IPv4 only</option>
+                        <option value="v6">IPv6 only</option>
+                      </select>
+                    </div>
+                    {isAdmin && (
+                      <label className="col-span-2 flex items-center gap-2 text-sm cursor-pointer w-fit">
+                        <input type="checkbox" checked={fwForm.log} onChange={(e) => setFwForm({ ...fwForm, log: e.target.checked })} className="w-4 h-4" />
+                        Log matches in the node&apos;s kernel log
+                      </label>
+                    )}
                   </div>
+                  {fwForm.protocol === "icmp" && /^\d/.test(fwForm.icmp_type.trim()) && !fwForm.family && (
+                    <p className="text-xs text-muted-foreground">A type given as a number means different messages in IPv4 and IPv6: choose one under Addresses.</p>
+                  )}
+                  {!firewallRules?.length && (vm.firewall_default ?? "drop") === "drop" && (
+                    <p role="status" className="text-sm rounded-md border border-warning/50 bg-warning/10 p-3">
+                      This is the VM&apos;s first rule. Once it is added, inbound traffic that no rule allows is dropped.
+                    </p>
+                  )}
                   <DialogFooter>
                     <Button variant="ghost" onClick={() => setFwOpen(false)}>Cancel</Button>
                     <Button onClick={handleAddFirewallRule} disabled={createFirewallRule.isPending}>
@@ -2810,6 +3044,14 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
               </div>
             )}
 
+            <FirewallPolicy
+              vm={vm}
+              isAdmin={isAdmin}
+              ruleCount={firewallRules?.length ?? 0}
+              onDefault={(value) => setFirewallDefault.mutateAsync(value)}
+              onSMTP={(blocked) => setSMTPBlocked.mutateAsync(blocked)}
+            />
+
             {firewallLoading ? (
               <SectionSkeleton />
             ) : firewallError ? (
@@ -2824,7 +3066,8 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                       <th className="text-left py-3 px-4 text-xs font-semibold">Protocol</th>
                       <th className="text-left py-3 px-4 text-xs font-semibold">Port</th>
                       <th className="text-left py-3 px-4 text-xs font-semibold">Direction</th>
-                      <th className="text-left py-3 px-4 text-xs font-semibold">Source</th>
+                      <th className="text-left py-3 px-4 text-xs font-semibold">Remote</th>
+                      <th className="text-left py-3 px-4 text-xs font-semibold">Addresses</th>
                       <th className="text-left py-3 px-4 text-xs font-semibold">Action</th>
                       <th className="text-left py-3 px-4 text-xs font-semibold">Priority</th>
                       <th className="text-left py-3 px-4 text-xs font-semibold">Actions</th>
@@ -2834,11 +3077,13 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
                     {firewallRules.map((rule: FirewallRule) => (
                       <tr key={rule.id} className="border-b">
                         <td className="py-3 px-4 font-mono text-sm">{rule.protocol}</td>
-                        <td className="py-3 px-4 font-mono text-sm">{rule.port_range || "*"}</td>
+                        <td className="py-3 px-4 font-mono text-sm">{rule.protocol === "icmp" ? rule.icmp_type || "All types" : rule.port_range || "*"}</td>
                         <td className="py-3 px-4 text-xs font-medium">{rule.direction}</td>
-                        <td className="py-3 px-4 font-mono text-sm">{rule.source_ip || "Any"}</td>
+                        <td className="py-3 px-4 font-mono text-sm">{!rule.source_ip || rule.source_ip === "0.0.0.0/0" ? "Any" : rule.source_ip}</td>
+                        <td className="py-3 px-4 text-xs">{rule.family === "v4" ? "IPv4" : rule.family === "v6" ? "IPv6" : "Both"}</td>
                         <td className="py-3 px-4">
                           <StatusBadge variant="lamp" className="text-xs" status={rule.action} />
+                          {rule.log && <span className="block text-xs text-muted-foreground mt-1">Logged</span>}
                         </td>
                         <td className="py-3 px-4 font-mono text-sm">{rule.priority}</td>
                         <td className="py-3 px-4">
@@ -2972,7 +3217,9 @@ export function VMDetail({ mode }: { mode: "admin" | "client" }) {
             <DialogTitle>Assign an IP address to {vm.hostname}</DialogTitle>
             <DialogDescription>
               An address is taken from a pool on this VM&apos;s node and reserved for it. The host is
-              configured to route it — anti-spoofing and firewall rules follow the address.
+              configured to route it, and anti-spoofing and firewall rules follow the address. The guest is
+              given it beside the addresses it has, live through its guest agent; it is never restarted for
+              this. If the guest cannot take it now, this page says so.
             </DialogDescription>
           </DialogHeader>
 

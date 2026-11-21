@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/maburvm/panel/internal/agent/libvirt"
+	"github.com/maburvm/panel/internal/agent/netrules"
 	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
 )
 
@@ -30,13 +32,14 @@ type savedNetworkConfigs struct {
 
 var netConfigMu sync.Mutex
 
-func netConfigPath() string {
-	dir := os.Getenv("MABURVM_DATA_DIR")
-	if dir == "" {
-		dir = "/var/lib/maburvm"
+func agentDataDir() string {
+	if dir := os.Getenv("MABURVM_DATA_DIR"); dir != "" {
+		return dir
 	}
-	return filepath.Join(dir, "network-config.json")
+	return "/var/lib/maburvm"
 }
+
+func netConfigPath() string { return filepath.Join(agentDataDir(), "network-config.json") }
 
 func currentBootID() string {
 	b, _ := os.ReadFile("/proc/sys/kernel/random/boot_id")
@@ -56,8 +59,11 @@ func loadNetworkConfigs(path string) savedNetworkConfigs {
 	return s
 }
 
-func writeNetworkConfigs(path string, s savedNetworkConfigs) error {
-	b, err := json.Marshal(s)
+func writeNetworkConfigs(path string, s savedNetworkConfigs) error { return writeJSONFile(path, s) }
+
+// writeJSONFile replaces path with v as JSON, never leaving it half written.
+func writeJSONFile(path string, v any) error {
+	b, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
@@ -132,4 +138,134 @@ func restoreNetworkConfigs(svc *NodeAgentService) {
 	}
 	updateNetworkConfig(path, bootID, "", nil) // stamp the new boot even if nothing applied
 	log.Printf("[NetworkRestore] restored network config of %d/%d VMs", restored, len(s.Configs))
+}
+
+// A tenant VPC (router namespace, bridge, veths, NAT) is runtime state too:
+// a reboot wipes it, and guests whose NIC sits on its bridge cannot start
+// until it is back. The agent keeps the VPCs it hosts and rebuilds them on
+// every start, before anything else; the panel also re-sends them.
+
+// savedVPC is one VPC this node hosts.
+type savedVPC struct {
+	Subnet  string `json:"subnet"`
+	Gateway string `json:"gateway"`
+}
+
+type savedVPCs struct {
+	BootID string              `json:"boot_id"`
+	VPCs   map[string]savedVPC `json:"vpcs"`
+}
+
+var vpcStateMu sync.Mutex
+
+func vpcStatePath() string { return filepath.Join(agentDataDir(), "vpc-config.json") }
+
+func loadVPCs(path string) savedVPCs {
+	s := savedVPCs{VPCs: map[string]savedVPC{}}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return s
+	}
+	if err := json.Unmarshal(b, &s); err != nil || s.VPCs == nil {
+		log.Printf("[NetworkRestore] WARNING: ignoring unreadable %s: %v", path, err)
+		return savedVPCs{VPCs: map[string]savedVPC{}}
+	}
+	return s
+}
+
+// updateVPC records a VPC, or forgets it when v is nil; either way the file
+// is stamped with bootID. An empty vpcID only stamps.
+func updateVPC(path, bootID, vpcID string, v *savedVPC) {
+	vpcStateMu.Lock()
+	defer vpcStateMu.Unlock()
+	s := loadVPCs(path)
+	s.BootID = bootID
+	if vpcID != "" {
+		if v == nil {
+			delete(s.VPCs, vpcID)
+		} else {
+			s.VPCs[vpcID] = *v
+		}
+	}
+	if err := writeJSONFile(path, s); err != nil {
+		log.Printf("[NetworkRestore] WARNING: saving %s: %v", path, err)
+	}
+}
+
+// restoreVPCs rebuilds every VPC on record (idempotent: a healthy one is left
+// as it is) and puts running guests' taps back on their bridges. It returns
+// the bridges rebuilt and whether the node rebooted since the file was last
+// stamped, which is when guests on them could not autostart.
+func restoreVPCs(svc *NodeAgentService) (map[string]bool, bool) {
+	path, bootID := vpcStatePath(), currentBootID()
+	s := loadVPCs(path)
+	newBoot := s.BootID != "" && bootID != "" && s.BootID != bootID
+	bridges := map[string]bool{}
+	for id, v := range s.VPCs {
+		br, err := svc.networkMgr.CreateVPC(id, v.Subnet, v.Gateway)
+		if err != nil {
+			log.Printf("[NetworkRestore] WARNING: VPC %s not rebuilt: %v", id, err)
+			continue
+		}
+		bridges[br] = true
+	}
+	if len(bridges) > 0 {
+		log.Printf("[NetworkRestore] %d/%d VPCs in place", len(bridges), len(s.VPCs))
+		reattachVPCTaps(bridges)
+	}
+	if bootID != "" {
+		updateVPC(path, bootID, "", nil)
+	}
+	return bridges, newBoot
+}
+
+// reattachVPCTaps puts running guests' taps back on their VPC bridge: a
+// bridge that had to be recreated starts out with no ports.
+func reattachVPCTaps(bridges map[string]bool) {
+	ifaces, err := libvirt.ListGuestInterfaces()
+	if err != nil {
+		log.Printf("[NetworkRestore] WARNING: listing guest interfaces: %v", err)
+		return
+	}
+	for _, gi := range ifaces {
+		if gi.Target == "" || !bridges[gi.Bridge] {
+			continue
+		}
+		if link, err := os.Readlink("/sys/class/net/" + gi.Target + "/master"); err == nil && filepath.Base(link) == gi.Bridge {
+			continue
+		}
+		if out, err := exec.Command("ip", "link", "set", gi.Target, "master", gi.Bridge).CombinedOutput(); err != nil {
+			log.Printf("[NetworkRestore] WARNING: VM %s: tap %s not put back on %s: %v (%s)", gi.VMID, gi.Target, gi.Bridge, err, strings.TrimSpace(string(out)))
+			continue
+		}
+		log.Printf("[NetworkRestore] VM %s: tap %s put back on VPC bridge %s", gi.VMID, gi.Target, gi.Bridge)
+	}
+}
+
+// startVPCGuests starts, after a reboot, the guests libvirt could not autostart
+// because their VPC bridge was not there yet.
+func startVPCGuests(bridges map[string]bool) {
+	vms, err := libvirt.ListVMs()
+	if err != nil {
+		log.Printf("[NetworkRestore] WARNING: listing VMs to start on VPCs: %v", err)
+		return
+	}
+	var guests []netrules.Guest
+	for _, vm := range vms {
+		if !vm.Autostart || vm.Status != libvirt.VMStatusStopped {
+			continue
+		}
+		brs, err := libvirt.DomainBridges(vm.UUID)
+		if err != nil {
+			continue
+		}
+		guests = append(guests, netrules.Guest{ID: vm.UUID, Autostart: true, Bridges: brs})
+	}
+	for _, id := range netrules.VPCGuestsToStart(guests, bridges) {
+		if err := libvirt.StartVM(id); err != nil {
+			log.Printf("[NetworkRestore] WARNING: VM %s on a VPC did not start after the reboot: %v", id, err)
+			continue
+		}
+		log.Printf("[NetworkRestore] VM %s started: its VPC was missing when the node booted", id)
+	}
 }

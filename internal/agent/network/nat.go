@@ -346,6 +346,162 @@ func (nm *NATManager) RemoveNAT(vmID string, internalIP string) error {
 	return nil
 }
 
+// PruneAddrs removes the masquerade and FORWARD accepts a VM holds for any
+// address but keep, and duplicates of those for keep: what an address change
+// or release leaves behind.
+func (nm *NATManager) PruneAddrs(vmID, keep string) {
+	nm.mu.Lock()
+	defer nm.mu.Unlock()
+	tag := "maburvm-vm-" + vmID
+	for _, c := range []struct {
+		table, chain, comment, flag string
+	}{
+		{NATTable, PostroutingChain, tag, "-s"},
+		{FilterTable, ForwardChain, tag + "-out", "-s"},
+		{FilterTable, ForwardChain, tag + "-in", "-d"},
+	} {
+		lines, err := nm.ipt.List(c.table, c.chain)
+		if err != nil {
+			log.Printf("[NATManager] WARNING: listing %s to prune VM %s: %v", c.chain, vmID, err)
+			continue
+		}
+		seen := false
+		for _, l := range lines {
+			if netrules.CountComment([]string{l}, c.comment) == 0 {
+				continue
+			}
+			if netrules.LineAddr(l, c.flag) == keep && !seen {
+				seen = true
+				continue
+			}
+			if spec := netrules.LineSpec(l); spec != nil {
+				if err := nm.ipt.Delete(c.table, c.chain, spec...); err != nil {
+					log.Printf("[NATManager] WARNING: could not remove %q: %v", l, err)
+				}
+			}
+		}
+	}
+}
+
+// PortForwardSpec is one forward a VM should have.
+type PortForwardSpec struct {
+	External, Internal int
+	Protocol           string // tcp or udp; anything else is tcp
+	SourceCIDR         string
+}
+
+// SetPortForwards makes the VM's forwards exactly want: the missing ones are
+// added before the ones no longer wanted (and duplicates) are removed, so a
+// forward that stays never stops answering. Without a publish address nothing
+// is removed either, so a passing detection failure costs no forwards.
+func (nm *NATManager) SetPortForwards(vmID, internalIP string, want []PortForwardSpec) error {
+	nm.mu.Lock()
+	defer nm.mu.Unlock()
+	lines, err := nm.ipt.List(NATTable, MaburVMChain)
+	if err != nil {
+		return fmt.Errorf("failed to list port forwards: %w", err)
+	}
+	tag := fmt.Sprintf("maburvm-vm-%s-port-", vmID)
+	installed := map[string]bool{}
+	for _, l := range lines {
+		if strings.Contains(l, tag) {
+			installed[netrules.PortForwardKey(netrules.LineSpec(l))] = true
+		}
+	}
+
+	var errs []string
+	wanted := map[string]bool{}
+	tracked := map[int]portForwardEntry{}
+	if len(want) > 0 {
+		if err := nm.ensurePublishAddr(); err != nil {
+			return err
+		}
+	}
+	for _, pf := range want {
+		if pf.External < 1 || pf.External > 65535 || pf.Internal < 1 || pf.Internal > 65535 {
+			errs = append(errs, fmt.Sprintf("invalid port forward %d->%d", pf.External, pf.Internal))
+			continue
+		}
+		proto := pf.Protocol
+		if proto != "udp" {
+			proto = "tcp"
+		}
+		spec := netrules.PortForwardRule(nm.publishAddr, vmID, pf.External, internalIP, pf.Internal, proto, pf.SourceCIDR)
+		key := netrules.PortForwardKey(spec)
+		wanted[key] = true
+		tracked[pf.External] = portForwardEntry{internalIP: internalIP, internalPort: pf.Internal, protocol: proto, sourceCIDR: pf.SourceCIDR}
+		if installed[key] {
+			continue
+		}
+		if err := nm.ipt.Append(NATTable, MaburVMChain, spec...); err != nil {
+			errs = append(errs, fmt.Sprintf("port forward %d->%d: %v", pf.External, pf.Internal, err))
+		}
+	}
+	seen := map[string]bool{}
+	for _, l := range lines {
+		if !strings.Contains(l, tag) {
+			continue
+		}
+		key := netrules.PortForwardKey(netrules.LineSpec(l))
+		if wanted[key] && !seen[key] {
+			seen[key] = true
+			continue
+		}
+		if err := nm.ipt.Delete(NATTable, MaburVMChain, netrules.LineSpec(l)...); err != nil {
+			errs = append(errs, fmt.Sprintf("removing %q: %v", l, err))
+		}
+	}
+	if len(tracked) > 0 {
+		nm.portForwards[vmID] = tracked
+	} else {
+		delete(nm.portForwards, vmID)
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+// Lists returns nat POSTROUTING, filter FORWARD and the port-forward chain as
+// they are now, and whether a publish address is known, for the drift check.
+func (nm *NATManager) Lists() (postrouting, forward, portForwards []string, publishKnown bool) {
+	nm.mu.Lock()
+	defer nm.mu.Unlock()
+	postrouting, _ = nm.ipt.List(NATTable, PostroutingChain)
+	forward, _ = nm.ipt.List(FilterTable, ForwardChain)
+	portForwards, _ = nm.ipt.List(NATTable, MaburVMChain)
+	return postrouting, forward, portForwards, nm.publishAddr != ""
+}
+
+// EnsureChain puts the port-forward chain and its PREROUTING jump back if
+// something outside the agent removed them, and says whether it had to.
+func (nm *NATManager) EnsureChain() (bool, error) {
+	nm.mu.Lock()
+	defer nm.mu.Unlock()
+	had, err := nm.ipt.ChainExists(NATTable, MaburVMChain)
+	if err != nil {
+		return false, err
+	}
+	jumped := false
+	if had {
+		if jumped, err = nm.ipt.Exists(NATTable, PreroutingChain, "-j", MaburVMChain); err != nil {
+			return false, err
+		}
+	}
+	if had && jumped {
+		return false, nil
+	}
+	if !had {
+		if err := nm.ipt.NewChain(NATTable, MaburVMChain); err != nil {
+			return false, fmt.Errorf("failed to create chain %s: %w", MaburVMChain, err)
+		}
+	}
+	if err := nm.ipt.Insert(NATTable, PreroutingChain, 1, "-j", MaburVMChain); err != nil {
+		return true, fmt.Errorf("failed to add PREROUTING jump: %w", err)
+	}
+	return true, nil
+}
+
 // ClearPortForwards removes every port forward of a VM, whatever the agent
 // remembers of it: the rules are found in the chain, so forwards an earlier
 // agent process added (in any rule form) go too.

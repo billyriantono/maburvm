@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"gorm.io/gorm"
 
@@ -148,4 +149,12 @@ func (r *BackupScheduleRepository) ExistsByVMID(ctx context.Context, vmID string
 		return false, err
 	}
 	return count > 0, nil
+}
+
+// ClaimRun moves a due schedule's next run to next and reports whether this
+// call did: a second caller finds it no longer due, so a run starts once.
+func (r *BackupScheduleRepository) ClaimRun(ctx context.Context, id string, now, next time.Time) (bool, error) {
+	res := r.db.WithContext(ctx).Model(&models.BackupSchedule{}).
+		Where("id = ? AND next_run_at <= ?", id, now).Update("next_run_at", next)
+	return res.RowsAffected == 1, res.Error
 }

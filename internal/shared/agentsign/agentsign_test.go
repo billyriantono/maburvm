@@ -34,3 +34,33 @@ func TestSignVerify(t *testing.T) {
 		t.Fatal("a malformed key must be refused")
 	}
 }
+
+// A node with AGENT_UPDATE_PUBKEY installs only builds signed with its key;
+// a node without one keeps accepting what the panel sends.
+func TestCheckUpdate(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	other, _, _ := ed25519.GenerateKey(rand.Reader)
+	key := base64.StdEncoding.EncodeToString(pub)
+	const digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+	good := Sign(priv, digest)
+
+	if msg := CheckUpdate("", digest, nil, "amd64"); msg != "" {
+		t.Fatalf("no key configured must accept: %s", msg)
+	}
+	if msg := CheckUpdate(key, digest, good, "amd64"); msg != "" {
+		t.Fatalf("a good signature must pass: %s", msg)
+	}
+	for name, c := range map[string]struct {
+		key string
+		sig []byte
+	}{
+		"unsigned":    {key, nil},
+		"wrong key":   {base64.StdEncoding.EncodeToString(other), good},
+		"bad key":     {"not-a-key", good},
+		"other build": {key, Sign(priv, "0000000000000000000000000000000000000000000000000000000000000000")},
+	} {
+		if CheckUpdate(c.key, digest, c.sig, "amd64") == "" {
+			t.Fatalf("%s: must be refused", name)
+		}
+	}
+}

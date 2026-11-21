@@ -39,6 +39,7 @@ import { toast } from "sonner"
 import { StatusBadge, useVMTransitions, vmStatus } from "@/components/status-badge"
 import { useCopy } from "@/lib/use-feedback"
 import { NodeStoragePools } from "@/components/pool-allocation"
+import { NodeAllocationCard } from "@/components/node-allocation"
 
 // Resource gauge component
 function ResourceGauge({ value, label, detail, icon: Icon, color }: { value: number; label: string; detail?: string; icon: React.ElementType; color: string }) {
@@ -500,6 +501,7 @@ export default function NodeDetailPage() {
 
           {/* Outside the live readings: what is stored and promised on a node
               matters most when the node is not answering. */}
+          <NodeAllocationCard node={node} />
           <NodeStoragePools nodeId={node.id} />
 
           {/* Node Details */}

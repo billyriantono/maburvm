@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -23,11 +24,12 @@ var (
 // APIKeyService manages per-user API automation credentials.
 type APIKeyService struct {
 	repo *repository.APIKeyRepository
+	db   *gorm.DB
 }
 
 // NewAPIKeyService creates a new APIKeyService.
 func NewAPIKeyService(db *gorm.DB) *APIKeyService {
-	return &APIKeyService{repo: repository.NewAPIKeyRepository(db)}
+	return &APIKeyService{repo: repository.NewAPIKeyRepository(db), db: db}
 }
 
 // CreateAPIKeyRequest is the input for creating an API key.
@@ -38,6 +40,8 @@ type CreateAPIKeyRequest struct {
 	Role models.UserRole `json:"role,omitempty"`
 	// ReadOnly limits the key to GET requests.
 	ReadOnly bool `json:"read_only,omitempty"`
+	// ClientIP is where the request came from, for the owner's email.
+	ClientIP string `json:"-"`
 }
 
 // CreateAPIKey generates a new token, stores only its hash, and returns the
@@ -73,6 +77,12 @@ func (s *APIKeyService) CreateAPIKey(ctx context.Context, userID string, ownerRo
 	}
 	if err := s.repo.Create(ctx, key); err != nil {
 		return nil, "", err
+	}
+	if s.db != nil {
+		if err := NotifyAccount(context.WithoutCancel(ctx), s.db, userID, EmailAPIKeyCreated,
+			map[string]string{"key": name, "who": ChangeSource(false, req.ClientIP)}); err != nil {
+			slog.Default().Warn("API key created, but its owner could not be told", "user_id", userID, "error", err)
+		}
 	}
 	return key, token, nil
 }

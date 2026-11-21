@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"fmt"
+	"math"
 	"path"
+	"sort"
 
 	"github.com/maburvm/panel/internal/shared/models"
 	"gorm.io/gorm"
@@ -258,6 +260,150 @@ func AdmitPoolDisk(ctx context.Context, tx *gorm.DB, pool *models.StoragePool, a
 	return admitPoolRatio(ctx, tx, pool, addGB)
 }
 
+// nodeLoad is what a node has promised to VMs, with the ratios that cap it.
+type nodeLoad struct {
+	Node           models.Node
+	AllocatedVCPU  int
+	AllocatedRAMMB int64
+	RAMRatio       float64 // 0 = no cap
+	VCPURatio      float64 // 0 = no cap
+}
+
+// ramFits mirrors AdmitNodeRAMTx, so placement never picks a node admission
+// then refuses. Unmeasured RAM or no ratio fits.
+func (n nodeLoad) ramFits(ramMB int) bool {
+	if n.RAMRatio <= 0 || n.Node.MemoryTotalBytes <= 0 {
+		return true
+	}
+	capacityMB := int64(float64(n.Node.MemoryTotalBytes) / (1024 * 1024) * n.RAMRatio)
+	return n.AllocatedRAMMB+int64(ramMB) <= capacityMB
+}
+
+// vcpuFits is the vCPU half: unmeasured CPUs or no ratio fits.
+func (n nodeLoad) vcpuFits(cpu int) bool {
+	return vcpuWithinRatio(n.Node.CPUCount, n.AllocatedVCPU, cpu, n.VCPURatio)
+}
+
+func vcpuWithinRatio(cpuCount, allocated, add int, ratio float64) bool {
+	if ratio <= 0 || cpuCount <= 0 || add <= 0 {
+		return true
+	}
+	return float64(allocated+add) <= float64(cpuCount)*ratio
+}
+
+// rankNodes orders candidates best first for a VM of ramMB: least RAM
+// allocated relative to the node's physical RAM once the VM is placed, then
+// most RAM left, then by name and id so the same state always picks the same
+// node. Nodes whose RAM has not been measured go last.
+func rankNodes(loads []nodeLoad, ramMB int) []nodeLoad {
+	out := append([]nodeLoad(nil), loads...)
+	share := func(n nodeLoad) float64 {
+		total := float64(n.Node.MemoryTotalBytes) / (1024 * 1024)
+		if total <= 0 {
+			return math.Inf(1)
+		}
+		return float64(n.AllocatedRAMMB+int64(ramMB)) / total
+	}
+	free := func(n nodeLoad) int64 { return n.Node.MemoryTotalBytes/(1024*1024) - n.AllocatedRAMMB }
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if sa, sb := share(a), share(b); sa != sb {
+			return sa < sb
+		}
+		if fa, fb := free(a), free(b); fa != fb {
+			return fa > fb
+		}
+		if a.Node.Name != b.Node.Name {
+			return a.Node.Name < b.Node.Name
+		}
+		return a.Node.ID < b.Node.ID
+	})
+	return out
+}
+
+// nodeAllocations sums the vCPUs and RAM (MB) the panel has promised on each
+// of the given nodes. Summed here rather than in SQL so it reads the same on
+// every database.
+func nodeAllocations(ctx context.Context, db *gorm.DB, nodeIDs []string) (map[string][2]int64, error) {
+	out := make(map[string][2]int64, len(nodeIDs))
+	if len(nodeIDs) == 0 {
+		return out, nil
+	}
+	var vms []struct {
+		NodeID    string
+		Resources models.Resources `gorm:"serializer:json"`
+	}
+	if err := db.WithContext(ctx).Table("vms").Select("node_id, resources").
+		Where("deleted_at IS NULL AND node_id IN ?", nodeIDs).Find(&vms).Error; err != nil {
+		return nil, fmt.Errorf("failed to sum node allocations: %w", err)
+	}
+	for _, vm := range vms {
+		a := out[vm.NodeID]
+		a[0] += int64(vm.Resources.CPU)
+		a[1] += int64(vm.Resources.RAM)
+		out[vm.NodeID] = a
+	}
+	return out, nil
+}
+
+// loadNodes pairs nodes with what is promised on them and their ratios.
+func loadNodes(ctx context.Context, db *gorm.DB, nodes []models.Node) ([]nodeLoad, error) {
+	ids := make([]string, len(nodes))
+	for i := range nodes {
+		ids[i] = nodes[i].ID
+	}
+	alloc, err := nodeAllocations(ctx, db, ids)
+	if err != nil {
+		return nil, err
+	}
+	ramRatio := RAMOvercommitRatio(ctx, db)
+	out := make([]nodeLoad, len(nodes))
+	for i, n := range nodes {
+		out[i] = nodeLoad{
+			Node: n, AllocatedVCPU: int(alloc[n.ID][0]), AllocatedRAMMB: alloc[n.ID][1],
+			RAMRatio: ramRatio, VCPURatio: VCPUAllocationRatio(ctx, db, n.VCPURatio),
+		}
+	}
+	return out, nil
+}
+
+// AdmitNodeVCPU checks that a node may carry addCPU more vCPUs under its vCPU
+// ratio. Call it in the transaction that records the change: the node row is
+// locked there, so concurrent orders on one node are admitted one at a time.
+// No ratio, a node whose CPUs were never measured, or a shrink all pass.
+func AdmitNodeVCPU(ctx context.Context, tx *gorm.DB, nodeID string, addCPU int) error {
+	if nodeID == "" || addCPU <= 0 {
+		return nil
+	}
+	read := func(q *gorm.DB) (models.Node, error) {
+		var node models.Node
+		err := q.Where("id = ?", nodeID).First(&node).Error
+		return node, err
+	}
+	node, err := read(tx.WithContext(ctx))
+	if err != nil {
+		return fmt.Errorf("failed to read node: %w", err)
+	}
+	// Locked only when there is a cap to keep: with none, nothing changes.
+	if VCPUAllocationRatio(ctx, tx, node.VCPURatio) <= 0 || node.CPUCount <= 0 {
+		return nil
+	}
+	if node, err = read(tx.WithContext(ctx).Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate})); err != nil {
+		return fmt.Errorf("failed to lock node: %w", err)
+	}
+	ratio := VCPUAllocationRatio(ctx, tx, node.VCPURatio)
+	alloc, err := nodeAllocations(ctx, tx, []string{nodeID})
+	if err != nil {
+		return err
+	}
+	allocated := int(alloc[nodeID][0])
+	if !vcpuWithinRatio(node.CPUCount, allocated, addCPU, ratio) {
+		return fmt.Errorf("%w: node %s would carry %d vCPUs, over its limit of %d (%.2fx its %d CPUs)",
+			ErrNodeCapacityExceeded, node.Name, allocated+addCPU, int(float64(node.CPUCount)*ratio), ratio, node.CPUCount)
+	}
+	return nil
+}
+
 // admitPoolRatio is the allocation-ratio half of AdmitPoolDisk. With addGB 0 it
 // re-checks a pool after the new disk has been recorded.
 func admitPoolRatio(ctx context.Context, tx *gorm.DB, pool *models.StoragePool, addGB int) error {
@@ -283,4 +429,39 @@ func admitPoolRatio(ctx context.Context, tx *gorm.DB, pool *models.StoragePool, 
 			allocated[pool.ID]/bytesPerGB+int64(addGB), int64(float64(pool.TotalSpace)*ratio)/bytesPerGB, ratio)
 	}
 	return nil
+}
+
+// NodeAllocation is what a node has promised to VMs against what it has, with
+// the ratios that cap it. A limit of 0 is no cap (no ratio, or not measured).
+type NodeAllocation struct {
+	VCPUAllocated int     `json:"vcpu_allocated"`
+	CPUCount      int     `json:"cpu_count"`
+	VCPURatio     float64 `json:"vcpu_ratio"`
+	// VCPURatioNode is the node's own ratio; 0 means the panel-wide one applies.
+	VCPURatioNode  float64 `json:"vcpu_ratio_node"`
+	VCPULimit      int     `json:"vcpu_limit"`
+	RAMAllocatedMB int64   `json:"ram_allocated_mb"`
+	RAMTotalMB     int64   `json:"ram_total_mb"`
+	RAMRatio       float64 `json:"ram_ratio"`
+	RAMLimitMB     int64   `json:"ram_limit_mb"`
+}
+
+// NodeAllocationOf reports a node's allocation, for its page.
+func NodeAllocationOf(ctx context.Context, db *gorm.DB, node models.Node) (*NodeAllocation, error) {
+	loads, err := loadNodes(ctx, db, []models.Node{node})
+	if err != nil {
+		return nil, err
+	}
+	n := loads[0]
+	a := &NodeAllocation{
+		VCPUAllocated: n.AllocatedVCPU, CPUCount: node.CPUCount, VCPURatio: n.VCPURatio, VCPURatioNode: node.VCPURatio,
+		RAMAllocatedMB: n.AllocatedRAMMB, RAMTotalMB: node.MemoryTotalBytes / (1024 * 1024), RAMRatio: n.RAMRatio,
+	}
+	if n.VCPURatio > 0 && node.CPUCount > 0 {
+		a.VCPULimit = int(float64(node.CPUCount) * n.VCPURatio)
+	}
+	if n.RAMRatio > 0 && node.MemoryTotalBytes > 0 {
+		a.RAMLimitMB = int64(float64(node.MemoryTotalBytes) / (1024 * 1024) * n.RAMRatio)
+	}
+	return a, nil
 }

@@ -26,6 +26,24 @@ func panelObjectStore(ctx context.Context) (*pb.ObjectStore, error) {
 	return ObjectStoreHook(ctx)
 }
 
+// permanentVMFailure reports an agent's answer to a VM command that another try
+// would get again. Agents report every VM command failure as INTERNAL, so
+// besides the codes this goes by the few messages that name something only an
+// operator can supply.
+func permanentVMFailure(agentErr *pb.ErrorResponse, detail string) bool {
+	if agentErr.GetRetryable() {
+		return false
+	}
+	switch agentErr.GetCode() {
+	case pb.ErrorCode_ERROR_CODE_INVALID_ARGUMENT, pb.ErrorCode_ERROR_CODE_NOT_FOUND, pb.ErrorCode_ERROR_CODE_ALREADY_EXISTS,
+		pb.ErrorCode_ERROR_CODE_PERMISSION_DENIED, pb.ErrorCode_ERROR_CODE_UNAUTHENTICATED:
+		return true
+	}
+	d := strings.ToLower(detail)
+	return isDomainNotFound(d) || strings.Contains(d, "template image not found") ||
+		strings.Contains(d, "template not found") || strings.Contains(d, "no space left on device")
+}
+
 // permanentDiskFailure reports whether a failed backup, restore or capture will
 // fail the same way if it is tried again. A retry moves the whole disk again,
 // so only a failure that can clear on its own is worth one.

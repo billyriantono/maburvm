@@ -216,8 +216,18 @@ func TestPG_BillingEventIsDeliveredThroughTheQueue(t *testing.T) {
 		retrying.Store(kind+" "+string(args), reason)
 	}
 	t.Cleanup(func() { queue.JobRetryingHook = nil })
-	vmID := uuid.NewString()
-	_, err = client.RiverClient().Insert(ctx, queue.VMOperationJob{VMID: vmID, Operation: queue.VMOpCreate, NodeID: uuid.NewString()}, nil)
+	// A VM whose node is offline: a failure another try may clear. (A VM that
+	// does not exist at all is cancelled at once.)
+	vmID, nodeID, userID, tplID := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+	for _, q := range []string{
+		`INSERT INTO users (id, email, password_hash, role) VALUES ('` + userID + `', 'retry@example.test', 'x', 'client')`,
+		`INSERT INTO nodes (id, name, ip_address, token, status) VALUES ('` + nodeID + `', 'n-retry', '192.0.2.9', 't', 'offline')`,
+		`INSERT INTO os_templates (id, name, version, image_path, checksum) VALUES ('` + tplID + `', 'debian', '12', '/x', 'c')`,
+		`INSERT INTO vms (id, user_id, node_id, hostname, os_template_id) VALUES ('` + vmID + `', '` + userID + `', '` + nodeID + `', 'retry-1', '` + tplID + `')`,
+	} {
+		require.NoError(t, db.Exec(q).Error, q)
+	}
+	_, err = client.RiverClient().Insert(ctx, queue.VMOperationJob{VMID: vmID, Operation: queue.VMOpCreate, NodeID: nodeID}, nil)
 	require.NoError(t, err)
 	var state, reason string
 	require.Eventually(t, func() bool {

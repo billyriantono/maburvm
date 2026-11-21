@@ -129,63 +129,6 @@ func removeIPv6Route(d IPv6Delegation) error {
 	return nil
 }
 
-// ipv6FirewallSpecs mirrors buildRuleSpec for ip6tables, with the VM's
-// delegated prefix in place of its address. sorted must already be in
-// priority order (the caller inserts each spec at position 1, exactly like
-// IPv4). Rules scoped to an IPv4 source can never match v6 traffic and are
-// skipped; IPv6 source CIDRs are honoured; "icmp" means ICMPv6 here.
-// Returns the per-rule specs and the trailing default-drop spec.
-func ipv6FirewallSpecs(vmID, prefix string, sorted []FirewallRule) (specs [][]string, defaultDrop []string) {
-	for _, rule := range sorted {
-		var spec []string
-		switch rule.Protocol {
-		case "", "all":
-		case "icmp":
-			spec = append(spec, "-p", "icmpv6")
-		default:
-			spec = append(spec, "-p", rule.Protocol)
-		}
-		if src := rule.SourceIP; src != "" && src != "0.0.0.0/0" && src != "::/0" {
-			if ip, _, err := net.ParseCIDR(src); err == nil && ip.To4() != nil {
-				continue // IPv4-only source: cannot apply to v6
-			} else if ip := net.ParseIP(src); ip != nil && ip.To4() != nil {
-				continue
-			}
-			// The remote end: source of inbound traffic, destination of outbound.
-			if rule.Direction == "inbound" {
-				spec = append(spec, "-s", src)
-			} else {
-				spec = append(spec, "-d", src)
-			}
-		}
-		if rule.Direction == "inbound" {
-			spec = append(spec, "-d", prefix)
-		} else {
-			spec = append(spec, "-s", prefix)
-		}
-		if rule.PortRange != "" && (rule.Protocol == "tcp" || rule.Protocol == "udp") {
-			portSpec, multi, err := normalizePortSpec(rule.PortRange)
-			if err != nil {
-				continue // validated on the v4 pass; never reached
-			}
-			if multi {
-				spec = append(spec, "-m", "multiport", "--dports", portSpec)
-			} else {
-				spec = append(spec, "--dport", portSpec)
-			}
-		}
-		if rule.Action == "allow" {
-			spec = append(spec, "-j", "ACCEPT")
-		} else {
-			spec = append(spec, "-j", "DROP")
-		}
-		spec = append(spec, "-m", "comment", "--comment", fmt.Sprintf("maburvm-vm-%s-rule-%s", vmID, rule.ID))
-		specs = append(specs, spec)
-	}
-	defaultDrop = []string{"-d", prefix, "-j", "DROP", "-m", "comment", "--comment", fmt.Sprintf("maburvm-vm-%s-default-drop", vmID)}
-	return specs, defaultDrop
-}
-
 // ipv6StatePath is where routed prefixes are persisted (MABURVM_DATA_DIR, like the
 // agent's other state; default /var/lib/maburvm).
 func ipv6StatePath() string {

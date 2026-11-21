@@ -20,6 +20,7 @@ const KINDS: { kind: AlertKind; label: string; help: string }[] = [
   { kind: "backup_failed", label: "A backup fails", help: "Once every retry is used up." },
   { kind: "job_failed", label: "A background job fails for good", help: "Creating, reinstalling, restoring, snapshots, imports and the rest of the job queue." },
   { kind: "firewall_off", label: "A node stops filtering guest traffic", help: "VM firewall rules and spoofing protection are not enforced on that node." },
+  { kind: "network_drift", label: "A node keeps losing VM network rules", help: "Its agent had to put VM firewall, spoofing or NAT rules back three times within an hour." },
 ]
 
 const ALL_ON = Object.fromEntries(KINDS.map((k) => [k.kind, true])) as Record<AlertKind, boolean>

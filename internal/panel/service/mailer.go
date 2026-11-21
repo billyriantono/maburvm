@@ -103,14 +103,14 @@ func EmailLogoURL(b Branding, publicURL string) string {
 	return publicURL + "/api/v1/branding/logo"
 }
 
-// SendWelcomeEmail sends the new-account message with a link to sign in.
-func SendWelcomeEmail(cfg SMTPSettings, to, name, panelURL string) error {
+// QueueWelcomeEmail queues the new-account message with a link to sign in.
+func QueueWelcomeEmail(ctx context.Context, db *gorm.DB, cfg SMTPSettings, to, name, panelURL string) error {
 	link := ""
 	if panelURL != "" {
 		link = strings.TrimRight(panelURL, "/") + "/login"
 	}
-	return SendMail(cfg, to, RenderEmail(cfg.Template(EmailWelcome), cfg.Brand,
-		EmailData{Name: name, Email: to, Link: link, LogoURL: EmailLogoURL(cfg.Brand, panelURL)}))
+	return queueRendered(ctx, db, EmailWelcome, to, RenderEmail(cfg.Template(EmailWelcome), cfg.Brand,
+		EmailData{Name: name, Email: to, Link: link, LogoURL: EmailLogoURL(cfg.Brand, panelURL)}), emailRefs{})
 }
 
 // SendPasswordResetEmail sends a password-reset link.
@@ -251,18 +251,22 @@ func sendOverTLS(addr string, auth smtp.Auth, from string, to []string, msg []by
 	return c.Quit()
 }
 
-// NotifyVMOwner emails a server's owner about something that happened to it:
-// created, reinstalled, put into or taken out of rescue mode. key is the
-// template. No email ever carries a password: when the panel generated one and
-// is keeping it, the email says where to read it; otherwise it reminds the
-// owner they chose their own. Best-effort: with no mail server set up, or that
-// email switched off, it does nothing.
+// NotifyVMOwner tells a server's owner about something that happened to it:
+// created, reinstalled, suspended, put into or taken out of rescue mode. key
+// is the template. The owner gets a notification in the panel and, when that
+// email is on and a mail server is set up, an email through the queue. No
+// email ever carries a password: when the panel generated one and is keeping
+// it, the email says where to read it; otherwise it reminds the owner they
+// chose their own.
 func NotifyVMOwner(ctx context.Context, db *gorm.DB, vmID, key string) error {
-	cfg, ok, err := LoadSMTPSettings(db)
-	if err != nil || !ok || !cfg.Enabled(key) {
-		return err
-	}
+	return NotifyVMOwnerWith(ctx, db, vmID, key, nil)
+}
+
+// NotifyVMOwnerWith is NotifyVMOwner with placeholders only some emails have
+// ({{used}} in a transfer warning, say); they win over the server ones.
+func NotifyVMOwnerWith(ctx context.Context, db *gorm.DB, vmID, key string, extra map[string]string) error {
 	var rows []struct {
+		UserID   string
 		Hostname string
 		Email    string
 		Name     string
@@ -271,7 +275,7 @@ func NotifyVMOwner(ctx context.Context, db *gorm.DB, vmID, key string) error {
 		OSType   string `gorm:"column:os_type"`
 		Address  string
 	}
-	if err := db.WithContext(ctx).Raw(`SELECT v.hostname, u.email, coalesce(u.name, '') AS name, u.role::text AS role,
+	if err := db.WithContext(ctx).Raw(`SELECT u.id::text AS user_id, v.hostname, u.email, coalesce(u.name, '') AS name, u.role::text AS role,
 			coalesce(t.name, '') AS system, coalesce(t.os_type, '') AS os_type,
 			coalesce((SELECT host(n.ip_address) FROM networks n WHERE n.vm_id = v.id AND n.deleted_at IS NULL ORDER BY n.created_at LIMIT 1), '') AS address
 		FROM vms v JOIN users u ON u.id = v.user_id
@@ -303,14 +307,21 @@ func NotifyVMOwner(ctx context.Context, db *gorm.DB, vmID, key string) error {
 		}
 		return v
 	}
-	return SendMail(cfg, r.Email, RenderEmail(cfg.Template(key), cfg.Brand, EmailData{
-		Name: r.Name, Email: r.Email, Link: link, LogoURL: EmailLogoURL(cfg.Brand, publicURL),
-		Extra: map[string]string{
-			"server":  r.Hostname,
-			"address": fill(r.Address, "not assigned yet"),
-			"system":  fill(r.System, "as ordered"),
-			"user":    models.OSLoginUser(r.OSType),
-			"access":  access,
-		},
-	}))
+	fields := map[string]string{
+		"server":  r.Hostname,
+		"address": fill(r.Address, "not assigned yet"),
+		"system":  fill(r.System, "as ordered"),
+		"user":    models.OSLoginUser(r.OSType),
+		"access":  access,
+	}
+	for k, v := range extra {
+		fields[k] = v
+	}
+	brand := LoadBranding(db.WithContext(ctx))
+	msg := RenderEmail(templateFor(LoadEmailTemplates(db.WithContext(ctx)), key), brand, EmailData{
+		Name: r.Name, Email: r.Email, Link: link, LogoURL: EmailLogoURL(brand, publicURL),
+		Extra: fields,
+	})
+	addNotice(ctx, db, r.UserID, key, msg.Subject, "vm", vmID)
+	return queueEmail(ctx, db, key, r.Email, msg, emailRefs{userID: r.UserID, vmID: vmID})
 }

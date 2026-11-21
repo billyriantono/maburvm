@@ -463,6 +463,21 @@ func TestPoolAlertSeverity(t *testing.T) {
 	}
 }
 
+func TestPoolAlertText(t *testing.T) {
+	const gb = 1 << 30
+	p := &models.StoragePool{Name: "vm", TotalSpace: 1000 * gb, UsedSpace: 910 * gb, AvailableSpace: 90 * gb}
+	title, detail := poolAlertText(p, "node-a", models.AlertSeverityWarning)
+	assert.Equal(t, "Storage pool vm on node-a is nearly full (91% used)", title)
+	assert.Contains(t, detail, "90.0 GB free of 1000.0 GB")
+	assert.Contains(t, detail, "refused on it once one would leave less than 20 GB free", "says when the hard stop comes")
+	assert.Contains(t, detail, "paused until space is freed")
+
+	p.UsedSpace, p.AvailableSpace = 990*gb, 10*gb
+	title, detail = poolAlertText(p, "node-a", models.AlertSeverityCritical)
+	assert.Equal(t, "Storage pool vm on node-a is full (99% used)", title)
+	assert.Contains(t, detail, "already refused", "past the reserve, new disks are stopped now")
+}
+
 func TestAlertWebhookIsSignedAndKeepsItsSchema(t *testing.T) {
 	var got struct {
 		body      []byte

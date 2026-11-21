@@ -31,6 +31,8 @@ type RouterOSNetwork struct {
 	IPv6Address string // CIDR form
 	IPv6Gateway string
 	IPv6DNS     []string
+	// Extra are further IPv4 addresses on the same interface.
+	Extra []GuestAddr
 }
 
 // rosPanelComment marks the address and route this panel added, so a later
@@ -58,6 +60,9 @@ func rosQuote(s string) string {
 }
 
 func (n RouterOSNetwork) validate() error {
+	if err := ValidateExtra(n.Extra); err != nil {
+		return err
+	}
 	if n.Address != "" {
 		if ip := net.ParseIP(n.Address); ip == nil || ip.To4() == nil {
 			return fmt.Errorf("invalid IPv4 address %q", n.Address)
@@ -103,6 +108,9 @@ func (n RouterOSNetwork) ipv4Lines() []string {
 		"/ip address remove [find comment=" + c + "]",
 		"/ip route remove [find comment=" + c + "]",
 		fmt.Sprintf("/ip address add address=%s/%d interface=$nic comment=%s", n.Address, n.Prefix, c),
+	}
+	for _, a := range n.Extra {
+		lines = append(lines, fmt.Sprintf("/ip address add address=%s/%d interface=$nic comment=%s", a.Address, a.Prefix, c))
 	}
 	if n.Gateway != "" {
 		lines = append(lines, fmt.Sprintf("/ip route add gateway=%s comment=%s", n.Gateway, c))

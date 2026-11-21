@@ -55,6 +55,20 @@ RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
               -X github.com/maburvm/panel/internal/shared/buildinfo.BuildTime=${BUILD_TIME} \
               -X github.com/maburvm/panel/internal/shared/buildinfo.Version=${APP_VERSION}" \
     -o /app/bin/linux/agent-amd64 ./cmd/agent
+# arm64 nodes: off unless asked for (--build-arg AGENT_ARM64=1), so an image for
+# amd64-only fleets builds exactly as before. Cross-compiled against Debian's
+# arm64 libvirt; the node still test-runs it before swapping it in.
+ARG AGENT_ARM64=""
+RUN if [ "$AGENT_ARM64" = "1" ]; then \
+      dpkg --add-architecture arm64 && apt-get update \
+      && apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross libvirt-dev:arm64 \
+      && PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig \
+         CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc go build \
+         -ldflags "-X github.com/maburvm/panel/internal/shared/buildinfo.Commit=${GIT_COMMIT} \
+                   -X github.com/maburvm/panel/internal/shared/buildinfo.BuildTime=${BUILD_TIME} \
+                   -X github.com/maburvm/panel/internal/shared/buildinfo.Version=${APP_VERSION}" \
+         -o /app/bin/linux/agent-arm64 ./cmd/agent; \
+    fi
 
 # Runtime stage
 FROM alpine:3.24
@@ -72,8 +86,9 @@ WORKDIR /app
 
 # Copy binary from builder
 COPY --from=builder /app/bin/panel ./panel
-# Default AGENT_BINARY_DIR (bin/linux, relative to WORKDIR).
-COPY --from=agent-builder /app/bin/linux/agent-amd64 ./bin/linux/agent-amd64
+# Default AGENT_BINARY_DIR (bin/linux, relative to WORKDIR): agent-amd64, and
+# agent-arm64 when it was built.
+COPY --from=agent-builder /app/bin/linux/ ./bin/linux/
 
 # Copy migrations (panel reads these at runtime)
 COPY internal/shared/db/migrations ./migrations

@@ -108,7 +108,7 @@ func backupWorkerFixture(t *testing.T, agent *backupAgent, store *pb.ObjectStore
 	for _, stmt := range []string{
 		`CREATE TABLE nodes (id TEXT PRIMARY KEY, name TEXT, ip_address TEXT, status TEXT, token TEXT, deleted_at DATETIME)`,
 		`CREATE TABLE vms (id TEXT PRIMARY KEY, user_id TEXT, node_id TEXT, hostname TEXT, os_template_id TEXT, resources TEXT, status TEXT, updated_at DATETIME, deleted_at DATETIME)`,
-		`CREATE TABLE backups (id TEXT PRIMARY KEY, vm_id TEXT, storage_provider TEXT, storage_path TEXT, backup_type TEXT, status TEXT, size INTEGER DEFAULT 0, compression TEXT, checksum TEXT, error_message TEXT, started_at DATETIME, completed_at DATETIME, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
+		`CREATE TABLE backups (id TEXT PRIMARY KEY, vm_id TEXT, storage_provider TEXT, storage_path TEXT, backup_type TEXT, status TEXT, size INTEGER DEFAULT 0, compression TEXT, checksum TEXT, error_message TEXT, started_at DATETIME, completed_at DATETIME, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME, disks TEXT DEFAULT '[]', consistency TEXT DEFAULT '')`,
 		`INSERT INTO nodes (id, name, ip_address, status, token) VALUES ('` + testNodeID + `', 'node-1', '192.0.2.10', 'active', 'tok')`,
 		`INSERT INTO vms (id, user_id, node_id, hostname, os_template_id, resources, status) VALUES ('` + testVMID + `', 'u', '` + testNodeID + `', 'h', 't', '{"cpu":1,"ram":512,"disk":10}', 'running')`,
 		`INSERT INTO backups (id, vm_id, storage_provider, storage_path, status) VALUES ('` + testBackupID + `', '` + testVMID + `', 's3', 'backups/x.qcow2', 'pending')`,
@@ -276,7 +276,7 @@ func TestBackupStopsWhenTheDestinationCannotBeRead(t *testing.T) {
 }
 
 func TestDiskJobsAreInsertedWithAFewAttempts(t *testing.T) {
-	for name, opts := range map[string]*river.InsertOpts{
+	for name, opts := range map[string]river.InsertOpts{
 		"backup": BackupJob{}.InsertOpts(), "restore": RestoreJob{}.InsertOpts(), "image": ImageJob{}.InsertOpts(),
 	} {
 		if opts.MaxAttempts != DiskJobMaxAttempts {
@@ -383,4 +383,28 @@ func TestRestoreCreateFailures(t *testing.T) {
 			t.Fatalf("VM left %q", got)
 		}
 	})
+}
+
+func TestPermanentVMFailure(t *testing.T) {
+	internal := func(msg string) *pb.ErrorResponse {
+		return &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INTERNAL, Message: msg}
+	}
+	for _, tc := range []struct {
+		name string
+		err  *pb.ErrorResponse
+		want bool
+	}{
+		{"template missing on the node", internal("template image not found at /var/lib/libvirt/templates/x.qcow2: no such file"), true},
+		{"domain gone", internal("failed to start: virError(Code=42, Domain=10, Message='Domain not found: no domain with matching uuid')"), true},
+		{"disk full", internal("failed to clone QCOW2 image: exit status 1 (output: No space left on device)"), true},
+		{"refused by code", &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_INVALID_ARGUMENT, Message: "bad"}, true},
+		{"libvirt busy", internal("cannot acquire state change lock"), false},
+		{"download hiccup", internal("failed to download template image from https://example.com/x.qcow2: connection reset"), false},
+		{"node says try again", &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_NOT_FOUND, Retryable: true}, false},
+		{"no structured error", nil, false},
+	} {
+		if got := permanentVMFailure(tc.err, tc.err.GetMessage()); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
 }

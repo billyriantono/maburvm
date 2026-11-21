@@ -168,6 +168,7 @@ func TestAddFirewallRuleIsCappedPerVM(t *testing.T) {
 	require.NoError(t, db.Exec(`CREATE TABLE firewall_rules (
 		id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, protocol TEXT NOT NULL, port_range TEXT, action TEXT NOT NULL,
 		direction TEXT NOT NULL, source_ip TEXT DEFAULT '0.0.0.0/0', priority INTEGER DEFAULT 100,
+		icmp_type TEXT NOT NULL DEFAULT '', log BOOLEAN NOT NULL DEFAULT 0, family TEXT NOT NULL DEFAULT '',
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, deleted_at DATETIME
 	)`).Error)
 	setQuotaSettings(t, db, `{"firewallRuleMaxPerVm": 3}`)
@@ -185,4 +186,21 @@ func TestAddFirewallRuleIsCappedPerVM(t *testing.T) {
 	// Unset, the built-in default applies.
 	setQuotaSettings(t, db, `{}`)
 	require.Equal(t, DefaultFirewallRulesPerVM, FirewallRulesPerVM(ctx, db))
+}
+
+// A VM's IPv6 rides on its IPv4 interface, so its last IPv4 may not go first.
+func TestReleasingTheLastIPv4KeepsIPv6Routed(t *testing.T) {
+	svc, db := newPortForwardTestService(t)
+	ctx := context.Background()
+	require.NoError(t, db.Exec(`CREATE TABLE vm_ipv6_prefixes (id TEXT PRIMARY KEY, pool_id TEXT NOT NULL, vm_id TEXT NOT NULL, prefix TEXT NOT NULL, idx INTEGER NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE ip_pools (id TEXT PRIMARY KEY, cidr TEXT, gateway TEXT, delegated_prefix_len INTEGER, deleted_at DATETIME)`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE ip_addresses (id TEXT PRIMARY KEY, pool_id TEXT, address TEXT, family TEXT, vm_id TEXT, deleted_at DATETIME)`).Error)
+	require.NoError(t, db.Exec(`INSERT INTO networks (id, vm_id, ip_address) VALUES ('net-1','vm-1','203.0.113.5'), ('net-2','vm-1','203.0.113.6')`).Error)
+	require.NoError(t, db.Exec(`INSERT INTO vm_ipv6_prefixes (id, pool_id, vm_id, prefix, idx) VALUES ('p-1','pool-6','vm-1','2001:db8:5::/64',1)`).Error)
+
+	require.False(t, svc.strandsIPv6(ctx, "vm-1", "net-1"), "another IPv4 is left to carry it")
+	require.NoError(t, db.Exec(`DELETE FROM networks WHERE id = 'net-2'`).Error)
+	require.True(t, svc.strandsIPv6(ctx, "vm-1", "net-1"))
+	require.NoError(t, db.Exec(`DELETE FROM vm_ipv6_prefixes`).Error)
+	require.False(t, svc.strandsIPv6(ctx, "vm-1", "net-1"), "no IPv6: the last IPv4 may go")
 }

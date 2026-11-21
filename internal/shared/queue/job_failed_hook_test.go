@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 )
 
 func TestJobFailedForGood(t *testing.T) {
@@ -35,5 +36,54 @@ func TestJobFailedForGood(t *testing.T) {
 		if got := tryFailed(tc.ctxErr, tc.err); got != wantFailed {
 			t.Errorf("%s: tryFailed got %v, want %v", tc.name, got, wantFailed)
 		}
+	}
+}
+
+func TestAttemptLimit(t *testing.T) {
+	for _, tc := range []struct {
+		kind string
+		args string
+		max  int
+		want int
+	}{
+		{"vm_operation", `{"operation":"create"}`, 25, NodeJobMaxAttempts},
+		{"vm_operation", `{"operation":"configure_network"}`, 25, NetworkJobMaxAttempts},
+		{"vm_operation", `{"operation":"create"}`, 2, 2},
+		{"network_config", `{}`, 25, NetworkJobMaxAttempts},
+		{"snapshot_operation", `{}`, 25, NodeJobMaxAttempts},
+		{"backup", `{}`, 25, DiskJobMaxAttempts},
+		{"webhook_delivery", `{}`, 10, 10},
+		{"audit", `{}`, 25, 25},
+	} {
+		if got := attemptLimit(tc.kind, []byte(tc.args), tc.max); got != tc.want {
+			t.Errorf("%s %s max %d: got %d, want %d", tc.kind, tc.args, tc.max, got, tc.want)
+		}
+	}
+}
+
+// A VM job queued before its kind had a limit (River's default of 25) must end,
+// and be reported, at the same try as a new one.
+func TestJobFailureReporterEndsLegacyJobsAtTheLimit(t *testing.T) {
+	reported := make(chan string, 1)
+	JobFailedHook = func(_ context.Context, _ string, _ []byte, reason string) { reported <- reason }
+	defer func() { JobFailedHook = nil }()
+
+	job := &rivertype.JobRow{Kind: "vm_operation", EncodedArgs: []byte(`{"operation":"start"}`), Attempt: NodeJobMaxAttempts, MaxAttempts: 25}
+	err := (&jobFailureReporter{}).Work(context.Background(), job, func(context.Context) error { return errors.New("node unreachable") })
+	if !isJobCancel(err) {
+		t.Fatalf("got %v, want the job cancelled", err)
+	}
+	select {
+	case reason := <-reported:
+		if reason != "gave up after 5 tries: node unreachable" {
+			t.Errorf("reason %q", reason)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the final failure was not reported")
+	}
+
+	job.Attempt = NodeJobMaxAttempts - 1
+	if err := (&jobFailureReporter{}).Work(context.Background(), job, func(context.Context) error { return errors.New("x") }); isJobCancel(err) {
+		t.Error("a try short of the limit must be retried")
 	}
 }

@@ -38,6 +38,7 @@ import { useCopy } from "@/lib/use-feedback"
 import { isSignInLocked, type VM } from "@/types"
 import { StatusBadge, vmStatus } from "@/components/status-badge"
 import { useConfirm } from "@/components/confirm-provider"
+import { UserPicker } from "@/components/user-picker"
 
 function formatDate(dateString: string): string {
   return new Date(dateString).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
@@ -140,25 +141,54 @@ export default function UserDetailPage() {
     }
   }, [setSuspended, suspended, withVms, reason])
 
-  // Delete handler
+  // An account that owns VMs is deleted only with a choice for them, made in
+  // the dialog below; one that owns none is a plain confirmation.
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [vmChoice, setVmChoice] = useState<"reassign" | "delete">("reassign")
+  const [reassignTo, setReassignTo] = useState("")
+  const [deleteAck, setDeleteAck] = useState(false)
+
+  const finishDelete = useCallback(() => {
+    setTimeout(() => router.push("/users"), 1000)
+  }, [router])
+
   const handleDelete = useCallback(async () => {
-    // The VM count is the whole reason this confirmation exists: deleting an
-    // account that still owns machines is the mistake worth interrupting.
+    if (userVMs.length > 0) {
+      setVmChoice("reassign")
+      setReassignTo("")
+      setDeleteAck(false)
+      setDeleteOpen(true)
+      return
+    }
     const ok = await confirm({
       title: `Delete user "${user?.email ?? ""}"?`,
-      description:
-        userVMs.length > 0
-          ? `This account still owns ${userVMs.length} VM(s). They are not deleted with it, and will be left without an owner.`
-          : "They lose access immediately. This cannot be undone.",
+      description: "They lose access immediately. This cannot be undone.",
       confirmLabel: "Delete user",
       destructive: true,
-      details: userVMs.length > 0 ? [{ label: "VMs owned", value: userVMs.length }] : undefined,
       action: () => deleteUser.mutateAsync(userId),
     })
     if (!ok) return
     toast.success("User deleted")
-    setTimeout(() => router.push("/users"), 1000)
-  }, [confirm, user, userVMs.length, deleteUser, userId, router])
+    finishDelete()
+  }, [confirm, user, userVMs.length, deleteUser, userId, finishDelete])
+
+  const handleDeleteWithVMs = useCallback(async () => {
+    try {
+      const result = await deleteUser.mutateAsync(
+        vmChoice === "reassign" ? { id: userId, vms: "reassign", to: reassignTo } : { id: userId, vms: "delete" },
+      )
+      setDeleteOpen(false)
+      const notQueued = result.vms_not_queued ?? []
+      if (notQueued.length > 0) {
+        toast.warning(`User deleted. Not queued for deletion: ${notQueued.map((v) => v.hostname).join(", ")}. Delete ${notQueued.length === 1 ? "that VM" : "those VMs"} from the VM list.`)
+      } else {
+        toast.success(vmChoice === "reassign" ? `User deleted. ${result.vms_reassigned ?? 0} VM(s) moved to the new owner.` : `User deleted. ${result.vms_deleting ?? 0} VM(s) are being deleted.`)
+      }
+      finishDelete()
+    } catch (err) {
+      toast.error(`Not deleted: ${(err as Error).message}`)
+    }
+  }, [deleteUser, vmChoice, userId, reassignTo, finishDelete])
 
   // Edit handler
   const handleEdit = useCallback(async () => {
@@ -392,6 +422,53 @@ export default function UserDetailPage() {
             </Dialog>
           )}
           <Button variant="destructive" onClick={() => handleDelete()} className="gap-2"><Trash2 className="w-4 h-4" />Delete</Button>
+          <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Delete user &quot;{user?.email}&quot;?</DialogTitle>
+                <DialogDescription>
+                  This account owns {userVMs.length} VM(s). Choose what happens to them. The account loses access immediately.
+                </DialogDescription>
+              </DialogHeader>
+              <fieldset className="space-y-3">
+                <legend className="sr-only">What happens to the VMs</legend>
+                <label className="flex items-start gap-3 cursor-pointer rounded-md border p-3">
+                  <input type="radio" name="vm-choice" className="mt-1 accent-primary" checked={vmChoice === "reassign"} onChange={() => setVmChoice("reassign")} />
+                  <span className="space-y-2">
+                    <span className="block text-sm font-medium">Give them to another account</span>
+                    <span className="block text-xs text-muted-foreground">They keep running. Floating IPs attached to them move too.</span>
+                    {vmChoice === "reassign" && (
+                      <UserPicker id="reassign-to" value={reassignTo} onChange={(id) => setReassignTo(id)} />
+                    )}
+                  </span>
+                </label>
+                <label className="flex items-start gap-3 cursor-pointer rounded-md border p-3">
+                  <input type="radio" name="vm-choice" className="mt-1 accent-primary" checked={vmChoice === "delete"} onChange={() => setVmChoice("delete")} />
+                  <span className="space-y-2">
+                    <span className="block text-sm font-medium">Delete them with the account</span>
+                    <span className="block text-xs text-muted-foreground">Each VM is destroyed with its disks. This cannot be undone.</span>
+                    {vmChoice === "delete" && (
+                      <span className="flex items-start gap-2 text-sm">
+                        <input id="delete-ack" type="checkbox" className="mt-1 accent-destructive" checked={deleteAck} onChange={(e) => setDeleteAck(e.target.checked)} />
+                        <label htmlFor="delete-ack">Delete {userVMs.map((vm: VM) => vm.hostname).join(", ")} and everything on {userVMs.length === 1 ? "it" : "them"}</label>
+                      </span>
+                    )}
+                  </span>
+                </label>
+              </fieldset>
+              <DialogFooter>
+                <Button variant="ghost" onClick={() => setDeleteOpen(false)}>Cancel</Button>
+                <Button
+                  variant="destructive"
+                  onClick={handleDeleteWithVMs}
+                  disabled={deleteUser.isPending || (vmChoice === "reassign" ? !reassignTo || reassignTo === userId : !deleteAck)}
+                >
+                  {deleteUser.isPending && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
+                  {vmChoice === "reassign" ? "Move VMs and delete user" : "Delete user and VMs"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
 

@@ -8,14 +8,16 @@ import (
 
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
+
+	"github.com/maburvm/panel/internal/shared/models"
 )
 
-// Job priorities
+// Job priorities. River accepts 1 (first) to 4 and refuses to queue anything else.
 const (
 	PriorityCritical = 1 // VM lifecycle operations
 	PriorityHigh     = 2 // User-facing operations
-	PriorityNormal   = 4 // Background tasks
-	PriorityLow      = 8 // Batch operations
+	PriorityNormal   = 3 // Background tasks
+	PriorityLow      = 4 // Batch operations
 )
 
 // Queue names
@@ -56,7 +58,8 @@ type VMOperationJob struct {
 	VMID      string          `json:"vm_id" river:"unique"`
 	Operation VMOperationType `json:"operation" river:"unique"`
 	NodeID    string          `json:"node_id"`
-	Params    json.RawMessage `json:"params,omitempty"`
+	// In the unique key, so a reset or reinstall with new values is not folded into an older one.
+	Params json.RawMessage `json:"params,omitempty" river:"unique"`
 }
 
 // Kind returns the job kind for VM operations
@@ -65,20 +68,20 @@ func (j VMOperationJob) Kind() string {
 }
 
 // InsertOpts returns insert options for VM operations (critical queue)
-func (j VMOperationJob) InsertOpts() *river.InsertOpts {
+func (j VMOperationJob) InsertOpts() river.InsertOpts {
 	// Network config is never de-duplicated: each job means "the desired state
 	// changed", and skipping one behind a job that is already running loses
 	// that change. The worker serialises them per VM and reads current rules.
 	if j.Operation == VMOpConfigureNetwork {
-		return &river.InsertOpts{Queue: QueueCritical, Priority: PriorityCritical}
+		return river.InsertOpts{Queue: QueueCritical, Priority: PriorityCritical, MaxAttempts: NetworkJobMaxAttempts}
 	}
-	return &river.InsertOpts{
-		Queue:    QueueCritical,
-		Priority: PriorityCritical,
-		// Idempotent enqueue: a second insert of the same (vm_id, operation) while
-		// one is still in-flight is skipped instead of duplicating the operation.
-		// Only vm_id+operation are hashed (river:"unique" tags), so a re-submit
-		// with differing params still dedups. Deliberately excludes Completed/
+	return river.InsertOpts{
+		Queue:       QueueCritical,
+		Priority:    PriorityCritical,
+		MaxAttempts: NodeJobMaxAttempts,
+		// Idempotent enqueue: a second insert of the same (vm_id, operation,
+		// params) while one is still in-flight is skipped instead of duplicating
+		// the operation. Deliberately excludes Completed/
 		// Discarded/Cancelled so a repeat op after the previous one finished
 		// (start→stop→start, or a re-delete) is still allowed.
 		UniqueOpts: river.UniqueOpts{
@@ -109,10 +112,11 @@ func (j TemplateSyncJob) Kind() string {
 }
 
 // InsertOpts returns insert options for template sync (default queue)
-func (j TemplateSyncJob) InsertOpts() *river.InsertOpts {
-	return &river.InsertOpts{
-		Queue:    QueueDefault,
-		Priority: PriorityNormal,
+func (j TemplateSyncJob) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue:       QueueDefault,
+		Priority:    PriorityNormal,
+		MaxAttempts: NodeJobMaxAttempts,
 	}
 }
 
@@ -133,6 +137,8 @@ type BackupJob struct {
 	Destination     string     `json:"destination"`      // S3 bucket or local path
 	Compression     string     `json:"compression"`      // gzip, zstd, none
 	BackupID        string     `json:"backup_id"`        // Reference to backup record
+	// Scheduled backups start only inside the backup window.
+	Scheduled bool `json:"scheduled,omitempty"`
 }
 
 // Kind returns the job kind for backup
@@ -153,8 +159,8 @@ func (j ImageJob) Kind() string { return "image" }
 
 // InsertOpts routes image capture to the batch queue with the same
 // long-transfer characteristics as backups.
-func (j ImageJob) InsertOpts() *river.InsertOpts {
-	return &river.InsertOpts{Queue: QueueBatch, Priority: PriorityLow, MaxAttempts: DiskJobMaxAttempts}
+func (j ImageJob) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{Queue: QueueBatch, Priority: PriorityLow, MaxAttempts: DiskJobMaxAttempts}
 }
 
 // DiskJobMaxAttempts is how many times a backup, a restore or an image capture
@@ -162,9 +168,21 @@ func (j ImageJob) InsertOpts() *river.InsertOpts {
 // persistence, it is 25 exports of the same disk.
 const DiskJobMaxAttempts = 3
 
+// River's default of 25 tries spreads retries over about three weeks, and the
+// operator hears of a failure only after the last one. Retries are spaced
+// attempt^4 seconds apart.
+const (
+	// NodeJobMaxAttempts covers VM lifecycle, snapshot, template and import
+	// jobs: about six minutes of retries.
+	NodeJobMaxAttempts = 5
+	// NetworkJobMaxAttempts is longer (about four hours): a network change is
+	// desired state that must reach a node that is briefly away.
+	NetworkJobMaxAttempts = 10
+)
+
 // InsertOpts returns insert options for backup (batch queue)
-func (j BackupJob) InsertOpts() *river.InsertOpts {
-	return &river.InsertOpts{
+func (j BackupJob) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
 		Queue:       QueueBatch,
 		Priority:    PriorityLow,
 		MaxAttempts: DiskJobMaxAttempts,
@@ -182,12 +200,15 @@ type RestoreJob struct {
 	// NodeStore is true for a backup kept in the node's own storage: the node
 	// is not sent the panel's destination, where the file is not.
 	NodeStore bool `json:"node_store,omitempty"`
+	// Disks are every disk of a backup of several; each is restored onto the
+	// VM's disk with the same target. Empty for a backup of the primary only.
+	Disks []models.BackupDisk `json:"disks,omitempty"`
 }
 
 func (j RestoreJob) Kind() string { return "restore" }
 
-func (j RestoreJob) InsertOpts() *river.InsertOpts {
-	return &river.InsertOpts{Queue: QueueCritical, Priority: PriorityCritical, MaxAttempts: DiskJobMaxAttempts}
+func (j RestoreJob) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{Queue: QueueCritical, Priority: PriorityCritical, MaxAttempts: DiskJobMaxAttempts}
 }
 
 // ImportSource represents the source of import
@@ -216,10 +237,11 @@ func (j ImportJob) Kind() string {
 }
 
 // InsertOpts returns insert options for import (batch queue)
-func (j ImportJob) InsertOpts() *river.InsertOpts {
-	return &river.InsertOpts{
-		Queue:    QueueBatch,
-		Priority: PriorityLow,
+func (j ImportJob) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue:       QueueBatch,
+		Priority:    PriorityLow,
+		MaxAttempts: NodeJobMaxAttempts,
 	}
 }
 
@@ -250,10 +272,11 @@ func (j SnapshotJob) Kind() string {
 }
 
 // InsertOpts returns insert options for snapshot operations (critical queue)
-func (j SnapshotJob) InsertOpts() *river.InsertOpts {
-	return &river.InsertOpts{
-		Queue:    QueueCritical,
-		Priority: PriorityHigh,
+func (j SnapshotJob) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue:       QueueCritical,
+		Priority:    PriorityHigh,
+		MaxAttempts: NodeJobMaxAttempts,
 	}
 }
 
@@ -317,8 +340,8 @@ func (j AuditJob) Kind() string {
 	return "audit"
 }
 
-func (j AuditJob) InsertOpts() *river.InsertOpts {
-	return &river.InsertOpts{
+func (j AuditJob) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
 		Queue:    QueueAudit,
 		Priority: PriorityNormal,
 	}

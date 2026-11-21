@@ -1,11 +1,13 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"gorm.io/gorm"
 
 	panelMiddleware "github.com/maburvm/panel/internal/panel/middleware"
 	"github.com/maburvm/panel/internal/panel/repository"
@@ -86,6 +88,7 @@ func (s *Server) setupUserAccountRoutes(users *echo.Group, userRepo *repository.
 			return fail(c, http.StatusInternalServerError, "reset_failed", "The password could not be changed")
 		}
 		audit(c, "user.password_reset", caller, user, map[string]any{"method": "temporary"})
+		notifyAdminChange(c, s.db, user.ID.String(), service.EmailPasswordChanged)
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{"temporary_password": password}})
 	}, panelMiddleware.RequirePermission("user:update"))
 
@@ -103,6 +106,7 @@ func (s *Server) setupUserAccountRoutes(users *echo.Group, userRepo *repository.
 			return fail(c, http.StatusInternalServerError, "reset_failed", "Two-factor authentication could not be reset")
 		}
 		audit(c, "user.two_factor_reset", caller, user, map[string]any{})
+		notifyAdminChange(c, s.db, user.ID.String(), service.EmailTwoFactorDisabled)
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{"two_factor_enabled": false}})
 	}, panelMiddleware.RequirePermission("user:update"))
 
@@ -119,4 +123,13 @@ func (s *Server) setupUserAccountRoutes(users *echo.Group, userRepo *repository.
 		audit(c, "user.unlock", caller, user, map[string]any{})
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{"locked": false}})
 	}, panelMiddleware.RequirePermission("user:update"))
+}
+
+// notifyAdminChange tells an account that an administrator changed how it is
+// signed in to. Best-effort: the change is made.
+func notifyAdminChange(c echo.Context, db *gorm.DB, userID, key string) {
+	if err := service.NotifyAccount(context.WithoutCancel(c.Request().Context()), db, userID, key,
+		map[string]string{"who": service.ChangeSource(true, "")}); err != nil {
+		slog.Default().Warn("account changed by an administrator, but its owner could not be told", "user_id", userID, "email", key, "error", err)
+	}
 }

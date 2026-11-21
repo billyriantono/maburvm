@@ -37,8 +37,14 @@ type PlanRequest struct {
 	DataQuotaGB       int64  `json:"data_quota_gb"`
 	OverQuotaPolicy   string `json:"over_quota_policy"`
 	ThrottleSpeedMbps int    `json:"throttle_speed_mbps"`
-	Description       string `json:"description"`
-	IsActive          *bool  `json:"is_active"`
+	// SMTPPolicy is models.SMTPAllowed or SMTPBlocked; empty keeps the plan's
+	// current policy (allowed for a new plan).
+	SMTPPolicy string `json:"smtp_policy"`
+	// Limits are the CPU and disk caps of new VMs on the plan; nil keeps the
+	// plan's current ones (none for a new plan).
+	Limits      *models.VMLimits `json:"limits"`
+	Description string           `json:"description"`
+	IsActive    *bool            `json:"is_active"`
 }
 
 func (r *PlanRequest) validate() error {
@@ -67,6 +73,16 @@ func (r *PlanRequest) validate() error {
 	case "", models.OverQuotaThrottle, models.OverQuotaOverage, models.OverQuotaSuspend:
 	default:
 		return fmt.Errorf("over_quota_policy must be throttle, overage, or suspend")
+	}
+	switch r.SMTPPolicy {
+	case "", models.SMTPAllowed, models.SMTPBlocked:
+	default:
+		return fmt.Errorf("smtp_policy must be allowed or blocked")
+	}
+	if r.Limits != nil {
+		if err := r.Limits.Validate(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -104,8 +120,15 @@ func (s *PlanService) CreatePlan(ctx context.Context, req *PlanRequest) (*models
 		DataQuotaGB:       req.DataQuotaGB,
 		OverQuotaPolicy:   req.normalizedOverQuotaPolicy(),
 		ThrottleSpeedMbps: req.ThrottleSpeedMbps,
+		SMTPPolicy:        models.SMTPAllowed,
 		Description:       req.Description,
 		IsActive:          active,
+	}
+	if req.SMTPPolicy != "" {
+		plan.SMTPPolicy = req.SMTPPolicy
+	}
+	if req.Limits != nil {
+		plan.Limits = *req.Limits
 	}
 	if err := s.repo.Create(ctx, plan); err != nil {
 		return nil, fmt.Errorf("failed to create plan: %w", err)
@@ -147,6 +170,12 @@ func (s *PlanService) UpdatePlan(ctx context.Context, id string, req *PlanReques
 	plan.DataQuotaGB = req.DataQuotaGB
 	plan.OverQuotaPolicy = req.normalizedOverQuotaPolicy()
 	plan.ThrottleSpeedMbps = req.ThrottleSpeedMbps
+	if req.SMTPPolicy != "" {
+		plan.SMTPPolicy = req.SMTPPolicy
+	}
+	if req.Limits != nil {
+		plan.Limits = *req.Limits
+	}
 	plan.Description = req.Description
 	if req.IsActive != nil {
 		plan.IsActive = *req.IsActive

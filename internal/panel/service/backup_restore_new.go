@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"gorm.io/gorm"
 
 	pb "github.com/maburvm/panel/internal/shared/grpc/pb/api/proto"
@@ -21,12 +23,43 @@ type RestoreSource struct {
 	// InDestination is true when the file is in the panel's backup destination,
 	// which the node is then sent. False leaves the node to its own storage.
 	InDestination bool
+	// DataDisks are the backup's disks after the primary one, attached to the
+	// new VM before its first boot.
+	DataDisks []models.BackupDisk
 }
 
 // apply adds what the create worker and the node need to know to the job.
 func (r *RestoreSource) apply(params map[string]interface{}) {
 	params["metadata"] = map[string]string{models.ImageOnceKey: "1", models.ImageSHA256Key: r.SHA256}
 	params["object_store"] = r.InDestination
+	if len(r.DataDisks) > 0 {
+		params["restore_disks"] = r.DataDisks
+	}
+}
+
+// featureRestoreDisks is what an agent reports when it can create a VM with
+// every disk of a backup.
+const featureRestoreDisks = "restore_disks"
+
+// checkRestoresDisks refuses a node whose agent would silently leave out a
+// backup's data disks.
+func (s *BackupService) checkRestoresDisks(ctx context.Context, node *models.Node) error {
+	client, authCtx, err := s.vmService.AgentFor(ctx, node.ID)
+	if err != nil {
+		return err
+	}
+	infoCtx, cancel := context.WithTimeout(authCtx, 30*time.Second)
+	defer cancel()
+	info, err := client.GetNodeInfo(infoCtx, &pb.GetNodeInfoRequest{})
+	if err != nil && status.Code(err) != codes.Unimplemented {
+		return fmt.Errorf("could not ask node %s what its agent can do: %w", node.Name, err)
+	}
+	for _, f := range info.GetFeatures() {
+		if f == featureRestoreDisks {
+			return nil
+		}
+	}
+	return fmt.Errorf("this backup has more than one disk, and the agent on node %s is too old to restore them all; update it first", node.Name)
 }
 
 // AgentFor returns a client for a node's agent and the context that
@@ -115,6 +148,11 @@ func (s *BackupService) RestoreAsNewVM(ctx context.Context, req *RestoreAsNewReq
 	if err := s.dest.CheckNode(ctx, node, inDestination); err != nil {
 		return nil, err
 	}
+	if len(backup.DataDisks()) > 0 {
+		if err := s.checkRestoresDisks(ctx, node); err != nil {
+			return nil, err
+		}
+	}
 
 	create := restoreCreateRequest(backup, src, req, inDestination)
 	if len(create.Hostname) > 100 {
@@ -147,18 +185,28 @@ func restoreCreateRequest(backup *models.Backup, src *models.VM, req *RestoreAsN
 		IPPoolID:       req.IPPoolID,
 		AutoAssignIP:   req.IPPoolID == "",
 		CloneSourceRef: "s3://" + backup.StoragePath,
-		Restore:        &RestoreSource{SHA256: backup.Checksum, InDestination: inDestination},
+		Restore:        &RestoreSource{SHA256: backup.Checksum, InDestination: inDestination, DataDisks: backup.DataDisks()},
 		// The owner already pays for this server. Their quota still counts the
 		// original, and must not be what stops it being brought back.
 		Billed: true,
 	}
 }
 
-// copyFirewallRules gives the restored VM its original's firewall in place of
-// the defaults every new VM is seeded with: a server that had other ports open
-// would come back unreachable on them. Best-effort, like the seed.
+// copyFirewallRules gives the restored VM its original's firewall, and what it
+// does with unmatched traffic, in place of the defaults every new VM is seeded
+// with: a server that had other ports open would come back unreachable on
+// them. Best-effort, like the seed.
 func (s *BackupService) copyFirewallRules(ctx context.Context, srcID, dstID string) {
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var defaults []string
+		if err := tx.Table("vms").Where("id = ?", srcID).Pluck("firewall_default", &defaults).Error; err != nil {
+			return err
+		}
+		if len(defaults) == 1 && defaults[0] != "" {
+			if err := tx.Table("vms").Where("id = ?", dstID).Update("firewall_default", defaults[0]).Error; err != nil {
+				return err
+			}
+		}
 		var rules []models.FirewallRule
 		if err := tx.Where("vm_id = ?", srcID).Find(&rules).Error; err != nil {
 			return err
@@ -172,7 +220,8 @@ func (s *BackupService) copyFirewallRules(ctx context.Context, srcID, dstID stri
 		copies := make([]models.FirewallRule, len(rules))
 		for i, r := range rules {
 			copies[i] = models.FirewallRule{VMID: dstID, Protocol: r.Protocol, PortRange: r.PortRange,
-				Action: r.Action, Direction: r.Direction, SourceIP: r.SourceIP, Priority: r.Priority}
+				Action: r.Action, Direction: r.Direction, SourceIP: r.SourceIP, Priority: r.Priority,
+				ICMPType: r.ICMPType, Log: r.Log, Family: r.Family}
 		}
 		return tx.Create(&copies).Error
 	})

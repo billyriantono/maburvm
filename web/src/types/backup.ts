@@ -13,7 +13,21 @@ export interface BackupRetentionPolicy {
   keep_daily?: number;
   keep_weekly?: number;
   keep_monthly?: number;
+  // Backups older than this many days are deleted; the newest is always kept.
+  max_age_days?: number;
 }
+
+// BackupDisk is one disk of a backup; the first is the primary disk.
+export interface BackupDisk {
+  target: string;
+  key: string;
+  size: number;
+  checksum: string;
+  virtual_size?: number;
+}
+
+// How a backup's copy was taken; '' for backups made before it was recorded.
+export type BackupConsistency = 'stopped' | 'frozen' | 'crash' | 'live' | '';
 
 // Backup represents a VM backup
 export interface Backup {
@@ -27,6 +41,9 @@ export interface Backup {
   compression: 'gzip' | 'zstd' | 'none';
   checksum?: string;
   error_message?: string;
+  // Every disk of the backup; empty for a backup of the primary disk only.
+  disks?: BackupDisk[] | null;
+  consistency?: BackupConsistency;
   started_at?: string;
   completed_at?: string;
   created_at: string;

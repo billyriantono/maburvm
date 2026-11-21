@@ -106,6 +106,11 @@ func (h *BackupHandler) CreateBackup(c echo.Context) error {
 				"error":   "Conflict",
 				"message": "Backup already in progress for this VM",
 			})
+		case errors.Is(err, service.ErrInvalidCompression):
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{
+				"error":   "Bad Request",
+				"message": err.Error(),
+			})
 		default:
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
 				"error":   "Internal Server Error",
@@ -606,7 +611,7 @@ func (h *BackupHandler) ConfigureSchedule(c echo.Context) error {
 				"error":   "Not Found",
 				"message": "VM not found",
 			})
-		case errors.Is(err, service.ErrInvalidCronExpression):
+		case errors.Is(err, service.ErrInvalidCronExpression), errors.Is(err, service.ErrInvalidRetention), errors.Is(err, service.ErrInvalidCompression):
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{
 				"error":   "Bad Request",
 				"message": err.Error(),

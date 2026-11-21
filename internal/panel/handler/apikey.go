@@ -55,6 +55,7 @@ func (h *APIKeyHandler) CreateAPIKey(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request body"})
 	}
+	req.ClientIP = c.RealIP()
 	key, token, err := h.service.CreateAPIKey(c.Request().Context(), user.ID.String(), user.Role, req)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": err.Error()})

@@ -111,7 +111,7 @@ func TestReinstallAcrossKinds(t *testing.T) {
 	}
 
 	// 1. RouterOS 7, created.
-	if err := s.createVM(request("guest:routeros:"+chr, "R0uter-pw-1")); err != nil {
+	if _, err := s.createVM(request("guest:routeros:"+chr, "R0uter-pw-1")); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	routerHas("created as RouterOS 7")

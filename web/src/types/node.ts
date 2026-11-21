@@ -13,8 +13,26 @@ export interface Node {
   last_report_at?: string | null;
   /** Checks in a row the node has missed. 0 while it is reporting. */
   failed_polls?: number;
+  /** What the node has promised to VMs against what it has (detail only). */
+  allocation?: NodeAllocation;
   created_at: string;
   updated_at: string;
+}
+
+/** A node's allocation. A limit of 0 is no cap: no ratio set, or the node has
+ *  not reported the figure yet (cpu_count or ram_total_mb 0). */
+export interface NodeAllocation {
+  vcpu_allocated: number;
+  cpu_count: number;
+  /** The ratio in force: the node's own, else the panel-wide one. */
+  vcpu_ratio: number;
+  /** The node's own ratio; 0 means the panel-wide one applies. */
+  vcpu_ratio_node: number;
+  vcpu_limit: number;
+  ram_allocated_mb: number;
+  ram_total_mb: number;
+  ram_ratio: number;
+  ram_limit_mb: number;
 }
 
 // NodeMetrics holds system metrics for a node
@@ -75,6 +93,8 @@ export interface UpdateNodeRequest {
   name?: string;
   status?: NodeStatus;
   creation_paused?: boolean;
+  /** The node's own vCPU overcommit ratio; 0 returns it to the panel-wide one. */
+  vcpu_ratio?: number;
 }
 
 // GuestConnection is how fast one guest NIC on one node is opening new outbound

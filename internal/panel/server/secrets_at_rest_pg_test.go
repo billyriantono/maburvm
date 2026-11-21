@@ -17,7 +17,7 @@ func TestSealSecretsAtRestOnPostgres(t *testing.T) {
 	db := pgTestDB(t)
 	for _, ddl := range []string{
 		`CREATE TABLE nodes (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), token varchar(255) NOT NULL)`,
-		`CREATE TABLE vms (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), vnc_password varchar(255))`,
+		`ALTER TABLE vms ADD COLUMN vnc_password varchar(255)`, // pgTestDB has a vms table
 		`CREATE TABLE system_settings (section varchar(64) PRIMARY KEY, data jsonb NOT NULL DEFAULT '{}', updated_at timestamptz)`,
 		`INSERT INTO nodes (token) VALUES ('0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef')`,
 		`INSERT INTO vms (vnc_password) VALUES ('Ab3dEf7h'), (NULL)`,

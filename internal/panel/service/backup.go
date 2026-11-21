@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -23,6 +23,8 @@ var (
 	ErrBackupNotFound        = errors.New("backup not found")
 	ErrScheduleNotFound      = errors.New("backup schedule not found")
 	ErrInvalidCronExpression = errors.New("invalid cron expression")
+	ErrInvalidRetention      = errors.New("invalid retention policy")
+	ErrInvalidCompression    = errors.New("compression must be gzip, zstd or none")
 	ErrScheduleAlreadyExists = errors.New("backup schedule already exists for this VM")
 	ErrBackupInProgress      = errors.New("backup already in progress for this VM")
 	ErrStorageUploadFailed   = errors.New("storage upload failed")
@@ -33,20 +35,21 @@ var (
 
 // BackupService handles backup-related business operations
 type BackupService struct {
-	db              *gorm.DB
-	backupRepo      *repository.BackupRepository
-	scheduleRepo    *repository.BackupScheduleRepository
-	vmRepo          *repository.VMRepository
-	nodeRepo        *repository.NodeRepository
-	riverClient     *river.Client[pgx.Tx]
-	dest            *BackupDestinations
-	objectStore     backupObjectStore // replaces the destination's client in tests
-	vmService       *VMService
-	logger          *slog.Logger
-	cron            *cron.Cron
-	cronParser      cron.Parser
-	scheduleMutex   sync.RWMutex
-	scheduleEntries map[string]cron.EntryID
+	db            *gorm.DB
+	backupRepo    *repository.BackupRepository
+	scheduleRepo  *repository.BackupScheduleRepository
+	vmRepo        *repository.VMRepository
+	nodeRepo      *repository.NodeRepository
+	riverClient   *river.Client[pgx.Tx]
+	dest          *BackupDestinations
+	objectStore   backupObjectStore // replaces the destination's client in tests
+	vmService     *VMService
+	logger        *slog.Logger
+	cronParser    cron.Parser
+	stop          chan struct{}
+	lastRetention time.Time // touched by the scheduler loop only
+	// fire replaces executeScheduledBackup in tests.
+	fire func(ctx context.Context, schedule *models.BackupSchedule, now time.Time)
 }
 
 // NewBackupService creates a new BackupService instance. dest is where backups
@@ -72,49 +75,38 @@ func NewBackupService(
 	)
 
 	return &BackupService{
-		db:              db,
-		backupRepo:      backupRepo,
-		scheduleRepo:    scheduleRepo,
-		vmRepo:          vmRepo,
-		nodeRepo:        nodeRepo,
-		riverClient:     riverClient,
-		dest:            dest,
-		logger:          logger,
-		cron:            cron.New(cron.WithParser(cronParser)),
-		cronParser:      cronParser,
-		scheduleEntries: make(map[string]cron.EntryID),
+		db:           db,
+		backupRepo:   backupRepo,
+		scheduleRepo: scheduleRepo,
+		vmRepo:       vmRepo,
+		nodeRepo:     nodeRepo,
+		riverClient:  riverClient,
+		dest:         dest,
+		logger:       logger,
+		cronParser:   cronParser,
 	}
 }
 
-// Start starts the cron scheduler
+// Start starts the backup scheduler. Schedules live in the database (their
+// next run included), so a restart loses none and runs what it missed once.
 func (s *BackupService) Start() error {
-	s.cron.Start()
-
-	// Load and schedule all active backup schedules
-	ctx := context.Background()
-	schedules, err := s.scheduleRepo.ListActive(ctx)
+	n, err := s.scheduleRepo.CountByStatus(context.Background(), models.BackupScheduleStatusActive)
 	if err != nil {
 		s.logger.Error("failed to load active backup schedules", "error", err)
 		return err
 	}
-
-	for _, schedule := range schedules {
-		if err := s.ScheduleBackup(ctx, &schedule); err != nil {
-			s.logger.Error("failed to schedule backup",
-				"schedule_id", schedule.ID,
-				"vm_id", schedule.VMID,
-				"error", err,
-			)
-		}
-	}
-
-	s.logger.Info("backup service started", "schedules_loaded", len(schedules))
+	s.stop = make(chan struct{})
+	go s.run(s.stop)
+	s.logger.Info("backup service started", "schedules", n)
 	return nil
 }
 
-// Stop stops the cron scheduler
+// Stop stops the scheduler.
 func (s *BackupService) Stop() {
-	s.cron.Stop()
+	if s.stop != nil {
+		close(s.stop)
+		s.stop = nil
+	}
 	s.logger.Info("backup service stopped")
 }
 
@@ -164,6 +156,9 @@ func (s *BackupService) CreateBackup(ctx context.Context, req *CreateBackupReque
 	// which covers both this path and the scheduled path with no TOCTOU window.
 
 	// Determine compression
+	if !validCompression(req.Compression) {
+		return nil, ErrInvalidCompression
+	}
 	compression := req.Compression
 	if compression == "" {
 		compression = "gzip"
@@ -171,7 +166,7 @@ func (s *BackupService) CreateBackup(ctx context.Context, req *CreateBackupReque
 
 	// Generate storage path
 	timestamp := time.Now().UTC().Format("20060102_150405")
-	storagePath := s.dest.Key(ctx, fmt.Sprintf("backups/%s/%s_%s.%s", vm.ID, vm.ID, timestamp, backupFileSuffix(compression)))
+	storagePath := s.dest.Key(ctx, fmt.Sprintf("backups/%s/%s_%s.qcow2", vm.ID, vm.ID, timestamp))
 
 	// Create backup record. Where the file ends up is the worker's to record,
 	// once the node has said where it put it.
@@ -376,15 +371,24 @@ func (s *BackupService) removeBackupFile(ctx context.Context, backup *models.Bac
 		return false, errors.New("no backup destination is set; set it under System settings, Backup")
 	}
 	// A delete of a file that is not there succeeds on S3, so look first: only
-	// a file that was found can be said to have been deleted.
-	found, err := client.Exists(ctx, backup.StoragePath)
-	if err != nil {
-		return false, err
+	// a file that was found can be said to have been deleted. Every disk of
+	// the backup goes; the first file is the one the backup is known by.
+	for i, key := range backup.StorageKeys() {
+		found, err := client.Exists(ctx, key)
+		if err != nil {
+			return false, err
+		}
+		if !found {
+			if i == 0 {
+				notDeleted = true
+			}
+			continue
+		}
+		if err := client.Delete(ctx, key); err != nil {
+			return false, err
+		}
 	}
-	if !found {
-		return true, nil
-	}
-	return false, client.Delete(ctx, backup.StoragePath)
+	return notDeleted, nil
 }
 
 // destinationStore returns the panel's client for the backup destination, or
@@ -467,6 +471,7 @@ func (s *BackupService) RestoreBackup(ctx context.Context, req *RestoreBackupReq
 		SourceKey: backup.StoragePath,
 		Checksum:  backup.Checksum,
 		NodeStore: backup.StorageProvider == models.BackupStoreNode,
+		Disks:     backup.Disks,
 	}
 
 	result, err := s.riverClient.Insert(ctx, job, nil)
@@ -511,6 +516,14 @@ func (s *BackupService) ConfigureSchedule(ctx context.Context, req *ConfigureSch
 	if _, err := s.cronParser.Parse(req.Schedule); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidCronExpression, err)
 	}
+	if req.RetentionPolicy != nil {
+		if err := validRetention(*req.RetentionPolicy); err != nil {
+			return nil, err
+		}
+	}
+	if !validCompression(req.Compression) {
+		return nil, ErrInvalidCompression
+	}
 
 	// Validate VM exists
 	if _, err := s.vmRepo.GetByID(ctx, req.VMID); err != nil {
@@ -549,9 +562,6 @@ func (s *BackupService) ConfigureSchedule(ctx context.Context, req *ConfigureSch
 			return nil, fmt.Errorf("failed to update schedule: %w", err)
 		}
 		schedule = existingSchedule
-
-		// Remove old cron entry
-		s.UnscheduleBackup(req.VMID)
 	} else {
 		// Create new schedule
 		newSchedule := &models.BackupSchedule{
@@ -571,7 +581,7 @@ func (s *BackupService) ConfigureSchedule(ctx context.Context, req *ConfigureSch
 		schedule = newSchedule
 	}
 
-	// Schedule the backup in cron
+	// From now on: changing a schedule does not run it at once.
 	if err := s.ScheduleBackup(ctx, schedule); err != nil {
 		s.logger.ErrorContext(ctx, "failed to schedule backup",
 			"schedule_id", schedule.ID,
@@ -604,10 +614,6 @@ func (s *BackupService) GetSchedule(ctx context.Context, vmID string) (*models.B
 
 // DeleteSchedule deletes the backup schedule for a VM
 func (s *BackupService) DeleteSchedule(ctx context.Context, vmID string) error {
-	// Unschedule from cron first
-	s.UnscheduleBackup(vmID)
-
-	// Delete from database
 	if err := s.scheduleRepo.DeleteByVMID(ctx, vmID); err != nil {
 		return fmt.Errorf("failed to delete schedule: %w", err)
 	}
@@ -620,101 +626,107 @@ func (s *BackupService) DeleteSchedule(ctx context.Context, vmID string) error {
 }
 
 // ============================================================================
-// Cron Scheduling
+// Scheduling
 // ============================================================================
 
-// ScheduleBackup adds a backup schedule to the cron
+// scheduleTick is how often the scheduler looks for due backups.
+const scheduleTick = time.Minute
+
+// retentionEvery is how often old scheduled backups are pruned.
+const retentionEvery = time.Hour
+
+// run is the scheduler loop. Its first pass, at start, is the catch-up: a
+// schedule whose run fell while the panel was down is due, and runs once.
+func (s *BackupService) run(stop <-chan struct{}) {
+	t := time.NewTicker(scheduleTick)
+	defer t.Stop()
+	for {
+		s.RunDue(context.Background(), time.Now())
+		select {
+		case <-stop:
+			return
+		case <-t.C:
+		}
+	}
+}
+
+// ScheduleBackup records when a schedule next runs, from now on.
 func (s *BackupService) ScheduleBackup(ctx context.Context, schedule *models.BackupSchedule) error {
-	s.scheduleMutex.Lock()
-	defer s.scheduleMutex.Unlock()
-
-	// Drop any existing entry for this VM first, so a reschedule (update) doesn't
-	// leak a cron entry that keeps firing the old expression.
-	if old, exists := s.scheduleEntries[schedule.VMID]; exists {
-		s.cron.Remove(old)
-		delete(s.scheduleEntries, schedule.VMID)
-	}
-
-	// Parse cron expression
-	entryID, err := s.cron.AddFunc(schedule.Schedule, func() {
-		s.executeScheduledBackup(schedule.ID)
-	})
+	next, err := s.nextRun(schedule.Schedule, time.Now())
 	if err != nil {
-		return fmt.Errorf("failed to add cron job: %w", err)
+		return err
 	}
-
-	s.scheduleEntries[schedule.VMID] = entryID
-
-	// Calculate next run time
-	nextRun := s.cron.Entry(entryID).Next
-	if err := s.scheduleRepo.UpdateNextRun(ctx, schedule.ID, nextRun); err != nil {
-		s.logger.Error("failed to update next run time",
-			"schedule_id", schedule.ID,
-			"error", err,
-		)
+	if err := s.scheduleRepo.UpdateNextRun(ctx, schedule.ID, next); err != nil {
+		return fmt.Errorf("failed to save the next run: %w", err)
 	}
-
-	s.logger.Info("backup scheduled",
-		"schedule_id", schedule.ID,
-		"vm_id", schedule.VMID,
-		"schedule", schedule.Schedule,
-		"next_run", nextRun,
-	)
-
+	schedule.NextRunAt = &next
+	s.logger.Info("backup scheduled", "schedule_id", schedule.ID, "vm_id", schedule.VMID, "schedule", schedule.Schedule, "next_run", next)
 	return nil
 }
 
-// UnscheduleBackup removes a backup schedule from the cron
-func (s *BackupService) UnscheduleBackup(vmID string) {
-	s.scheduleMutex.Lock()
-	defer s.scheduleMutex.Unlock()
+// nextRun is the schedule's first run after now.
+func (s *BackupService) nextRun(expr string, now time.Time) (time.Time, error) {
+	sched, err := s.cronParser.Parse(expr)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%w: %v", ErrInvalidCronExpression, err)
+	}
+	return sched.Next(now), nil
+}
 
-	if entryID, exists := s.scheduleEntries[vmID]; exists {
-		s.cron.Remove(entryID)
-		delete(s.scheduleEntries, vmID)
-		s.logger.Info("backup unscheduled", "vm_id", vmID)
+// RunDue starts every active schedule that is due at now, once each, and
+// prunes old backups once an hour. Runs missed while the panel was down are
+// caught up by one backup, not one per missed run. Outside the backup window
+// nothing starts: due schedules wait for it to open.
+func (s *BackupService) RunDue(ctx context.Context, now time.Time) {
+	schedules, err := s.scheduleRepo.ListActive(ctx)
+	if err != nil {
+		s.logger.Error("failed to load backup schedules", "error", err)
+		return
+	}
+	inWindow := queue.LoadBackupPolicy(ctx, s.db).InWindow(now)
+	fire := s.executeScheduledBackup
+	if s.fire != nil {
+		fire = s.fire
+	}
+	for i := range schedules {
+		sc := &schedules[i]
+		next, err := s.nextRun(sc.Schedule, now)
+		if err != nil {
+			s.logger.Error("backup schedule has an invalid expression", "schedule_id", sc.ID, "schedule", sc.Schedule, "error", err)
+			continue
+		}
+		if sc.NextRunAt == nil || sc.NextRunAt.IsZero() {
+			_ = s.scheduleRepo.UpdateNextRun(ctx, sc.ID, next)
+			continue
+		}
+		if sc.NextRunAt.After(now) || !inWindow {
+			continue
+		}
+		claimed, err := s.scheduleRepo.ClaimRun(ctx, sc.ID, now, next)
+		if err != nil || !claimed {
+			continue
+		}
+		fire(ctx, sc, now)
+	}
+	if now.Sub(s.lastRetention) >= retentionEvery {
+		s.lastRetention = now
+		for i := range schedules {
+			if err := s.applyRetentionPolicy(ctx, &schedules[i], now); err != nil {
+				s.logger.Error("failed to apply retention policy", "schedule_id", schedules[i].ID, "vm_id", schedules[i].VMID, "error", err)
+			}
+		}
 	}
 }
 
-// executeScheduledBackup is called by cron to execute a scheduled backup
-func (s *BackupService) executeScheduledBackup(scheduleID string) {
-	ctx := context.Background()
-
-	// Get schedule details
-	schedule, err := s.scheduleRepo.GetByID(ctx, scheduleID)
-	if err != nil {
-		s.logger.Error("failed to get schedule for execution",
-			"schedule_id", scheduleID,
-			"error", err,
-		)
-		return
-	}
-
-	// Check if schedule is still active
-	if !schedule.IsActive() {
-		s.logger.Info("skipping inactive schedule",
-			"schedule_id", scheduleID,
-			"status", schedule.Status,
-		)
-		return
-	}
-
-	// Validate VM exists
+// executeScheduledBackup makes one scheduled backup of the schedule's VM.
+func (s *BackupService) executeScheduledBackup(ctx context.Context, schedule *models.BackupSchedule, now time.Time) {
 	vm, err := s.vmRepo.GetByID(ctx, schedule.VMID)
 	if err != nil {
-		s.logger.Error("failed to get VM for scheduled backup",
-			"schedule_id", scheduleID,
-			"vm_id", schedule.VMID,
-			"error", err,
-		)
+		s.logger.Error("failed to get VM for scheduled backup", "schedule_id", schedule.ID, "vm_id", schedule.VMID, "error", err)
 		return
 	}
 
-	// Generate storage path
-	timestamp := time.Now().UTC().Format("20060102_150405")
-	storagePath := s.dest.Key(ctx, fmt.Sprintf("backups/%s/scheduled_%s.%s", vm.ID, timestamp, backupFileSuffix(schedule.Compression)))
-
-	// Create backup record
+	storagePath := s.dest.Key(ctx, fmt.Sprintf("backups/%s/scheduled_%s.qcow2", vm.ID, now.UTC().Format("20060102_150405")))
 	backup := &models.Backup{
 		VMID:            schedule.VMID,
 		StorageProvider: models.BackupStoreDestination,
@@ -723,152 +735,121 @@ func (s *BackupService) executeScheduledBackup(scheduleID string) {
 		Status:          models.BackupStatusPending,
 		Compression:     schedule.Compression,
 	}
-
 	if err := s.backupRepo.Create(ctx, backup); err != nil {
 		if isBackupInProgressViolation(err) {
-			s.logger.Info("skipping scheduled backup; one is already active for this VM",
-				"schedule_id", scheduleID,
-				"vm_id", schedule.VMID,
-			)
+			s.logger.Info("skipping scheduled backup; one is already active for this VM", "schedule_id", schedule.ID, "vm_id", schedule.VMID)
 			return
 		}
-		s.logger.Error("failed to create backup record",
-			"schedule_id", scheduleID,
-			"vm_id", schedule.VMID,
-			"error", err,
-		)
+		s.logger.Error("failed to create backup record", "schedule_id", schedule.ID, "vm_id", schedule.VMID, "error", err)
 		return
 	}
 
-	// Enqueue backup job
-	job := queue.BackupJob{
+	result, err := s.riverClient.Insert(ctx, queue.BackupJob{
 		VMID:            backup.VMID,
 		BackupType:      queue.BackupTypeFull,
 		StorageProvider: backup.StorageProvider,
 		Destination:     backup.StoragePath,
 		Compression:     backup.Compression,
 		BackupID:        backup.ID,
-	}
-
-	result, err := s.riverClient.Insert(ctx, job, nil)
+		Scheduled:       true,
+	}, nil)
 	if err != nil {
-		s.logger.Error("failed to enqueue scheduled backup job",
-			"backup_id", backup.ID,
-			"schedule_id", scheduleID,
-			"error", err,
-		)
-		// Update backup status to failed
-		s.backupRepo.UpdateStatus(ctx, backup.ID, models.BackupStatusFailed)
+		s.logger.Error("failed to enqueue scheduled backup job", "backup_id", backup.ID, "schedule_id", schedule.ID, "error", err)
+		_ = s.backupRepo.UpdateStatus(ctx, backup.ID, models.BackupStatusFailed)
 		return
 	}
-
-	// Update schedule last run
-	now := time.Now()
-	if err := s.scheduleRepo.UpdateLastRun(ctx, scheduleID, now, &backup.ID); err != nil {
-		s.logger.Error("failed to update last run time",
-			"schedule_id", scheduleID,
-			"error", err,
-		)
+	if err := s.scheduleRepo.UpdateLastRun(ctx, schedule.ID, now, &backup.ID); err != nil {
+		s.logger.Error("failed to update last run time", "schedule_id", schedule.ID, "error", err)
 	}
-
-	// Calculate and update next run
-	s.scheduleMutex.RLock()
-	if entryID, exists := s.scheduleEntries[schedule.VMID]; exists {
-		nextRun := s.cron.Entry(entryID).Next
-		s.scheduleRepo.UpdateNextRun(ctx, scheduleID, nextRun)
-	}
-	s.scheduleMutex.RUnlock()
-
-	s.logger.Info("scheduled backup job enqueued",
-		"backup_id", backup.ID,
-		"schedule_id", scheduleID,
-		"vm_id", schedule.VMID,
-		"job_id", result.Job.ID,
-	)
-
-	// Apply retention policy
-	if err := s.applyRetentionPolicy(ctx, schedule, backup); err != nil {
-		s.logger.Error("failed to apply retention policy",
-			"schedule_id", scheduleID,
-			"vm_id", schedule.VMID,
-			"error", err,
-		)
-	}
+	s.logger.Info("scheduled backup job enqueued", "backup_id", backup.ID, "schedule_id", schedule.ID, "vm_id", schedule.VMID, "job_id", result.Job.ID)
 }
 
-// applyRetentionPolicy applies the retention policy for scheduled backups
-func (s *BackupService) applyRetentionPolicy(ctx context.Context, schedule *models.BackupSchedule, latestBackup *models.Backup) error {
-	policy := schedule.RetentionPolicy
-
-	// If no retention policy, keep all backups
-	if policy.KeepLast == 0 && policy.KeepDaily == 0 && policy.KeepWeekly == 0 && policy.KeepMonthly == 0 {
+// applyRetentionPolicy deletes the schedule's backups its policy no longer
+// keeps. Manual backups are never touched.
+func (s *BackupService) applyRetentionPolicy(ctx context.Context, schedule *models.BackupSchedule, now time.Time) error {
+	if schedule.RetentionPolicy == (models.BackupRetentionPolicy{}) {
 		return nil
 	}
-
-	// Get all completed backups for this VM
 	backups, err := s.backupRepo.ListByVMID(ctx, schedule.VMID, 0, 0)
 	if err != nil {
 		return fmt.Errorf("failed to list backups: %w", err)
 	}
-
-	// Filter completed backups
-	var completedBackups []models.Backup
+	var scheduled []models.Backup
 	for _, b := range backups {
 		if b.Status == models.BackupStatusCompleted && b.BackupType == models.BackupTypeSchedule {
-			completedBackups = append(completedBackups, b)
+			scheduled = append(scheduled, b)
 		}
 	}
-
-	// Apply keep_last policy
-	if policy.KeepLast > 0 && len(completedBackups) > policy.KeepLast {
-		toDelete := completedBackups[policy.KeepLast:]
-		for _, b := range toDelete {
-			// Check if this backup is protected by other retention rules
-			if s.shouldKeepBackup(b, completedBackups, policy) {
-				continue
-			}
-
-			if _, err := s.DeleteBackup(ctx, b.ID); err != nil {
-				s.logger.Error("failed to delete backup per retention policy",
-					"backup_id", b.ID,
-					"error", err,
-				)
-			}
+	for _, b := range backupsToPrune(scheduled, schedule.RetentionPolicy, now) {
+		if _, err := s.DeleteBackup(ctx, b.ID); err != nil {
+			s.logger.Error("failed to delete backup per retention policy", "backup_id", b.ID, "error", err)
 		}
 	}
-
 	return nil
 }
 
-// shouldKeepBackup determines if a backup should be kept based on retention policy
-func (s *BackupService) shouldKeepBackup(backup models.Backup, allBackups []models.Backup, policy models.BackupRetentionPolicy) bool {
-	backupTime := backup.CreatedAt
-	now := time.Now()
+// backupsToPrune picks, from one VM's completed scheduled backups, those the
+// policy no longer keeps. A backup is kept when it is among the last KeepLast,
+// or the newest of one of the last KeepDaily days (KeepWeekly weeks,
+// KeepMonthly months) that have a backup, and is not older than MaxAgeDays.
+// With no keep rule, only age removes backups. The newest is always kept.
+func backupsToPrune(backups []models.Backup, p models.BackupRetentionPolicy, now time.Time) []models.Backup {
+	if p == (models.BackupRetentionPolicy{}) || len(backups) == 0 {
+		return nil
+	}
+	sorted := append([]models.Backup(nil), backups...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].CreatedAt.After(sorted[j].CreatedAt) })
 
-	// Check daily retention
-	if policy.KeepDaily > 0 {
-		daysSince := int(now.Sub(backupTime).Hours() / 24)
-		if daysSince <= policy.KeepDaily {
-			// Check if this is the only backup for this day
-			backupDay := backupTime.Truncate(24 * time.Hour)
-			isOnlyDaily := true
-			for _, b := range allBackups {
-				if b.ID != backup.ID && b.CreatedAt.Truncate(24*time.Hour).Equal(backupDay) {
-					// There's another backup from the same day, keep the newer one
-					if b.CreatedAt.After(backupTime) {
-						return false
-					}
-					isOnlyDaily = false
-					break
-				}
+	countRules := p.KeepLast > 0 || p.KeepDaily > 0 || p.KeepWeekly > 0 || p.KeepMonthly > 0
+	keep := map[string]bool{}
+	for i := 0; i < p.KeepLast && i < len(sorted); i++ {
+		keep[sorted[i].ID] = true
+	}
+	newestPer := func(n int, period func(time.Time) string) {
+		seen := map[string]bool{}
+		for _, b := range sorted {
+			k := period(b.CreatedAt.In(now.Location()))
+			if seen[k] {
+				continue
 			}
-			if isOnlyDaily {
-				return true
+			if len(seen) == n {
+				return
 			}
+			seen[k] = true
+			keep[b.ID] = true
 		}
 	}
+	newestPer(p.KeepDaily, func(t time.Time) string { return t.Format("2006-01-02") })
+	newestPer(p.KeepWeekly, func(t time.Time) string { y, w := t.ISOWeek(); return fmt.Sprintf("%d-%02d", y, w) })
+	newestPer(p.KeepMonthly, func(t time.Time) string { return t.Format("2006-01") })
 
-	return false
+	maxAge := time.Duration(p.MaxAgeDays) * 24 * time.Hour
+	var prune []models.Backup
+	for _, b := range sorted[1:] {
+		if (countRules && !keep[b.ID]) || (maxAge > 0 && now.Sub(b.CreatedAt) > maxAge) {
+			prune = append(prune, b)
+		}
+	}
+	return prune
+}
+
+// validCompression accepts what the node can export with; empty is the default.
+func validCompression(c string) bool {
+	return c == "" || c == "gzip" || c == "zstd" || c == "none"
+}
+
+// validRetention checks a retention policy an owner sent.
+func validRetention(p models.BackupRetentionPolicy) error {
+	for _, f := range []struct {
+		name     string
+		val, max int
+	}{{"keep_last", p.KeepLast, 365}, {"keep_daily", p.KeepDaily, 365}, {"keep_weekly", p.KeepWeekly, 104},
+		{"keep_monthly", p.KeepMonthly, 120}, {"max_age_days", p.MaxAgeDays, 3650}} {
+		if f.val < 0 || f.val > f.max {
+			return fmt.Errorf("%w: %s must be between 0 and %d", ErrInvalidRetention, f.name, f.max)
+		}
+	}
+	return nil
 }
 
 // ============================================================================
@@ -948,17 +929,6 @@ type BackupStats struct {
 	InProgressCount int64  `json:"in_progress_count"`
 	CompletedCount  int64  `json:"completed_count"`
 	FailedCount     int64  `json:"failed_count"`
-}
-
-func backupFileSuffix(compression string) string {
-	switch compression {
-	case "gzip":
-		return "tar.gz"
-	case "zstd":
-		return "tar.zst"
-	default:
-		return "tar"
-	}
 }
 
 // isBackupInProgressViolation reports whether err is the active-backup uniqueness

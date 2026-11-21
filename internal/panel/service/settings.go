@@ -75,6 +75,8 @@ type quotaSettings struct {
 	// space and was saved as 1 by the form's default, which under this meaning
 	// would refuse every order on a pool already past 1.0x.
 	DiskAllocationRatio *float64 `json:"diskAllocationRatio"`
+	// How many vCPUs a node may carry per logical CPU. A node's own ratio wins.
+	VCPUAllocationRatio *float64 `json:"vcpuAllocationRatio"`
 }
 
 // loadQuotaSettings reads the admin-managed limits. A missing row, unset field
@@ -150,4 +152,17 @@ func DiskAllocationRatio(ctx context.Context, db *gorm.DB) float64 {
 		return *v
 	}
 	return DefaultDiskAllocationRatio
+}
+
+// VCPUAllocationRatio is how many vCPUs a node may carry per logical CPU: the
+// node's own ratio when it has one, else the panel-wide one. 0 is no cap, the
+// default, so nodes already carrying many vCPUs keep taking orders.
+func VCPUAllocationRatio(ctx context.Context, db *gorm.DB, nodeRatio float64) float64 {
+	if nodeRatio > 0 {
+		return nodeRatio
+	}
+	if v := loadQuotaSettings(ctx, db).VCPUAllocationRatio; v != nil && *v > 0 {
+		return *v
+	}
+	return 0
 }

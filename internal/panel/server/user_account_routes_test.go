@@ -68,6 +68,35 @@ func TestUserRoutes_PeerAdminDeletesCustomersNotStaff(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code, "already gone")
 }
 
+// ADM-18: an account that owns VMs is deleted only with a choice for them;
+// without one nothing changes and the VMs are listed.
+func TestUserRoutes_DeleteRefusedWhileTheAccountOwnsVMs(t *testing.T) {
+	founding, client := adminUser("founding@example.com"), clientUser("client@example.com")
+	s, db := accountServer(t, founding, client)
+	tok := mintToken(t, founding)
+	require.NoError(t, db.Exec(`INSERT INTO vms (id, user_id, node_id, hostname, status) VALUES ('vm-1', ?, 'n1', 'web-1', 'running')`, client.ID.String()).Error)
+	path := "/api/v1/users/" + client.ID.String()
+
+	rec := doUserReq(t, s, http.MethodDelete, path, tok, "")
+	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+	var out struct {
+		Data struct {
+			VMs []service.OwnedVM `json:"vms"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	require.Len(t, out.Data.VMs, 1)
+	assert.Equal(t, "web-1", out.Data.VMs[0].Hostname)
+	assert.Equal(t, int64(1), countUsersByRole(t, db, models.RoleClient), "nothing deleted")
+	assert.Equal(t, int64(0), auditCount(t, db, "user.delete", founding, client))
+
+	for _, q := range []string{"?vms=keep", "?vms=reassign", "?vms=reassign&to=" + client.ID.String()} {
+		rec = doUserReq(t, s, http.MethodDelete, path+q, tok, "")
+		assert.Equal(t, http.StatusBadRequest, rec.Code, q+": "+rec.Body.String())
+	}
+	assert.Equal(t, int64(1), countUsersByRole(t, db, models.RoleClient), "a bad choice deletes nothing")
+}
+
 // SEC-14: another administrator's email, allow-list, name, password, 2FA and
 // lock are the founding administrator's to change, the founder's own included.
 func TestUserRoutes_OnlyFoundingAdminChangesStaffAccounts(t *testing.T) {

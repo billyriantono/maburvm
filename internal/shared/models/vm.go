@@ -52,15 +52,32 @@ type VM struct {
 	// nil = not known (VMs from before this was tracked), "" = none, otherwise
 	// the image URL or path. Read-only here ("->") so ordinary saves never
 	// touch it; the operation worker writes it once the node confirms.
-	AttachedISO *string        `json:"attached_iso" gorm:"column:attached_iso;->"`
+	AttachedISO *string `json:"attached_iso" gorm:"column:attached_iso;->"`
 	// Suspended blocks the owner from starting or changing the VM, whatever its
 	// power state. Read-only here; SetSuspended is the one writer.
 	Suspended bool `json:"suspended" gorm:"column:suspended;->"`
 	// PlanID is the plan the VM was ordered on or last changed to; BillingRef is
 	// the billing system's reference for the service that pays for it. Both
 	// read-only here; VMService.SetBillingLink is the writer.
-	PlanID     *string        `json:"plan_id,omitempty" gorm:"column:plan_id;->"`
-	BillingRef *string        `json:"billing_ref,omitempty" gorm:"column:billing_ref;->"`
+	PlanID     *string `json:"plan_id,omitempty" gorm:"column:plan_id;->"`
+	BillingRef *string `json:"billing_ref,omitempty" gorm:"column:billing_ref;->"`
+	// Network policy, read-only here (written by NetworkService by table
+	// name). FirewallDefault is models.FirewallDefault*; empty on a database
+	// without the column, which reads as drop.
+	FirewallDefault string `json:"firewall_default" gorm:"column:firewall_default;->"`
+	SMTPBlocked     bool   `json:"smtp_blocked" gorm:"column:smtp_blocked;->"`
+	// GuestNetworkNote says why the guest has not taken an address change;
+	// GuestNetworkPending that its node applies it by itself once it can.
+	GuestNetworkNote    *string `json:"guest_network_note,omitempty" gorm:"column:guest_network_note;->"`
+	GuestNetworkPending bool    `json:"guest_network_pending" gorm:"column:guest_network_pending;->"`
+	// Limits are the VM's CPU and disk caps, copied from its plan or set by an
+	// operator; Throttle an operator's tighter caps on top, until lifted.
+	// LimitsNote says why the node does not have them yet. All read-only here;
+	// VMService writes them by table name. The throttle and the note are for
+	// staff, so only the VM detail response carries them.
+	Limits     VMLimits       `json:"limits" gorm:"column:limits;type:jsonb;serializer:json;->"`
+	Throttle   *VMLimits      `json:"-" gorm:"column:throttle;type:jsonb;serializer:json;->"`
+	LimitsNote *string        `json:"-" gorm:"column:limits_note;->"`
 	CreatedAt  time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
 	UpdatedAt  time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
 	DeletedAt  gorm.DeletedAt `json:"-" gorm:"index"`

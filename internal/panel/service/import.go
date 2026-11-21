@@ -347,6 +347,9 @@ func (s *ImportService) processDiscoveredVM(ctx context.Context, req *ImportVirt
 	}
 
 	result.VMID = vm.ID
+	// An imported VM arrives with no firewall rules and is reachable on every
+	// port; its first rule must not turn that into default-deny.
+	_ = s.db.WithContext(ctx).Exec("UPDATE vms SET firewall_default = ? WHERE id = ?", models.FirewallDefaultAccept, vm.ID).Error
 
 	// Create network records for discovered IPs
 	for _, net := range candidate.Networks {

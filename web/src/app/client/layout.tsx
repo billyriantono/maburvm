@@ -7,6 +7,7 @@ import { ClientSidebar, clientPages } from "@/components/client-sidebar"
 import { GlobalSearch } from "@/components/global-search"
 import { Button } from "@/components/ui/button"
 import { ThemeToggle } from "@/components/theme-toggle"
+import { ClientNotifications } from "@/components/client-notifications"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -83,6 +84,8 @@ export default function ClientLayout({
             <div className="hidden md:block ml-auto mr-3">
               <GlobalSearch pages={clientPages} vmHref={clientVmHref} admin={false} />
             </div>
+
+            <div className="mr-3"><ClientNotifications /></div>
 
             <div className="mr-3"><ThemeToggle /></div>
 

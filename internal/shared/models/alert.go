@@ -15,6 +15,7 @@ const (
 	AlertKindBackupFailed = "backup_failed"
 	AlertKindJobFailed    = "job_failed"
 	AlertKindFirewallOff  = "firewall_off"
+	AlertKindNetworkDrift = "network_drift"
 )
 
 const (

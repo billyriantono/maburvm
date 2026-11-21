@@ -159,15 +159,13 @@ var NotifyEmailChanged = func(db *gorm.DB, oldEmail, newEmail, name string) {
 		slog.Default().Warn("account email changed, but the old address could not be told: email is not set up", "old_email", oldEmail)
 		return
 	}
-	go func() {
-		msg := RenderEmail(EmailTemplate{
-			Subject: "The email address of your {{brand}} account was changed",
-			Body: "{{greeting}},\n\nAn administrator changed the email address of your {{brand}} account from {{email}} to {{new_email}}.\n\n" +
-				"You now sign in with the new address, and password-reset messages go there. If you did not ask for this, contact support.",
-		}, cfg.Brand, EmailData{Name: name, Email: oldEmail, LogoURL: EmailLogoURL(cfg.Brand, os.Getenv("PANEL_PUBLIC_URL")),
-			Extra: map[string]string{"new_email": newEmail}})
-		if err := SendMail(cfg, oldEmail, msg); err != nil {
-			slog.Default().Warn("account email changed, but the old address could not be told", "old_email", oldEmail, "error", err)
-		}
-	}()
+	msg := RenderEmail(EmailTemplate{
+		Subject: "The email address of your {{brand}} account was changed",
+		Body: "{{greeting}},\n\nAn administrator changed the email address of your {{brand}} account from {{email}} to {{new_email}}.\n\n" +
+			"You now sign in with the new address, and password-reset messages go there. If you did not ask for this, contact support.",
+	}, cfg.Brand, EmailData{Name: name, Email: oldEmail, LogoURL: EmailLogoURL(cfg.Brand, os.Getenv("PANEL_PUBLIC_URL")),
+		Extra: map[string]string{"new_email": newEmail}})
+	if err := queueRendered(context.Background(), db, "email_changed", oldEmail, msg, emailRefs{}); err != nil {
+		slog.Default().Warn("account email changed, but the old address could not be told", "old_email", oldEmail, "error", err)
+	}
 }

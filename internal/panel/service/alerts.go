@@ -439,6 +439,7 @@ var jobLabels = map[string]string{
 	"audit":              "Audit log write",
 	"network_config":     "Network change",
 	"webhook_delivery":   "Billing event delivery",
+	"email_delivery":     "Email delivery",
 }
 
 // JobFailed records a background job that failed for good: every try used,

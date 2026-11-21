@@ -72,7 +72,7 @@ func (h *NodeHandler) RegisterNode(c echo.Context) error {
 				"error":   "Conflict",
 				"message": err.Error(),
 			})
-		case errors.Is(err, service.ErrInvalidNodeIP):
+		case errors.Is(err, service.ErrInvalidNodeIP), errors.Is(err, service.ErrInvalidNodeRatio):
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{
 				"error":   "Bad Request",
 				"message": err.Error(),
@@ -184,8 +184,10 @@ type NodeDetailResponse struct {
 	Online         bool         `json:"online"`
 	CreationPaused bool         `json:"creation_paused"`
 	Metrics        *NodeMetrics `json:"metrics,omitempty"`
-	CreatedAt      string       `json:"created_at"`
-	UpdatedAt      string       `json:"updated_at"`
+	// What the node has promised to VMs, against what it has.
+	Allocation *service.NodeAllocation `json:"allocation,omitempty"`
+	CreatedAt  string                  `json:"created_at"`
+	UpdatedAt  string                  `json:"updated_at"`
 }
 
 // NodeMetrics represents node performance metrics in the response
@@ -238,6 +240,8 @@ func (h *NodeHandler) GetNode(c echo.Context) error {
 		UpdatedAt:      node.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 	}
 
+	resp.Allocation, _ = h.service.Allocation(c.Request().Context(), node)
+
 	if metrics != nil {
 		resp.Metrics = &NodeMetrics{
 			CPUUsage:    metrics.CPUUsage,
@@ -259,6 +263,8 @@ type UpdateNodeRequest struct {
 	IPAddress      string `json:"ip_address,omitempty"`
 	Status         string `json:"status,omitempty"`
 	CreationPaused *bool  `json:"creation_paused,omitempty"`
+	// VCPURatio is the node's own vCPU overcommit ratio; 0 uses the panel-wide one.
+	VCPURatio *float64 `json:"vcpu_ratio,omitempty"`
 }
 
 // UpdateNode handles PUT /api/nodes/:id - Update node information
@@ -292,6 +298,7 @@ func (h *NodeHandler) UpdateNode(c echo.Context) error {
 		updateReq.Status = &status
 	}
 	updateReq.CreationPaused = req.CreationPaused
+	updateReq.VCPURatio = req.VCPURatio
 
 	// Update node
 	node, err := h.service.UpdateNode(c.Request().Context(), id, updateReq)

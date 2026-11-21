@@ -176,10 +176,11 @@ func TestVMServiceRescueRequiresISO(t *testing.T) {
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 	)
 
-	// With no iso_url and no RESCUE_ISO_URL, rescue must fail clearly (before any side effect).
+	// With no iso_url, no saved rescue image and no RESCUE_ISO_URL, rescue must
+	// fail clearly (before any side effect).
+	t.Setenv("RESCUE_ISO_URL", "")
 	_, err := svc.RescueVM(ctx, vm.ID, "", false)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "no rescue ISO configured")
+	require.ErrorIs(t, err, ErrNoRescueImage)
 
 	// The VM must not have been flipped into rescue mode.
 	var stored models.VM
@@ -234,7 +235,7 @@ func setupVMIPAMTestDB(t *testing.T) *gorm.DB {
 		`CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', email TEXT NOT NULL, password_hash TEXT NOT NULL, role TEXT, quota_mode TEXT NOT NULL DEFAULT 'legacy', two_factor_secret TEXT, two_factor_enabled BOOLEAN NOT NULL DEFAULT 0, two_factor_backup_codes TEXT, ip_whitelist TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, token_revoked_at DATETIME, suspended_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE nodes (id TEXT PRIMARY KEY, name TEXT NOT NULL, ip_address TEXT NOT NULL, status TEXT, token TEXT NOT NULL, cert_fingerprint TEXT NOT NULL DEFAULT '', region_id TEXT, zone TEXT NOT NULL DEFAULT '', memory_total_bytes INTEGER NOT NULL DEFAULT 0, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE os_templates (id TEXT PRIMARY KEY, name TEXT NOT NULL, version TEXT NOT NULL, image_path TEXT NOT NULL, size_bytes BIGINT NOT NULL DEFAULT 0, os_type TEXT NOT NULL DEFAULT 'linux', is_active BOOLEAN, description TEXT, licensed BOOLEAN NOT NULL DEFAULT 0, plan_ids TEXT, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
-		`CREATE TABLE vms (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, node_id TEXT NOT NULL, hostname TEXT NOT NULL, os_template_id TEXT NOT NULL, resources TEXT, status TEXT, source_migration TEXT, vnc_port INTEGER, vnc_password TEXT, console_enabled BOOLEAN DEFAULT 1, rescue_mode BOOLEAN DEFAULT 0, plan_id TEXT, billing_ref TEXT, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
+		`CREATE TABLE vms (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, node_id TEXT NOT NULL, hostname TEXT NOT NULL, os_template_id TEXT NOT NULL, resources TEXT, status TEXT, source_migration TEXT, vnc_port INTEGER, vnc_password TEXT, console_enabled BOOLEAN DEFAULT 1, rescue_mode BOOLEAN DEFAULT 0, plan_id TEXT, billing_ref TEXT, firewall_default TEXT NOT NULL DEFAULT 'drop', smtp_blocked BOOLEAN NOT NULL DEFAULT 0, guest_network_note TEXT, guest_network_pending BOOLEAN NOT NULL DEFAULT 0, limits TEXT NOT NULL DEFAULT '{}', throttle TEXT, limits_note TEXT, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE networks (id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, ip_address TEXT NOT NULL, bandwidth_limit INTEGER DEFAULT 0, bandwidth_quota_gb INTEGER DEFAULT 0, over_quota_policy TEXT DEFAULT 'throttle', throttle_speed_mbps INTEGER DEFAULT 0, throttled BOOLEAN DEFAULT 0, vlan_id INTEGER, anti_spoofing BOOLEAN DEFAULT 1, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE port_forwards (id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, network_id TEXT, node_id TEXT, external_port INTEGER, internal_port INTEGER, protocol TEXT, source_ip TEXT, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE ip_pools (id TEXT PRIMARY KEY, name TEXT NOT NULL, node_id TEXT, family TEXT NOT NULL, cidr TEXT, gateway TEXT, bridge TEXT, range_start TEXT, range_end TEXT, description TEXT, orderable BOOLEAN NOT NULL DEFAULT 0, delegated_prefix_len INTEGER, link_prefix TEXT, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,

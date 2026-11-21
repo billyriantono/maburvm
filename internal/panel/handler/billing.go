@@ -1046,6 +1046,19 @@ func (h *BillingHandler) handleVMResize(ctx context.Context, data *WebhookData, 
 		res.Disk = disk
 	}
 
+	// The plan's CPU and disk caps, before any shutdown, so the running VM
+	// takes them live and a restart for the resize keeps them.
+	var limitsNote string
+	if plan != nil {
+		applied, err := h.vmService.ApplyPlanVMLimits(ctx, data.VMID, plan)
+		if err != nil {
+			return WebhookResponse{}, fmt.Errorf("failed to apply the plan's CPU and disk limits: %w", err)
+		}
+		if applied.Note != nil {
+			limitsNote = *applied.Note
+		}
+	}
+
 	// A change of speed or quota alone needs no shutdown.
 	if res.CPU != old.CPU || res.RAM != old.RAM || res.Disk != old.Disk {
 		// CPU and memory only change on a stopped VM. A running one is shut down
@@ -1092,6 +1105,10 @@ func (h *BillingHandler) handleVMResize(ctx context.Context, data *WebhookData, 
 			return WebhookResponse{}, err
 		}
 		meta["plan_id"] = plan.ID
+		meta["limits"] = "applied"
+		if limitsNote != "" {
+			meta["limits"] = limitsNote
+		}
 	}
 	return WebhookResponse{
 		Success: true, Message: "VM resized", VMID: data.VMID, ExternalRef: data.ExternalRef,

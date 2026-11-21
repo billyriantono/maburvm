@@ -8,6 +8,8 @@ import (
 	"sync"
 
 	"github.com/coreos/go-iptables/iptables"
+
+	"github.com/maburvm/panel/internal/agent/netrules"
 )
 
 const (
@@ -125,11 +127,10 @@ func assignAddrs(addrs []SpoofAddr, nics []NIC) []spoofNIC {
 	return out
 }
 
-// ebRuleCommands builds the ebtables commands creating a VM's chain. Within
-// the chain RETURN only ends this VM's checks; FORWARD goes on to the next
-// VM's chain, so traffic between two VMs is checked on both ends.
-func ebRuleCommands(vmID string, nics []spoofNIC) [][]string {
-	chain := ebChain(vmID)
+// ebRuleCommands builds the ebtables commands creating a VM's chain under the
+// given name. Within the chain RETURN only ends this VM's checks; FORWARD goes
+// on to the next VM's chain, so traffic between two VMs is checked on both ends.
+func ebRuleCommands(chain string, nics []spoofNIC) [][]string {
 	// A new ebtables chain defaults to ACCEPT, which would end FORWARD
 	// processing and skip every VM chain after this one.
 	cmds := [][]string{{"-N", chain}, {"-P", chain, "RETURN"}}
@@ -172,45 +173,60 @@ func (asm *AntiSpoofManager) ApplyAntiSpoofRules(vmID string, addrs []SpoofAddr,
 	asm.mu.Lock()
 	defer asm.mu.Unlock()
 
-	if err := asm.removeRulesInternal(vmID); err != nil {
-		return fmt.Errorf("failed to remove existing rules: %w", err)
-	}
 	r := &spoofRules{VMID: vmID, Addrs: addrs}
 	asm.vmRules[vmID] = r
 	return asm.write(r, nics)
 }
 
 // write puts r on the host for the VM's current NICs (assumes lock is held).
+//
+// The new chain is built under whichever of the VM's two chain names is free
+// and jumped to before the old one goes, so a rewrite never leaves the VM
+// unchecked. A VM without taps (stopped) has its rules lifted.
 func (asm *AntiSpoofManager) write(r *spoofRules, nics []NIC) error {
 	r.Key = nicKey(nics)
 	restricted := assignAddrs(r.Addrs, nics)
 	if len(restricted) == 0 {
-		return nil
+		return asm.removeFromHost(r.VMID)
 	}
 	if _, err := exec.LookPath("ebtables"); err != nil {
 		return nil // ebtables not installed; nwfilter is all there is
 	}
-	for _, c := range ebRuleCommands(r.VMID, restricted) {
+	names := netrules.EbChainNames(r.VMID)
+	next := names[0]
+	if ebtables("-L", names[0]) == nil {
+		next = names[1]
+	}
+	_ = removeEBChain(next) // left over from a write that was cut short
+	for _, c := range ebRuleCommands(next, restricted) {
 		if err := ebtables(c...); err != nil {
-			_ = asm.removeFromHost(r.VMID)
+			_ = removeEBChain(next)
 			r.Key = "" // retried by RebindInterfaces
 			return err
+		}
+	}
+	for _, n := range names {
+		if n != next {
+			if err := removeEBChain(n); err != nil {
+				log.Printf("[AntiSpoof] VM %s: could not remove the previous chain %s: %v", r.VMID, n, err)
+			}
+		}
+	}
+	// Rules in the oldest, iptables layout go once the ebtables ones are in.
+	for _, ipt := range []*iptables.IPTables{asm.ipt, asm.ipt6} {
+		if ipt != nil {
+			if err := asm.cleanupByComment(r.VMID, ipt); err != nil {
+				log.Printf("[AntiSpoof] VM %s: could not remove old iptables rules: %v", r.VMID, err)
+			}
 		}
 	}
 	return nil
 }
 
-// ebChain names the per-VM ebtables chain holding a VM's rules. ebtables
-// rules carry no comments, so a chain named after the VM is the only way to
-// find them again once the agent's memory of them is gone (restart, hand
-// edits). Chain names are capped at 31 chars, hence the truncated id.
-func ebChain(vmID string) string {
-	id := strings.ReplaceAll(vmID, "-", "")
-	if len(id) > 20 {
-		id = id[:20]
-	}
-	return "MAS-" + id
-}
+// ebChain is the name earlier agents gave a VM's chain; see EbChainNames.
+// ebtables rules carry no comments, so a chain named after the VM is the only
+// way to find them again once the agent's memory of them is gone.
+func ebChain(vmID string) string { return netrules.EbChainNames(vmID)[0] }
 
 func ebtables(args ...string) error {
 	if output, err := exec.Command("ebtables", args...).CombinedOutput(); err != nil {
@@ -219,13 +235,23 @@ func ebtables(args ...string) error {
 	return nil
 }
 
-// removeEBTablesRules removes a VM's ebtables chain and the FORWARD jump to it.
-// It needs only the VM id, so it also works for rules the agent no longer tracks.
+// removeEBTablesRules removes a VM's ebtables chains and the FORWARD jumps to
+// them. It needs only the VM id, so it also works for rules the agent no
+// longer tracks.
 func removeEBTablesRules(vmID string) error {
 	if _, err := exec.LookPath("ebtables"); err != nil {
 		return nil // ebtables not installed, nothing to remove
 	}
-	chain := ebChain(vmID)
+	for _, chain := range netrules.EbChainNames(vmID) {
+		if err := removeEBChain(chain); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// removeEBChain removes one ebtables chain and the FORWARD jumps to it.
+func removeEBChain(chain string) error {
 	if ebtables("-L", chain) != nil {
 		return nil // no chain, nothing to remove
 	}
@@ -264,10 +290,6 @@ func (asm *AntiSpoofManager) RebindInterfaces(lookup func(vmID string) ([]NIC, e
 	for vmID, r := range asm.vmRules {
 		nics, err := lookup(vmID)
 		if err != nil || nicKey(nics) == r.Key {
-			continue
-		}
-		if err := asm.removeFromHost(vmID); err != nil {
-			log.Printf("[AntiSpoof] VM %s: could not remove rules for %q: %v", vmID, r.Key, err)
 			continue
 		}
 		if err := asm.write(r, nics); err != nil {
@@ -341,7 +363,6 @@ func (asm *AntiSpoofManager) AdoptExisting(vmIDs []string, nicsOf func(vmID stri
 		if len(addrs) == 0 {
 			continue // no anti-spoof on this VM
 		}
-		_ = asm.removeFromHost(vmID)
 		r := &spoofRules{VMID: vmID, Addrs: addrs}
 		if err := asm.write(r, nics); err != nil {
 			log.Printf("[AntiSpoof] VM %s: could not re-apply rules: %v", vmID, err)
@@ -354,7 +375,13 @@ func (asm *AntiSpoofManager) AdoptExisting(vmIDs []string, nicsOf func(vmID stri
 // chainAddrs reads the addresses a VM's ebtables chain allows, each with the
 // bridge of the tap it was allowed on.
 func chainAddrs(vmID string, nics []NIC) []SpoofAddr {
-	out, err := exec.Command("ebtables", "-L", ebChain(vmID)).Output()
+	var out []byte
+	err := fmt.Errorf("no chain")
+	for _, chain := range netrules.EbChainNames(vmID) {
+		if out, err = exec.Command("ebtables", "-L", chain).Output(); err == nil {
+			break
+		}
+	}
 	if err != nil {
 		return nil
 	}

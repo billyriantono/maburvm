@@ -57,6 +57,14 @@ var EmailPlaceholders = []struct {
 	{"{{system}}", "The operating system installed (server emails only)"},
 	{"{{user}}", "The account the server is signed in to with: root, or admin on a router (server emails only)"},
 	{"{{access}}", "How to sign in to the server: where to read its password, or a reminder of what was chosen (server emails only)"},
+	{"{{used}}", "Data transferred this month, e.g. 812.4 GB (transfer warnings only)"},
+	{"{{quota}}", "The monthly transfer allowance, e.g. 1000 GB (transfer warnings only)"},
+	{"{{percent}}", "How much of the allowance is used, e.g. 81% (transfer warnings only)"},
+	{"{{resets}}", "The date the allowance starts again (transfer warnings only)"},
+	{"{{after}}", "What happens once the allowance is used up, as this server is set up (transfer warnings only)"},
+	{"{{backup}}", "Which backup failed: \u201cThe scheduled backup\u201d or \u201cA backup\u201d (backup emails only)"},
+	{"{{who}}", "Where a change came from: an address, or an administrator (account emails only)"},
+	{"{{key}}", "The name of the new API key (API key emails only)"},
 }
 
 const (
@@ -67,6 +75,14 @@ const (
 	EmailVMReinstalled = "vm_reinstalled"
 	EmailVMRescueOn    = "vm_rescue_on"
 	EmailVMRescueOff   = "vm_rescue_off"
+	EmailTransferWarn  = "transfer_warning"
+	EmailVMSuspended   = "vm_suspended"
+	EmailVMUnsuspended = "vm_unsuspended"
+	EmailBackupFailed  = "backup_failed"
+	// Account emails: a change to how the account is signed in to.
+	EmailPasswordChanged   = "password_changed"
+	EmailTwoFactorDisabled = "two_factor_disabled"
+	EmailAPIKeyCreated     = "api_key_created"
 )
 
 // serverSample fills the server placeholders in previews and test sends.
@@ -178,6 +194,111 @@ var emailTemplateDefs = []EmailTemplateDef{
 		},
 		Sample: serverSample, SampleLink: "https://panel.example.com/client/vms/example", LinkMeaning: serverLinkMeaning,
 	},
+	{
+		Key:      EmailTransferWarn,
+		Name:     "Transfer usage warning",
+		SentWhen: "Sent to a server's owner when its data transfer reaches a warning level (set under System settings, Quotas), at most once per level each month.",
+		Optional: true,
+		Default: EmailTemplate{
+			Subject: "Your server {{server}} has used {{percent}} of its monthly transfer",
+			Body: "{{greeting}},\n\nYour server {{server}} has transferred {{used}} of its {{quota}} monthly allowance ({{percent}}).\n\n" +
+				"{{after}}\n\nThe allowance starts again on {{resets}}.",
+			Button: "Open your server",
+		},
+		Sample: transferSample, SampleLink: "https://panel.example.com/client/vms/example", LinkMeaning: serverLinkMeaning,
+	},
+	{
+		Key:      EmailVMSuspended,
+		Name:     "Server suspended",
+		SentWhen: "Sent to a server's owner when it is suspended, by staff or the billing system. Switch it off when your billing system sends its own.",
+		Optional: true,
+		Default: EmailTemplate{
+			Subject: "Your server {{server}} has been suspended",
+			Body: "{{greeting}},\n\nYour server {{server}} has been suspended and is powered off. Its disk and address are kept, " +
+				"but it cannot be started until the suspension is lifted.\n\nIf you are not sure why, contact support.",
+			Button: "Open your server",
+		},
+		Sample: serverSample, SampleLink: "https://panel.example.com/client/vms/example", LinkMeaning: serverLinkMeaning,
+	},
+	{
+		Key:      EmailVMUnsuspended,
+		Name:     "Server unsuspended",
+		SentWhen: "Sent to a server's owner when its suspension is lifted.",
+		Optional: true,
+		Default: EmailTemplate{
+			Subject: "Your server {{server}} is no longer suspended",
+			Body: "{{greeting}},\n\nThe suspension of your server {{server}} has been lifted, and it is being started again. " +
+				"If it does not come up, start it from its page.",
+			Button: "Open your server",
+		},
+		Sample: serverSample, SampleLink: "https://panel.example.com/client/vms/example", LinkMeaning: serverLinkMeaning,
+	},
+	{
+		Key:      EmailBackupFailed,
+		Name:     "Backup failed",
+		SentWhen: "Sent to a customer when a backup of their server fails after every retry. Staff see the reason under Alerts.",
+		Optional: true,
+		Default: EmailTemplate{
+			Subject: "A backup of your server {{server}} failed",
+			Body: "{{greeting}},\n\n{{backup}} of your server {{server}} did not complete. The server itself keeps running as before.\n\n" +
+				"The failure has been recorded for our staff. If it keeps happening, contact support.",
+			Button: "Open your server",
+		},
+		Sample:     map[string]string{"name": "Dewi", "email": "dewi@example.com", "server": "web-01", "backup": "The scheduled backup"},
+		SampleLink: "https://panel.example.com/client/vms/example", LinkMeaning: serverLinkMeaning,
+	},
+	{
+		Key:      EmailPasswordChanged,
+		Name:     "Password changed",
+		SentWhen: "Sent when the password of an account changes: changed by its owner, set through a reset link, or replaced by an administrator.",
+		Optional: true,
+		Default: EmailTemplate{
+			Subject: "Your {{brand}} password was changed",
+			Body:    "{{greeting}},\n\nThe password of your {{brand}} account ({{email}}) was changed. {{who}}\n\n" + notYou,
+			Button:  "Sign in",
+		},
+		Sample: accountSample, SampleLink: "https://panel.example.com/login", LinkMeaning: accountLinkMeaning,
+	},
+	{
+		Key:      EmailTwoFactorDisabled,
+		Name:     "Two-factor turned off",
+		SentWhen: "Sent when two-factor sign-in is turned off for an account, by its owner or by an administrator.",
+		Optional: true,
+		Default: EmailTemplate{
+			Subject: "Two-factor sign-in was turned off for your {{brand}} account",
+			Body: "{{greeting}},\n\nTwo-factor sign-in was turned off for your {{brand}} account ({{email}}). Signing in now takes only the password. {{who}}\n\n" +
+				"You can turn it on again under your profile. " + notYou,
+			Button: "Sign in",
+		},
+		Sample: accountSample, SampleLink: "https://panel.example.com/login", LinkMeaning: accountLinkMeaning,
+	},
+	{
+		Key:      EmailAPIKeyCreated,
+		Name:     "API key created",
+		SentWhen: "Sent when a new API key is created for an account.",
+		Optional: true,
+		Default: EmailTemplate{
+			Subject: "A new API key was created for your {{brand}} account",
+			Body: "{{greeting}},\n\nA new API key named \u201c{{key}}\u201d was created for your {{brand}} account ({{email}}). " +
+				"It can do what your account can until it expires or is revoked. {{who}}\n\n" + notYou,
+			Button: "Sign in",
+		},
+		Sample: accountSample, SampleLink: "https://panel.example.com/login", LinkMeaning: accountLinkMeaning,
+	},
+}
+
+// accountSample fills the account placeholders in previews and test sends.
+var accountSample = map[string]string{
+	"name": "Dewi", "email": "dewi@example.com", "who": "It was made from the address 203.0.113.24.", "key": "deploy-bot",
+}
+
+const accountLinkMeaning = "The button opens your panel's sign-in page."
+
+// transferSample fills the transfer placeholders in previews and test sends.
+var transferSample = map[string]string{
+	"name": "Dewi", "email": "dewi@example.com", "server": "web-01", "address": "203.0.113.24",
+	"used": "812.4 GB", "quota": "1000 GB", "percent": "81%", "resets": "1 December",
+	"after": "Once it is used up, the server's speed is lowered to 10 Mbps until the allowance starts again.",
 }
 
 // What {{access}} becomes in a server email, by how the server can be reached.

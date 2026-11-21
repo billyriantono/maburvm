@@ -416,13 +416,22 @@ func (s *Server) Start() error {
 	// Register NodeAgent service with dependencies
 	nodeAgentSvc := NewNodeAgentService(libvirtMgr, networkMgr, healthColl, vncProx)
 	if networkMgr != nil {
+		// After a reboot, VPC bridges must exist before the guests on them can
+		// start, and every VM's rules must be back before those guests do.
+		vpcBridges, rebooted := restoreVPCs(nodeAgentSvc)
 		restoreNetworkConfigs(nodeAgentSvc)
+		if rebooted && len(vpcBridges) > 0 {
+			go startVPCGuests(vpcBridges)
+		}
+		go nodeAgentSvc.runNetworkReconciler(context.Background())
 	}
 	// Before serving, so no request is editing a definition this saves back.
 	secureConsoles(true)
 	go secureConsolesForever()
 	pb.RegisterNodeAgentServer(s.grpcServer, nodeAgentSvc)
 	go pruneCustomerISOsForever()
+	go evictTemplateCacheForever()
+	go recoverBackupOverlays()
 
 	s.started = true
 

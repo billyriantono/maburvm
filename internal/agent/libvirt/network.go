@@ -64,6 +64,8 @@ type GuestInterface struct {
 	Name string
 	// Target is the host-side tap device (e.g. vnet3), empty if not yet attached.
 	Target string
+	// Bridge is the host bridge the interface is defined on, empty for other kinds.
+	Bridge string
 }
 
 // ListGuestInterfaces returns every NIC of every running domain.
@@ -108,6 +110,9 @@ func ListGuestInterfaces() ([]GuestInterface, error) {
 				}
 				if iface.Target != nil {
 					gi.Target = iface.Target.Dev
+				}
+				if iface.Source != nil && iface.Source.Bridge != nil {
+					gi.Bridge = iface.Source.Bridge.Bridge
 				}
 				out = append(out, gi)
 			}

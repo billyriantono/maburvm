@@ -31,8 +31,8 @@ func newRestoreFixture(t *testing.T, targetAgent pb.NodeAgentServer) *restoreFix
 	t.Helper()
 	db := setupVMIPAMTestDB(t)
 	for _, stmt := range []string{
-		`CREATE TABLE backups (id TEXT PRIMARY KEY, vm_id TEXT, storage_provider TEXT, storage_path TEXT, backup_type TEXT, status TEXT, size INTEGER DEFAULT 0, compression TEXT, checksum TEXT, error_message TEXT, started_at DATETIME, completed_at DATETIME, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
-		`CREATE TABLE firewall_rules (id TEXT PRIMARY KEY, vm_id TEXT, protocol TEXT, port_range TEXT, action TEXT, direction TEXT, source_ip TEXT, priority INTEGER, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
+		`CREATE TABLE backups (id TEXT PRIMARY KEY, vm_id TEXT, storage_provider TEXT, storage_path TEXT, backup_type TEXT, status TEXT, size INTEGER DEFAULT 0, compression TEXT, checksum TEXT, error_message TEXT, started_at DATETIME, completed_at DATETIME, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME, disks TEXT DEFAULT '[]', consistency TEXT DEFAULT '')`,
+		`CREATE TABLE firewall_rules (id TEXT PRIMARY KEY, vm_id TEXT, protocol TEXT, port_range TEXT, action TEXT, direction TEXT, source_ip TEXT, priority INTEGER, icmp_type TEXT NOT NULL DEFAULT '', log BOOLEAN NOT NULL DEFAULT 0, family TEXT NOT NULL DEFAULT '', created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE system_settings (section TEXT PRIMARY KEY, data TEXT, updated_at DATETIME)`,
 	} {
 		require.NoError(t, db.Exec(stmt).Error)
@@ -261,11 +261,20 @@ func TestCopyFirewallRulesReplacesTheDefaults(t *testing.T) {
 	dst := "44444444-4444-4444-4444-444444444444"
 	require.NoError(t, f.db.Create(&models.FirewallRule{VMID: dst, Protocol: "tcp", PortRange: "22", Action: "allow", Direction: "inbound", SourceIP: "0.0.0.0/0", Priority: 10}).Error)
 
+	require.NoError(t, f.db.Model(&models.FirewallRule{}).Where("vm_id = ?", f.src.ID).Updates(map[string]interface{}{"log": true, "family": "v6"}).Error)
+	require.NoError(t, f.db.Exec(`UPDATE vms SET firewall_default = 'accept' WHERE id = ?`, f.src.ID).Error)
+	require.NoError(t, f.db.Create(&models.VM{ID: dst, UserID: f.src.UserID, NodeID: f.src.NodeID, Hostname: "restored", OSTemplateID: f.src.OSTemplateID}).Error)
+
 	f.svc.copyFirewallRules(ctx, f.src.ID, dst)
 	var rules []models.FirewallRule
 	require.NoError(t, f.db.Find(&rules, "vm_id = ?", dst).Error)
 	require.Len(t, rules, 1)
 	require.Equal(t, "8443", rules[0].PortRange)
+	require.True(t, rules[0].Log)
+	require.Equal(t, "v6", rules[0].Family)
+	var def string
+	require.NoError(t, f.db.Raw(`SELECT firewall_default FROM vms WHERE id = ?`, dst).Scan(&def).Error)
+	require.Equal(t, "accept", def, "an imported VM's policy comes back with it")
 
 	// The original keeps its own.
 	require.NoError(t, f.db.Find(&rules, "vm_id = ?", f.src.ID).Error)

@@ -22,6 +22,7 @@ var (
 	ErrInvalidNodeIP         = fmt.Errorf("invalid node IP address")
 	ErrNodeUnreachable       = fmt.Errorf("node is unreachable")
 	ErrTokenGenerationFailed = fmt.Errorf("failed to generate authentication token")
+	ErrInvalidNodeRatio      = fmt.Errorf("invalid node ratio")
 )
 
 // Default agent port for connectivity checks
@@ -205,10 +206,16 @@ type UpdateNodeRequest struct {
 	Status    *models.NodeStatus `json:"status,omitempty" validate:"omitempty,oneof=active maintenance offline"`
 	// CreationPaused, when set, stops or resumes placing new VMs on the node.
 	CreationPaused *bool `json:"creation_paused,omitempty"`
+	// VCPURatio, when set, is the node's own vCPU overcommit ratio; 0 returns
+	// it to the panel-wide one.
+	VCPURatio *float64 `json:"vcpu_ratio,omitempty"`
 }
 
 // UpdateNode updates an existing node's information
 func (s *NodeService) UpdateNode(ctx context.Context, id string, req *UpdateNodeRequest) (*models.Node, error) {
+	if req.VCPURatio != nil && (*req.VCPURatio < 0 || *req.VCPURatio > 100) {
+		return nil, fmt.Errorf("%w: the vCPU ratio must be between 0 and 100", ErrInvalidNodeRatio)
+	}
 	// Get existing node
 	node, err := s.repo.GetByID(ctx, id)
 	if err != nil {
@@ -265,6 +272,13 @@ func (s *NodeService) UpdateNode(ctx context.Context, id string, req *UpdateNode
 			return nil, fmt.Errorf("failed to update node: %w", err)
 		}
 		node.CreationPaused = *req.CreationPaused
+	}
+	if req.VCPURatio != nil {
+		if err := s.db.WithContext(ctx).Table("nodes").Where("id = ?", node.ID).
+			Update("vcpu_ratio", *req.VCPURatio).Error; err != nil {
+			return nil, fmt.Errorf("failed to update node: %w", err)
+		}
+		node.VCPURatio = *req.VCPURatio
 	}
 
 	return node, nil
@@ -542,6 +556,9 @@ func (s *NodeService) nodeMetrics(ctx context.Context, node *models.Node, online
 				ConntrackMax:         liveInfo.ConntrackMax,
 				FirewallEnforcement:  firewallEnforcement(liveInfo.FirewallEnforcement),
 				NATAddress:           liveInfo.NATAddress,
+				GuestNetworkPending:  liveInfo.GuestNetworkPending,
+				NetworkRepairs:       liveInfo.NetworkRepairs,
+				NetworkRepairLast:    liveInfo.NetworkRepairLast,
 				Live:                 true,
 				Status:               "online",
 			}
@@ -611,6 +628,11 @@ type NodeMetrics struct {
 	// NATAddress is the node address port forwards are published on. Empty
 	// from an agent that still publishes them on every local address.
 	NATAddress string `json:"nat_address"`
+	// GuestNetworkPending, NetworkRepairs and NetworkRepairLast are passed on
+	// from the agent (see client.LiveMetricsResult).
+	GuestNetworkPending []string `json:"-"`
+	NetworkRepairs      int64    `json:"-"`
+	NetworkRepairLast   string   `json:"-"`
 	// Live is true when the figures came from the agent in this call, rather
 	// than being the zero values of a node that did not answer.
 	Live bool `json:"-"`
@@ -624,4 +646,12 @@ func firewallEnforcement(reported string) string {
 		return reported
 	}
 	return models.FirewallUnknown
+}
+
+// Allocation reports what a node has promised to VMs, against what it has.
+func (s *NodeService) Allocation(ctx context.Context, node *models.Node) (*NodeAllocation, error) {
+	if node == nil || s.db == nil {
+		return nil, nil
+	}
+	return NodeAllocationOf(ctx, s.db, *node)
 }

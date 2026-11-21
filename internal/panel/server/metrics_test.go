@@ -49,6 +49,10 @@ func TestFleetCollector(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Collectors are read in parallel; each new connection to :memory: is an empty database.
+	if sqlDB, err := db.DB(); err == nil {
+		sqlDB.SetMaxOpenConns(1)
+	}
 	for _, q := range []string{
 		`CREATE TABLE nodes (id TEXT PRIMARY KEY, name TEXT, status TEXT, deleted_at DATETIME, failed_polls INTEGER NOT NULL DEFAULT 0, last_report_at DATETIME)`,
 		`CREATE TABLE vms (id TEXT PRIMARY KEY, node_id TEXT, status TEXT, deleted_at DATETIME)`,

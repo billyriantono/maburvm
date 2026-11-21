@@ -36,7 +36,7 @@ const (
 // has stopped reporting goes with "node offline".
 var AlertKinds = []string{
 	models.AlertKindNodeOffline, models.AlertKindStoragePool, models.AlertKindBackupFailed,
-	models.AlertKindJobFailed, models.AlertKindFirewallOff,
+	models.AlertKindJobFailed, models.AlertKindFirewallOff, models.AlertKindNetworkDrift,
 }
 
 // ErrAlertSettings is a save or a test refused for what was entered.

@@ -27,19 +27,23 @@ const maxAgentBinary = 256 << 20
 // swapScript runs in a transient systemd unit, outside this service's cgroup, so
 // it survives the restart it performs. It mirrors scripts/deploy-agent.sh:
 // back up, swap, restart, and roll back unless the new agent is still up — with
-// no extra restarts — after 15s. A crash-looping binary flickers through
+// no extra restarts — after 30s. A crash-looping binary flickers through
 // "active" between Restart= attempts, so being active once proves nothing.
+// One swap at a time: a second update that arrives during the first's health
+// check gives up instead of backing up a binary that is still on trial.
 //
 // $1 = installed binary, $2 = verified new binary in the same directory.
 const swapScript = `set -u
 EXE="$1"; NEW="$2"; UNIT=maburvm-agent
+exec 9>/run/maburvm-agent-update.lock
+flock -n 9 || { echo "another agent update is still running, this one is dropped"; rm -f "$NEW"; exit 1; }
 BAK="/root/maburvm-agent.bak-$(date +%Y%m%d-%H%M%S)"
 sleep 2  # let the RPC response reach the panel first
 cp -a "$EXE" "$BAK" || { echo "backup failed, update aborted"; rm -f "$NEW"; exit 1; }
 mv -f "$NEW" "$EXE"
 systemctl restart "$UNIT"
 R0=$(systemctl show -p NRestarts --value "$UNIT")
-sleep 15
+sleep 30
 if [ "$(systemctl is-active "$UNIT")" = active ] && [ "$(systemctl show -p NRestarts --value "$UNIT")" = "$R0" ]; then
   echo "agent update OK; backup at $BAK"
   ls -1t /root/maburvm-agent.bak-* 2>/dev/null | tail -n +6 | xargs -r rm -f
@@ -51,25 +55,6 @@ install -m0755 "$BAK" "$EXE"
 systemctl restart "$UNIT"
 exit 1
 `
-
-// checkUpdateSignature says why an update must be refused, or "" to go on.
-// With no AGENT_UPDATE_PUBKEY on the node every update is accepted, as before.
-func checkUpdateSignature(pubKey, digest string, sig []byte, arch string) string {
-	if pubKey == "" {
-		return ""
-	}
-	pub, err := agentsign.ParsePublicKey(pubKey)
-	if err != nil {
-		return "AGENT_UPDATE_PUBKEY on this node is not valid (" + err.Error() + "); fix it before updating"
-	}
-	if len(sig) == 0 {
-		return "this node installs only signed agent builds (AGENT_UPDATE_PUBKEY is set) and the panel sent no signature: put agent-" + arch + ".sig beside the panel's bundled agent"
-	}
-	if !agentsign.Verify(pub, digest, sig) {
-		return "the agent build's signature does not match this node's AGENT_UPDATE_PUBKEY"
-	}
-	return ""
-}
 
 // UpdateAgent receives a new agent binary from the panel and schedules the swap.
 //
@@ -106,8 +91,9 @@ func (s *NodeAgentService) UpdateAgent(stream pb.NodeAgent_UpdateAgentServer) er
 	if err != nil {
 		return fail("cannot locate own binary: %v", err)
 	}
-	// Same directory as the installed binary, so the swap is a rename.
-	tmp := exe + ".new"
+	// Same directory as the installed binary, so the swap is a rename. Named per
+	// update, so a second upload cannot overwrite a file a swap is about to move.
+	tmp := fmt.Sprintf("%s.new-%d", exe, time.Now().UnixNano())
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
 	if err != nil {
 		return fail("cannot write %s: %v", tmp, err)
@@ -151,7 +137,7 @@ func (s *NodeAgentService) UpdateAgent(stream pb.NodeAgent_UpdateAgentServer) er
 	if digest != strings.ToLower(first.Sha256) {
 		return fail("sha256 mismatch: got %s", digest)
 	}
-	if msg := checkUpdateSignature(os.Getenv("AGENT_UPDATE_PUBKEY"), digest, first.Signature, first.Arch); msg != "" {
+	if msg := agentsign.CheckUpdate(os.Getenv("AGENT_UPDATE_PUBKEY"), digest, first.Signature, first.Arch); msg != "" {
 		return fail("%s", msg)
 	}
 

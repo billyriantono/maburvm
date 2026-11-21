@@ -153,7 +153,7 @@ export default function UsersPage() {
     const ok = await confirm({
       title: `Delete user "${user.email}"?`,
       description:
-        "They lose access immediately. Resources they own are not deleted with them, so check what they still hold first.",
+        "They lose access immediately. An account that owns VMs is deleted from its own page, where you choose what happens to them.",
       confirmLabel: "Delete user",
       destructive: true,
       action: () => deleteUser.mutateAsync(user.id),

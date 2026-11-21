@@ -207,3 +207,70 @@ export function useDeleteFirewallRule(vmId: string) {
     },
   })
 }
+
+// useSetFirewallDefault sets what the VM's firewall does with inbound traffic
+// no rule matched.
+export function useSetFirewallDefault(vmId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<void, Error, 'drop' | 'accept'>({
+    mutationFn: async (value) => {
+      await api.put(`/api/v1/vms/${vmId}/firewall-default`, { default: value })
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['vms', 'detail', vmId] }),
+  })
+}
+
+// useSetSMTPBlocked blocks or allows the VM's outbound mail (administrators).
+export function useSetSMTPBlocked(vmId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<void, Error, boolean>({
+    mutationFn: async (blocked) => {
+      await api.put(`/api/v1/vms/${vmId}/smtp`, { blocked })
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['vms', 'detail', vmId] }),
+  })
+}
+
+// useDismissGuestNetworkNote clears the note about an address change the
+// guest did not take, once it has been dealt with.
+export function useDismissGuestNetworkNote(vmId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<void, Error, void>({
+    mutationFn: async () => {
+      await api.delete(`/api/v1/vms/${vmId}/guest-network-note`)
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['vms', 'detail', vmId] }),
+  })
+}
+
+// IPAssignment is one holding of an address (or IPv6 prefix) by a VM.
+export interface IPAssignment {
+  id: string
+  address: string
+  vm_id: string | null
+  vm_hostname: string
+  user_id: string | null
+  user_email: string
+  node_id: string | null
+  kind: 'direct' | 'floating' | 'ipv6_prefix'
+  assigned_at: string
+  released_at: string | null
+  /** Recorded when the history began: the start is the best known date. */
+  estimated: boolean
+}
+
+// useIPHistory looks up who held an address, optionally at one moment (an
+// RFC 3339 time). Disabled until an address is given.
+export function useIPHistory(address: string, at: string) {
+  return useQuery<IPAssignment[]>({
+    queryKey: ['ip-history', address, at],
+    queryFn: async () => {
+      const params = new URLSearchParams({ address })
+      if (at) params.set('at', at)
+      const response = await api.get<IPAssignment[]>(`/api/v1/ip-history?${params.toString()}`)
+      return response.data.data
+    },
+    enabled: !!address,
+    retry: false,
+  })
+}

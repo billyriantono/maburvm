@@ -11,21 +11,24 @@ import (
 // The agent reports raw byte counters from /sys/class/net/<vnet>/statistics/;
 // the panel accumulates deltas into this table.
 type BandwidthUsage struct {
-	ID        string         `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	VMID      string         `json:"vm_id" gorm:"type:uuid;not null;index:idx_bw_vm_period,unique" validate:"required,uuid"`
-	NodeID    string         `json:"node_id" gorm:"type:uuid;not null" validate:"required,uuid"`
-	PeriodStart time.Time    `json:"period_start" gorm:"type:date;not null;index:idx_bw_vm_period,unique"`
-	PeriodEnd   time.Time    `json:"period_end" gorm:"type:date;not null"`
-	RxBytes   int64          `json:"rx_bytes" gorm:"type:bigint;default:0"`   // Total received bytes this period
-	TxBytes   int64          `json:"tx_bytes" gorm:"type:bigint;default:0"`   // Total transmitted bytes this period
-	TotalBytes int64         `json:"total_bytes" gorm:"type:bigint;default:0"` // RxBytes + TxBytes
-	QuotaBytes int64         `json:"quota_bytes" gorm:"type:bigint;default:0"` // Quota in bytes (0 = unlimited)
-	Exceeded  bool           `json:"exceeded" gorm:"type:boolean;default:false"`
-	BlockedAt *time.Time     `json:"blocked_at,omitempty" gorm:"type:timestamptz"`
-	LastReportedAt time.Time `json:"last_reported_at" gorm:"type:timestamptz;not null;default:NOW()"`
-	CreatedAt time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
-	UpdatedAt time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
-	DeletedAt gorm.DeletedAt `json:"-" gorm:"index"`
+	ID          string     `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	VMID        string     `json:"vm_id" gorm:"type:uuid;not null;index:idx_bw_vm_period,unique" validate:"required,uuid"`
+	NodeID      string     `json:"node_id" gorm:"type:uuid;not null" validate:"required,uuid"`
+	PeriodStart time.Time  `json:"period_start" gorm:"type:date;not null;index:idx_bw_vm_period,unique"`
+	PeriodEnd   time.Time  `json:"period_end" gorm:"type:date;not null"`
+	RxBytes     int64      `json:"rx_bytes" gorm:"type:bigint;default:0"`    // Total received bytes this period
+	TxBytes     int64      `json:"tx_bytes" gorm:"type:bigint;default:0"`    // Total transmitted bytes this period
+	TotalBytes  int64      `json:"total_bytes" gorm:"type:bigint;default:0"` // RxBytes + TxBytes
+	QuotaBytes  int64      `json:"quota_bytes" gorm:"type:bigint;default:0"` // Quota in bytes (0 = unlimited)
+	Exceeded    bool       `json:"exceeded" gorm:"type:boolean;default:false"`
+	BlockedAt   *time.Time `json:"blocked_at,omitempty" gorm:"type:timestamptz"`
+	// WarnedPercent is the highest usage warning sent to the owner this period.
+	// Read-only here; the collector writes it by table name.
+	WarnedPercent  int            `json:"warned_percent" gorm:"column:warned_percent;->"`
+	LastReportedAt time.Time      `json:"last_reported_at" gorm:"type:timestamptz;not null;default:NOW()"`
+	CreatedAt      time.Time      `json:"created_at" gorm:"not null;default:NOW()"`
+	UpdatedAt      time.Time      `json:"updated_at" gorm:"not null;default:NOW()"`
+	DeletedAt      gorm.DeletedAt `json:"-" gorm:"index"`
 }
 
 // TableName specifies the table name for BandwidthUsage

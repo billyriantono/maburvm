@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input"
 import { usePlans, useCreatePlan, useUpdatePlan, useDeletePlan } from "@/lib/hooks/use-plans"
 import type { CreatePlanRequest, Plan } from "@/types/plan"
 import { useConfirm } from "@/components/confirm-provider"
+import { LimitsFields, NO_LIMITS, limitsProblem, limitsSummary } from "@/components/vm-limits"
 
 const emptyForm: CreatePlanRequest = {
   name: "",
@@ -29,6 +30,8 @@ const emptyForm: CreatePlanRequest = {
   data_quota_gb: 0,
   over_quota_policy: "throttle",
   throttle_speed_mbps: 0,
+  smtp_policy: "allowed",
+  limits: NO_LIMITS,
   description: "",
   is_active: true,
 }
@@ -61,6 +64,8 @@ export default function PlansPage() {
       data_quota_gb: plan.data_quota_gb,
       over_quota_policy: plan.over_quota_policy,
       throttle_speed_mbps: plan.throttle_speed_mbps,
+      smtp_policy: plan.smtp_policy ?? "allowed",
+      limits: { ...NO_LIMITS, ...plan.limits },
       description: plan.description ?? "",
       is_active: plan.is_active,
     })
@@ -99,6 +104,7 @@ export default function PlansPage() {
   }
 
   const saving = createPlan.isPending || updatePlan.isPending
+  const limitsError = limitsProblem(form.limits ?? NO_LIMITS)
 
   return (
     <div className="max-w-6xl mx-auto">
@@ -170,9 +176,30 @@ export default function PlansPage() {
               </div>
             )}
             <div>
+              <label htmlFor="plan-smtp" className="block text-xs font-medium text-muted-foreground mb-1">Outbound mail (port 25)</label>
+              <select
+                id="plan-smtp"
+                value={form.smtp_policy ?? "allowed"}
+                onChange={(e) => setForm({ ...form, smtp_policy: e.target.value as CreatePlanRequest["smtp_policy"] })}
+                className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              >
+                <option value="allowed">Allowed</option>
+                <option value="blocked">Blocked</option>
+              </select>
+              <p className="text-[10px] text-muted-foreground mt-1">For VMs created on this plan from now on. Existing VMs keep their setting; an administrator can change it per VM.</p>
+            </div>
+            <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">Description</label>
               <Input value={form.description ?? ""} onChange={(e) => setForm({ ...form, description: e.target.value })} />
             </div>
+          </div>
+          <div className="mt-5 border-t pt-4">
+            <h3 className="text-sm font-medium">CPU and disk limits</h3>
+            <p className="mb-3 text-xs text-muted-foreground">
+              What each VM on this plan may take from its node, so one busy VM cannot slow down the others. New VMs, and VMs moved to this plan, get these. Changing them leaves existing VMs as they are; an administrator can change a VM&apos;s limits on its page.
+            </p>
+            <LimitsFields idPrefix="plan-limits" value={form.limits ?? NO_LIMITS} onChange={(limits) => setForm({ ...form, limits })} />
+            {limitsError && <p role="alert" className="mt-3 text-sm text-destructive">{limitsError}</p>}
           </div>
           <label className="flex items-center gap-2 mt-4 cursor-pointer w-fit">
             <input type="checkbox" checked={form.is_active ?? true} onChange={(e) => setForm({ ...form, is_active: e.target.checked })} className="w-4 h-4" />
@@ -180,7 +207,7 @@ export default function PlansPage() {
           </label>
           <div className="flex justify-end gap-3 mt-4">
             <Button type="button" variant="ghost" onClick={() => { setShowForm(false); setEditingId(null) }}>Cancel</Button>
-            <Button type="submit" disabled={saving}>
+            <Button type="submit" disabled={saving || !!limitsError}>
               {saving && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
               {editingId ? "Save Changes" : "Create Plan"}
             </Button>
@@ -235,6 +262,8 @@ export default function PlansPage() {
               <div className="col-span-1 font-medium text-sm leading-tight">
                 <div className="flex items-center gap-1"><Zap className="w-3 h-3 text-muted-foreground" />{plan.bandwidth_mbps ? `${plan.bandwidth_mbps}` : "∞"}</div>
                 <div className="text-[11px] text-muted-foreground">{plan.data_quota_gb ? `${plan.data_quota_gb}GB·${plan.over_quota_policy[0].toUpperCase()}` : "∞ data"}</div>
+                {plan.smtp_policy === "blocked" && <div className="text-[11px] text-muted-foreground">Port 25 blocked</div>}
+                {limitsSummary(plan.limits).map((line) => <div key={line} className="text-[11px] text-muted-foreground">{line}</div>)}
               </div>
               <div className="col-span-2 flex justify-end gap-2">
                 <Button variant="outline" size="sm" className="h-8 w-8 p-0" title="Edit plan" onClick={() => openEdit(plan)}>

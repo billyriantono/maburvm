@@ -781,6 +781,13 @@ type LiveMetricsResult struct {
 	// them, which callers must treat as unknown.
 	FirewallEnforcement string
 	NATAddress          string
+
+	// GuestNetworkPending lists VMs whose guest still waits for an address
+	// change; NetworkRepairs counts host-rule repairs since the agent started,
+	// NetworkRepairLast says the last one. All empty from an older agent.
+	GuestNetworkPending []string
+	NetworkRepairs      int64
+	NetworkRepairLast   string
 }
 
 // GetLiveMetrics retrieves real-time system metrics from a node without the
@@ -826,6 +833,9 @@ func (c *AgentClient) GetLiveMetrics(ctx context.Context, nodeID string) (*LiveM
 			ConntrackMax:         resp.GetConntrackMax(),
 			FirewallEnforcement:  resp.GetFirewallEnforcement(),
 			NATAddress:           resp.GetNatAddress(),
+			GuestNetworkPending:  resp.GetGuestNetworkPending(),
+			NetworkRepairs:       resp.GetNetworkRepairs(),
+			NetworkRepairLast:    resp.GetNetworkRepairLast(),
 		}
 		return nil
 	})

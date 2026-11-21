@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 
 	"github.com/maburvm/panel/internal/shared/models"
@@ -230,4 +231,169 @@ func TestHeadroomIsMeaningful(t *testing.T) {
 	if PoolFits(pool, 40) {
 		t.Error("a pool with room for the disk and nothing else must not be chosen")
 	}
+}
+
+func TestNodeLoadFits(t *testing.T) {
+	n := nodeLoad{Node: models.Node{MemoryTotalBytes: 16 * gib, CPUCount: 8}, AllocatedRAMMB: 12 * 1024, AllocatedVCPU: 14}
+	assert.True(t, n.ramFits(8*1024), "no RAM ratio: anything fits, as before")
+	assert.True(t, n.vcpuFits(64), "no vCPU ratio: anything fits, as before")
+
+	n.RAMRatio, n.VCPURatio = 1.0, 2.0
+	assert.True(t, n.ramFits(4*1024), "exactly at the cap")
+	assert.False(t, n.ramFits(4*1024+1), "one MB over")
+	assert.True(t, n.vcpuFits(2), "16 of 16 vCPUs")
+	assert.False(t, n.vcpuFits(3), "17 of 16 vCPUs")
+	assert.True(t, n.vcpuFits(0), "a resize that adds no vCPUs is never refused")
+
+	unmeasured := nodeLoad{RAMRatio: 1, VCPURatio: 1, AllocatedRAMMB: 1 << 30, AllocatedVCPU: 1000}
+	assert.True(t, unmeasured.ramFits(1024) && unmeasured.vcpuFits(4), "a node never measured is not a full node")
+}
+
+func TestRankNodes(t *testing.T) {
+	load := func(id, name string, totalGiB, allocMiB int64) nodeLoad {
+		return nodeLoad{Node: models.Node{ID: id, Name: name, MemoryTotalBytes: totalGiB * gib}, AllocatedRAMMB: allocMiB}
+	}
+	small := load("id-small", "small", 64, 32*1024) // half full
+	big := load("id-big", "big", 128, 32*1024)      // a quarter full
+	twin := load("id-twin", "a-twin", 128, 32*1024) // the same as big
+	fresh := load("id-fresh", "fresh", 0, 0)        // never measured
+	busy := load("id-busy", "busy", 128, 120*1024)
+
+	got := rankNodes([]nodeLoad{fresh, small, busy, big, twin}, 4096)
+	var order []string
+	for _, n := range got {
+		order = append(order, n.Node.Name)
+	}
+	assert.Equal(t, []string{"a-twin", "big", "small", "busy", "fresh"}, order,
+		"least allocated first, a tie by name, unmeasured last")
+
+	// Proportional, not absolute: a big node with more free RAM but a higher
+	// share allocated loses to a small node with a lower share.
+	bigBusy := load("id-bb", "big-busy", 256, 192*1024)  // 64 GiB free, 75% allocated
+	smallIdle := load("id-si", "small-idle", 32, 8*1024) // 24 GiB free, 25% allocated
+	assert.Equal(t, "small-idle", rankNodes([]nodeLoad{bigBusy, smallIdle}, 2048)[0].Node.Name)
+
+	again := rankNodes([]nodeLoad{twin, big, small}, 4096)
+	assert.Equal(t, got[0].Node.ID, again[0].Node.ID, "the same state always picks the same node")
+}
+
+// placeDB is placementDB with the node columns placement reads.
+func placeDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, _, _ := placementDB(t)
+	for _, stmt := range []string{
+		`ALTER TABLE nodes ADD COLUMN creation_paused BOOLEAN NOT NULL DEFAULT 0`,
+		`ALTER TABLE nodes ADD COLUMN failed_polls INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE nodes ADD COLUMN cpu_count INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE nodes ADD COLUMN vcpu_ratio REAL NOT NULL DEFAULT 0`,
+	} {
+		require.NoError(t, db.Exec(stmt).Error)
+	}
+	return db
+}
+
+func addNode(t *testing.T, db *gorm.DB, id string, cpus int, memGiB int64, extra string) models.Node {
+	t.Helper()
+	require.NoError(t, db.Exec(`INSERT INTO nodes (id, name, ip_address, status, token, cpu_count, memory_total_bytes) VALUES (?, ?, '10.0.0.1', 'active', ?, ?, ?)`,
+		id, id, "tok-"+id, cpus, memGiB*gib).Error)
+	if extra != "" {
+		require.NoError(t, db.Exec(`UPDATE nodes SET `+extra+` WHERE id = ?`, id).Error)
+	}
+	var n models.Node
+	require.NoError(t, db.Where("id = ?", id).First(&n).Error)
+	return n
+}
+
+func setQuotas(t *testing.T, db *gorm.DB, data string) {
+	t.Helper()
+	require.NoError(t, db.Exec(`DELETE FROM system_settings`).Error)
+	if data != "" {
+		require.NoError(t, db.Exec(`INSERT INTO system_settings (section, data) VALUES ('quotas', ?)`, data).Error)
+	}
+}
+
+func TestPlaceVM(t *testing.T) {
+	ctx := context.Background()
+	db := placeDB(t)
+	s := &VMService{db: db, logger: slog.Default()}
+	n1 := addNode(t, db, "n1", 8, 16, "")
+	n2 := addNode(t, db, "n2", 8, 64, "")
+	paused := addNode(t, db, "paused", 64, 512, "creation_paused = 1")
+	silent := addNode(t, db, "silent", 64, 512, "failed_polls = 2")
+	require.NoError(t, db.Exec(`INSERT INTO vms (id, node_id, resources) VALUES
+		('a', 'n1', '{"cpu":6,"ram":2048,"disk":10}'),
+		('b', 'n2', '{"cpu":2,"ram":40960,"disk":10}'),
+		('gone', 'n1', '{"cpu":64,"ram":999999,"disk":10}')`).Error)
+	require.NoError(t, db.Exec(`UPDATE vms SET deleted_at = '2026-01-01' WHERE id = 'gone'`).Error)
+	nodes := []models.Node{n2, paused, silent, n1}
+	vm := models.Resources{CPU: 4, RAM: 4096, Disk: 20}
+
+	setQuotas(t, db, "")
+	id, err := s.placeVM(ctx, nodes, vm, true)
+	require.NoError(t, err)
+	assert.Equal(t, "n1", id, "the least allocated node; paused and silent nodes never, a deleted VM holds nothing")
+	again, _ := s.placeVM(ctx, nodes, vm, true)
+	assert.Equal(t, id, again, "no round-robin: the same state, the same node")
+
+	setQuotas(t, db, `{"vcpuAllocationRatio": 1}`)
+	id, err = s.placeVM(ctx, nodes, vm, true)
+	require.NoError(t, err)
+	assert.Equal(t, "n2", id, "n1 would carry 10 vCPUs on 8 CPUs")
+
+	require.NoError(t, db.Exec(`UPDATE nodes SET vcpu_ratio = 2 WHERE id = 'n1'`).Error)
+	n1.VCPURatio = 2
+	nodes[3] = n1
+	id, _ = s.placeVM(ctx, nodes, vm, true)
+	assert.Equal(t, "n1", id, "the node's own ratio wins over the panel-wide one")
+
+	setQuotas(t, db, `{"ramOvercommitRatio": 1}`)
+	id, err = s.placeVM(ctx, nodes, models.Resources{CPU: 1, RAM: 15 * 1024, Disk: 20}, true)
+	require.NoError(t, err)
+	assert.Equal(t, "n2", id, "RAM is checked before the node is chosen: 17 GB on a 16 GB node does not fit")
+
+	huge := models.Resources{CPU: 1, RAM: 100 * 1024, Disk: 20}
+	_, err = s.placeVM(ctx, nodes, huge, true)
+	assert.ErrorIs(t, err, ErrNoAvailableNodes, "a region order fails when nothing fits")
+	id, err = s.placeVM(ctx, nodes, huge, false)
+	require.NoError(t, err)
+	assert.Contains(t, []string{"n1", "n2"}, id, "otherwise the best node is tried, and admission says why it is refused")
+
+	_, err = s.placeVM(ctx, []models.Node{paused}, vm, false)
+	assert.ErrorIs(t, err, ErrNoAvailableNodes)
+
+	// The node with the disk's pool full is skipped when another has room.
+	require.NoError(t, db.Exec(`UPDATE storage_pools SET available_space = ? WHERE node_id = 'node-1'`, 5*gib).Error)
+	require.NoError(t, db.Exec(`UPDATE storage_pools SET node_id = 'n1' WHERE node_id = 'node-1'`).Error)
+	setQuotas(t, db, "")
+	id, _ = s.placeVM(ctx, nodes, vm, true)
+	assert.Equal(t, "n2", id, "n1's pool cannot hold the disk")
+}
+
+func TestAdmitNodeVCPU(t *testing.T) {
+	ctx := context.Background()
+	db := placeDB(t)
+	addNode(t, db, "n1", 4, 16, "")
+	addNode(t, db, "unmeasured", 0, 16, "")
+	require.NoError(t, db.Exec(`INSERT INTO vms (id, node_id, resources) VALUES ('a', 'n1', '{"cpu":6,"ram":1024,"disk":10}')`).Error)
+
+	setQuotas(t, db, "")
+	assert.NoError(t, AdmitNodeVCPU(ctx, db, "n1", 100), "no ratio: no cap, as before")
+
+	setQuotas(t, db, `{"vcpuAllocationRatio": 2}`)
+	assert.NoError(t, AdmitNodeVCPU(ctx, db, "n1", 2), "8 of 8")
+	err := AdmitNodeVCPU(ctx, db, "n1", 3)
+	assert.ErrorIs(t, err, ErrNodeCapacityExceeded)
+	assert.Contains(t, err.Error(), "9 vCPUs, over its limit of 8")
+	assert.NoError(t, AdmitNodeVCPU(ctx, db, "n1", -2), "a shrink is never refused")
+	assert.NoError(t, AdmitNodeVCPU(ctx, db, "unmeasured", 50), "CPUs never reported: not a full node")
+
+	require.NoError(t, db.Exec(`UPDATE nodes SET vcpu_ratio = 3 WHERE id = 'n1'`).Error)
+	assert.NoError(t, AdmitNodeVCPU(ctx, db, "n1", 6), "the node's own ratio: 12 of 12")
+
+	alloc, err := NodeAllocationOf(ctx, db, addNode(t, db, "n3", 8, 32, "vcpu_ratio = 1.5"))
+	require.NoError(t, err)
+	assert.Equal(t, 12, alloc.VCPULimit)
+	assert.Equal(t, 1.5, alloc.VCPURatioNode)
+	assert.Equal(t, int64(32*1024), alloc.RAMTotalMB)
+	assert.Zero(t, alloc.RAMLimitMB, "no RAM ratio, no RAM limit")
 }

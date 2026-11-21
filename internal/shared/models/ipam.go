@@ -183,3 +183,23 @@ func (a *IPAddress) BeforeCreate(tx *gorm.DB) error {
 }
 
 func (a *IPAddress) Validate() ValidationErrors { return ValidateStruct(a) }
+
+// IPAssignment is one holding of an address (or IPv6 prefix) by a VM, from
+// assigned to released. Rows are written by database triggers on every path
+// that assigns or releases an address; Estimated rows were recorded from
+// holdings already in place when the history began.
+type IPAssignment struct {
+	ID         string     `json:"id" gorm:"column:id;primaryKey"`
+	Address    string     `json:"address" gorm:"column:address"`
+	VMID       *string    `json:"vm_id" gorm:"column:vm_id"`
+	VMHostname string     `json:"vm_hostname" gorm:"column:vm_hostname"`
+	UserID     *string    `json:"user_id" gorm:"column:user_id"`
+	UserEmail  string     `json:"user_email" gorm:"column:user_email"`
+	NodeID     *string    `json:"node_id" gorm:"column:node_id"`
+	Kind       string     `json:"kind" gorm:"column:kind"`
+	AssignedAt time.Time  `json:"assigned_at" gorm:"column:assigned_at"`
+	ReleasedAt *time.Time `json:"released_at" gorm:"column:released_at"`
+	Estimated  bool       `json:"estimated" gorm:"column:estimated"`
+}
+
+func (IPAssignment) TableName() string { return "ip_assignment_history" }

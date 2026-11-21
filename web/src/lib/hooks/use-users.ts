@@ -151,12 +151,31 @@ export function useUnlockUser(id: string) {
   })
 }
 
+/** What happens to the VMs of an account being deleted; required when it owns any. */
+export interface DeleteUserRequest {
+  id: string
+  vms?: "reassign" | "delete"
+  /** The account that receives the VMs, for vms: "reassign". */
+  to?: string
+}
+
+export interface DeleteUserResult {
+  vms_reassigned?: number
+  vms_deleting?: number
+  vms_not_queued?: { id: string; hostname: string; error: string }[]
+}
+
 export function useDeleteUser() {
   const queryClient = useQueryClient()
 
-  return useMutation<void, Error, string>({
-    mutationFn: async (id) => {
-      await api.delete(`/api/v1/users/${id}`)
+  return useMutation<DeleteUserResult, Error, string | DeleteUserRequest>({
+    mutationFn: async (req) => {
+      const { id, vms, to } = typeof req === "string" ? { id: req } as DeleteUserRequest : req
+      const q = new URLSearchParams()
+      if (vms) q.set("vms", vms)
+      if (to) q.set("to", to)
+      const res = await api.delete<DeleteUserResult>(`/api/v1/users/${id}${q.size ? `?${q}` : ""}`)
+      return res?.data?.data ?? {}
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users', 'list'] })

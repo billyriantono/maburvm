@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 )
 
@@ -45,30 +44,6 @@ func TestIPv6RouteCommands(t *testing.T) {
 	}
 	if _, err := (IPv6Delegation{Prefix: "2001:db8:20:5::/64", MAC: d.MAC}).validate(); err == nil {
 		t.Error("missing bridge accepted")
-	}
-}
-
-func TestIPv6FirewallSpecs(t *testing.T) {
-	rules := []FirewallRule{
-		{ID: "ssh", Protocol: "tcp", PortRange: "22", Action: "allow", Direction: "inbound", SourceIP: "0.0.0.0/0", Priority: 10},
-		{ID: "ping", Protocol: "icmp", Action: "allow", Direction: "inbound", SourceIP: "0.0.0.0/0", Priority: 20},
-		{ID: "office", Protocol: "tcp", PortRange: "3306", Action: "allow", Direction: "inbound", SourceIP: "203.0.113.0/24", Priority: 30},
-		{ID: "v6net", Protocol: "udp", PortRange: "5000-5100", Action: "deny", Direction: "inbound", SourceIP: "2001:db8::/32", Priority: 40},
-		{ID: "egress", Protocol: "all", Action: "deny", Direction: "outbound", SourceIP: "", Priority: 50},
-	}
-	specs, drop := ipv6FirewallSpecs("vm1", "2001:db8:20:5::/64", rules)
-	want := [][]string{
-		{"-p", "tcp", "-d", "2001:db8:20:5::/64", "--dport", "22", "-j", "ACCEPT", "-m", "comment", "--comment", "maburvm-vm-vm1-rule-ssh"},
-		{"-p", "icmpv6", "-d", "2001:db8:20:5::/64", "-j", "ACCEPT", "-m", "comment", "--comment", "maburvm-vm-vm1-rule-ping"},
-		// "office" is IPv4-scoped and must be skipped
-		{"-p", "udp", "-s", "2001:db8::/32", "-d", "2001:db8:20:5::/64", "-m", "multiport", "--dports", "5000:5100", "-j", "DROP", "-m", "comment", "--comment", "maburvm-vm-vm1-rule-v6net"},
-		{"-s", "2001:db8:20:5::/64", "-j", "DROP", "-m", "comment", "--comment", "maburvm-vm-vm1-rule-egress"},
-	}
-	if !reflect.DeepEqual(specs, want) {
-		t.Errorf("specs =\n%v\nwant\n%v", specs, want)
-	}
-	if strings.Join(drop, " ") != "-d 2001:db8:20:5::/64 -j DROP -m comment --comment maburvm-vm-vm1-default-drop" {
-		t.Errorf("default drop = %v", drop)
 	}
 }
 

@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -83,7 +85,8 @@ func (s *UserService) RequestPasswordReset(ctx context.Context, email, resetURLB
 // unknown email). A var so tests can capture the link.
 var deliverResetLink = func(db *gorm.DB, to, name, resetURL string) {
 	if cfg, ok, err := LoadSMTPSettings(db); err == nil && ok {
-		_ = SendPasswordResetEmail(cfg, to, name, resetURL)
+		_ = queueRendered(context.Background(), db, EmailPasswordReset, to, RenderEmail(cfg.Template(EmailPasswordReset), cfg.Brand,
+			EmailData{Name: name, Email: to, Link: resetURL, LogoURL: EmailLogoURL(cfg.Brand, os.Getenv("PANEL_PUBLIC_URL"))}), emailRefs{})
 	}
 }
 
@@ -123,6 +126,11 @@ func (s *UserService) ResetPassword(ctx context.Context, rawToken, newPassword s
 	// Whoever holds the mailbox has proved the account is theirs: a sign-in
 	// lock from guessed passwords is lifted with the reset.
 	_ = ClearSignInLock(ctx, s.db, tok.UserID)
+
+	if err := NotifyAccount(context.WithoutCancel(ctx), s.db, tok.UserID.String(), EmailPasswordChanged,
+		map[string]string{"who": "It was set through a password-reset link."}); err != nil {
+		slog.Default().Warn("password reset, but the owner could not be told", "user_id", tok.UserID, "error", err)
+	}
 
 	// Invalidate any outstanding sessions for this account.
 	return s.RevokeUserTokens(tok.UserID)

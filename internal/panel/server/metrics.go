@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/maburvm/panel/internal/shared/queue"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -50,8 +51,9 @@ func metricsMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 func metricsHandler(token string, db *gorm.DB) echo.HandlerFunc {
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}), httpRequestDuration)
+	reg.MustRegister(queue.JobFailures)
 	if db != nil {
-		reg.MustRegister(&fleetCollector{db: db})
+		reg.MustRegister(&fleetCollector{db: db}, &opsCollector{db: db})
 	}
 	h := echo.WrapHandler(promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 	return func(c echo.Context) error {

@@ -16,6 +16,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useAbuseGuests, useSetQuarantine } from "@/lib/hooks/use-abuse"
+import { IPHistoryLookup } from "@/components/ip-history-lookup"
 import type { GuestConnection } from "@/types"
 
 // Abuse is measured in new connections per second, not bytes. A guest running a
@@ -86,6 +87,8 @@ export default function AbusePage() {
           {showAll ? "Show flagged only" : "Show every guest"}
         </Button>
       </div>
+
+      <IPHistoryLookup />
 
       {isLoading ? (
         <div className="flex items-center justify-center py-20">

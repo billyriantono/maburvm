@@ -65,6 +65,11 @@ quota_mode TEXT NOT NULL DEFAULT 'legacy',
 		failed_login_count INTEGER NOT NULL DEFAULT 0, locked_until DATETIME, totp_last_step INTEGER NOT NULL DEFAULT 0
 	)`
 	require.NoError(t, db.Exec(ddl).Error)
+	// Deleting an account looks for the VMs it owns.
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS vms (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, node_id TEXT NOT NULL, hostname TEXT,
+		os_template_id TEXT, resources TEXT, status TEXT DEFAULT 'stopped', suspended BOOLEAN NOT NULL DEFAULT 0, source_migration TEXT,
+		vnc_port INTEGER, vnc_password TEXT, console_enabled BOOLEAN DEFAULT 1, rescue_mode BOOLEAN DEFAULT 0, plan_id TEXT, billing_ref TEXT,
+		created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`).Error)
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS user_quotas (user_id TEXT PRIMARY KEY, max_vms INTEGER DEFAULT 0, max_vcpu INTEGER DEFAULT 0, max_ram_mb INTEGER DEFAULT 0, max_disk_gb INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, quota_mode TEXT NOT NULL DEFAULT 'legacy', policy_id TEXT, policy_version INTEGER, policy_name TEXT, policy_assigned_at DATETIME, policy_assigned_by TEXT, cap_revision_id TEXT)`).Error)
 	// Seed in deterministic order with explicit timestamps so founding-admin
 	// resolution (created_at ASC) is reproducible.
@@ -671,10 +676,6 @@ func TestUserRoutes_SuspendAndRestoreACustomer(t *testing.T) {
 	peer := adminUser("peer@example.com")
 	client := clientUser("client@example.com")
 	db := setupUserContainmentDB(t, founding, peer, client)
-	require.NoError(t, db.Exec(`CREATE TABLE vms (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, node_id TEXT NOT NULL, hostname TEXT,
-		os_template_id TEXT, resources TEXT, status TEXT DEFAULT 'stopped', suspended BOOLEAN NOT NULL DEFAULT 0, source_migration TEXT,
-		vnc_port INTEGER, vnc_password TEXT, console_enabled BOOLEAN DEFAULT 1, rescue_mode BOOLEAN DEFAULT 0, plan_id TEXT, billing_ref TEXT,
-		created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`).Error)
 	require.NoError(t, db.Exec(`CREATE TABLE audit_logs (id TEXT PRIMARY KEY, user_id TEXT, action TEXT NOT NULL, resource_type TEXT, resource_id TEXT,
 		ip_address TEXT, user_agent TEXT, details TEXT, before_snapshot TEXT, after_snapshot TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`).Error)
 	vmID := uuid.NewString()

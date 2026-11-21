@@ -26,6 +26,7 @@ import {
   Link,
   Lock,
   Server,
+  LifeBuoy,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -34,7 +35,11 @@ import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { DNSProviderSettings } from "@/components/dns-provider-settings"
 import { BackupDestinationSettings } from "@/components/backup-destination-settings"
+import { BackupPolicySettings } from "@/components/backup-policy-settings"
+import { TransferQuotaSettings } from "@/components/transfer-quota-settings"
 import { BillingDeliveries } from "@/components/billing-deliveries"
+import { RescueImageSettings } from "@/components/rescue-image-settings"
+import { EmailLog } from "@/components/email-log"
 
 // The password policy (LoadPasswordPolicy in internal/panel/service/user.go)
 // and the sign-in policy (LoadSignInPolicy in internal/panel/middleware/sign_in_policy.go).
@@ -86,6 +91,7 @@ const quotaSchema = z.object({
   // meaningful setting ("do not enforce") rather than an accidental lockout.
   ramOvercommitRatio: z.number().min(0).max(20),
   diskAllocationRatio: z.number().min(0).max(20),
+  vcpuAllocationRatio: z.number().min(0).max(100),
 })
 
 // Email settings schema
@@ -144,6 +150,7 @@ const defaultQuotaSettings = {
   // internal/panel/service/settings.go: 0 = not enforced.
   ramOvercommitRatio: 0,
   diskAllocationRatio: 0,
+  vcpuAllocationRatio: 0,
 }
 
 const defaultEmailSettings = {
@@ -176,8 +183,12 @@ interface AgentRun {
 }
 
 // How long a node gets to come back on the new agent before the update is
-// called failed: the swap, the restart and its own 15 second health check.
+// called failed: the swap, the restart and its own 30 second health check.
+// The panel keeps watching after this page closes and raises an alert if not.
 const AGENT_RETURN_MS = 120_000
+// The node rolls back an agent that is not still up 30 seconds after its
+// restart, so a new build seen sooner is not yet a finished update.
+const AGENT_SETTLE_MS = 45_000
 
 function agentSteps(run: AgentRun): ProgressStep[] {
   const sent = run.phase !== "sending"
@@ -193,7 +204,7 @@ function agentSteps(run: AgentRun): ProgressStep[] {
       state: !sent || failedSending ? "pending" : run.phase === "done" ? "done" : run.phase === "failed" ? "failed" : "active",
       detail:
         run.phase === "restarting"
-          ? "Checked every 5 seconds. If the new agent does not stay up, the node goes back to the one it had."
+          ? "The node keeps the new agent only if it is still up 30 seconds after the restart, and otherwise goes back to the one it had. Checked every 5 seconds."
           : run.phase === "failed" && run.acceptedAt
             ? run.note
             : undefined,
@@ -229,7 +240,7 @@ function BuildPanel() {
     for (const [id, run] of Object.entries(runs)) {
       if (run.phase !== "restarting" || !run.acceptedAt) continue
       const node = (data.nodes ?? []).find((n) => n.node_id === id)
-      if (node && !node.error && node.matches_panel) {
+      if (node && !node.error && node.matches_panel && Date.now() - run.acceptedAt > AGENT_SETTLE_MS) {
         patch(id, { phase: "done" })
         toast.success(`${run.name} now runs ${data.panel.short_sha}`)
       } else if (Date.now() - run.acceptedAt > AGENT_RETURN_MS) {
@@ -528,6 +539,10 @@ export default function SystemSettingsPage() {
             <Mail className="w-4 h-4 mr-2" />
             Email
           </TabsTrigger>
+          <TabsTrigger value="rescue" className="text-xs">
+            <LifeBuoy className="w-4 h-4 mr-2" />
+            Rescue
+          </TabsTrigger>
         </TabsList>
 
         {/* Which build is actually running, on the panel and on each node.
@@ -705,9 +720,10 @@ export default function SystemSettingsPage() {
           </Card>
         </TabsContent>
 
-        {/* Where backups are kept. Schedules and retention are set per VM. */}
+        {/* Where backups are kept, and when they run. Schedules and retention are set per VM. */}
         <TabsContent value="backup">
           <BackupDestinationSettings />
+          <BackupPolicySettings />
         </TabsContent>
 
         {/* API Settings */}
@@ -950,6 +966,28 @@ export default function SystemSettingsPage() {
                         </p>
                       )}
                     </div>
+                    <div className="space-y-2">
+                      <label htmlFor="vcpuAllocationRatio" className="block text-sm font-medium text-muted-foreground mb-2">
+                        vCPU overcommit ratio
+                      </label>
+                      <Input
+                        id="vcpuAllocationRatio"
+                        type="number"
+                        step="0.5"
+                        {...quotaForm.register("vcpuAllocationRatio", { valueAsNumber: true })}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        How many vCPUs a node may carry per CPU thread it has. 0 means no limit, the
+                        default. At 4, a node with 32 threads accepts 128 vCPUs. A node can have its
+                        own ratio on its page, which wins over this one. Set this above what each
+                        node already carries, or new orders there are refused.
+                      </p>
+                      {quotaForm.formState.errors.vcpuAllocationRatio && (
+                        <p className="text-xs text-destructive">
+                          {quotaForm.formState.errors.vcpuAllocationRatio.message}
+                        </p>
+                      )}
+                    </div>
                   </div>
                 </div>
 
@@ -966,6 +1004,7 @@ export default function SystemSettingsPage() {
               </form>
             </CardContent>
           </Card>
+          <TransferQuotaSettings />
         </TabsContent>
 
         <TabsContent value="api">
@@ -1295,6 +1334,11 @@ export default function SystemSettingsPage() {
               </form>
             </CardContent>
           </Card>
+          <EmailLog />
+        </TabsContent>
+
+        <TabsContent value="rescue">
+          <RescueImageSettings />
         </TabsContent>
       </Tabs>
     </div>

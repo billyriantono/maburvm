@@ -261,6 +261,8 @@ type CreateVMRequest struct {
 	// (Vultr/DO-style create-from-snapshot) instead of the OS template. The OS
 	// template is derived from the image, so os_template_id is not required then.
 	SourceImageID string `json:"source_image_id,omitempty" validate:"omitempty,uuid"`
+	// Limits are the new VM's CPU and disk caps (staff only); absent takes the plan's.
+	Limits *models.VMLimits `json:"limits,omitempty"`
 }
 
 // CreateVMResponse represents the response after creating a VM
@@ -374,6 +376,9 @@ func (h *VMHandler) CreateVM(c echo.Context) error {
 		Password:           req.Password,
 		RegeneratePassword: req.RegeneratePassword,
 		SSHPublicKeys:      sshPublicKeys,
+	}
+	if userCtx.Role == models.RoleAdmin {
+		createReq.Limits = req.Limits
 	}
 
 	// Every VM gets a root password, returned once, unless the caller set one.
@@ -729,6 +734,8 @@ type VMDetailResponse struct {
 	VNCPort        int    `json:"vnc_port,omitempty"`
 	ConsoleEnabled bool   `json:"console_enabled"`
 	RescueMode     bool   `json:"rescue_mode"`
+	// False while the operator has not chosen a rescue image.
+	RescueAvailable bool `json:"rescue_available"`
 	// null = not known, "" = no ISO in the drive, otherwise the attached image.
 	AttachedISO *string `json:"attached_iso"`
 	Suspended   bool    `json:"suspended"`
@@ -748,8 +755,20 @@ type VMDetailResponse struct {
 	IPv6Prefix  string `json:"ipv6_prefix,omitempty"`
 	IPv6Address string `json:"ipv6_address,omitempty"`
 	IPv6Gateway string `json:"ipv6_gateway,omitempty"`
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
+	// Network policy: the firewall's default for unmatched inbound traffic,
+	// whether outbound mail (port 25) is blocked, and an address change the
+	// guest has not taken yet (pending: the node applies it by itself later).
+	FirewallDefault     string  `json:"firewall_default"`
+	SMTPBlocked         bool    `json:"smtp_blocked"`
+	GuestNetworkNote    *string `json:"guest_network_note,omitempty"`
+	GuestNetworkPending bool    `json:"guest_network_pending"`
+	// CPU and disk caps. The owner sees the VM's own limits; an operator's
+	// throttle and whether the node has them are for staff.
+	Limits     models.VMLimits  `json:"limits"`
+	Throttle   *models.VMLimits `json:"throttle,omitempty"`
+	LimitsNote *string          `json:"limits_note,omitempty"`
+	CreatedAt  string           `json:"created_at"`
+	UpdatedAt  string           `json:"updated_at"`
 }
 
 // GetVM handles GET /api/vms/:id - Get VM details and status
@@ -787,22 +806,35 @@ func (h *VMHandler) GetVM(c echo.Context) error {
 	}
 
 	resp := VMDetailResponse{
-		RegionID:       vm.VM.RegionID,
-		RegionName:     vm.VM.RegionName,
-		RegionCountry:  vm.VM.RegionCountry,
-		ID:             vm.VM.ID,
-		Hostname:       vm.VM.Hostname,
-		Status:         string(vm.VM.Status),
-		NodeID:         vm.VM.NodeID,
-		UserID:         vm.VM.UserID,
-		OSTemplateID:   vm.VM.OSTemplateID,
-		Resources:      vm.VM.Resources,
-		ConsoleEnabled: vm.VM.ConsoleEnabled,
-		RescueMode:     vm.VM.RescueMode,
-		AttachedISO:    vm.VM.AttachedISO,
-		Suspended:      vm.VM.Suspended,
-		CreatedAt:      vm.VM.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
-		UpdatedAt:      vm.VM.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		RegionID:        vm.VM.RegionID,
+		RegionName:      vm.VM.RegionName,
+		RegionCountry:   vm.VM.RegionCountry,
+		ID:              vm.VM.ID,
+		Hostname:        vm.VM.Hostname,
+		Status:          string(vm.VM.Status),
+		NodeID:          vm.VM.NodeID,
+		UserID:          vm.VM.UserID,
+		OSTemplateID:    vm.VM.OSTemplateID,
+		Resources:       vm.VM.Resources,
+		ConsoleEnabled:  vm.VM.ConsoleEnabled,
+		RescueMode:      vm.VM.RescueMode,
+		RescueAvailable: h.service.RescueAvailable(c.Request().Context()),
+		AttachedISO:     vm.VM.AttachedISO,
+		Suspended:       vm.VM.Suspended,
+		CreatedAt:       vm.VM.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		UpdatedAt:       vm.VM.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+
+		FirewallDefault:     vm.VM.FirewallDefault,
+		SMTPBlocked:         vm.VM.SMTPBlocked,
+		GuestNetworkNote:    vm.VM.GuestNetworkNote,
+		GuestNetworkPending: vm.VM.GuestNetworkPending,
+		Limits:              vm.VM.Limits,
+	}
+	if !isClientRole(c) {
+		resp.Throttle, resp.LimitsNote = vm.VM.Throttle, vm.VM.LimitsNote
+	}
+	if resp.FirewallDefault == "" {
+		resp.FirewallDefault = models.FirewallDefaultDrop
 	}
 
 	if vm.Node != nil {
@@ -1855,7 +1887,7 @@ func (h *VMHandler) DetachISOVM(c echo.Context) error {
 }
 
 // RescueVM handles POST /api/vms/:id/rescue - Boot the VM from a rescue ISO.
-// Body: optional {iso_url}; falls back to the RESCUE_ISO_URL env var.
+// Body: optional {iso_url}; without one, the rescue image from System settings (else RESCUE_ISO_URL).
 func (h *VMHandler) RescueVM(c echo.Context) error {
 	id := c.Param("id")
 	if !h.authorizeVMChange(c, id) {
@@ -2043,6 +2075,12 @@ func RegisterVMRoutes(e *echo.Echo, handler *VMHandler, db *gorm.DB) {
 		consoleToken.POST("/disable", handler.DisableConsole)
 		consoleToken.POST("/repair", handler.RepairConsole)
 	}
+
+	// CPU and disk caps, and an operator's throttle: staff only.
+	vms.PUT("/:id/limits", handler.SetVMLimits, middleware.RequirePermission("vm:update"))
+	vms.POST("/:id/limits/apply", handler.ApplyVMLimits, middleware.RequirePermission("vm:update"))
+	vms.POST("/:id/throttle", handler.ThrottleVM, middleware.RequirePermission("vm:update"))
+	vms.DELETE("/:id/throttle", handler.UnthrottleVM, middleware.RequirePermission("vm:update"))
 }
 
 // GenerateConsoleToken handles POST /api/v1/vms/:id/console/token.

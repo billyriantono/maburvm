@@ -52,6 +52,7 @@ const (
 	NodeAgent_GetExportProgress_FullMethodName   = "/agent.NodeAgent/GetExportProgress"
 	NodeAgent_GetGuestConnections_FullMethodName = "/agent.NodeAgent/GetGuestConnections"
 	NodeAgent_UpdateAgent_FullMethodName         = "/agent.NodeAgent/UpdateAgent"
+	NodeAgent_SetVMLimits_FullMethodName         = "/agent.NodeAgent/SetVMLimits"
 )
 
 // NodeAgentClient is the client API for NodeAgent service.
@@ -199,6 +200,10 @@ type NodeAgentClient interface {
 	// restarts the service and rolls back if it does not come up. The response is
 	// sent before the restart, so success means "scheduled", not "running".
 	UpdateAgent(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[AgentUpdateChunk, AgentUpdateResponse], error)
+	// SetVMLimits applies a VM's CPU and disk caps to its definition and, when it
+	// is running, to the running guest, so one busy VM cannot starve the others
+	// on the node. An agent without it answers Unimplemented.
+	SetVMLimits(ctx context.Context, in *SetVMLimitsRequest, opts ...grpc.CallOption) (*SetVMLimitsResponse, error)
 }
 
 type nodeAgentClient struct {
@@ -557,6 +562,16 @@ func (c *nodeAgentClient) UpdateAgent(ctx context.Context, opts ...grpc.CallOpti
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type NodeAgent_UpdateAgentClient = grpc.ClientStreamingClient[AgentUpdateChunk, AgentUpdateResponse]
 
+func (c *nodeAgentClient) SetVMLimits(ctx context.Context, in *SetVMLimitsRequest, opts ...grpc.CallOption) (*SetVMLimitsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetVMLimitsResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_SetVMLimits_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // NodeAgentServer is the server API for NodeAgent service.
 // All implementations must embed UnimplementedNodeAgentServer
 // for forward compatibility.
@@ -702,6 +717,10 @@ type NodeAgentServer interface {
 	// restarts the service and rolls back if it does not come up. The response is
 	// sent before the restart, so success means "scheduled", not "running".
 	UpdateAgent(grpc.ClientStreamingServer[AgentUpdateChunk, AgentUpdateResponse]) error
+	// SetVMLimits applies a VM's CPU and disk caps to its definition and, when it
+	// is running, to the running guest, so one busy VM cannot starve the others
+	// on the node. An agent without it answers Unimplemented.
+	SetVMLimits(context.Context, *SetVMLimitsRequest) (*SetVMLimitsResponse, error)
 	mustEmbedUnimplementedNodeAgentServer()
 }
 
@@ -810,6 +829,9 @@ func (UnimplementedNodeAgentServer) GetGuestConnections(context.Context, *GetGue
 }
 func (UnimplementedNodeAgentServer) UpdateAgent(grpc.ClientStreamingServer[AgentUpdateChunk, AgentUpdateResponse]) error {
 	return status.Error(codes.Unimplemented, "method UpdateAgent not implemented")
+}
+func (UnimplementedNodeAgentServer) SetVMLimits(context.Context, *SetVMLimitsRequest) (*SetVMLimitsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetVMLimits not implemented")
 }
 func (UnimplementedNodeAgentServer) mustEmbedUnimplementedNodeAgentServer() {}
 func (UnimplementedNodeAgentServer) testEmbeddedByValue()                   {}
@@ -1386,6 +1408,24 @@ func _NodeAgent_UpdateAgent_Handler(srv interface{}, stream grpc.ServerStream) e
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type NodeAgent_UpdateAgentServer = grpc.ClientStreamingServer[AgentUpdateChunk, AgentUpdateResponse]
 
+func _NodeAgent_SetVMLimits_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetVMLimitsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).SetVMLimits(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_SetVMLimits_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).SetVMLimits(ctx, req.(*SetVMLimitsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // NodeAgent_ServiceDesc is the grpc.ServiceDesc for NodeAgent service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1508,6 +1548,10 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetGuestConnections",
 			Handler:    _NodeAgent_GetGuestConnections_Handler,
+		},
+		{
+			MethodName: "SetVMLimits",
+			Handler:    _NodeAgent_SetVMLimits_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

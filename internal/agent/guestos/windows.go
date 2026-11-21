@@ -22,6 +22,9 @@ type WindowsNetwork struct {
 	IPv6Address string // CIDR form
 	IPv6Gateway string
 	IPv6DNS     []string
+	// Extra are further IPv4 addresses on the same card. They are never the
+	// source of the guest's own connections.
+	Extra []GuestAddr
 }
 
 // WindowsNetworkScript is the PowerShell that re-addresses a running Windows
@@ -41,6 +44,9 @@ func WindowsNetworkScript(n WindowsNetwork) (string, error) {
 			return "", fmt.Errorf("invalid gateway %q", n.Gateway)
 		}
 	}
+	if err := ValidateExtra(n.Extra); err != nil {
+		return "", err
+	}
 	// Every value below was parsed above and is written back from its parsed
 	// form, so nothing the caller sent reaches PowerShell as text.
 	mac := strings.ToUpper(strings.ReplaceAll(hw.String(), ":", "-"))
@@ -59,6 +65,9 @@ func WindowsNetworkScript(n WindowsNetwork) (string, error) {
 		add += " -DefaultGateway '" + net.ParseIP(n.Gateway).To4().String() + "'"
 	}
 	lines = append(lines, add+" | Out-Null")
+	for _, a := range n.Extra {
+		lines = append(lines, fmt.Sprintf("New-NetIPAddress -InterfaceIndex $i -IPAddress '%s' -PrefixLength %d -SkipAsSource $true | Out-Null", net.ParseIP(a.Address).To4(), a.Prefix))
+	}
 	if n.IPv6Address != "" {
 		v6, v6net, err := net.ParseCIDR(n.IPv6Address)
 		if err != nil || v6.To4() != nil {

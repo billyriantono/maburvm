@@ -359,8 +359,22 @@ func attachISORef(imagePath, isoSource string) string {
 	return models.CustomerISORef(imagePath)
 }
 
-// Work implements the VM operation job handler
+// Work runs a VM operation. When a create or reinstall fails on its last try,
+// for whatever reason, the VM is marked failed: nothing will retry it, and it
+// must not sit at "creating" for good.
 func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperationJob]) error {
+	err := w.run(ctx, job)
+	op := job.Args.Operation
+	if (op == VMOpCreate || op == VMOpRebuild) && tryFailed(ctx.Err(), err) &&
+		(isJobCancel(err) || lastTry(job.JobRow)) && globalWorkerContext != nil {
+		if uerr := globalWorkerContext.VMRepo.UpdateStatus(context.WithoutCancel(ctx), job.Args.VMID, models.VMStatusError); uerr != nil {
+			w.logger.ErrorContext(ctx, "could not mark the VM failed", "vm_id", job.Args.VMID, "error", uerr)
+		}
+	}
+	return err
+}
+
+func (w *VMOperationWorker) run(ctx context.Context, job *river.Job[VMOperationJob]) error {
 	startTime := time.Now()
 	jobID := fmt.Sprintf("%d", job.ID)
 
@@ -378,7 +392,7 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 			"error", err,
 			"operation", job.Args.Operation,
 		)
-		return fmt.Errorf("invalid operation: %w", err)
+		return river.JobCancel(fmt.Errorf("invalid operation: %w", err))
 	}
 
 	// Get dependencies
@@ -396,6 +410,14 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 			"error", err,
 			"vm_id", job.Args.VMID,
 		)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// A delete whose row is gone has nothing left to do; any other
+			// operation on a VM that no longer exists never will.
+			if job.Args.Operation == VMOpDelete {
+				return nil
+			}
+			return river.JobCancel(fmt.Errorf("the VM no longer exists: %w", err))
+		}
 		return fmt.Errorf("failed to get VM: %w", err)
 	}
 
@@ -406,6 +428,9 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 			"error", err,
 			"node_id", job.Args.NodeID,
 		)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return river.JobCancel(fmt.Errorf("the VM's node no longer exists: %w", err))
+		}
 		return fmt.Errorf("failed to get node: %w", err)
 	}
 
@@ -505,6 +530,8 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 			// ObjectStore asks for the panel's backup destination to be sent
 			// along, for a disk restored from a backup kept there.
 			ObjectStore bool `json:"object_store"`
+			// RestoreDisks are a backup's data disks, for a VM restored from it.
+			RestoreDisks []models.BackupDisk `json:"restore_disks"`
 		}
 
 		if err := json.Unmarshal(job.Args.Params, &params); err != nil {
@@ -543,10 +570,6 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 				imageID = attachISORef(params.ImagePath, params.ISOSource)
 			}
 
-			iopsLimit := int32(0)
-			if vm.Resources.IOPS != nil {
-				iopsLimit = int32(*vm.Resources.IOPS)
-			}
 			swapMb := int64(0)
 			if vm.Resources.Swap != nil {
 				swapMb = int64(*vm.Resources.Swap)
@@ -558,8 +581,8 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 					MemoryMb:             int64(vm.Resources.RAM),
 					DiskGb:               int64(vm.Resources.Disk),
 					SwapMb:               swapMb,
-					IopsLimit:            iopsLimit,
 					NetworkBandwidthMbps: int32(params.BandwidthMbps),
+					Limits:               LimitsProto(vm.Limits.WithThrottle(vm.Throttle)),
 				},
 				ImageId:      imageID,
 				SshPublicKey: params.SSHPublicKey,
@@ -568,6 +591,7 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 				VncEnabled:   true,
 				VncPassword:  params.VNCPassword,
 				RootPassword: params.RootPassword,
+				RestoreDisks: restoreDisksProto(params.RestoreDisks),
 				NetworkConfig: &pb.VMNetworkConfig{
 					Interfaces: []*pb.NetworkInterface{
 						{
@@ -732,6 +756,7 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 		if detail == "" {
 			detail = "agent reported failure without a message"
 		}
+		permanent := permanentVMFailure(resp.Error, detail)
 		// An agent from before templates carried a kind takes the reference for
 		// a file path and cannot find it. Say what is actually wrong.
 		if kind, _ := models.SplitGuestImageRef(vmConfig.GetImageId()); kind != models.OSTypeLinux &&
@@ -766,7 +791,7 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 		}
 		// The node has already retried the transfer itself, and a refusal does
 		// not change: trying again only downloads the file again.
-		if job.Args.Operation == VMOpAttachISO || restoresBackup(vmConfig) {
+		if permanent || job.Args.Operation == VMOpAttachISO || restoresBackup(vmConfig) {
 			return river.JobCancel(fmt.Errorf("VM command failed: %s", detail))
 		}
 		return fmt.Errorf("VM command failed: %s", detail)
@@ -788,6 +813,8 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 		// Best-effort: a failure here leaves the VM as open as it was before
 		// this feature, and any later firewall mutation re-applies full state.
 		w.applyPostCreateNetworkConfig(ctx, client, node, vm)
+		w.confirmLimits(ctx, client, node, vm, opDB)
+		recordRestoredDisks(ctx, opDB, vm.ID, resp.GetRestoredDisks(), w.logger)
 	case VMOpStart:
 		newStatus = models.VMStatusRunning
 	case VMOpStop:
@@ -841,6 +868,7 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 			newStatus = models.VMStatusRunning
 			w.applyPostCreateNetworkConfig(ctx, client, node, vm)
 		}
+		dropSnapshotRecords(ctx, vm.ID, w.logger)
 	case VMOpResize:
 		// A billing package change stops a running VM to resize it; boot it
 		// again here, after the resize, so the start cannot overtake it.
@@ -931,6 +959,26 @@ func (w *VMOperationWorker) Work(ctx context.Context, job *river.Job[VMOperation
 	return nil
 }
 
+// confirmLimits asks the node to apply a new VM's limits once more and records
+// the outcome on the VM. A current agent already defined the VM with them; an
+// older one ignored them, and this is where that shows.
+func (w *VMOperationWorker) confirmLimits(ctx context.Context, client pb.NodeAgentClient, node *models.Node, vm *models.VM, db *gorm.DB) {
+	limits := vm.Limits.WithThrottle(vm.Throttle)
+	if limits.IsZero() || db == nil {
+		return
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	resp, err := client.SetVMLimits(agentAuthContext(callCtx, node), &pb.SetVMLimitsRequest{VmId: vm.ID, Limits: LimitsProto(limits)})
+	cancel()
+	note := LimitsNote(node.Name, resp, err)
+	if note != nil {
+		w.logger.WarnContext(ctx, "new VM's limits not applied", "vm_id", vm.ID, "note", *note)
+	}
+	if err := db.WithContext(ctx).Table("vms").Where("id = ?", vm.ID).Update("limits_note", note).Error; err != nil {
+		w.logger.ErrorContext(ctx, "failed to record the VM's limits note", "vm_id", vm.ID, "error", err)
+	}
+}
+
 // applyPostCreateNetworkConfig enforces a freshly created VM's stored network
 // state (IP, bandwidth, VLAN, anti-spoofing, firewall rules) on the node right
 // after the create succeeded — without it the default firewall seeded by the
@@ -964,7 +1012,7 @@ func (w *VMOperationWorker) applyPostCreateNetworkConfig(ctx context.Context, cl
 		paramMap["ipv6_prefix"] = v6.Prefix
 		paramMap["ipv6_address"] = v6.Address()
 		paramMap["ipv6_gateway"] = models.IPv6LinkLocalGateway
-	} else if len(rules) == 0 {
+	} else if len(rules) == 0 && !vm.SMTPBlocked {
 		// Nothing to enforce, and an empty ReplaceAll would still be a no-op
 		// firewall-wise — skip the round-trip.
 		return
@@ -1023,9 +1071,9 @@ func (w *VMOperationWorker) cleanupDeletedVM(ctx context.Context, vmID string) e
 }
 
 // Timeout overrides River's 1-minute default for address changes. Rewriting
-// the guest can take a guest-agent wait, an ACPI shutdown, a disk edit and a
-// boot; a shorter deadline made River retry while the agent was still working,
-// and the two calls fought over the VM.
+// the guest can take a guest-agent wait or a disk edit; a shorter deadline
+// made River retry while the agent was still working, and the two calls
+// fought over the VM.
 func (w *VMOperationWorker) Timeout(job *river.Job[VMOperationJob]) time.Duration {
 	// Every operation gets slightly more than the deadline its agent call
 	// runs under (an hour for create, five minutes otherwise). River's own
@@ -1048,27 +1096,23 @@ var netConfigLocks, netConfigDone sync.Map
 // via the ApplyNetworkConfig gRPC method.
 func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client pb.NodeAgentClient, node *models.Node, vm *models.VM, job *river.Job[VMOperationJob]) error {
 	var params struct {
-		IPAddress      string            `json:"ip_address"`
-		BandwidthLimit int64             `json:"bandwidth_limit"`
-		VLANID         *int              `json:"vlan_id,omitempty"`
-		AntiSpoofing   bool              `json:"anti_spoofing"`
-		Gateway        string            `json:"gateway"`
-		Netmask        int               `json:"netmask"`
-		ConfigureGuest bool              `json:"configure_guest"`
-		ExtraIPs       []string          `json:"extra_ips"`
-		IPBridges      map[string]string `json:"ip_bridges"`
-		IPv6Prefix     string            `json:"ipv6_prefix"`
-		IPv6Address    string            `json:"ipv6_address"`
-		IPv6Gateway    string            `json:"ipv6_gateway"`
-		FirewallRules  []struct {
-			Direction string `json:"direction"`
-			Action    string `json:"action"`
-			Protocol  string `json:"protocol"`
-			SourceIP  string `json:"source_ip"`
-			PortRange string `json:"port_range"`
-			Priority  int    `json:"priority"`
-		} `json:"firewall_rules,omitempty"`
-		PortForwards []struct {
+		IPAddress       string                `json:"ip_address"`
+		BandwidthLimit  int64                 `json:"bandwidth_limit"`
+		VLANID          *int                  `json:"vlan_id,omitempty"`
+		AntiSpoofing    bool                  `json:"anti_spoofing"`
+		Gateway         string                `json:"gateway"`
+		Netmask         int                   `json:"netmask"`
+		ConfigureGuest  bool                  `json:"configure_guest"`
+		ExtraIPs        []string              `json:"extra_ips"`
+		IPBridges       map[string]string     `json:"ip_bridges"`
+		IPv6Prefix      string                `json:"ipv6_prefix"`
+		IPv6Address     string                `json:"ipv6_address"`
+		IPv6Gateway     string                `json:"ipv6_gateway"`
+		FirewallDefault string                `json:"firewall_default"`
+		BlockSMTP       bool                  `json:"block_smtp"`
+		IPPrefixes      map[string]int        `json:"ip_prefixes"`
+		FirewallRules   []models.FirewallRule `json:"firewall_rules,omitempty"`
+		PortForwards    []struct {
 			ExternalPort int    `json:"external_port"`
 			InternalPort int    `json:"internal_port"`
 			Protocol     string `json:"protocol"`
@@ -1099,36 +1143,28 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 		return nil
 	}
 
-	// Rules and port forwards are read now, not taken from the job: the copy
-	// in the job is as old as the enqueue. The copy is the fallback only.
-	var fwRules []*pb.FirewallRule
-	for _, r := range params.FirewallRules {
-		fwRules = append(fwRules, &pb.FirewallRule{
-			Direction:  modelDirectionToProto(r.Direction),
-			Action:     modelActionToProto(r.Action),
-			Protocol:   r.Protocol,
-			SourceCidr: r.SourceIP,
-			DestPort:   r.PortRange,
-			Priority:   int32(r.Priority),
-		})
-	}
+	// Rules, policy and port forwards are read now, not taken from the job:
+	// the copy in the job is as old as the enqueue. The copy is the fallback.
+	rules := params.FirewallRules
 	var freshPFs []models.PortForward
 	havePFs := false
 	if globalWorkerContext != nil && globalWorkerContext.DB != nil {
-		if rules, err := repository.NewFirewallRepository(globalWorkerContext.DB).ListByVMID(ctx, vm.ID, 0, 0); err == nil {
-			fwRules = fwRules[:0]
-			for _, r := range rules {
-				fwRules = append(fwRules, &pb.FirewallRule{
-					Direction:  modelDirectionToProto(r.Direction),
-					Action:     modelActionToProto(r.Action),
-					Protocol:   r.Protocol,
-					SourceCidr: r.SourceIP,
-					DestPort:   r.PortRange,
-					Priority:   int32(r.Priority),
-				})
-			}
+		db := globalWorkerContext.DB.WithContext(ctx)
+		if fresh, err := repository.NewFirewallRepository(globalWorkerContext.DB).ListByVMID(ctx, vm.ID, 0, 0); err == nil {
+			rules = fresh
 		}
-		havePFs = globalWorkerContext.DB.WithContext(ctx).Where("vm_id = ?", vm.ID).Find(&freshPFs).Error == nil
+		var policy struct {
+			FirewallDefault string
+			SMTPBlocked     bool `gorm:"column:smtp_blocked"`
+		}
+		if db.Table("vms").Select("firewall_default, smtp_blocked").Where("id = ?", vm.ID).Scan(&policy).Error == nil {
+			params.FirewallDefault, params.BlockSMTP = policy.FirewallDefault, policy.SMTPBlocked
+		}
+		havePFs = db.Where("vm_id = ?", vm.ID).Find(&freshPFs).Error == nil
+	}
+	fwRules := make([]*pb.FirewallRule, 0, len(rules))
+	for _, r := range rules {
+		fwRules = append(fwRules, firewallRuleToProto(r))
 	}
 
 	// Build network interface with anti-spoofing flag + VLAN tag.
@@ -1136,13 +1172,17 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 	if params.VLANID != nil {
 		vlanID = int32(*params.VLANID)
 	}
+	netmask := params.Netmask
+	if netmask == 0 {
+		netmask = params.IPPrefixes[params.IPAddress]
+	}
 	iface := &pb.NetworkInterface{
 		Name:         "eth0",
 		Type:         pb.NetworkInterfaceType_NETWORK_INTERFACE_TYPE_BRIDGE,
 		IpAddress:    params.IPAddress,
 		AntiSpoofing: params.AntiSpoofing,
 		VlanId:       vlanID,
-		Netmask:      int32(params.Netmask),
+		Netmask:      int32(netmask),
 		Gateway:      params.Gateway,
 		BridgeName:   params.IPBridges[params.IPAddress],
 		Ipv6Prefix:   params.IPv6Prefix,
@@ -1157,6 +1197,7 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 			Type:       pb.NetworkInterfaceType_NETWORK_INTERFACE_TYPE_BRIDGE,
 			IpAddress:  ip,
 			BridgeName: params.IPBridges[ip],
+			Netmask:    int32(params.IPPrefixes[ip]),
 		})
 	}
 
@@ -1191,9 +1232,11 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 				IngressRateMbps: int32(params.BandwidthLimit),
 				EgressRateMbps:  int32(params.BandwidthLimit),
 			},
+			FirewallDefault: params.FirewallDefault,
+			BlockSmtp:       params.BlockSMTP,
 		},
 		ReplaceAll:     true,
-		ConfigureGuest: params.ConfigureGuest,
+		ConfigureGuest: params.ConfigureGuest && params.IPAddress != "",
 	}
 
 	resp, err := client.ApplyNetworkConfig(agentAuthContext(ctx, node), req)
@@ -1221,6 +1264,19 @@ func (w *VMOperationWorker) handleConfigureNetwork(ctx context.Context, client p
 
 	if last, ok := netConfigDone.Load(vm.ID); jobID != 0 && (!ok || last.(int64) < jobID) {
 		netConfigDone.Store(vm.ID, jobID)
+	}
+
+	// What the guest did not take is said on the VM's page; a later change it
+	// did take clears it.
+	if req.ConfigureGuest && globalWorkerContext != nil && globalWorkerContext.DB != nil {
+		var note interface{}
+		if resp.GetGuestPending() != "" {
+			note = resp.GetGuestPending()
+		}
+		if err := globalWorkerContext.DB.WithContext(ctx).Table("vms").Where("id = ?", vm.ID).
+			Updates(map[string]interface{}{"guest_network_note": note, "guest_network_pending": resp.GetGuestRetry()}).Error; err != nil {
+			w.logger.WarnContext(ctx, "could not record the guest's address state", "vm_id", vm.ID, "error", err)
+		}
 	}
 
 	w.logger.InfoContext(ctx, "network config applied successfully",
@@ -1253,6 +1309,29 @@ func modelDirectionToProto(d string) pb.FirewallDirection {
 		return pb.FirewallDirection_FIREWALL_DIRECTION_OUTBOUND
 	default:
 		return pb.FirewallDirection_FIREWALL_DIRECTION_INBOUND
+	}
+}
+
+// firewallRuleToProto converts a stored rule for the agent. A reject travels
+// as DENY plus the reject flag, so an agent that predates reject drops the
+// traffic instead of refusing the whole rule set.
+func firewallRuleToProto(r models.FirewallRule) *pb.FirewallRule {
+	action := modelActionToProto(r.Action)
+	reject := r.Action == "reject"
+	if reject {
+		action = pb.FirewallAction_FIREWALL_ACTION_DENY
+	}
+	return &pb.FirewallRule{
+		Direction:  modelDirectionToProto(r.Direction),
+		Action:     action,
+		Protocol:   r.Protocol,
+		SourceCidr: r.SourceIP,
+		DestPort:   r.PortRange,
+		Priority:   int32(r.Priority),
+		Reject:     reject,
+		IcmpType:   r.ICMPType,
+		Log:        r.Log,
+		Family:     r.Family,
 	}
 }
 
@@ -1505,13 +1584,13 @@ func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreJob]) er
 		return fail(false, err)
 	}
 
-	resp, err := client.RestoreDisk(agentAuthContext(ctx, node), &pb.RestoreDiskRequest{
-		VmId:             vm.ID,
-		SourceKey:        job.Args.SourceKey,
-		ExpectedChecksum: job.Args.Checksum,
-		ObjectStore:      store,
-	})
+	resp, err := client.RestoreDisk(agentAuthContext(ctx, node), restoreDiskRequest(vm.ID, job.Args, store))
 	if err != nil {
+		// Sent without source_key, a backup of several disks is refused by an
+		// agent too old to restore them all, instead of half restored.
+		if len(job.Args.Disks) > 1 && status.Code(err) == codes.InvalidArgument {
+			return river.JobCancel(fmt.Errorf("the agent on node %s is older than the panel and cannot restore a backup of several disks; update it and try again", node.Name))
+		}
 		return fail(permanentDiskFailure(err, nil), fmt.Errorf("error restoring disk: %w", err))
 	}
 	if !resp.Success {
@@ -1521,10 +1600,40 @@ func (w *RestoreWorker) Work(ctx context.Context, job *river.Job[RestoreJob]) er
 		}
 		return river.JobCancel(fmt.Errorf("disk restore failed: %s", msg))
 	}
+	// The VM's snapshots lived in the disks just replaced.
+	dropSnapshotRecords(ctx, vm.ID, w.logger)
 
 	w.logger.InfoContext(ctx, "restore completed",
 		"vm_id", vm.ID, "backup_id", job.Args.BackupID, "bytes", resp.BytesRestored)
 	return nil
+}
+
+// restoreDiskRequest asks the node to restore a backup in place: its primary
+// disk by source_key, as every agent understands, or every disk of a backup of
+// several.
+func restoreDiskRequest(vmID string, job RestoreJob, store *pb.ObjectStore) *pb.RestoreDiskRequest {
+	req := &pb.RestoreDiskRequest{VmId: vmID, SourceKey: job.SourceKey, ExpectedChecksum: job.Checksum, ObjectStore: store}
+	if len(job.Disks) > 1 {
+		req.SourceKey, req.ExpectedChecksum = "", ""
+		for _, d := range job.Disks {
+			req.Disks = append(req.Disks, &pb.BackupDiskFile{Target: d.Target, Key: d.Key, Checksum: d.Checksum})
+		}
+	}
+	return req
+}
+
+// dropSnapshotRecords forgets a VM's snapshots after its disks were replaced
+// (a reinstall or a restore): they were inside the old images.
+func dropSnapshotRecords(ctx context.Context, vmID string, logger *slog.Logger) {
+	if globalWorkerContext == nil || globalWorkerContext.DB == nil {
+		return
+	}
+	res := globalWorkerContext.DB.WithContext(ctx).Where("vm_id = ?", vmID).Delete(&models.Snapshot{})
+	if res.Error != nil {
+		logger.ErrorContext(ctx, "could not remove the records of a replaced disk's snapshots", "vm_id", vmID, "error", res.Error)
+	} else if res.RowsAffected > 0 {
+		logger.InfoContext(ctx, "snapshots removed with the disk they were in", "vm_id", vmID, "count", res.RowsAffected)
+	}
 }
 
 // Timeout overrides River's 1-minute default: a disk export + object-storage
@@ -1640,20 +1749,22 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 		return w.fail(ctx, job, false, fmt.Sprintf("the backup destination saved in the panel cannot be read: %v", err))
 	}
 
+	// A scheduled backup waits for the window, and every backup for a free
+	// export slot on its node. Waiting is a snooze: it uses up no try.
 	if job.Args.BackupID != "" {
+		policy := LoadBackupPolicy(ctx, globalWorkerContext.DB)
 		now := time.Now()
-		if err := globalWorkerContext.DB.WithContext(ctx).
-			Model(&models.Backup{}).
-			Where("id = ?", job.Args.BackupID).
-			Updates(map[string]interface{}{
-				"status":        models.BackupStatusInProgress,
-				"started_at":    now,
-				"error_message": "",
-			}).Error; err != nil {
-			w.logger.WarnContext(ctx, "failed to mark backup as in progress",
-				"backup_id", job.Args.BackupID,
-				"error", err,
-			)
+		if wait := policy.UntilWindow(now); job.Args.Scheduled && wait > 0 {
+			w.noteQueued(ctx, job.Args.BackupID, fmt.Sprintf("Waiting for the backup window, which opens at %s.", policy.WindowStart))
+			return river.JobSnooze(wait)
+		}
+		claimed, err := claimBackupSlot(ctx, globalWorkerContext.DB, job.Args.BackupID, node.ID, policy.NodeLimit(), now)
+		if err != nil {
+			return w.fail(ctx, job, false, fmt.Sprintf("could not count the backups running on node %s: %v", node.Name, err))
+		}
+		if !claimed {
+			w.noteQueued(ctx, job.Args.BackupID, fmt.Sprintf("Queued: its node is already running %d backups at once.", policy.NodeLimit()))
+			return river.JobSnooze(backupSlotRecheck)
 		}
 	}
 
@@ -1662,13 +1773,11 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 		return w.fail(ctx, job, false, err.Error())
 	}
 
-	// Full-disk backup (the only type real flows enqueue) exports the qcow2
-	// directly via BackupDisk below. We deliberately DO NOT take a libvirt
-	// snapshot first: imported domains have no snapshot metadata and
-	// CreateSnapshot hangs/errors on them. A direct qcow2 export is
-	// crash-consistent and is exactly what the working RestoreDisk path expects.
-	// ponytail: crash-consistent copy of a running disk; add fs-quiesce only if a
-	// restored image ever shows dirty-fs corruption in the field.
+	// Full-disk backup (the only type real flows enqueue) exports every disk
+	// via BackupDisk below; the node holds a running VM's disks still on
+	// temporary overlays while it copies them, freezing the guest when its agent
+	// answers. No libvirt snapshot is kept: imported domains have no snapshot
+	// metadata and CreateSnapshot hangs/errors on them.
 	var snapshotName string
 	if job.Args.BackupType == BackupTypeSnapshot {
 		req := &pb.SnapshotRequest{
@@ -1710,7 +1819,9 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 	backupResp, err := client.BackupDisk(agentAuthContext(ctx, node), &pb.BackupDiskRequest{
 		VmId:           vm.ID,
 		DestinationKey: job.Args.Destination,
-		Compress:       true,
+		Compress:       job.Args.Compression != "none",
+		Compression:    job.Args.Compression,
+		AllDisks:       true,
 		ObjectStore:    store,
 	})
 	if err != nil {
@@ -1732,17 +1843,16 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 
 	if job.Args.BackupID != "" {
 		completedAt := time.Now()
+		done := completedBackup(backupResp)
+		done.StorageProvider, done.CompletedAt = location, &completedAt
+		if len(done.Disks) == 0 && hasDataDisks(ctx, vm.ID) {
+			// An agent that predates whole-VM backups copied the first disk only.
+			done.ErrorMessage = "Only the first disk was backed up: the node's agent is older than the panel. Update it to include the VM's other disks."
+		}
 		if err := globalWorkerContext.DB.WithContext(ctx).
-			Model(&models.Backup{}).
-			Where("id = ?", job.Args.BackupID).
-			Updates(map[string]interface{}{
-				"status":           models.BackupStatusCompleted,
-				"storage_provider": location,
-				"size":             backupResp.SizeBytes,
-				"checksum":         backupResp.Checksum,
-				"error_message":    "",
-				"completed_at":     completedAt,
-			}).Error; err != nil {
+			Model(&models.Backup{ID: job.Args.BackupID}).
+			Select("status", "storage_provider", "size", "checksum", "error_message", "completed_at", "disks", "consistency", "compression").
+			Updates(done).Error; err != nil {
 			w.logger.WarnContext(ctx, "failed to update completed backup metadata",
 				"backup_id", job.Args.BackupID,
 				"error", err,
@@ -1767,6 +1877,56 @@ func (w *BackupWorker) Work(ctx context.Context, job *river.Job[BackupJob]) erro
 	)
 
 	return nil
+}
+
+// backupSlotRecheck is how often a backup queued behind its node's limit
+// looks for a free slot.
+const backupSlotRecheck = 2 * time.Minute
+
+// noteQueued says on a pending backup's row why it has not started.
+func (w *BackupWorker) noteQueued(ctx context.Context, backupID, why string) {
+	if err := globalWorkerContext.DB.WithContext(ctx).Model(&models.Backup{}).
+		Where("id = ? AND status = ?", backupID, models.BackupStatusPending).
+		Update("error_message", why).Error; err != nil {
+		w.logger.WarnContext(ctx, "could not note why a backup waits", "backup_id", backupID, "error", err)
+	}
+}
+
+// completedBackup is what a finished export records on the backup's row.
+func completedBackup(resp *pb.BackupDiskResponse) *models.Backup {
+	b := &models.Backup{
+		Status:      models.BackupStatusCompleted,
+		Size:        resp.GetSizeBytes(),
+		Checksum:    resp.GetChecksum(),
+		Compression: resp.GetCompression(),
+		Consistency: resp.GetConsistency(),
+	}
+	if b.Compression == "" {
+		b.Compression = "gzip" // an older agent always compressed with zlib
+	}
+	if b.Consistency == "" {
+		b.Consistency = models.BackupConsistencyLive
+	}
+	if len(resp.GetDisks()) > 0 {
+		b.Size = 0
+		for _, d := range resp.GetDisks() {
+			b.Disks = append(b.Disks, models.BackupDisk{Target: d.GetTarget(), Key: d.GetKey(), Size: d.GetSizeBytes(),
+				Checksum: d.GetChecksum(), VirtualSize: d.GetVirtualSizeBytes()})
+			b.Size += d.GetSizeBytes()
+		}
+	}
+	return b
+}
+
+// hasDataDisks reports whether the panel knows of disks on the VM besides its
+// primary one.
+func hasDataDisks(ctx context.Context, vmID string) bool {
+	var n int64
+	if err := globalWorkerContext.DB.WithContext(ctx).Table("vm_disks").
+		Where("vm_id = ? AND deleted_at IS NULL", vmID).Count(&n).Error; err != nil {
+		return false
+	}
+	return n > 0
 }
 
 // ImageWorker captures a VM's disk to a standalone object-storage image. It
@@ -2294,6 +2454,9 @@ func (w *ImportWorker) Work(ctx context.Context, job *river.Job[ImportJob]) erro
 		}
 		return fmt.Errorf("failed to create VM record: %w", err)
 	}
+	// Imported with no firewall rules: its first rule must not turn it into
+	// default-deny.
+	_ = globalWorkerContext.DB.WithContext(ctx).Exec("UPDATE vms SET firewall_default = ? WHERE id = ?", models.FirewallDefaultAccept, vm.ID).Error
 
 	latency := time.Since(startTime)
 	if w.metrics != nil {
@@ -2334,10 +2497,11 @@ func (j NetworkConfigJob) Kind() string {
 }
 
 // InsertOpts returns insert options for network config (critical queue)
-func (j NetworkConfigJob) InsertOpts() *river.InsertOpts {
-	return &river.InsertOpts{
-		Queue:    QueueCritical,
-		Priority: PriorityHigh,
+func (j NetworkConfigJob) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue:       QueueCritical,
+		Priority:    PriorityHigh,
+		MaxAttempts: NetworkJobMaxAttempts,
 	}
 }
 
@@ -2633,7 +2797,7 @@ func (w *SnapshotWorker) Work(ctx context.Context, job *river.Job[SnapshotJob]) 
 			"error", err,
 			"operation", job.Args.Operation,
 		)
-		return fmt.Errorf("invalid operation: %w", err)
+		return river.JobCancel(fmt.Errorf("invalid operation: %w", err))
 	}
 
 	// Get dependencies
@@ -2651,6 +2815,9 @@ func (w *SnapshotWorker) Work(ctx context.Context, job *river.Job[SnapshotJob]) 
 			"error", err,
 			"vm_id", job.Args.VMID,
 		)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return river.JobCancel(fmt.Errorf("the VM no longer exists: %w", err))
+		}
 		return fmt.Errorf("failed to get VM: %w", err)
 	}
 
@@ -2661,6 +2828,9 @@ func (w *SnapshotWorker) Work(ctx context.Context, job *river.Job[SnapshotJob]) 
 			"error", err,
 			"node_id", job.Args.NodeID,
 		)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return river.JobCancel(fmt.Errorf("the VM's node no longer exists: %w", err))
+		}
 		return fmt.Errorf("failed to get node: %w", err)
 	}
 

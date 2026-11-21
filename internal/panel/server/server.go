@@ -72,6 +72,7 @@ type Server struct {
 // NewServer creates a new HTTP server instance
 func NewServer(db *gorm.DB, cfg *config.Config) *Server {
 	e := echo.New()
+	e.HideBanner, e.HidePort = true, true
 
 	// Pin agent TLS certificates: the panel records each node agent's self-signed
 	// cert fingerprint on first connection and verifies it thereafter, so a
@@ -84,7 +85,7 @@ func NewServer(db *gorm.DB, cfg *config.Config) *Server {
 	e.IPExtractor = clientIPExtractor(cfg.Server)
 
 	// Middleware
-	e.Use(middleware.Logger())
+	e.Use(requestLogger())
 	e.Use(middleware.Recover())
 
 	// CORS with credentials. A configured ALLOWED_ORIGINS REPLACES the localhost
@@ -567,7 +568,7 @@ func (s *Server) setupVMRoutes(g *echo.Group) {
 	// most likely by this process's predecessor shutting down. Say so, rather
 	// than leave a row that reads identically to work in progress.
 	if n := imageService.ReconcileStuckCaptures(context.Background()); n > 0 {
-		fmt.Printf("marked %d interrupted image capture(s) as failed\n", n)
+		slog.Default().Info("marked interrupted image captures as failed", "count", n)
 	}
 
 	// The node service lets the image list report live capture progress: a
@@ -594,7 +595,9 @@ func (s *Server) setupVMRoutes(g *echo.Group) {
 	// node is on. Agents are deployed separately from the panel, so "did my
 	// change land?" has two different answers.
 	versionNodeService := service.NewNodeService(repository.NewNodeRepository(s.db), s.db)
-	handler.RegisterVersionRoutes(s.echo, handler.NewVersionHandler(versionNodeService), s.db)
+	versionHandler := handler.NewVersionHandler(versionNodeService)
+	versionHandler.Alerts = s.alertsInstance()
+	handler.RegisterVersionRoutes(s.echo, versionHandler, s.db)
 
 	// Address reputation: what the outside world thinks of the space we hand to
 	// customers. An address burned by abuse keeps its listings after the abuse
@@ -1006,7 +1009,7 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 			// Best-effort welcome email (never fails the creation).
 			if req.SendWelcomeEmail {
 				if cfg, ok, serr := service.LoadSMTPSettings(s.db); serr == nil && ok {
-					if werr := service.SendWelcomeEmail(cfg, client.Email, client.Name, os.Getenv("PANEL_PUBLIC_URL")); werr != nil {
+					if werr := service.QueueWelcomeEmail(ctx, s.db, cfg, client.Email, client.Name, os.Getenv("PANEL_PUBLIC_URL")); werr != nil {
 						slog.Default().Warn("welcome email failed", "email", client.Email, "error", werr)
 					}
 				} else {
@@ -1311,8 +1314,19 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 		if !ok || caller.Role != models.RoleAdmin {
 			return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "Insufficient permissions"})
 		}
+		// An account that owns VMs is deleted only with an explicit choice for
+		// them: vms=reassign&to=<user id>, or vms=delete.
+		vmsMode, reassignTo := c.QueryParam("vms"), strings.TrimSpace(c.QueryParam("to"))
+		if vmsMode != "" && vmsMode != service.UserVMsReassign && vmsMode != service.UserVMsDelete {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "vms must be reassign or delete"})
+		}
+		if vmsMode == service.UserVMsDelete && s.riverClient == nil {
+			return c.JSON(http.StatusServiceUnavailable, map[string]interface{}{"error": "Service Unavailable", "message": "The job queue is not running, so the VMs cannot be deleted. Nothing was changed."})
+		}
 
 		var deleted models.User
+		var ownedVMs, movedVMs []service.OwnedVM
+		var vmErr error
 		rbErr := s.execRoleBoundaryTx(ctx, func(tx *gorm.DB) error {
 			repo := repository.NewUserRepository(tx)
 			target, gerr := repo.GetByID(ctx, id)
@@ -1339,18 +1353,67 @@ func (s *Server) setupUserRoutes(g *echo.Group) {
 				// A customer account is any administrator's to delete.
 				return &roleBoundaryErr{status: http.StatusForbidden, code: "insufficient_permissions"}
 			}
+			owned, oerr := service.UserOwnedVMs(ctx, tx, id.String())
+			if oerr != nil {
+				return fmt.Errorf("list VMs: %w", oerr)
+			}
+			ownedVMs = owned
+			switch {
+			case len(owned) == 0:
+			case vmsMode == "":
+				return &roleBoundaryErr{status: http.StatusConflict, code: "user_owns_vms"}
+			case vmsMode == service.UserVMsReassign:
+				if movedVMs, vmErr = service.ReassignUserVMs(ctx, tx, id.String(), reassignTo); vmErr != nil {
+					return vmErr
+				}
+			}
 			if err := repo.Delete(ctx, id); err != nil {
 				return fmt.Errorf("delete: %w", err)
 			}
 			deleted = *target
 			return nil
 		})
+		if vmErr != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": vmErr.Error()})
+		}
+		var rb *roleBoundaryErr
+		if errors.As(rbErr, &rb) && rb.code == "user_owns_vms" {
+			return c.JSON(http.StatusConflict, map[string]interface{}{
+				"error":   rb.code,
+				"message": fmt.Sprintf("This account owns %d VM(s). Open the account and choose Delete to give them to another account or delete them with it.", len(ownedVMs)),
+				"data":    map[string]interface{}{"vms": ownedVMs},
+			})
+		}
 		if rbErr != nil {
 			return writeRoleBoundaryErr(c, rbErr)
 		}
-		service.AuditUserEvent(ctx, s.db, "user.delete", caller.ID.String(), id.String(), c.RealIP(), c.Request().UserAgent(),
-			map[string]any{"email": deleted.Email, "role": string(deleted.Role)})
-		return c.NoContent(http.StatusNoContent)
+
+		details := map[string]any{"email": deleted.Email, "role": string(deleted.Role)}
+		result := map[string]interface{}{}
+		switch {
+		case len(movedVMs) > 0:
+			details["vms"], details["vms_to"], details["vm_count"] = service.UserVMsReassign, reassignTo, len(movedVMs)
+			for _, v := range movedVMs {
+				service.AuditVMOwnerChange(ctx, s.db, caller.ID.String(), v, id.String(), reassignTo, c.RealIP(), c.Request().UserAgent())
+			}
+			result["vms_reassigned"] = len(movedVMs)
+		case vmsMode == service.UserVMsDelete && len(ownedVMs) > 0:
+			// The account is gone; its VMs follow through the queue. One that
+			// cannot be queued is listed, so it is not left unseen.
+			failed := []map[string]string{}
+			for _, v := range ownedVMs {
+				if err := accountVMs.DeleteVM(ctx, v.ID); err != nil {
+					failed = append(failed, map[string]string{"id": v.ID, "hostname": v.Hostname, "error": err.Error()})
+				}
+			}
+			details["vms"], details["vm_count"], details["vms_not_queued"] = service.UserVMsDelete, len(ownedVMs), failed
+			result["vms_deleting"], result["vms_not_queued"] = len(ownedVMs)-len(failed), failed
+		}
+		service.AuditUserEvent(ctx, s.db, "user.delete", caller.ID.String(), id.String(), c.RealIP(), c.Request().UserAgent(), details)
+		if len(result) == 0 {
+			return c.NoContent(http.StatusNoContent)
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": result})
 	}, panelMiddleware.RequirePermission("user:delete"))
 }
 
@@ -1713,6 +1776,10 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		if userService != nil {
 			_ = userService.RevokeUserTokens(userCtx.ID)
 		}
+		if err := service.NotifyAccount(context.WithoutCancel(c.Request().Context()), s.db, userCtx.ID.String(), service.EmailPasswordChanged,
+			map[string]string{"who": service.ChangeSource(false, c.RealIP())}); err != nil {
+			slog.Default().Warn("password changed, but the owner could not be told", "user_id", userCtx.ID, "error", err)
+		}
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "Password changed. Sign in again."})
 	})
 
@@ -1789,6 +1856,10 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 		if err := userService.Disable2FA(userCtx.ID); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 		}
+		if err := service.NotifyAccount(context.WithoutCancel(c.Request().Context()), s.db, userCtx.ID.String(), service.EmailTwoFactorDisabled,
+			map[string]string{"who": service.ChangeSource(false, c.RealIP())}); err != nil {
+			slog.Default().Warn("two-factor turned off, but the owner could not be told", "user_id", userCtx.ID, "error", err)
+		}
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "2FA disabled"})
 	})
 
@@ -1834,6 +1905,25 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 			if section == service.AlertSettingsSection {
 				return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Alerts are saved on the Alerts page"})
 			}
+			if section == queue.BackupPolicySection {
+				var p queue.BackupPolicy
+				if err := json.Unmarshal(data, &p); err != nil {
+					return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Invalid backup settings"})
+				}
+				if err := p.ValidateWindow(); err != nil {
+					return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Backup window " + err.Error()})
+				}
+				if p.PerNode < 0 || p.PerNode > 20 {
+					return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Backups at once per node must be between 1 and 20"})
+				}
+			}
+			if section == service.RescueSettingsSection {
+				clean, err := service.ValidateRescueSettings(data)
+				if err != nil {
+					return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
+				}
+				data = clean
+			}
 			var stored string
 			_ = s.db.WithContext(c.Request().Context()).
 				Raw("SELECT data::text FROM system_settings WHERE section = ?", section).Scan(&stored).Error
@@ -1850,6 +1940,42 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 			}
 		}
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "Settings saved"})
+	})
+
+	// Transfer quotas: whether going over is enforced, and when owners are
+	// warned. The enforcement switch used to be the BANDWIDTH_ENFORCE variable,
+	// which still decides while nothing is saved here.
+	sys.GET("/bandwidth", func(c echo.Context) error {
+		ctx := c.Request().Context()
+		saved := service.LoadBandwidthSettings(ctx, s.db)
+		on, source := service.BandwidthEnforcement(ctx, s.db)
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{
+			"enforce": on, "enforce_source": source,
+			"warn_percents": service.UsageWarnPercents(ctx, s.db), "warn_default": saved.WarnPercents == nil,
+		}})
+	})
+	sys.PUT("/bandwidth", func(c echo.Context) error {
+		var in service.BandwidthSettings
+		if err := json.NewDecoder(c.Request().Body).Decode(&in); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "Invalid request body"})
+		}
+		if in.Enforce == nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": "enforce is required"})
+		}
+		if in.WarnPercents == nil {
+			in.WarnPercents = []int{}
+		}
+		if err := service.SaveBandwidthSettings(c.Request().Context(), s.db, in); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Bad Request", "message": err.Error()})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": in})
+	})
+
+	// The rescue image in use and where it comes from, so the form can say
+	// when RESCUE_ISO_URL is what customers get. Saved through PUT /system.
+	sys.GET("/rescue", func(c echo.Context) error {
+		iso, source := service.RescueISO(c.Request().Context(), s.db)
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{"iso_url": iso, "source": source}})
 	})
 
 	// Branding (admin-only save). Reading it is public; see /api/v1/branding.
@@ -1980,6 +2106,37 @@ func (s *Server) setupSettingsRoutes(g *echo.Group) {
 			return c.JSON(http.StatusBadGateway, map[string]interface{}{"error": "Bad Gateway", "message": err.Error()})
 		}
 		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "message": "Test sent to " + to})
+	})
+
+	// The sent-email log: what the panel emailed customers, and what became of
+	// it. Message bodies stay in the panel: they can hold a reset link.
+	sys.GET("/emails", func(c echo.Context) error {
+		size, _ := strconv.Atoi(c.QueryParam("page_size"))
+		page, _ := strconv.Atoi(c.QueryParam("page"))
+		size, page = min(max(size, 5), 100), max(page, 1)
+		if c.QueryParam("page_size") == "" {
+			size = 25
+		}
+		rows, total, err := service.ListEmailLog(c.Request().Context(), s.db, c.QueryParam("status"), size, (page-1)*size)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to load the email log"})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{
+			"emails": rows, "total": total, "page": page, "page_size": size,
+		}})
+	})
+	sys.POST("/emails/:id/retry", func(c echo.Context) error {
+		err := service.ErrEmailNotFound
+		if _, bad := uuid.Parse(c.Param("id")); bad == nil {
+			err = service.RetryEmail(c.Request().Context(), s.db, c.Param("id"))
+		}
+		if errors.Is(err, service.ErrEmailNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Not Found", "message": "That email is not in the log, or has not failed"})
+		}
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Internal Server Error", "message": err.Error()})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": map[string]interface{}{"queued": true}})
 	})
 
 	// Nameserver connection (admin-only). The API key goes in and never comes
@@ -2223,7 +2380,10 @@ func sealSettingSecrets(data json.RawMessage) (json.RawMessage, error) {
 	return json.Marshal(m)
 }
 
-// setupNotificationRoutes configures notification routes (uses audit_logs as source)
+// setupNotificationRoutes serves the notification bell. A customer's
+// notifications are their own rows (a VM ready, suspended, a backup that
+// failed) with a read state; an administrator's bell stays the recent audit
+// log, which is what the admin area shows.
 func (s *Server) setupNotificationRoutes(g *echo.Group) {
 	auditRepo := repository.NewAuditRepository(s.db)
 
@@ -2233,30 +2393,46 @@ func (s *Server) setupNotificationRoutes(g *echo.Group) {
 	// GET /notifications
 	notifications.GET("", func(c echo.Context) error {
 		ctx := c.Request().Context()
-		// Audit rows name users, addresses and resources across the whole
-		// fleet. Admins see all of it; everyone else sees their own.
 		userCtx, ok := panelMiddleware.GetUserContext(c)
 		if !ok {
 			return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Not authenticated"})
 		}
-		var logs []models.AuditLog
 		if userCtx.Role == models.RoleAdmin {
-			logs, _ = auditRepo.List(ctx, 20, 0)
-		} else {
-			logs, _ = auditRepo.ListByUser(ctx, userCtx.ID.String(), 20, 0)
+			logs, _ := auditRepo.List(ctx, 20, 0)
+			return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": logs})
 		}
-		return c.JSON(http.StatusOK, map[string]interface{}{
-			"success": true,
-			"data":    logs,
-		})
+		rows, unread, err := service.ListNotifications(ctx, s.db, userCtx.ID.String(), 30)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to load notifications"})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true, "data": rows, "unread": unread})
+	})
+
+	// PUT /notifications/read-all
+	notifications.PUT("/read-all", func(c echo.Context) error {
+		userCtx, ok := panelMiddleware.GetUserContext(c)
+		if !ok {
+			return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Not authenticated"})
+		}
+		if err := service.MarkAllNotificationsRead(c.Request().Context(), s.db, userCtx.ID.String()); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to mark notifications read"})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true})
 	})
 
 	// PUT /notifications/:id/read
 	notifications.PUT("/:id/read", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, map[string]interface{}{
-			"success": true,
-			"message": "Notification marked as read",
-		})
+		userCtx, ok := panelMiddleware.GetUserContext(c)
+		if !ok {
+			return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Not authenticated"})
+		}
+		if err := service.MarkNotificationRead(c.Request().Context(), s.db, userCtx.ID.String(), c.Param("id")); err != nil {
+			if errors.Is(err, service.ErrNotificationNotFound) {
+				return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "Notification not found"})
+			}
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to mark the notification read"})
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"success": true})
 	})
 }
 
@@ -2308,7 +2484,7 @@ func (s *Server) Start() error {
 	// after a routine deploy.
 	if s.queueClient != nil {
 		if err := s.queueClient.StopAndCancel(ctx); err != nil {
-			fmt.Printf("queue shutdown: %v\n", err)
+			slog.Default().Error("queue shutdown", "error", err)
 		}
 	}
 
@@ -2317,6 +2493,8 @@ func (s *Server) Start() error {
 
 // Run initializes and starts the panel server
 func Run() error {
+	setupLogging()
+
 	// Load configuration (validated so missing required fields fail fast)
 	cfg, err := config.LoadDefaultValidated()
 	if err != nil {
@@ -2368,6 +2546,16 @@ func Run() error {
 	queue.JobFailedHook = func(ctx context.Context, kind string, args []byte, reason string) {
 		alerts.JobFailed(ctx, kind, args, reason)
 		service.BillingJobFailed(ctx, db, queueClient.RiverClient(), kind, args, reason, false)
+		switch kind {
+		case (queue.BackupJob{}).Kind():
+			if err := service.NotifyBackupFailed(ctx, db, args); err != nil {
+				slog.Default().Warn("backup failed, but the VM's owner could not be told", "error", err)
+			}
+		case (queue.VMOperationJob{}).Kind():
+			if err := service.NotifyVMOperationFailed(ctx, db, args); err != nil {
+				slog.Default().Warn("VM job failed, but the VM's owner could not be told", "error", err)
+			}
+		}
 	}
 	queue.JobRetryingHook = func(ctx context.Context, kind string, args []byte, reason string) {
 		service.BillingJobFailed(ctx, db, queueClient.RiverClient(), kind, args, reason, true)
@@ -2375,6 +2563,10 @@ func Run() error {
 	queue.WebhookDeliverHook = func(ctx context.Context, deliveryID string, final bool) error {
 		return service.DeliverBillingEvent(ctx, db, deliveryID, final)
 	}
+	queue.EmailDeliverHook = func(ctx context.Context, emailID string, final bool) error {
+		return service.DeliverEmail(ctx, db, emailID, final)
+	}
+	service.SetEmailQueue(queueClient.RiverClient())
 	if err := queueClient.Start(context.Background()); err != nil {
 		_ = queueClient.Stop(context.Background())
 		return fmt.Errorf("failed to start queue: %w", err)
@@ -2392,7 +2584,7 @@ func Run() error {
 	server.alerts = alerts
 	server.queueConfig = queueCfg
 	server.SetQueueClient(queueClient)
-	fmt.Printf("Panel server starting on %s:%d\n", cfg.Server.Host, cfg.Server.Port)
+	slog.Default().Info("panel server starting", "host", cfg.Server.Host, "port", cfg.Server.Port)
 
 	return server.Start()
 }

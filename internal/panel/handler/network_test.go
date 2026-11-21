@@ -44,6 +44,8 @@ quota_mode TEXT NOT NULL DEFAULT 'legacy',
 			os_template_id TEXT, resources TEXT, status TEXT DEFAULT 'stopped', suspended BOOLEAN NOT NULL DEFAULT 0,
 			source_migration TEXT, vnc_port INTEGER, vnc_password TEXT,
 			console_enabled BOOLEAN DEFAULT 1, rescue_mode BOOLEAN DEFAULT 0,
+			firewall_default TEXT NOT NULL DEFAULT 'drop', smtp_blocked BOOLEAN NOT NULL DEFAULT 0,
+			guest_network_note TEXT, guest_network_pending BOOLEAN NOT NULL DEFAULT 0,
 			created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE IF NOT EXISTS networks (
 			id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, ip_address TEXT, bandwidth_limit INTEGER,
@@ -52,7 +54,8 @@ quota_mode TEXT NOT NULL DEFAULT 'legacy',
 			updated_at DATETIME, deleted_at DATETIME)`,
 		`CREATE TABLE IF NOT EXISTS firewall_rules (
 			id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, protocol TEXT, port_range TEXT, action TEXT,
-			direction TEXT, source_ip TEXT, priority INTEGER, created_at DATETIME, updated_at DATETIME,
+			direction TEXT, source_ip TEXT, priority INTEGER, icmp_type TEXT NOT NULL DEFAULT '',
+			log BOOLEAN NOT NULL DEFAULT 0, family TEXT NOT NULL DEFAULT '', created_at DATETIME, updated_at DATETIME,
 			deleted_at DATETIME)`,
 		`CREATE TABLE IF NOT EXISTS port_forwards (
 			id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, network_id TEXT, node_id TEXT, external_port INTEGER,
@@ -459,4 +462,61 @@ func TestNetworkHandler_FirewallStatusIsScopedToTheOwner(t *testing.T) {
 	// The test nodes table has no firewall state: that must read as unknown.
 	assert.JSONEq(t, `{"success":true,"data":{"enforcement":"unknown"}}`, rec.Body.String())
 	require.Equal(t, http.StatusNotFound, get(other).Code)
+}
+
+// Outbound mail protects the address space, so only an administrator changes
+// it; the owner is told whom to ask.
+func TestNetworkHandler_SMTPIsAdminOnly(t *testing.T) {
+	db := newAuthzTestDB(t)
+	owner := seedUser(t, db, models.RoleClient)
+	admin := seedUser(t, db, models.RoleAdmin)
+	vmID := seedVM(t, db, owner)
+	h := NewNetworkHandler(newTestNetworkService(db), authz.NewAuthorizer(db))
+	blocked := func() (b bool) {
+		require.NoError(t, db.Raw(`SELECT smtp_blocked FROM vms WHERE id = ?`, vmID).Scan(&b).Error)
+		return b
+	}
+
+	c, rec := ctxWithUser(t, db, owner, models.RoleClient)
+	c.SetParamNames("id")
+	c.SetParamValues(vmID)
+	setBodyNetwork(t, c, map[string]interface{}{"blocked": false})
+	require.NoError(t, h.SetSMTP(c))
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+
+	c, rec = ctxWithUser(t, db, admin, models.RoleAdmin)
+	c.SetParamNames("id")
+	c.SetParamValues(vmID)
+	setBodyNetwork(t, c, map[string]interface{}{"blocked": true})
+	require.NoError(t, h.SetSMTP(c))
+	assert.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.True(t, blocked())
+
+	c, rec = ctxWithUser(t, db, admin, models.RoleAdmin)
+	c.SetParamNames("id")
+	c.SetParamValues(vmID)
+	setBodyNetwork(t, c, map[string]interface{}{})
+	require.NoError(t, h.SetSMTP(c))
+	assert.Equal(t, http.StatusBadRequest, rec.Code, "a missing value is not read as allowed")
+	assert.True(t, blocked())
+}
+
+func TestNetworkHandler_FirewallDefault(t *testing.T) {
+	db := newAuthzTestDB(t)
+	owner := seedUser(t, db, models.RoleClient)
+	vmID := seedVM(t, db, owner)
+	h := NewNetworkHandler(newTestNetworkService(db), authz.NewAuthorizer(db))
+	set := func(v string) int {
+		c, rec := ctxWithUser(t, db, owner, models.RoleClient)
+		c.SetParamNames("id")
+		c.SetParamValues(vmID)
+		setBodyNetwork(t, c, map[string]interface{}{"default": v})
+		require.NoError(t, h.SetFirewallDefault(c))
+		return rec.Code
+	}
+	assert.Equal(t, http.StatusOK, set(models.FirewallDefaultAccept))
+	var got string
+	require.NoError(t, db.Raw(`SELECT firewall_default FROM vms WHERE id = ?`, vmID).Scan(&got).Error)
+	assert.Equal(t, models.FirewallDefaultAccept, got)
+	assert.Equal(t, http.StatusBadRequest, set("reject"))
 }

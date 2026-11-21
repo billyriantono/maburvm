@@ -14,6 +14,9 @@ import (
 // belong to the VM named in the request.
 var ErrVMHasNoSuchInterface = errors.New("that interface does not belong to this VM")
 
+// ErrIPv6NeedsIPv4 refuses to release the IPv4 address a VM's IPv6 rides on.
+var ErrIPv6NeedsIPv4 = errors.New("this is the VM's last IPv4 address and its IPv6 is carried on it: release the IPv6 first")
+
 // SetIPAMService wires address allocation into the network service.
 func (s *NetworkService) SetIPAMService(ipam *IPAMService) { s.ipamService = ipam }
 
@@ -30,11 +33,9 @@ func (s *NetworkService) SetIPAMService(ipam *IPAMService) { s.ipamService = ipa
 // fail. requestedIP pins a specific address and requires poolID, because "give
 // me 1.2.3.4" is only answerable against the pool that owns it.
 //
-// What this does NOT do is configure the guest. The host is set up — the address
-// is reserved, anti-spoofing and firewall rules follow it — but writing the
-// address inside the VM needs cloud-init, which only regenerates on rebuild. For
-// an imported machine the owner has to set it themselves, and the UI says so
-// rather than leaving them to discover it.
+// The guest is given the new address beside the ones it has, live through its
+// guest agent; a running guest that does not answer is never restarted for it
+// (see the agent's applyGuestNetwork), and the VM's page says what is left.
 func (s *NetworkService) AssignIPAddress(ctx context.Context, vmID, poolID, requestedIP string) (*models.Network, error) {
 	if s.ipamService == nil {
 		return nil, fmt.Errorf("address allocation is not configured")
@@ -115,16 +116,35 @@ func (s *NetworkService) AssignIPAddress(ctx context.Context, vmID, poolID, requ
 	}
 
 	// Push the host-side configuration. Failing here leaves the allocation in
-	// place on purpose: the address is genuinely reserved, and the agent
-	// re-applies full desired state when it next reconnects, so the right
-	// recovery is to retry rather than to hand the address back.
-	// The guest must learn the new address too, not just the host rules; the
-	// pool supplies the prefix/gateway it needs.
+	// place on purpose: the address is genuinely reserved, and the full desired
+	// state goes out again on the next change, so the right recovery is to
+	// retry rather than to hand the address back.
 	var pool models.IPPool
 	if err := s.db.WithContext(ctx).Where("id = ?", allocated.PoolID).First(&pool).Error; err != nil {
 		return created, fmt.Errorf("address assigned but its pool could not be loaded: %w", err)
 	}
-	if cerr := s.enqueueNetworkConfig(ctx, vm, created, &pool); cerr != nil {
+	// The address is added beside the ones the VM has: the job carries the
+	// VM's first address as the primary, with its own prefix and gateway, and
+	// every other address with its prefix, and the guest is given all of them.
+	primary, primaryPool, perr := s.primaryNetworkWithPool(ctx, vm.ID)
+	if perr != nil {
+		// The current primary is not managed by IPAM (an imported VM), so its
+		// prefix and gateway are unknown and the guest cannot be rewritten
+		// without losing it. The host is set up; the owner adds the address.
+		first, ferr := s.networkRepo.GetByVMID(ctx, vm.ID)
+		if ferr != nil {
+			return created, fmt.Errorf("address assigned but node configuration could not be queued: %w", ferr)
+		}
+		note := fmt.Sprintf("%s/%d is reserved and routed to this VM, but the guest was not changed because its current address is not managed by the panel. Add %s/%d inside the guest.",
+			hostOnlyIP(created.IPAddress), prefixFromCIDR(pool.CIDR), hostOnlyIP(created.IPAddress), prefixFromCIDR(pool.CIDR))
+		_ = s.db.WithContext(ctx).Table("vms").Where("id = ?", vm.ID).
+			Updates(map[string]interface{}{"guest_network_note": note, "guest_network_pending": false}).Error
+		if cerr := s.enqueueNetworkConfigJob(ctx, vm, first); cerr != nil {
+			return created, fmt.Errorf("address assigned but node configuration could not be queued: %w", cerr)
+		}
+		return created, nil
+	}
+	if cerr := s.enqueueNetworkConfig(ctx, vm, primary, primaryPool); cerr != nil {
 		return created, fmt.Errorf("address assigned but node configuration could not be queued: %w", cerr)
 	}
 	return created, nil
@@ -270,6 +290,9 @@ func (s *NetworkService) ReleaseIPAddress(ctx context.Context, vmID, networkID s
 		}
 		return err
 	}
+	if s.strandsIPv6(ctx, vmID, networkID) {
+		return ErrIPv6NeedsIPv4
+	}
 
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if derr := tx.Delete(&models.Network{}, "id = ?", networkID).Error; derr != nil {
@@ -289,10 +312,33 @@ func (s *NetworkService) ReleaseIPAddress(ctx context.Context, vmID, networkID s
 		return err
 	}
 
-	// Re-push whatever the VM has left, so the host stops enforcing rules for an
-	// address it no longer owns.
-	if rerr := s.enqueueNetworkResync(ctx, vm); rerr != nil {
+	// Re-push whatever the VM has left, so the host stops routing and allowing
+	// the address it no longer owns; with nothing left, every host rule goes.
+	// When the rest is managed here the guest drops the address too, so it
+	// does not answer for it once someone else holds it.
+	var rerr error
+	if primary, pool, perr := s.primaryNetworkWithPool(ctx, vm.ID); perr == nil {
+		rerr = s.enqueueNetworkConfig(ctx, vm, primary, pool)
+	} else if _, gerr := s.networkRepo.GetByVMID(ctx, vm.ID); errors.Is(gerr, gorm.ErrRecordNotFound) {
+		rerr = s.enqueueNetworkClear(ctx, vm)
+	} else {
+		rerr = s.enqueueNetworkResync(ctx, vm)
+	}
+	if rerr != nil {
 		return fmt.Errorf("address released but node configuration could not be queued: %w", rerr)
 	}
 	return nil
+}
+
+// strandsIPv6 reports that releasing networkID would leave the VM with IPv6 and
+// no IPv4 interface. The node configures IPv6 only alongside an IPv4 address,
+// so the release would stop routing an IPv6 the VM is still assigned.
+func (s *NetworkService) strandsIPv6(ctx context.Context, vmID, networkID string) bool {
+	var others int64
+	if err := s.db.WithContext(ctx).Model(&models.Network{}).
+		Where("vm_id = ? AND id <> ?", vmID, networkID).Count(&others).Error; err != nil || others > 0 {
+		return false
+	}
+	v6, err := vmIPv6(ctx, s.db, vmID)
+	return err == nil && v6 != nil
 }

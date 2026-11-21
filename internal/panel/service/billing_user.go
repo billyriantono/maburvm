@@ -137,13 +137,11 @@ var deliverNewAccountLink = func(db *gorm.DB, to, name, link string) {
 		return
 	}
 	panelURL := os.Getenv("PANEL_PUBLIC_URL")
-	// Off the request: a mail server that is slow to answer must not time out a paid order.
-	go func() {
-		if err := SendMail(cfg, to, RenderEmail(cfg.Template(EmailWelcomeOrder), cfg.Brand,
-			EmailData{Name: name, Email: to, Link: link, LogoURL: EmailLogoURL(cfg.Brand, panelURL)})); err != nil {
-			slog.Default().Warn("billing: could not email the new account's owner", "email", to, "error", err)
-		}
-	}()
+	// Through the queue: a mail server that is slow to answer must not time out a paid order.
+	if err := queueRendered(context.Background(), db, EmailWelcomeOrder, to, RenderEmail(cfg.Template(EmailWelcomeOrder), cfg.Brand,
+		EmailData{Name: name, Email: to, Link: link, LogoURL: EmailLogoURL(cfg.Brand, panelURL)}), emailRefs{}); err != nil {
+		slog.Default().Warn("billing: could not email the new account's owner", "email", to, "error", err)
+	}
 }
 
 // sendNewBillingAccountEmail tells a new customer their account exists and

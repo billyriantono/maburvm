@@ -260,7 +260,7 @@ values from `.env.production` to the panel:
 | Variable | |
 |---|---|
 | `BILLING_API_KEY`, `BILLING_WEBHOOK_SECRET` | the shared key and signing secret. The webhook is off (it answers 503) until both are set. Use `openssl rand -hex 32` for each and enter the same values in the billing system (for WHMCS: `integrations/whmcs/README.md`). |
-| `BANDWIDTH_ENFORCE` | `true` makes a plan's monthly transfer quota act: a VM that goes over is throttled or stopped, as its plan says. Any other value only measures. Default `false`. |
+| `BANDWIDTH_ENFORCE` | the starting value of System settings, Quotas, "Restrict VMs that use up their quota". Once that is saved on the page, the page decides and this is ignored. `true` makes a plan's monthly transfer quota act: a VM that goes over is throttled or stopped, as its plan says. Any other value only measures. Default `false`. |
 
 After changing them, recreate the panel container
 (`docker compose ... up -d panel`); a restart alone keeps the old environment.
@@ -271,10 +271,13 @@ the panel's clock, and each signed request is accepted once, so keep the
 billing server's clock synchronised. `GET /webhooks/billing/docs` lists the
 events and their fields.
 
-With `BANDWIDTH_ENFORCE` on, a VM is throttled or stopped at the moment it
-crosses its quota. A VM that already crossed this month while enforcement was
-off is left alone until the next month. Check the quotas your plans carry
-before turning it on: from then on they are what customers get.
+With enforcement on, a VM is throttled or stopped at the moment it crosses its
+quota. A VM that already crossed this month while enforcement was off is left
+alone until the next month. Check the quotas your plans carry before turning
+it on: from then on they are what customers get. Owners are emailed at 80% and
+100% of their quota (once per level each month) unless other levels are saved
+on the same page; usage already past a level when this version was installed
+counts as warned, so the upgrade sends no burst of mail.
 
 What customers may do past the billing system is set under System settings,
 Quotas: ordering, cloning and adding disks on their own, and whether they may
@@ -359,6 +362,65 @@ signature does not survive a container being recreated: bind-mount it, or
 repeat the `cp`). Nodes without `AGENT_UPDATE_PUBKEY` ignore the signature, and
 older panels keep working with them.
 
+**Updating an agent from the panel.** Settings, System lists each node's agent
+build beside the panel's and offers "Update to <commit>" for a node on another
+build, one node at a time. The panel sends the agent bundled in its image. The
+node refuses it, with the running agent untouched, if the size or SHA-256 does
+not match, the signature does not (when `AGENT_UPDATE_PUBKEY` is set), or the
+binary does not start there and print the expected commit with `--version` (a
+glibc or libvirt the build does not fit fails here). Otherwise a transient unit
+(`maburvm-agent-update-<time>`) backs the old binary up to
+`/root/maburvm-agent.bak-<time>` (the newest five are kept), swaps in the new
+one and restarts `maburvm-agent`. If the agent is not still up 30 seconds later
+with no extra restart, it puts the old binary back and restarts again. Only one
+swap runs at a time on a node. Restarting the agent does not restart or pause
+any VM. The page follows the update; the panel also checks the node three
+minutes later, page open or not, and raises a "Job failed" alert if the node is
+not on the new build. A node whose agent predates updates from the panel says
+so: update it once with `scripts/deploy-agent.sh`.
+
+The image bundles `agent-amd64` only. For arm64 nodes, build the panel image
+with `--build-arg AGENT_ARM64=1`, which cross-compiles `agent-arm64` against
+Debian's arm64 libvirt.
+
+The update button has not yet been used on a live node. Make the first run a
+supervised one, on the node with the fewest customer VMs:
+
+1. Have `scripts/deploy-agent.sh` ready for that node as the fallback, and check
+   that no backup or image export is running on it (Backups page, Jobs).
+2. On the node, note the running build and watch the agent:
+   `/usr/local/bin/maburvm-agent --version` (or the path in the unit's
+   `ExecStart`), `virsh list --all | wc -l`, then `journalctl -fu maburvm-agent`
+   in one shell and `journalctl -f -u 'maburvm-agent-update-*'` in another.
+3. Optional dry run of the binary on the node, without swapping: copy it out of
+   the panel (`docker compose ... cp panel:/app/bin/linux/agent-amd64 .`), copy
+   it to the node's `/tmp`, and run `/tmp/agent-amd64 --version`. It must print
+   the panel's commit. Remove it afterwards.
+4. Click Update for that node. Expect, in order: "update scheduled" on the page;
+   in the update unit's log "agent update OK; backup at /root/maburvm-agent.bak-…"
+   about 35 seconds later; the node listed as "Same as the panel".
+5. Check nothing else moved: `virsh list --all` shows the same domains in the
+   same states, the node is online on the Nodes page, a VM's console opens, and
+   `iptables -S | wc -l` is about what it was (the agent re-checks VM network
+   rules at start).
+6. If the page says the update did not take, read the update unit's log. A
+   rollback leaves the old agent running; to retry by hand, use
+   `scripts/deploy-agent.sh`. To undo a successful update, `install -m0755` the
+   newest `/root/maburvm-agent.bak-*` over the binary and restart the agent.
+
+Then update the remaining nodes one at a time, each only after the previous one
+shows "Same as the panel".
+
+**Template cache.** Template images downloaded from a URL or object storage,
+and disks pulled for a cross-node clone, are cached on the node so later VMs
+reuse them. Images you place on the node by hand (a Windows template built
+there, say) are never removed by the agent, wherever they are.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `TEMPLATE_CACHE_DIR` | `/var/lib/libvirt/templates` | Where downloads are cached, for example on a data volume instead of the root filesystem. Must be an absolute path. Customer ISOs go in its `customer-iso` directory. Images already cached in the old place are downloaded again when next used. |
+| `TEMPLATE_CACHE_MAX_GB` | unset (no limit) | Keeps the downloads in the cache under this size: the least recently used are removed first, after each download and once an hour. A download that any VM has attached, or that was used in the last six hours, is never removed, so the cache can stay above the limit. |
+
 **Node packages the agent shells out to:** install `iputils-arping` on every
 hypervisor. The panel's IP reconciler asks the agent to ARP-probe pool addresses
 before allocating them; without `arping` the agent falls back to `ping` + the
@@ -413,6 +475,24 @@ schedule. To turn it on, add the variable below to the agent's unit
 `systemctl daemon-reload` and restart the agent. Even then the agent does not
 turn it on while the node's `FORWARD` policy is `DROP`, because guests without
 their own accept rule would lose their network.
+
+**VM network rules: update the panel, then every agent.** Nothing changes for
+running VMs at the upgrade. VMs that had no firewall rules keep accepting
+inbound traffic that no rule matches when a rule is added (the VM's Firewall tab
+shows the policy and asks before switching it to drop); VMs with rules keep
+dropping it. Outbound mail on port 25 stays allowed for every existing VM and
+plan; a plan set to block it applies to VMs created on it afterwards, and an
+administrator can block or allow it per VM. An agent older than the panel
+ignores the mail block, the accept policy, and the family, ICMP type and log
+fields of a rule, so update the agents before using them. An updated agent
+checks every five minutes that each VM's firewall, NAT, port forwards and
+anti-spoofing rules are still installed and puts back what is missing (the first
+check after it starts only brings older rules in line); a node that needs this
+three times in an hour raises a "keeps losing VM network rules" alert. It also
+rebuilds tenant VPCs after a reboot and starts the guests on them that are set
+to autostart. Adding or releasing an address never restarts a VM on an updated
+agent: a guest that cannot take the change live gets it when its guest agent
+answers or when it is next started from the panel, and its page says so.
 
 **VM consoles stay on the node.** A VM's console socket listens on the node's
 loopback address with a password, and the panel reaches it through the agent's
@@ -1072,3 +1152,94 @@ The usage gauges (`maburvm_node_cpu_usage_percent` and the rest) are absent for
 a node with no reading in the last five minutes, instead of holding their last
 value. `maburvm_node_status` is the status the panel stores, which follows the
 checks above.
+
+The same endpoint carries the panel's own state, read from the database at
+scrape time:
+
+| Metric | Labels | Meaning |
+|---|---|---|
+| `maburvm_queue_jobs` | `kind`, `state` | Background jobs not finished (available, scheduled, retryable, running, pending). |
+| `maburvm_queue_oldest_available_job_age_seconds` | `queue` | How long the oldest job ready to run has waited. Grows when a queue is stuck. |
+| `maburvm_queue_jobs_finished_recently` | `kind`, `state` | Jobs cancelled or discarded that the queue still keeps (about a week). |
+| `maburvm_queue_job_failures_total` | `kind`, `outcome` | Counter of failed tries since the panel started: `retry` (tried again) or `failed` (for good). |
+| `maburvm_backups` | `status` | Backups by status. |
+| `maburvm_backup_last_success_timestamp_seconds` | `vm_id`, `vm` | When the VM's newest completed backup finished. Absent for a VM with none. |
+| `maburvm_backup_last_failed` | `vm_id`, `vm` | 1 when the VM's newest backup failed. |
+| `maburvm_storage_pool_capacity_bytes`, `_available_bytes`, `_allocated_bytes` | `node`, `pool`, `pool_id` | Pool size and free space as the node last reported them, and the virtual disk placed in it. |
+| `maburvm_ip_pool_free_addresses` | `pool_id`, `pool` | Addresses free to hand out. |
+| `maburvm_ip_pool_addresses` | `pool_id`, `pool`, `status` | Addresses by status. |
+| `maburvm_alerts_firing` | `kind`, `severity` | Alerts open now. |
+| `maburvm_ops_collect_success` | `group` | 0 when a group above could not be read on this scrape. |
+
+```yaml
+      - alert: JobQueueStuck
+        expr: max(maburvm_queue_oldest_available_job_age_seconds) > 900
+      - alert: JobsFailing
+        expr: increase(maburvm_queue_job_failures_total{outcome="failed"}[1h]) > 0
+      - alert: BackupFailed
+        expr: maburvm_backup_last_failed == 1
+      - alert: BackupStale
+        expr: time() - maburvm_backup_last_success_timestamp_seconds > 2 * 86400
+      - alert: PoolNearlyFull
+        expr: maburvm_storage_pool_available_bytes / maburvm_storage_pool_capacity_bytes < 0.1
+      - alert: IPPoolNearlyEmpty
+        expr: maburvm_ip_pool_free_addresses < 5
+```
+
+The panel logs one JSON object per line on standard error: requests (method,
+path without its query string, route, status, latency), its own messages and
+the job queue's. `docker compose logs panel | jq` reads them.
+
+### Background job retries
+
+A job that drives a node is tried a bounded number of times, spaced further
+apart each time: VM operations, snapshots, template syncs and imports 5 times
+(about six minutes), network changes 10 times (about four hours, so a node that
+is briefly away still gets them), backups, restores and image captures 3 times
+(each try moves a whole disk), customer emails 8 times (about an hour). A
+failure that another try cannot change (the template missing on the node, the
+VM's domain gone, no space left, a refusal) stops at once. Jobs queued before
+an upgrade stop at the same point. When a job fails for good, a "Job failed" or
+"Backup failed" alert is raised, and a VM whose creation or reinstall failed is
+marked as failed.
+
+Jobs run in four queues with their own workers (Settings, Job queue): VM
+operations, restores, snapshots and network changes in `critical`; backups,
+image captures and imports in `batch`; audit records in `audit`; the rest in
+`default`. Panels before this release put every job in `default`, whatever the
+queue settings said; jobs already queued there when you upgrade still run. A
+second request for the same operation on the same VM while one is still queued
+or running is answered with the job already there.
+
+## 15. Customer emails, notifications and rescue mode
+
+**Emails.** Every email to a customer is written to the email log (Settings,
+System, Email) and sent by the job queue, which retries a mail server that
+refuses or is down. Failed emails can be sent again from the log. The log keeps
+90 days and never shows the message body (it can hold a password-reset link).
+Besides account and server emails (welcome, password reset, server ready,
+reinstalled, rescue on and off), customers are emailed when a server is
+suspended or unsuspended, when a backup of their server fails after its last
+try, when its transfer reaches a warning level, and when their password is
+changed, two-factor sign-in is turned off or an API key is created for their
+account. Each can be reworded or switched off under Email templates. Nothing is
+sent until a mail server is set up.
+
+**Notifications.** Customers see the same events under Notifications in their
+area, with a read state kept per account. The administrator's bell is
+unchanged.
+
+**Rescue mode.** Enter rescue boots a stopped server from a rescue ISO so its
+owner can repair it from the console. Choose the ISO under Settings, System,
+Rescue: an http(s) URL each node downloads, or the path of an ISO on every
+node. Until one is saved there, `RESCUE_ISO_URL` in the panel's environment is
+used; with neither, the button is disabled for customers and says rescue mode is
+not available.
+
+**Deleting an account that owns VMs** is refused until you choose, on the
+account's page, to give its VMs (and their floating IPs) to another account or
+to delete them with it. Each VM given away is recorded in the audit log.
+
+**Detaching a data disk deletes it.** A detached disk is not kept anywhere it
+could be reattached from, so the panel asks for confirmation and deletes the
+disk with everything on it.

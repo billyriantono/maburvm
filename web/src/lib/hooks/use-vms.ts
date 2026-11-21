@@ -11,6 +11,8 @@ import type {
   VMMetrics,
   VMMetricSample,
   VMOperation,
+  VMLimits,
+  VMLimitsResult,
   CreateVMRequest,
   UpdateVMRequest,
   PaginatedResponse,
@@ -219,7 +221,7 @@ export function useDetachISO(id: string) {
 }
 
 // useRescueVM boots the VM from a rescue ISO. Optional isoUrl overrides the
-// server default (RESCUE_ISO_URL).
+// operator's rescue image (System settings, Rescue).
 export function useRescueVM(id: string) {
   const queryClient = useQueryClient()
   return useMutation<void, Error, string | undefined>({
@@ -347,6 +349,31 @@ export function useRepairConsole(id: string) {
       queryClient.invalidateQueries({ queryKey: ['vms', 'detail', id] })
     },
   })
+}
+
+// useVMLimits changes a VM's CPU and disk caps (operators only): set its own
+// limits, apply them again, throttle it, or lift the throttle. Each answers
+// with the limits now stored and whether the node has them.
+export function useVMLimits(id: string) {
+  const queryClient = useQueryClient()
+  const done = () => queryClient.invalidateQueries({ queryKey: ['vms', 'detail', id] })
+  const set = useMutation<VMLimitsResult, Error, VMLimits>({
+    mutationFn: async (limits) => (await api.put<VMLimitsResult>(`/api/v1/vms/${id}/limits`, { limits })).data.data,
+    onSuccess: done,
+  })
+  const apply = useMutation<VMLimitsResult, Error, void>({
+    mutationFn: async () => (await api.post<VMLimitsResult>(`/api/v1/vms/${id}/limits/apply`)).data.data,
+    onSuccess: done,
+  })
+  const throttle = useMutation<VMLimitsResult, Error, Partial<VMLimits>>({
+    mutationFn: async (t) => (await api.post<VMLimitsResult>(`/api/v1/vms/${id}/throttle`, t)).data.data,
+    onSuccess: done,
+  })
+  const unthrottle = useMutation<VMLimitsResult, Error, void>({
+    mutationFn: async () => (await api.delete<VMLimitsResult>(`/api/v1/vms/${id}/throttle`)).data.data,
+    onSuccess: done,
+  })
+  return { set, apply, throttle, unthrottle }
 }
 
 // useMigrateVM live-migrates a VM to another node.

@@ -47,6 +47,12 @@ type Node struct {
 	// yet" and is treated as unlimited, so a node the panel has not polled
 	// yet keeps provisioning rather than failing closed.
 	MemoryTotalBytes int64 `json:"memory_total_bytes" gorm:"not null;default:0"`
+	// CPUCount is the node's logical CPUs as its agent last reported them (0 =
+	// not measured, treated as unlimited). VCPURatio is this node's own vCPU
+	// overcommit ratio; 0 uses the panel-wide one. Read-only here: the collector
+	// and NodeService.UpdateNode write them by table name.
+	CPUCount  int     `json:"cpu_count" gorm:"column:cpu_count;->"`
+	VCPURatio float64 `json:"vcpu_ratio" gorm:"column:vcpu_ratio;->"`
 	// LastReportAt is when the node's agent last answered the collector with
 	// real figures; FailedPolls is how many checks in a row it has missed since.
 	// Read-only here, like CreationPaused: the collector writes them by table name.
